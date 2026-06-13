@@ -1,0 +1,212 @@
+- generic [active] [ref=e1]:
+  - main [ref=e2]:
+    - generic [ref=e3]:
+      - generic [ref=e4]:
+        - link "ourdream Trust & Safety home page" [ref=e5] [cursor=pointer]:
+          - /url: /
+          - img "ourdream Trust & Safety home page" [ref=e6]
+        - button "Search... ⌘K" [ref=e7]:
+          - generic [ref=e8]:
+            - img [ref=e9]
+            - generic [ref=e12]: Search...
+          - generic [ref=e13]: ⌘K
+        - navigation [ref=e14]:
+          - link "ourdream" [ref=e15] [cursor=pointer]:
+            - /url: /
+          - link "Report a problem" [ref=e16] [cursor=pointer]:
+            - /url: /safety/reporting/how-to-report
+          - button "Toggle dark mode" [ref=e17]:
+            - img [ref=e18]
+      - link "Trust & Safety" [ref=e21] [cursor=pointer]:
+        - /url: /safety/introduction
+    - generic [ref=e22]:
+      - complementary [ref=e23]:
+        - navigation [ref=e24]:
+          - generic [ref=e25]:
+            - heading "Overview" [level=3] [ref=e26]
+            - list [ref=e27]:
+              - listitem [ref=e28]:
+                - link "Our approach to safety" [ref=e29] [cursor=pointer]:
+                  - /url: /safety/introduction
+              - listitem [ref=e30]:
+                - link "Principles" [ref=e31] [cursor=pointer]:
+                  - /url: /safety/principles
+              - listitem [ref=e32]:
+                - link "What we won't do" [ref=e33] [cursor=pointer]:
+                  - /url: /safety/policies/what-we-wont-do
+          - generic [ref=e34]:
+            - heading "Policies" [level=3] [ref=e35]
+            - list [ref=e36]:
+              - listitem [ref=e37]:
+                - link "Acceptable use" [ref=e38] [cursor=pointer]:
+                  - /url: /safety/policies/acceptable-use
+              - listitem [ref=e39]:
+                - link "Prohibited content" [ref=e40] [cursor=pointer]:
+                  - /url: /safety/policies/prohibited-content
+              - listitem [ref=e41]:
+                - link "Age verification" [ref=e42] [cursor=pointer]:
+                  - /url: /safety/policies/age-verification
+              - listitem [ref=e43]:
+                - link "Intellectual property" [ref=e44] [cursor=pointer]:
+                  - /url: /safety/policies/intellectual-property
+          - generic [ref=e45]:
+            - heading "Moderation" [level=3] [ref=e46]
+            - list [ref=e47]:
+              - listitem [ref=e48]:
+                - link "How moderation works" [ref=e49] [cursor=pointer]:
+                  - /url: /safety/moderation/how-it-works
+              - listitem [ref=e50]:
+                - link "Why was my character rejected?" [ref=e51] [cursor=pointer]:
+                  - /url: /safety/moderation/why-rejected
+              - listitem [ref=e52]:
+                - link "Appeals" [ref=e53] [cursor=pointer]:
+                  - /url: /safety/moderation/appeals
+          - generic [ref=e54]:
+            - heading "Reporting" [level=3] [ref=e55]
+            - list [ref=e56]:
+              - listitem [ref=e57]:
+                - link "Report a problem" [ref=e58] [cursor=pointer]:
+                  - /url: /safety/reporting/how-to-report
+          - generic [ref=e59]:
+            - heading "Your account" [level=3] [ref=e60]
+            - list [ref=e61]:
+              - listitem [ref=e62]:
+                - link "Your safety tools" [ref=e63] [cursor=pointer]:
+                  - /url: /safety/your-account/safety-tools
+              - listitem [ref=e64]:
+                - link "Wellbeing resources" [ref=e65] [cursor=pointer]:
+                  - /url: /safety/your-account/wellbeing-resources
+              - listitem [ref=e66]:
+                - link "Privacy at a glance" [ref=e67] [cursor=pointer]:
+                  - /url: /safety/your-account/privacy-summary
+          - generic [ref=e68]:
+            - heading "Contact" [level=3] [ref=e69]
+            - list [ref=e70]:
+              - listitem [ref=e71]:
+                - link "Contact" [ref=e72] [cursor=pointer]:
+                  - /url: /safety/contact
+      - article [ref=e73]:
+        - generic [ref=e74]:
+          - paragraph [ref=e75]: Overview
+          - heading "Our approach to safety" [level=1] [ref=e76]
+        - paragraph [ref=e77]: How ourdream thinks about trust, moderation, and the limits of what we build.
+        - generic [ref=e78]:
+          - img "ourdream" [ref=e80]
+          - paragraph [ref=e81]:
+            - text: ourdream is a generative platform for AI characters, operated by
+            - strong [ref=e82]: Dream Studio USA, Inc.
+            - text: "(a Delaware corporation). Most of what people make on it is adult creative work: characters, scenarios, roleplay, the kind of thing that has lived in private notebooks and online forums for decades. The trust and safety work we do exists so that the platform stays a good home for that creative work, and so that the things that shouldn't be on it aren't."
+          - paragraph [ref=e83]: Everything on ourdream is generated by AI. You are interacting with software, not a person. Characters do not exist outside the model and do not have feelings, memories, or independent existence between sessions.
+          - paragraph [ref=e84]: "This site is the public record of how all of that happens: what is allowed, what is not, how moderation decisions get made, how to report a problem, and how to reach the team behind it. If something on the platform doesn't match what's described here, we want to know."
+          - heading "Start here" [level=2] [ref=e85]
+          - generic [ref=e86]:
+            - link "Principles The values behind every policy decision." [ref=e87] [cursor=pointer]:
+              - /url: /safety/principles
+              - generic [ref=e88]:
+                - img [ref=e89]
+                - heading "Principles" [level=3] [ref=e92]
+                - paragraph [ref=e93]: The values behind every policy decision.
+            - link "What's allowed What you can create and what we won't host." [ref=e94] [cursor=pointer]:
+              - /url: /safety/policies/acceptable-use
+              - generic [ref=e95]:
+                - img [ref=e96]
+                - heading "What's allowed" [level=3] [ref=e98]
+                - paragraph [ref=e99]: What you can create and what we won't host.
+            - link "Prohibited content The hard limits. What we will not host under any framing." [ref=e100] [cursor=pointer]:
+              - /url: /safety/policies/prohibited-content
+              - generic [ref=e101]:
+                - img [ref=e102]
+                - heading "Prohibited content" [level=3] [ref=e105]
+                - paragraph [ref=e106]: The hard limits. What we will not host under any framing.
+            - link "Age verification How we keep ourdream 18+ on both ends." [ref=e107] [cursor=pointer]:
+              - /url: /safety/policies/age-verification
+              - generic [ref=e108]:
+                - img [ref=e109]
+                - heading "Age verification" [level=3] [ref=e113]
+                - paragraph [ref=e114]: How we keep ourdream 18+ on both ends.
+            - link "How moderation works Defense in depth across input, output, and review." [ref=e115] [cursor=pointer]:
+              - /url: /safety/moderation/how-it-works
+              - generic [ref=e116]:
+                - img [ref=e117]
+                - heading "How moderation works" [level=3] [ref=e120]
+                - paragraph [ref=e121]: Defense in depth across input, output, and review.
+            - link "Why was my character rejected? The most common rejection reasons, with the fix for each." [ref=e122] [cursor=pointer]:
+              - /url: /safety/moderation/why-rejected
+              - generic [ref=e123]:
+                - img [ref=e124]
+                - heading "Why was my character rejected?" [level=3] [ref=e127]
+                - paragraph [ref=e128]: The most common rejection reasons, with the fix for each.
+            - link "Report a problem The fastest path to flagging a character, image, or user." [ref=e129] [cursor=pointer]:
+              - /url: /safety/reporting/how-to-report
+              - generic [ref=e130]:
+                - img [ref=e131]
+                - heading "Report a problem" [level=3] [ref=e133]
+                - paragraph [ref=e134]: The fastest path to flagging a character, image, or user.
+            - link "Your safety tools Hide characters, mute tags, manage your account." [ref=e135] [cursor=pointer]:
+              - /url: /safety/your-account/safety-tools
+              - generic [ref=e136]:
+                - img [ref=e137]
+                - heading "Your safety tools" [level=3] [ref=e139]
+                - paragraph [ref=e140]: Hide characters, mute tags, manage your account.
+            - link "Wellbeing resources External crisis and support services by country." [ref=e141] [cursor=pointer]:
+              - /url: /safety/your-account/wellbeing-resources
+              - generic [ref=e142]:
+                - img [ref=e143]
+                - heading "Wellbeing resources" [level=3] [ref=e145]
+                - paragraph [ref=e146]: External crisis and support services by country.
+            - link "Contact The right channel for trust, legal, press, security, or law enforcement." [ref=e147] [cursor=pointer]:
+              - /url: /safety/contact
+              - generic [ref=e148]:
+                - img [ref=e149]
+                - heading "Contact" [level=3] [ref=e152]
+                - paragraph [ref=e153]: The right channel for trust, legal, press, security, or law enforcement.
+          - heading "Commitments" [level=2] [ref=e154]
+          - paragraph [ref=e155]:
+            - text: A short list of things ourdream commits to. See
+            - link "What we won't do" [ref=e156] [cursor=pointer]:
+              - /url: /safety/policies/what-we-wont-do
+            - text: for the full list.
+          - list [ref=e157]:
+            - listitem [ref=e158]: We do not host content depicting minors. Ever.
+            - listitem [ref=e159]: We do not host real-person likeness.
+            - listitem [ref=e160]: We do not sell your chats.
+            - listitem [ref=e161]: We tell you when your content is removed, and why.
+          - paragraph [ref=e162]: The rest of this site is what those commitments mean in practice.
+        - paragraph [ref=e163]: Last modified on June 10, 2026
+        - link "Principles" [ref=e165] [cursor=pointer]:
+          - /url: /safety/principles
+          - text: Principles
+          - img [ref=e166]
+      - complementary [ref=e168]:
+        - navigation [ref=e169]:
+          - heading "On this page" [level=2] [ref=e170]:
+            - img [ref=e171]
+            - text: On this page
+          - list [ref=e172]:
+            - listitem [ref=e173]:
+              - link "Start here" [ref=e174] [cursor=pointer]:
+                - /url: "#start-here"
+            - listitem [ref=e175]:
+              - link "Commitments" [ref=e176] [cursor=pointer]:
+                - /url: "#commitments"
+    - generic [ref=e178]:
+      - generic [ref=e179]:
+        - link "ourdream Trust & Safety home page" [ref=e180] [cursor=pointer]:
+          - /url: /
+          - img "ourdream Trust & Safety home page" [ref=e181]
+        - generic [ref=e182]:
+          - link "trust@ourdream.ai" [ref=e183] [cursor=pointer]:
+            - /url: mailto:trust@ourdream.ai
+          - link "ourdream.ai" [ref=e184] [cursor=pointer]:
+            - /url: /
+        - link "website" [ref=e185] [cursor=pointer]:
+          - /url: /
+          - img [ref=e186]
+      - generic [ref=e189]:
+        - paragraph [ref=e190]: Powered by mintlify
+        - generic [ref=e191]:
+          - img [ref=e192]
+          - img [ref=e194]
+          - img [ref=e200]
+  - button "Open Next.js Dev Tools" [ref=e207] [cursor=pointer]:
+    - img [ref=e208]

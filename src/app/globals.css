@@ -9,6 +9,8 @@
   --color-foreground: var(--foreground);
   --font-sans: "Geist", "Geist Fallback", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "Geist Mono", "Geist Mono Fallback", ui-monospace, monospace;
+  --font-safety-docs: var(--font-safety), -apple-system, "system-ui", "Segoe UI",
+    system-ui, sans-serif;
   --font-heading: var(--font-sans);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
@@ -49,38 +51,57 @@
 }
 
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
+  --background: rgb(13 13 13);
+  --foreground: rgb(250 250 250);
+  --card: rgb(18 18 18);
+  --card-foreground: rgb(250 250 250);
+  --popover: rgb(36 36 36);
+  --popover-foreground: rgb(250 250 250);
+  --primary: rgb(253 95 194);
+  --primary-foreground: rgb(255 255 255);
+  --secondary: rgb(36 36 36);
+  --secondary-foreground: rgb(255 255 255);
+  --muted: rgb(36 36 36);
+  --muted-foreground: rgb(170 170 170);
+  --accent: rgb(46 46 46);
+  --accent-foreground: rgb(255 255 255);
+  --destructive: rgb(255 99 99);
+  --border: rgb(36 36 36);
+  --input: rgb(53 53 54);
+  --ring: rgb(255 255 255);
+  --chart-1: rgb(253 95 194);
+  --chart-2: rgb(170 170 170);
+  --chart-3: rgb(114 113 112);
+  --chart-4: rgb(53 53 54);
+  --chart-5: rgb(36 36 36);
   --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --sidebar: rgb(18 18 18);
+  --sidebar-foreground: rgb(250 250 250);
+  --sidebar-primary: rgb(253 95 194);
+  --sidebar-primary-foreground: rgb(255 255 255);
+  --sidebar-accent: rgb(46 46 46);
+  --sidebar-accent-foreground: rgb(255 255 255);
+  --sidebar-border: rgb(36 36 36);
+  --sidebar-ring: rgb(255 255 255);
+  --ds-surface-primary: rgb(13 13 13);
+  --ds-surface-secondary: rgb(18 18 18);
+  --ds-surface-raised: rgb(46 46 46);
+  --ds-surface-strong: rgb(53 53 54);
+  --ds-border-primary: rgb(36 36 36);
+  --ds-content-primary: rgb(255 255 255);
+  --ds-content-secondary: rgb(170 170 170);
+  --ds-content-tertiary: rgb(114 113 112);
+  --ds-brand-pink: rgb(253 95 194);
+  --ds-gradient-accent-surface: linear-gradient(0deg, #ff1cac, #fd5fc2 50%, #ff79d1);
+  --ds-gradient-card-scrim: linear-gradient(
+    0deg,
+    rgba(0, 0, 0, 0.6),
+    rgba(0, 0, 0, 0.596) 4.625%,
+    rgba(0, 0, 0, 0.58) 9.25%,
+    rgba(0, 0, 0, 0.4) 27.75%,
+    rgba(0, 0, 0, 0.2) 41.625%,
+    transparent 69.375%
+  );
 }
 
 .dark {
@@ -123,8 +144,29 @@
   }
   body {
     @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
   }
   html {
     @apply font-sans;
+    background: rgb(13 13 13);
+    scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+  }
+  ::selection {
+    background: rgba(253, 95, 194, 0.35);
+  }
+}
+
+@layer utilities {
+  .font-safety-docs {
+    font-family:
+      var(--font-safety), -apple-system, "system-ui", "Segoe UI", system-ui,
+      sans-serif;
+  }
+
+  .line-clamp-2 {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
   }
 }

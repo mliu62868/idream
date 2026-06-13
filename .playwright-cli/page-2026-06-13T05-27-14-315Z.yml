@@ -1,0 +1,281 @@
+- generic [active] [ref=e1]:
+  - blockquote [ref=e2]:
+    - heading [level=2] [ref=e3]: Documentation Index
+    - paragraph [ref=e4]:
+      - text: "Fetch the complete documentation index at:"
+      - link [ref=e5] [cursor=pointer]:
+        - /url: /llms.txt
+        - text: /llms.txt
+    - paragraph [ref=e6]: Use this file to discover all available pages before exploring further.
+  - generic [ref=e7]:
+    - link "Skip to main content" [ref=e8] [cursor=pointer]:
+      - /url: "#content-area"
+    - generic [ref=e10]:
+      - banner [ref=e11]:
+        - generic [ref=e14]:
+          - generic [ref=e17]:
+            - link "ourdream Trust & Safety home page dark logo" [ref=e19] [cursor=pointer]:
+              - /url: https://ourdream.ai
+              - generic [ref=e20]: ourdream Trust & Safety home page
+              - img "dark logo" [ref=e21]
+            - button "Open search" [ref=e23] [cursor=pointer]:
+              - generic [ref=e24]:
+                - img [ref=e25]
+                - generic [ref=e28]: Search...
+              - generic [ref=e29]: ⌘K
+            - generic [ref=e30]:
+              - navigation "Main" [ref=e31]:
+                - list [ref=e32]:
+                  - listitem [ref=e33]:
+                    - link "ourdream" [ref=e34] [cursor=pointer]:
+                      - /url: https://ourdream.ai
+                  - listitem [ref=e35]:
+                    - link "Report a problem" [ref=e36] [cursor=pointer]:
+                      - /url: /reporting/how-to-report
+                      - generic [ref=e38]:
+                        - generic [ref=e39]: Report a problem
+                        - img [ref=e40]
+              - button "Toggle dark mode" [ref=e43] [cursor=pointer]:
+                - img [ref=e44]
+          - link "Trust & Safety" [ref=e48] [cursor=pointer]:
+            - /url: /introduction
+            - text: Trust & Safety
+      - generic [ref=e50]:
+        - navigation "Pages" [ref=e51]:
+          - generic [ref=e54]:
+            - generic [ref=e55]:
+              - heading "Overview" [level=3] [ref=e57]
+              - list [ref=e58]:
+                - listitem [ref=e59]:
+                  - link "Our approach to safety" [ref=e60] [cursor=pointer]:
+                    - /url: /introduction
+                    - generic [ref=e63]: Our approach to safety
+                - listitem [ref=e64]:
+                  - link "Principles" [ref=e65] [cursor=pointer]:
+                    - /url: /principles
+                    - generic [ref=e68]: Principles
+                - listitem [ref=e69]:
+                  - link "What we won't do" [ref=e70] [cursor=pointer]:
+                    - /url: /policies/what-we-wont-do
+                    - generic [ref=e73]: What we won't do
+            - generic [ref=e74]:
+              - heading "Policies" [level=3] [ref=e76]
+              - list [ref=e77]:
+                - listitem [ref=e78]:
+                  - link "Acceptable use" [ref=e79] [cursor=pointer]:
+                    - /url: /policies/acceptable-use
+                    - generic [ref=e82]: Acceptable use
+                - listitem [ref=e83]:
+                  - link "Prohibited content" [ref=e84] [cursor=pointer]:
+                    - /url: /policies/prohibited-content
+                    - generic [ref=e87]: Prohibited content
+                - listitem [ref=e88]:
+                  - link "Age verification" [ref=e89] [cursor=pointer]:
+                    - /url: /policies/age-verification
+                    - generic [ref=e92]: Age verification
+                - listitem [ref=e93]:
+                  - link "Intellectual property" [ref=e94] [cursor=pointer]:
+                    - /url: /policies/intellectual-property
+                    - generic [ref=e97]: Intellectual property
+            - generic [ref=e98]:
+              - heading "Moderation" [level=3] [ref=e100]
+              - list [ref=e101]:
+                - listitem [ref=e102]:
+                  - link "How moderation works" [ref=e103] [cursor=pointer]:
+                    - /url: /moderation/how-it-works
+                    - generic [ref=e106]: How moderation works
+                - listitem [ref=e107]:
+                  - link "Why was my character rejected?" [ref=e108] [cursor=pointer]:
+                    - /url: /moderation/why-rejected
+                    - generic [ref=e111]: Why was my character rejected?
+                - listitem [ref=e112]:
+                  - link "Appeals" [ref=e113] [cursor=pointer]:
+                    - /url: /moderation/appeals
+                    - generic [ref=e116]: Appeals
+            - generic [ref=e117]:
+              - heading "Reporting" [level=3] [ref=e119]
+              - list [ref=e120]:
+                - listitem [ref=e121]:
+                  - link "Report a problem" [ref=e122] [cursor=pointer]:
+                    - /url: /reporting/how-to-report
+                    - generic [ref=e125]: Report a problem
+            - generic [ref=e126]:
+              - heading "Your account" [level=3] [ref=e128]
+              - list [ref=e129]:
+                - listitem [ref=e130]:
+                  - link "Your safety tools" [ref=e131] [cursor=pointer]:
+                    - /url: /your-account/safety-tools
+                    - generic [ref=e134]: Your safety tools
+                - listitem [ref=e135]:
+                  - link "Wellbeing resources" [ref=e136] [cursor=pointer]:
+                    - /url: /your-account/wellbeing-resources
+                    - generic [ref=e139]: Wellbeing resources
+                - listitem [ref=e140]:
+                  - link "Privacy at a glance" [ref=e141] [cursor=pointer]:
+                    - /url: /your-account/privacy-summary
+                    - generic [ref=e144]: Privacy at a glance
+            - generic [ref=e145]:
+              - heading "Contact" [level=3] [ref=e147]
+              - list [ref=e148]:
+                - listitem [ref=e149]:
+                  - link "Contact" [ref=e150] [cursor=pointer]:
+                    - /url: /contact
+                    - generic [ref=e153]: Contact
+        - main [ref=e154]:
+          - generic [ref=e155]:
+            - navigation "On this page" [ref=e159]:
+              - heading "On this page" [level=2] [ref=e160]:
+                - button "On this page" [ref=e161] [cursor=pointer]:
+                  - img [ref=e162]
+                  - generic [ref=e163]: On this page
+              - list [ref=e165]:
+                - listitem [ref=e166]:
+                  - link "Start here" [ref=e167] [cursor=pointer]:
+                    - /url: "#start-here"
+                - listitem [ref=e168]:
+                  - link "Commitments" [ref=e169] [cursor=pointer]:
+                    - /url: "#commitments"
+            - generic [ref=e170]:
+              - generic [ref=e171]:
+                - generic [ref=e172]:
+                  - generic [ref=e173]: Overview
+                  - heading "Our approach to safety" [level=1] [ref=e175]
+                - paragraph [ref=e177]: How ourdream thinks about trust, moderation, and the limits of what we build.
+              - generic [ref=e178]:
+                - generic [ref=e179]:
+                  - img "ourdream" [ref=e182]
+                  - generic:
+                    - 'button "Expand image: ourdream"'
+                - generic [ref=e183]:
+                  - text: ourdream is a generative platform for AI characters, operated by
+                  - strong [ref=e184]: Dream Studio USA, Inc.
+                  - text: "(a Delaware corporation). Most of what people make on it is adult creative work: characters, scenarios, roleplay, the kind of thing that has lived in private notebooks and online forums for decades. The trust and safety work we do exists so that the platform stays a good home for that creative work, and so that the things that shouldn’t be on it aren’t."
+                - generic [ref=e185]: Everything on ourdream is generated by AI. You are interacting with software, not a person. Characters do not exist outside the model and do not have feelings, memories, or independent existence between sessions.
+                - generic [ref=e186]: "This site is the public record of how all of that happens: what is allowed, what is not, how moderation decisions get made, how to report a problem, and how to reach the team behind it. If something on the platform doesn’t match what’s described here, we want to know."
+                - heading "Navigate to header Start here" [level=2] [ref=e187]:
+                  - link "Navigate to header" [ref=e188] [cursor=pointer]:
+                    - /url: "#start-here"
+                    - img [ref=e190]
+                  - generic [ref=e192] [cursor=pointer]: Start here
+                - generic [ref=e193]:
+                  - link [ref=e194] [cursor=pointer]:
+                    - link [ref=e196]:
+                      - /url: /principles
+                      - img [ref=e198]
+                      - generic [ref=e199]:
+                        - heading [level=2] [ref=e200]: Principles
+                        - generic [ref=e202]: The values behind every policy decision.
+                  - link [ref=e203] [cursor=pointer]:
+                    - link [ref=e205]:
+                      - /url: /policies/acceptable-use
+                      - img [ref=e207]
+                      - generic [ref=e208]:
+                        - heading [level=2] [ref=e209]: What's allowed
+                        - generic [ref=e211]: What you can create and what we won’t host.
+                  - link [ref=e212] [cursor=pointer]:
+                    - link [ref=e214]:
+                      - /url: /policies/prohibited-content
+                      - img [ref=e216]
+                      - generic [ref=e217]:
+                        - heading [level=2] [ref=e218]: Prohibited content
+                        - generic [ref=e220]: The hard limits. What we will not host under any framing.
+                  - link [ref=e221] [cursor=pointer]:
+                    - link [ref=e223]:
+                      - /url: /policies/age-verification
+                      - img [ref=e225]
+                      - generic [ref=e226]:
+                        - heading [level=2] [ref=e227]: Age verification
+                        - generic [ref=e229]: How we keep ourdream 18+ on both ends.
+                  - link [ref=e230] [cursor=pointer]:
+                    - link [ref=e232]:
+                      - /url: /moderation/how-it-works
+                      - img [ref=e234]
+                      - generic [ref=e235]:
+                        - heading [level=2] [ref=e236]: How moderation works
+                        - generic [ref=e238]: Defense in depth across input, output, and review.
+                  - link [ref=e239] [cursor=pointer]:
+                    - link [ref=e241]:
+                      - /url: /moderation/why-rejected
+                      - img [ref=e243]
+                      - generic [ref=e244]:
+                        - heading [level=2] [ref=e245]: Why was my character rejected?
+                        - generic [ref=e247]: The most common rejection reasons, with the fix for each.
+                  - link [ref=e248] [cursor=pointer]:
+                    - link [ref=e250]:
+                      - /url: /reporting/how-to-report
+                      - img [ref=e252]
+                      - generic [ref=e253]:
+                        - heading [level=2] [ref=e254]: Report a problem
+                        - generic [ref=e256]: The fastest path to flagging a character, image, or user.
+                  - link [ref=e257] [cursor=pointer]:
+                    - link [ref=e259]:
+                      - /url: /your-account/safety-tools
+                      - img [ref=e261]
+                      - generic [ref=e262]:
+                        - heading [level=2] [ref=e263]: Your safety tools
+                        - generic [ref=e265]: Hide characters, mute tags, manage your account.
+                  - link [ref=e266] [cursor=pointer]:
+                    - link [ref=e268]:
+                      - /url: /your-account/wellbeing-resources
+                      - img [ref=e270]
+                      - generic [ref=e271]:
+                        - heading [level=2] [ref=e272]: Wellbeing resources
+                        - generic [ref=e274]: External crisis and support services by country.
+                  - link [ref=e275] [cursor=pointer]:
+                    - link [ref=e277]:
+                      - /url: /contact
+                      - img [ref=e279]
+                      - generic [ref=e280]:
+                        - heading [level=2] [ref=e281]: Contact
+                        - generic [ref=e283]: The right channel for trust, legal, press, security, or law enforcement.
+                - heading "Navigate to header Commitments" [level=2] [ref=e284]:
+                  - link "Navigate to header" [ref=e285] [cursor=pointer]:
+                    - /url: "#commitments"
+                    - img [ref=e287]
+                  - generic [ref=e289] [cursor=pointer]: Commitments
+                - generic [ref=e290]:
+                  - text: A short list of things ourdream commits to. See
+                  - link "What we won’t do" [ref=e291] [cursor=pointer]:
+                    - /url: /policies/what-we-wont-do
+                  - text: for the full list.
+                - list [ref=e292]:
+                  - listitem [ref=e293]: We do not host content depicting minors. Ever.
+                  - listitem [ref=e294]: We do not host real-person likeness.
+                  - listitem [ref=e295]: We do not sell your chats.
+                  - listitem [ref=e296]: We tell you when your content is removed, and why.
+                - generic [ref=e297]: The rest of this site is what those commitments mean in practice.
+              - generic [ref=e298]: Last modified on June 10, 2026
+              - link "Principles" [ref=e300] [cursor=pointer]:
+                - /url: /principles
+                - generic [ref=e301]: Principles
+                - img [ref=e302]
+      - contentinfo [ref=e304]:
+        - generic [ref=e305]:
+          - generic [ref=e306]:
+            - link "ourdream Trust & Safety home page dark logo" [ref=e308] [cursor=pointer]:
+              - /url: https://ourdream.ai
+              - generic [ref=e309]: ourdream Trust & Safety home page
+              - img "dark logo" [ref=e310]
+            - generic [ref=e313]:
+              - link "trust@ourdream.ai" [ref=e314] [cursor=pointer]:
+                - /url: mailto:trust@ourdream.ai
+              - link "ourdream.ai" [ref=e315] [cursor=pointer]:
+                - /url: https://ourdream.ai
+            - link "website" [ref=e317] [cursor=pointer]:
+              - /url: https://ourdream.ai
+              - generic [ref=e318]: website
+              - img [ref=e319]
+          - generic [ref=e321]:
+            - link "Powered by This documentation is built and hosted on Mintlify, a developer documentation platform" [ref=e323] [cursor=pointer]:
+              - /url: https://www.mintlify.com?utm_campaign=poweredBy&utm_medium=referral&utm_source=od-f1eb486d
+              - generic [ref=e324]: Powered by
+              - img [ref=e325]
+              - generic [ref=e334]: This documentation is built and hosted on Mintlify, a developer documentation platform
+            - generic [ref=e335]:
+              - button "Switch to system theme" [ref=e336] [cursor=pointer]:
+                - img [ref=e337]
+              - button "Switch to light theme" [ref=e341] [cursor=pointer]:
+                - img [ref=e342]
+              - button "Switch to dark theme" [ref=e349] [cursor=pointer]:
+                - img [ref=e350]
+  - alert [ref=e352]

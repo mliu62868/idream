@@ -1,0 +1,263 @@
+- generic [active] [ref=e1]:
+  - main [ref=e2]:
+    - generic [ref=e3]:
+      - generic [ref=e4]:
+        - link "ourdream Trust & Safety home page" [ref=e5] [cursor=pointer]:
+          - /url: /
+          - img "ourdream Trust & Safety home page" [ref=e6]
+        - button "Search... ⌘K" [ref=e7]:
+          - generic [ref=e8]:
+            - img [ref=e9]
+            - generic [ref=e12]: Search...
+          - generic [ref=e13]: ⌘K
+        - navigation [ref=e14]:
+          - link "ourdream" [ref=e15] [cursor=pointer]:
+            - /url: /
+          - link "Report a problem" [ref=e16] [cursor=pointer]:
+            - /url: /safety/reporting/how-to-report
+          - button "Toggle dark mode" [ref=e17]:
+            - img [ref=e18]
+      - link "Trust & Safety" [ref=e21] [cursor=pointer]:
+        - /url: /safety/introduction
+    - generic [ref=e22]:
+      - complementary [ref=e23]:
+        - navigation [ref=e24]:
+          - generic [ref=e25]:
+            - heading "Overview" [level=3] [ref=e26]
+            - list [ref=e27]:
+              - listitem [ref=e28]:
+                - link "Our approach to safety" [ref=e29] [cursor=pointer]:
+                  - /url: /safety/introduction
+              - listitem [ref=e30]:
+                - link "Principles" [ref=e31] [cursor=pointer]:
+                  - /url: /safety/principles
+              - listitem [ref=e32]:
+                - link "What we won't do" [ref=e33] [cursor=pointer]:
+                  - /url: /safety/policies/what-we-wont-do
+          - generic [ref=e34]:
+            - heading "Policies" [level=3] [ref=e35]
+            - list [ref=e36]:
+              - listitem [ref=e37]:
+                - link "Acceptable use" [ref=e38] [cursor=pointer]:
+                  - /url: /safety/policies/acceptable-use
+              - listitem [ref=e39]:
+                - link "Prohibited content" [ref=e40] [cursor=pointer]:
+                  - /url: /safety/policies/prohibited-content
+              - listitem [ref=e41]:
+                - link "Age verification" [ref=e42] [cursor=pointer]:
+                  - /url: /safety/policies/age-verification
+              - listitem [ref=e43]:
+                - link "Intellectual property" [ref=e44] [cursor=pointer]:
+                  - /url: /safety/policies/intellectual-property
+          - generic [ref=e45]:
+            - heading "Moderation" [level=3] [ref=e46]
+            - list [ref=e47]:
+              - listitem [ref=e48]:
+                - link "How moderation works" [ref=e49] [cursor=pointer]:
+                  - /url: /safety/moderation/how-it-works
+              - listitem [ref=e50]:
+                - link "Why was my character rejected?" [ref=e51] [cursor=pointer]:
+                  - /url: /safety/moderation/why-rejected
+              - listitem [ref=e52]:
+                - link "Appeals" [ref=e53] [cursor=pointer]:
+                  - /url: /safety/moderation/appeals
+          - generic [ref=e54]:
+            - heading "Reporting" [level=3] [ref=e55]
+            - list [ref=e56]:
+              - listitem [ref=e57]:
+                - link "Report a problem" [ref=e58] [cursor=pointer]:
+                  - /url: /safety/reporting/how-to-report
+          - generic [ref=e59]:
+            - heading "Your account" [level=3] [ref=e60]
+            - list [ref=e61]:
+              - listitem [ref=e62]:
+                - link "Your safety tools" [ref=e63] [cursor=pointer]:
+                  - /url: /safety/your-account/safety-tools
+              - listitem [ref=e64]:
+                - link "Wellbeing resources" [ref=e65] [cursor=pointer]:
+                  - /url: /safety/your-account/wellbeing-resources
+              - listitem [ref=e66]:
+                - link "Privacy at a glance" [ref=e67] [cursor=pointer]:
+                  - /url: /safety/your-account/privacy-summary
+          - generic [ref=e68]:
+            - heading "Contact" [level=3] [ref=e69]
+            - list [ref=e70]:
+              - listitem [ref=e71]:
+                - link "Contact" [ref=e72] [cursor=pointer]:
+                  - /url: /safety/contact
+      - article [ref=e73]:
+        - generic [ref=e74]:
+          - paragraph [ref=e75]: Overview
+          - heading "Privacy at a glance" [level=1] [ref=e76]
+        - paragraph [ref=e77]: A plain language summary of what ourdream collects and how it is used.
+        - generic [ref=e78]:
+          - generic [ref=e79]:
+            - text: This page is a plain language summary. The
+            - link "Privacy Policy" [ref=e80] [cursor=pointer]:
+              - /url: https://ourdream.ai/terms/privacy-policy
+            - text: is the legal document; if there is ever a conflict, that document governs.
+          - paragraph [ref=e81]:
+            - text: "The short version: ourdream collects what it needs to run the product and bills you. It does not sell your data. The data controller for the information described on this page is"
+            - strong [ref=e82]: Dream Studio USA, Inc.
+            - text: ", the legal entity that operates ourdream."
+          - heading "What we collect" [level=2] [ref=e83]
+          - table [ref=e85]:
+            - rowgroup [ref=e86]:
+              - row "Category Example Why" [ref=e87]:
+                - columnheader "Category" [ref=e88]
+                - columnheader "Example" [ref=e89]
+                - columnheader "Why" [ref=e90]
+            - rowgroup [ref=e91]:
+              - row "Account info Email, password hash, age confirmation To run your account" [ref=e92]:
+                - cell "Account info" [ref=e93]
+                - cell "Email, password hash, age confirmation" [ref=e94]
+                - cell "To run your account" [ref=e95]
+              - row "Payment info Plan, billing address, card on file (held by payment processor) To bill you" [ref=e96]:
+                - cell "Payment info" [ref=e97]
+                - cell "Plan, billing address, card on file (held by payment processor)" [ref=e98]
+                - cell "To bill you" [ref=e99]
+              - row "Content you create Characters, chats, images, videos The product" [ref=e100]:
+                - cell "Content you create" [ref=e101]
+                - cell "Characters, chats, images, videos" [ref=e102]
+                - cell "The product" [ref=e103]
+              - row "Usage telemetry Pages viewed, features used, errors hit Product improvement, debugging" [ref=e104]:
+                - cell "Usage telemetry" [ref=e105]
+                - cell "Pages viewed, features used, errors hit" [ref=e106]
+                - cell "Product improvement, debugging" [ref=e107]
+              - row "Device info Browser, OS, approximate region Security, support" [ref=e108]:
+                - cell "Device info" [ref=e109]
+                - cell "Browser, OS, approximate region" [ref=e110]
+                - cell "Security, support" [ref=e111]
+          - heading "What we do not collect" [level=2] [ref=e112]
+          - list [ref=e113]:
+            - listitem [ref=e114]: Your contacts.
+            - listitem [ref=e115]: Your location beyond the country/region needed for tax and compliance.
+            - listitem [ref=e116]: The contents of other apps on your device.
+          - heading "Who sees your chats" [level=2] [ref=e117]
+          - table [ref=e119]:
+            - rowgroup [ref=e120]:
+              - row "Audience Sees private chats?" [ref=e121]:
+                - columnheader "Audience" [ref=e122]
+                - columnheader "Sees private chats?" [ref=e123]
+            - rowgroup [ref=e124]:
+              - row "You Yes" [ref=e125]:
+                - cell "You" [ref=e126]
+                - cell "Yes" [ref=e127]
+              - row "Other users (incl. character creators) No" [ref=e128]:
+                - cell "Other users (incl. character creators)" [ref=e129]
+                - cell "No" [ref=e130]
+              - row "ourdream staff Only with your explicit support consent, or when responding to a lawful legal request" [ref=e131]:
+                - cell "ourdream staff" [ref=e132]
+                - cell "Only with your explicit support consent, or when responding to a lawful legal request" [ref=e133]
+              - row "Third-party AI providers Yes. The message you send is processed by the model provider to generate the reply, governed by their data-processing agreement" [ref=e134]:
+                - cell "Third-party AI providers" [ref=e135]
+                - cell "Yes. The message you send is processed by the model provider to generate the reply, governed by their data-processing agreement" [ref=e136]
+          - heading "Who sees your images and videos" [level=2] [ref=e137]
+          - table [ref=e139]:
+            - rowgroup [ref=e140]:
+              - row "Audience Sees private generations?" [ref=e141]:
+                - columnheader "Audience" [ref=e142]
+                - columnheader "Sees private generations?" [ref=e143]
+            - rowgroup [ref=e144]:
+              - row "You Yes" [ref=e145]:
+                - cell "You" [ref=e146]
+                - cell "Yes" [ref=e147]
+              - row "Other users (incl. character creators) Generations of public characters will automatically be placed in their public character pack available to all users, with all metadata of who generated the media removed. Generations of private and unlisted characters are not visible" [ref=e148]:
+                - cell "Other users (incl. character creators)" [ref=e149]
+                - cell "Generations of public characters will automatically be placed in their public character pack available to all users, with all metadata of who generated the media removed. Generations of private and unlisted characters are not visible" [ref=e150]
+              - row "ourdream staff Only with your explicit support consent, or when responding to a lawful legal request" [ref=e151]:
+                - cell "ourdream staff" [ref=e152]
+                - cell "Only with your explicit support consent, or when responding to a lawful legal request" [ref=e153]
+              - row "Third-party AI providers Model-dependent. ourdream self-hosts a majority of our image models, but some models utilize third-party providers. In those cases, your image will be generated by the model provider, governed by their data-processing agreement" [ref=e154]:
+                - cell "Third-party AI providers" [ref=e155]
+                - cell "Model-dependent. ourdream self-hosts a majority of our image models, but some models utilize third-party providers. In those cases, your image will be generated by the model provider, governed by their data-processing agreement" [ref=e156]
+          - heading "Third parties we use" [level=2] [ref=e157]
+          - paragraph [ref=e158]: "ourdream uses third-party services to run. The major ones:"
+          - list [ref=e159]:
+            - listitem [ref=e160]: AI model providers, for chat and image generation
+            - listitem [ref=e161]: A payment processor, to bill subscriptions
+            - listitem [ref=e162]:
+              - link "Go.cam" [ref=e163] [cursor=pointer]:
+                - /url: https://go.cam/
+              - text: ", for age verification on mature features"
+            - listitem [ref=e164]: Infrastructure providers, for hosting, storage, and CDN
+          - paragraph [ref=e165]: CSAM detection runs on our own classifiers; we do not send images to a third-party CSAM-detection vendor.
+          - paragraph [ref=e166]:
+            - text: The full list with what each one receives is in the
+            - link "Privacy Policy" [ref=e167] [cursor=pointer]:
+              - /url: https://ourdream.ai/terms/privacy-policy
+            - text: .
+          - heading "Your rights" [level=2] [ref=e168]
+          - paragraph [ref=e169]: Depending on where you live, you have the right to access the data we hold about you, correct inaccurate data, delete your account and the data associated with it, export your data in a portable format, and object to specific uses such as analytics.
+          - paragraph [ref=e170]:
+            - text: To request any of these, email
+            - strong [ref=e171]:
+              - link "trust@ourdream.ai" [ref=e172] [cursor=pointer]:
+                - /url: mailto:trust@ourdream.ai
+            - text: . Account deletion is also available in
+            - strong [ref=e173]: Settings → Account management
+            - text: .
+          - heading "Children" [level=2] [ref=e174]
+          - paragraph [ref=e175]:
+            - text: ourdream is 18+. We do not knowingly collect data from anyone under 18. If you believe a user is a minor, report it through
+            - link "How to report" [ref=e176] [cursor=pointer]:
+              - /url: /safety/reporting/how-to-report
+            - text: .
+          - heading "Changes" [level=2] [ref=e177]
+          - paragraph [ref=e178]: When we change how we collect or use data, we update the full Privacy Policy. The "Last modified" date at the bottom is authoritative.
+        - paragraph [ref=e179]: Last modified on June 10, 2026
+        - link "Contact" [ref=e181] [cursor=pointer]:
+          - /url: /safety/contact
+          - text: Contact
+          - img [ref=e182]
+      - complementary [ref=e184]:
+        - navigation [ref=e185]:
+          - heading "On this page" [level=2] [ref=e186]:
+            - img [ref=e187]
+            - text: On this page
+          - list [ref=e188]:
+            - listitem [ref=e189]:
+              - link "What we collect" [ref=e190] [cursor=pointer]:
+                - /url: "#what-we-collect"
+            - listitem [ref=e191]:
+              - link "What we do not collect" [ref=e192] [cursor=pointer]:
+                - /url: "#what-we-do-not-collect"
+            - listitem [ref=e193]:
+              - link "Who sees your chats" [ref=e194] [cursor=pointer]:
+                - /url: "#who-sees-your-chats"
+            - listitem [ref=e195]:
+              - link "Who sees your images and videos" [ref=e196] [cursor=pointer]:
+                - /url: "#who-sees-your-images-and-videos"
+            - listitem [ref=e197]:
+              - link "Third parties we use" [ref=e198] [cursor=pointer]:
+                - /url: "#third-parties-we-use"
+            - listitem [ref=e199]:
+              - link "Your rights" [ref=e200] [cursor=pointer]:
+                - /url: "#your-rights"
+            - listitem [ref=e201]:
+              - link "Children" [ref=e202] [cursor=pointer]:
+                - /url: "#children"
+            - listitem [ref=e203]:
+              - link "Changes" [ref=e204] [cursor=pointer]:
+                - /url: "#changes"
+    - generic [ref=e206]:
+      - generic [ref=e207]:
+        - link "ourdream Trust & Safety home page" [ref=e208] [cursor=pointer]:
+          - /url: /
+          - img "ourdream Trust & Safety home page" [ref=e209]
+        - generic [ref=e210]:
+          - link "trust@ourdream.ai" [ref=e211] [cursor=pointer]:
+            - /url: mailto:trust@ourdream.ai
+          - link "ourdream.ai" [ref=e212] [cursor=pointer]:
+            - /url: /
+        - link "website" [ref=e213] [cursor=pointer]:
+          - /url: /
+          - img [ref=e214]
+      - generic [ref=e217]:
+        - paragraph [ref=e218]: Powered by mintlify
+        - generic [ref=e219]:
+          - img [ref=e220]
+          - img [ref=e222]
+          - img [ref=e228]
+  - button "Open Next.js Dev Tools" [ref=e235] [cursor=pointer]:
+    - img [ref=e236]

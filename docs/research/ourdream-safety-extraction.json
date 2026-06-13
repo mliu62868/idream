@@ -1,0 +1,741 @@
+{
+  "viewport": {
+    "w": 1440,
+    "h": 1200
+  },
+  "htmlClass": "inter_1d81deff-module__CYM0aG__variable jetbrains_mono_e9ee6d28-module__lbFCHq__variable twoslash-dark lg:[--scroll-mt:9.5rem] dark",
+  "body": {
+    "name": "body",
+    "tag": "body",
+    "className": "",
+    "text": "Documentation Index\n\nFetch the complete documentation index at: /llms.txt\n\nUse this file to discover all available pages before exploring further.\n\nSkip to main content\nourdream Trust & Safety home page\nSearch...\n⌘K\nourdream\nReport a problem\nTrust & Safety\nOverview\nOur approach to safety\nPrinciples\nWhat we won't do\nPolicies\nAcceptable use\nProhibited content\nAge verification\nIntellectual property\nModeration\nHow moderation works\nWhy was my character rejected?\nAppeals\nReporting\nReport a problem\nYou",
+    "rect": {
+      "x": 0,
+      "y": 0,
+      "width": 1440,
+      "height": 2659
+    },
+    "styles": {
+      "fontSize": "16px",
+      "fontWeight": "400",
+      "fontFamily": "Inter, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+      "lineHeight": "24px",
+      "color": "rgb(255, 255, 255)",
+      "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+      "width": "1440px",
+      "height": "2658.97px",
+      "display": "block",
+      "flexDirection": "row",
+      "border": "0px solid rgb(45, 40, 43)",
+      "position": "static",
+      "overflow": "visible",
+      "opacity": "1",
+      "transition": "all"
+    }
+  },
+  "topbar": {
+    "name": "topbar",
+    "tag": "header",
+    "className": "z-30 fixed lg:sticky top-0 w-full peer is-not-custom peer is-not-center peer is-not-wide peer is-not-frame",
+    "text": "ourdream Trust & Safety home page\nSearch...\n⌘K\nourdream\nReport a problem\nTrust & Safety",
+    "rect": {
+      "x": 0,
+      "y": 0,
+      "width": 1440,
+      "height": 112
+    },
+    "styles": {
+      "fontSize": "16px",
+      "fontWeight": "400",
+      "fontFamily": "Inter, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+      "lineHeight": "24px",
+      "color": "rgb(166, 161, 164)",
+      "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+      "width": "1440px",
+      "height": "112px",
+      "display": "block",
+      "flexDirection": "row",
+      "border": "0px solid rgb(45, 40, 43)",
+      "position": "sticky",
+      "zIndex": "30",
+      "overflow": "visible",
+      "opacity": "1",
+      "transition": "all"
+    }
+  },
+  "sidebar": {
+    "name": "sidebar",
+    "tag": "nav",
+    "className": "z-20 hidden lg:block fixed bottom-0 right-auto w-[18rem]",
+    "text": "Overview\nOur approach to safety\nPrinciples\nWhat we won't do\nPolicies\nAcceptable use\nProhibited content\nAge verification\nIntellectual property\nModeration\nHow moderation works\nWhy was my character rejected?\nAppeals\nReporting\nReport a problem\nYour account\nYour safety tools\nWellbeing resources\nPrivacy at a glance\nContact\nContact",
+    "rect": {
+      "x": 32,
+      "y": 114,
+      "width": 288,
+      "height": 1086
+    },
+    "styles": {
+      "fontSize": "16px",
+      "fontWeight": "400",
+      "fontFamily": "Inter, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+      "lineHeight": "24px",
+      "color": "rgb(166, 161, 164)",
+      "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+      "width": "288px",
+      "height": "1086.41px",
+      "display": "block",
+      "flexDirection": "row",
+      "border": "0px solid rgb(45, 40, 43)",
+      "position": "fixed",
+      "top": "113.6px",
+      "left": "32px",
+      "right": "1120px",
+      "zIndex": "20",
+      "overflow": "visible",
+      "opacity": "1",
+      "transition": "all"
+    }
+  },
+  "main": {
+    "name": "main",
+    "tag": "main",
+    "className": "",
+    "text": "On this page\nStart here\nCommitments\nOverview\nOur approach to safety\n\nHow ourdream thinks about trust, moderation, and the limits of what we build.\n\nourdream is a generative platform for AI characters, operated by Dream Studio USA, Inc. (a Delaware corporation). Most of what people make on it is adult creative work: characters, scenarios, roleplay, the kind of thing that has lived in private notebooks and online forums for decades. The trust and safety work we do exists so that the platform stays",
+    "rect": {
+      "x": 32,
+      "y": 112,
+      "width": 1376,
+      "height": 2171
+    },
+    "styles": {
+      "fontSize": "16px",
+      "fontWeight": "400",
+      "fontFamily": "Inter, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+      "lineHeight": "24px",
+      "color": "rgb(166, 161, 164)",
+      "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+      "width": "1376px",
+      "height": "2170.97px",
+      "display": "block",
+      "flexDirection": "row",
+      "border": "0px solid rgb(45, 40, 43)",
+      "position": "static",
+      "overflow": "visible",
+      "opacity": "1",
+      "transition": "all"
+    }
+  },
+  "toc": null,
+  "article": {
+    "name": "article",
+    "tag": "div",
+    "className": "mt-0.5 space-y-2.5",
+    "text": "Overview\nOur approach to safety",
+    "rect": {
+      "x": 363,
+      "y": 154,
+      "width": 689,
+      "height": 66
+    },
+    "styles": {
+      "fontSize": "16px",
+      "fontWeight": "400",
+      "fontFamily": "Inter, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+      "lineHeight": "16px",
+      "color": "rgb(166, 161, 164)",
+      "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+      "margin": "2px 0px 0px",
+      "width": "688.812px",
+      "height": "66px",
+      "display": "block",
+      "flexDirection": "row",
+      "border": "0px solid rgb(45, 40, 43)",
+      "position": "static",
+      "overflow": "visible",
+      "opacity": "1",
+      "transition": "all"
+    }
+  },
+  "eyebrow": {
+    "name": "eyebrow",
+    "tag": "div",
+    "className": "flex items-center space-x-3 flex-shrink-0",
+    "text": "Overview",
+    "rect": {
+      "x": 0,
+      "y": 0,
+      "width": 0,
+      "height": 0
+    },
+    "styles": {
+      "fontSize": "14px",
+      "fontWeight": "400",
+      "fontFamily": "Inter, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+      "lineHeight": "24px",
+      "color": "rgb(166, 161, 164)",
+      "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+      "display": "flex",
+      "flexDirection": "row",
+      "alignItems": "center",
+      "border": "0px solid rgb(45, 40, 43)",
+      "position": "static",
+      "overflow": "visible",
+      "opacity": "1",
+      "transition": "all"
+    }
+  },
+  "h1": {
+    "name": "h1",
+    "tag": "h1",
+    "className": "text-2xl sm:text-3xl text-gray-900 tracking-tight dark:text-gray-200 [overflow-wrap:anywhere] font-bold",
+    "text": "Our approach to safety",
+    "rect": {
+      "x": 363,
+      "y": 184,
+      "width": 320,
+      "height": 36
+    },
+    "styles": {
+      "fontSize": "30px",
+      "fontWeight": "700",
+      "fontFamily": "Inter, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+      "lineHeight": "36px",
+      "letterSpacing": "-0.75px",
+      "color": "rgb(230, 225, 228)",
+      "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+      "width": "320.188px",
+      "height": "36px",
+      "display": "block",
+      "flexDirection": "row",
+      "border": "0px solid rgb(45, 40, 43)",
+      "position": "static",
+      "overflow": "visible",
+      "opacity": "1",
+      "transition": "all"
+    }
+  },
+  "lead": null,
+  "logoImage": {
+    "name": "logoImage",
+    "tag": "img",
+    "className": "object-contain block dark:hidden",
+    "text": "",
+    "rect": {
+      "x": 0,
+      "y": 0,
+      "width": 0,
+      "height": 0
+    },
+    "styles": {
+      "fontSize": "16px",
+      "fontWeight": "400",
+      "fontFamily": "Inter, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+      "lineHeight": "28px",
+      "color": "rgb(166, 161, 164)",
+      "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+      "width": "130px",
+      "maxWidth": "100%",
+      "flexDirection": "row",
+      "border": "0px solid rgb(45, 40, 43)",
+      "position": "static",
+      "overflow": "clip",
+      "opacity": "1",
+      "transition": "all"
+    }
+  },
+  "firstParagraph": {
+    "name": "firstParagraph",
+    "tag": "div",
+    "className": "mdx-content @container/columns-container relative mt-8 prose prose-gray dark:prose-invert [contain:inline-size] isolate empty:hidden mb-14",
+    "text": "ourdream is a generative platform for AI characters, operated by Dream Studio USA, Inc. (a Delaware corporation). Most of what people make on it is adult creative work: characters, scenarios, roleplay, the kind of thing that has lived in private notebooks and online forums for decades. The trust and safety work we do exists so that the platform stays a good home for that creative work, and so that the things that shouldn’t be on it aren’t.\nEverything on ourdream is generated by AI. You are inter",
+    "rect": {
+      "x": 363,
+      "y": 288,
+      "width": 689,
+      "height": 1733
+    },
+    "styles": {
+      "fontSize": "16px",
+      "fontWeight": "400",
+      "fontFamily": "Inter, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+      "lineHeight": "28px",
+      "color": "rgb(166, 161, 164)",
+      "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+      "margin": "32px 0px 56px",
+      "width": "688.812px",
+      "height": "1732.97px",
+      "display": "block",
+      "flexDirection": "row",
+      "border": "0px solid rgb(45, 40, 43)",
+      "position": "relative",
+      "overflow": "visible",
+      "opacity": "1",
+      "transition": "all"
+    }
+  },
+  "startHeading": {
+    "name": "startHeading",
+    "tag": "h2",
+    "className": "flex whitespace-pre-wrap group font-semibold",
+    "text": "​\nStart here",
+    "rect": {
+      "x": 363,
+      "y": 775,
+      "width": 689,
+      "height": 32
+    },
+    "styles": {
+      "fontSize": "24px",
+      "fontWeight": "600",
+      "fontFamily": "Inter, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+      "lineHeight": "31.9999px",
+      "letterSpacing": "-0.6px",
+      "color": "rgb(255, 255, 255)",
+      "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+      "margin": "48px 0px 16px",
+      "width": "688.812px",
+      "height": "31.9844px",
+      "display": "flex",
+      "flexDirection": "row",
+      "border": "0px solid rgb(45, 40, 43)",
+      "position": "static",
+      "overflow": "visible",
+      "opacity": "1",
+      "transition": "all"
+    }
+  },
+  "cardsGrid": {
+    "name": "cardsGrid",
+    "tag": "div",
+    "className": "px-6 py-5 relative",
+    "text": "Principles\nThe values behind every policy decision.",
+    "rect": {
+      "x": 364,
+      "y": 832,
+      "width": 334,
+      "height": 156
+    },
+    "styles": {
+      "fontSize": "16px",
+      "fontWeight": "400",
+      "fontFamily": "Inter, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+      "lineHeight": "28px",
+      "color": "rgb(166, 161, 164)",
+      "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+      "padding": "20px 24px",
+      "width": "334.406px",
+      "height": "156px",
+      "display": "block",
+      "flexDirection": "row",
+      "border": "0px solid rgb(45, 40, 43)",
+      "position": "relative",
+      "overflow": "visible",
+      "opacity": "1",
+      "transition": "all"
+    }
+  },
+  "firstCard": {
+    "name": "firstCard",
+    "tag": "a",
+    "className": "",
+    "text": "Principles\nThe values behind every policy decision.",
+    "rect": {
+      "x": 0,
+      "y": 0,
+      "width": 0,
+      "height": 0
+    },
+    "styles": {
+      "fontSize": "16px",
+      "fontWeight": "600",
+      "fontFamily": "Inter, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+      "lineHeight": "28px",
+      "color": "rgb(166, 161, 164)",
+      "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+      "display": "contents",
+      "flexDirection": "row",
+      "position": "static",
+      "overflow": "visible",
+      "opacity": "1",
+      "transition": "all"
+    }
+  },
+  "commitmentsHeading": {
+    "name": "commitmentsHeading",
+    "tag": "h2",
+    "className": "flex whitespace-pre-wrap group font-semibold",
+    "text": "​\nCommitments",
+    "rect": {
+      "x": 363,
+      "y": 1741,
+      "width": 689,
+      "height": 32
+    },
+    "styles": {
+      "fontSize": "24px",
+      "fontWeight": "600",
+      "fontFamily": "Inter, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+      "lineHeight": "31.9999px",
+      "letterSpacing": "-0.6px",
+      "color": "rgb(255, 255, 255)",
+      "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+      "margin": "48px 0px 16px",
+      "width": "688.812px",
+      "height": "31.9844px",
+      "display": "flex",
+      "flexDirection": "row",
+      "border": "0px solid rgb(45, 40, 43)",
+      "position": "static",
+      "overflow": "visible",
+      "opacity": "1",
+      "transition": "all"
+    }
+  },
+  "commitmentsList": {
+    "name": "commitmentsList",
+    "tag": "ul",
+    "className": "",
+    "text": "We do not host content depicting minors. Ever.\nWe do not host real-person likeness.\nWe do not sell your chats.\nWe tell you when your content is removed, and why.",
+    "rect": {
+      "x": 363,
+      "y": 1837,
+      "width": 689,
+      "height": 136
+    },
+    "styles": {
+      "fontSize": "16px",
+      "fontWeight": "400",
+      "fontFamily": "Inter, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+      "lineHeight": "28px",
+      "color": "rgb(166, 161, 164)",
+      "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+      "margin": "20px 0px",
+      "width": "688.812px",
+      "height": "136px",
+      "display": "block",
+      "flexDirection": "row",
+      "border": "0px solid rgb(45, 40, 43)",
+      "position": "static",
+      "overflow": "visible",
+      "opacity": "1",
+      "transition": "all"
+    }
+  },
+  "footer": {
+    "name": "footer",
+    "tag": "footer",
+    "className": "advanced-footer flex flex-col items-center mx-auto border-t border-gray-100 dark:border-gray-800/50 peer-[.is-custom]:!hidden peer-[.is-custom]:sm:!hidden peer-[.is-custom]:md:!hidden peer-[.is-custom]:lg:!hidden peer-[.",
+    "text": "ourdream Trust & Safety home page\ntrust@ourdream.ai\nourdream.ai\nwebsite\nPowered by\nThis documentation is built and hosted on Mintlify, a developer documentation platform",
+    "rect": {
+      "x": 0,
+      "y": 2283,
+      "width": 1440,
+      "height": 376
+    },
+    "styles": {
+      "fontSize": "16px",
+      "fontWeight": "400",
+      "fontFamily": "Inter, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+      "lineHeight": "24px",
+      "color": "rgb(166, 161, 164)",
+      "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+      "width": "1440px",
+      "height": "376px",
+      "display": "flex",
+      "flexDirection": "column",
+      "alignItems": "center",
+      "position": "static",
+      "overflow": "visible",
+      "opacity": "1",
+      "transition": "all"
+    }
+  },
+  "navSections": [
+    {
+      "title": "Overview",
+      "items": []
+    },
+    {
+      "title": "Policies",
+      "items": []
+    },
+    {
+      "title": "Moderation",
+      "items": []
+    },
+    {
+      "title": "Reporting",
+      "items": []
+    },
+    {
+      "title": "Your account",
+      "items": []
+    },
+    {
+      "title": "Contact",
+      "items": []
+    }
+  ],
+  "cards": [
+    {
+      "text": "Principles\nThe values behind every policy decision.",
+      "href": "/principles",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "styles": {
+        "fontSize": "16px",
+        "fontWeight": "600",
+        "fontFamily": "Inter, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+        "lineHeight": "28px",
+        "color": "rgb(166, 161, 164)",
+        "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+        "display": "contents",
+        "flexDirection": "row",
+        "position": "static",
+        "overflow": "visible",
+        "opacity": "1",
+        "transition": "all"
+      }
+    },
+    {
+      "text": "What's allowed\nWhat you can create and what we won’t host.",
+      "href": "/policies/acceptable-use",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "styles": {
+        "fontSize": "16px",
+        "fontWeight": "600",
+        "fontFamily": "Inter, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+        "lineHeight": "28px",
+        "color": "rgb(166, 161, 164)",
+        "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+        "display": "contents",
+        "flexDirection": "row",
+        "position": "static",
+        "overflow": "visible",
+        "opacity": "1",
+        "transition": "all"
+      }
+    },
+    {
+      "text": "Prohibited content\nThe hard limits. What we will not host under any framing.",
+      "href": "/policies/prohibited-content",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "styles": {
+        "fontSize": "16px",
+        "fontWeight": "600",
+        "fontFamily": "Inter, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+        "lineHeight": "28px",
+        "color": "rgb(166, 161, 164)",
+        "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+        "display": "contents",
+        "flexDirection": "row",
+        "position": "static",
+        "overflow": "visible",
+        "opacity": "1",
+        "transition": "all"
+      }
+    },
+    {
+      "text": "Age verification\nHow we keep ourdream 18+ on both ends.",
+      "href": "/policies/age-verification",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "styles": {
+        "fontSize": "16px",
+        "fontWeight": "600",
+        "fontFamily": "Inter, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+        "lineHeight": "28px",
+        "color": "rgb(166, 161, 164)",
+        "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+        "display": "contents",
+        "flexDirection": "row",
+        "position": "static",
+        "overflow": "visible",
+        "opacity": "1",
+        "transition": "all"
+      }
+    },
+    {
+      "text": "How moderation works\nDefense in depth across input, output, and review.",
+      "href": "/moderation/how-it-works",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "styles": {
+        "fontSize": "16px",
+        "fontWeight": "600",
+        "fontFamily": "Inter, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+        "lineHeight": "28px",
+        "color": "rgb(166, 161, 164)",
+        "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+        "display": "contents",
+        "flexDirection": "row",
+        "position": "static",
+        "overflow": "visible",
+        "opacity": "1",
+        "transition": "all"
+      }
+    },
+    {
+      "text": "Report a problem\nThe fastest path to flagging a character, image, or user.",
+      "href": "/reporting/how-to-report",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "styles": {
+        "fontSize": "16px",
+        "fontWeight": "600",
+        "fontFamily": "Inter, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+        "lineHeight": "28px",
+        "color": "rgb(166, 161, 164)",
+        "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+        "display": "contents",
+        "flexDirection": "row",
+        "position": "static",
+        "overflow": "visible",
+        "opacity": "1",
+        "transition": "all"
+      }
+    },
+    {
+      "text": "Your safety tools\nHide characters, mute tags, manage your account.",
+      "href": "/your-account/safety-tools",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "styles": {
+        "fontSize": "16px",
+        "fontWeight": "600",
+        "fontFamily": "Inter, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+        "lineHeight": "28px",
+        "color": "rgb(166, 161, 164)",
+        "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+        "display": "contents",
+        "flexDirection": "row",
+        "position": "static",
+        "overflow": "visible",
+        "opacity": "1",
+        "transition": "all"
+      }
+    },
+    {
+      "text": "Wellbeing resources\nExternal crisis and support services by country.",
+      "href": "/your-account/wellbeing-resources",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "styles": {
+        "fontSize": "16px",
+        "fontWeight": "600",
+        "fontFamily": "Inter, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+        "lineHeight": "28px",
+        "color": "rgb(166, 161, 164)",
+        "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+        "display": "contents",
+        "flexDirection": "row",
+        "position": "static",
+        "overflow": "visible",
+        "opacity": "1",
+        "transition": "all"
+      }
+    },
+    {
+      "text": "Contact\nThe right channel for trust, legal, press, security, or law enforcement.",
+      "href": "/contact",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "styles": {
+        "fontSize": "16px",
+        "fontWeight": "600",
+        "fontFamily": "Inter, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif, -apple-system, \"system-ui\", \"Segoe UI\", system-ui, sans-serif",
+        "lineHeight": "28px",
+        "color": "rgb(166, 161, 164)",
+        "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+        "display": "contents",
+        "flexDirection": "row",
+        "position": "static",
+        "overflow": "visible",
+        "opacity": "1",
+        "transition": "all"
+      }
+    }
+  ],
+  "images": [
+    {
+      "src": "https://mintcdn.com/od-f1eb486d/_8zgpEaEHP3ySGuf/logo/light.svg?fit=max&auto=format&n=_8zgpEaEHP3ySGuf&q=85&s=01fa9593e7f718b95a67ca241d25508b",
+      "alt": "light logo",
+      "width": 130,
+      "height": 15
+    },
+    {
+      "src": "https://mintcdn.com/od-f1eb486d/_8zgpEaEHP3ySGuf/logo/dark.svg?fit=max&auto=format&n=_8zgpEaEHP3ySGuf&q=85&s=93b24efa461eeb506f59d30125e3be98",
+      "alt": "dark logo",
+      "width": 130,
+      "height": 15
+    },
+    {
+      "src": "https://mintcdn.com/od-f1eb486d/_8zgpEaEHP3ySGuf/logo/light.svg?w=1100&fit=max&auto=format&n=_8zgpEaEHP3ySGuf&q=85&s=de40586053f606ec19818b88005eb5d0",
+      "alt": "ourdream",
+      "width": 121,
+      "height": 13
+    },
+    {
+      "src": "https://mintcdn.com/od-f1eb486d/_8zgpEaEHP3ySGuf/logo/dark.svg?w=1100&fit=max&auto=format&n=_8zgpEaEHP3ySGuf&q=85&s=10dea328b691bc926e5cd66177b62712",
+      "alt": "ourdream",
+      "width": 121,
+      "height": 13
+    },
+    {
+      "src": "https://mintcdn.com/od-f1eb486d/_8zgpEaEHP3ySGuf/logo/light.svg?fit=max&auto=format&n=_8zgpEaEHP3ySGuf&q=85&s=01fa9593e7f718b95a67ca241d25508b",
+      "alt": "light logo",
+      "width": 130,
+      "height": 15
+    },
+    {
+      "src": "https://mintcdn.com/od-f1eb486d/_8zgpEaEHP3ySGuf/logo/dark.svg?fit=max&auto=format&n=_8zgpEaEHP3ySGuf&q=85&s=93b24efa461eeb506f59d30125e3be98",
+      "alt": "dark logo",
+      "width": 130,
+      "height": 15
+    },
+    {
+      "src": "https://mintcdn.com/od-f1eb486d/_8zgpEaEHP3ySGuf/logo/dark.svg?w=1100&fit=max&auto=format&n=_8zgpEaEHP3ySGuf&q=85&s=10dea328b691bc926e5cd66177b62712",
+      "alt": "ourdream",
+      "width": 121,
+      "height": 13
+    }
+  ]
+}

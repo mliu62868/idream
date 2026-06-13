@@ -1,0 +1,211 @@
+- generic [active] [ref=e1]:
+  - main [ref=e2]:
+    - generic [ref=e3]:
+      - generic [ref=e4]:
+        - link "ourdream Trust & Safety home page" [ref=e5] [cursor=pointer]:
+          - /url: /
+          - img "ourdream Trust & Safety home page" [ref=e6]
+        - button "Search... ⌘K" [ref=e7]:
+          - generic [ref=e8]:
+            - img [ref=e9]
+            - generic [ref=e12]: Search...
+          - generic [ref=e13]: ⌘K
+        - navigation [ref=e14]:
+          - link "ourdream" [ref=e15] [cursor=pointer]:
+            - /url: /
+          - link "Report a problem" [ref=e16] [cursor=pointer]:
+            - /url: /safety/reporting/how-to-report
+          - button "Toggle dark mode" [ref=e17]:
+            - img [ref=e18]
+      - link "Trust & Safety" [ref=e21] [cursor=pointer]:
+        - /url: /safety/introduction
+    - generic [ref=e22]:
+      - complementary [ref=e23]:
+        - navigation [ref=e24]:
+          - generic [ref=e25]:
+            - heading "Overview" [level=3] [ref=e26]
+            - list [ref=e27]:
+              - listitem [ref=e28]:
+                - link "Our approach to safety" [ref=e29] [cursor=pointer]:
+                  - /url: /safety/introduction
+              - listitem [ref=e30]:
+                - link "Principles" [ref=e31] [cursor=pointer]:
+                  - /url: /safety/principles
+              - listitem [ref=e32]:
+                - link "What we won't do" [ref=e33] [cursor=pointer]:
+                  - /url: /safety/policies/what-we-wont-do
+          - generic [ref=e34]:
+            - heading "Policies" [level=3] [ref=e35]
+            - list [ref=e36]:
+              - listitem [ref=e37]:
+                - link "Acceptable use" [ref=e38] [cursor=pointer]:
+                  - /url: /safety/policies/acceptable-use
+              - listitem [ref=e39]:
+                - link "Prohibited content" [ref=e40] [cursor=pointer]:
+                  - /url: /safety/policies/prohibited-content
+              - listitem [ref=e41]:
+                - link "Age verification" [ref=e42] [cursor=pointer]:
+                  - /url: /safety/policies/age-verification
+              - listitem [ref=e43]:
+                - link "Intellectual property" [ref=e44] [cursor=pointer]:
+                  - /url: /safety/policies/intellectual-property
+          - generic [ref=e45]:
+            - heading "Moderation" [level=3] [ref=e46]
+            - list [ref=e47]:
+              - listitem [ref=e48]:
+                - link "How moderation works" [ref=e49] [cursor=pointer]:
+                  - /url: /safety/moderation/how-it-works
+              - listitem [ref=e50]:
+                - link "Why was my character rejected?" [ref=e51] [cursor=pointer]:
+                  - /url: /safety/moderation/why-rejected
+              - listitem [ref=e52]:
+                - link "Appeals" [ref=e53] [cursor=pointer]:
+                  - /url: /safety/moderation/appeals
+          - generic [ref=e54]:
+            - heading "Reporting" [level=3] [ref=e55]
+            - list [ref=e56]:
+              - listitem [ref=e57]:
+                - link "Report a problem" [ref=e58] [cursor=pointer]:
+                  - /url: /safety/reporting/how-to-report
+          - generic [ref=e59]:
+            - heading "Your account" [level=3] [ref=e60]
+            - list [ref=e61]:
+              - listitem [ref=e62]:
+                - link "Your safety tools" [ref=e63] [cursor=pointer]:
+                  - /url: /safety/your-account/safety-tools
+              - listitem [ref=e64]:
+                - link "Wellbeing resources" [ref=e65] [cursor=pointer]:
+                  - /url: /safety/your-account/wellbeing-resources
+              - listitem [ref=e66]:
+                - link "Privacy at a glance" [ref=e67] [cursor=pointer]:
+                  - /url: /safety/your-account/privacy-summary
+          - generic [ref=e68]:
+            - heading "Contact" [level=3] [ref=e69]
+            - list [ref=e70]:
+              - listitem [ref=e71]:
+                - link "Contact" [ref=e72] [cursor=pointer]:
+                  - /url: /safety/contact
+      - article [ref=e73]:
+        - generic [ref=e74]:
+          - paragraph [ref=e75]: Overview
+          - heading "How moderation works" [level=1] [ref=e76]
+        - paragraph [ref=e77]: Defense in depth across input, output, behaviour, labelers, and reports.
+        - generic [ref=e78]:
+          - paragraph [ref=e79]:
+            - text: ourdream's content moderation is built as
+            - link "defense in depth" [ref=e80] [cursor=pointer]:
+              - /url: https://en.wikipedia.org/wiki/Defense_in_depth_(computing\
+              - strong [ref=e81]: defense in depth
+            - text: "): multiple independent layers stacked together, each tuned to catch a different category of content. Each layer specialises in a different class of signal, and the layers reinforce each other."
+          - 'img "Defense in depth: five moderation layers stacked. Input, output, metadata and behaviour, human reviewers, community reports." [ref=e83]'
+          - heading "The layers" [level=2] [ref=e84]
+          - heading "1. Input" [level=3] [ref=e85]
+          - paragraph [ref=e86]: Every prompt is classified before any model runs against it. Chat messages, image prompts, and character submissions pass through a set of classifiers covering content, behaviour, and metadata signals. Inputs that match the strictest signals are blocked before the model runs at all; other flagged inputs are routed to the next layer.
+          - heading "2. Output" [level=3] [ref=e87]
+          - paragraph [ref=e88]:
+            - text: Generated images go through a separate set of classifiers that looks at the output independent of the prompt. This is an independent check on what the model actually produces, covering the categories that map to
+            - link "Prohibited content" [ref=e89] [cursor=pointer]:
+              - /url: /safety/policies/prohibited-content
+            - text: . Outputs that fail are blocked from delivery and may trigger account level review.
+          - heading "3. Metadata and behaviour" [level=3] [ref=e90]
+          - paragraph [ref=e91]: The third layer reads patterns rather than content. It looks at signals across many actions by the same user, or across many users producing similar content. Examples include accounts that produce content the other layers reject at unusually high rates, and prompts that share structural features with previously-blocked ones.
+          - paragraph [ref=e92]: Behaviour signals usually do not block content on their own. They raise the priority of human review.
+          - heading "4. Human reviewers" [level=3] [ref=e93]
+          - paragraph [ref=e94]: "Trained reviewers see what the classifiers flag. Reviewers can:"
+          - list [ref=e95]:
+            - listitem [ref=e96]: Approve content (release it from review).
+            - listitem [ref=e97]: Reject it with a reason that maps to a specific policy.
+            - listitem [ref=e98]: Escalate ambiguous cases to a senior reviewer or to the trust team.
+            - listitem [ref=e99]: Flag patterns that the classifier layers should learn from; edge cases feed back into the rules and training data.
+          - paragraph [ref=e100]: For public character submissions the review queue runs in the hundreds per day. For chat-generated content the volume is much higher; the classifier layers handle the bulk of it, and the cases that warrant a human reach a human.
+          - heading "5. Community reports" [level=3] [ref=e101]
+          - paragraph [ref=e102]:
+            - text: The last layer is everyone using the product. Users can
+            - link "report" [ref=e103] [cursor=pointer]:
+              - /url: /safety/reporting/how-to-report
+            - text: characters, images, videos, and scenarios. Reports trigger re-review against the
+            - emphasis [ref=e104]: current
+            - text: policy, which may be stricter than the one in force when the content was first generated.
+          - paragraph [ref=e105]: The most severe categories (underage content) are reviewed first.
+          - heading "Why this shape" [level=2] [ref=e106]
+          - paragraph [ref=e107]: Each layer specialises. Classifiers handle volume at speed. Metadata signals catch behavioural patterns. Human reviewers handle ambiguity and judgement. The community surfaces what's actually playing out in practice. Together they cover more ground than any single layer could alone.
+          - heading "The moderation team" [level=2] [ref=e108]
+          - paragraph [ref=e109]: Reviewers are vetted ourdream staff and trusted long-term community contributors who have been onboarded into the moderation rota. They operate under written guidelines and undergo regular calibration with each other and with the trust team to keep judgement consistent.
+          - paragraph [ref=e110]: Moderation decisions are made independent of growth and revenue metrics. The trust team owns the policy; product owns the product.
+          - paragraph [ref=e111]: We care about moderator wellbeing because the work is hard, and do not tolerate abuse or harassment of our moderation team. The team also meets regularly to review edge cases and update the guidelines.
+          - heading "What gets rejected most often" [level=2] [ref=e112]
+          - paragraph [ref=e113]: "In the public-submission queue, in rough order of frequency:"
+          - list [ref=e114]:
+            - listitem [ref=e115]: Profile images with underage cues.
+            - listitem [ref=e116]: Characters too close to existing IP.
+            - listitem [ref=e117]: Scenarios that frame non-consent as desirable — whether the user is cast as perpetrator or the framing otherwise presents non-consent as the appeal.
+            - listitem [ref=e118]: Names or descriptions matching the real-person blocklist.
+          - paragraph [ref=e119]:
+            - text: Each of these is described on
+            - link "Prohibited content" [ref=e120] [cursor=pointer]:
+              - /url: /safety/policies/prohibited-content
+            - text: .
+          - heading "What classifiers see vs what humans see" [level=2] [ref=e121]
+          - paragraph [ref=e122]:
+            - text: Automated classifiers process
+            - strong [ref=e123]: all
+            - text: content on the platform — including private chat messages and private generations — because they have to in order to enforce the policies above. Classifier processing happens in-line and no human reads the content as part of it.
+          - paragraph [ref=e124]:
+            - strong [ref=e125]: Human reviewers
+            - text: only see content that has been (a) flagged by a classifier, (b) reported by a user, or (c) escalated as part of a trust-team investigation. They do not browse private chats. Account data (email, payment information, IP address) is gated behind trust- team access and is touched only when an investigation requires it.
+          - heading "Appeals" [level=2] [ref=e126]
+          - paragraph [ref=e127]:
+            - text: If a creator believes a rejection or removal was applied incorrectly, the
+            - link "Appeals" [ref=e128] [cursor=pointer]:
+              - /url: /safety/moderation/appeals
+            - text: process is the way to raise it. A different reviewer handles the appeal, with the original objection in mind. Appeals also feed back into the rules and training data, so the work creators put into making the case rarely goes nowhere.
+        - paragraph [ref=e129]: Last modified on June 10, 2026
+        - link "Why was my character rejected?" [ref=e131] [cursor=pointer]:
+          - /url: /safety/moderation/why-rejected
+          - text: Why was my character rejected?
+          - img [ref=e132]
+      - complementary [ref=e134]:
+        - navigation [ref=e135]:
+          - heading "On this page" [level=2] [ref=e136]:
+            - img [ref=e137]
+            - text: On this page
+          - list [ref=e138]:
+            - listitem [ref=e139]:
+              - link "The layers" [ref=e140] [cursor=pointer]:
+                - /url: "#the-layers"
+            - listitem [ref=e141]:
+              - link "Why this shape" [ref=e142] [cursor=pointer]:
+                - /url: "#why-this-shape"
+            - listitem [ref=e143]:
+              - link "The moderation team" [ref=e144] [cursor=pointer]:
+                - /url: "#the-moderation-team"
+            - listitem [ref=e145]:
+              - link "What gets rejected most often" [ref=e146] [cursor=pointer]:
+                - /url: "#what-gets-rejected-most-often"
+            - listitem [ref=e147]:
+              - link "What classifiers see vs what humans see" [ref=e148] [cursor=pointer]:
+                - /url: "#what-classifiers-see-vs-what-humans-see"
+            - listitem [ref=e149]:
+              - link "Appeals" [ref=e150] [cursor=pointer]:
+                - /url: "#appeals"
+    - generic [ref=e152]:
+      - generic [ref=e153]:
+        - link "ourdream Trust & Safety home page" [ref=e154] [cursor=pointer]:
+          - /url: /
+          - img "ourdream Trust & Safety home page" [ref=e155]
+        - generic [ref=e156]:
+          - link "trust@ourdream.ai" [ref=e157] [cursor=pointer]:
+            - /url: mailto:trust@ourdream.ai
+          - link "ourdream.ai" [ref=e158] [cursor=pointer]:
+            - /url: /
+        - link "website" [ref=e159] [cursor=pointer]:
+          - /url: /
+          - img [ref=e160]
+      - generic [ref=e163]:
+        - paragraph [ref=e164]: Powered by mintlify
+        - generic [ref=e165]:
+          - img [ref=e166]
+          - img [ref=e168]
+          - img [ref=e174]
+  - button "Open Next.js Dev Tools" [ref=e181] [cursor=pointer]:
+    - img [ref=e182]

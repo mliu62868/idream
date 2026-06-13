@@ -1,0 +1,32 @@
+import Image from "next/image";
+
+export function AgeGate() {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black p-2">
+      <div className="flex w-full max-w-sm flex-col items-center rounded-[28px] border border-white/10 bg-[rgb(36,36,36)] p-6 text-center shadow-[2px_2px_8px_3px_rgba(0,0,0,0.25)]">
+        <Image
+          src="/images/ourdream/age-gate-logo.png"
+          alt="ourdream.ai"
+          width={100}
+          height={16}
+          className="h-4 w-auto opacity-60"
+        />
+        <h2 className="mt-6 text-[24px] font-bold uppercase leading-[26px] text-white">
+          Adults Only
+        </h2>
+        <p className="mt-1.5 text-[14px] leading-5 text-[rgb(170,170,170)]">
+          By entering, you agree to our{" "}
+          <a className="text-white underline underline-offset-2" href="#">
+            Terms
+          </a>
+        </p>
+        <button className="mt-6 min-h-10 w-full rounded-full bg-[linear-gradient(0deg,#ff1cac,#fd5fc2_50%,#ff79d1)] px-4 py-3 text-[14px] font-bold leading-[14px] text-white">
+          I&apos;m over 18
+        </button>
+        <a className="mt-4 text-[12px] font-medium leading-4 text-[rgb(114,113,112)]" href="#">
+          Leave site
+        </a>
+      </div>
+    </div>
+  );
+}
