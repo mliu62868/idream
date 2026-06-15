@@ -1,6 +1,42 @@
+"use client";
+
 import Image from "next/image";
+import { useEffect, useState } from "react";
 
 export function AgeGate() {
+  const [visible, setVisible] = useState(false);
+  const [pending, setPending] = useState(false);
+
+  useEffect(() => {
+    const accepted =
+      localStorage.getItem("AdultContentAcceptedOD") === "true" ||
+      document.cookie.includes("AdultContentAcceptedOD=true");
+    setVisible(!accepted);
+  }, []);
+
+  async function accept() {
+    setPending(true);
+    try {
+      const response = await fetch("/api/v1/age-gate/accept", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sourcePath: window.location.pathname,
+          policyVersion: "2026-06-13",
+        }),
+      });
+      if (!response.ok) throw new Error("Age gate accept failed");
+      localStorage.setItem("AdultContentAcceptedOD", "true");
+      document.cookie = "AdultContentAcceptedOD=true; path=/; max-age=31536000; samesite=lax";
+      window.dispatchEvent(new Event("idream-age-gate-accepted"));
+      setVisible(false);
+    } finally {
+      setPending(false);
+    }
+  }
+
+  if (!visible) return null;
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black p-2">
       <div className="flex w-full max-w-sm flex-col items-center rounded-[28px] border border-white/10 bg-[rgb(36,36,36)] p-6 text-center shadow-[2px_2px_8px_3px_rgba(0,0,0,0.25)]">
@@ -20,8 +56,13 @@ export function AgeGate() {
             Terms
           </a>
         </p>
-        <button className="mt-6 min-h-10 w-full rounded-full bg-[linear-gradient(0deg,#ff1cac,#fd5fc2_50%,#ff79d1)] px-4 py-3 text-[14px] font-bold leading-[14px] text-white">
-          I&apos;m over 18
+        <button
+          className="mt-6 min-h-10 w-full rounded-full bg-[linear-gradient(0deg,#ff1cac,#fd5fc2_50%,#ff79d1)] px-4 py-3 text-[14px] font-bold leading-[14px] text-white disabled:opacity-70"
+          disabled={pending}
+          onClick={accept}
+          type="button"
+        >
+          {pending ? "Entering..." : "I'm over 18"}
         </button>
         <a className="mt-4 text-[12px] font-medium leading-4 text-[rgb(114,113,112)]" href="#">
           Leave site

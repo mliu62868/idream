@@ -1,8 +1,8 @@
 import Image from "next/image";
-import Link from "next/link";
 import { ChevronDown, Menu, Search } from "lucide-react";
 import { categoryFilters } from "@/lib/ourdream-data";
 import { cn } from "@/lib/utils";
+import { AuthNav } from "./AuthNav";
 
 function Pill({
   children,
@@ -21,7 +21,23 @@ function Pill({
   );
 }
 
-export function TopControls() {
+export function TopControls({
+  activeCategory = "All",
+  query = "",
+  sort = "popular",
+  onCategoryChange,
+  onQueryChange,
+  onSortChange,
+}: Readonly<{
+  activeCategory?: string;
+  query?: string;
+  sort?: string;
+  onCategoryChange?: (category: string) => void;
+  onQueryChange?: (query: string) => void;
+  onSortChange?: (sort: string) => void;
+}>) {
+  const sortLabel = sort === "newest" ? "Newest" : "Popular · Month";
+
   return (
     <>
       <header className="sticky top-0 z-40 h-14 w-full bg-[rgba(13,13,13,0.6)] backdrop-blur-xl">
@@ -31,18 +47,7 @@ export function TopControls() {
           </button>
           <div className="hidden min-w-0 flex-1 md:block" />
           <div className="ml-auto flex items-center gap-3">
-            <Link
-              className="hidden text-[12px] font-bold leading-4 text-white md:block"
-              href="/login"
-            >
-              Login
-            </Link>
-            <Link
-              className="rounded-full bg-[linear-gradient(0deg,#ff1cac,#fd5fc2_50%,#ff79d1)] px-4 py-2 text-[12px] font-bold leading-4 text-white"
-              href="/signup"
-            >
-              Join Free
-            </Link>
+            <AuthNav />
           </div>
         </div>
       </header>
@@ -61,12 +66,24 @@ export function TopControls() {
 
         <div className="flex items-center gap-3 overflow-x-auto pb-2 md:grid md:grid-cols-[1fr_320px_1fr] md:overflow-visible md:pb-0">
           <div className="flex justify-start">
-            <Pill>Popular · Month</Pill>
+            <button
+              className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full bg-[rgb(53,53,54)] pl-4 pr-3 text-[12px] font-medium leading-4 text-white transition-colors hover:bg-[rgb(62,62,63)]"
+              onClick={() => onSortChange?.(sort === "newest" ? "popular" : "newest")}
+              type="button"
+            >
+              {sortLabel}
+              <ChevronDown className="h-3.5 w-3.5 text-[rgb(170,170,170)]" />
+            </button>
           </div>
 
           <label className="hidden h-9 items-center gap-2 rounded-full bg-[rgb(53,53,54)] px-4 text-[12px] font-medium leading-4 text-[rgb(170,170,170)] md:flex">
             <Search className="h-4 w-4" />
-            <span>Try &apos;Busty blonde&apos; or &apos;Petite asian&apos;</span>
+            <input
+              className="min-w-0 flex-1 bg-transparent text-white outline-none placeholder:text-[rgb(170,170,170)]"
+              onChange={(event) => onQueryChange?.(event.target.value)}
+              placeholder="Try 'Busty blonde' or 'Petite asian'"
+              value={query}
+            />
           </label>
 
           <div className="flex justify-start gap-2 md:justify-end">
@@ -77,15 +94,17 @@ export function TopControls() {
         </div>
 
         <div className="mt-2 flex gap-1 overflow-x-auto pb-3 md:mt-4 md:pb-0">
-          {categoryFilters.map((filter, index) => (
+          {categoryFilters.map((filter) => (
             <button
               key={filter}
+              onClick={() => onCategoryChange?.(filter)}
               className={cn(
                 "flex h-9 shrink-0 items-center rounded-full px-3 text-[12px] font-medium leading-4 transition-colors",
-                index === 0
+                filter === activeCategory
                   ? "bg-[rgb(46,46,46)] text-white"
                   : "text-[rgb(170,170,170)] hover:bg-[rgb(36,36,36)] hover:text-white",
               )}
+              type="button"
             >
               {filter}
             </button>

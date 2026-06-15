@@ -9,7 +9,7 @@ on:
       - master
 
 jobs:
-  quality:
+  sqlite:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -26,11 +26,107 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Lint
-        run: npm run lint
+      - name: Generate client + push SQLite schema
+        run: DB_PROVIDER=sqlite npm run db:push
 
-      - name: Type check
-        run: npm run typecheck
+      - name: Check (lint + typecheck + build)
+        run: npm run check
 
-      - name: Build
-        run: npm run build
+      - name: Test with coverage (SQLite)
+        run: npm run coverage
+
+  postgresql:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: idream_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d idream_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DB_PROVIDER: postgresql
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/idream_test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate client + push PostgreSQL schema
+        run: npm run db:push
+
+      - name: Check (lint + typecheck + build)
+        run: npm run check
+
+      - name: Test with coverage (PostgreSQL)
+        run: npm run coverage
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Generate client + push SQLite schema
+        run: DB_PROVIDER=sqlite npm run db:push
+
+      - name: Seed SQLite (dev.db for E2E)
+        run: DB_PROVIDER=sqlite npm run db:seed
+
+      - name: Start dev server
+        run: npm run dev &
+
+      - name: Wait for server
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sSf http://127.0.0.1:3000 >/dev/null 2>&1; then
+              echo "server is up"; exit 0
+            fi
+            sleep 2
+          done
+          echo "dev server did not become ready"; exit 1
+
+      - name: Run E2E
+        run: npm run test:e2e
+
+      - name: Upload Playwright traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore

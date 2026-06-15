@@ -1,0 +1,111 @@
+# iDream 后台技术架构（Architecture）
+
+更新日期：2026-06-13
+目标产品：Ourdream.ai 克隆（18+ AI 角色扮演 / AI 伴侣平台）
+目标站点：https://ourdream.ai/
+
+## 0. 这套文档是什么
+
+`docs/product/` 已经回答了 **"做什么"**（PRD、用户故事、功能图、后台功能规格）。
+本目录 `docs/architecture/` 回答 **"怎么做"** —— 在 **Next.js 16 + Prisma + SQLite(dev)/PostgreSQL(prod)** 技术栈上，把产品规格落地成可执行、可验证、不丢功能的工程方案。
+
+事实来源（SSoT）链路：
+
+```
+docs/product/PRD.md                 ← 产品需求（什么）
+docs/product/ProductFeatureMap.md   ← 功能/页面映射
+docs/product/BackendFeatureSpec.md  ← 后台模块/实体/状态机/API surface/授权矩阵（功能契约）
+        │
+        ▼
+docs/architecture/*                 ← 技术实现方案（本目录，怎么做）
+        │
+        ▼
+prisma/schema.prisma + src/server/* ← 代码（最终事实来源）
+```
+
+> 原则：本目录**不复制** BackendFeatureSpec 已有的"实体字段表 / API 列表 / 授权矩阵 / 状态机"，而是引用它，并补齐"用这个技术栈如何真正实现"。当两者冲突时，以本目录的技术决策（02）为准，并回写更新 BackendFeatureSpec。
+
+## 1. 阅读顺序
+
+| # | 文档 | 内容 | 读者 |
+| --- | --- | --- | --- |
+| — | [README.md](./README.md) | 索引、技术栈、决策摘要（本文件） | 所有人 |
+| 01 | [01-system-architecture.md](./01-system-architecture.md) | 系统架构、分层、请求生命周期、模块依赖、部署拓扑 | 所有工程 |
+| 02 | [02-technical-decisions.md](./02-technical-decisions.md) | 关键技术决策（ADR）：栈形态/双库/Auth/支付/队列/AI/年龄验证/存储/限流/缓存 | 架构、Lead |
+| 03 | [03-data-model.md](./03-data-model.md) | 完整 Prisma schema、双库兼容约束、迁移与 seed 策略 | 后台工程 |
+| 04 | [04-api-design.md](./04-api-design.md) | API 规范：响应/错误/校验/分页/鉴权/限流/幂等/SSE | 前后端 |
+| 05 | [05-module-design.md](./05-module-design.md) | 各后台模块的 service/repository 职责与关键流程 | 后台工程 |
+| 06 | [06-async-jobs-and-ai.md](./06-async-jobs-and-ai.md) | 无 Redis 队列、worker、AI provider 抽象、生成流水线 | 后台工程 |
+| 07 | [07-security-and-compliance.md](./07-security-and-compliance.md) | 鉴权、年龄合规、内容审核、CSAM/NCMEC、隐私、密钥、审计 | 全员 + 法务 |
+| 08 | [08-billing-and-entitlements.md](./08-billing-and-entitlements.md) | 订阅、PSP、webhook 幂等、权益派生、dreamcoin ledger | 后台工程 |
+| 09 | [09-project-structure.md](./09-project-structure.md) | 目录结构、分层约定、命名、模块骨架 | 所有工程 |
+| 10 | [10-operations.md](./10-operations.md) | 环境、env 变量目录、部署、连接池、迁移 runbook、CI、可观测性 | DevOps |
+| 11 | [11-testing.md](./11-testing.md) | L1–L4 测试策略与工具 | 所有工程 |
+| 12 | [12-roadmap.md](./12-roadmap.md) | 实施路线图（对齐 P0–P2 里程碑、可验证交付物） | PM、Lead |
+| 13 | [13-backlog.md](./13-backlog.md) | 未完成功能 backlog（基于当前代码核对，后续迭代起点） | PM、Lead、全员 |
+
+## 2. 技术栈一览
+
+| 层 | 选型 | 说明 |
+| --- | --- | --- |
+| 运行时 | Node.js ≥ 24 | `.nvmrc=24`，`package.json engines.node>=24` |
+| 框架 | Next.js 16.2.1（App Router, React 19.2） | **注意：Next 16 有破坏性变更**，middleware 已更名 **Proxy**，详见 01/02 |
+| 语言 | TypeScript 5（strict, 禁 `any`） | `@/*` → `src/*` |
+| ORM | Prisma 7.x（`prisma.config.ts`，`prisma-client` 生成器） | 单一可移植 schema，详见 03 |
+| 数据库 | dev: SQLite 文件 / prod: PostgreSQL（Neon 等 Vercel Marketplace） | provider 切换策略见 02-ADR-2、03 |
+| 鉴权 | better-auth（email+password + session，Prisma adapter） | 备选 Auth.js v5，见 02-ADR-3 |
+| 校验 | Zod | 系统边界强制校验（API 入参、env、provider 回调） |
+| UI | shadcn/ui + @base-ui/react + Tailwind v4 | 既有，前端不在本目录范围 |
+| 支付 | 抽象 `PaymentProvider`；**生产用加密货币**（推荐自托管 BTCPay Server，非托管/无 AUP 风险） | 见 02-ADR-4 |
+| 异步 | DB 表队列 + Vercel Cron worker + `after()` | 无 Redis；抽象 `JobQueue` 可替换，见 06 |
+| AI | 抽象 `ChatModel`/`ImageModel`/`VideoModel`/`Voice`/`Moderation` | **自托管开源模型，经内部流水线 API（OpenAI 兼容）接入**，见 02-ADR-6 |
+| 对象存储 | 抽象 `BlobStore`；参考 S3 兼容（R2）/ Vercel Blob(private) | 签名 URL，见 02-ADR-8 |
+| 限流 | DB 令牌桶（dev）/ Upstash Redis（prod 推荐） | 见 02-ADR-9 |
+| 部署 | Vercel（主）；`output: standalone` 亦支持 Docker | 见 10 |
+| 测试 | Vitest（L1/L2/L3）+ Playwright（L4） | 见 11 |
+| 日志/监控 | pino 结构化日志 + Sentry + 自建 analytics 事件 | 见 09/10 |
+
+## 3. 关键技术决策摘要（详见 02）
+
+| ADR | 决策 | 一句话理由 |
+| --- | --- | --- |
+| ADR-1 | **模块化单体**：Next App Router Route Handlers + service/repository 分层，单仓单部署 | KISS、Vercel 原生、避免过早拆服务；重活走异步 job |
+| ADR-2 | **单一可移植 Prisma schema + provider 切换**；dev `db push`(SQLite)，prod `migrate`(Postgres) | 满足"sqlite dev/postgres prod"；Postgres-only 性能特性放进 prod 迁移 SQL |
+| ADR-3 | **better-auth** 自管 user/session/account 表，域字段（plan 等）外挂 | 现代、Prisma 原生、email+password+session+限流齐全 |
+| ADR-4 | **支付抽象 + 加密货币**（BTCPay Server / NOWPayments 等）；订阅按"预付周期 + 到期续费"建模 | 加密支付绕开卡组织成人内容限制；自托管非托管无 AUP 风险 |
+| ADR-5 | **DB 表驱动队列 + Vercel Cron + `after()`**，抽象 `JobQueue` | 无 Redis 也能跑；可平滑升级 QStash/Vercel Queues |
+| ADR-6 | **AI provider 全部抽象**；**自托管开源模型经内部流水线 API（OpenAI 兼容）接入** | 自托管规避公有 API 成人内容禁令；prompt 不出内网 |
+| ADR-7 | **年龄验证 provider 抽象**（Go.cam 等），按司法辖区/风险触发，状态进 `age_verifications` | 安全文档点名 Go.cam；UK OSA / 美国多州法律强制 |
+| ADR-8 | **对象存储抽象 + S3 兼容(R2)/Vercel Blob(private)**，私有 + 签名 URL | 媒体资产私密、防盗链、成人 CDN 友好 |
+| ADR-9 | **限流：dev DB 令牌桶 / prod Upstash Redis** | 鉴权/生成/聊天端点必须限流，防滥用与成本失控 |
+| ADR-10 | **缓存：公开 SEO/目录用 Cache Components(`use cache`+`cacheTag`)，产品/鉴权 API 全动态** | Next 16 缓存模型；角色更新按 tag 失效 |
+
+## 4. 不可妥协的合规底线（贯穿全文，P0）
+
+这是一个 **18+ 成人 AI 产品**，下列项是**法律 / 平台政策强制**，不是可选优化（详见 07）：
+
+1. **CSAM / 未成年内容零容忍**：输入与输出都必须过未成年检测；命中即拦截、留证、按法律向 **NCMEC** 等机构上报；角色年龄强制 `>= 18`。
+2. **年龄门槛 + 身份年龄验证**：成人内容前置 age gate；按司法辖区触发第三方身份验证后才能使用受限路由。
+3. **深度伪造 / 真实人物 / 受版权 IP / 非自愿框架 / 规避尝试**：创建与生成阶段必须检测并拒绝。
+4. **支付与模型供应商**：已定 **加密货币支付 + 自托管开源模型（流水线 API）**，规避卡组织与公有 API 的成人内容封禁。**MVP 阶段支付用 mock**；**CSAM 检测/上报与第三方年龄验证暂缓为上线前 deferred TODO**（设计不弱化，见 12 暂缓项 / 07）。
+5. **隐私**：聊天默认私密；敏感内容不进公开 feed；举报人身份不对被举报方披露。
+
+## 5. 当前代码现状（基线）
+
+- 已存在：Next 16 静态前端（`src/app`、`src/components/ourdream/*`），样例数据 `src/lib/ourdream-data.ts`（28 个角色卡、分类 chips、导航、footer），164 条静态路由。
+- 不存在：`prisma/`、`.env`、任何后台逻辑、测试框架、`src/server/`。
+- 本架构即从此基线起步，第一步见 [12-roadmap.md](./12-roadmap.md) 里程碑 M0。
+
+## 6. 验证闭环（贯穿实现）
+
+每个里程碑必须通过：
+
+```bash
+npm run lint        # L1: ESLint
+npm run typecheck   # L1: tsc --noEmit
+npm run test        # L2/L3: vitest（待引入）
+npm run build       # 产物构建
+npm run check       # lint + typecheck + build（已存在）
+```
+
+后台引入后追加：`npm run db:push`（dev）、`npm run db:migrate`（prod）、`npm run test:e2e`（Playwright）。详见 11。

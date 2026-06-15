@@ -1,10 +1,9 @@
 import { AppSidebar } from "./AppSidebar";
-import { CharacterGrid } from "./CharacterGrid";
+import { ExploreWorkspace } from "./ExploreWorkspace";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { PromoToast } from "./PromoToast";
 import { HomeSeoSections } from "./HomeSeoSections";
 import { SiteFooter } from "./SiteFooter";
-import { TopControls } from "./TopControls";
 
 export function OurdreamClone() {
   return (
@@ -12,10 +11,7 @@ export function OurdreamClone() {
       <div className="flex min-h-screen w-full">
         <AppSidebar />
         <div className="min-w-0 flex-1 pb-20 md:pb-12">
-          <TopControls />
-          <div className="pt-2 md:pt-6">
-            <CharacterGrid />
-          </div>
+          <ExploreWorkspace />
           <HomeSeoSections />
         </div>
       </div>

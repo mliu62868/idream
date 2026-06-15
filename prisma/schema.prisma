@@ -1,0 +1,725 @@
+// Shape SSoT. datasource.provider is rewritten by scripts/db-provider.mjs.
+// The datasource URL is provided by prisma.config.ts (Prisma 7).
+// Keep this schema portable across SQLite dev and PostgreSQL prod.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  emailVerified Boolean   @default(false)
+  name          String?
+  image         String?
+  displayName   String?
+  role          String    @default("user") // enum: user | moderator | admin
+  status        String    @default("active") // enum: active | suspended | deleted
+  anonymousId   String?   @unique
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+
+  sessions           Session[]
+  accounts           Account[]
+  preferences        UserPreferences?
+  ageGateAcceptances AgeGateAcceptance[]
+  ageVerifications   AgeVerification[]
+  charactersCreated  Character[]            @relation("CharacterCreator")
+  characterDrafts    CharacterDraft[]
+  chatSessions       ChatSession[]
+  generationJobs     GenerationJob[]
+  mediaAssets        MediaAsset[]
+  mediaLikes         MediaLike[]
+  characterLikes     CharacterLike[]
+  mediaCollections   MediaCollection[]
+  presets            GenerationPreset[]
+  subscriptions      Subscription[]
+  entitlements       Entitlement[]
+  ledgerEntries      DreamcoinLedger[]
+  checkoutSessions   CheckoutSession[]
+  redemptions        RedeemCodeRedemption[]
+  referralsSent      Referral[]             @relation("Inviter")
+  referralsReceived  Referral[]             @relation("Invitee")
+  reportsMade        ContentReport[]        @relation("Reporter")
+  appeals            Appeal[]
+  followers          Follow[]               @relation("Followee")
+  following          Follow[]               @relation("Follower")
+
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model Account {
+  id                   String    @id @default(cuid())
+  userId               String
+  providerId           String // enum: credential | google | discord | ...
+  accountId            String
+  password             String?
+  accessToken          String?
+  refreshToken         String?
+  accessTokenExpiresAt DateTime?
+  scope                String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  user                 User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, accountId])
+  @@index([userId])
+  @@map("accounts")
+}
+
+model Verification {
+  id         String   @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([identifier])
+  @@map("verifications")
+}
+
+model UserPreferences {
+  userId               String   @id
+  mutedTags            Json
+  safeModeFlags        Json
+  notificationSettings Json
+  locale               String   @default("en")
+  updatedAt            DateTime @updatedAt
+  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_preferences")
+}
+
+model AgeGateAcceptance {
+  id            String   @id @default(cuid())
+  userId        String?
+  anonymousId   String?
+  acceptedAt    DateTime @default(now())
+  country       String?
+  sourcePath    String?
+  policyVersion String?
+  user          User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([anonymousId])
+  @@map("age_gate_acceptances")
+}
+
+model AgeVerification {
+  id                     String    @id @default(cuid())
+  userId                 String
+  provider               String // enum: gocam | yoti | persona | veriff | mock
+  providerVerificationId String?
+  status                 String    @default("required") // enum: required | pending | verified | failed | expired | not_required
+  jurisdiction           String?
+  requiredReason         String?
+  verifiedAt             DateTime?
+  expiresAt              DateTime?
+  metadata               Json
+  createdAt              DateTime  @default(now())
+  user                   User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@map("age_verifications")
+}
+
+model Character {
+  id              String    @id @default(cuid())
+  creatorId       String?
+  name            String
+  age             Int
+  description     String
+  systemPrompt    String?
+  visibility      String    @default("private") // enum: private | unlisted | public
+  status          String    @default("draft") // enum: draft | pending_review | approved | rejected | removed | archived
+  style           String    @default("realistic") // enum: realistic | anime | hybrid | other
+  gender          String    @default("female") // enum: female | male | trans
+  relationship    String?
+  voiceId         String?
+  imageAssetId    String?
+  appearance      Json
+  advancedDetails Json
+  vivid           Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime?
+
+  creator        User?                 @relation("CharacterCreator", fields: [creatorId], references: [id], onDelete: SetNull)
+  imageAsset     MediaAsset?           @relation("CharacterImage", fields: [imageAssetId], references: [id], onDelete: SetNull)
+  tags           CharacterTag[]
+  stats          CharacterStats?
+  submissions    CharacterSubmission[]
+  chatSessions   ChatSession[]
+  generationJobs GenerationJob[]
+  likes          CharacterLike[]
+
+  @@index([visibility, status])
+  @@index([creatorId])
+  @@index([gender, style])
+  @@index([createdAt])
+  @@map("characters")
+}
+
+model CharacterDraft {
+  id              String                @id @default(cuid())
+  ownerId         String
+  step            Int                   @default(0)
+  gender          String?
+  style           String?
+  appearance      Json
+  hair            Json
+  body            Json
+  name            String?
+  advancedDetails Json
+  tags            Json
+  previewJobId    String?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  owner           User                  @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  previewJobs     CharacterPreviewJob[]
+
+  @@index([ownerId])
+  @@map("character_drafts")
+}
+
+model CharacterPreviewJob {
+  id            String         @id @default(cuid())
+  draftId       String
+  status        String         @default("queued") // enum: queued | running | completed | failed
+  provider      String?
+  resultAssetId String?
+  errorCode     String?
+  createdAt     DateTime       @default(now())
+  completedAt   DateTime?
+  draft         CharacterDraft @relation(fields: [draftId], references: [id], onDelete: Cascade)
+
+  @@index([draftId])
+  @@map("character_preview_jobs")
+}
+
+model Tag {
+  id               String         @id @default(cuid())
+  slug             String         @unique
+  label            String
+  category         String?
+  isSensitive      Boolean        @default(false)
+  isMutedByDefault Boolean        @default(false)
+  characters       CharacterTag[]
+
+  @@index([category])
+  @@map("tags")
+}
+
+model CharacterTag {
+  characterId String
+  tagId       String
+  character   Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  tag         Tag       @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([characterId, tagId])
+  @@index([tagId])
+  @@map("character_tags")
+}
+
+model CharacterStats {
+  characterId    String    @id
+  likesCount     Int       @default(0)
+  chatsCount     Int       @default(0)
+  viewsCount     Int       @default(0)
+  lastActivityAt DateTime?
+  character      Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  @@index([likesCount])
+  @@index([chatsCount])
+  @@map("character_stats")
+}
+
+model CharacterLike {
+  userId      String
+  characterId String
+  createdAt   DateTime  @default(now())
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  character   Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  @@id([userId, characterId])
+  @@index([characterId])
+  @@map("character_likes")
+}
+
+model CharacterSubmission {
+  id           String    @id @default(cuid())
+  characterId  String
+  submitterId  String
+  status       String    @default("pending") // enum: pending | approved | rejected
+  reviewReason String?
+  reviewerId   String?
+  submittedAt  DateTime  @default(now())
+  reviewedAt   DateTime?
+  character    Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([characterId])
+  @@map("character_submissions")
+}
+
+model ChatSession {
+  id            String    @id @default(cuid())
+  userId        String
+  characterId   String
+  title         String?
+  status        String    @default("active") // enum: active | archived | deleted
+  memorySummary String?
+  lastMessageAt DateTime?
+  createdAt     DateTime  @default(now())
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  character     Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  messages      Message[]
+
+  @@index([userId, lastMessageAt])
+  @@index([characterId])
+  @@map("chat_sessions")
+}
+
+model Message {
+  id           String           @id @default(cuid())
+  sessionId    String
+  role         String // enum: user | assistant | system | tool
+  content      String
+  model        String?
+  status       String           @default("pending") // enum: pending | moderating_input | blocked | generating | moderating_output | sent | failed | deleted
+  tokenCount   Int?
+  safetyStatus String           @default("unknown") // enum: unknown | passed | flagged | blocked
+  createdAt    DateTime         @default(now())
+  session      ChatSession      @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  versions     MessageVersion[]
+
+  @@index([sessionId, createdAt])
+  @@map("messages")
+}
+
+model MessageVersion {
+  id        String   @id @default(cuid())
+  messageId String
+  content   String
+  model     String?
+  selected  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
+  @@map("message_versions")
+}
+
+model ChatUsage {
+  id           String   @id @default(cuid())
+  userId       String
+  sessionId    String?
+  messagesUsed Int      @default(0)
+  periodStart  DateTime
+  periodEnd    DateTime
+
+  @@unique([userId, periodStart])
+  @@index([userId])
+  @@map("chat_usage")
+}
+
+model GenerationPreset {
+  id         String   @id @default(cuid())
+  ownerId    String?
+  scope      String   @default("user") // enum: built_in | user | community
+  type       String // enum: background | pose | outfit | mode
+  category   String?
+  label      String
+  controls   Json
+  visibility String   @default("private") // enum: private | public | unlisted
+  status     String   @default("active") // enum: active | archived
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  owner      User?    @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([scope, type])
+  @@index([ownerId])
+  @@map("generation_presets")
+}
+
+model GenerationJob {
+  id             String       @id @default(cuid())
+  userId         String
+  characterId    String?
+  mode           String // enum: image | video
+  prompt         String?
+  negativePrompt String?
+  controls       Json
+  presetIds      Json
+  model          String?
+  orientation    String?
+  outputCount    Int          @default(1)
+  status         String       @default("queued") // enum: queued | moderating_input | running | moderating_output | completed | failed | blocked | refunded
+  costDreamcoins Int          @default(0)
+  provider       String?
+  errorCode      String?
+  createdAt      DateTime     @default(now())
+  completedAt    DateTime?
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  character      Character?   @relation(fields: [characterId], references: [id], onDelete: SetNull)
+  assets         MediaAsset[]
+
+  @@index([userId, createdAt])
+  @@index([status])
+  @@map("generation_jobs")
+}
+
+model MediaAsset {
+  id               String                @id @default(cuid())
+  ownerId          String
+  sourceJobId      String?
+  characterId      String?
+  type             String // enum: image | video
+  url              String
+  thumbnailUrl     String?
+  prompt           String?
+  visibility       String                @default("private") // enum: private | public_pack | unlisted
+  safetyStatus     String                @default("unknown") // enum: unknown | passed | flagged | blocked
+  metadata         Json
+  liked            Boolean               @default(false)
+  createdAt        DateTime              @default(now())
+  deletedAt        DateTime?
+  owner            User                  @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  sourceJob        GenerationJob?        @relation(fields: [sourceJobId], references: [id], onDelete: SetNull)
+  likes            MediaLike[]
+  collections      MediaCollectionItem[]
+  characterImageOf Character[]           @relation("CharacterImage")
+
+  @@index([ownerId, type, createdAt])
+  @@index([sourceJobId])
+  @@index([characterId])
+  @@map("media_assets")
+}
+
+model MediaLike {
+  userId       String
+  mediaAssetId String
+  createdAt    DateTime   @default(now())
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mediaAsset   MediaAsset @relation(fields: [mediaAssetId], references: [id], onDelete: Cascade)
+
+  @@id([userId, mediaAssetId])
+  @@index([mediaAssetId])
+  @@map("media_likes")
+}
+
+model MediaCollection {
+  id         String                @id @default(cuid())
+  ownerId    String
+  name       String
+  visibility String                @default("private") // enum: private | public | unlisted
+  createdAt  DateTime              @default(now())
+  owner      User                  @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  items      MediaCollectionItem[]
+
+  @@index([ownerId])
+  @@map("media_collections")
+}
+
+model MediaCollectionItem {
+  collectionId String
+  mediaAssetId String
+  sortOrder    Int             @default(0)
+  collection   MediaCollection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  mediaAsset   MediaAsset      @relation(fields: [mediaAssetId], references: [id], onDelete: Cascade)
+
+  @@id([collectionId, mediaAssetId])
+  @@map("media_collection_items")
+}
+
+model Plan {
+  id                 String         @id @default(cuid())
+  slug               String // enum: premium | deluxe
+  name               String
+  billingPeriod      String // enum: monthly | yearly
+  priceCents         Int
+  currency           String         @default("usd")
+  includedDreamcoins Int            @default(0)
+  features           Json
+  active             Boolean        @default(true)
+  subscriptions      Subscription[]
+
+  @@unique([slug, billingPeriod])
+  @@map("plans")
+}
+
+model Subscription {
+  id                     String    @id @default(cuid())
+  userId                 String
+  planId                 String
+  provider               String // enum: mock | btcpay | nowpayments | cryptomus | coingate
+  providerCustomerId     String?
+  providerSubscriptionId String?
+  status                 String    @default("checkout_created") // enum: checkout_created | checkout_completed | active | past_due | canceled | expired
+  currentPeriodEnd       DateTime?
+  cancelAtPeriodEnd      Boolean   @default(false)
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+  user                   User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan                   Plan      @relation(fields: [planId], references: [id])
+
+  @@index([userId, status])
+  @@index([providerSubscriptionId])
+  @@map("subscriptions")
+}
+
+model Entitlement {
+  id        String    @id @default(cuid())
+  userId    String
+  key       String
+  value     Json
+  source    String // enum: subscription | redeem | promo | manual
+  expiresAt DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, key])
+  @@index([userId])
+  @@map("entitlements")
+}
+
+model DreamcoinLedger {
+  id           String   @id @default(cuid())
+  userId       String
+  delta        Int
+  balanceAfter Int
+  reason       String // enum: signup_bonus | subscription_grant | generation_spend | refund | redeem | referral | admin_adjust
+  sourceId     String?
+  createdAt    DateTime @default(now())
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("dreamcoin_ledger")
+}
+
+model CheckoutSession {
+  id                String   @id @default(cuid())
+  userId            String
+  provider          String
+  providerSessionId String?
+  status            String   @default("created") // enum: created | completed | expired | canceled
+  returnPath        String?
+  createdAt         DateTime @default(now())
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("checkout_sessions")
+}
+
+model ModerationEvent {
+  id         String   @id @default(cuid())
+  targetType String
+  targetId   String
+  layer      String
+  status     String
+  policyCode String?
+  confidence Float?
+  details    Json
+  createdAt  DateTime @default(now())
+
+  @@index([targetType, targetId])
+  @@index([policyCode])
+  @@map("moderation_events")
+}
+
+model ContentReport {
+  id          String             @id @default(cuid())
+  reporterId  String?
+  targetType  String
+  targetId    String
+  category    String
+  description String?
+  status      String             @default("open")
+  priority    Int                @default(3)
+  createdAt   DateTime           @default(now())
+  reporter    User?              @relation("Reporter", fields: [reporterId], references: [id], onDelete: SetNull)
+  reviews     ModerationReview[]
+
+  @@index([status, priority])
+  @@index([targetType, targetId])
+  @@map("content_reports")
+}
+
+model ModerationReview {
+  id         String         @id @default(cuid())
+  reportId   String?
+  reviewerId String
+  decision   String
+  policyCode String?
+  notes      String?
+  createdAt  DateTime       @default(now())
+  report     ContentReport? @relation(fields: [reportId], references: [id], onDelete: SetNull)
+
+  @@index([reportId])
+  @@map("moderation_reviews")
+}
+
+model Appeal {
+  id                 String    @id @default(cuid())
+  userId             String
+  targetType         String
+  targetId           String
+  originalDecisionId String?
+  status             String    @default("open")
+  appealText         String
+  reviewerId         String?
+  createdAt          DateTime  @default(now())
+  resolvedAt         DateTime?
+  user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@map("appeals")
+}
+
+model PolicyVersion {
+  id          String   @id @default(cuid())
+  slug        String
+  version     String
+  title       String?
+  body        String?
+  publishedAt DateTime @default(now())
+  sourceUrl   String?
+
+  @@unique([slug, version])
+  @@map("policy_versions")
+}
+
+model RedeemCode {
+  id             String                 @id @default(cuid())
+  codeHash       String                 @unique
+  reward         Json
+  status         String                 @default("active")
+  maxRedemptions Int?
+  expiresAt      DateTime?
+  createdAt      DateTime               @default(now())
+  redemptions    RedeemCodeRedemption[]
+
+  @@map("redeem_codes")
+}
+
+model RedeemCodeRedemption {
+  id           String     @id @default(cuid())
+  redeemCodeId String
+  userId       String
+  rewardStatus String     @default("granted")
+  createdAt    DateTime   @default(now())
+  redeemCode   RedeemCode @relation(fields: [redeemCodeId], references: [id], onDelete: Cascade)
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([redeemCodeId, userId])
+  @@map("redeem_code_redemptions")
+}
+
+model Referral {
+  id             String   @id @default(cuid())
+  inviterId      String
+  inviteeId      String?
+  code           String   @unique
+  status         String   @default("pending")
+  subscriptionId String?
+  rewardStatus   String   @default("none")
+  createdAt      DateTime @default(now())
+  inviter        User     @relation("Inviter", fields: [inviterId], references: [id], onDelete: Cascade)
+  invitee        User?    @relation("Invitee", fields: [inviteeId], references: [id], onDelete: SetNull)
+
+  @@index([inviterId])
+  @@map("referrals")
+}
+
+model Follow {
+  followerId String
+  followeeId String
+  createdAt  DateTime @default(now())
+  follower   User     @relation("Follower", fields: [followerId], references: [id], onDelete: Cascade)
+  followee   User     @relation("Followee", fields: [followeeId], references: [id], onDelete: Cascade)
+
+  @@id([followerId, followeeId])
+  @@index([followeeId])
+  @@map("follows")
+}
+
+model Job {
+  id          String    @id @default(cuid())
+  queue       String
+  payload     Json
+  status      String    @default("queued")
+  priority    Int       @default(5)
+  attempts    Int       @default(0)
+  maxAttempts Int       @default(5)
+  dedupeKey   String?   @unique
+  lockedBy    String?
+  lockedAt    DateTime?
+  nextRunAt   DateTime  @default(now())
+  lastError   String?
+  createdAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  @@index([status, queue, nextRunAt])
+  @@map("jobs")
+}
+
+model ProviderEvent {
+  id              String    @id @default(cuid())
+  provider        String
+  providerEventId String
+  type            String?
+  payload         Json
+  processedAt     DateTime?
+  createdAt       DateTime  @default(now())
+
+  @@unique([provider, providerEventId])
+  @@map("provider_events")
+}
+
+model AnalyticsEvent {
+  id          String   @id @default(cuid())
+  userId      String?
+  anonymousId String?
+  name        String
+  props       Json
+  createdAt   DateTime @default(now())
+
+  @@index([name, createdAt])
+  @@index([userId])
+  @@map("analytics_events")
+}
+
+model RoutePage {
+  path          String   @id
+  template      String
+  title         String
+  description   String
+  canonical     String?
+  contentStatus String   @default("template")
+  body          Json
+  updatedAt     DateTime @updatedAt
+
+  @@index([template])
+  @@map("route_pages")
+}

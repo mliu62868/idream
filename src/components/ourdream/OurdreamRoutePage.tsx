@@ -2,17 +2,11 @@ import Image from "next/image";
 import Link from "next/link";
 import {
   ArrowRight,
-  Bot,
   Check,
   ChevronRight,
-  Crown,
-  ImageIcon,
-  Lock,
   PlayCircle,
   Search,
-  Settings2,
   Sparkles,
-  Wand2,
 } from "lucide-react";
 import {
   characterCards,
@@ -24,6 +18,12 @@ import { AppSidebar } from "./AppSidebar";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { SafetyCenterPage } from "./SafetyCenterPage";
 import { SiteFooter } from "./SiteFooter";
+import { AuthNav } from "./AuthNav";
+import { AuthWorkspace } from "./AuthWorkspace";
+import { CreateWorkspace } from "./CreateWorkspace";
+import { GeneratorWorkspace } from "./GeneratorWorkspace";
+import { ProfileWorkspace } from "./ProfileWorkspace";
+import { UpgradeWorkspace } from "./UpgradeWorkspace";
 
 function activeHrefForPath(path: string) {
   if (path.startsWith("/create")) return "/create";
@@ -52,18 +52,9 @@ function AppTopbar() {
           <Search className="h-4 w-4 shrink-0" />
           <span className="truncate">Search characters, guides, and generators</span>
         </div>
-        <Link
-          className="hidden text-[12px] font-bold leading-4 text-white md:block"
-          href="/login"
-        >
-          Login
-        </Link>
-        <Link
-          className="rounded-full bg-[linear-gradient(0deg,#ff1cac,#fd5fc2_50%,#ff79d1)] px-4 py-2 text-[12px] font-bold leading-4 text-white"
-          href="/signup"
-        >
-          Join Free
-        </Link>
+        <div className="flex items-center gap-3">
+          <AuthNav />
+        </div>
       </div>
     </header>
   );
@@ -191,6 +182,14 @@ function FeatureGrid() {
 }
 
 function MarketingPage({ route }: Readonly<{ route: OurdreamRoute }>) {
+  if (route.path === "/login" || route.path === "/signup") {
+    return (
+      <RouteShell route={route}>
+        <AuthWorkspace mode={route.path === "/signup" ? "signup" : "login"} />
+      </RouteShell>
+    );
+  }
+
   return (
     <RouteShell route={route}>
       <PageHero route={route} />
@@ -232,164 +231,17 @@ function MarketingPage({ route }: Readonly<{ route: OurdreamRoute }>) {
 }
 
 function CreatePage({ route }: Readonly<{ route: OurdreamRoute }>) {
-  const controls = ["Gender", "Style", "Personality", "Voice", "Relationship"];
-
   return (
     <RouteShell route={route}>
-      <section className="px-4 pb-12 pt-10 md:px-[60px] md:pb-16">
-        <div className="mx-auto max-w-6xl">
-          <h1 className="text-center text-[clamp(28px,6vw,52px)] font-black leading-none text-white">
-            Create Your Dream AI Girl
-          </h1>
-          <div className="mt-9 grid gap-4 md:grid-cols-[360px_1fr]">
-            <div className="relative min-h-[560px] overflow-hidden rounded-[20px] bg-[rgb(18,18,18)]">
-              <Image
-                alt=""
-                className="object-cover object-top"
-                fill
-                priority
-                sizes="360px"
-                src="/images/ourdream/card-sarah-mercer.webp"
-              />
-              <div className="absolute inset-0 bg-[linear-gradient(0deg,rgba(0,0,0,.82),rgba(0,0,0,.1)_62%,transparent)]" />
-              <div className="absolute inset-x-0 bottom-0 p-5">
-                <p className="text-[12px] font-black uppercase text-[rgb(253,95,194)]">
-                  Preview
-                </p>
-                <h2 className="mt-2 text-[26px] font-black leading-7">
-                  Your custom character
-                </h2>
-                <p className="mt-2 text-[13px] font-medium leading-5 text-[rgb(170,170,170)]">
-                  The original creator starts with a large centered title and
-                  guides users through compact selection controls.
-                </p>
-              </div>
-            </div>
-            <div className="rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-4 md:p-6">
-              <div className="grid gap-3 md:grid-cols-2">
-                {controls.map((control) => (
-                  <button
-                    className="flex min-h-20 items-center justify-between rounded-[14px] bg-[rgb(36,36,36)] px-4 text-left text-white transition-colors hover:bg-[rgb(46,46,46)]"
-                    key={control}
-                  >
-                    <span>
-                      <span className="block text-[12px] font-bold uppercase leading-4 text-[rgb(114,113,112)]">
-                        Select
-                      </span>
-                      <span className="mt-1 block text-[18px] font-bold leading-6">
-                        {control}
-                      </span>
-                    </span>
-                    <ChevronRight className="h-4 w-4 text-[rgb(170,170,170)]" />
-                  </button>
-                ))}
-              </div>
-              <div className="mt-5 rounded-[14px] bg-[rgb(36,36,36)] p-4">
-                <label className="text-[12px] font-bold uppercase leading-4 text-[rgb(114,113,112)]">
-                  Custom prompt
-                </label>
-                <div className="mt-3 min-h-28 rounded-[12px] border border-white/10 bg-[rgb(13,13,13)] p-4 text-[14px] font-medium leading-6 text-[rgb(170,170,170)]">
-                  Describe the companion you want to create.
-                </div>
-              </div>
-              <button className="mt-5 flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[linear-gradient(0deg,#ff1cac,#fd5fc2_50%,#ff79d1)] text-[14px] font-black text-white">
-                <Wand2 className="h-4 w-4" />
-                Generate character
-              </button>
-            </div>
-          </div>
-        </div>
-      </section>
+      <CreateWorkspace />
     </RouteShell>
   );
 }
 
 function GeneratorPage({ route }: Readonly<{ route: OurdreamRoute }>) {
-  const fields = [
-    "Select Character (required)",
-    "Background (optional)",
-    "Pose (optional)",
-    "Outfit (optional)",
-    "Custom Prompt (premium feature)",
-  ];
-
   return (
     <RouteShell route={route}>
-      <section className="px-4 py-8 md:px-[60px] md:py-12">
-        <div className="mx-auto grid max-w-6xl gap-5 md:grid-cols-[420px_1fr]">
-          <div className="rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-4">
-            <div className="grid grid-cols-2 rounded-full bg-[rgb(36,36,36)] p-1">
-              {["Image", "Video"].map((mode, index) => (
-                <button
-                  className={`h-10 rounded-full text-[13px] font-bold ${
-                    index === 0
-                      ? "bg-white text-[rgb(13,13,13)]"
-                      : "text-[rgb(170,170,170)]"
-                  }`}
-                  key={mode}
-                >
-                  {mode}
-                </button>
-              ))}
-            </div>
-            <div className="mt-4 space-y-3">
-              {fields.map((field, index) => (
-                <button
-                  className="flex h-12 w-full items-center justify-between rounded-[12px] bg-[rgb(36,36,36)] px-4 text-left text-[13px] font-semibold text-[rgb(170,170,170)]"
-                  key={field}
-                >
-                  <span>{field}</span>
-                  {index === 4 ? (
-                    <Lock className="h-4 w-4" />
-                  ) : (
-                    <Settings2 className="h-4 w-4" />
-                  )}
-                </button>
-              ))}
-            </div>
-            <button className="mt-4 flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[linear-gradient(0deg,#ff1cac,#fd5fc2_50%,#ff79d1)] text-[14px] font-black text-white">
-              <ImageIcon className="h-4 w-4" />
-              Generate
-            </button>
-          </div>
-
-          <div className="rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-4">
-            <div className="mb-4 flex gap-2">
-              {["Images", "Videos", "Liked"].map((tab, index) => (
-                <button
-                  className={`h-9 rounded-full px-4 text-[12px] font-bold ${
-                    index === 0
-                      ? "bg-[rgb(46,46,46)] text-white"
-                      : "text-[rgb(170,170,170)]"
-                  }`}
-                  key={tab}
-                >
-                  {tab}
-                </button>
-              ))}
-            </div>
-            <div className="grid gap-3 md:grid-cols-3">
-              {characterCards.slice(2, 8).map((card) => (
-                <div
-                  className="relative aspect-[4/5] overflow-hidden rounded-[14px] bg-[rgb(36,36,36)]"
-                  key={card.id}
-                >
-                  <Image
-                    alt=""
-                    className="object-cover object-top"
-                    fill
-                    sizes="180px"
-                    src={card.image}
-                  />
-                  <div className="absolute bottom-2 left-2 right-2 rounded-full bg-black/45 px-3 py-1 text-[11px] font-bold">
-                    {card.title}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      </section>
+      <GeneratorWorkspace />
       <RelatedRoutes route={route} />
     </RouteShell>
   );
@@ -398,46 +250,7 @@ function GeneratorPage({ route }: Readonly<{ route: OurdreamRoute }>) {
 function ProfilePage({ route }: Readonly<{ route: OurdreamRoute }>) {
   return (
     <RouteShell route={route}>
-      <section className="px-4 py-10 md:px-[60px]">
-        <div className="mx-auto max-w-5xl">
-          <h1 className="text-[38px] font-black uppercase leading-10 text-white">
-            {route.title}
-          </h1>
-          <div className="mt-6 flex flex-wrap gap-2">
-            {["Recent Characters", "Group Chats", "Packs", "Presets", "Created"].map(
-              (tab, index) => (
-                <button
-                  className={`h-10 rounded-full px-4 text-[13px] font-bold ${
-                    index === 0
-                      ? "bg-[rgb(46,46,46)] text-white"
-                      : "text-[rgb(170,170,170)]"
-                  }`}
-                  key={tab}
-                >
-                  {tab}
-                </button>
-              ),
-            )}
-          </div>
-          <div className="mt-10 rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-10 text-center">
-            <Bot className="mx-auto h-10 w-10 text-[rgb(114,113,112)]" />
-            <h2 className="mt-4 text-[22px] font-black uppercase">
-              No characters yet
-            </h2>
-            <p className="mx-auto mt-3 max-w-md text-[14px] leading-6 text-[rgb(170,170,170)]">
-              The target route presents a personal collection shell. This clone
-              keeps the tabbed empty-state surface without implementing account
-              storage.
-            </p>
-            <Link
-              className="mt-6 inline-flex h-11 items-center justify-center rounded-full bg-white px-5 text-[14px] font-bold text-[rgb(13,13,13)]"
-              href="/create"
-            >
-              Create
-            </Link>
-          </div>
-        </div>
-      </section>
+      <ProfileWorkspace />
     </RouteShell>
   );
 }
@@ -612,33 +425,7 @@ function UpgradePage({ route }: Readonly<{ route: OurdreamRoute }>) {
   return (
     <RouteShell route={route}>
       <PageHero route={route} />
-      <section className="px-4 pb-14 md:px-[60px]">
-        <div className="mx-auto grid max-w-5xl gap-4 md:grid-cols-2">
-          {[
-            ["Yearly", "$9.99", "Billed as one annual payment"],
-            ["Monthly", "$19.99", "Flexible month-to-month access"],
-          ].map(([name, price, copy], index) => (
-            <article
-              className={`rounded-[20px] border p-6 ${
-                index === 0
-                  ? "border-[rgb(253,95,194)] bg-[rgb(36,36,36)]"
-                  : "border-white/10 bg-[rgb(18,18,18)]"
-              }`}
-              key={name}
-            >
-              <Crown className="h-6 w-6 text-[rgb(253,95,194)]" />
-              <h2 className="mt-4 text-[26px] font-black uppercase">{name}</h2>
-              <p className="mt-2 text-[44px] font-black leading-none">{price}</p>
-              <p className="mt-3 text-[14px] leading-6 text-[rgb(170,170,170)]">
-                {copy}
-              </p>
-              <button className="mt-6 h-11 w-full rounded-full bg-white text-[14px] font-black text-[rgb(13,13,13)]">
-                Upgrade
-              </button>
-            </article>
-          ))}
-        </div>
-      </section>
+      <UpgradeWorkspace />
     </RouteShell>
   );
 }

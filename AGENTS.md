@@ -63,3 +63,9 @@ scripts/            # Asset download scripts
 - After editing `.claude/skills/clone-website/SKILL.md`, run `node scripts/sync-skills.mjs` to regenerate the skill for all platforms.
 
 @docs/research/INSPECTION_GUIDE.md
+
+
+
+## Target Site
+复刻这个网站： https://ourdream.ai/, 我们可以参考学习， 对比， 验证
+

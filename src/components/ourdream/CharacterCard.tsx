@@ -1,4 +1,5 @@
 import Image from "next/image";
+import Link from "next/link";
 import type { CharacterCardData } from "@/types/ourdream";
 import {
   ChatBubbleIcon,
@@ -8,7 +9,10 @@ import {
 
 export function CharacterCard({ card }: Readonly<{ card: CharacterCardData }>) {
   return (
-    <article className="group relative aspect-[240/400] w-full cursor-pointer overflow-hidden rounded-[12px] bg-[rgb(36,36,36)] transition-transform duration-200 ease-out hover:scale-[1.012]">
+    <Link
+      className="group relative block aspect-[240/400] w-full cursor-pointer overflow-hidden rounded-[12px] bg-[rgb(36,36,36)] transition-transform duration-200 ease-out hover:scale-[1.012]"
+      href={`/characters/${card.id}`}
+    >
       {card.vivid && (
         <div className="pointer-events-none absolute right-3 top-2 z-10 -skew-x-6">
           <span className="inline-flex items-center gap-1 rounded-[8px] bg-[linear-gradient(0deg,#ff1cac,#fd5fc2_50%,#ff79d1)] px-2 py-1 text-[11px] font-black uppercase italic leading-[14px] text-white">
@@ -52,6 +56,6 @@ export function CharacterCard({ card }: Readonly<{ card: CharacterCardData }>) {
           <span className="ml-auto min-w-0 truncate">{card.creator}</span>
         </div>
       </div>
-    </article>
+    </Link>
   );
 }
