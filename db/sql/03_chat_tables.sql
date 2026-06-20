@@ -12,10 +12,10 @@ CREATE TABLE IF NOT EXISTS chat.chat_sessions (
   memory_enabled     boolean NOT NULL DEFAULT true,
   memory_summary     text,                              -- rolling summary (PG)
   log_extracted_seq  bigint NOT NULL DEFAULT 0,         -- session.jsonl derive watermark (D3)
-  last_message_at    timestamptz,
-  created_at         timestamptz NOT NULL DEFAULT now(),
-  updated_at         timestamptz NOT NULL DEFAULT now(),
-  deleted_at         timestamptz
+  last_message_at    timestamp,
+  created_at         timestamp NOT NULL DEFAULT (timezone('utc', now())),
+  updated_at         timestamp NOT NULL DEFAULT (timezone('utc', now())),
+  deleted_at         timestamp
 );
 CREATE INDEX IF NOT EXISTS chat_sessions_user_last_idx
   ON chat.chat_sessions (user_id, last_message_at DESC);
@@ -32,9 +32,9 @@ CREATE TABLE IF NOT EXISTS chat.messages (
   token_count   integer,
   safety_status text NOT NULL DEFAULT 'unknown',        -- unknown|passed|flagged|blocked
   attempt       integer NOT NULL DEFAULT 1,             -- regenerate attempt counter
-  created_at    timestamptz NOT NULL DEFAULT now(),
-  updated_at    timestamptz NOT NULL DEFAULT now(),
-  deleted_at    timestamptz
+  created_at    timestamp NOT NULL DEFAULT (timezone('utc', now())),
+  updated_at    timestamp NOT NULL DEFAULT (timezone('utc', now())),
+  deleted_at    timestamp
 );
 CREATE INDEX IF NOT EXISTS messages_session_created_idx
   ON chat.messages (session_id, created_at);
@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS chat.message_versions (
   model      text,
   selected   boolean NOT NULL DEFAULT false,
   attempt    integer NOT NULL DEFAULT 1,
-  created_at timestamptz NOT NULL DEFAULT now()
+  created_at timestamp NOT NULL DEFAULT (timezone('utc', now()))
 );
 CREATE INDEX IF NOT EXISTS message_versions_message_idx
   ON chat.message_versions (message_id);
@@ -59,10 +59,10 @@ CREATE TABLE IF NOT EXISTS chat.chat_usage (
   user_id       text NOT NULL,
   session_id    text,
   messages_used integer NOT NULL DEFAULT 0,
-  period_start  timestamptz NOT NULL,
-  period_end    timestamptz NOT NULL,
-  created_at    timestamptz NOT NULL DEFAULT now(),
-  updated_at    timestamptz NOT NULL DEFAULT now(),
+  period_start  timestamp NOT NULL,
+  period_end    timestamp NOT NULL,
+  created_at    timestamp NOT NULL DEFAULT (timezone('utc', now())),
+  updated_at    timestamp NOT NULL DEFAULT (timezone('utc', now())),
   UNIQUE (user_id, period_start)
 );
 CREATE INDEX IF NOT EXISTS chat_usage_user_idx ON chat.chat_usage (user_id);
@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS chat.chat_moderation_events (
   policy_code text,
   confidence  double precision,
   details     jsonb NOT NULL DEFAULT '{}'::jsonb,
-  created_at  timestamptz NOT NULL DEFAULT now()
+  created_at  timestamp NOT NULL DEFAULT (timezone('utc', now()))
 );
 CREATE INDEX IF NOT EXISTS chat_moderation_target_idx
   ON chat.chat_moderation_events (target_type, target_id);
@@ -90,9 +90,9 @@ CREATE TABLE IF NOT EXISTS chat.chat_outbox_events (
   payload        jsonb NOT NULL DEFAULT '{}'::jsonb,
   status         text NOT NULL DEFAULT 'pending',       -- pending|delivered|failed
   attempts       integer NOT NULL DEFAULT 0,
-  next_run_at    timestamptz NOT NULL DEFAULT now(),
-  created_at     timestamptz NOT NULL DEFAULT now(),
-  delivered_at   timestamptz
+  next_run_at    timestamp NOT NULL DEFAULT (timezone('utc', now())),
+  created_at     timestamp NOT NULL DEFAULT (timezone('utc', now())),
+  delivered_at   timestamp
 );
 CREATE INDEX IF NOT EXISTS chat_outbox_pending_idx
   ON chat.chat_outbox_events (status, next_run_at);
@@ -104,8 +104,8 @@ CREATE TABLE IF NOT EXISTS chat.chat_inbox_events (
   payload      jsonb NOT NULL DEFAULT '{}'::jsonb,
   status       text NOT NULL DEFAULT 'pending',         -- pending|consumed|failed
   attempts     integer NOT NULL DEFAULT 0,
-  created_at   timestamptz NOT NULL DEFAULT now(),
-  consumed_at  timestamptz
+  created_at   timestamp NOT NULL DEFAULT (timezone('utc', now())),
+  consumed_at  timestamp
 );
 CREATE INDEX IF NOT EXISTS chat_inbox_pending_idx
   ON chat.chat_inbox_events (status, created_at);
