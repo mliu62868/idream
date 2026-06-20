@@ -46,7 +46,9 @@
     "db:migrate:dev": "DB_PROVIDER=postgresql npm run db:provider && prisma migrate dev",
     "db:migrate:deploy": "DB_PROVIDER=postgresql npm run db:provider && prisma migrate deploy",
     "db:seed": "tsx prisma/seed.ts",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "start:finalizer": "tsx src/processes/finalizer.ts",
+    "start:event-consumer": "tsx src/processes/event-consumer.ts"
   },
   "dependencies": {
     "@idream/shared": "workspace:*",
