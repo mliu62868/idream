@@ -23,3 +23,16 @@ if (process.env.NODE_ENV !== "production") {
 }
 
 export type { PrismaClient as ChatPrismaClient };
+export type {
+  ChatUserView,
+  ChatCharacterView,
+  ChatCharacterTagsView,
+  ChatEntitlementView,
+  ChatUserEligibilityView,
+  ChatSession,
+  Message,
+  MessageVersion,
+  ChatUsage,
+  ChatOutboxEvent,
+  ChatInboxEvent,
+} from "../generated/client/client.js";

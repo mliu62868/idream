@@ -28,13 +28,23 @@ export function provisionChatTestDb() {
   psqlSuper("postgres", `DROP DATABASE IF EXISTS ${DB} WITH (FORCE);`);
   psqlSuper("postgres", `CREATE DATABASE ${DB};`);
 
-  // 2. main schema → public
+  // 2. main schema → public, via main's own db-push (handles db-provider switch).
+  //    Restore the schema provider to sqlite afterward so main's portable
+  //    dev/test loop is never left in a postgres state by a chat test run.
   const url = `postgresql://${SUPER}@${HOST}:${PORT}/${DB}`;
-  execFileSync("npx", ["prisma", "db", "push"], {
-    cwd: mainDir,
-    stdio: ["ignore", "ignore", "inherit"],
-    env: { ...process.env, DB_PROVIDER: "postgresql", DATABASE_URL: url },
-  });
+  try {
+    execFileSync("node", ["scripts/db-push.mjs"], {
+      cwd: mainDir,
+      stdio: ["ignore", "ignore", "inherit"],
+      env: { ...process.env, DB_PROVIDER: "postgresql", DATABASE_URL: url },
+    });
+  } finally {
+    execFileSync("node", ["scripts/db-provider.mjs"], {
+      cwd: mainDir,
+      stdio: ["ignore", "ignore", "inherit"],
+      env: { ...process.env, DB_PROVIDER: "sqlite" },
+    });
+  }
 
   // 3. boundary SQL + assertions
   execFileSync("bash", [path.join(repoRoot, "db", "sql", "apply-validate.sh")], {
