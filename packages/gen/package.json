@@ -1,0 +1,30 @@
+{
+  "name": "@idream/gen",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Generation Service — gen/image + gen/video. Slow async workers: payload self-contained, write blob only, NO DB authority. Finalize via app.ai.finalize → gen-finalizer (main-side).",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "echo source-only",
+    "start:image": "tsx src/image.ts",
+    "start:video": "tsx src/video.ts"
+  },
+  "dependencies": {
+    "@idream/shared": "workspace:*",
+    "bullmq": "^5.79.0",
+    "ioredis": "^5.11.1",
+    "pino": "^10.3.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24",
+    "tsx": "^4.22.4",
+    "typescript": "^5",
+    "vitest": "^4.1.8"
+  }
+}
