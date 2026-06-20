@@ -64,4 +64,76 @@ describe("proxyChatRequest", () => {
     expect(res.status).toBe(401);
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  const jsonResp = (body: unknown, status: number) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  const authedHeaders = { "content-type": "application/json", "x-idream-user-id": "seed-dev-user" };
+
+  it("adapts POST /chat/sessions → { ok, data: { session } }", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    fetchMock.mockResolvedValueOnce(jsonResp({ id: "sess_1", characterId: "c1" }, 201));
+    const req = new Request("http://localhost/api/v1/chat/sessions", {
+      method: "POST",
+      headers: authedHeaders,
+      body: JSON.stringify({ characterId: "c1" }),
+    });
+    const res = await proxyChatRequest(req, ["chat", "sessions"]);
+    expect(res.status).toBe(201);
+    expect(await res.json()).toEqual({ ok: true, data: { session: { id: "sess_1", characterId: "c1" } } });
+  });
+
+  it("adapts POST messages → echoes user content + assistant placeholder + streamUrl", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    fetchMock.mockResolvedValueOnce(
+      jsonResp({ userMessageId: "mu", assistantMessageId: "ma", streamUrl: "/api/v1/chat/messages/ma/stream" }, 202),
+    );
+    const req = new Request("http://localhost/api/v1/chat/sessions/s1/messages", {
+      method: "POST",
+      headers: authedHeaders,
+      body: JSON.stringify({ content: "  hi there  " }),
+    });
+    const res = await proxyChatRequest(req, ["chat", "sessions", "s1", "messages"]);
+    const json = (await res.json()) as { data: Record<string, unknown> };
+    expect(json.data.userMessage).toEqual({ id: "mu", role: "user", content: "hi there" });
+    expect(json.data.assistant).toEqual({ id: "ma", role: "assistant", content: "" });
+    expect(json.data.streamUrl).toBe("/api/v1/chat/messages/ma/stream");
+  });
+
+  it("adapts GET session → embeds messages + character name", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const db = await import("@/server/lib/db");
+    const spy = vi
+      .spyOn(db.prisma.character, "findUnique")
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .mockResolvedValue({ name: "Mei" } as any);
+    fetchMock.mockResolvedValueOnce(
+      jsonResp(
+        { session: { id: "s1", title: null, characterId: "c1" }, messages: [{ id: "m1", role: "user", content: "hi" }] },
+        200,
+      ),
+    );
+    const req = new Request("http://localhost/api/v1/chat/sessions/s1", {
+      method: "GET",
+      headers: { "x-idream-user-id": "seed-dev-user" },
+    });
+    const res = await proxyChatRequest(req, ["chat", "sessions", "s1"]);
+    const json = (await res.json()) as {
+      data: { session: { id: string; character: { name: string }; messages: unknown[] } };
+    };
+    expect(json.data.session.id).toBe("s1");
+    expect(json.data.session.character.name).toBe("Mei");
+    expect(json.data.session.messages).toHaveLength(1);
+    spy.mockRestore();
+  });
+
+  it("passes through management endpoints (memories) unchanged", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    fetchMock.mockResolvedValueOnce(jsonResp({ memories: [{ id: "mem_1" }] }, 200));
+    const req = new Request("http://localhost/api/v1/chat/memories", {
+      method: "GET",
+      headers: { "x-idream-user-id": "seed-dev-user" },
+    });
+    const res = await proxyChatRequest(req, ["chat", "memories"]);
+    expect(await res.json()).toEqual({ memories: [{ id: "mem_1" }] });
+  });
 });

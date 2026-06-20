@@ -12,6 +12,7 @@ import {
 } from "@idream/shared/bff";
 import { getAuthCtx } from "@/server/lib/auth";
 import { env } from "@/server/lib/env";
+import { prisma } from "@/server/lib/db";
 
 const HOP_BY_HOP = new Set(["cookie", "host", "connection", "content-length", "transfer-encoding"]);
 
@@ -63,10 +64,87 @@ export async function proxyChatRequest(request: Request, segments: string[]): Pr
     duplex: "half",
   });
 
+  // Shape-adapt the few endpoints the product frontend consumes: the chat service
+  // speaks a lean raw protocol, while the frontend expects the monolith's
+  // { ok, data } envelope with embedded/echoed objects. Adapt ONLY these 2xx JSON
+  // responses; everything else (SSE streams, management endpoints) streams through.
+  const adapted = await adaptForFrontend(request.method, segments, body, upstream);
+  if (adapted) return adapted;
+
   // Pass through status + body (streaming-safe for SSE).
   const respHeaders = new Headers(upstream.headers);
   respHeaders.delete("content-encoding");
   return new Response(upstream.body, { status: upstream.status, headers: respHeaders });
+}
+
+/** Reshape the 3 frontend-consumed chat responses into the { ok, data } contract. */
+async function adaptForFrontend(
+  method: string,
+  segments: string[],
+  reqBody: string,
+  upstream: Response,
+): Promise<Response | null> {
+  if (!upstream.ok) return null;
+  if (!(upstream.headers.get("content-type") ?? "").includes("application/json")) return null;
+  const s = segments; // includes leading "chat"
+
+  // POST /chat/sessions → { data: { session: { id, ... } } }
+  if (method === "POST" && s.length === 2 && s[0] === "chat" && s[1] === "sessions") {
+    const session = (await upstream.json()) as { id?: string };
+    return envelope({ session }, upstream.status);
+  }
+
+  // GET /chat/sessions/:id → { data: { session: { ..., character:{name}, messages } } }
+  if (method === "GET" && s.length === 3 && s[0] === "chat" && s[1] === "sessions") {
+    const raw = (await upstream.json()) as {
+      session?: { characterId?: string } & Record<string, unknown>;
+      messages?: unknown[];
+    };
+    const session = raw.session ?? {};
+    const characterId = session.characterId;
+    const character = characterId
+      ? await prisma.character.findUnique({ where: { id: characterId }, select: { name: true } })
+      : null;
+    return envelope(
+      { session: { ...session, character: { name: character?.name ?? "" }, messages: raw.messages ?? [] } },
+      upstream.status,
+    );
+  }
+
+  // POST /chat/sessions/:id/messages → { data: { userMessage, assistant, streamUrl } }
+  if (method === "POST" && s.length === 4 && s[0] === "chat" && s[1] === "sessions" && s[3] === "messages") {
+    const raw = (await upstream.json()) as {
+      userMessageId?: string;
+      assistantMessageId?: string;
+      streamUrl?: string;
+    };
+    const content = safeContent(reqBody);
+    return envelope(
+      {
+        userMessage: { id: raw.userMessageId, role: "user", content },
+        assistant: { id: raw.assistantMessageId, role: "assistant", content: "" },
+        streamUrl: raw.streamUrl,
+      },
+      upstream.status,
+    );
+  }
+
+  return null;
+}
+
+function envelope(data: unknown, status: number): Response {
+  return new Response(JSON.stringify({ ok: true, data }), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function safeContent(reqBody: string): string {
+  try {
+    return String((JSON.parse(reqBody) as { content?: unknown }).content ?? "").trim();
+  } catch {
+    return "";
+  }
 }
 
 function jsonError(status: number, code: string, message: string): Response {
