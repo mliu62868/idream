@@ -53,12 +53,24 @@ describe("retrieveMemories", () => {
     const content = `L1: ${MEM[2]}\\nL2: ${MEM[0]}`;
     process.env.IGREP_BIN = await fakeIgrep(`{"ref":"memory.md:1-3","score":0.9,"content":"${content}"}\n`);
     process.env.CHAT_MEMORY_RETRIEVAL = "igrep";
-    const r = await retrieveMemories({ userId: U, characterId: C, query: "music", max: 3 });
-    expect(r.memories[0]).toBe("User enjoys jazz music.");
+    // max=2 so the igrep ranking fully determines the result (no recency backfill).
+    const r = await retrieveMemories({ userId: U, characterId: C, query: "music", max: 2 });
+    expect(r.memories[0]).toBe("User enjoys jazz music."); // igrep relevance owns the top slot
     expect(r.memories).toContain("User likes being called Mei.");
-    // a line igrep never surfaced (hiking) is absent from the ranked result
+    // a line igrep never surfaced (hiking) is absent when max < total
     expect(r.memories).not.toContain("User is a teacher who loves hiking.");
     expect(r.boundaries).toEqual(["Do not discuss work."]);
+  });
+
+  it("igrep mode backfills with recency so it never drops recent context", async () => {
+    // igrep surfaces only the oldest line; recency must still fill the rest.
+    const content = `L1: ${MEM[0]}`; // only "Mei" (oldest)
+    process.env.IGREP_BIN = await fakeIgrep(`{"ref":"memory.md:1-3","score":0.5,"content":"${content}"}\n`);
+    process.env.CHAT_MEMORY_RETRIEVAL = "igrep";
+    const r = await retrieveMemories({ userId: U, characterId: C, query: "x", max: 2 });
+    expect(r.memories[0]).toBe("User likes being called Mei."); // igrep hit first
+    expect(r.memories[1]).toBe("User enjoys jazz music."); // most-recent backfill
+    expect(r.memories).toHaveLength(2);
   });
 
   it("igrep timeout → degrades to recency", async () => {

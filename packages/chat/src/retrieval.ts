@@ -39,7 +39,16 @@ export async function retrieveMemories(input: RetrieveInput): Promise<MemoryRetr
 
   if (env.MEMORY_RETRIEVAL === "igrep" && input.query.trim()) {
     const ranked = await igrepRank(input, all).catch(() => null);
-    if (ranked && ranked.length) return { boundaries, memories: ranked.slice(0, input.max) };
+    if (ranked && ranked.length) {
+      // igrep surfaces relevant lines first; backfill with the most-recent
+      // remaining lines so igrep mode is NEVER worse than recency (small files
+      // chunk whole-file → no intra-chunk ranking; recency still matters).
+      const merged = [...ranked];
+      for (let i = all.length - 1; i >= 0 && merged.length < input.max; i--) {
+        if (!merged.includes(all[i])) merged.push(all[i]);
+      }
+      return { boundaries, memories: merged.slice(0, input.max) };
+    }
   }
 
   // recency baseline: newest entries are appended last.
