@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "types": ["node"],
+    "paths": {
+      "@idream/shared": ["../shared/src/index.ts"],
+      "@idream/shared/contracts": ["../shared/src/contracts/index.ts"],
+      "@idream/shared/bff": ["../shared/src/bff/signing.ts"]
+    }
+  },
+  "include": ["src/**/*.ts", "prisma.config.ts"],
+  "exclude": ["node_modules", "generated"]
+}

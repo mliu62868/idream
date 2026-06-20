@@ -48,6 +48,7 @@ next-env.d.ts
 **/test.db-wal
 **/test.db-shm
 **/prisma/generated/
+packages/chat/generated/
 
 # Monorepo build/cache
 .turbo/

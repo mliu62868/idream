@@ -1,0 +1,203 @@
+// Chat Service Prisma — connects as chat_service role.
+// Read-only `view` blocks for the 4 main-side views (core/billing/compliance);
+// read/write `model` blocks for chat.* authority tables. multiSchema enabled.
+// The DDL is authoritative in db/sql/*.sql (user-executed). This schema MAPS to it
+// (same columns/types); do not `prisma db push` chat.* — that's chat_owner's job.
+
+generator client {
+  provider        = "prisma-client-js"
+  output          = "../generated/client"
+  previewFeatures = ["multiSchema", "views"]
+}
+
+datasource db {
+  provider = "postgresql"
+  schemas  = ["chat", "core", "billing", "compliance"]
+}
+
+// ---- read-only views (main authority, exposed minimally) --------------------
+view ChatUserView {
+  userId      String    @unique @map("user_id")
+  displayName String?   @map("display_name")
+  locale      String
+  status      String
+  deletedAt   DateTime? @map("deleted_at")
+  updatedAt   DateTime  @map("updated_at")
+
+  @@map("chat_user_view")
+  @@schema("core")
+}
+
+view ChatCharacterView {
+  characterId  String   @unique @map("character_id")
+  creatorId    String?  @map("creator_id")
+  name         String
+  age          Int
+  description  String
+  systemPrompt String?  @map("system_prompt")
+  relationship String?
+  visibility   String
+  status       String
+  voiceId      String?  @map("voice_id")
+  updatedAt    DateTime @map("updated_at")
+
+  @@map("chat_character_view")
+  @@schema("core")
+}
+
+view ChatCharacterTagsView {
+  characterId String @unique @map("character_id")
+  tags        Json
+
+  @@map("chat_character_tags_view")
+  @@schema("core")
+}
+
+view ChatEntitlementView {
+  userId             String   @unique @map("user_id")
+  modelTier          String   @map("model_tier")
+  memoryMultiplier   Int      @map("memory_multiplier")
+  unlimitedMessages  Boolean  @map("unlimited_messages")
+  voiceEnabled       Boolean  @map("voice_enabled")
+  updatedAt          DateTime @map("updated_at")
+
+  @@map("chat_entitlement_view")
+  @@schema("billing")
+}
+
+view ChatUserEligibilityView {
+  userId           String    @unique @map("user_id")
+  ageGateAccepted  Boolean   @map("age_gate_accepted")
+  ageVerified      Boolean   @map("age_verified")
+  jurisdiction     String?
+  restrictedReason String?   @map("restricted_reason")
+  updatedAt        DateTime  @map("updated_at")
+
+  @@map("chat_user_eligibility_view")
+  @@schema("compliance")
+}
+
+// ---- chat authority tables (chat_service read/write) ------------------------
+model ChatSession {
+  id               String    @id
+  userId           String    @map("user_id")
+  characterId      String    @map("character_id")
+  title            String?
+  status           String    @default("active")
+  memoryEnabled    Boolean   @default(true) @map("memory_enabled")
+  memorySummary    String?   @map("memory_summary")
+  logExtractedSeq  BigInt    @default(0) @map("log_extracted_seq")
+  lastMessageAt    DateTime? @map("last_message_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @default(now()) @updatedAt @map("updated_at")
+  deletedAt        DateTime? @map("deleted_at")
+
+  messages Message[]
+
+  @@index([userId, lastMessageAt(sort: Desc)], map: "chat_sessions_user_last_idx")
+  @@index([characterId], map: "chat_sessions_character_idx")
+  @@map("chat_sessions")
+  @@schema("chat")
+}
+
+model Message {
+  id           String      @id
+  sessionId    String      @map("session_id")
+  role         String
+  content      String      @default("")
+  model        String?
+  status       String      @default("pending")
+  tokenCount   Int?        @map("token_count")
+  safetyStatus String      @default("unknown") @map("safety_status")
+  attempt      Int         @default(1)
+  createdAt    DateTime    @default(now()) @map("created_at")
+  updatedAt    DateTime    @default(now()) @updatedAt @map("updated_at")
+  deletedAt    DateTime?   @map("deleted_at")
+
+  session  ChatSession      @relation(fields: [sessionId], references: [id])
+  versions MessageVersion[]
+
+  @@index([sessionId, createdAt], map: "messages_session_created_idx")
+  @@index([status, updatedAt], map: "messages_status_updated_idx")
+  @@map("messages")
+  @@schema("chat")
+}
+
+model MessageVersion {
+  id        String   @id
+  messageId String   @map("message_id")
+  content   String
+  model     String?
+  selected  Boolean  @default(false)
+  attempt   Int      @default(1)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  message Message @relation(fields: [messageId], references: [id])
+
+  @@index([messageId], map: "message_versions_message_idx")
+  @@map("message_versions")
+  @@schema("chat")
+}
+
+model ChatUsage {
+  id           String   @id
+  userId       String   @map("user_id")
+  sessionId    String?  @map("session_id")
+  messagesUsed Int      @default(0) @map("messages_used")
+  periodStart  DateTime @map("period_start")
+  periodEnd    DateTime @map("period_end")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([userId, periodStart])
+  @@index([userId], map: "chat_usage_user_idx")
+  @@map("chat_usage")
+  @@schema("chat")
+}
+
+model ChatModerationEvent {
+  id         String   @id
+  targetType String   @map("target_type")
+  targetId   String   @map("target_id")
+  layer      String
+  status     String
+  policyCode String?  @map("policy_code")
+  confidence Float?
+  details    Json     @default("{}")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([targetType, targetId], map: "chat_moderation_target_idx")
+  @@map("chat_moderation_events")
+  @@schema("chat")
+}
+
+model ChatOutboxEvent {
+  id            String    @id
+  eventType     String    @map("event_type")
+  aggregateType String    @map("aggregate_type")
+  aggregateId   String    @map("aggregate_id")
+  payload       Json      @default("{}")
+  status        String    @default("pending")
+  attempts      Int       @default(0)
+  nextRunAt     DateTime  @default(now()) @map("next_run_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  deliveredAt   DateTime? @map("delivered_at")
+
+  @@index([status, nextRunAt], map: "chat_outbox_pending_idx")
+  @@map("chat_outbox_events")
+  @@schema("chat")
+}
+
+model ChatInboxEvent {
+  id         String    @id
+  eventType  String    @map("event_type")
+  payload    Json      @default("{}")
+  status     String    @default("pending")
+  attempts   Int       @default(0)
+  createdAt  DateTime  @default(now()) @map("created_at")
+  consumedAt DateTime? @map("consumed_at")
+
+  @@index([status, createdAt], map: "chat_inbox_pending_idx")
+  @@map("chat_inbox_events")
+  @@schema("chat")
+}
