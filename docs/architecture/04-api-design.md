@@ -224,23 +224,45 @@ export const requireEntitlement = async (c: AuthCtx, key: string) =>
 
 ## 8. 流式（SSE）聊天
 
-`POST /api/v1/chat/sessions/:id/messages?stream=1` 返回 `text/event-stream`：
+Chat SSE 由 Chat Service 提供；主站可以作为同源 BFF 代理，但不直接写 chat 表、不拼 prompt、不做 chat finalizer。
+
+标准两步：
+
+```text
+POST /api/v1/chat/sessions/:id/messages
+GET  /api/v1/chat/streams/:assistantMessageId
+```
+
+`POST` 返回 `assistantMessageId` 和 `streamUrl`；`GET` 返回 `text/event-stream`：
 
 ```ts
 // 简化骨架
 export const POST = handle(async (req, { params }) => {
-  const ctx = await getAuthCtx(); requireUser(ctx); requireAgeVerified(ctx);
+  const ctx = await getAuthCtx();
+  const user = requireUser(ctx);
   const { content } = sendMessageBody.parse(await req.json());
-  const { messageId, stream } = await chat.service.sendMessage(ctx, params.id, content);
-  if (!new URL(req.url).searchParams.has("stream")) return accepted({ messageId });
+  const result = await chatClient.sendMessage({
+    signedUserContext: signInternalUserContext(user),
+    sessionId: params.id,
+    content,
+  });
+  return accepted(result);
+});
 
+export const GET = handle(async (req, { params }) => {
+  const ctx = await getAuthCtx();
+  const user = requireUser(ctx);
+  const upstream = await chatClient.openStream({
+    signedUserContext: signInternalUserContext(user),
+    assistantMessageId: params.assistantMessageId,
+    lastEventId: req.headers.get("last-event-id"),
+  });
   const encoder = new TextEncoder();
   const body = new ReadableStream({
     async start(controller) {
-      for await (const delta of stream) {                 // service 内对接 ChatModel 流
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(delta)}\n\n`));
+      for await (const event of upstream) {
+        controller.enqueue(encoder.encode(event));
       }
-      controller.enqueue(encoder.encode(`event: done\ndata: {"messageId":"${messageId}"}\n\n`));
       controller.close();
     },
   });
@@ -248,14 +270,15 @@ export const POST = handle(async (req, { params }) => {
 });
 ```
 
-- 输出审核在流结束后对完整文本复核（见 06 §4）；流式期间命中高危可提前中断并发送安全错误事件。
+- 输出审核在 Chat Service 内对完整文本复核（见 06 §7）；流式期间命中高危可提前中断并发送安全错误事件。
 - 设置较长 `maxDuration`（route segment config）适配流式；超时由前端可重连/轮询兜底。
-- 备选非流式：返回 `202 {messageId}`，前端轮询 `GET messages` 直到 `sent`。
+- 备选非流式：返回 `202 {assistantMessageId}`，前端轮询 `GET /api/v1/chat/sessions/:id` 直到 `sent`。
 
 ## 9. 幂等
 
 - **webhook**：`provider_events(provider, providerEventId)` 唯一约束去重（08 §3）。
-- **生成/聊天创建**：可选 `Idempotency-Key` 头 → `jobs.dedupeKey`，重复提交返回同一 job。
+- **生成创建**：可选 `Idempotency-Key` 头 → `jobs.dedupeKey`，重复提交返回同一 job。
+- **聊天发消息**：由 Chat Service 按 `assistantMessageId` / request id 幂等，重复提交返回同一 stream/message。
 - **like/follow**：用复合主键的 upsert/delete，天然幂等。
 - **redeem**：`redeem_code_redemptions(redeemCodeId,userId)` 唯一，重复兑换 `409`。
 

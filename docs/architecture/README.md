@@ -35,7 +35,7 @@ prisma/schema.prisma + src/server/* ← 代码（最终事实来源）
 | 03 | [03-data-model.md](./03-data-model.md) | 完整 Prisma schema、双库兼容约束、迁移与 seed 策略 | 后台工程 |
 | 04 | [04-api-design.md](./04-api-design.md) | API 规范：响应/错误/校验/分页/鉴权/限流/幂等/SSE | 前后端 |
 | 05 | [05-module-design.md](./05-module-design.md) | 各后台模块的 service/repository 职责与关键流程 | 后台工程 |
-| 06 | [06-async-jobs-and-ai.md](./06-async-jobs-and-ai.md) | 无 Redis 队列、worker、AI provider 抽象、生成流水线 | 后台工程 |
+| 06 | [06-async-jobs-and-ai.md](./06-async-jobs-and-ai.md) | Redis/BullMQ、Chat 内部队列、AI provider 抽象、生成流水线 | 后台工程 |
 | 07 | [07-security-and-compliance.md](./07-security-and-compliance.md) | 鉴权、年龄合规、内容审核、CSAM/NCMEC、隐私、密钥、审计 | 全员 + 法务 |
 | 08 | [08-billing-and-entitlements.md](./08-billing-and-entitlements.md) | 订阅、PSP、webhook 幂等、权益派生、dreamcoin ledger | 后台工程 |
 | 09 | [09-project-structure.md](./09-project-structure.md) | 目录结构、分层约定、命名、模块骨架 | 所有工程 |
@@ -43,6 +43,9 @@ prisma/schema.prisma + src/server/* ← 代码（最终事实来源）
 | 11 | [11-testing.md](./11-testing.md) | L1–L4 测试策略与工具 | 所有工程 |
 | 12 | [12-roadmap.md](./12-roadmap.md) | 实施路线图（对齐 P0–P2 里程碑、可验证交付物） | PM、Lead |
 | 13 | [13-backlog.md](./13-backlog.md) | 未完成功能 backlog（基于当前代码核对，后续迭代起点） | PM、Lead、全员 |
+| 14 | [14-chat-service-tech-design.md](./14-chat-service-tech-design.md) | Chat Service 技术架构（服务拆分、权限边界、热路径、存储/记忆、服务目录/协议/pm2） | Lead、后端 |
+
+> 实施执行计划见仓库根 [`PLAN.md`](../../PLAN.md)（阶段/任务/验收 SSoT）。
 
 ## 2. 技术栈一览
 
@@ -57,7 +60,7 @@ prisma/schema.prisma + src/server/* ← 代码（最终事实来源）
 | 校验 | Zod | 系统边界强制校验（API 入参、env、provider 回调） |
 | UI | shadcn/ui + @base-ui/react + Tailwind v4 | 既有，前端不在本目录范围 |
 | 支付 | 抽象 `PaymentProvider`；**生产用加密货币**（推荐自托管 BTCPay Server，非托管/无 AUP 风险） | 见 02-ADR-4 |
-| 异步 | DB 表队列 + Vercel Cron worker + `after()` | 无 Redis；抽象 `JobQueue` 可替换，见 06 |
+| 异步 | Redis/BullMQ + worker；Chat Service 内部队列；Image/Video 跨服务队列 | 见 06 |
 | AI | 抽象 `ChatModel`/`ImageModel`/`VideoModel`/`Voice`/`Moderation` | **自托管开源模型，经内部流水线 API（OpenAI 兼容）接入**，见 02-ADR-6 |
 | 对象存储 | 抽象 `BlobStore`；参考 S3 兼容（R2）/ Vercel Blob(private) | 签名 URL，见 02-ADR-8 |
 | 限流 | DB 令牌桶（dev）/ Upstash Redis（prod 推荐） | 见 02-ADR-9 |
@@ -73,7 +76,7 @@ prisma/schema.prisma + src/server/* ← 代码（最终事实来源）
 | ADR-2 | **单一可移植 Prisma schema + provider 切换**；dev `db push`(SQLite)，prod `migrate`(Postgres) | 满足"sqlite dev/postgres prod"；Postgres-only 性能特性放进 prod 迁移 SQL |
 | ADR-3 | **better-auth** 自管 user/session/account 表，域字段（plan 等）外挂 | 现代、Prisma 原生、email+password+session+限流齐全 |
 | ADR-4 | **支付抽象 + 加密货币**（BTCPay Server / NOWPayments 等）；订阅按"预付周期 + 到期续费"建模 | 加密支付绕开卡组织成人内容限制；自托管非托管无 AUP 风险 |
-| ADR-5 | **DB 表驱动队列 + Vercel Cron + `after()`**，抽象 `JobQueue` | 无 Redis 也能跑；可平滑升级 QStash/Vercel Queues |
+| ADR-5 | **Redis/BullMQ + worker + `after()` 触发轻量副作用** | 可靠任务、重试、限并发；Chat 和 Image/Video 队列边界不同 |
 | ADR-6 | **AI provider 全部抽象**；**自托管开源模型经内部流水线 API（OpenAI 兼容）接入** | 自托管规避公有 API 成人内容禁令；prompt 不出内网 |
 | ADR-7 | **年龄验证 provider 抽象**（Go.cam 等），按司法辖区/风险触发，状态进 `age_verifications` | 安全文档点名 Go.cam；UK OSA / 美国多州法律强制 |
 | ADR-8 | **对象存储抽象 + S3 兼容(R2)/Vercel Blob(private)**，私有 + 签名 URL | 媒体资产私密、防盗链、成人 CDN 友好 |

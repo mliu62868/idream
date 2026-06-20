@@ -38,20 +38,27 @@ next-env.d.ts
 # Vercel
 .vercel
 
-# Prisma local artifacts
-dev.db
-dev.db-journal
-dev.db-wal
-dev.db-shm
-prisma/dev.db
-prisma/dev.db-journal
-prisma/dev.db-wal
-prisma/dev.db-shm
-prisma/test.db
-prisma/test.db-journal
-prisma/test.db-wal
-prisma/test.db-shm
-prisma/generated/
+# Prisma local artifacts (any package)
+**/dev.db
+**/dev.db-journal
+**/dev.db-wal
+**/dev.db-shm
+**/test.db
+**/test.db-journal
+**/test.db-wal
+**/test.db-shm
+**/prisma/generated/
+
+# Monorepo build/cache
+.turbo/
+**/.turbo/
+**/dist/
+
+# Local chat file store (CHAT_FS_ROOT)
+data/chat/
+
+# pm2
+.pm2/
 
 # Local settings (not project config)
 .claude/settings.local.json

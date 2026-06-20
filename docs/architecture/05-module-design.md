@@ -1,6 +1,6 @@
 # 05 · 模块设计
 
-更新日期：2026-06-13
+更新日期：2026-06-18
 
 每个模块 = `src/server/modules/<name>/`，自洽分层（`*.service.ts` / `*.repository.ts` / `*.schema.ts` / `*.types.ts`）。本文件给每个模块的**职责、关键流程、关键不变量**；端点签名见 `BackendFeatureSpec §5`，数据见 03，跨模块通用机制见 04/06。
 
@@ -52,18 +52,24 @@
 
 ## 4. chat
 
-**职责**：会话与消息、上下文记忆、额度、输入/输出审核、重生成、历史。
+**职责**：Chat Service 拥有聊天域完整能力：会话与消息、消息版本、上下文记忆、关系状态、聊天额度、输入/输出审核、重生成、历史、SSE/stream replay、chat outbox。
 
-**关键流程**（详见 01 §4.2、06 §4）：
-- `POST /chat/sessions`：按 (user,character) 找或建 active session；断言角色可用（approved 或自有）。
-- `POST /chat/sessions/:id/messages`：`requireOwner`→ 额度/entitlement（免费 vs unlimited_messages）→ **输入审核**（同步轻量或快路径）→ 落 user message(`pending`) → 入队 `chat.generate` → 202/SSE。
-- worker：拼 prompt（character.systemPrompt + memorySummary + 最近 N 条 + 用户消息）→ 调 `ChatModel`（流式）→ **输出审核** → 落 assistant `Message` + `MessageVersion(selected)` → 更新 `lastMessageAt`、`chat_usage`、可能更新 `memorySummary`（摘要 job）。
-- `POST /messages/:id/regenerate`：新增 `MessageVersion`，**不改审计历史**（spec 4.2）。
-- 删除会话 = 软删 `status=deleted`。
+**主站关系**：
+- 主站拥有 `users`、`characters/girlfriends`、billing entitlement、age eligibility 的权威状态。
+- Chat 可以只读 `chat_user_view`、`chat_character_view`、`chat_entitlement_view`、`chat_user_eligibility_view`。
+- Chat 只写 chat domain 表，不写主站 core/billing/compliance 表。
+- 主站可以代理 Chat API，也可以消费 Chat outbox；不再作为 chat finalizer。
 
-**不变量**：被审核拦截的消息返回安全错误但**保留会话**；user/assistant 内容都产生 `moderation_events`；额度服务端判定。
+**关键流程**（详见 01 §4.2、06 §7、`docs/product/CHAT_SERVICE_PRD.md`）：
+- `POST /chat/sessions`：Chat 根据 userId + characterId 找或建 active session；从主站只读 view 断言用户 active、年龄/身份符合、角色可读且未下架。
+- `POST /chat/sessions/:id/messages`：Chat 校验 owner、entitlement/usage、角色状态、输入审核 → 事务落 user message + assistant placeholder → 入 Chat 内部 `chat.generate` → 返回 `assistantMessageId + streamUrl`。
+- Chat worker：拼 prompt（character persona + relationship + memorySummary + long-term memories + 最近 N 条）→ 调 `ChatModel`（流式）→ Redis Stream/SSE → 输出审核 → 事务落 assistant `Message` + `MessageVersion(selected)` → 更新 `lastMessageAt`、`chat_usage`、`memorySummary`、`companion_memories`、`relationship_states`、`chat_outbox_events`。
+- `POST /messages/:id/regenerate`：新增 `MessageVersion`，**不改审计历史**。
+- 删除会话 = 软删 `status=deleted`；删除消息/记忆后必须从后续 context 与 runtime index 中移除。
 
-**记忆策略**：滑动窗口 + 滚动摘要。超过 token 阈值时入队"摘要 job"压缩旧消息进 `memorySummary`（Deluxe 3x memory = 更大窗口/更长摘要，由 entitlement 配置）。
+**不变量**：被审核拦截的消息返回安全错误但**保留会话**；user/assistant 内容都产生 chat moderation trace；额度由 Chat 服务端结合主站 entitlement view 判定；Chat outbox 事件按 event id 幂等消费。
+
+**记忆策略**：滑动窗口 + 滚动摘要 + 长期记忆 + relationship state。Deluxe 3x memory = 更大窗口/更长摘要/更多 memory retrieval，由 entitlement view 配置。
 
 ---
 

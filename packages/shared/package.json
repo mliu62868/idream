@@ -1,0 +1,26 @@
+{
+  "name": "@idream/shared",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Cross-service contracts SSoT: event names, payload schemas, queue names, idempotency keys, BFF signing.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./contracts": "./src/contracts/index.ts",
+    "./bff": "./src/bff/signing.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "echo 'source-only package, no build'"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "typescript": "^5",
+    "vitest": "^4.1.8"
+  }
+}

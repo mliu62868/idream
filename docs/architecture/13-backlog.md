@@ -44,17 +44,17 @@
 
 ---
 
-## C. 异步运行时（设计已出，未接线）
+## C. 异步运行时（BullMQ 已接线，生产化待完善）
 
-> 文档 [06](./06-async-jobs-and-ai.md) 设计了 DB 队列 + worker + `after()`，但**生成/聊天目前在请求内联同步执行**，队列只入不出。
+> 文档 [06](./06-async-jobs-and-ai.md) 已迁移到 Redis + BullMQ。目标边界是 Chat Service 自己拥有 chat DB 和内部队列；Image/Video 通过主站到 AI worker 的 BullMQ 队列入队。当前仓库仍有本地 worker 过渡实现，生产仍需要独立 worker 部署、Cron 和队列仪表盘。
 
 | 项 | 现状 | 待办 |
 | --- | --- | --- |
-| **队列消费/worker 处理器** | `DbJobQueue` 能 enqueue/claim/complete/fail/dead；`/api/internal/worker` **只 claim 不处理**；各队列（chat.generate/generation.image/moderation.\*/report.triage/reward.ledger…）入队后无消费者，job 堆积 | 实现各队列 handler（认领后真正处理）；把内联生成/聊天迁移为真正异步 + 状态轮询/SSE |
+| **队列消费/worker 处理器** | BullMQ adapter、AI local worker、finalize worker、Redis Stream SSE 已接线 | 拆出独立 worker 进程；补失败耗尽 reconciler、队列仪表盘、生产并发/限流配置 |
 | **Cron 调度** | 无 `vercel.json/vercel.ts` crons；worker 端点无触发源 | 配 Vercel Cron 定时打 worker；超时/重入/死信重放 runbook |
 | **`after()` 收尾** | 未使用 | 把 analytics、views 自增、非关键副作用移到 `after()` |
-| **聊天 SSE 流式** | `sendChatMessage` 服务端拉完整 mock 回复后一次性返回；无 `text/event-stream`；spec 的 `?stream=1` 未接 | 真正 token 级 SSE 到前端，前端逐字渲染 |
-| **聊天记忆 summary** | `ChatSession.memorySummary` 字段存在但**从不写入** | 滚动摘要/长程记忆，注入后续 prompt |
+| **聊天 SSE 流式** | `sendChatMessage` 服务端拉完整 mock 回复后一次性返回；无 `text/event-stream`；spec 的 `?stream=1` 未接 | 迁移到 Chat Service SSE，真正 token 级流式到前端 |
+| **聊天记忆 summary** | `ChatSession.memorySummary` 字段存在但**从不写入** | 迁移到 Chat Service 的滚动摘要/长程记忆/relationship state |
 
 ---
 

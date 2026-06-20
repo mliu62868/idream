@@ -89,12 +89,16 @@ Safety rules:
 
 ### 3.3 Chat
 
+Chat data is owned by Chat Service. The main site may proxy these APIs and consume chat outbox events, but it does not directly write chat sessions, messages, memories, or relationship state.
+
 | 实体 | 关键字段 |
 | --- | --- |
 | `chat_sessions` | `id`, `user_id`, `character_id`, `title`, `status`, `memory_summary`, `last_message_at`, `created_at` |
 | `messages` | `id`, `session_id`, `role`, `content`, `model`, `status`, `token_count`, `safety_status`, `created_at` |
 | `message_versions` | `id`, `message_id`, `content`, `model`, `created_at`, `selected` |
 | `chat_usage` | `id`, `user_id`, `session_id`, `messages_used`, `period_start`, `period_end` |
+| `companion_memories` | `id`, `user_id`, `character_id`, `session_id`, `scope`, `type`, `text`, `confidence`, `status`, `source_message_ids`, `created_at`, `updated_at` |
+| `relationship_states` | `id`, `user_id`, `character_id`, `stage`, `summary`, `signals_json`, `boundaries_json`, `version`, `updated_at` |
 
 Enums:
 
@@ -303,6 +307,8 @@ q, gender, style, age_min, age_max, tags[], sort, period, cursor, limit
 
 ### 5.4 Chat
 
+Served by Chat Service or by a main-site BFF that proxies to Chat Service. Chat Service reads main-site User/Character/Entitlement/Eligibility views but owns all chat-domain writes.
+
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
 | `POST` | `/api/v1/chat/sessions` | User | Start or resume chat for a character |
@@ -316,7 +322,8 @@ q, gender, style, age_min, age_max, tags[], sort, period, cursor, limit
 Streaming can use SSE:
 
 ```text
-POST /api/v1/chat/sessions/:id/messages?stream=1
+POST /api/v1/chat/sessions/:id/messages
+GET  /api/v1/chat/streams/:assistantMessageId
 ```
 
 ### 5.5 Generation & Media
@@ -444,10 +451,11 @@ Generation request:
 
 | Queue | Producer | Consumer | Notes |
 | --- | --- | --- | --- |
-| `moderation.input` | chat, creator, generation | moderation service | Blocks high-severity content before model/provider call |
+| `moderation.input` | Chat Service, creator, generation | moderation service | Blocks high-severity content before model/provider call |
 | `age.verification.webhook` | verification provider | compliance worker | Updates verification status idempotently |
 | `character.preview` | creator API | image worker | Generates creator preview before final submit |
-| `chat.generate` | chat API | LLM worker | Writes assistant message versions |
+| `chat.generate` | Chat Service API | Chat Service worker | Internal Chat queue; writes assistant message versions, usage, memory, relationship, and outbox |
+| `chat.outbox.deliver` | Chat Service DB | Chat Service worker | Delivers chat events to main-site consumers idempotently |
 | `generation.image` | generation API | image worker | P0 worker |
 | `generation.video` | generation API | video worker | P1 worker unless required earlier |
 | `moderation.output` | model workers | moderation service | Releases or blocks generated assets/messages |
@@ -476,7 +484,7 @@ Generation request:
 - A first-time visitor must accept age gate before seeing adult Explore content or using Create/Generate/Chat.
 - If identity age verification is required, the user cannot use gated routes until verification state is valid.
 - An authenticated user can search/filter public characters and open a character detail page.
-- An authenticated user can start a chat, send messages, refresh the page, and keep history.
+- An authenticated user can start a chat, send messages, refresh the page, and keep history through Chat Service.
 - An authenticated user can create a multi-step private character draft, generate preview, submit it, and see it in My AI.
 - An authenticated user can start an image generation job with selected character/Freeplay and presets, see status, and view completed media in Images.
 - Premium/Deluxe-only controls are enforced server-side via entitlements.

@@ -344,6 +344,10 @@ model CharacterSubmission {
 
 ### 3.4 Chat
 
+> 目标归属：以下 chat 表由 Chat Service 权威拥有。当前主站 Prisma schema 中保留这些模型，是为了单仓/同库过渡和本地测试；迁移完成后，主站只能通过 Chat API / outbox / read model 使用这些数据，不直接写 `chat_sessions`、`messages`、`companion_memories`、`relationship_states`。
+>
+> Chat Service 可以只读主站 `User`、`Character`、`Entitlement`、`AgeVerification` 的最小 view，但不写这些主站权威表。
+
 ```prisma
 model ChatSession {
   id            String    @id @default(cuid())
@@ -719,27 +723,11 @@ model Follow {                                          // 社区关注（P1）
 }
 ```
 
-### 3.9 基础设施（队列 / webhook 幂等 / 埋点 / 路由内容）
+### 3.9 基础设施（BullMQ / webhook 幂等 / 埋点 / 路由内容）
 
 ```prisma
-model Job {                                             // DB 驱动队列（见 06）
-  id          String   @id @default(cuid())
-  queue       String                                   /// enum: chat.generate|generation.image|generation.video|moderation.input|moderation.output|character.preview|billing.webhook|age.verification.webhook|reward.ledger|report.triage|analytics.events
-  payload     Json
-  status      String   @default("queued")              /// enum: queued|running|completed|failed|dead
-  priority    Int      @default(5)
-  attempts    Int      @default(0)
-  maxAttempts Int      @default(5)
-  dedupeKey   String?  @unique                          // 防重复入队
-  lockedBy    String?
-  lockedAt    DateTime?
-  nextRunAt   DateTime @default(now())                  // 退避调度
-  lastError   String?
-  createdAt   DateTime @default(now())
-  completedAt DateTime?
-  @@index([status, queue, nextRunAt])
-  @@map("jobs")
-}
+// Queue state lives in Redis/BullMQ (see 06). The relational DB stores only
+// authoritative business state and idempotency records.
 
 model ProviderEvent {                                   // webhook 幂等（支付/验证）
   id            String   @id @default(cuid())

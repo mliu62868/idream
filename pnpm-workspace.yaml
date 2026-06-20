@@ -1,0 +1,21 @@
+packages:
+  - "packages/*"
+
+allowBuilds:
+  '@prisma/engines': set this to true or false
+  better-sqlite3: set this to true or false
+  esbuild: set this to true or false
+  msgpackr-extract: set this to true or false
+  prisma: set this to true or false
+  sharp: set this to true or false
+  unrs-resolver: set this to true or false
+
+# Native deps that need their install scripts to run (compile bindings / fetch engines).
+onlyBuiltDependencies:
+  - "@prisma/engines"
+  - prisma
+  - better-sqlite3
+  - esbuild
+  - msgpackr-extract
+  - sharp
+  - unrs-resolver

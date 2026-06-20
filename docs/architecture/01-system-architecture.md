@@ -1,15 +1,15 @@
 # 01 · 系统架构
 
-更新日期：2026-06-13
+更新日期：2026-06-18
 
-## 1. 架构风格：模块化单体（Modular Monolith）
+## 1. 架构风格：模块化单体 + Chat Service 独立边界
 
-单仓、单部署、按业务模块（domain module）内聚分层。**不**在 MVP 阶段拆分微服务。
+主站保持单仓、单部署、按业务模块（domain module）内聚分层。Chat 按独立服务边界设计：它拥有聊天域数据库能力，可以先在同仓/同库里落地，但热路径不再由主站写 chat 表或做 chat finalizer。
 
 为什么：
 
 - **KISS / YAGNI**：前端已是 Next 16，用同一个 App 提供 API 最省心；Vercel 原生支持。
-- **Orthogonality**：模块之间通过 service 接口与事件（job）解耦，未来要拆服务时按模块边界切，成本可控。
+- **Orthogonality**：主站 core domain 与 chat domain 通过只读 view 和 outbox 事件解耦，Chat 可独立扩展。
 - **重活异步化**：聊天生成、图片/视频生成、审核、webhook 处理都走异步 job（见 06），所以同步 HTTP 路径很短，serverless 超时风险低，不需要长驻服务。
 
 ```
@@ -37,6 +37,23 @@
         │ Prisma Client（单例）                  │ Provider SDK
         ▼                                        ▼
    PostgreSQL(prod) / SQLite(dev)         AI / PSP / Blob / Verify / Redis
+```
+
+Chat 目标拓扑：
+
+```text
+Main Site owns:
+  identity, compliance, catalog/characters, creator, billing, generation, media, safety/admin, SEO
+
+Chat Service owns:
+  chat_sessions, messages, message_versions, chat_usage,
+  companion_memories, relationship_states, chat stream, chat outbox
+
+Chat Service reads only:
+  core.chat_user_view
+  core.chat_character_view
+  billing.chat_entitlement_view
+  compliance.chat_user_eligibility_view
 ```
 
 ## 2. 分层与依赖方向
@@ -71,7 +88,7 @@ route handler ─▶ service ─▶ repository ─▶ Prisma Client ─▶ DB
 | identity | `modules/identity` | lib/auth | ✅ |
 | compliance（age gate + age verification） | `modules/compliance` | identity, providers/verify | ✅ |
 | catalog（角色目录/搜索/筛选/标签/统计） | `modules/catalog` | — | ✅ |
-| chat | `modules/chat` | catalog, compliance, billing(额度), safety, jobs, providers/chat | ✅ |
+| chat | `modules/chat` or Chat Service | read-only core/billing/compliance views, safety policy, providers/chat | ✅ |
 | creator（草稿/预览/提交/审核态） | `modules/creator` | catalog, safety, jobs, providers/image | ✅ |
 | generation（图/视频任务、presets） | `modules/generation` | catalog, billing(dreamcoin), safety, jobs, providers/image,video | ✅(先图) |
 | media（图库 like/manage/download） | `modules/media` | providers/blob | ✅(基础) |
@@ -91,6 +108,7 @@ route handler ─▶ service ─▶ repository ─▶ Prisma Client ─▶ DB
 - 跨模块只能 `import` 对方的 `*.service.ts`（公开 API），禁止跨模块 import 对方 repository。
 - 出现双向依赖时，下沉公共概念到 `lib/` 或用 **事件/job** 解耦（如 billing 完成 → 发事件 → library 刷新）。
 - 共享读模型（如"角色卡 DTO"）放对应模块的 `*.types.ts` 并导出。
+- Chat 是特殊边界：主站可以调用/代理 Chat API，也可以消费 Chat outbox；主站不直接写 Chat Service 权威表。Chat 可以只读主站 User/Character/Entitlement/Eligibility view，但不能写主站权威表。
 
 ## 4. 请求生命周期
 
@@ -113,16 +131,33 @@ route.ts          ok(envelope, { items, nextCursor })  +  after(()=>events.track
 
 ### 4.2 典型写请求（发消息 `POST /api/v1/chat/sessions/:id/messages`）
 
-同步路径**只**做：鉴权 → 校验 → 额度检查 → 输入审核（快路径/可同步轻量）→ 落库 user message(`pending`) → **入队 `chat.generate`** → 返回 `202 + messageId`（或开 SSE）。
-**重活**（调 LLM、输出审核、写 assistant 版本）在 worker 里异步完成（见 06 §4）。客户端用 SSE 或轮询拿结果。
+Chat 写请求进入 Chat Service。主站可以作为 BFF 验证 session cookie 并代理请求，但不写 `chat_sessions/messages/memories/relationships`，也不做 chat finalizer。
 
 ```
-route POST ─▶ chat.service.sendMessage()
-   ├─ assert owner & entitlement(messages quota)         [billing/identity]
-   ├─ moderation.input(content)  ── 命中高危 → blocked + moderation_event + 安全错误
-   ├─ repo.insertMessage(role=user, status=pending)
-   ├─ queue.enqueue('chat.generate', {sessionId, messageId})
-   └─ return 202 {messageId}            ↘ after(): events.track('message_sent')
+Browser ─▶ Main BFF/API Gateway ─▶ Chat Service
+                                ├─ verify signed user context
+                                ├─ read core.chat_user_view
+                                ├─ read compliance.chat_user_eligibility_view
+                                ├─ read billing.chat_entitlement_view
+                                ├─ read core.chat_character_view
+                                ├─ moderation.input(content)
+                                ├─ transaction:
+                                │    insert user message
+                                │    insert assistant placeholder
+                                │    update session.lastMessageAt
+                                ├─ enqueue internal chat.generate
+                                └─ return {assistantMessageId, streamUrl}
+
+Chat worker:
+  recent messages + memory + relationship + character persona
+  → ChatModel.stream
+  → Redis Stream / SSE
+  → moderation.output
+  → transaction:
+       update assistant message + version
+       increment chat_usage
+       apply memory / relationship
+       insert chat outbox events
 ```
 
 ### 4.3 webhook（支付/验证 provider）
@@ -173,6 +208,11 @@ route POST ─▶ chat.service.sendMessage()
         │  - direct (migrate) │   └──────────────────────────────────┘
         └─────────────────────┘
 
+                 ┌──────────── Chat Service ────────────┐
+                 │ Chat API / SSE / chat workers         │
+                 │ read-only core views + write chat.*   │
+                 └───────────────────────────────────────┘
+
    dev：本地 `next dev` + SQLite 文件 + provider 的 mock/sandbox 实现
 ```
 
@@ -191,3 +231,4 @@ route POST ─▶ chat.service.sendMessage()
 6. 客户端传来的 plan / 权益一律不可信，服务端按 entitlements 判定。
 7. provider 回调先验签、再幂等落库、最后入队处理。
 8. schema 只用 SQLite + Postgres 双方都支持的特性子集（见 03 §2）。
+9. Chat Service 只读主站 User/Character/Entitlement/Eligibility view，只写 chat domain 表。
