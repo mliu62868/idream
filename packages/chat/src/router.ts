@@ -12,7 +12,15 @@ import {
   sendMessage,
   setNoMemory,
 } from "./service.js";
-import { deleteSession } from "./privacy.js";
+import { deleteMessage, deleteSession } from "./privacy.js";
+import { deleteMemory, listMemories, updateMemory } from "./memories.js";
+import {
+  deleteRelationship,
+  getRelationshipState,
+  listRelationships,
+  setRelationship,
+  type RelationshipStage,
+} from "./relationship.js";
 import { streamKey } from "./stream.js";
 
 export interface ChatRequest {
@@ -28,6 +36,7 @@ export type ChatResponse =
   | { kind: "sse"; streamKey: string; lastEventId?: string };
 
 const PREFIX = "/api/v1/chat";
+const MESSAGES_PREFIX = "/api/v1/messages";
 
 export async function dispatchChat(req: ChatRequest): Promise<ChatResponse> {
   try {
@@ -46,8 +55,18 @@ export async function dispatchChat(req: ChatRequest): Promise<ChatResponse> {
 
 async function route(req: ChatRequest): Promise<ChatResponse> {
   const { method, userId } = req;
-  if (!req.path.startsWith(PREFIX)) return json(404, { error: "not_found" });
-  const rest = req.path.slice(PREFIX.length).replace(/\/+$/, "");
+  // Accept both conventions the main-web BFF proxies: the chat namespace
+  // (/api/v1/chat/*) and bare message ops (/api/v1/messages/* → resource
+  // "messages"), so regenerate/stream/delete reach the same handlers either way.
+  let rest: string;
+  if (req.path.startsWith(PREFIX)) {
+    rest = req.path.slice(PREFIX.length);
+  } else if (req.path.startsWith(MESSAGES_PREFIX)) {
+    rest = `/messages${req.path.slice(MESSAGES_PREFIX.length)}`;
+  } else {
+    return json(404, { error: "not_found" });
+  }
+  rest = rest.replace(/\/+$/, "");
   const segs = rest.split("/").filter(Boolean); // [] | ["sessions"] | ["sessions",id] ...
 
   // /sessions
@@ -82,7 +101,11 @@ async function route(req: ChatRequest): Promise<ChatResponse> {
     }
   }
 
-  // /messages/:id/regenerate  and  /messages/:id/stream
+  // /messages/:id  (delete) and /messages/:id/{regenerate,stream}
+  if (segs[0] === "messages" && segs.length === 2 && method === "DELETE") {
+    await deleteMessage({ userId, messageId: segs[1] });
+    return json(200, { ok: true });
+  }
   if (segs[0] === "messages" && segs.length === 3) {
     const messageId = segs[1];
     if (segs[2] === "regenerate" && method === "POST") {
@@ -90,6 +113,51 @@ async function route(req: ChatRequest): Promise<ChatResponse> {
     }
     if (segs[2] === "stream" && method === "GET") {
       return { kind: "sse", streamKey: streamKey(messageId), lastEventId: req.query?.lastEventId };
+    }
+  }
+
+  // /streams/:assistantMessageId  — PRD §8.2 alias for the SSE token stream.
+  if (segs[0] === "streams" && segs.length === 2 && method === "GET") {
+    return { kind: "sse", streamKey: streamKey(segs[1]), lastEventId: req.query?.lastEventId };
+  }
+
+  // /memories  and  /memories/:id  (long-term memory management, PRD §8.2)
+  if (segs[0] === "memories" && segs.length === 1 && method === "GET") {
+    return json(200, { memories: await listMemories(userId, req.query?.characterId) });
+  }
+  if (segs[0] === "memories" && segs.length === 2) {
+    const memoryId = segs[1];
+    if (method === "PATCH") {
+      const updated = await updateMemory(userId, memoryId, str(body(req).text));
+      if (!updated) return json(404, { error: "memory_not_found" });
+      return json(200, updated);
+    }
+    if (method === "DELETE") {
+      const removed = await deleteMemory(userId, memoryId);
+      return json(removed ? 200 : 404, removed ? { ok: true } : { error: "memory_not_found" });
+    }
+  }
+
+  // /relationships  and  /relationships/:characterId  (companion bond, PRD §8.2)
+  if (segs[0] === "relationships" && segs.length === 1 && method === "GET") {
+    return json(200, { relationships: await listRelationships(userId) });
+  }
+  if (segs[0] === "relationships" && segs.length === 2) {
+    const characterId = segs[1];
+    if (method === "GET") return json(200, await getRelationshipState(userId, characterId));
+    if (method === "PATCH") {
+      const b = body(req);
+      return json(
+        200,
+        await setRelationship(userId, characterId, {
+          summary: optStr(b.summary),
+          stage: optStr(b.stage) as RelationshipStage | undefined,
+        }),
+      );
+    }
+    if (method === "DELETE") {
+      await deleteRelationship(userId, characterId);
+      return json(200, { ok: true });
     }
   }
 

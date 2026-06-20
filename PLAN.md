@@ -10,7 +10,13 @@
 - chat 服务**真实运行时冒烟通过**：`tsx packages/chat/src/main.ts` 起 web+worker，HTTP create→send→worker generate→finalize→assistant `sent`→写 `session.jsonl`→`memory.extract` 派生（回查 PG 源链）→regenerate attempt 2→SSE start/delta→usage++。
 - **数据库 SQL 由用户执行**：`db/sql/01..04` + `apply-validate.sh` 已交付且本地校验库验证通过；生产请以 superuser/各 owner 角色执行（改默认占位密码）。
 
-**待办（P0 范围外 / P1 尾部）**：P1-2 的 igrep 语义检索（`retrieveMemories` 已留函数边界，当前走文件解析+recency）、P1-4 删除单体 chat 旧路径（现以 `CHAT_SERVICE_URL` 开关共存，硬切会动 main 既有测试，待前端切到服务路径后再做）；group chat / voice / pgvector 仍延后。
+**已落地（2026-06-20 续）：AI 女优用户控制/管理 API**（PRD §8.2/§12，把 chat service 补到与单体功能对等）。此前 chat service 只有 sessions/messages/regenerate/stream + setNoMemory，缺记忆/关系管理与删消息——现已补齐并验证（chat 测试 30→41 绿，typecheck 5/5 清）：
+- **记忆管理**（`packages/chat/src/memories.ts`，文件层）：`GET /memories[?characterId]`、`PATCH /memories/:id`、`DELETE /memories/:id`；每条记忆带稳定 id（`mid:` 或 legacy 行内容哈希），`memory.ts` 写入时落 `mid`。
+- **关系管理**（`relationship.ts` 增 list/get/set/delete）：`GET /relationships`、`GET|PATCH|DELETE /relationships/:characterId`（PATCH 改 summary/stage 并 bump version，DELETE 重置回 EMPTY）。
+- **删消息 + 记忆遗忘**（`privacy.ts`）：`DELETE /messages/:id` 接路由；删消息/删会话联动 `forgetByMessageIds` 按 source linkage 清派生记忆（P0 隐私：删除落到权威文件层，非仅过滤检索）。
+- **路由前缀兼容**：router 同时认 `/api/v1/chat/*` 与裸 `/api/v1/messages/*`（对齐 BFF proxy 对 `resource==="messages"` 的转发），并加 `GET /streams/:id` SSE 别名（PRD §8.2）。
+
+**待办（P0 范围外 / P1 尾部）**：P1-2 的 igrep 语义检索（`retrieveMemories` 已留函数边界，当前走文件解析+recency）、P1-4 删除单体 chat 旧路径（现以 `CHAT_SERVICE_URL` 开关共存，硬切会动 main 既有测试，待前端切到服务路径后再做）；前端切服务路径时需对齐响应封装（chat service 用裸 JSON，单体用 `ok({...})` 信封）；group chat / voice / pgvector 仍延后。
 
 ## 1. 一屏架构
 

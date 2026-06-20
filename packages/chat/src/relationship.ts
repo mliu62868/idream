@@ -2,7 +2,8 @@
 // authority (NOT PG). Each turn merges signals + advances stage; narrative summary
 // appended. Read-merge-atomic-write so the single chat.memory.extract writer never
 // races itself. Used by the model for tone/continuity, not exposed as a game score.
-import { readWhole, writeAtomic, chatFsPaths } from "./chat-fs.js";
+import path from "node:path";
+import { readWhole, writeAtomic, chatFsPaths, listPrefix, deletePrefix } from "./chat-fs.js";
 
 export type RelationshipStage = "new" | "familiar" | "close" | "committed";
 
@@ -54,6 +55,58 @@ export async function updateRelationship(
   const next: RelationshipState = { stage, signals, summary, version: current.version + 1 };
   await writeAtomic(chatFsPaths.relationship(userId, characterId), renderRelationship(next));
   return next;
+}
+
+// ---- user-facing management API (PRD §7.3, §8.2) ----------------------------
+// Relationship state is file-layer authority, tenant-partitioned under
+// mem/{userId}/{charId}/relationship.md, so reading the caller's own prefix is
+// the isolation. Exposed so users can review / edit / reset a companion bond.
+
+export interface RelationshipView extends RelationshipState {
+  characterId: string;
+}
+
+/** List every companion relationship the user has built. */
+export async function listRelationships(userId: string): Promise<RelationshipView[]> {
+  const rels = await listPrefix(["mem", userId]);
+  const out: RelationshipView[] = [];
+  for (const rel of rels) {
+    const parts = rel.split(path.sep);
+    if (parts[parts.length - 1] !== "relationship.md") continue;
+    const characterId = parts[2];
+    if (!characterId || characterId === "global") continue;
+    const state = parseRelationship(await readWhole(parts));
+    out.push({ characterId, ...state });
+  }
+  return out;
+}
+
+/** Read one relationship (EMPTY default if none derived yet). */
+export async function getRelationshipState(
+  userId: string,
+  characterId: string,
+): Promise<RelationshipView> {
+  const state = parseRelationship(await readWhole(chatFsPaths.relationship(userId, characterId)));
+  return { characterId, ...state };
+}
+
+/** Edit the narrative summary and/or stage (bumps version). Returns the new state. */
+export async function setRelationship(
+  userId: string,
+  characterId: string,
+  patch: { summary?: string; stage?: RelationshipStage },
+): Promise<RelationshipView> {
+  const current = parseRelationship(await readWhole(chatFsPaths.relationship(userId, characterId)));
+  const stage = patch.stage && STAGE_ORDER.includes(patch.stage) ? patch.stage : current.stage;
+  const summary = patch.summary != null ? clampSummary(patch.summary) : current.summary;
+  const next: RelationshipState = { ...current, stage, summary, version: current.version + 1 };
+  await writeAtomic(chatFsPaths.relationship(userId, characterId), renderRelationship(next));
+  return { characterId, ...next };
+}
+
+/** Reset (hard-delete) a relationship — removes the authority file. Idempotent. */
+export async function deleteRelationship(userId: string, characterId: string): Promise<void> {
+  await deletePrefix(chatFsPaths.relationship(userId, characterId));
 }
 
 export function stageForScore(score: number): RelationshipStage {

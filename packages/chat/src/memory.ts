@@ -121,9 +121,10 @@ export function deriveCandidates(userText: string, sourceMessageId: string): Mem
   return out;
 }
 
-/** memory.md line: a bullet + an inline source tag (front-matter-lite, parseable). */
+/** memory.md line: a bullet + an inline source tag (front-matter-lite, parseable).
+ * Carries a stable `mid` so the management API (memories.ts) can PATCH/DELETE it. */
 function renderMemoryLine(c: MemoryCandidate): string {
-  return `- [${c.type}] ${c.text} <!-- src:${c.sourceMessageIds.join(",")} conf:${c.confidence} -->`;
+  return `- [${c.type}] ${c.text} <!-- src:${c.sourceMessageIds.join(",")} mid:${createId("mem")} conf:${c.confidence} -->`;
 }
 
 function clampTurn(text: string): string {

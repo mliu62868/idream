@@ -10,6 +10,7 @@ import type { ChatPrismaClient } from "./db.js";
 import { chatPrisma } from "./db.js";
 import { env } from "./env.js";
 import { deletePrefix } from "./chat-fs.js";
+import { forgetByMessageIds } from "./memories.js";
 import { recordOutbox } from "./outbox.js";
 import { CHAT_TO_MAIN_EVENTS } from "@idream/shared/contracts";
 
@@ -30,7 +31,9 @@ export async function deleteMessage(
       data: { status: "deleted", content: "", deletedAt: new Date() },
     });
   });
-  // memory forget is async (memory.extract / forget worker re-checks source links)
+  // Clear source linkage: drop any long-term memory derived from this message
+  // (PRD §12 — deletion must reach the index/files, not just filter retrieval).
+  await forgetByMessageIds(input.userId, [message.id]).catch(() => {});
 }
 
 export async function deleteSession(
@@ -41,7 +44,7 @@ export async function deleteSession(
   if (!session || session.userId !== input.userId) {
     throw new Error("not your session");
   }
-  await prisma.$transaction(async (tx) => {
+  const deletedIds = await prisma.$transaction(async (tx) => {
     const messages = await tx.message.findMany({ where: { sessionId: session.id }, select: { id: true } });
     const ids = messages.map((m) => m.id);
     if (ids.length) await tx.messageVersion.deleteMany({ where: { messageId: { in: ids } } });
@@ -56,10 +59,13 @@ export async function deleteSession(
       aggregateId: session.id,
       payload: { userId: input.userId },
     });
+    return ids;
   });
 
   // remove the agent trace: active jsonl + any numbered segments
   await removeSessionFiles(session.userId, session.id);
+  // forget any long-term memory seeded by this session's messages (source linkage)
+  await forgetByMessageIds(input.userId, deletedIds).catch(() => {});
 }
 
 export async function deleteAccount(
