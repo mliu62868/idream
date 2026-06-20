@@ -2,6 +2,16 @@
 
 > 本文是**执行计划**（做什么、什么顺序、验收标准）。架构与设计细节见 `docs/architecture/14-chat-service-tech-design.md`（how）与 `docs/product/CHAT_SERVICE_PRD.md`（what）。本文不重复 rationale，只指导落地。
 
+## 实施状态（2026-06-20）
+
+**已落地并验证**：P0-1 ~ P0-5 全部 + P1-1/P1-2/P1-3。monorepo（pnpm + Turborepo），4 包 `@idream/{shared,main,chat,gen}`，6 进程 `ecosystem.config.js`。
+- 全工作区测试 **127 绿**（shared 6 + gen 6 + main 85 + chat 30），typecheck 5/5 清。
+- DB 边界对真实 Postgres 端到端验收：`chat_service` 读 4 view + CRUD `chat.*`，写 `public.*`/view 被 DB 拒绝（`db/sql/` + `packages/chat/test/boundary.test.ts`）。
+- chat 服务**真实运行时冒烟通过**：`tsx packages/chat/src/main.ts` 起 web+worker，HTTP create→send→worker generate→finalize→assistant `sent`→写 `session.jsonl`→`memory.extract` 派生（回查 PG 源链）→regenerate attempt 2→SSE start/delta→usage++。
+- **数据库 SQL 由用户执行**：`db/sql/01..04` + `apply-validate.sh` 已交付且本地校验库验证通过；生产请以 superuser/各 owner 角色执行（改默认占位密码）。
+
+**待办（P0 范围外 / P1 尾部）**：P1-2 的 igrep 语义检索（`retrieveMemories` 已留函数边界，当前走文件解析+recency）、P1-4 删除单体 chat 旧路径（现以 `CHAT_SERVICE_URL` 开关共存，硬切会动 main 既有测试，待前端切到服务路径后再做）；group chat / voice / pgvector 仍延后。
+
 ## 1. 一屏架构
 
 **拆分依据**：按执行时间分级——`main` 快（毫秒同步），`chat`/`gen` 慢（秒级生成）；慢负载从快 web 剥离，三者**只用异步任务 + 事件**交互。
@@ -66,4 +76,10 @@
 
 ## 6. 立即下一步
 
-**P0-1 边界重构**。AI 产出：chat schema 目标 DDL + 4 view DDL + 3 role/grant 脚本 + chat Prisma + 负向权限测试。**SQL 交用户执行**，AI 跑 Prisma generate 与测试。
+P0 + P1-1/2/3 已落地（见顶部「实施状态」）。剩余推进顺序：
+1. **生产 DB 边界落库**：用户以 superuser/各 owner 执行 `db/sql/01..04`（改占位密码），设 `CHAT_DATABASE_URL` 用 `chat_service` role 连接，跑 `packages/chat` 测试验收。
+2. **前端切服务路径**：前端 chat 调用改走 `/api/v1/chat/*`（BFF 反代，设 `CHAT_SERVICE_URL` + `CHAT_BFF_SIGNING_SECRET`）。
+3. **P1-4 清理**：前端切换后，删 `packages/main` 单体 chat 旧路径（service.ts 的 chat 函数 + `ai.chat.generate` 路径）。
+4. **P1-2 igrep**：把 `retrieveMemories`/`memory.extract` 内部换 igrep 语义检索（带超时+退化），调用方不变。
+
+启动全部进程：`pnpm pm2:start`（见 `ecosystem.config.js`）。
