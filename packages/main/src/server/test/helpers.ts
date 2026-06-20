@@ -270,7 +270,6 @@ export async function dreamcoinBalance(userId: string) {
 export async function purgeTestData(prefix: string) {
   const sw = { startsWith: prefix } as const;
   await jobQueue.removeByDedupePrefix(prefix, [
-    "ai.chat.generate",
     "ai.memory.sync",
     "ai.memory.forget",
     "ai.memory.rebuild",

@@ -3,10 +3,8 @@ import { jobQueue } from "@/server/jobs/queue";
 import type { QueueJob } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
 import { providers } from "@/server/providers";
-import { generateChatCompletion } from "./chat-runtime";
 import {
   aiFinalizePayloadSchema,
-  chatGeneratePayloadSchema,
   imageGeneratePayloadSchema,
   memoryForgetPayloadSchema,
   memoryRebuildPayloadSchema,
@@ -18,10 +16,8 @@ import {
   type VideoGeneratePayload,
   videoGeneratePayloadSchema,
 } from "./schemas";
-import { appendChatStreamEvent } from "./stream-store";
 
 export const localAiQueueNames = [
-  "ai.chat.generate",
   "ai.memory.sync",
   "ai.memory.forget",
   "ai.memory.rebuild",
@@ -40,9 +36,7 @@ export interface LocalAiDrainResult {
   processed: number;
 }
 
-type ChatCompletedPayload = Extract<AiFinalizePayload, { kind: "chat.completed" }>;
 type SyncedMemory = Extract<MemorySyncPayload["changes"][number], { operation: "upsert" }>["memory"];
-type MemoryCandidate = NonNullable<ChatCompletedPayload["memoryPatch"]>["candidates"][number];
 
 export async function drainLocalAiPipeline(input: {
   limit?: number;
@@ -79,9 +73,6 @@ export async function drainLocalAiPipeline(input: {
 }
 
 async function processLocalAiJob(job: QueueJob) {
-  if (job.queue === "ai.chat.generate") {
-    return processChatGenerate(job.payload, job.attemptsMade + 1, job.maxAttempts);
-  }
   if (job.queue === "ai.memory.sync") {
     return processMemorySync(job.payload);
   }
@@ -102,86 +93,6 @@ async function processLocalAiJob(job: QueueJob) {
   }
 
   throw new Error(`Unsupported local AI queue: ${job.queue}`);
-}
-
-async function processChatGenerate(
-  payloadValue: Prisma.JsonValue,
-  attempt: number,
-  maxAttempts: number,
-) {
-  const payload = chatGeneratePayloadSchema.parse(payloadValue);
-  const assistant = await prisma.message.findUnique({
-    where: { id: payload.assistantMessageId },
-  });
-
-  if (!assistant || assistant.status === "sent" || assistant.status === "deleted") return;
-
-  await prisma.message.updateMany({
-    where: { id: payload.assistantMessageId, status: { in: ["pending", "generating"] } },
-    data: { status: "generating" },
-  });
-
-  await appendChatStreamEvent(payload.streamKey, { type: "start", attempt });
-
-  let wroteDelta = false;
-  let result: Awaited<ReturnType<typeof generateChatCompletion>>;
-  try {
-    result = await generateChatCompletion(payload, attempt, {
-      onDelta: async (event) => {
-        wroteDelta = true;
-        await appendChatStreamEvent(payload.streamKey, event);
-      },
-    });
-  } catch (error) {
-    if (!wroteDelta && attempt < maxAttempts) throw error;
-    const message = error instanceof Error ? error.message : String(error);
-    await appendChatStreamEvent(payload.streamKey, {
-      type: "error",
-      attempt,
-      code: wroteDelta ? "provider_interrupted" : "provider_failed",
-      retryable: !wroteDelta,
-    });
-    await jobQueue.enqueue({
-      queue: "app.ai.finalize",
-      payload: toInputJson({
-        version: 1,
-        kind: "chat.failed",
-        requestId: payload.requestId,
-        sessionId: payload.sessionId,
-        userMessageId: payload.userMessageId,
-        assistantMessageId: payload.assistantMessageId,
-        error: {
-          code: wroteDelta ? "provider_interrupted" : "provider_failed",
-          message,
-          retryable: !wroteDelta,
-          partialOutput: wroteDelta,
-        },
-      } satisfies AiFinalizePayload),
-      dedupeKey: `chat-finalize:${payload.assistantMessageId}:failed`,
-    });
-    return;
-  }
-
-  await appendChatStreamEvent(payload.streamKey, { type: "done", attempt, usage: result.usage });
-
-  await jobQueue.enqueue({
-    queue: "app.ai.finalize",
-    payload: toInputJson({
-      version: 1,
-      kind: "chat.completed",
-      requestId: payload.requestId,
-      sessionId: payload.sessionId,
-      userMessageId: payload.userMessageId,
-      assistantMessageId: payload.assistantMessageId,
-      content: result.content,
-      model: result.model,
-      usage: result.usage,
-      memoryPatch: result.memoryPatch,
-      relationshipPatch: result.relationshipPatch,
-      trace: result.trace,
-    } satisfies AiFinalizePayload),
-    dedupeKey: `chat-finalize:${payload.assistantMessageId}`,
-  });
 }
 
 async function processMemoryForget(payloadValue: Prisma.JsonValue) {
@@ -432,11 +343,9 @@ async function processVideoGenerate(payloadValue: Prisma.JsonValue) {
 async function processFinalize(payloadValue: Prisma.JsonValue) {
   const payload = aiFinalizePayloadSchema.parse(payloadValue);
 
-  if (payload.kind === "chat.completed") return finalizeChatCompleted(payload);
-  if (payload.kind === "chat.failed") return finalizeChatFailed(payload);
   if (payload.kind === "memory.forgotten") return finalizeMemoryForgotten(payload);
   if (payload.kind === "generation.completed") return finalizeGenerationCompleted(payload);
-  return finalizeGenerationFailed(payload);
+  if (payload.kind === "generation.failed") return finalizeGenerationFailed(payload);
 }
 
 async function finalizeMemoryForgotten(
@@ -453,318 +362,6 @@ async function finalizeMemoryForgotten(
     },
     { userId: payload.userId },
   );
-}
-
-async function finalizeChatCompleted(
-  payload: Extract<AiFinalizePayload, { kind: "chat.completed" }>,
-) {
-  const assistant = await prisma.message.findUnique({
-    where: { id: payload.assistantMessageId },
-    include: { session: true },
-  });
-  if (!assistant || assistant.status === "deleted") return;
-
-  const outputModeration = await moderateText(
-    "message",
-    payload.assistantMessageId,
-    payload.content,
-    "output",
-  );
-  const finalStatus = outputModeration.status === "blocked" ? "blocked" : "sent";
-  const shouldCountUsage = assistant.status !== "sent" && assistant.status !== "blocked";
-  const shouldApplySideEffects = shouldCountUsage && finalStatus === "sent";
-  const sessionSummary = payload.memoryPatch?.sessionSummary?.text;
-  const memorySyncChanges: MemorySyncPayload["changes"] = [];
-
-  await prisma.$transaction(async (tx) => {
-    await tx.message.update({
-      where: { id: payload.assistantMessageId },
-      data: {
-        content: payload.content,
-        model: payload.model,
-        status: finalStatus,
-        safetyStatus: outputModeration.status,
-        tokenCount: payload.usage.completionTokens,
-      },
-    });
-
-    const selectedVersion = await tx.messageVersion.findFirst({
-      where: { messageId: payload.assistantMessageId, selected: true },
-    });
-    if (selectedVersion) {
-      await tx.messageVersion.update({
-        where: { id: selectedVersion.id },
-        data: { content: payload.content, model: payload.model },
-      });
-    } else {
-      await tx.messageVersion.create({
-        data: {
-          messageId: payload.assistantMessageId,
-          content: payload.content,
-          model: payload.model,
-          selected: true,
-        },
-      });
-    }
-
-    await tx.chatSession.update({
-      where: { id: payload.sessionId },
-      data: {
-        lastMessageAt: new Date(),
-        memorySummary: sessionSummary ?? assistant.session.memorySummary,
-      },
-    });
-
-    if (shouldCountUsage) {
-      await incrementChatUsage(tx, assistant.session.userId, payload.sessionId);
-    }
-
-    if (shouldApplySideEffects && assistant.session.memoryEnabled) {
-      memorySyncChanges.push(
-        ...(await applyMemoryPatch(
-          tx,
-          assistant.session.userId,
-          assistant.session.characterId,
-          payload.sessionId,
-          payload.memoryPatch,
-        )),
-      );
-    }
-
-    if (shouldApplySideEffects) {
-      await applyRelationshipPatch(
-        tx,
-        assistant.session.userId,
-        assistant.session.characterId,
-        payload.relationshipPatch,
-      );
-    }
-  });
-
-  if (memorySyncChanges.length > 0) {
-    await jobQueue.enqueue({
-      queue: "ai.memory.sync",
-      payload: toInputJson({
-        version: 1,
-        kind: "memory.sync",
-        requestId: `${payload.requestId}:memory`,
-        userId: assistant.session.userId,
-        characterId: assistant.session.characterId,
-        changes: memorySyncChanges,
-      } satisfies MemorySyncPayload),
-      dedupeKey: `memory-sync:${payload.assistantMessageId}`,
-    });
-  }
-}
-
-async function finalizeChatFailed(payload: Extract<AiFinalizePayload, { kind: "chat.failed" }>) {
-  await prisma.message.updateMany({
-    where: { id: payload.assistantMessageId, status: { not: "deleted" } },
-    data: {
-      status: "failed",
-      content: payload.error.message,
-      model: "mock-chat",
-      safetyStatus: "unknown",
-    },
-  });
-}
-
-async function applyMemoryPatch(
-  tx: Prisma.TransactionClient,
-  userId: string,
-  characterId: string,
-  sessionId: string,
-  memoryPatch: ChatCompletedPayload["memoryPatch"],
-): Promise<MemorySyncPayload["changes"]> {
-  const changes: MemorySyncPayload["changes"] = [];
-  if (!memoryPatch?.candidates?.length) return changes;
-
-  for (const candidate of memoryPatch.candidates) {
-    const text = candidate.text.trim();
-    if (!text) continue;
-    if (!(await allowedMemoryCandidate(tx, sessionId, candidate))) continue;
-    const scopedCharacterId = candidate.scope === "global" ? null : characterId;
-    const scopedSessionId = candidate.scope === "session" ? sessionId : null;
-
-    if (candidate.operation === "delete") {
-      const deleted = await tx.companionMemory.findMany({
-        where: {
-          userId,
-          characterId: scopedCharacterId,
-          sessionId: scopedSessionId,
-          text,
-          status: "active",
-          deletedAt: null,
-        },
-        select: { id: true },
-      });
-      await tx.companionMemory.updateMany({
-        where: { id: { in: deleted.map((memory) => memory.id) }, userId },
-        data: { status: "deleted", deletedAt: new Date() },
-      });
-      for (const memory of deleted) changes.push({ operation: "delete", memoryId: memory.id });
-      continue;
-    }
-
-    const existing = await tx.companionMemory.findFirst({
-      where: {
-        userId,
-        characterId: scopedCharacterId,
-        sessionId: scopedSessionId,
-        scope: candidate.scope,
-        type: candidate.type,
-        text,
-        status: "active",
-        deletedAt: null,
-      },
-    });
-
-    if (existing) {
-      const updated = await tx.companionMemory.update({
-        where: { id: existing.id },
-        data: {
-          confidence: Math.max(existing.confidence, candidate.confidence),
-          sourceMessageIds: toInputJson(
-            uniqueStrings([
-              ...jsonStringArray(existing.sourceMessageIds),
-              ...candidate.sourceMessageIds,
-            ]),
-          ),
-        },
-      });
-      changes.push({ operation: "upsert", memory: syncedMemoryFromRecord(updated) });
-    } else {
-      const created = await tx.companionMemory.create({
-        data: {
-          userId,
-          characterId: scopedCharacterId,
-          sessionId: scopedSessionId,
-          scope: candidate.scope,
-          type: candidate.type,
-          text,
-          confidence: candidate.confidence,
-          status: "active",
-          sourceMessageIds: toInputJson(candidate.sourceMessageIds),
-        },
-      });
-      changes.push({ operation: "upsert", memory: syncedMemoryFromRecord(created) });
-    }
-  }
-
-  return changes;
-}
-
-async function allowedMemoryCandidate(
-  tx: Prisma.TransactionClient,
-  sessionId: string,
-  candidate: MemoryCandidate,
-) {
-  if (candidate.scope === "global") return false;
-  if (candidate.confidence < minimumMemoryConfidence(candidate.type)) return false;
-  if (containsProhibitedMemoryText(candidate.text)) return false;
-  if (candidate.sourceMessageIds.length === 0) return false;
-
-  const sourceMessages = await tx.message.findMany({
-    where: {
-      id: { in: candidate.sourceMessageIds },
-      sessionId,
-      status: "sent",
-      safetyStatus: { not: "blocked" },
-    },
-    select: { id: true },
-  });
-  return sourceMessages.length > 0;
-}
-
-function minimumMemoryConfidence(type: string) {
-  if (type === "boundary") return 0.8;
-  if (type === "shared_event") return 0.72;
-  return 0.7;
-}
-
-function containsProhibitedMemoryText(text: string) {
-  const normalized = text.toLowerCase();
-  return [
-    /\b(password|passcode|api key|secret key|private key|seed phrase)\b/,
-    /\b\d{3}-\d{2}-\d{4}\b/,
-    /\b(?:\d[ -]*?){13,19}\b/,
-  ].some((pattern) => pattern.test(normalized));
-}
-
-function syncedMemoryFromRecord(memory: {
-  id: string;
-  characterId: string | null;
-  sessionId: string | null;
-  scope: string;
-  type: string;
-  text: string;
-  confidence: number;
-  status: string;
-  sourceMessageIds: Prisma.JsonValue;
-  createdAt: Date;
-  updatedAt: Date;
-}): SyncedMemory {
-  return {
-    id: memory.id,
-    characterId: memory.characterId,
-    sessionId: memory.sessionId,
-    scope: memory.scope as SyncedMemory["scope"],
-    type: memory.type as SyncedMemory["type"],
-    text: memory.text,
-    confidence: memory.confidence,
-    status: memory.status as SyncedMemory["status"],
-    sourceMessageIds: jsonStringArray(memory.sourceMessageIds),
-    createdAt: memory.createdAt.toISOString(),
-    updatedAt: memory.updatedAt.toISOString(),
-  };
-}
-
-async function applyRelationshipPatch(
-  tx: Prisma.TransactionClient,
-  userId: string,
-  characterId: string,
-  relationshipPatch: ChatCompletedPayload["relationshipPatch"],
-) {
-  const patch = relationshipPatchRecord(relationshipPatch);
-  if (!patch) return;
-
-  const existing = await tx.relationshipState.findUnique({
-    where: { userId_characterId: { userId, characterId } },
-  });
-  const signals = mergeSignals(numberRecord(existing?.signals), patch.signalsDelta);
-  const boundaries = uniqueStrings([
-    ...jsonStringArray(existing?.boundaries),
-    ...patch.boundaries,
-  ]);
-  const summary = clampText(
-    [existing?.summary, patch.summaryDelta].filter(Boolean).join("\n"),
-    900,
-  );
-  const stage = patch.stage ?? stageForSignals(signals);
-
-  if (existing) {
-    await tx.relationshipState.update({
-      where: { id: existing.id },
-      data: {
-        stage,
-        summary: summary || existing.summary,
-        signals: toInputJson(signals),
-        boundaries: toInputJson(boundaries),
-        version: { increment: 1 },
-      },
-    });
-  } else {
-    await tx.relationshipState.create({
-      data: {
-        userId,
-        characterId,
-        stage,
-        summary: summary || null,
-        signals: toInputJson(signals),
-        boundaries: toInputJson(boundaries),
-      },
-    });
-  }
 }
 
 async function finalizeGenerationCompleted(
@@ -900,21 +497,6 @@ async function moderateText(
   return result.data;
 }
 
-async function incrementChatUsage(
-  tx: Prisma.TransactionClient,
-  userId: string,
-  sessionId: string,
-) {
-  const now = new Date();
-  const periodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-  const periodEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
-  await tx.chatUsage.upsert({
-    where: { userId_periodStart: { userId, periodStart } },
-    update: { messagesUsed: { increment: 1 }, sessionId },
-    create: { userId, sessionId, periodStart, periodEnd, messagesUsed: 1 },
-  });
-}
-
 async function refundGeneration(
   userId: string,
   jobId: string,
@@ -983,76 +565,14 @@ async function trackEvent(
   });
 }
 
-function clampText(value: string, maxLength: number) {
-  return value.length <= maxLength ? value : `${value.slice(0, maxLength - 1)}...`;
-}
-
 function toInputJson(value: unknown): Prisma.InputJsonValue {
   return value as Prisma.InputJsonValue;
-}
-
-function relationshipPatchRecord(value: unknown) {
-  if (!isRecord(value)) return null;
-  const summaryDelta = typeof value.summaryDelta === "string" ? value.summaryDelta : "";
-  const signalsDelta = numberRecord(value.signalsDelta);
-  const boundaries = jsonStringArray(value.boundaries);
-  const stage = relationshipStage(value.stage);
-  if (!summaryDelta && Object.keys(signalsDelta).length === 0 && boundaries.length === 0 && !stage) {
-    return null;
-  }
-  return { summaryDelta, signalsDelta, boundaries, stage };
-}
-
-function mergeSignals(
-  current: Record<string, number>,
-  delta: Record<string, number>,
-) {
-  const merged = { ...current };
-  for (const [key, value] of Object.entries(delta)) {
-    merged[key] = Math.max(0, (merged[key] ?? 0) + value);
-  }
-  return merged;
-}
-
-function stageForSignals(signals: Record<string, number>) {
-  const turns = signals.turns ?? 0;
-  const warmth = signals.warmth ?? 0;
-  const trust = signals.trust ?? 0;
-  const familiarity = signals.familiarity ?? 0;
-  const score = Math.max(turns, warmth, trust, familiarity);
-  if (score >= 20) return "committed";
-  if (score >= 8) return "close";
-  if (score >= 2) return "familiar";
-  return "new";
-}
-
-function relationshipStage(value: unknown) {
-  return value === "new" || value === "familiar" || value === "close" || value === "committed"
-    ? value
-    : undefined;
-}
-
-function numberRecord(value: unknown): Record<string, number> {
-  if (!isRecord(value)) return {};
-  const result: Record<string, number> = {};
-  for (const [key, item] of Object.entries(value)) {
-    if (typeof item === "number" && Number.isFinite(item)) result[key] = item;
-  }
-  return result;
 }
 
 function jsonStringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
     : [];
-}
-
-function uniqueStrings(values: string[]) {
-  return [...new Set(values)];
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function cryptoRandomId() {

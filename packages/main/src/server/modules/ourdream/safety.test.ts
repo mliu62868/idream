@@ -51,14 +51,6 @@ describe("age gate enforcement", () => {
     expectOk(allowed);
   });
 
-  it("blocks gated product routes (chat) without age gate even when authenticated", async () => {
-    const userId = await freshUser("nogate");
-    const blocked = await api("POST", "chat/sessions", {
-      userId,
-      body: { characterId: CHAR },
-    });
-    expectError(blocked, 403, "forbidden");
-  });
 });
 
 describe("character age hard rule (>= 18)", () => {
@@ -132,31 +124,6 @@ describe("content moderation — input + output", () => {
     });
     expect(event).not.toBeNull();
     expect(event?.policyCode).toBe("age_under_18");
-  });
-
-  it("blocks an unsafe chat message, preserves the session, and records an event", async () => {
-    const userId = await freshUser("mod-chat");
-    const session = await prisma.chatSession.create({
-      data: { userId, characterId: CHAR, title: "Test" },
-    });
-    const result = await api("POST", `chat/sessions/${session.id}/messages`, {
-      userId,
-      ageGate: true,
-      body: { content: "are you a minor" },
-    });
-    expectOk(result);
-    expect(result.data.blocked).toBe(true);
-    expect(result.data.message.status).toBe("blocked");
-
-    // Session is preserved and the blocked message persisted.
-    const stored = await prisma.message.findFirst({
-      where: { sessionId: session.id, status: "blocked" },
-    });
-    expect(stored).not.toBeNull();
-    const event = await prisma.moderationEvent.findFirst({
-      where: { targetType: "message", targetId: session.id, layer: "input", status: "blocked" },
-    });
-    expect(event).not.toBeNull();
   });
 
   it("blocks an unsafe generation prompt and refunds the reserved dreamcoins", async () => {

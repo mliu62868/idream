@@ -167,43 +167,6 @@ describe("explore: search, filter, sort, pagination", () => {
   });
 });
 
-describe("chat: history survives a refresh", () => {
-  it("persists user + assistant messages and returns them on reload", async () => {
-    const userId = `${P}chat-user`;
-    const charId = `${P}chat-char`;
-    await createUser({ id: userId });
-    await seedChar({ id: charId, name: `${P} Chat Char`, creatorId: `${P}sys` });
-
-    const session = await api("POST", "chat/sessions", {
-      userId,
-      ageGate: true,
-      body: { characterId: charId },
-    });
-    expectOk(session);
-    const sessionId = session.data.session.id as string;
-
-    const send = await api("POST", `chat/sessions/${sessionId}/messages`, {
-      userId,
-      ageGate: true,
-      body: { content: "hello there" },
-    });
-    expectOk(send);
-    expect(send.data.assistant.role).toBe("assistant");
-    expect(String(send.data.assistant.content).length).toBeGreaterThan(0);
-
-    // "Refresh": fetch the session again — both messages are still present.
-    const reload = await api("GET", `chat/sessions/${sessionId}`, { userId });
-    expectOk(reload);
-    const roles = (reload.data.session.messages as Array<{ role: string }>).map((m) => m.role);
-    expect(roles).toContain("user");
-    expect(roles).toContain("assistant");
-
-    // Chat usage was recorded for quota tracking.
-    const usage = await prisma.chatUsage.findFirst({ where: { userId } });
-    expect(usage?.messagesUsed).toBe(1);
-  });
-});
-
 describe("create lifecycle: draft → preview → submit → My AI", () => {
   it("walks a draft through to an approved private character visible in library", async () => {
     const userId = `${P}creator`;

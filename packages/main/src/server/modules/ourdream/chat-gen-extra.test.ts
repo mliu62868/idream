@@ -30,47 +30,6 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
-describe("chat: list, regenerate, delete, archive", () => {
-  it("lists sessions, regenerates without mutating history, deletes, and archives", async () => {
-    const userId = `${P}chat`;
-    await createUser({ id: userId });
-    const session = await api("POST", "chat/sessions", {
-      userId,
-      ageGate: true,
-      body: { characterId: CHAR },
-    });
-    const sessionId = session.data.session.id as string;
-    const sent = await api("POST", `chat/sessions/${sessionId}/messages`, {
-      userId,
-      ageGate: true,
-      body: { content: "hi" },
-    });
-    const assistantId = sent.data.assistant.id as string;
-    const originalContent = sent.data.assistant.content as string;
-
-    const list = await api("GET", "chat/sessions", { userId });
-    expectOk(list);
-    expect((list.data.items as Array<{ id: string }>).map((s) => s.id)).toContain(sessionId);
-
-    // Regenerate appends a new version; the original message content is untouched.
-    const regen = await api("POST", `messages/${assistantId}/regenerate`, { userId });
-    expectOk(regen);
-    expect(regen.data.version.messageId).toBe(assistantId);
-    const original = await prisma.message.findUnique({ where: { id: assistantId } });
-    expect(original?.content).toBe(originalContent);
-
-    const del = await api("DELETE", `messages/${assistantId}`, { userId });
-    expectOk(del);
-    const deleted = await prisma.message.findUnique({ where: { id: assistantId } });
-    expect(deleted?.status).toBe("deleted");
-
-    const archive = await api("DELETE", `chat/sessions/${sessionId}`, { userId });
-    expectOk(archive);
-    const archived = await prisma.chatSession.findUnique({ where: { id: sessionId } });
-    expect(archived?.status).toBe("deleted");
-  });
-});
-
 describe("video generation (Deluxe)", () => {
   it("runs a video job for an entitled user and charges 100 dreamcoins per output", async () => {
     const userId = `${P}video`;
