@@ -49,4 +49,16 @@ export const env = {
   get PORT() {
     return Number.parseInt(process.env.CHAT_PORT ?? "3100", 10);
   },
+  // Long-term memory retrieval strategy (PLAN P1-2). "recency" (default) is the
+  // safe hot-path baseline; "igrep" attempts semantic ranking with a strict
+  // timeout that degrades back to recency (P0 hot path must not depend on igrep).
+  get MEMORY_RETRIEVAL() {
+    return process.env.CHAT_MEMORY_RETRIEVAL === "igrep" ? "igrep" : "recency";
+  },
+  get MEMORY_RETRIEVAL_TIMEOUT_MS() {
+    return Number.parseInt(process.env.CHAT_MEMORY_RETRIEVAL_TIMEOUT_MS ?? "1500", 10);
+  },
+  get IGREP_BIN() {
+    return process.env.IGREP_BIN ?? "igrep";
+  },
 } as const;

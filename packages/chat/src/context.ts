@@ -4,8 +4,9 @@
 // on timeout/error we degrade to "recent messages only" and never block the reply
 // (design §5 hot-path degradation). memory_enabled=false reads NO long-term memory.
 import type { ChatPrismaClient, ChatCharacterView } from "./db.js";
-import { chatFsPaths, readWhole } from "./chat-fs.js";
+import { env } from "./env.js";
 import { resolvePolicy, snapshotFromView, type ChatPolicy } from "./policy.js";
+import { retrieveMemories } from "./retrieval.js";
 
 const MEMORY_READ_TIMEOUT_MS = 250;
 
@@ -47,12 +48,20 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
     .reverse()
     .map((m) => ({ id: m.id, role: m.role as "user" | "assistant", content: m.content }));
 
-  // File-layer memory read with a timeout budget — degrade on slowness.
+  // File-layer memory retrieval with a timeout budget — degrade on slowness.
+  // Query = the latest user turn (semantic ranking when igrep is enabled).
   let boundaries: string[] = [];
   let longTermMemories: string[] = [];
   if (memoryEnabled && policy.maxMemories > 0) {
-    const read = readMemoryFiles(userId, characterId, policy.maxMemories);
-    const degraded = await withTimeout(read, MEMORY_READ_TIMEOUT_MS, { boundaries: [], memories: [] });
+    const query = [...recentMessages].reverse().find((m) => m.role === "user")?.content ?? "";
+    const read = retrieveMemories({ userId, characterId, query, max: policy.maxMemories });
+    // Outer hot-path cap. recency = 250ms; igrep mode gets its own budget + margin
+    // (retrieveMemories self-degrades to recency on its internal igrep timeout).
+    const budget =
+      env.MEMORY_RETRIEVAL === "igrep"
+        ? env.MEMORY_RETRIEVAL_TIMEOUT_MS + MEMORY_READ_TIMEOUT_MS
+        : MEMORY_READ_TIMEOUT_MS;
+    const degraded = await withTimeout(read, budget, { boundaries: [], memories: [] });
     boundaries = degraded.boundaries;
     longTermMemories = degraded.memories;
   }
@@ -65,30 +74,6 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
     boundaries,
     longTermMemories,
   };
-}
-
-async function readMemoryFiles(
-  userId: string,
-  characterId: string,
-  maxMemories: number,
-): Promise<{ boundaries: string[]; memories: string[] }> {
-  const [boundariesRaw, memoryRaw] = await Promise.all([
-    readWhole(chatFsPaths.boundaries(userId)),
-    readWhole(chatFsPaths.memory(userId, characterId)),
-  ]);
-  const boundaries = parseMemoryLines(boundariesRaw);
-  // memory.md: newest entries last; take the most recent maxMemories lines.
-  const memories = parseMemoryLines(memoryRaw).slice(-maxMemories);
-  return { boundaries, memories };
-}
-
-/** Memory files are markdown bullet lines; ignore headings/blank/frontmatter. */
-function parseMemoryLines(raw: string | null): string[] {
-  if (!raw) return [];
-  return raw
-    .split("\n")
-    .map((l) => l.replace(/^[-*]\s*/, "").trim())
-    .filter((l) => l.length > 0 && !l.startsWith("#") && l !== "---");
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
