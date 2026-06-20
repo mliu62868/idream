@@ -1,5 +1,8 @@
 // SPEC: Chat service runtime config. Fail fast on missing required secrets.
-// INTENT: One typed accessor; no scattered process.env reads.
+// INTENT: One typed accessor; no scattered process.env reads. All config comes
+// from packages/chat/.env (see .env.example) — loaded here, non-overriding so
+// vitest/pm2-injected vars still win.
+import "dotenv/config";
 import path from "node:path";
 
 function required(name: string, fallback?: string): string {

@@ -1,3 +1,7 @@
+// Next.js auto-loads .env for the web app; this dotenv import (non-overriding)
+// ensures the standalone tsx processes (gen-finalizer, main-event-consumer) also
+// read packages/main/.env. See .env.example.
+import "dotenv/config";
 import { z } from "zod";
 import { DEFAULT_SQLITE_DATABASE_URL } from "./constants";
 

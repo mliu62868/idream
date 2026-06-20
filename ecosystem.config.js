@@ -15,7 +15,7 @@ module.exports = {
       args: "start",
       exec_mode: "cluster",
       instances: "max",
-      env: { PORT: 3000 },
+      // config from packages/main/.env (next + dotenv load it)
     },
     // fast I/O + slow generation — chat/web (API+SSE) + chat/worker, one process
     {
@@ -25,7 +25,7 @@ module.exports = {
       args: "src/main.ts",
       exec_mode: "fork",
       instances: 1, // ⚠️ local FS single-writer
-      env: { CHAT_PORT: 3100 },
+      // config from packages/chat/.env (CHAT_PORT, CHAT_DATABASE_URL, …)
     },
     // slow · async — pure generation, only writes blob, horizontally scalable
     {

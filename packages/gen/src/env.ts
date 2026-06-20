@@ -2,7 +2,9 @@
 // process.env reads. gen is a pure async worker — needs only Redis (for the
 // BullMQ queues) and a blob root (mock blob store writes under it).
 // INTENT: Lazy getters so importing this module never throws; tests can run
-// without any env set.
+// without any env set. Config comes from packages/gen/.env (see .env.example),
+// loaded here non-overriding so injected vars still win.
+import "dotenv/config";
 import path from "node:path";
 
 export const env = {
