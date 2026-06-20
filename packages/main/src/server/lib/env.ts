@@ -30,6 +30,11 @@ const EnvSchema = z.object({
   PAYMENT_PROVIDER: z.enum(["mock"]).default("mock"),
   BLOB_PROVIDER: z.enum(["mock"]).default("mock"),
   AGE_VERIFICATION_PROVIDER: z.enum(["mock"]).default("mock"),
+  // Chat Service split (design §1/§8). When CHAT_SERVICE_URL is set, main-web
+  // reverse-proxies /api/v1/chat/* to the chat service with a signed BFF context
+  // instead of handling chat in-process. Unset ⇒ monolith chat (dev/test).
+  CHAT_SERVICE_URL: z.string().url().optional(),
+  CHAT_BFF_SIGNING_SECRET: z.string().optional(),
 });
 
 const rawEnv = {

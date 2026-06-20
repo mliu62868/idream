@@ -11,6 +11,7 @@ import type {
   VideoGeneratePayload,
 } from "@/server/ai/schemas";
 import { createChatSseResponse } from "@/server/ai/stream-store";
+import { chatServiceEnabled, proxyChatRequest } from "@/server/bff/chat-proxy";
 import { jobQueue } from "@/server/jobs/queue";
 import {
   clearSessionCookie,
@@ -227,6 +228,12 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
     if (id && action === "preview" && method === "POST") return previewDraft(request, id);
     if (id && action === "submit" && method === "POST") return submitDraft(request, id);
     if (id && action === "tags" && method === "POST") return updateDraftTags(request, id);
+  }
+
+  // Chat Service split: when configured, main-web reverse-proxies all chat traffic
+  // to the chat service with a signed BFF context (design §1/§3). Unset ⇒ monolith.
+  if ((resource === "chat" || resource === "messages") && chatServiceEnabled()) {
+    return proxyChatRequest(request, segments);
   }
 
   if (resource === "chat") {
