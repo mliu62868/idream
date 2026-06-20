@@ -29,6 +29,17 @@ export const env = {
   get CHAT_MODEL_PROVIDER() {
     return process.env.CHAT_MODEL_PROVIDER ?? process.env.CHAT_PROVIDER ?? "mock";
   },
+  // OpenAI-compatible chat model (local mlx via oMLX / LM Studio, or any OpenAI
+  // API). Only read when CHAT_MODEL_PROVIDER=openai. Base URL includes /v1.
+  get CHAT_MODEL_BASE_URL() {
+    return process.env.CHAT_MODEL_BASE_URL ?? "http://127.0.0.1:8061/v1";
+  },
+  get CHAT_MODEL_NAME() {
+    return process.env.CHAT_MODEL_NAME ?? "Qwen3.5-0.8B-8bit";
+  },
+  get CHAT_MODEL_API_KEY() {
+    return process.env.CHAT_MODEL_API_KEY ?? "";
+  },
   get MODERATION_PROVIDER() {
     return process.env.MODERATION_PROVIDER ?? "mock";
   },

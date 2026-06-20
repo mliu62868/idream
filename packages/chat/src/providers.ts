@@ -36,6 +36,54 @@ class MockChatModel implements ChatModel {
   }
 }
 
+// SPEC: stream from any OpenAI-compatible /chat/completions endpoint (SSE).
+// Local default targets oMLX (Apple-Silicon mlx server) on :8061 with a Qwen
+// model — see packages/chat/.env. INVARIANT: yields only assistant `content`
+// deltas; a reasoning model's `reasoning_content` is dropped so thinking never
+// leaks into the reply. EXAMPLE: provider=openai, model=Qwen3.5-4B-MLX-4bit.
+class OpenAIChatModel implements ChatModel {
+  constructor(
+    private readonly baseUrl: string,
+    private readonly model: string,
+    private readonly apiKey: string,
+  ) {}
+
+  async *stream(input: Parameters<ChatModel["stream"]>[0]): AsyncIterable<ChatChunk> {
+    const res = await fetch(`${this.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+      },
+      body: JSON.stringify({ model: this.model, messages: input.messages, stream: true }),
+    });
+    if (!res.ok || !res.body) {
+      throw new Error(`Chat model HTTP ${res.status}: ${await res.text().catch(() => "")}`);
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for await (const bytes of res.body as unknown as AsyncIterable<Uint8Array>) {
+      buffer += decoder.decode(bytes, { stream: true });
+      // SSE frames are separated by a blank line; events carry `data: <json>`.
+      let nl: number;
+      while ((nl = buffer.indexOf("\n")) !== -1) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (payload === "[DONE]") {
+          yield { delta: "", done: true };
+          return;
+        }
+        const delta = (JSON.parse(payload).choices?.[0]?.delta?.content ?? "") as string;
+        if (delta) yield { delta, done: false };
+      }
+    }
+    yield { delta: "", done: true };
+  }
+}
+
 const BLOCKED_TERMS = ["underage", "minor", "csam"];
 
 class MockModerationProvider implements ModerationProvider {
@@ -66,15 +114,30 @@ export interface ChatProviders {
 }
 
 export function createProviders(): ChatProviders {
-  for (const [name, value] of [
-    ["CHAT_MODEL_PROVIDER", env.CHAT_MODEL_PROVIDER],
-    ["MODERATION_PROVIDER", env.MODERATION_PROVIDER],
-  ] as const) {
-    if (value !== "mock") {
-      throw new Error(`Only mock providers are wired today. ${name}=${value} unsupported.`);
-    }
+  // Moderation has only a mock impl today.
+  if (env.MODERATION_PROVIDER !== "mock") {
+    throw new Error(`MODERATION_PROVIDER=${env.MODERATION_PROVIDER} unsupported (only "mock").`);
   }
-  return { chat: new MockChatModel(), moderation: new MockModerationProvider() };
+  const moderation = new MockModerationProvider();
+
+  switch (env.CHAT_MODEL_PROVIDER) {
+    case "mock":
+      return { chat: new MockChatModel(), moderation };
+    // "openai" = any OpenAI-compatible endpoint (oMLX / LM Studio / OpenAI).
+    case "openai":
+      return {
+        chat: new OpenAIChatModel(
+          env.CHAT_MODEL_BASE_URL,
+          env.CHAT_MODEL_NAME,
+          env.CHAT_MODEL_API_KEY,
+        ),
+        moderation,
+      };
+    default:
+      throw new Error(
+        `CHAT_MODEL_PROVIDER=${env.CHAT_MODEL_PROVIDER} unsupported (use "mock" or "openai").`,
+      );
+  }
 }
 
 export const providers = createProviders();

@@ -60,6 +60,27 @@ services:
     depends_on:
       - redis
 
+  # Local Postgres for the chat-service boundary (design §2). Host port 5433 to
+  # avoid the native pg / supabase already on 5432. DB `idream` holds main's
+  # public.* base tables + the chat schema/views (bootstrap: db/sql/*).
+  postgres:
+    image: postgres:16-alpine
+    container_name: idream-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-idream}
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-idream}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   redis:
     image: redis:8-alpine
     container_name: ai-website-cloner-redis
@@ -77,3 +98,4 @@ services:
 
 volumes:
   redis-data:
+  postgres-data:

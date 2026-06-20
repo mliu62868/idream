@@ -19,6 +19,7 @@
     "@idream/shared": "workspace:*",
     "@prisma/adapter-pg": "7.6.0",
     "@prisma/client": "7.6.0",
+    "@prisma/client-runtime-utils": "7.6.0",
     "bullmq": "^5.79.0",
     "ioredis": "^5.11.1",
     "pg": "^8.21.0",
