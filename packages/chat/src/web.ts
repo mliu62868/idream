@@ -63,7 +63,12 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 
   res.writeHead(result.status, { "content-type": "application/json" });
-  res.end(JSON.stringify(result.body));
+  res.end(jsonStringify(result.body));
+}
+
+/** BigInt-safe JSON (chat.* has BigInt columns like logExtractedSeq). */
+function jsonStringify(value: unknown): string {
+  return JSON.stringify(value, (_k, v) => (typeof v === "bigint" ? Number(v) : v));
 }
 
 interface AuthOk { ok: true; userId: string }
