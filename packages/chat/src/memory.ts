@@ -6,6 +6,9 @@
 import type { ChatPrismaClient } from "./db.js";
 import { chatPrisma } from "./db.js";
 import { appendLine, chatFsPaths } from "./chat-fs.js";
+import { updateRelationship } from "./relationship.js";
+import { createId } from "./id.js";
+import { CHAT_TO_MAIN_EVENTS } from "@idream/shared/contracts";
 
 export interface MemoryExtractPayload {
   sessionId: string;
@@ -47,6 +50,14 @@ export async function processMemoryExtract(
     return { written: 0, skipped: "blocked_or_deleted" };
   }
 
+  // Relationship narrative is derived every allowed turn (file authority, P1-2).
+  await updateRelationship(session.userId, session.characterId, {
+    summaryDelta: clampTurn(userMessage.content),
+  });
+  await recordDerivedOutbox(prisma, CHAT_TO_MAIN_EVENTS.relationshipUpdated, "character", session.characterId, {
+    userId: session.userId,
+  });
+
   const candidates = deriveCandidates(userMessage.content, userMessage.id);
   if (candidates.length === 0) return { written: 0, skipped: null };
 
@@ -58,6 +69,10 @@ export async function processMemoryExtract(
       await appendLine(chatFsPaths.memory(session.userId, session.characterId), line);
     }
   }
+  await recordDerivedOutbox(prisma, CHAT_TO_MAIN_EVENTS.memoryUpdated, "user", session.userId, {
+    characterId: session.characterId,
+    count: candidates.length,
+  });
 
   // advance the derive watermark (D3) — best effort
   await prisma.chatSession
@@ -109,4 +124,22 @@ export function deriveCandidates(userText: string, sourceMessageId: string): Mem
 /** memory.md line: a bullet + an inline source tag (front-matter-lite, parseable). */
 function renderMemoryLine(c: MemoryCandidate): string {
   return `- [${c.type}] ${c.text} <!-- src:${c.sourceMessageIds.join(",")} conf:${c.confidence} -->`;
+}
+
+function clampTurn(text: string): string {
+  const t = text.trim().replace(/\s+/g, " ");
+  return t.length <= 200 ? `User: ${t}` : `User: ${t.slice(0, 199)}…`;
+}
+
+/** Outbox for off-TX derivations (memory/relationship). Delivered like any event. */
+async function recordDerivedOutbox(
+  prisma: ChatPrismaClient,
+  eventType: string,
+  aggregateType: string,
+  aggregateId: string,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  await prisma.chatOutboxEvent
+    .create({ data: { id: createId("evt"), eventType, aggregateType, aggregateId, payload: payload as never } })
+    .catch(() => {});
 }
