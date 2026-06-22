@@ -86,11 +86,13 @@ P0 + P1-1/2/3 已落地。**P1-2 igrep / 前端切换适配 / P1-4 清理 均已
 
 1. ~~**P1-2 igrep**~~ ✅：`retrieval.ts` 的 `retrieveMemories` 内置 igrep 语义检索 + 严格超时 + recency 退化（flag `CHAT_MEMORY_RETRIEVAL` 门控，默认 recency；热路径不依赖 igrep），`context.ts` 调用，generate 不变。实测 igrep 冷启 ~25s/暖 ~0.5–0.8s 且返回整文件 chunk → **不强塞同步热路径是刻意取舍**；小记忆文件 recency 足够。chat 测试 +4。
 2. ~~**前端切服务路径（适配）**~~ ✅：前端只消费 3 个端点且无 memory/relationship UI。BFF（`chat-proxy.ts`）对这 3 个响应做 shape 适配（裸协议 → `{ ok, data }` 信封，补 character 名 / 回显 userMessage+assistant+streamUrl），**chat service 与前端均不改**。运维侧只需设 `CHAT_SERVICE_URL` + `CHAT_BFF_SIGNING_SECRET` 即切换。proxy 测试 2→6。
-3. ~~**P1-4 清理**~~ ✅：删 `packages/main` 单体 chat 旧路径（`chat-runtime.ts`/`stream-store.ts` 整删；`local-pipeline.ts` 删 `ai.chat.generate → app.ai.finalize(chat.completed/failed)`；`service.ts` 删 16 个 chat handler + chat schemas + 孤立 entitlement helper；保留 proxy dispatch + image/video + memory pipeline）。−1700 LOC，main 测试 89→83（−6 chat），tsc/lint 清。**未动 Prisma schema**（无用表留待用户单独迁移）。
+3. ~~**P1-4 清理**~~ ✅：删 `packages/main` 单体 chat 旧路径（`chat-runtime.ts`/`stream-store.ts` 整删；`local-pipeline.ts` 删 `ai.chat.generate → app.ai.finalize(chat.completed/failed)`；`service.ts` 删 16 个 chat handler + chat schemas；保留 proxy dispatch + image/video）。−1700 LOC，main 89→83（−6 chat）。
+4. ~~**孤儿 memory pipeline 清理**~~ ✅：P1-4 后 `ai.memory.sync/forget/rebuild` 无入队者 → 整段删除（`local-pipeline.ts` 现仅 image/video）。
+5. ~~**library/recent 事件投影**~~ ✅（用户拍板「事件投影表」）：新增 main 自有 `RecentChat` 投影模型（`recent_chats`），由 `event-consumer.ts` 用 chat→main 事件喂养（session.created seed / message.completed bump / session.deleted hide），`library/recent` 读它。**移除 6 个死单体 chat 模型**（ChatSession/Message/MessageVersion/ChatUsage/CompanionMemory/RelationshipState）+ User/Character 反向关系。产出 `db/sql/05_main_recent_chats.sql`（用户执行：建投影表 + 删 6 死表，已对真实 PG 验证 DDL 可执行）。
 
-**仅剩需用户执行（非代码）**：
-- **生产 DB 边界落库**：用户以 superuser/各 owner 执行 `db/sql/01..04`（改占位密码），设 `CHAT_DATABASE_URL` 用 `chat_service` role 连接，跑 `packages/chat` 测试验收。
-- 运维侧设 `CHAT_SERVICE_URL` + `CHAT_BFF_SIGNING_SECRET` 正式切流；起进程 `bun run pm2:start`（见 `ecosystem.config.js`）。
-- 可选清理：单体 chat 的无用 Prisma 表（`messages`/`message_versions`/`chat_usage`/`companion_memories`/`relationship_states`，注意 `chat_sessions` 仍被 `library/recent` 读）需 SQL 迁移，由用户决定。
+**至此所有可代码化项完成。仅剩需用户执行（非代码）**：
+- **生产 DB 边界落库**：以 superuser/各 owner 执行 `db/sql/01..04`（改占位密码），设 `CHAT_DATABASE_URL` 用 `chat_service` role 连接，跑 `packages/chat` 验收。
+- **main DB 迁移**：执行 `db/sql/05_main_recent_chats.sql`（或 `prisma db push`）建 `recent_chats` + 删 6 死表。
+- 运维侧设 `CHAT_SERVICE_URL` + `CHAT_BFF_SIGNING_SECRET` 正式切流；`bun run pm2:start`。
 
-**仍延后（P0/P1 范围外，架构已拍板）**：group chat、voice、记忆向量检索（pgvector）、`chat_stream_events` DB replay。
+**仍延后（用户 2026 拍板「都先不做」，作为独立 initiative）**：group chat、voice、记忆向量检索（pgvector）、`chat_stream_events` DB replay。
