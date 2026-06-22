@@ -1313,7 +1313,8 @@ async function library(request: Request, tab: string) {
   const user = requireUser(ctx);
 
   if (tab === "recent") {
-    const sessions = await prisma.chatSession.findMany({
+    // Read the event-fed projection (chat service owns chat authority post-split).
+    const sessions = await prisma.recentChat.findMany({
       where: { userId: user.id, status: { not: "deleted" } },
       include: { character: { include: { imageAsset: true, stats: true, tags: { include: { tag: true } } } } },
       orderBy: [{ lastMessageAt: "desc" }, { createdAt: "desc" }],

@@ -40,4 +40,38 @@ describe("applyChatEvent", () => {
     });
     expect(event?.policyCode).toBe("unsafe_request");
   });
+
+  it("maintains the recent-chats projection across created → completed → deleted", async () => {
+    const user = await prisma.user.create({ data: { email: `ec-proj-${Date.now()}@t.dev`, status: "active" } });
+    const character = await prisma.character.create({
+      data: { name: "ProjChar", age: 24, description: "d", appearance: {}, advancedDetails: {} },
+    });
+    const sessionId = `sess_proj_${Date.now()}`;
+
+    // session.created seeds the projection row
+    await applyChatEvent({
+      eventId: "p1",
+      eventType: "chat.session.created",
+      aggregateId: sessionId,
+      payload: { userId: user.id, characterId: character.id },
+    });
+    let row = await prisma.recentChat.findUnique({ where: { sessionId } });
+    expect(row?.userId).toBe(user.id);
+    expect(row?.status).toBe("active");
+
+    // message.completed bumps lastMessageAt
+    await applyChatEvent({
+      eventId: "p2",
+      eventType: "chat.message.completed",
+      aggregateId: "msg_x",
+      payload: { sessionId, userId: user.id, characterId: character.id },
+    });
+    row = await prisma.recentChat.findUnique({ where: { sessionId } });
+    expect(row?.lastMessageAt).toBeTruthy();
+
+    // session.deleted hides it from the library
+    await applyChatEvent({ eventId: "p3", eventType: "chat.session.deleted", aggregateId: sessionId, payload: { userId: user.id } });
+    row = await prisma.recentChat.findUnique({ where: { sessionId } });
+    expect(row?.status).toBe("deleted");
+  });
 });

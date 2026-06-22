@@ -30,6 +30,21 @@ interface InboundEvent {
 
 export async function applyChatEvent(event: InboundEvent): Promise<void> {
   switch (event.eventType) {
+    case CHAT_TO_MAIN_EVENTS.sessionCreated: {
+      // Seed the library recent-chats projection (chat service owns authority).
+      const userId = String(event.payload.userId ?? "");
+      const characterId = String(event.payload.characterId ?? "");
+      if (userId && characterId) {
+        await prisma.recentChat
+          .upsert({
+            where: { sessionId: event.aggregateId },
+            create: { sessionId: event.aggregateId, userId, characterId, lastMessageAt: new Date() },
+            update: {},
+          })
+          .catch(() => {});
+      }
+      return;
+    }
     case CHAT_TO_MAIN_EVENTS.messageCompleted: {
       const characterId = String(event.payload.characterId ?? "");
       if (characterId) {
@@ -40,6 +55,24 @@ export async function applyChatEvent(event: InboundEvent): Promise<void> {
           })
           .catch(() => {});
       }
+      // Bump the projection's recency (upsert: tolerate a missed session.created).
+      const sessionId = String(event.payload.sessionId ?? "");
+      const userId = String(event.payload.userId ?? "");
+      if (sessionId && userId && characterId) {
+        await prisma.recentChat
+          .upsert({
+            where: { sessionId },
+            create: { sessionId, userId, characterId, lastMessageAt: new Date(), status: "active" },
+            update: { lastMessageAt: new Date(), status: "active" },
+          })
+          .catch(() => {});
+      }
+      return;
+    }
+    case CHAT_TO_MAIN_EVENTS.sessionDeleted: {
+      await prisma.recentChat
+        .update({ where: { sessionId: event.aggregateId }, data: { status: "deleted" } })
+        .catch(() => {});
       return;
     }
     case CHAT_TO_MAIN_EVENTS.safetyFlagged: {
@@ -59,8 +92,8 @@ export async function applyChatEvent(event: InboundEvent): Promise<void> {
       logger.info({ userId: event.aggregateId }, "chat account erasure completed");
       return;
     default:
-      // session.created / usage.incremented / memory.updated / relationship.updated:
-      // analytics-only for now; recording is enough.
+      // usage.incremented / memory.updated / relationship.updated: analytics-only
+      // for now; recording is enough.
       logger.debug({ eventType: event.eventType }, "chat event observed");
       return;
   }

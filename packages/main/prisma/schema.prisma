@@ -31,7 +31,7 @@ model User {
   ageVerifications   AgeVerification[]
   charactersCreated  Character[]            @relation("CharacterCreator")
   characterDrafts    CharacterDraft[]
-  chatSessions       ChatSession[]
+  recentChats        RecentChat[]
   generationJobs     GenerationJob[]
   mediaAssets        MediaAsset[]
   mediaLikes         MediaLike[]
@@ -49,8 +49,6 @@ model User {
   appeals            Appeal[]
   followers          Follow[]               @relation("Followee")
   following          Follow[]               @relation("Follower")
-  companionMemories  CompanionMemory[]
-  relationshipStates RelationshipState[]
 
   @@map("users")
 }
@@ -171,11 +169,9 @@ model Character {
   tags           CharacterTag[]
   stats          CharacterStats?
   submissions    CharacterSubmission[]
-  chatSessions   ChatSession[]
+  recentChats    RecentChat[]
   generationJobs GenerationJob[]
   likes          CharacterLike[]
-  companionMemories CompanionMemory[]
-  relationshipStates RelationshipState[]
 
   @@index([visibility, status])
   @@index([creatorId])
@@ -286,108 +282,25 @@ model CharacterSubmission {
   @@map("character_submissions")
 }
 
-model ChatSession {
-  id            String    @id @default(cuid())
+// Recent-chats read projection (main-owned). The chat service is the authority
+// for chat sessions/messages (its own chat.* schema); main keeps this lean
+// projection fed by the chat→main outbox (session.created / message.completed /
+// session.deleted) so the library "recent" tab works without main writing the
+// chat domain. One-way derived from events — never the source of truth.
+model RecentChat {
+  sessionId     String    @id
   userId        String
   characterId   String
   title         String?
-  status        String    @default("active") // enum: active | archived | deleted
-  memorySummary String?
-  memoryEnabled Boolean   @default(true)
+  status        String    @default("active") // active | deleted
   lastMessageAt DateTime?
   createdAt     DateTime  @default(now())
   user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   character     Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
-  messages      Message[]
-  companionMemories CompanionMemory[]
 
   @@index([userId, lastMessageAt])
   @@index([characterId])
-  @@map("chat_sessions")
-}
-
-model Message {
-  id           String           @id @default(cuid())
-  sessionId    String
-  role         String // enum: user | assistant | system | tool
-  content      String
-  model        String?
-  status       String           @default("pending") // enum: pending | moderating_input | blocked | generating | moderating_output | sent | failed | deleted
-  tokenCount   Int?
-  safetyStatus String           @default("unknown") // enum: unknown | passed | flagged | blocked
-  createdAt    DateTime         @default(now())
-  session      ChatSession      @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  versions     MessageVersion[]
-
-  @@index([sessionId, createdAt])
-  @@map("messages")
-}
-
-model MessageVersion {
-  id        String   @id @default(cuid())
-  messageId String
-  content   String
-  model     String?
-  selected  Boolean  @default(false)
-  createdAt DateTime @default(now())
-  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
-
-  @@index([messageId])
-  @@map("message_versions")
-}
-
-model ChatUsage {
-  id           String   @id @default(cuid())
-  userId       String
-  sessionId    String?
-  messagesUsed Int      @default(0)
-  periodStart  DateTime
-  periodEnd    DateTime
-
-  @@unique([userId, periodStart])
-  @@index([userId])
-  @@map("chat_usage")
-}
-
-model CompanionMemory {
-  id               String       @id @default(cuid())
-  userId           String
-  characterId      String?
-  sessionId        String?
-  scope            String       // enum: global | character | session
-  type             String       // enum: user_fact | preference | boundary | shared_event
-  text             String
-  confidence       Float        @default(0)
-  status           String       @default("active") // enum: active | deleted
-  sourceMessageIds Json
-  createdAt        DateTime     @default(now())
-  updatedAt        DateTime     @updatedAt
-  deletedAt        DateTime?
-  user             User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  character        Character?   @relation(fields: [characterId], references: [id], onDelete: Cascade)
-  session          ChatSession? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-
-  @@index([userId, characterId, status])
-  @@index([sessionId, status])
-  @@map("companion_memories")
-}
-
-model RelationshipState {
-  id          String    @id @default(cuid())
-  userId      String
-  characterId String
-  stage       String    @default("new")
-  summary     String?
-  signals     Json
-  boundaries  Json
-  version     Int       @default(1)
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  character   Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
-
-  @@unique([userId, characterId])
-  @@map("relationship_states")
+  @@map("recent_chats")
 }
 
 model GenerationPreset {
