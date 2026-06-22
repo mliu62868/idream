@@ -17,7 +17,6 @@ export const GENDERS = ["female", "male", "trans"] as const;
 
 export const JOB_STATUSES = ["queued", "running", "completed", "failed", "dead"] as const;
 export const JOB_QUEUES = [
-  "ai.memory.forget",
   "ai.image.generate",
   "ai.video.generate",
   "app.ai.finalize",

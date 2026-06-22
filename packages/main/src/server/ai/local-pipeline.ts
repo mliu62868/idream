@@ -6,21 +6,13 @@ import { providers } from "@/server/providers";
 import {
   aiFinalizePayloadSchema,
   imageGeneratePayloadSchema,
-  memoryForgetPayloadSchema,
-  memoryRebuildPayloadSchema,
-  memorySyncPayloadSchema,
   type AiFinalizePayload,
   type ImageGeneratePayload,
-  type MemoryRebuildPayload,
-  type MemorySyncPayload,
   type VideoGeneratePayload,
   videoGeneratePayloadSchema,
 } from "./schemas";
 
 export const localAiQueueNames = [
-  "ai.memory.sync",
-  "ai.memory.forget",
-  "ai.memory.rebuild",
   "ai.image.generate",
   "ai.video.generate",
   "app.ai.finalize",
@@ -35,8 +27,6 @@ export interface LocalAiDrainResult {
   }>;
   processed: number;
 }
-
-type SyncedMemory = Extract<MemorySyncPayload["changes"][number], { operation: "upsert" }>["memory"];
 
 export async function drainLocalAiPipeline(input: {
   limit?: number;
@@ -73,15 +63,6 @@ export async function drainLocalAiPipeline(input: {
 }
 
 async function processLocalAiJob(job: QueueJob) {
-  if (job.queue === "ai.memory.sync") {
-    return processMemorySync(job.payload);
-  }
-  if (job.queue === "ai.memory.forget") {
-    return processMemoryForget(job.payload);
-  }
-  if (job.queue === "ai.memory.rebuild") {
-    return processMemoryRebuild(job.payload);
-  }
   if (job.queue === "ai.image.generate") {
     return processImageGenerate(job.payload);
   }
@@ -93,160 +74,6 @@ async function processLocalAiJob(job: QueueJob) {
   }
 
   throw new Error(`Unsupported local AI queue: ${job.queue}`);
-}
-
-async function processMemoryForget(payloadValue: Prisma.JsonValue) {
-  const payload = memoryForgetPayloadSchema.parse(payloadValue);
-  const ids = new Set([
-    ...payload.memoryIds,
-    ...(payload.scope === "memory" ? payload.targetIds : []),
-  ]);
-  const messageIds = new Set(payload.scope === "message" ? payload.targetIds : []);
-  if (payload.sourceMessageId) messageIds.add(payload.sourceMessageId);
-
-  if (payload.sessionId) {
-    const sessionMemories = await prisma.companionMemory.findMany({
-      where: {
-        userId: payload.userId,
-        sessionId: payload.sessionId,
-        status: "active",
-        deletedAt: null,
-      },
-      select: { id: true },
-    });
-    for (const memory of sessionMemories) ids.add(memory.id);
-  }
-
-  if (messageIds.size > 0) {
-    const memories = await prisma.companionMemory.findMany({
-      where: { userId: payload.userId, status: "active", deletedAt: null },
-      select: { id: true, sourceMessageIds: true },
-    });
-    for (const memory of memories) {
-      if (jsonStringArray(memory.sourceMessageIds).some((id) => messageIds.has(id))) {
-        ids.add(memory.id);
-      }
-    }
-  }
-
-  if (payload.scope === "character") {
-    await prisma.companionMemory.findMany({
-      where: {
-        userId: payload.userId,
-        characterId: { in: payload.targetIds },
-        status: "active",
-        deletedAt: null,
-      },
-      select: { id: true },
-    }).then((memories) => memories.forEach((memory) => ids.add(memory.id)));
-  }
-
-  if (payload.scope === "account") {
-    await prisma.companionMemory.findMany({
-      where: { userId: payload.userId, status: "active", deletedAt: null },
-      select: { id: true },
-    }).then((memories) => memories.forEach((memory) => ids.add(memory.id)));
-  }
-
-  if (ids.size > 0) {
-    await prisma.companionMemory.updateMany({
-      where: { id: { in: [...ids] }, userId: payload.userId },
-      data: {
-        status: "deleted",
-        deletedAt: new Date(),
-      },
-    });
-  }
-
-  await jobQueue.enqueue({
-    queue: "app.ai.finalize",
-    payload: toInputJson({
-      version: 1,
-      kind: "memory.forgotten",
-      requestId: payload.requestId,
-      userId: payload.userId,
-      scope: payload.scope,
-      targetIds: payload.targetIds,
-      deletedMemoryIds: [...ids],
-      reason: payload.reason,
-    } satisfies AiFinalizePayload),
-    dedupeKey: `memory-forgotten:${payload.requestId}`,
-  });
-}
-
-async function processMemorySync(payloadValue: Prisma.JsonValue) {
-  const payload = memorySyncPayloadSchema.parse(payloadValue);
-  await prisma.$transaction(async (tx) => {
-    for (const change of payload.changes) {
-      if (change.operation === "delete") {
-        await tx.companionMemory.updateMany({
-          where: { id: change.memoryId, userId: payload.userId },
-          data: { status: "deleted", deletedAt: new Date() },
-        });
-        continue;
-      }
-
-      await upsertSyncedMemory(tx, payload, change.memory);
-    }
-  });
-}
-
-async function processMemoryRebuild(payloadValue: Prisma.JsonValue) {
-  const payload = memoryRebuildPayloadSchema.parse(payloadValue);
-  const snapshotIds = new Set(payload.source.memories.map((memory) => memory.id));
-
-  await prisma.$transaction(async (tx) => {
-    await tx.companionMemory.updateMany({
-      where: {
-        userId: payload.userId,
-        characterId: payload.characterId ?? undefined,
-        status: "active",
-        deletedAt: null,
-        id: snapshotIds.size > 0 ? { notIn: [...snapshotIds] } : undefined,
-      },
-      data: { status: "deleted", deletedAt: new Date() },
-    });
-
-    for (const memory of payload.source.memories) {
-      await upsertSyncedMemory(tx, payload, memory);
-    }
-  });
-}
-
-async function upsertSyncedMemory(
-  tx: Prisma.TransactionClient,
-  payload: MemorySyncPayload | MemoryRebuildPayload,
-  memory: SyncedMemory,
-) {
-  const deleted = memory.status === "deleted";
-  await tx.companionMemory.upsert({
-    where: { id: memory.id },
-    update: {
-      userId: payload.userId,
-      characterId: memory.scope === "global" ? null : (memory.characterId ?? payload.characterId ?? null),
-      sessionId: memory.scope === "session" ? (memory.sessionId ?? null) : null,
-      scope: memory.scope,
-      type: memory.type,
-      text: memory.text,
-      confidence: memory.confidence,
-      status: memory.status,
-      sourceMessageIds: toInputJson(memory.sourceMessageIds),
-      deletedAt: deleted ? new Date() : null,
-    },
-    create: {
-      id: memory.id,
-      userId: payload.userId,
-      characterId: memory.scope === "global" ? null : (memory.characterId ?? payload.characterId ?? null),
-      sessionId: memory.scope === "session" ? (memory.sessionId ?? null) : null,
-      scope: memory.scope,
-      type: memory.type,
-      text: memory.text,
-      confidence: memory.confidence,
-      status: memory.status,
-      sourceMessageIds: toInputJson(memory.sourceMessageIds),
-      deletedAt: deleted ? new Date() : null,
-    },
-  });
 }
 
 async function processImageGenerate(payloadValue: Prisma.JsonValue) {
@@ -343,25 +170,8 @@ async function processVideoGenerate(payloadValue: Prisma.JsonValue) {
 async function processFinalize(payloadValue: Prisma.JsonValue) {
   const payload = aiFinalizePayloadSchema.parse(payloadValue);
 
-  if (payload.kind === "memory.forgotten") return finalizeMemoryForgotten(payload);
   if (payload.kind === "generation.completed") return finalizeGenerationCompleted(payload);
   if (payload.kind === "generation.failed") return finalizeGenerationFailed(payload);
-}
-
-async function finalizeMemoryForgotten(
-  payload: Extract<AiFinalizePayload, { kind: "memory.forgotten" }>,
-) {
-  await trackEvent(
-    "memory_forgotten",
-    {
-      requestId: payload.requestId,
-      scope: payload.scope,
-      targetIds: payload.targetIds,
-      deletedMemoryIds: payload.deletedMemoryIds,
-      reason: payload.reason,
-    },
-    { userId: payload.userId },
-  );
 }
 
 async function finalizeGenerationCompleted(
@@ -567,12 +377,6 @@ async function trackEvent(
 
 function toInputJson(value: unknown): Prisma.InputJsonValue {
   return value as Prisma.InputJsonValue;
-}
-
-function jsonStringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string")
-    : [];
 }
 
 function cryptoRandomId() {
