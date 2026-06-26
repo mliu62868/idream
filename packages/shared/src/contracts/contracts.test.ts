@@ -12,6 +12,7 @@ describe("idempotency keys", () => {
   it("generation-finalize keys on terminal state", () => {
     expect(idempotencyKeys.generationFinalize("j1", "completed")).toBe("generation-finalize:j1:completed");
     expect(idempotencyKeys.generationFinalize("j1", "failed")).toBe("generation-finalize:j1:failed");
+    expect(idempotencyKeys.generationFinalize("j1", "blocked")).toBe("generation-finalize:j1:blocked");
   });
 });
 

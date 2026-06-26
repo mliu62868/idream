@@ -1,5 +1,3 @@
-import { env } from "../env";
-
 export interface NameMatchFilter {
   contains: string;
 }
@@ -12,11 +10,11 @@ export function nameMatch(query: string): NameMatchFilter | undefined {
   const normalized = normalizeSearchQuery(query);
   if (!normalized) return undefined;
 
-  // SQLite has no Prisma mode: "insensitive"; Postgres can use trigram indexes
-  // added in migrations while keeping the schema filter portable.
+  // Postgres trigram indexes can be added in migrations while keeping this
+  // Prisma filter portable.
   return { contains: normalized };
 }
 
 export function activeDbProvider() {
-  return env.DB_PROVIDER;
+  return "postgresql";
 }

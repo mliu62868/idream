@@ -4,11 +4,13 @@ import { jobQueue } from "@/server/jobs/queue";
 import {
   api,
   createCharacter,
+  createMedia,
   createUser,
   expectError,
   expectOk,
   grantCoins,
   purgeTestData,
+  runQueuedGenerationJobs,
 } from "@/server/test/helpers";
 
 // SPEC (highest-priority risk list, docs/architecture/11-testing.md §4):
@@ -51,6 +53,32 @@ describe("age gate enforcement", () => {
     expectOk(allowed);
   });
 
+  it("blocks adult workspace APIs until the age gate is accepted", async () => {
+    const userId = await freshUser("adult-api-gate");
+    const mediaId = `${P}media-gate`;
+    await createMedia({ id: mediaId, ownerId: userId });
+
+    const blocked = [
+      await api("GET", "generation/config", { userId }),
+      await api("GET", "generation/jobs", { userId }),
+      await api("GET", "generation/presets", { userId }),
+      await api("GET", "media", { userId }),
+      await api("GET", `media/${mediaId}/download`, { userId }),
+      await api("GET", "library/recent", { userId }),
+      await api("POST", "character-drafts", {
+        userId,
+        body: { gender: "female", style: "realistic", name: "Gate Test" },
+      }),
+    ];
+
+    for (const result of blocked) {
+      expectError(result, 403, "forbidden");
+      expect(result.error?.details).toMatchObject({ reason: "age_gate_required" });
+    }
+
+    const allowed = await api("GET", "generation/config", { userId, ageGate: true });
+    expectOk(allowed);
+  });
 });
 
 describe("character age hard rule (>= 18)", () => {
@@ -143,18 +171,25 @@ describe("content moderation — input + output", () => {
       ageGate: true,
       body: { mode: "image", characterId: CHAR, prompt: "csam content", outputCount: 1 },
     });
-    expectOk(result);
-    expect(result.data.job.status).toBe("blocked");
+    expectOk(result, 202);
+    expect(result.data.job.status).toBe("queued");
+    await runQueuedGenerationJobs(8);
+    const poll = await api("GET", `generation/jobs/${result.data.job.id}`, {
+      userId,
+      ageGate: true,
+    });
+    expectOk(poll);
+    expect(poll.data.job.status).toBe("blocked");
 
     const after = await prisma.dreamcoinLedger.aggregate({
       where: { userId },
       _sum: { delta: true },
     });
-    // reserve(-10) then refund(+10) nets to zero — balance unchanged.
+    // reserve then refund nets to zero — balance unchanged.
     expect(after._sum.delta).toBe(before._sum.delta);
 
     const event = await prisma.moderationEvent.findFirst({
-      where: { targetType: "generation_job", targetId: userId, status: "blocked" },
+      where: { targetType: "generation_job", targetId: result.data.job.id, status: "blocked" },
     });
     expect(event).not.toBeNull();
   });
@@ -187,8 +222,9 @@ describe("jurisdiction age verification gate", () => {
       ageGate: true,
       body: { mode: "image", characterId: CHAR, outputCount: 1 },
     });
-    expectOk(result);
-    expect(result.data.job.status).toBe("completed");
+    expectOk(result, 202);
+    expect(result.data.job.status).toBe("queued");
+    await runQueuedGenerationJobs(8);
   });
 });
 
@@ -273,11 +309,26 @@ describe("admin moderation queue + audit", () => {
     const queue = await api("GET", "admin/moderation/queue", { userId: admin, role: "admin" });
     expectOk(queue);
     expect((queue.data.reports as Array<{ id: string }>).some((r) => r.id === reportId)).toBe(true);
+    const filteredQueue = await api("GET", "admin/moderation/queue", {
+      userId: admin,
+      role: "admin",
+      query: { id: reportId },
+    });
+    expectOk(filteredQueue);
+    expect(filteredQueue.data.reports as Array<{ id: string }>).toEqual([
+      expect.objectContaining({ id: reportId }),
+    ]);
 
     const decision = await api("POST", `admin/moderation/${reportId}/decision`, {
       userId: admin,
       role: "admin",
-      body: { decision: "actioned", policyCode: "prohibited_content", notes: "removed" },
+      body: {
+        decision: "actioned",
+        policyCode: "prohibited_content",
+        notes: "removed",
+        reason: "policy violation confirmed",
+        confirmation: "TAKEDOWN",
+      },
     });
     expectOk(decision);
     expect(decision.data.review).toMatchObject({ policyCode: "prohibited_content" });

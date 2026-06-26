@@ -2,9 +2,10 @@
 import { expect } from "vitest";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
-import { AGE_GATE_COOKIE } from "@/server/lib/auth";
+import { AGE_GATE_COOKIE, type ActorRole } from "@/server/lib/auth";
 import { dispatchV1 } from "@/server/modules/ourdream/service";
 import { jobQueue } from "@/server/jobs/queue";
+import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
 
 // SPEC: Shared integration-test client + fixtures for the /api/v1 surface.
 // INTENT: One ergonomic `api()` that drives dispatchV1 exactly like the route
@@ -20,7 +21,7 @@ export interface ApiOptions {
   query?: Record<string, string | number | boolean | undefined>;
   /** Sets x-idream-user-id (dev auth) — authenticates as this user. */
   userId?: string;
-  /** Sets x-idream-role (dev auth) — user | moderator | admin. */
+  /** Sets x-idream-role (dev auth) — user | moderator | support | ops | analyst | admin. */
   role?: string;
   /** Sets x-idream-anonymous-id. */
   anonymousId?: string;
@@ -103,7 +104,7 @@ export function cookieHeader(setCookies: string[]) {
 export interface CreateUserInput {
   id: string;
   email?: string;
-  role?: "user" | "moderator" | "admin";
+  role?: ActorRole;
   displayName?: string;
   status?: "active" | "suspended" | "deleted";
 }
@@ -238,8 +239,11 @@ export async function createRedeemCode(
   code: string,
   reward: Prisma.InputJsonValue = { dreamcoins: 500 },
 ) {
-  return prisma.redeemCode.create({
-    data: { codeHash: redeemCodeHash(code.toUpperCase()), reward, status: "active" },
+  const codeHash = redeemCodeHash(code.toUpperCase());
+  return prisma.redeemCode.upsert({
+    where: { codeHash },
+    update: { reward, status: "active" },
+    create: { id: code, codeHash, reward, status: "active" },
   });
 }
 
@@ -263,6 +267,14 @@ export async function dreamcoinBalance(userId: string) {
   return aggregate._sum.delta ?? 0;
 }
 
+export async function runQueuedGenerationJobs(limit = 25) {
+  return drainLocalAiPipeline({
+    queues: ["ai.image.generate", "ai.video.generate", "app.ai.finalize"],
+    limit,
+    workerId: "test-generation-worker",
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Cleanup — delete everything created under a test-file prefix, FK-safe order.
 // ---------------------------------------------------------------------------
@@ -281,6 +293,41 @@ export async function purgeTestData(prefix: string) {
   ]);
 
   await prisma.moderationReview.deleteMany({ where: { OR: [{ id: sw }, { reportId: sw }] } });
+  await prisma.adminAuditLog.deleteMany({
+    where: { OR: [{ id: sw }, { actorId: sw }, { targetId: sw }] },
+  });
+  await prisma.adminActionRequest.deleteMany({
+    where: { OR: [{ id: sw }, { requestedById: sw }, { approvedById: sw }, { targetId: sw }] },
+  });
+  await prisma.supportConsentGrant.deleteMany({
+    where: { OR: [{ id: sw }, { userId: sw }, { targetId: sw }, { ticketId: sw }] },
+  });
+  await prisma.legalHold.deleteMany({
+    where: {
+      OR: [
+        { id: sw },
+        { targetId: sw },
+        { caseNumber: sw },
+        { approvedById: sw },
+        { createdById: sw },
+        { releasedById: sw },
+      ],
+    },
+  });
+  await prisma.adminUserPermission.deleteMany({
+    where: { OR: [{ id: sw }, { userId: sw }, { createdById: sw }] },
+  });
+  await prisma.adminSavedView.deleteMany({ where: { OR: [{ id: sw }, { ownerId: sw }] } });
+  await prisma.generationModelProfile.deleteMany({ where: { OR: [{ id: sw }, { profileKey: sw }] } });
+  await prisma.generationPromptTemplate.deleteMany({
+    where: { OR: [{ id: sw }, { templateKey: sw }] },
+  });
+  await prisma.generationProviderRoute.deleteMany({
+    where: { OR: [{ id: sw }, { profileKey: sw }] },
+  });
+  await prisma.pricingRule.deleteMany({ where: { OR: [{ id: sw }, { ruleKey: sw }] } });
+  await prisma.featureFlag.deleteMany({ where: { key: sw } });
+  await prisma.appSetting.deleteMany({ where: { key: sw } });
   await prisma.appeal.deleteMany({ where: { OR: [{ id: sw }, { userId: sw }] } });
   await prisma.contentReport.deleteMany({
     where: { OR: [{ id: sw }, { targetId: sw }, { reporterId: sw }] },
@@ -312,7 +359,7 @@ export async function purgeTestData(prefix: string) {
   });
 
   // Users cascade most remaining per-user rows (sessions, subs, ledger, jobs...).
-  await prisma.user.deleteMany({ where: { id: sw } });
+  await prisma.user.deleteMany({ where: { OR: [{ id: sw }, { email: sw }] } });
   // Plans last — subscriptions referencing them are gone via user cascade.
   await prisma.plan.deleteMany({ where: { OR: [{ id: sw }, { slug: sw }] } });
   await prisma.tag.deleteMany({ where: { OR: [{ id: sw }, { slug: sw }] } });

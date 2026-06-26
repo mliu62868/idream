@@ -1,20 +1,39 @@
+"use client";
+
 import Image from "next/image";
+import Link from "next/link";
 import { ChevronDown, Menu, Search } from "lucide-react";
+import { useState } from "react";
 import { categoryFilters } from "@/lib/ourdream-data";
 import { cn } from "@/lib/utils";
 import { AuthNav } from "./AuthNav";
 
+const mobileMenuItems = [
+  { label: "Create", href: "/create" },
+  { label: "Explore", href: "/" },
+  { label: "Chat", href: "/chat" },
+  { label: "Generate", href: "/generate" },
+  { label: "My AI", href: "/custom" },
+  { label: "Feed", href: "/feed" },
+  { label: "Community", href: "/community" },
+  { label: "Help Desk", href: "/helpdesk" },
+  { label: "Upgrade", href: "/upgrade" },
+];
+
 function Pill({
+  ariaLabel,
   children,
   className,
   onClick,
 }: Readonly<{
+  ariaLabel?: string;
   children: React.ReactNode;
   className?: string;
   onClick?: () => void;
 }>) {
   return (
     <button
+      aria-label={ariaLabel}
       className={cn(
         "inline-flex h-9 shrink-0 items-center gap-2 rounded-full bg-[rgb(53,53,54)] pl-4 pr-3 text-[12px] font-medium leading-4 text-white transition-colors hover:bg-[rgb(62,62,63)]",
         className,
@@ -55,6 +74,7 @@ export function TopControls({
   onStyleChange?: (style: string) => void;
   onAgeChange?: (age: string) => void;
 }>) {
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const sortLabel = sort === "newest" ? "Newest" : "Popular · Month";
   const genderLabel = gender === "any" ? "Any Gender" : titleCase(gender);
   const styleLabel = style === "any" ? "Any Style" : titleCase(style);
@@ -65,7 +85,13 @@ export function TopControls({
     <>
       <header className="sticky top-0 z-40 h-14 w-full bg-[rgba(13,13,13,0.6)] backdrop-blur-xl">
         <div className="flex h-14 items-center justify-between gap-2 px-2 md:px-4">
-          <button className="inline-flex h-10 w-10 items-center justify-center rounded-full text-[rgb(170,170,170)] md:hidden">
+          <button
+            aria-expanded={mobileMenuOpen}
+            aria-label="Open navigation menu"
+            className="inline-flex h-10 w-10 items-center justify-center rounded-full text-[rgb(170,170,170)] md:hidden"
+            onClick={() => setMobileMenuOpen((open) => !open)}
+            type="button"
+          >
             <Menu className="h-4 w-4" />
           </button>
           <div className="hidden min-w-0 flex-1 md:block" />
@@ -73,6 +99,20 @@ export function TopControls({
             <AuthNav />
           </div>
         </div>
+        {mobileMenuOpen ? (
+          <nav className="absolute left-2 right-2 top-14 grid grid-cols-2 gap-2 rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-3 shadow-[0_16px_40px_rgba(0,0,0,0.38)] md:hidden">
+            {mobileMenuItems.map((item) => (
+              <Link
+                className="rounded-[10px] bg-[rgb(36,36,36)] px-3 py-3 text-[13px] font-bold text-white"
+                href={item.href}
+                key={item.href}
+                onClick={() => setMobileMenuOpen(false)}
+              >
+                {item.label}
+              </Link>
+            ))}
+          </nav>
+        ) : null}
       </header>
 
       <section className="w-full px-2 pt-0 md:px-[60px] md:pt-[14px]">
@@ -87,9 +127,21 @@ export function TopControls({
           />
         </div>
 
+        <label className="mb-3 flex h-10 items-center gap-2 rounded-full bg-[rgb(53,53,54)] px-4 text-[12px] font-medium leading-4 text-[rgb(170,170,170)] md:hidden">
+          <Search className="h-4 w-4 shrink-0" />
+          <input
+            aria-label="Search characters"
+            className="min-w-0 flex-1 bg-transparent text-white outline-none placeholder:text-[rgb(170,170,170)]"
+            onChange={(event) => onQueryChange?.(event.target.value)}
+            placeholder="Search characters"
+            value={query}
+          />
+        </label>
+
         <div className="flex items-center gap-3 overflow-x-auto pb-2 md:grid md:grid-cols-[1fr_320px_1fr] md:overflow-visible md:pb-0">
           <div className="flex justify-start">
             <button
+              aria-label="Sort characters"
               className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full bg-[rgb(53,53,54)] pl-4 pr-3 text-[12px] font-medium leading-4 text-white transition-colors hover:bg-[rgb(62,62,63)]"
               onClick={() => onSortChange?.(sort === "newest" ? "popular" : "newest")}
               type="button"
@@ -102,6 +154,7 @@ export function TopControls({
           <label className="hidden h-9 items-center gap-2 rounded-full bg-[rgb(53,53,54)] px-4 text-[12px] font-medium leading-4 text-[rgb(170,170,170)] md:flex">
             <Search className="h-4 w-4" />
             <input
+              aria-label="Search characters"
               className="min-w-0 flex-1 bg-transparent text-white outline-none placeholder:text-[rgb(170,170,170)]"
               onChange={(event) => onQueryChange?.(event.target.value)}
               placeholder="Try 'Busty blonde' or 'Petite asian'"
@@ -110,13 +163,22 @@ export function TopControls({
           </label>
 
           <div className="flex justify-start gap-2 md:justify-end">
-            <Pill onClick={() => onGenderChange?.(nextValue(gender, ["female", "male", "trans", "any"]))}>
+            <Pill
+              ariaLabel="Gender filter"
+              onClick={() => onGenderChange?.(nextValue(gender, ["female", "male", "trans", "any"]))}
+            >
               {genderLabel}
             </Pill>
-            <Pill onClick={() => onStyleChange?.(nextValue(style, ["any", "realistic", "anime", "hybrid"]))}>
+            <Pill
+              ariaLabel="Style filter"
+              onClick={() => onStyleChange?.(nextValue(style, ["any", "realistic", "anime", "hybrid"]))}
+            >
               {styleLabel}
             </Pill>
-            <Pill onClick={() => onAgeChange?.(nextValue(age, ["any", "18-24", "25-34", "35+"]))}>
+            <Pill
+              ariaLabel="Age filter"
+              onClick={() => onAgeChange?.(nextValue(age, ["any", "18-24", "25-34", "35+"]))}
+            >
               {ageLabel}
             </Pill>
           </div>

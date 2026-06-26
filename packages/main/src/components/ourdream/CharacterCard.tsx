@@ -28,6 +28,7 @@ export function CharacterCard({ card }: Readonly<{ card: CharacterCardData }>) {
         fill
         sizes="(max-width: 767px) 183px, 210px"
         className="object-cover object-top"
+        unoptimized={isPrivateMediaUrl(card.image)}
       />
       <div className="absolute inset-0 bg-[linear-gradient(0deg,rgba(0,0,0,.72),rgba(0,0,0,.58)_24%,rgba(0,0,0,.22)_48%,rgba(0,0,0,0)_70%)]" />
 
@@ -58,4 +59,8 @@ export function CharacterCard({ card }: Readonly<{ card: CharacterCardData }>) {
       </div>
     </Link>
   );
+}
+
+function isPrivateMediaUrl(url: string) {
+  return url.startsWith("/api/v1/media/") || url.startsWith("/user-content/");
 }

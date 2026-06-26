@@ -1,8 +1,8 @@
 # 11 · 测试策略
 
-更新日期：2026-06-13
+更新日期：2026-06-25
 
-对齐 global rules（L1–L4、TDD、80% 覆盖）与 web 规则（vitest/playwright）。核心难点是**双库（SQLite/Postgres）行为一致性**与**AI/支付的不可控性**（用 mock provider 解）。
+对齐 global rules（L1–L4、TDD、覆盖率门）与 web 规则（Vitest/Playwright）。当前实现以 **bun workspace + Postgres 测试库 + Redis + mock providers** 为基线；早期 SQLite 双库设想已不再是默认执行路径。
 
 ## 1. 工具与层级
 
@@ -10,29 +10,30 @@
 | --- | --- | --- | --- |
 | L1 | lint + typecheck | eslint（含 import 边界 09 §2）+ `tsc --noEmit` | 秒级 |
 | L2 | service/repository/lib 单元 | **Vitest** | 分钟 |
-| L3 | API route 集成（含 DB、mock provider） | Vitest + 真实 Prisma（SQLite 内存/临时库 + Docker PG） | 分钟 |
+| L3 | API route 集成（含 DB、mock provider） | Vitest + 真实 Prisma（Postgres 测试库 + Redis） | 分钟 |
 | L4 | 关键用户流 E2E | **Playwright** | 慢 |
 
-引入（devDependencies）：`vitest`、`@vitest/coverage-v8`、`playwright`、`tsx`（seed/脚本）。新增 scripts：
+已引入（devDependencies）：`vitest`、`@vitest/coverage-v8`、`@playwright/test`、`tsx`（seed/脚本）。主要 scripts：
 
 ```jsonc
 {
+  "check": "turbo run lint typecheck build",
   "test": "vitest run",
   "test:watch": "vitest",
-  "test:sqlite": "DB_PROVIDER=sqlite vitest run",
-  "test:postgres": "DB_PROVIDER=postgresql vitest run",
+  "test:postgres": "vitest run",
   "test:e2e": "playwright test",
   "coverage": "vitest run --coverage"
 }
 ```
 
-## 2. 双库一致性测试（本项目特有，重点）
+## 2. Postgres 隔离测试（本项目特有，重点）
 
-差异点用**同一套测试跑两个 provider**：
+主站和 chat 服务测试都必须跑在隔离 Postgres 测试库上：
 
-- repository/搜索测试在 CI 同时跑 `test:sqlite` 与 `test:postgres`（10 §5）。
-- 重点覆盖：`lib/db/search.ts` 的 `nameMatch`（大小写、模糊）、cursor 分页排序稳定性、`jobs` 认领并发（PG SKIP LOCKED vs SQLite 事务）、Json 字段读写、事务回滚。
-- 任何"在 SQLite 过但 Postgres 挂"（或反之）都是双库纪律漏洞，必须修。
+- `packages/main` 默认使用 `TEST_DATABASE_URL`，未设置时使用 `postgresql://postgres:postgres@localhost:5433/idream_test`；global setup 会重建 schema、执行 `db-push`、seed，并清空 Redis DB 15。
+- `packages/chat` 是 Postgres-native，global setup 会 push 主 schema、应用 chat boundary SQL，并清空 Redis DB 14。
+- 重点覆盖：`lib/db/search.ts` 的 `nameMatch`（大小写、模糊）、cursor 分页排序稳定性、队列认领并发、Json 字段读写、事务回滚、chat service DB 权限边界。
+- 任何测试对开发库或生产库产生副作用都是阻断级问题。
 
 ## 3. Provider 测试替身
 
@@ -75,11 +76,11 @@
 2. 注册/登录 → `/me` 反映状态。
 3. 开始聊天 → 发消息 → 刷新页面历史仍在。
 4. 创建多步草稿 → 预览 → 提交 → My AI 可见。
-5. 图片生成（mock provider）→ 看到完成媒体。
+5. 图片生成（mock provider 或本地 pipeline/sdcpp）→ 看到完成媒体。
 6. upgrade → checkout(sandbox) → webhook → 权益生效（dreamcoin/entitlement）。
 7. 举报内容 → admin 队列可见 → 处置。
 
-E2E 用 **seed 数据 + mock provider**，跑在 preview 或本地 `next dev`；artifacts（截图/视频/trace）上传 CI。
+E2E 默认用 **seed 数据 + mock provider**，跑在 preview 或本地 `next dev`；本地高保真验证可把图片 provider 切到 `pipeline`，指向 `serve:sdcpp-image` 的 OpenAI-compatible endpoint。生成相关 E2E 会轮询 worker/job 状态，允许真实图片 pipeline 的秒级耗时。artifacts（截图/视频/trace）上传 CI。
 
 ## 6. TDD 工作流（global rule）
 
@@ -89,18 +90,18 @@ E2E 用 **seed 数据 + mock provider**，跑在 preview 或本地 `next dev`；
 
 ## 7. 覆盖率门
 
-- 目标 ≥80%（global）。
-- service/lib（业务核心）要求更高；route 主要靠 L3 集成覆盖；前端组件不在本目录范围。
-- CI 跑 `coverage`，低于门限阻断（可对 generated/seed 排除）。
+- 目标仍是业务核心 ≥80%，service/lib 优先；route 主要靠 L3 集成覆盖，前端组件不在本目录范围。
+- `bun run --filter @idream/main coverage` 当前会执行 20 个测试文件 / 125 个测试；2026-06-25 基线为 Statements 77.89%、Branches 65.19%、Functions 83.44%、Lines 81.31%。
+- CI 使用该基线作为 ratchet gate，防止覆盖率继续下降。后续目标是补齐 provider/admin/launch-readiness 分支测试，把 Statements/Lines/Functions 稳定提升到 80%+，Branches 再单独提高。
 
 ## 8. 实现现状（2026-06-15）
 
 ### 8.1 测试基础设施
-- **隔离 test DB**：`vitest.config.ts` 的 `globalSetup`（`src/server/test/global-setup.ts`）在整轮测试前重置并 seed 一个专用测试库——本地 SQLite `prisma/test.db`，CI Postgres 用 `DATABASE_URL`（双库矩阵）。与 `dev.db` 完全隔离。
-- **顺序执行**：`fileParallelism:false` 避免多 fork 进程并发写同一 SQLite 文件（SQLITE_BUSY）。
+- **隔离 test DB**：`vitest.config.ts` 的 `globalSetup`（`src/server/test/global-setup.ts`）在整轮测试前重置并 seed 一个专用 Postgres 测试库。与 dev/prod 数据库完全隔离。
+- **顺序执行**：`fileParallelism:false` 避免多 fork 进程并发写同一测试库造成不稳定。
 - **共享 helpers**（`src/server/test/helpers.ts`）：`api()` 直驱 `dispatchV1`（与 route handler 等价）、dev 认证头（`x-idream-user-id/role`，仅 `APP_ENV=test`）、fixtures（user/character/plan/media/preset/redeem code/coins）、按前缀 `purgeTestData()` 自隔离清理、`expectOk/expectError` 断言。
 
-### 8.2 L2/L3 套件（Vitest，76 用例 / 12 文件）
+### 8.2 L2/L3 套件（Vitest，125 用例 / 20 文件）
 | 文件 | 覆盖 |
 | --- | --- |
 | `modules/ourdream/safety.test.ts` | age gate / age<18 / input+output 审核 block + 事件 / 年龄验证门 / 举报+匿名+admin 处置 / underage 即时隐藏 |
@@ -114,18 +115,22 @@ E2E 用 **seed 数据 + mock provider**，跑在 preview 或本地 `next dev`；
 | `app/api/internal/worker/route.test.ts` | worker 端点鉴权 + `handle()` 包装 + 队列认领 |
 | `lib/db/search.test.ts`、`providers/providers.test.ts` | 搜索 helper / provider mock |
 
-覆盖率（v8）：Statements 88.6% / Lines 91.4% / Functions 89.2% / Branches 78%（分支偏低主要为 Postgres-only 认领路径与 env 配置分支，SQLite 矩阵不可达）。门槛见 `vitest.config.ts`。
+覆盖率（v8，2026-06-25）：Statements 77.89% / Lines 81.31% / Functions 83.44% / Branches 65.19%。`vitest.config.ts` 以此作为 ratchet 门槛，后续只允许上调。
 
-### 8.3 L4 E2E（Playwright，`src/e2e/flows.e2e.ts`）
-覆盖 §5 七条关键流：flow1 age gate→explore→详情、flow2 注册→鉴权(/me)（均走真实浏览器 UI）；flow3/5/6/7 聊天/生成/计费/审核走真实 Next server 的 `/api/v1`（`page.request` 共享浏览器 cookie，经真实 proxy+route handler）；外加 create/generate workspace 渲染 smoke。
+### 8.3 L4 E2E（Playwright，`src/e2e/*.e2e.ts`）
+`flows.e2e.ts` 覆盖 §5 关键流：flow1 age gate→explore→详情、flow2 注册→鉴权(/me)（均走真实浏览器 UI）；flow3/4/5/6 聊天/生成/计费/审核走真实 Next server 的 `/api/v1`（`page.request` 共享浏览器 cookie，经真实 proxy+route handler）；外加 create/generate workspace 渲染 smoke 和 admin control-plane API smoke。
+`ui-workflows.e2e.ts` 覆盖真实 UI 提交流：Create 表单提交→角色保存→`/custom` Created tab 可见；Generate 表单提交→内部 worker/job 轮询→图库出现完成媒体；Upgrade 点击 Premium monthly→订阅和 dreamcoins 生效→Premium prompt controls 解锁。
+`public-routes.e2e.ts` 以成年已登录测试用户覆盖入口矩阵：`/`、`/explore`、`/create`、`/generate`、`/chat`、`/custom`、`/profile`、`/upgrade`、`/feed`、`/community`、`/terms`、`/safety/introduction`，逐页检查标题、`main`、404、坏图和 console/page error。匿名首访 age gate 由 `flows.e2e.ts` 的 flow1 单独覆盖。
 
-> **运行方式**：E2E 默认连接已运行的 dev server（`npm run dev`，本地建议 tmux；CI 在 workflow 内后台启动并 `curl` 轮询就绪）。设 `PW_WEBSERVER=1` 可让 Playwright 自管 `next dev`。首次需 `npx playwright install chromium`。
+> **运行方式**：E2E 默认连接已运行的 dev server（`bun run dev`，本地建议 tmux；CI 在 workflow 内后台启动并 `curl` 轮询就绪）。设 `PW_WEBSERVER=1` 可让 Playwright 自管 `next dev`。首次需 `bunx playwright install chromium`。
 
 ### 8.4 命令
 ```bash
-npm run test          # L2/L3（默认 SQLite test.db）
-npm run coverage      # 带覆盖率门槛
-npm run test:postgres # 双库：对 Postgres 跑同一套
-npm run test:e2e      # L4（需 dev server 在跑）
-npm run check         # lint + typecheck + build
+bun run check                         # L1 + build（全 workspace）
+bun run --filter @idream/main test    # 主站 L2/L3（Postgres + Redis）
+bun run --filter @idream/chat test    # chat service + DB boundary
+bun run --filter @idream/gen test     # generation/provider contracts
+bun run --filter @idream/shared test  # shared contract helpers
+bun run --filter @idream/main test:e2e # L4（需 dev server 在跑）
+bun run --filter @idream/main coverage # coverage ratchet gate
 ```

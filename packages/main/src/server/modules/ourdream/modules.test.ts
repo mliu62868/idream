@@ -162,18 +162,22 @@ describe("library tabs", () => {
     const userId = `${P}lib`;
     await createUser({ id: userId });
     await api("POST", `characters/${CHAR}/like`, { userId, ageGate: true });
+    await createMedia({ id: `${P}lib-media`, ownerId: userId, prompt: "library recent image" });
 
-    const characters = await api("GET", "library/characters", { userId });
+    const characters = await api("GET", "library/characters", { userId, ageGate: true });
     expectOk(characters);
     expect((characters.data.items as Array<{ id: string }>).map((c) => c.id)).toContain(CHAR);
 
-    const groupChats = await api("GET", "library/group-chats", { userId });
+    const groupChats = await api("GET", "library/group-chats", { userId, ageGate: true });
     expectOk(groupChats);
     expect(groupChats.data.items).toEqual([]);
     expect(groupChats.data.emptyCta).toBe("/create");
 
-    const recent = await api("GET", "library/recent", { userId });
+    const recent = await api("GET", "library/recent", { userId, ageGate: true });
     expectOk(recent);
+    const recentItems = recent.data.items as Array<{ id: string; type?: string }>;
+    expect(recentItems.map((item) => item.id)).toContain(CHAR);
+    expect(recentItems.map((item) => item.id)).toContain(`${P}lib-media`);
   });
 });
 
@@ -231,7 +235,7 @@ describe("tags, likes, duplicate", () => {
     const liked = await prisma.characterLike.findFirst({ where: { userId, characterId: CHAR } });
     expect(liked).not.toBeNull();
 
-    const unlike = await api("DELETE", `characters/${CHAR}/like`, { userId });
+    const unlike = await api("DELETE", `characters/${CHAR}/like`, { userId, ageGate: true });
     expectOk(unlike);
     const stillLiked = await prisma.characterLike.findFirst({ where: { userId, characterId: CHAR } });
     expect(stillLiked).toBeNull();
@@ -254,16 +258,24 @@ describe("generation presets", () => {
 
     const created = await api("POST", "generation/presets", {
       userId,
+      ageGate: true,
       body: { type: "pose", label: "My Pose", controls: { angle: "side" } },
     });
     expectOk(created);
     const presetId = created.data.preset.id as string;
 
-    const list = await api("GET", "generation/presets", { userId, query: { type: "pose" } });
+    const list = await api("GET", "generation/presets", {
+      userId,
+      ageGate: true,
+      query: { type: "pose" },
+    });
     expectOk(list);
     expect((list.data.items as Array<{ id: string }>).map((p) => p.id)).toContain(presetId);
 
-    const archived = await api("DELETE", `generation/presets/${presetId}`, { userId });
+    const archived = await api("DELETE", `generation/presets/${presetId}`, {
+      userId,
+      ageGate: true,
+    });
     expectOk(archived);
     const after = await prisma.generationPreset.findUnique({ where: { id: presetId } });
     expect(after?.status).toBe("archived");
@@ -281,6 +293,7 @@ describe("media bulk operations", () => {
 
     const visibility = await api("POST", "media/bulk", {
       userId,
+      ageGate: true,
       body: { ids: [a, b], action: "visibility", visibility: "unlisted" },
     });
     expectOk(visibility);
@@ -288,6 +301,7 @@ describe("media bulk operations", () => {
 
     const del = await api("POST", "media/bulk", {
       userId,
+      ageGate: true,
       body: { ids: [a], action: "delete" },
     });
     expectOk(del);
@@ -328,6 +342,16 @@ describe("feed, community, policies, analytics", () => {
     const res = await api("GET", "community/leaderboards", { ageGate: true });
     expectOk(res);
     expect(res.data.leaderboards).toHaveProperty("characters");
+    expect(res.data.leaderboards.dreamers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: SYS,
+          displayName: "Test User",
+          characters: 1,
+        }),
+      ]),
+    );
+    expect(JSON.stringify(res.data.leaderboards.dreamers)).not.toContain("@test.local");
   });
 
   it("returns published policies", async () => {

@@ -46,6 +46,7 @@ export function CharacterDetailClient({ id }: Readonly<{ id: string }>) {
   async function startChat() {
     if (!character) return;
     setBusy(true);
+    setStatus("");
     try {
       const response = await fetch("/api/v1/chat/sessions", {
         method: "POST",
@@ -54,6 +55,10 @@ export function CharacterDetailClient({ id }: Readonly<{ id: string }>) {
       });
       if (response.status === 401) {
         window.location.href = "/signup";
+        return;
+      }
+      if (!response.ok) {
+        setStatus("Could not start chat. Please try again.");
         return;
       }
       const payload = (await response.json()) as {
@@ -67,11 +72,35 @@ export function CharacterDetailClient({ id }: Readonly<{ id: string }>) {
     }
   }
 
+  async function likeCharacter() {
+    if (!character) return;
+    setBusy(true);
+    setStatus("");
+    try {
+      const response = await fetch(`/api/v1/characters/${character.id}/like`, {
+        method: "POST",
+      });
+      if (response.status === 401) {
+        window.location.href = "/signup";
+        return;
+      }
+      if (!response.ok) {
+        setStatus("Could not save your like. Please try again.");
+        return;
+      }
+      setCharacter({ ...character, liked: true });
+      setStatus("Character liked.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function reportCharacter() {
     if (!character) return;
     setBusy(true);
+    setStatus("");
     try {
-      await fetch(`/api/v1/characters/${character.id}/report`, {
+      const response = await fetch(`/api/v1/characters/${character.id}/report`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -79,6 +108,14 @@ export function CharacterDetailClient({ id }: Readonly<{ id: string }>) {
           description: "User submitted from character detail.",
         }),
       });
+      if (response.status === 401) {
+        window.location.href = "/signup";
+        return;
+      }
+      if (!response.ok) {
+        setStatus("Could not submit the report. Please try again.");
+        return;
+      }
       setStatus("Report submitted for review.");
     } finally {
       setBusy(false);
@@ -108,6 +145,7 @@ export function CharacterDetailClient({ id }: Readonly<{ id: string }>) {
                   priority
                   sizes="380px"
                   src={character.image}
+                  unoptimized={isPrivateMediaUrl(character.image)}
                 />
                 <div className="absolute inset-0 bg-[linear-gradient(0deg,rgba(0,0,0,.72),transparent_55%)]" />
               </div>
@@ -116,12 +154,17 @@ export function CharacterDetailClient({ id }: Readonly<{ id: string }>) {
                 <p className="text-[12px] font-black uppercase leading-4 text-[rgb(253,95,194)]">
                   {character.style ?? "realistic"} companion
                 </p>
-                <h1 className="mt-3 text-[44px] font-black uppercase leading-[0.95] md:text-[72px]">
-                  {character.title}
-                  <span className="ml-3 text-[28px] md:text-[42px]">
+                <div className="mt-3 flex flex-wrap items-end gap-x-3 gap-y-2">
+                  <h1 className="text-[44px] font-black uppercase leading-[0.95] md:text-[72px]">
+                    {character.title}
+                  </h1>
+                  <span
+                    aria-label={`${character.age} years old`}
+                    className="pb-1 text-[28px] font-black leading-none text-white/80 md:pb-2 md:text-[42px]"
+                  >
                     {character.age}
                   </span>
-                </h1>
+                </div>
                 <p className="mt-5 max-w-2xl text-[15px] font-medium leading-7 text-[rgb(170,170,170)] md:text-[17px]">
                   {character.description}
                 </p>
@@ -148,11 +191,11 @@ export function CharacterDetailClient({ id }: Readonly<{ id: string }>) {
                   <button
                     className="inline-flex h-12 items-center justify-center gap-2 rounded-full bg-[rgb(36,36,36)] px-5 text-[14px] font-bold text-white"
                     disabled={busy}
-                    onClick={() => fetch(`/api/v1/characters/${character.id}/like`, { method: "POST" })}
+                    onClick={likeCharacter}
                     type="button"
                   >
                     <Heart className="h-4 w-4" />
-                    Like
+                    {character.liked ? "Liked" : "Like"}
                   </button>
                   <button
                     className="inline-flex h-12 items-center justify-center gap-2 rounded-full bg-[rgb(36,36,36)] px-5 text-[14px] font-bold text-white"
@@ -182,4 +225,8 @@ export function CharacterDetailClient({ id }: Readonly<{ id: string }>) {
       <MobileBottomNav activeHref="/" />
     </main>
   );
+}
+
+function isPrivateMediaUrl(url: string) {
+  return url.startsWith("/api/v1/media/") || url.startsWith("/user-content/");
 }

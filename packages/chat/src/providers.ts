@@ -1,6 +1,7 @@
 // SPEC: Chat service only needs two providers — the chat model (streaming) and
 // moderation (input/output). Slim, self-contained; no image/video/payment/blob.
 // INTENT: keep the chat deploy artifact thin (design §10 dependency isolation).
+import { SafetyGatewayModerationProvider } from "@idream/shared";
 import { env } from "./env.js";
 
 export interface ChatChunk {
@@ -49,7 +50,7 @@ class OpenAIChatModel implements ChatModel {
   ) {}
 
   async *stream(input: Parameters<ChatModel["stream"]>[0]): AsyncIterable<ChatChunk> {
-    const res = await fetch(`${this.baseUrl}/chat/completions`, {
+    const res = await fetch(chatCompletionEndpoint(this.baseUrl), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -101,6 +102,25 @@ class MockModerationProvider implements ModerationProvider {
   }
 }
 
+class SafetyGatewayChatModerationProvider implements ModerationProvider {
+  private readonly gateway: SafetyGatewayModerationProvider;
+
+  constructor(config: { serviceUrl: string; apiKey: string; timeoutMs: number }) {
+    this.gateway = new SafetyGatewayModerationProvider(config);
+  }
+
+  async check(input: { targetType: "text"; content: string }): Promise<ModerationResult> {
+    const result = await this.gateway.check(input);
+    if (result.ok) return result.data;
+
+    return {
+      status: "blocked",
+      policyCode: result.error.code,
+      confidence: 1,
+    };
+  }
+}
+
 function chunk(text: string, size: number): string[] {
   if (!text) return [""];
   const out: string[] = [];
@@ -113,18 +133,53 @@ export interface ChatProviders {
   moderation: ModerationProvider;
 }
 
-export function createProviders(): ChatProviders {
-  // Moderation has only a mock impl today.
-  if (env.MODERATION_PROVIDER !== "mock") {
-    throw new Error(`MODERATION_PROVIDER=${env.MODERATION_PROVIDER} unsupported (only "mock").`);
+function createModerationProvider(): ModerationProvider {
+  switch (env.MODERATION_PROVIDER) {
+    case "mock":
+      return new MockModerationProvider();
+    case "safety-gateway":
+      return new SafetyGatewayChatModerationProvider({
+        serviceUrl: requireProviderEnv(
+          "MODERATION_SERVICE_URL",
+          env.MODERATION_SERVICE_URL,
+          "MODERATION_PROVIDER",
+          env.MODERATION_PROVIDER,
+        ),
+        apiKey: requireProviderEnv(
+          "MODERATION_API_KEY",
+          env.MODERATION_API_KEY,
+          "MODERATION_PROVIDER",
+          env.MODERATION_PROVIDER,
+        ),
+        timeoutMs: env.MODERATION_TIMEOUT_MS,
+      });
+    default:
+      throw new Error(
+        `MODERATION_PROVIDER=${env.MODERATION_PROVIDER} unsupported (use "mock" or "safety-gateway").`,
+      );
   }
-  const moderation = new MockModerationProvider();
+}
+
+function requireProviderEnv(
+  name: string,
+  value: string | undefined,
+  providerName: string,
+  provider: string,
+) {
+  if (!value) throw new Error(`${name} is required when ${providerName}=${provider}`);
+  return value;
+}
+
+export function createProviders(): ChatProviders {
+  const moderation = createModerationProvider();
 
   switch (env.CHAT_MODEL_PROVIDER) {
     case "mock":
       return { chat: new MockChatModel(), moderation };
     // "openai" = any OpenAI-compatible endpoint (oMLX / LM Studio / OpenAI).
+    // "pipeline" is the production gateway alias; it exposes the same endpoint.
     case "openai":
+    case "pipeline":
       return {
         chat: new OpenAIChatModel(
           env.CHAT_MODEL_BASE_URL,
@@ -135,9 +190,17 @@ export function createProviders(): ChatProviders {
       };
     default:
       throw new Error(
-        `CHAT_MODEL_PROVIDER=${env.CHAT_MODEL_PROVIDER} unsupported (use "mock" or "openai").`,
+        `CHAT_MODEL_PROVIDER=${env.CHAT_MODEL_PROVIDER} unsupported (use "mock", "openai", or "pipeline").`,
       );
   }
 }
 
 export const providers = createProviders();
+
+function chatCompletionEndpoint(baseUrl: string) {
+  const url = new URL(baseUrl);
+  if (url.pathname.endsWith("/chat/completions")) return url;
+  const basePath = url.pathname === "/" ? "" : url.pathname.replace(/\/$/, "");
+  url.pathname = `${basePath}/chat/completions`;
+  return url;
+}

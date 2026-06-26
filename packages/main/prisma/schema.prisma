@@ -1,13 +1,12 @@
-// Shape SSoT. datasource.provider is rewritten by scripts/db-provider.mjs.
+// Shape SSoT. Main web is Postgres-only.
 // The datasource URL is provided by prisma.config.ts (Prisma 7).
-// Keep this schema portable across SQLite dev and PostgreSQL prod.
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
 }
 
 model User {
@@ -17,7 +16,7 @@ model User {
   name          String?
   image         String?
   displayName   String?
-  role          String    @default("user") // enum: user | moderator | admin
+  role          String    @default("user") // enum: user | moderator | support | ops | analyst | admin
   status        String    @default("active") // enum: active | suspended | deleted
   anonymousId   String?   @unique
   createdAt     DateTime  @default(now())
@@ -323,30 +322,58 @@ model GenerationPreset {
 }
 
 model GenerationJob {
-  id             String       @id @default(cuid())
-  userId         String
-  characterId    String?
-  mode           String // enum: image | video
-  prompt         String?
-  negativePrompt String?
-  controls       Json
-  presetIds      Json
-  model          String?
-  orientation    String?
-  outputCount    Int          @default(1)
-  status         String       @default("queued") // enum: queued | moderating_input | running | moderating_output | completed | failed | blocked | refunded
-  costDreamcoins Int          @default(0)
-  provider       String?
-  errorCode      String?
-  createdAt      DateTime     @default(now())
-  completedAt    DateTime?
-  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  character      Character?   @relation(fields: [characterId], references: [id], onDelete: SetNull)
-  assets         MediaAsset[]
+  id                    String               @id @default(cuid())
+  userId                String
+  characterId           String?
+  derivedFromJobId      String?
+  idempotencyKey        String?
+  mode                  String // enum: image | video
+  prompt                String?
+  negativePrompt        String?
+  controls              Json
+  presetIds             Json
+  model                 String?
+  profileId             String?
+  profileVersion        Int?
+  promptTemplateId      String?
+  promptTemplateVersion Int?
+  orientation           String?
+  outputCount           Int                  @default(1)
+  status                String               @default("queued") // enum: queued | moderating_input | running | moderating_output | completed | failed | blocked | refunded
+  costDreamcoins        Int                  @default(0)
+  provider              String?
+  errorCode             String?
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+  completedAt           DateTime?
+  user                  User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  character             Character?           @relation(fields: [characterId], references: [id], onDelete: SetNull)
+  derivedFromJob        GenerationJob?       @relation("GenerationRetry", fields: [derivedFromJobId], references: [id], onDelete: SetNull)
+  retryJobs             GenerationJob[]      @relation("GenerationRetry")
+  assets                MediaAsset[]
+  events                GenerationJobEvent[]
 
+  @@unique([userId, idempotencyKey])
   @@index([userId, createdAt])
+  @@index([derivedFromJobId])
   @@index([status])
+  @@index([profileId, profileVersion])
+  @@index([promptTemplateId, promptTemplateVersion])
   @@map("generation_jobs")
+}
+
+model GenerationJobEvent {
+  id        String        @id @default(cuid())
+  jobId     String
+  type      String
+  message   String?
+  metadata  Json
+  createdAt DateTime      @default(now())
+  job       GenerationJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId, createdAt])
+  @@index([type])
+  @@map("generation_job_events")
 }
 
 model MediaAsset {
@@ -357,6 +384,12 @@ model MediaAsset {
   type             String // enum: image | video
   url              String
   thumbnailUrl     String?
+  storageKey       String?               @unique
+  contentType      String?
+  width            Int?
+  height           Int?
+  providerAssetId  String?
+  sourcePromptHash String?
   prompt           String?
   visibility       String                @default("private") // enum: private | public_pack | unlisted
   safetyStatus     String                @default("unknown") // enum: unknown | passed | flagged | blocked
@@ -464,16 +497,18 @@ model Entitlement {
 }
 
 model DreamcoinLedger {
-  id           String   @id @default(cuid())
-  userId       String
-  delta        Int
-  balanceAfter Int
-  reason       String // enum: signup_bonus | subscription_grant | generation_spend | refund | redeem | referral | admin_adjust
-  sourceId     String?
-  createdAt    DateTime @default(now())
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id             String   @id @default(cuid())
+  userId         String
+  delta          Int
+  balanceAfter   Int
+  reason         String // enum: signup_bonus | subscription_grant | generation_spend | refund | redeem | referral | admin_adjust
+  sourceId       String?
+  idempotencyKey String?  @unique
+  createdAt      DateTime @default(now())
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, createdAt])
+  @@index([sourceId])
   @@map("dreamcoin_ledger")
 }
 
@@ -662,4 +697,228 @@ model RoutePage {
 
   @@index([template])
   @@map("route_pages")
+}
+
+model AdminAuditLog {
+  id         String   @id @default(cuid())
+  actorId    String
+  actorRole  String
+  action     String
+  targetType String
+  targetId   String
+  reason     String?
+  before     Json?
+  after      Json?
+  requestId  String?
+  ipHash     String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  @@index([actorId, createdAt])
+  @@index([action, createdAt])
+  @@index([targetType, targetId])
+  @@map("admin_audit_logs")
+}
+
+model AdminActionRequest {
+  id            String    @id @default(cuid())
+  requestedById String
+  approvedById  String?
+  permissionKey String
+  action        String
+  targetType    String
+  targetId      String
+  payload       Json
+  status        String    @default("pending") // enum: pending | approved | rejected | canceled
+  reason        String?
+  createdAt     DateTime  @default(now())
+  decidedAt     DateTime?
+
+  @@index([status, createdAt])
+  @@index([requestedById])
+  @@map("admin_action_requests")
+}
+
+model FeatureFlag {
+  key            String   @id
+  label          String
+  description    String?
+  enabled        Boolean  @default(false)
+  rolloutPercent Int      @default(0)
+  targetRoles    Json
+  targetPlans    Json
+  hardPolicy     Boolean  @default(false)
+  version        Int      @default(1)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([enabled])
+  @@map("feature_flags")
+}
+
+model AppSetting {
+  key       String   @id
+  value     Json
+  version   Int      @default(1)
+  status    String   @default("active") // enum: draft | active | archived
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@map("app_settings")
+}
+
+model GenerationModelProfile {
+  id                  String    @id @default(cuid())
+  profileKey          String
+  label               String
+  mode                String    @default("image") // enum: image | video
+  runner              String    @default("sd_cpp") // enum: pipeline | sd_cpp | mlx | comfyui | external
+  pipelineModel       String
+  sourceModelPath     String?
+  convertedModelPath  String?
+  modelFormat         String    @default("safetensors")
+  runnerConfig        Json?
+  defaultWidth        Int       @default(768)
+  defaultHeight       Int       @default(1024)
+  allowedOrientations Json
+  steps               Int       @default(28)
+  sampler             String    @default("dpmpp_2m")
+  cfgScale            Float     @default(7)
+  negativeTemplateId  String?
+  costMultiplier      Float     @default(1)
+  requiredEntitlement String?
+  maxCount            Int       @default(4)
+  concurrencyLimit    Int       @default(1)
+  enabled             Boolean   @default(true)
+  rolloutPercent      Int       @default(100)
+  version             Int       @default(1)
+  status              String    @default("draft") // enum: draft | active | archived
+  dryRunSummary       Json?
+  publishedAt         DateTime?
+  archivedAt          DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@index([profileKey, status])
+  @@index([mode, status])
+  @@map("generation_model_profiles")
+}
+
+model GenerationPromptTemplate {
+  id            String    @id @default(cuid())
+  templateKey   String
+  label         String
+  mode          String    @default("image") // enum: image | video | negative
+  useCase       String    @default("character") // enum: character | freeplay | negative
+  body          String
+  negativeBase  String?
+  presetOrder   Json
+  safetyHints   Json
+  sampleMatrix  Json
+  version       Int       @default(1)
+  status        String    @default("draft") // enum: draft | active | archived
+  dryRunSummary Json?
+  publishedAt   DateTime?
+  archivedAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([templateKey, status])
+  @@index([mode, useCase, status])
+  @@map("generation_prompt_templates")
+}
+
+model GenerationProviderRoute {
+  id          String   @id @default(cuid())
+  profileKey  String
+  provider    String
+  endpointRef String?
+  weight      Int      @default(100)
+  enabled     Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([profileKey, enabled])
+  @@map("generation_provider_routes")
+}
+
+model PricingRule {
+  id            String    @id @default(cuid())
+  ruleKey       String
+  label         String
+  mode          String
+  baseCost      Int
+  multiplier    Float     @default(1)
+  status        String    @default("draft") // enum: draft | active | archived
+  version       Int       @default(1)
+  effectiveFrom DateTime?
+  publishedAt   DateTime?
+  archivedAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([ruleKey, status])
+  @@index([mode, status])
+  @@map("pricing_rules")
+}
+
+model AdminSavedView {
+  id        String   @id @default(cuid())
+  ownerId   String
+  scope     String
+  label     String
+  filters   Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([ownerId, scope])
+  @@map("admin_saved_views")
+}
+
+model AdminUserPermission {
+  id            String   @id @default(cuid())
+  userId        String
+  permissionKey String
+  effect        String // enum: grant | revoke
+  reason        String
+  createdById   String
+  createdAt     DateTime @default(now())
+
+  @@unique([userId, permissionKey, effect])
+  @@index([userId])
+  @@map("admin_user_permissions")
+}
+
+model SupportConsentGrant {
+  id          String   @id @default(cuid())
+  userId      String
+  ticketId    String
+  targetType  String
+  targetId    String
+  scope       Json
+  expiresAt   DateTime
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  @@index([userId, targetType, targetId])
+  @@index([ticketId])
+  @@map("support_consent_grants")
+}
+
+model LegalHold {
+  id           String    @id @default(cuid())
+  targetType   String
+  targetId     String
+  caseNumber   String
+  reason       String
+  status       String    @default("active") // enum: active | released
+  approvedById String
+  createdById  String
+  releasedById String?
+  releasedAt   DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([targetType, targetId, status])
+  @@index([caseNumber])
+  @@map("legal_holds")
 }

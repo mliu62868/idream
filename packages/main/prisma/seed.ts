@@ -8,14 +8,24 @@ import {
 import { createPrismaClientOptions } from "../src/server/lib/prisma-adapter";
 import { safetyDocuments } from "../src/lib/ourdream-safety-data";
 
-process.env.DB_PROVIDER ??= "sqlite";
-process.env.DATABASE_URL ??= "file:./dev.db";
+process.env.DB_PROVIDER ??= "postgresql";
+process.env.DATABASE_URL ??= "postgresql://postgres:postgres@localhost:5433/idream";
 
 const prisma = new PrismaClient(createPrismaClientOptions());
 
 const SYSTEM_USER_ID = "seed-system-creator";
 const ADMIN_USER_ID = "seed-admin-user";
 const DEV_USER_ID = "seed-dev-user";
+const SUPPORT_USER_ID = "seed-support-user";
+const OPS_USER_ID = "seed-ops-user";
+const ANALYST_USER_ID = "seed-analyst-user";
+const Z_IMAGE_SOURCE_MODEL_PATH =
+  "/Users/kk/Downloads/pornmasterZImage_turboV35Bf16.safetensors";
+const Z_IMAGE_LLM_PATH =
+  "/Users/kk/.localai/models/z-image-components/Qwen3-4B-Instruct-2507-Q4_K_M.gguf";
+const Z_IMAGE_VAE_PATH =
+  "/Users/kk/.localai/models/z-image-components/split_files/vae/ae.safetensors";
+const SDCPP_CLI_PATH = "/Users/kk/code/sdcpp/sd-cli";
 
 const sensitiveTags = new Set(["teen", "bdsm", "virgin"]);
 
@@ -97,6 +107,42 @@ async function seedUsers() {
       emailVerified: true,
       displayName: "Dev User",
       role: "user",
+    },
+  });
+
+  await prisma.user.upsert({
+    where: { id: SUPPORT_USER_ID },
+    update: {},
+    create: {
+      id: SUPPORT_USER_ID,
+      email: "support@idream.local",
+      emailVerified: true,
+      displayName: "Support",
+      role: "support",
+    },
+  });
+
+  await prisma.user.upsert({
+    where: { id: OPS_USER_ID },
+    update: {},
+    create: {
+      id: OPS_USER_ID,
+      email: "ops@idream.local",
+      emailVerified: true,
+      displayName: "Ops",
+      role: "ops",
+    },
+  });
+
+  await prisma.user.upsert({
+    where: { id: ANALYST_USER_ID },
+    update: {},
+    create: {
+      id: ANALYST_USER_ID,
+      email: "analyst@idream.local",
+      emailVerified: true,
+      displayName: "Analyst",
+      role: "analyst",
     },
   });
 
@@ -380,6 +426,387 @@ async function seedPresets() {
   }
 }
 
+async function seedAdminControlPlane() {
+  await prisma.featureFlag.upsert({
+    where: { key: "video_gen" },
+    update: {
+      label: "Video generation",
+      description: "Single gate for all video generation traffic.",
+      enabled: false,
+      rolloutPercent: 0,
+      targetRoles: [],
+      targetPlans: ["deluxe"],
+      hardPolicy: false,
+    },
+    create: {
+      key: "video_gen",
+      label: "Video generation",
+      description: "Single gate for all video generation traffic.",
+      enabled: false,
+      rolloutPercent: 0,
+      targetRoles: [],
+      targetPlans: ["deluxe"],
+      hardPolicy: false,
+    },
+  });
+
+  await prisma.featureFlag.upsert({
+    where: { key: "image_edit" },
+    update: {
+      label: "Image edit",
+      description: "Unlocks the image edit surface when providers are ready.",
+      enabled: false,
+      rolloutPercent: 0,
+      targetRoles: [],
+      targetPlans: [],
+      hardPolicy: false,
+    },
+    create: {
+      key: "image_edit",
+      label: "Image edit",
+      description: "Unlocks the image edit surface when providers are ready.",
+      enabled: false,
+      rolloutPercent: 0,
+      targetRoles: [],
+      targetPlans: [],
+      hardPolicy: false,
+    },
+  });
+
+  await prisma.generationPromptTemplate.upsert({
+    where: { id: "seed-template-image-character-v1" },
+    update: {
+      templateKey: "template_image_character_default",
+      label: "Image character default",
+      mode: "image",
+      useCase: "character",
+      body: "Character image generation template with appearance, pose, outfit, background, style, and quality blocks.",
+      negativeBase: "low quality, distorted anatomy, extra fingers, watermark, text",
+      presetOrder: ["background", "pose", "outfit", "mode"],
+      safetyHints: { hardPolicies: ["age_under_18", "real_person_nonconsensual"] },
+      sampleMatrix: [{ character: "seed", orientation: "4:5", presets: ["background", "pose"] }],
+      dryRunSummary: { sampleCount: 6, successRate: 1, blockedRate: 0 },
+      version: 1,
+      status: "active",
+      publishedAt: new Date("2026-06-24T00:00:00.000Z"),
+    },
+    create: {
+      id: "seed-template-image-character-v1",
+      templateKey: "template_image_character_default",
+      label: "Image character default",
+      mode: "image",
+      useCase: "character",
+      body: "Character image generation template with appearance, pose, outfit, background, style, and quality blocks.",
+      negativeBase: "low quality, distorted anatomy, extra fingers, watermark, text",
+      presetOrder: ["background", "pose", "outfit", "mode"],
+      safetyHints: { hardPolicies: ["age_under_18", "real_person_nonconsensual"] },
+      sampleMatrix: [{ character: "seed", orientation: "4:5", presets: ["background", "pose"] }],
+      dryRunSummary: { sampleCount: 6, successRate: 1, blockedRate: 0 },
+      version: 1,
+      status: "active",
+      publishedAt: new Date("2026-06-24T00:00:00.000Z"),
+    },
+  });
+
+  await prisma.generationPromptTemplate.upsert({
+    where: { id: "seed-template-image-freeplay-v1" },
+    update: {
+      templateKey: "template_image_freeplay_default",
+      label: "Image freeplay default",
+      mode: "image",
+      useCase: "freeplay",
+      body: "Freeplay image generation template with user prompt, style, preset fragments, and quality blocks.",
+      negativeBase: "low quality, distorted anatomy, watermark, text",
+      presetOrder: ["background", "pose", "outfit", "mode"],
+      safetyHints: { hardPolicies: ["age_under_18", "real_person_nonconsensual"] },
+      sampleMatrix: [{ freeplay: true, orientation: "1:1" }],
+      dryRunSummary: { sampleCount: 4, successRate: 1, blockedRate: 0 },
+      version: 1,
+      status: "active",
+      publishedAt: new Date("2026-06-24T00:00:00.000Z"),
+    },
+    create: {
+      id: "seed-template-image-freeplay-v1",
+      templateKey: "template_image_freeplay_default",
+      label: "Image freeplay default",
+      mode: "image",
+      useCase: "freeplay",
+      body: "Freeplay image generation template with user prompt, style, preset fragments, and quality blocks.",
+      negativeBase: "low quality, distorted anatomy, watermark, text",
+      presetOrder: ["background", "pose", "outfit", "mode"],
+      safetyHints: { hardPolicies: ["age_under_18", "real_person_nonconsensual"] },
+      sampleMatrix: [{ freeplay: true, orientation: "1:1" }],
+      dryRunSummary: { sampleCount: 4, successRate: 1, blockedRate: 0 },
+      version: 1,
+      status: "active",
+      publishedAt: new Date("2026-06-24T00:00:00.000Z"),
+    },
+  });
+
+  await prisma.generationPromptTemplate.upsert({
+    where: { id: "seed-template-video-character-v1" },
+    update: {
+      templateKey: "template_video_character_default",
+      label: "Video character beta",
+      mode: "video",
+      useCase: "character",
+      body: "Video generation beta template. Draftable while video_gen is disabled.",
+      negativeBase: "low quality, flicker, watermark, text",
+      presetOrder: ["pose", "mode"],
+      safetyHints: { disabledUntilFlag: "video_gen" },
+      sampleMatrix: [{ character: "seed", seconds: 4 }],
+      dryRunSummary: { sampleCount: 2, successRate: 1, blockedRate: 0 },
+      version: 1,
+      status: "active",
+      publishedAt: new Date("2026-06-24T00:00:00.000Z"),
+    },
+    create: {
+      id: "seed-template-video-character-v1",
+      templateKey: "template_video_character_default",
+      label: "Video character beta",
+      mode: "video",
+      useCase: "character",
+      body: "Video generation beta template. Draftable while video_gen is disabled.",
+      negativeBase: "low quality, flicker, watermark, text",
+      presetOrder: ["pose", "mode"],
+      safetyHints: { disabledUntilFlag: "video_gen" },
+      sampleMatrix: [{ character: "seed", seconds: 4 }],
+      dryRunSummary: { sampleCount: 2, successRate: 1, blockedRate: 0 },
+      version: 1,
+      status: "active",
+      publishedAt: new Date("2026-06-24T00:00:00.000Z"),
+    },
+  });
+
+  await prisma.generationModelProfile.upsert({
+    where: { id: "seed-profile-image-default-v1" },
+    update: {
+      profileKey: "profile_image_default_v1",
+      label: "Default image",
+      mode: "image",
+      runner: "sd_cpp",
+      pipelineModel: "pornmaster-zimage-turbo",
+      sourceModelPath: Z_IMAGE_SOURCE_MODEL_PATH,
+      convertedModelPath: null,
+      modelFormat: "safetensors",
+      runnerConfig: {
+        cliPath: SDCPP_CLI_PATH,
+        llmPath: Z_IMAGE_LLM_PATH,
+        vaePath: Z_IMAGE_VAE_PATH,
+        apiModelId: "pornmaster-zimage-turbo",
+      },
+      defaultWidth: 768,
+      defaultHeight: 1024,
+      allowedOrientations: ["1:1", "4:5", "3:4", "9:16", "16:9"],
+      steps: 28,
+      sampler: "dpmpp_2m",
+      cfgScale: 7,
+      negativeTemplateId: "template_image_character_default",
+      costMultiplier: 1,
+      requiredEntitlement: null,
+      maxCount: 4,
+      concurrencyLimit: 2,
+      enabled: true,
+      rolloutPercent: 100,
+      version: 1,
+      status: "active",
+      dryRunSummary: { sampleCount: 6, successRate: 1, p95LatencyMs: 900 },
+      publishedAt: new Date("2026-06-24T00:00:00.000Z"),
+    },
+    create: {
+      id: "seed-profile-image-default-v1",
+      profileKey: "profile_image_default_v1",
+      label: "Default image",
+      mode: "image",
+      runner: "sd_cpp",
+      pipelineModel: "pornmaster-zimage-turbo",
+      sourceModelPath: Z_IMAGE_SOURCE_MODEL_PATH,
+      convertedModelPath: null,
+      modelFormat: "safetensors",
+      runnerConfig: {
+        cliPath: SDCPP_CLI_PATH,
+        llmPath: Z_IMAGE_LLM_PATH,
+        vaePath: Z_IMAGE_VAE_PATH,
+        apiModelId: "pornmaster-zimage-turbo",
+      },
+      defaultWidth: 768,
+      defaultHeight: 1024,
+      allowedOrientations: ["1:1", "4:5", "3:4", "9:16", "16:9"],
+      steps: 28,
+      sampler: "dpmpp_2m",
+      cfgScale: 7,
+      negativeTemplateId: "template_image_character_default",
+      costMultiplier: 1,
+      requiredEntitlement: null,
+      maxCount: 4,
+      concurrencyLimit: 2,
+      enabled: true,
+      rolloutPercent: 100,
+      version: 1,
+      status: "active",
+      dryRunSummary: { sampleCount: 6, successRate: 1, p95LatencyMs: 900 },
+      publishedAt: new Date("2026-06-24T00:00:00.000Z"),
+    },
+  });
+
+  await prisma.generationModelProfile.upsert({
+    where: { id: "seed-profile-image-premium-v1" },
+    update: {
+      profileKey: "profile_image_premium_v1",
+      label: "Premium image",
+      mode: "image",
+      runner: "sd_cpp",
+      pipelineModel: "pornmaster-zimage-turbo",
+      sourceModelPath: Z_IMAGE_SOURCE_MODEL_PATH,
+      convertedModelPath: null,
+      modelFormat: "safetensors",
+      runnerConfig: {
+        cliPath: SDCPP_CLI_PATH,
+        llmPath: Z_IMAGE_LLM_PATH,
+        vaePath: Z_IMAGE_VAE_PATH,
+        apiModelId: "pornmaster-zimage-turbo",
+      },
+      defaultWidth: 1024,
+      defaultHeight: 1365,
+      allowedOrientations: ["1:1", "4:5", "3:4", "9:16", "16:9"],
+      steps: 36,
+      sampler: "dpmpp_2m",
+      cfgScale: 6.5,
+      negativeTemplateId: "template_image_character_default",
+      costMultiplier: 1.5,
+      requiredEntitlement: "premium_models",
+      maxCount: 4,
+      concurrencyLimit: 1,
+      enabled: true,
+      rolloutPercent: 100,
+      version: 1,
+      status: "active",
+      dryRunSummary: { sampleCount: 6, successRate: 1, p95LatencyMs: 1200 },
+      publishedAt: new Date("2026-06-24T00:00:00.000Z"),
+    },
+    create: {
+      id: "seed-profile-image-premium-v1",
+      profileKey: "profile_image_premium_v1",
+      label: "Premium image",
+      mode: "image",
+      runner: "sd_cpp",
+      pipelineModel: "pornmaster-zimage-turbo",
+      sourceModelPath: Z_IMAGE_SOURCE_MODEL_PATH,
+      convertedModelPath: null,
+      modelFormat: "safetensors",
+      runnerConfig: {
+        cliPath: SDCPP_CLI_PATH,
+        llmPath: Z_IMAGE_LLM_PATH,
+        vaePath: Z_IMAGE_VAE_PATH,
+        apiModelId: "pornmaster-zimage-turbo",
+      },
+      defaultWidth: 1024,
+      defaultHeight: 1365,
+      allowedOrientations: ["1:1", "4:5", "3:4", "9:16", "16:9"],
+      steps: 36,
+      sampler: "dpmpp_2m",
+      cfgScale: 6.5,
+      negativeTemplateId: "template_image_character_default",
+      costMultiplier: 1.5,
+      requiredEntitlement: "premium_models",
+      maxCount: 4,
+      concurrencyLimit: 1,
+      enabled: true,
+      rolloutPercent: 100,
+      version: 1,
+      status: "active",
+      dryRunSummary: { sampleCount: 6, successRate: 1, p95LatencyMs: 1200 },
+      publishedAt: new Date("2026-06-24T00:00:00.000Z"),
+    },
+  });
+
+  await prisma.generationModelProfile.upsert({
+    where: { id: "seed-profile-video-beta-v1" },
+    update: {
+      profileKey: "profile_video_beta_v1",
+      label: "Video beta",
+      mode: "video",
+      runner: "external",
+      pipelineModel: "mock-video",
+      sourceModelPath: null,
+      convertedModelPath: null,
+      modelFormat: "external",
+      runnerConfig: { disabledUntilFlag: "video_gen" },
+      defaultWidth: 768,
+      defaultHeight: 1024,
+      allowedOrientations: ["9:16", "16:9"],
+      steps: 24,
+      sampler: "video_default",
+      cfgScale: 5,
+      negativeTemplateId: "template_video_character_default",
+      costMultiplier: 1,
+      requiredEntitlement: "video_generation",
+      maxCount: 1,
+      concurrencyLimit: 1,
+      enabled: true,
+      rolloutPercent: 0,
+      version: 1,
+      status: "active",
+      dryRunSummary: { sampleCount: 2, successRate: 1, disabledByFlag: "video_gen" },
+      publishedAt: new Date("2026-06-24T00:00:00.000Z"),
+    },
+    create: {
+      id: "seed-profile-video-beta-v1",
+      profileKey: "profile_video_beta_v1",
+      label: "Video beta",
+      mode: "video",
+      runner: "external",
+      pipelineModel: "mock-video",
+      sourceModelPath: null,
+      convertedModelPath: null,
+      modelFormat: "external",
+      runnerConfig: { disabledUntilFlag: "video_gen" },
+      defaultWidth: 768,
+      defaultHeight: 1024,
+      allowedOrientations: ["9:16", "16:9"],
+      steps: 24,
+      sampler: "video_default",
+      cfgScale: 5,
+      negativeTemplateId: "template_video_character_default",
+      costMultiplier: 1,
+      requiredEntitlement: "video_generation",
+      maxCount: 1,
+      concurrencyLimit: 1,
+      enabled: true,
+      rolloutPercent: 0,
+      version: 1,
+      status: "active",
+      dryRunSummary: { sampleCount: 2, successRate: 1, disabledByFlag: "video_gen" },
+      publishedAt: new Date("2026-06-24T00:00:00.000Z"),
+    },
+  });
+
+  await prisma.pricingRule.upsert({
+    where: { id: "seed-pricing-image-default-v1" },
+    update: {
+      ruleKey: "generation_image_default",
+      label: "Image generation default",
+      mode: "image",
+      baseCost: 5,
+      multiplier: 1,
+      status: "active",
+      version: 1,
+      publishedAt: new Date("2026-06-24T00:00:00.000Z"),
+    },
+    create: {
+      id: "seed-pricing-image-default-v1",
+      ruleKey: "generation_image_default",
+      label: "Image generation default",
+      mode: "image",
+      baseCost: 5,
+      multiplier: 1,
+      status: "active",
+      version: 1,
+      publishedAt: new Date("2026-06-24T00:00:00.000Z"),
+    },
+  });
+}
+
 async function seedPolicies() {
   for (const document of safetyDocuments) {
     await prisma.policyVersion.upsert({
@@ -445,6 +872,7 @@ async function main() {
   await seedCharacters();
   await seedPlans();
   await seedPresets();
+  await seedAdminControlPlane();
   await seedPolicies();
   await seedRoutePages();
 }

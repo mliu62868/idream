@@ -1,13 +1,13 @@
 import type { Prisma } from "@prisma/client";
+import { resolveLocalBlobPath, resolveLocalBlobRoot } from "@idream/shared/storage/local-blob";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { z } from "zod";
-import {
-  drainLocalAiPipeline,
-  localAiQueueNames,
-} from "@/server/ai/local-pipeline";
 import type {
   ImageGeneratePayload,
   VideoGeneratePayload,
 } from "@/server/ai/schemas";
+import { dispatchAdmin } from "@/server/modules/admin/service";
 import { chatServiceEnabled, proxyChatRequest } from "@/server/bff/chat-proxy";
 import { jobQueue } from "@/server/jobs/queue";
 import {
@@ -17,7 +17,6 @@ import {
   getAuthCtx,
   hashPassword,
   mergeAnonymous,
-  requireAdmin,
   requireAgeGate,
   requireAgeVerified,
   requireUser,
@@ -30,6 +29,7 @@ import { prisma } from "@/server/lib/db";
 import { nameMatch } from "@/server/lib/db/search";
 import { AppError, Errors } from "@/server/lib/errors";
 import { empty, fail, ok } from "@/server/lib/http";
+import { logger } from "@/server/lib/logger";
 import { providers } from "@/server/providers";
 
 type ApiMethod = "GET" | "POST" | "PATCH" | "DELETE" | "PUT";
@@ -79,17 +79,41 @@ const draftSubmitSchema = z.object({
   age: z.number().int().min(18).max(99).default(21),
 });
 
-const generationJobSchema = z.object({
-  mode: z.enum(["image", "video"]).default("image"),
-  characterId: z.string().min(1).optional(),
-  prompt: z.string().trim().max(2_000).optional(),
-  negativePrompt: z.string().trim().max(1_000).optional(),
-  controls: z.record(z.string(), z.unknown()).default({}),
-  presetIds: z.array(z.string()).max(12).default([]),
-  orientation: z.string().max(20).optional(),
-  outputCount: z.number().int().min(1).max(4).default(1),
-  model: z.string().max(80).optional(),
-});
+const imageOrientations = ["1:1", "4:5", "3:4", "9:16", "16:9"] as const;
+
+const generationControlsSchema = z
+  .object({
+    backgroundPresetId: z.string().trim().min(1).max(120).optional(),
+    posePresetId: z.string().trim().min(1).max(120).optional(),
+    outfitPresetId: z.string().trim().min(1).max(120).optional(),
+    orientation: z.enum(imageOrientations).optional(),
+    model: z.string().trim().min(1).max(120).optional(),
+    seconds: z.number().int().min(1).max(30).optional(),
+  })
+  .strict();
+
+const generationJobSchema = z
+  .object({
+    mode: z.enum(["image", "video"]).default("image"),
+    characterId: z.string().min(1).optional(),
+    freeplay: z.boolean().default(false),
+    prompt: z.string().trim().max(2_000).optional(),
+    negativePrompt: z.string().trim().max(1_000).optional(),
+    controls: generationControlsSchema.default({}),
+    presetIds: z.array(z.string()).max(12).default([]),
+    orientation: z.enum(imageOrientations).optional(),
+    outputCount: z.number().int().min(1).max(4).default(1),
+    model: z.string().max(80).optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (Boolean(value.characterId) === value.freeplay) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["characterId"],
+        message: "Choose exactly one of characterId or freeplay",
+      });
+    }
+  });
 
 const presetCreateSchema = z.object({
   type: z.enum(["background", "pose", "outfit", "mode"]),
@@ -130,12 +154,6 @@ const redeemSchema = z.object({
   code: z.string().trim().min(3).max(80),
 });
 
-const adminDecisionSchema = z.object({
-  decision: z.enum(["actioned", "no_violation", "duplicate", "escalated", "closed"]),
-  policyCode: z.string().max(120).optional(),
-  notes: z.string().max(2_000).optional(),
-});
-
 const eventSchema = z.object({
   name: z.string().trim().min(1).max(120),
   props: z.record(z.string(), z.unknown()).default({}),
@@ -149,6 +167,10 @@ export async function dispatchV1(request: Request, segments: string[]) {
     if (error instanceof z.ZodError) {
       return fail(new AppError("bad_request", "Validation failed", error.flatten()));
     }
+    logger.error(
+      { error, method: request.method, path: new URL(request.url).pathname },
+      "Unhandled v1 route error",
+    );
     return fail(new AppError("internal", "Internal error"));
   }
 }
@@ -158,6 +180,10 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
   const [resource, id, action, child] = segments;
 
   if (!resource) return ok({ service: "idream-api", version: "v1" });
+
+  if (resource === "admin") {
+    return dispatchAdmin(request, segments.slice(1));
+  }
 
   if (resource === "auth") {
     if (id === "signup" && method === "POST") return signup(request);
@@ -213,7 +239,9 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
   }
 
   if (resource === "generation") {
+    if (id === "config" && !action && method === "GET") return generationConfig(request);
     if (id === "jobs" && !action && method === "POST") return createGenerationJob(request);
+    if (id === "jobs" && !action && method === "GET") return listGenerationJobs(request);
     if (id === "jobs" && action && !child && method === "GET") return getGenerationJob(request, action);
     if (id === "jobs" && action && child === "retry" && method === "POST") {
       return retryGenerationJob(request, action);
@@ -229,6 +257,7 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
     if (id === "bulk" && method === "POST") return bulkMedia(request);
     if (id && action === "like" && method === "POST") return likeMedia(request, id);
     if (id && action === "like" && method === "DELETE") return unlikeMedia(request, id);
+    if (id && action === "content" && method === "GET") return contentMedia(request, id);
     if (id && action === "download" && method === "GET") return downloadMedia(request, id);
     if (id && !action && method === "DELETE") return deleteMedia(request, id);
   }
@@ -273,13 +302,6 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
   if (resource === "appeals" && !id && method === "POST") return createAppeal(request);
   if (resource === "policies" && !id && method === "GET") return policies();
 
-  if (resource === "admin" && id === "moderation") {
-    if (action === "queue" && method === "GET") return adminQueue(request);
-    if (action && child === "decision" && method === "POST") {
-      return adminDecision(request, action);
-    }
-  }
-
   if (resource === "users" && id && action === "follow") {
     if (method === "POST") return followUser(request, id);
     if (method === "DELETE") return unfollowUser(request, id);
@@ -301,13 +323,14 @@ async function signup(request: Request) {
   const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30);
   const token = createSessionToken();
   const user = await prisma.$transaction(async (tx) => {
+    const anonymousId = await claimableAnonymousId(tx, ctx.anonymousId);
     const created = await tx.user.create({
       data: {
         email: body.email,
         emailVerified: true,
         name: body.name,
         displayName: body.name ?? body.email.split("@")[0],
-        anonymousId: ctx.anonymousId,
+        ...(anonymousId ? { anonymousId } : {}),
         accounts: {
           create: {
             providerId: credentialProvider,
@@ -343,6 +366,18 @@ async function signup(request: Request) {
   });
   response.headers.append("set-cookie", sessionCookie(token, expiresAt));
   return response;
+}
+
+async function claimableAnonymousId(
+  tx: Prisma.TransactionClient,
+  anonymousId: string | undefined,
+) {
+  if (!anonymousId) return undefined;
+  const owner = await tx.user.findUnique({
+    where: { anonymousId },
+    select: { id: true },
+  });
+  return owner ? undefined : anonymousId;
 }
 
 async function login(request: Request) {
@@ -463,12 +498,27 @@ async function createAgeVerificationSession(request: Request) {
 // INVARIANTS: idempotent by provider event id; applies the reported status to
 // the user's latest age_verification exactly once.
 async function ageVerificationWebhook(request: Request, provider: string) {
-  const payload = await jsonBody(request);
-  const eventId =
+  const rawBody = await bodyText(request);
+  const payload = parseJsonText(rawBody);
+  const incomingEventId =
     request.headers.get("x-provider-event-id") ??
     (isRecord(payload) && typeof payload.providerEventId === "string"
       ? payload.providerEventId
       : cryptoRandomId("age_evt"));
+
+  const parsed = await providers.ageVerification.parseWebhook({
+    providerEventId: incomingEventId,
+    payload,
+    rawBody,
+    signature:
+      request.headers.get("x-age-verify-signature") ??
+      request.headers.get("x-gocam-signature") ??
+      request.headers.get("x-signature") ??
+      undefined,
+  });
+  if (!parsed.ok) throw Errors.badRequest(parsed.error.message, parsed.error);
+
+  const eventId = parsed.data.providerEventId;
 
   const already = await prisma.providerEvent.findUnique({
     where: { provider_providerEventId: { provider, providerEventId: eventId } },
@@ -486,24 +536,27 @@ async function ageVerificationWebhook(request: Request, provider: string) {
     },
   });
 
-  const userId =
-    isRecord(payload) && typeof payload.userId === "string" ? payload.userId : undefined;
-  const status =
-    isRecord(payload) && typeof payload.status === "string" ? payload.status : "verified";
-  if (userId) {
-    const latest = await prisma.ageVerification.findFirst({
-      where: { userId },
-      orderBy: { createdAt: "desc" },
-    });
+  const { userId, providerVerificationId, status } = parsed.data;
+  if (userId || providerVerificationId) {
+    const latest =
+      userId
+        ? await prisma.ageVerification.findFirst({
+            where: { userId },
+            orderBy: { createdAt: "desc" },
+          })
+        : await prisma.ageVerification.findFirst({
+            where: { providerVerificationId },
+            orderBy: { createdAt: "desc" },
+          });
     const verifiedAt = status === "verified" ? new Date() : null;
     if (latest) {
       await prisma.ageVerification.update({
         where: { id: latest.id },
-        data: { status, provider, verifiedAt },
+        data: { status, provider, providerVerificationId, verifiedAt },
       });
-    } else {
+    } else if (userId) {
       await prisma.ageVerification.create({
-        data: { userId, provider, status, verifiedAt, metadata: {} },
+        data: { userId, provider, providerVerificationId, status, verifiedAt, metadata: {} },
       });
     }
   }
@@ -633,6 +686,8 @@ async function likeCharacter(request: Request, id: string) {
 async function unlikeCharacter(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
   const deleted = await prisma.characterLike.deleteMany({
     where: { userId: user.id, characterId: id },
   });
@@ -707,6 +762,8 @@ async function createDraft(request: Request) {
 async function updateDraft(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
   const body = draftPatchSchema.parse(await jsonBody(request));
   await assertDraftOwner(id, user.id);
 
@@ -855,6 +912,8 @@ async function submitDraft(request: Request, id: string) {
 async function updateDraftTags(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
   const body = z.object({ tags: z.array(z.string()).max(12) }).parse(await jsonBody(request));
   await assertDraftOwner(id, user.id);
   const draft = await prisma.characterDraft.update({
@@ -864,171 +923,362 @@ async function updateDraftTags(request: Request, id: string) {
   return ok({ draft });
 }
 
+async function generationConfig(request: Request) {
+  const ctx = await getAuthCtx(request);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  const entitlements = ctx.userId ? await entitlementMap(ctx.userId) : {};
+  const balance = ctx.userId ? await dreamcoinBalance(ctx.userId) : 0;
+  const [profiles, templates, presets, videoEnabled, imageBaseCost, videoBaseCost] = await Promise.all([
+    prisma.generationModelProfile.findMany({
+      where: { status: "active", enabled: true },
+      orderBy: [{ mode: "asc" }, { costMultiplier: "asc" }, { label: "asc" }],
+    }),
+    prisma.generationPromptTemplate.findMany({
+      where: { status: "active" },
+      orderBy: [{ mode: "asc" }, { useCase: "asc" }, { version: "desc" }],
+    }),
+    prisma.generationPreset.findMany({
+      where: { scope: "built_in", status: "active" },
+      orderBy: [{ type: "asc" }, { label: "asc" }],
+    }),
+    featureFlagEnabled("video_gen"),
+    generationCost("image", 1),
+    generationCost("video", 1),
+  ]);
+
+  const visibleProfiles = profiles.filter((profile) =>
+    profile.requiredEntitlement ? Boolean(entitlements[profile.requiredEntitlement]) : true,
+  );
+  const imageProfiles = visibleProfiles.filter((profile) => profile.mode === "image");
+  const videoProfiles = visibleProfiles.filter((profile) => profile.mode === "video");
+  const defaultImageProfile = imageProfiles[0] ?? profiles.find((profile) => profile.mode === "image");
+
+  return ok({
+    entitlements,
+    dreamcoins: { balance },
+    pricing: {
+      image: {
+        baseCost: imageBaseCost,
+        maxCount: defaultImageProfile?.maxCount ?? 4,
+      },
+      video: {
+        baseCost: videoBaseCost,
+      },
+    },
+    image: {
+      orientations: jsonStringArray(defaultImageProfile?.allowedOrientations).length
+        ? jsonStringArray(defaultImageProfile?.allowedOrientations)
+        : ["1:1", "4:5", "3:4", "9:16", "16:9"],
+      models: imageProfiles.map(profileConfigDTO),
+      promptTemplates: templates
+        .filter((template) => template.mode === "image")
+        .map(templateConfigDTO),
+    },
+    video: {
+      enabled: videoEnabled,
+      requiredEntitlement: "video_generation",
+      models: videoEnabled ? videoProfiles.map(profileConfigDTO) : [],
+      promptTemplates: templates
+        .filter((template) => template.mode === "video")
+        .map(templateConfigDTO),
+    },
+    presets: presets.map((preset) => ({
+      id: preset.id,
+      type: preset.type,
+      category: preset.category,
+      label: preset.label,
+      controls: preset.controls,
+      visibility: preset.visibility,
+    })),
+  });
+}
+
 async function createGenerationJob(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const body = generationJobSchema.parse(await jsonBody(request));
+  const idempotencyKey = normalizeHeader(request.headers.get("idempotency-key"));
+  if (idempotencyKey) {
+    const existing = await prisma.generationJob.findFirst({
+      where: { userId: user.id, idempotencyKey },
+      include: generationJobInclude(),
+    });
+    if (existing) return ok(generationJobResponse(existing));
+  }
+
   const entitlements = await entitlementMap(user.id);
-  const character = body.characterId ? await readableCharacter(body.characterId, user.id) : null;
+  const character = body.characterId
+    ? await generationCharacter(body.characterId, user.id)
+    : null;
+  const selectedModel = body.model ?? body.controls.model;
+  const profile = await selectGenerationProfile(body.mode, selectedModel);
 
   if (body.mode === "video" && !entitlements.video_generation) {
     throw Errors.paymentRequired("Video generation requires Deluxe entitlement");
   }
+  if (body.mode === "video" && !(await featureFlagEnabled("video_gen"))) {
+    throw Errors.forbidden("Video generation is disabled");
+  }
   if ((body.prompt || body.negativePrompt) && !entitlements.premium_controls) {
     throw Errors.paymentRequired("Custom prompt controls require Premium");
   }
-
-  const cost = generationCost(body.mode, body.outputCount);
-  const balance = await dreamcoinBalance(user.id);
-  if (balance < cost) {
-    throw Errors.paymentRequired("Insufficient dreamcoins", { balance, cost });
-  }
-
-  const moderation = await moderateText(
-    "generation_job",
-    user.id,
-    `${body.prompt ?? ""} ${body.negativePrompt ?? ""}`,
-    "input",
-  );
-
-  const job = await prisma.$transaction(async (tx) => {
-    const created = await tx.generationJob.create({
-      data: {
-        userId: user.id,
-        characterId: body.characterId,
-        mode: body.mode,
-        prompt: body.prompt,
-        negativePrompt: body.negativePrompt,
-        controls: toInputJson(body.controls),
-        presetIds: toInputJson(body.presetIds),
-        model: body.model ?? (body.mode === "video" ? "mock-video" : "mock-image"),
-        orientation: body.orientation,
-        outputCount: body.outputCount,
-        status: moderation.status === "blocked" ? "blocked" : "queued",
-        costDreamcoins: cost,
-        provider: "mock-pipeline",
-      },
+  if (profile.requiredEntitlement && !entitlements[profile.requiredEntitlement]) {
+    throw Errors.paymentRequired("Selected model requires entitlement", {
+      entitlement: profile.requiredEntitlement,
     });
-    await appendLedger(tx, user.id, -cost, "generation_spend", created.id);
-    return created;
-  });
-
-  if (moderation.status === "blocked") {
-    await refundGeneration(user.id, job.id, cost, "blocked");
-    return ok({ job: { ...job, status: "blocked" } });
+  }
+  if (body.outputCount > profile.maxCount) {
+    throw Errors.badRequest("Output count exceeds selected model limit", {
+      maxCount: profile.maxCount,
+    });
   }
 
+  const promptTemplate = await selectPromptTemplate(
+    body.mode,
+    body.characterId ? "character" : "freeplay",
+  );
+  const orientation =
+    body.orientation ??
+    body.controls.orientation ??
+    jsonStringArray(profile.allowedOrientations)[0] ??
+    "4:5";
+  const controls = {
+    ...body.controls,
+    orientation,
+    model: profile.profileKey,
+    profileId: profile.profileKey,
+    width: profile.defaultWidth,
+    height: profile.defaultHeight,
+  };
+  const cost = await generationCost(body.mode, body.outputCount, profile.costMultiplier);
   const prompt =
     body.prompt ??
     `${body.mode === "video" ? "Video" : "Image"} generation for ${
       character?.name ?? "an original companion"
     }`;
-  const common = {
-    version: 1 as const,
-    requestId: cryptoRandomId("gen_req"),
-    generationJobId: job.id,
-    userId: user.id,
-    characterId: body.characterId ?? null,
-    prompt,
-    negativePrompt: body.negativePrompt ?? null,
-    controls: body.controls,
-    seed: job.id,
-    model: body.model ?? (body.mode === "video" ? "mock-video" : "mock-image"),
-    outputPrefix: `gen/${job.id}/`,
-  };
-  const payload: ImageGeneratePayload | VideoGeneratePayload =
-    body.mode === "video"
-      ? {
-          ...common,
-          kind: "video",
-          seconds: numericControl(body.controls, "seconds", 4),
-        }
-      : {
-          ...common,
-          kind: "image",
-          presetIds: body.presetIds,
-          orientation: body.orientation ?? stringControl(body.controls, "orientation", "portrait"),
-          count: body.outputCount,
-        };
 
-  await jobQueue.enqueue({
-    queue: body.mode === "video" ? "ai.video.generate" : "ai.image.generate",
-    payload: toInputJson(payload),
-    dedupeKey: `generation:${job.id}`,
+  const job = await prisma.$transaction(async (tx) => {
+    await lockUserLedger(tx, user.id);
+    const balance = await dreamcoinBalance(user.id, tx);
+    if (balance < cost) {
+      throw Errors.paymentRequired("Insufficient dreamcoins", {
+        balance,
+        cost,
+        required: cost,
+      });
+    }
+    const active = await tx.generationJob.count({
+      where: { userId: user.id, status: { in: activeGenerationStatuses() } },
+    });
+    const max = maxInflightJobs(entitlements);
+    if (active >= max) {
+      throw Errors.rateLimited("Too many active generation jobs", { active, max });
+    }
+
+    const created = await tx.generationJob.create({
+      data: {
+        userId: user.id,
+        characterId: body.characterId,
+        idempotencyKey,
+        mode: body.mode,
+        prompt,
+        negativePrompt: body.negativePrompt,
+        controls: toInputJson(controls),
+        presetIds: toInputJson(body.presetIds),
+        model: profile.pipelineModel,
+        profileId: profile.profileKey,
+        profileVersion: profile.version,
+        promptTemplateId: promptTemplate.templateKey,
+        promptTemplateVersion: promptTemplate.version,
+        orientation,
+        outputCount: body.outputCount,
+        status: "queued",
+        costDreamcoins: cost,
+        provider: profile.runner,
+      },
+    });
+    await appendGenerationEvent(tx, created.id, "created", "Generation job accepted", {
+      mode: created.mode,
+      profileId: created.profileId,
+      promptTemplateId: created.promptTemplateId,
+      idempotencyKey: idempotencyKey ?? null,
+    });
+    await appendLedger(
+      tx,
+      user.id,
+      -cost,
+      "generation_spend",
+      created.id,
+      `generation:${created.id}:reserve`,
+    );
+    await appendGenerationEvent(tx, created.id, "reserved", "Dreamcoins reserved", {
+      amount: cost,
+    });
+    await appendGenerationEvent(tx, created.id, "queued", "Generation job queued", {});
+    return created;
   });
-  await drainLocalAiPipeline({ queues: [...localAiQueueNames], limit: 8 });
 
-  const completed = await prisma.generationJob.findUnique({
+  try {
+    await enqueueGenerationJob(job);
+  } catch (error) {
+    await failQueuedGeneration(job, "queue_enqueue_failed", error);
+    throw Errors.internal("Generation queue unavailable", { jobId: job.id });
+  }
+  const queued = await prisma.generationJob.findUniqueOrThrow({
     where: { id: job.id },
-    include: { assets: true },
+    include: generationJobInclude(),
   });
+  return ok(generationJobResponse(queued), { status: 202 });
+}
+
+async function listGenerationJobs(request: Request) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  const url = new URL(request.url);
+  const status = url.searchParams.get("status");
+  const mode = url.searchParams.get("mode");
+  const limit = clampInt(url.searchParams.get("limit"), 1, 50, 20);
+  const offset = decodeCursor(url.searchParams.get("cursor"));
+  const jobs = await prisma.generationJob.findMany({
+    where: {
+      userId: user.id,
+      mode: mode && mode !== "all" ? mode : undefined,
+      status:
+        status === "active"
+          ? { in: activeGenerationStatuses() }
+          : status
+            ? status
+            : undefined,
+    },
+    include: generationJobInclude(),
+    orderBy: { createdAt: "desc" },
+    skip: offset,
+    take: limit + 1,
+  });
+  const page = jobs.slice(0, limit);
   return ok({
-    job: completed,
-    assets: (completed?.assets ?? []).map(mediaDTO),
+    items: page.map(generationJobDTO),
+    nextCursor: jobs.length > limit ? encodeCursor(offset + limit) : null,
   });
 }
 
 async function getGenerationJob(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
   const job = await prisma.generationJob.findFirst({
     where: { id, userId: user.id },
-    include: { assets: true },
+    include: generationJobInclude(),
   });
   if (!job) throw Errors.notFound("Generation job not found");
-  return ok({ job });
+  return ok(generationJobResponse(job));
 }
 
 async function retryGenerationJob(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
   const job = await prisma.generationJob.findFirst({ where: { id, userId: user.id } });
   if (!job) throw Errors.notFound("Generation job not found");
-  if (job.status !== "failed" && job.status !== "refunded") {
-    throw Errors.badRequest("Only failed or refunded jobs can be retried");
+  if (job.status === "blocked") {
+    throw Errors.forbidden("Blocked generation jobs cannot be retried");
   }
-  await prisma.generationJob.update({
-    where: { id },
-    data: { status: "queued", errorCode: null },
-  });
+  if (job.status !== "failed") {
+    throw Errors.badRequest("Only failed generation jobs can be retried");
+  }
+  if (job.mode !== "image" && job.mode !== "video") {
+    throw Errors.badRequest("Unsupported generation mode");
+  }
+  const retryCount = await prisma.generationJob.count({ where: { derivedFromJobId: job.id } });
+  if (retryCount >= 3) {
+    throw Errors.rateLimited("Retry limit reached for this generation job", {
+      retries: retryCount,
+      max: 3,
+    });
+  }
+  const entitlements = await entitlementMap(user.id);
   const controls = jsonRecord(job.controls);
-  const prompt =
-    job.prompt ??
-    `${job.mode === "video" ? "Video" : "Image"} generation retry ${job.id}`;
-  const common = {
-    version: 1 as const,
-    requestId: cryptoRandomId("gen_retry"),
-    generationJobId: job.id,
-    userId: user.id,
-    characterId: job.characterId,
-    prompt,
-    negativePrompt: job.negativePrompt,
-    controls,
-    seed: job.id,
-    model: job.model ?? (job.mode === "video" ? "mock-video" : "mock-image"),
-    outputPrefix: `gen/${job.id}/`,
-  };
-  const payload: ImageGeneratePayload | VideoGeneratePayload =
-    job.mode === "video"
-      ? {
-          ...common,
-          kind: "video",
-          seconds: numericControl(controls, "seconds", 4),
-        }
-      : {
-          ...common,
-          kind: "image",
-          presetIds: jsonStringArray(job.presetIds),
-          orientation: job.orientation ?? stringControl(controls, "orientation", "portrait"),
-          count: job.outputCount,
-        };
-  await jobQueue.enqueue({
-    queue: job.mode === "video" ? "ai.video.generate" : "ai.image.generate",
-    payload: toInputJson(payload),
+  const profile = await selectGenerationProfile(job.mode, job.profileId ?? job.model ?? undefined);
+  if (profile.requiredEntitlement && !entitlements[profile.requiredEntitlement]) {
+    throw Errors.paymentRequired("Selected model requires entitlement", {
+      entitlement: profile.requiredEntitlement,
+    });
+  }
+  const cost = await generationCost(job.mode, job.outputCount, profile.costMultiplier);
+  const retry = await prisma.$transaction(async (tx) => {
+    await lockUserLedger(tx, user.id);
+    const balance = await dreamcoinBalance(user.id, tx);
+    if (balance < cost) {
+      throw Errors.paymentRequired("Insufficient dreamcoins", {
+        balance,
+        cost,
+        required: cost,
+      });
+    }
+    const active = await tx.generationJob.count({
+      where: { userId: user.id, status: { in: activeGenerationStatuses() } },
+    });
+    const max = maxInflightJobs(entitlements);
+    if (active >= max) {
+      throw Errors.rateLimited("Too many active generation jobs", { active, max });
+    }
+    const created = await tx.generationJob.create({
+      data: {
+        userId: user.id,
+        characterId: job.characterId,
+        derivedFromJobId: job.id,
+        mode: job.mode,
+        prompt: job.prompt,
+        negativePrompt: job.negativePrompt,
+        controls: toInputJson(controls),
+        presetIds: toInputJson(jsonStringArray(job.presetIds)),
+        model: profile.pipelineModel,
+        profileId: profile.profileKey,
+        profileVersion: profile.version,
+        promptTemplateId: job.promptTemplateId,
+        promptTemplateVersion: job.promptTemplateVersion,
+        orientation: job.orientation,
+        outputCount: job.outputCount,
+        status: "queued",
+        costDreamcoins: cost,
+        provider: profile.runner,
+      },
+    });
+    await appendGenerationEvent(tx, created.id, "created", "Retry generation job accepted", {
+      derivedFromJobId: job.id,
+    });
+    await appendLedger(
+      tx,
+      user.id,
+      -cost,
+      "generation_spend",
+      created.id,
+      `generation:${created.id}:reserve`,
+    );
+    await appendGenerationEvent(tx, created.id, "reserved", "Dreamcoins reserved", {
+      amount: cost,
+    });
+    await appendGenerationEvent(tx, created.id, "queued", "Retry generation job queued", {});
+    return created;
   });
-  return ok({ queued: true });
+  try {
+    await enqueueGenerationJob(retry);
+  } catch (error) {
+    await failQueuedGeneration(retry, "queue_enqueue_failed", error);
+    throw Errors.internal("Generation queue unavailable", { jobId: retry.id });
+  }
+  const queued = await prisma.generationJob.findUniqueOrThrow({
+    where: { id: retry.id },
+    include: generationJobInclude(),
+  });
+  return ok(generationJobResponse(queued), { status: 202 });
 }
 
 async function listPresets(request: Request) {
@@ -1037,6 +1287,8 @@ async function listPresets(request: Request) {
   const scope = url.searchParams.get("scope");
   const q = url.searchParams.get("q");
   const ctx = await getAuthCtx(request);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
   const items = await prisma.generationPreset.findMany({
     where: {
       status: "active",
@@ -1055,6 +1307,8 @@ async function listPresets(request: Request) {
 async function createPreset(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
   const body = presetCreateSchema.parse(await jsonBody(request));
   const preset = await prisma.generationPreset.create({
     data: {
@@ -1073,6 +1327,8 @@ async function createPreset(request: Request) {
 async function archivePreset(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
   await prisma.generationPreset.updateMany({
     where: { id, ownerId: user.id },
     data: { status: "archived" },
@@ -1083,6 +1339,8 @@ async function archivePreset(request: Request, id: string) {
 async function updatePreset(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
   const body = z
     .object({
       label: z.string().trim().min(1).max(80).optional(),
@@ -1111,25 +1369,38 @@ async function updatePreset(request: Request, id: string) {
 async function listMedia(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
   const url = new URL(request.url);
   const liked = url.searchParams.get("liked") === "1";
   const type = url.searchParams.get("type");
+  const visibility = url.searchParams.get("visibility");
+  const limit = clampInt(url.searchParams.get("limit"), 1, 80, 40);
+  const offset = decodeCursor(url.searchParams.get("cursor"));
   const assets = await prisma.mediaAsset.findMany({
     where: {
       ownerId: user.id,
       deletedAt: null,
       type: type ?? undefined,
+      visibility: visibility ?? undefined,
       likes: liked ? { some: { userId: user.id } } : undefined,
     },
     orderBy: { createdAt: "desc" },
-    take: clampInt(url.searchParams.get("limit"), 1, 80, 40),
+    skip: offset,
+    take: limit + 1,
   });
-  return ok({ items: assets.map(mediaDTO) });
+  const page = assets.slice(0, limit);
+  return ok({
+    items: page.map(mediaDTO),
+    nextCursor: assets.length > limit ? encodeCursor(offset + limit) : null,
+  });
 }
 
 async function likeMedia(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
   await assertMediaOwner(id, user.id);
   await prisma.mediaLike.upsert({
     where: { userId_mediaAssetId: { userId: user.id, mediaAssetId: id } },
@@ -1143,6 +1414,8 @@ async function likeMedia(request: Request, id: string) {
 async function unlikeMedia(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
   await prisma.mediaLike.deleteMany({ where: { userId: user.id, mediaAssetId: id } });
   await prisma.mediaAsset.updateMany({ where: { id, ownerId: user.id }, data: { liked: false } });
   return ok({ liked: false });
@@ -1151,6 +1424,8 @@ async function unlikeMedia(request: Request, id: string) {
 async function bulkMedia(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
   const body = z
     .object({
       ids: z.array(z.string()).min(1).max(100),
@@ -1177,17 +1452,104 @@ async function bulkMedia(request: Request) {
 async function downloadMedia(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
   const asset = await assertMediaOwner(id, user.id);
+  const metadata = jsonRecord(asset.metadata);
+  const providerKey = typeof metadata.providerKey === "string" ? metadata.providerKey : undefined;
+  const key = asset.storageKey ?? providerKey ?? asset.url;
+  if ((process.env.BLOB_PROVIDER ?? "mock") === "mock" && (asset.storageKey ?? providerKey)) {
+    return ok({ url: `${mediaViewUrl(asset)}?download=1` });
+  }
   const signed = await providers.blob.signGetUrl({
-    key: asset.url,
-    expiresInSeconds: 60 * 5,
+    key,
+    expiresInSeconds: signedUrlTtlSeconds(),
+    downloadFilename: mediaDownloadFilename(asset),
   });
   return ok({ url: signed.ok ? signed.data.url : asset.url });
+}
+
+async function contentMedia(request: Request, id: string) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  const asset = await assertMediaOwner(id, user.id);
+  const metadata = jsonRecord(asset.metadata);
+  const providerKey = typeof metadata.providerKey === "string" ? metadata.providerKey : undefined;
+  const key = asset.storageKey ?? providerKey;
+
+  if (key && (process.env.BLOB_PROVIDER ?? "mock") === "mock") {
+    const body = await readFile(localBlobPath(key)).catch(() => null);
+    if (!body) throw Errors.notFound("Media not found");
+    const url = new URL(request.url);
+    const headers = new Headers({
+      "cache-control": "private, max-age=60",
+      "content-type": asset.contentType ?? "application/octet-stream",
+    });
+    if (url.searchParams.get("download") === "1") {
+      headers.set("content-disposition", `attachment; filename="${mediaDownloadFilename(asset)}"`);
+    }
+    return new Response(body, { headers });
+  }
+
+  const signed = await providers.blob.signGetUrl({
+    key: key ?? asset.url,
+    expiresInSeconds: signedUrlTtlSeconds(),
+    downloadFilename:
+      new URL(request.url).searchParams.get("download") === "1"
+        ? mediaDownloadFilename(asset)
+        : undefined,
+  });
+  return Response.redirect(signed.ok ? signed.data.url : asset.url, 302);
+}
+
+function localBlobPath(key: string) {
+  const root = resolveLocalBlobRoot();
+  const target = resolveLocalBlobPath(key);
+  if (target !== root && !target.startsWith(`${root}${path.sep}`)) {
+    throw Errors.notFound("Media not found");
+  }
+  return target;
+}
+
+function mediaDownloadFilename(asset: {
+  id: string;
+  type: string;
+  contentType?: string | null;
+  storageKey: string | null;
+  url: string;
+}) {
+  return `idream-${asset.type}-${asset.id}${mediaFileExtension(asset)}`;
+}
+
+function mediaFileExtension(asset: {
+  contentType?: string | null;
+  storageKey?: string | null;
+  url: string;
+}) {
+  const byContentType: Record<string, string> = {
+    "image/gif": ".gif",
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "video/mp4": ".mp4",
+    "video/webm": ".webm",
+  };
+  if (asset.contentType && byContentType[asset.contentType]) {
+    return byContentType[asset.contentType];
+  }
+
+  const source = asset.storageKey ?? asset.url;
+  const match = /\.(gif|jpe?g|mp4|png|webm|webp)(?:[?#]|$)/i.exec(source);
+  return match ? `.${match[1].toLowerCase().replace("jpeg", "jpg")}` : "";
 }
 
 async function deleteMedia(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
   await prisma.mediaAsset.updateMany({
     where: { id, ownerId: user.id },
     data: { deletedAt: new Date() },
@@ -1246,45 +1608,57 @@ async function billingPortal(request: Request) {
 }
 
 async function billingWebhook(request: Request, provider: string) {
-  const payload = await jsonBody(request);
+  const rawBody = await bodyText(request);
+  const payload = parseJsonText(rawBody);
   const eventId =
     request.headers.get("x-provider-event-id") ??
     (isRecord(payload) && typeof payload.providerEventId === "string"
       ? payload.providerEventId
+      : isRecord(payload) && typeof payload.deliveryId === "string"
+        ? payload.deliveryId
+        : isRecord(payload) && typeof payload.id === "string"
+          ? payload.id
       : cryptoRandomId("evt"));
   const parsed = await providers.payment.parseWebhook({
     providerEventId: eventId,
     payload,
-    signature: request.headers.get("x-signature") ?? undefined,
+    signature:
+      request.headers.get("btcpay-sig") ??
+      request.headers.get("x-signature") ??
+      undefined,
+    rawBody,
   });
   if (!parsed.ok) throw Errors.badRequest(parsed.error.message, parsed.error);
+  const providerEventId = parsed.data.providerEventId;
 
   const already = await prisma.providerEvent.findUnique({
-    where: { provider_providerEventId: { provider, providerEventId: eventId } },
+    where: { provider_providerEventId: { provider, providerEventId } },
   });
   if (already?.processedAt) return ok({ processed: false, idempotent: true });
 
   const event = await prisma.providerEvent.upsert({
-    where: { provider_providerEventId: { provider, providerEventId: eventId } },
+    where: { provider_providerEventId: { provider, providerEventId } },
     update: { payload: toInputJson(payload) },
     create: {
       provider,
-      providerEventId: eventId,
+      providerEventId,
       type: parsed.data.type,
       payload: toInputJson(payload),
     },
   });
-  const checkoutSession = await prisma.checkoutSession.findFirst({
-    where: { providerSessionId: parsed.data.invoiceId },
-  });
-  if (checkoutSession) {
-    const planId =
-      isRecord(payload) && typeof payload.planId === "string" ? payload.planId : undefined;
-    if (planId) await activateSubscription(checkoutSession.userId, planId, parsed.data.invoiceId);
-    await prisma.checkoutSession.update({
-      where: { id: checkoutSession.id },
-      data: { status: "completed" },
+  if (parsed.data.type === "invoice.confirmed" && parsed.data.invoiceId) {
+    const checkoutSession = await prisma.checkoutSession.findFirst({
+      where: { providerSessionId: parsed.data.invoiceId },
     });
+    if (checkoutSession) {
+      const planId =
+        isRecord(payload) && typeof payload.planId === "string" ? payload.planId : undefined;
+      if (planId) await activateSubscription(checkoutSession.userId, planId, parsed.data.invoiceId);
+      await prisma.checkoutSession.update({
+        where: { id: checkoutSession.id },
+        data: { status: "completed" },
+      });
+    }
   }
 
   await prisma.providerEvent.update({
@@ -1311,16 +1685,73 @@ async function dreamcoins(request: Request) {
 async function library(request: Request, tab: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
 
   if (tab === "recent") {
-    // Read the event-fed projection (chat service owns chat authority post-split).
-    const sessions = await prisma.recentChat.findMany({
-      where: { userId: user.id, status: { not: "deleted" } },
-      include: { character: { include: { imageAsset: true, stats: true, tags: { include: { tag: true } } } } },
-      orderBy: [{ lastMessageAt: "desc" }, { createdAt: "desc" }],
-      take: 12,
-    });
-    return ok({ items: sessions });
+    // Chat remains authoritative in the chat service, but the library home must
+    // still feel populated if the event-fed recent_chats projection lags.
+    const [sessions, likedCharacters, createdCharacters, media] = await Promise.all([
+      prisma.recentChat.findMany({
+        where: { userId: user.id, status: { not: "deleted" } },
+        include: { character: { include: characterInclude(user.id) } },
+        orderBy: [{ lastMessageAt: "desc" }, { createdAt: "desc" }],
+        take: 12,
+      }),
+      prisma.characterLike.findMany({
+        where: { userId: user.id },
+        include: { character: { include: characterInclude(user.id) } },
+        orderBy: { createdAt: "desc" },
+        take: 12,
+      }),
+      prisma.character.findMany({
+        where: { creatorId: user.id, deletedAt: null },
+        include: characterInclude(user.id),
+        orderBy: { createdAt: "desc" },
+        take: 12,
+      }),
+      prisma.mediaAsset.findMany({
+        where: { ownerId: user.id, deletedAt: null },
+        orderBy: { createdAt: "desc" },
+        take: 12,
+      }),
+    ]);
+
+    const entries = new Map<string, { item: Record<string, unknown>; sortAt: Date }>();
+    const addEntry = (key: string, item: Record<string, unknown>, sortAt: Date) => {
+      const existing = entries.get(key);
+      if (!existing || existing.sortAt < sortAt) entries.set(key, { item, sortAt });
+    };
+
+    for (const session of sessions) {
+      const character = characterDTO(session.character);
+      addEntry(
+        `chat:${session.sessionId}`,
+        {
+          id: session.sessionId,
+          type: "chat",
+          title: session.title ?? character.title,
+          character,
+          createdAt: session.createdAt,
+        },
+        session.lastMessageAt ?? session.createdAt,
+      );
+    }
+    for (const like of likedCharacters) {
+      addEntry(`character:${like.characterId}`, characterDTO(like.character), like.createdAt);
+    }
+    for (const character of createdCharacters) {
+      addEntry(`character:${character.id}`, characterDTO(character), character.createdAt);
+    }
+    for (const asset of media) {
+      addEntry(`media:${asset.id}`, mediaDTO(asset), asset.createdAt);
+    }
+
+    const items = [...entries.values()]
+      .sort((a, b) => b.sortAt.getTime() - a.sortAt.getTime())
+      .slice(0, 12)
+      .map((entry) => entry.item);
+    return ok({ items });
   }
 
   if (tab === "characters") {
@@ -1595,43 +2026,6 @@ async function policies() {
   return ok({ items });
 }
 
-async function adminQueue(request: Request) {
-  const ctx = await getAuthCtx(request);
-  requireAdmin(ctx);
-  const reports = await prisma.contentReport.findMany({
-    where: { status: { in: ["open", "triaged", "reviewing"] } },
-    include: { reviews: true },
-    orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
-    take: 100,
-  });
-  return ok({ reports });
-}
-
-async function adminDecision(request: Request, reportId: string) {
-  const ctx = await getAuthCtx(request);
-  const admin = requireAdmin(ctx);
-  const body = adminDecisionSchema.parse(await jsonBody(request));
-  const review = await prisma.moderationReview.create({
-    data: {
-      reportId,
-      reviewerId: admin.id,
-      decision: body.decision,
-      policyCode: body.policyCode,
-      notes: body.notes,
-    },
-  });
-  const report = await prisma.contentReport.update({
-    where: { id: reportId },
-    data: { status: body.decision },
-  });
-
-  if (body.decision === "actioned") {
-    await applyModerationAction(report.targetType, report.targetId, body.policyCode);
-  }
-
-  return ok({ review, report });
-}
-
 async function track(request: Request) {
   const ctx = await getAuthCtx(request);
   const body = eventSchema.parse(await jsonBody(request));
@@ -1717,6 +2111,11 @@ async function community(request: Request, segments: string[]) {
   requireAgeGate(ctx);
   const [, view] = segments;
   const url = new URL(request.url);
+  const publicCharacterWhere = {
+    visibility: "public",
+    status: "approved",
+    deletedAt: null,
+  } satisfies Prisma.CharacterWhereInput;
 
   if (view === "collections") {
     const collections = await prisma.mediaCollection.findMany({
@@ -1727,29 +2126,82 @@ async function community(request: Request, segments: string[]) {
     return ok({ collections });
   }
 
-  const characters = await prisma.character.findMany({
-    where: {
-      visibility: "public",
-      status: "approved",
-      deletedAt: null,
-      gender: url.searchParams.get("gender") ?? undefined,
-      style: url.searchParams.get("style") ?? undefined,
-      createdAt:
-        url.searchParams.get("release") === "30d"
-          ? { gte: new Date(Date.now() - 1000 * 60 * 60 * 24 * 30) }
-          : undefined,
-    },
-    include: characterInclude(ctx.userId),
-    orderBy: [{ stats: { likesCount: "desc" } }],
-    take: 20,
-  });
+  const [characters, dreamerRows] = await Promise.all([
+    prisma.character.findMany({
+      where: {
+        ...publicCharacterWhere,
+        gender: url.searchParams.get("gender") ?? undefined,
+        style: url.searchParams.get("style") ?? undefined,
+        createdAt:
+          url.searchParams.get("release") === "30d"
+            ? { gte: new Date(Date.now() - 1000 * 60 * 60 * 24 * 30) }
+            : undefined,
+      },
+      include: characterInclude(ctx.userId),
+      orderBy: [{ stats: { likesCount: "desc" } }],
+      take: 20,
+    }),
+    communityDreamerRows(),
+  ]);
+  const dreamers = dreamerRows.map((dreamer) => ({
+    id: dreamer.id,
+    displayName: dreamer.displayName,
+    image: dreamer.image,
+    characters: numberFromDb(dreamer.characters),
+    followers: numberFromDb(dreamer.followers),
+    likes: formatCount(numberFromDb(dreamer.likes)),
+    chats: formatCount(numberFromDb(dreamer.chats)),
+  }));
   return ok({
     leaderboards: {
       characters: characters.map((character) => characterDTO(character)),
-      dreamers: [],
+      dreamers,
       collections: [],
     },
   });
+}
+
+type CommunityDreamerRow = {
+  id: string;
+  displayName: string;
+  image: string | null;
+  characters: number | bigint;
+  followers: number | bigint;
+  likes: number | bigint;
+  chats: number | bigint;
+};
+
+async function communityDreamerRows() {
+  return prisma.$queryRaw<CommunityDreamerRow[]>`
+    SELECT
+      u.id,
+      COALESCE(u."displayName", u.name, 'Dreamer') AS "displayName",
+      u.image,
+      COUNT(c.id)::int AS characters,
+      COALESCE(f.followers, 0)::int AS followers,
+      COALESCE(SUM(cs."likesCount"), 0)::bigint AS likes,
+      COALESCE(SUM(cs."chatsCount"), 0)::bigint AS chats
+    FROM "users" u
+    JOIN "characters" c
+      ON c."creatorId" = u.id
+      AND c.visibility = 'public'
+      AND c.status = 'approved'
+      AND c."deletedAt" IS NULL
+    LEFT JOIN "character_stats" cs ON cs."characterId" = c.id
+    LEFT JOIN (
+      SELECT "followeeId", COUNT(*)::int AS followers
+      FROM "follows"
+      GROUP BY "followeeId"
+    ) f ON f."followeeId" = u.id
+    WHERE u.status = 'active'
+      AND u."deletedAt" IS NULL
+    GROUP BY u.id, u."displayName", u.name, u.image, f.followers
+    ORDER BY
+      (COALESCE(SUM(cs."likesCount"), 0) + COALESCE(SUM(cs."chatsCount"), 0)) DESC,
+      COUNT(c.id) DESC,
+      u."createdAt" DESC
+    LIMIT 12
+  `;
 }
 
 async function followUser(request: Request, targetId: string) {
@@ -1780,6 +2232,8 @@ async function unfollowUser(request: Request, targetId: string) {
 async function duplicateCharacter(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
   const source = await readableCharacter(id, user.id);
   const duplicate = await prisma.character.create({
     data: {
@@ -1804,6 +2258,8 @@ async function duplicateCharacter(request: Request, id: string) {
 async function updateCharacter(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
   const body = z
     .object({
       name: z.string().min(1).max(80).optional(),
@@ -1827,6 +2283,8 @@ async function updateCharacter(request: Request, id: string) {
 async function archiveCharacter(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
   await prisma.character.updateMany({
     where: { id, creatorId: user.id },
     data: { status: "archived", deletedAt: new Date() },
@@ -1899,28 +2357,131 @@ function mediaDTO(asset: {
   type: string;
   url: string;
   thumbnailUrl: string | null;
+  storageKey?: string | null;
+  contentType?: string | null;
+  width?: number | null;
+  height?: number | null;
   prompt: string | null;
   visibility: string;
   safetyStatus: string;
   liked: boolean;
   createdAt: Date;
 }) {
+  const displayUrl = asset.storageKey ? mediaViewUrl(asset) : asset.url;
   return {
     id: asset.id,
     type: asset.type,
-    url: asset.url,
-    thumbnailUrl: asset.thumbnailUrl ?? asset.url,
+    url: displayUrl,
+    thumbnailUrl: asset.storageKey ? displayUrl : (asset.thumbnailUrl ?? asset.url),
     prompt: asset.prompt,
     visibility: asset.visibility,
     safetyStatus: asset.safetyStatus,
     liked: asset.liked,
+    contentType: asset.contentType ?? null,
+    width: asset.width ?? null,
+    height: asset.height ?? null,
     createdAt: asset.createdAt,
   };
 }
 
+function mediaViewUrl(asset: {
+  id: string;
+  type: string;
+  contentType?: string | null;
+  storageKey?: string | null;
+  url: string;
+}) {
+  const extension = mediaFileExtension(asset) || (asset.type === "image" ? ".png" : "");
+  return `/user-content/${mediaRouteToken(asset.id)}/content${extension}`;
+}
+
+function mediaRouteToken(id: string) {
+  return Buffer.from(id, "utf8").toString("base64url");
+}
+
+function generationJobInclude() {
+  return {
+    assets: true,
+    events: { orderBy: { createdAt: "asc" as const } },
+  } satisfies Prisma.GenerationJobInclude;
+}
+
+type GenerationJobWithRelations = Prisma.GenerationJobGetPayload<{
+  include: ReturnType<typeof generationJobInclude>;
+}>;
+
+function generationJobDTO(job: GenerationJobWithRelations) {
+  return {
+    id: job.id,
+    userId: job.userId,
+    characterId: job.characterId,
+    derivedFromJobId: job.derivedFromJobId,
+    mode: job.mode,
+    prompt: job.prompt,
+    negativePrompt: job.negativePrompt,
+    controls: job.controls,
+    presetIds: job.presetIds,
+    model: job.model,
+    profileId: job.profileId,
+    profileVersion: job.profileVersion,
+    promptTemplateId: job.promptTemplateId,
+    promptTemplateVersion: job.promptTemplateVersion,
+    orientation: job.orientation,
+    outputCount: job.outputCount,
+    status: job.status,
+    costDreamcoins: job.costDreamcoins,
+    provider: job.provider,
+    errorCode: job.errorCode,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    completedAt: job.completedAt,
+  };
+}
+
+function generationJobResponse(job: GenerationJobWithRelations) {
+  const refunded = generationRefundAmount(job.events);
+  const missingOutputs = Math.max(0, job.outputCount - job.assets.length);
+  return {
+    job: generationJobDTO(job),
+    assets: job.assets.map(mediaDTO),
+    events: job.events.map((event) => ({
+      id: event.id,
+      type: event.type,
+      message: event.message,
+      metadata: event.metadata,
+      createdAt: event.createdAt,
+    })),
+    cost: {
+      charged: job.costDreamcoins,
+      refunded,
+      finalCharge: Math.max(0, job.costDreamcoins - refunded),
+      assetCount: job.assets.length,
+      requestedCount: job.outputCount,
+      missingOutputs,
+    },
+  };
+}
+
+function generationRefundAmount(events: GenerationJobWithRelations["events"]) {
+  return events.reduce((total, event) => {
+    if (event.type !== "refunded") return total;
+    const metadata = isRecord(event.metadata) ? event.metadata : {};
+    const amount = metadata.amount;
+    return total + (typeof amount === "number" && Number.isFinite(amount) ? amount : 0);
+  }, 0);
+}
+
 async function jsonBody(request: Request): Promise<unknown> {
   if (request.method === "GET" || request.method === "DELETE") return {};
-  const text = await request.text();
+  return parseJsonText(await bodyText(request));
+}
+
+async function bodyText(request: Request) {
+  if (request.method === "GET" || request.method === "DELETE") return "";
+  return request.text();
+}
+
+function parseJsonText(text: string): unknown {
   if (!text) return {};
   return JSON.parse(text) as unknown;
 }
@@ -1973,6 +2534,11 @@ function numericControl(
   return value;
 }
 
+function normalizeHeader(value: string | null) {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed.slice(0, 160) : null;
+}
+
 function slugify(value: string) {
   return value
     .trim()
@@ -2009,6 +2575,10 @@ function formatCount(value: number) {
   return String(value);
 }
 
+function numberFromDb(value: number | bigint) {
+  return typeof value === "bigint" ? Number(value) : value;
+}
+
 async function assertDraftOwner(id: string, userId: string) {
   const draft = await prisma.characterDraft.findFirst({
     where: { id, ownerId: userId },
@@ -2029,6 +2599,21 @@ async function readableCharacter(id: string, userId: string) {
     },
   });
   if (!character) throw Errors.notFound("Character not found");
+  return character;
+}
+
+async function generationCharacter(id: string, userId: string) {
+  const character = await readableCharacter(id, userId);
+  if (character.age < 18) {
+    throw Errors.badRequest("Character is not eligible for generation", {
+      policyCode: "UNDERAGE",
+    });
+  }
+  if (character.status !== "approved") {
+    throw Errors.forbidden("Character is not approved for generation", {
+      status: character.status,
+    });
+  }
   return character;
 }
 
@@ -2089,7 +2674,13 @@ async function appendLedger(
   delta: number,
   reason: string,
   sourceId?: string,
+  idempotencyKey?: string,
 ) {
+  if (idempotencyKey) {
+    const existing = await tx.dreamcoinLedger.findUnique({ where: { idempotencyKey } });
+    if (existing) return existing;
+  }
+  await lockUserLedger(tx, userId);
   const balance = await dreamcoinBalance(userId, tx);
   return tx.dreamcoinLedger.create({
     data: {
@@ -2098,27 +2689,230 @@ async function appendLedger(
       balanceAfter: balance + delta,
       reason,
       sourceId,
+      idempotencyKey,
     },
   });
 }
 
-async function refundGeneration(
-  userId: string,
-  jobId: string,
-  cost: number,
-  status = "refunded",
+async function lockUserLedger(tx: Prisma.TransactionClient, userId: string) {
+  await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId} FOR UPDATE`;
+}
+
+async function failQueuedGeneration(
+  job: { id: string; userId: string; costDreamcoins: number },
+  errorCode: string,
+  error: unknown,
 ) {
   await prisma.$transaction(async (tx) => {
-    await appendLedger(tx, userId, cost, "refund", jobId);
+    if (job.costDreamcoins > 0) {
+      await appendLedger(
+        tx,
+        job.userId,
+        job.costDreamcoins,
+        "refund",
+        job.id,
+        `generation:${job.id}:refund`,
+      );
+    }
     await tx.generationJob.update({
-      where: { id: jobId },
-      data: { status },
+      where: { id: job.id },
+      data: { status: "failed", errorCode, completedAt: new Date() },
+    });
+    await appendGenerationEvent(tx, job.id, "failed", "Generation queue enqueue failed", {
+      errorCode,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    await appendGenerationEvent(tx, job.id, "refunded", "Dreamcoins refunded", {
+      amount: job.costDreamcoins,
     });
   });
 }
 
-function generationCost(mode: "image" | "video", outputCount: number) {
-  return mode === "video" ? 100 * outputCount : 10 * outputCount;
+async function appendGenerationEvent(
+  tx: Prisma.TransactionClient,
+  jobId: string,
+  type: string,
+  message: string,
+  metadata: Record<string, unknown>,
+) {
+  return tx.generationJobEvent.create({
+    data: {
+      jobId,
+      type,
+      message,
+      metadata: toInputJson(metadata),
+    },
+  });
+}
+
+async function enqueueGenerationJob(job: {
+  id: string;
+  userId: string;
+  characterId: string | null;
+  mode: string;
+  prompt: string | null;
+  negativePrompt: string | null;
+  controls: Prisma.JsonValue;
+  presetIds: Prisma.JsonValue;
+  model: string | null;
+  orientation: string | null;
+  outputCount: number;
+}) {
+  const controls = jsonRecord(job.controls);
+  const common = {
+    version: 1 as const,
+    requestId: cryptoRandomId("gen_req"),
+    generationJobId: job.id,
+    userId: job.userId,
+    characterId: job.characterId,
+    prompt: job.prompt ?? `${job.mode === "video" ? "Video" : "Image"} generation ${job.id}`,
+    negativePrompt: job.negativePrompt,
+    controls,
+    seed: job.id,
+    model: job.model ?? (job.mode === "video" ? "mock-video" : "mock-image"),
+    outputPrefix: `gen/${job.id}/`,
+  };
+  const payload: ImageGeneratePayload | VideoGeneratePayload =
+    job.mode === "video"
+      ? {
+          ...common,
+          kind: "video",
+          seconds: numericControl(controls, "seconds", 4),
+        }
+      : {
+          ...common,
+          kind: "image",
+          presetIds: jsonStringArray(job.presetIds),
+          orientation: job.orientation ?? stringControl(controls, "orientation", "4:5"),
+          count: job.outputCount,
+        };
+  await jobQueue.enqueue({
+    queue: job.mode === "video" ? "ai.video.generate" : "ai.image.generate",
+    payload: toInputJson(payload),
+    dedupeKey: `generation:${job.id}`,
+    maxAttempts: 3,
+  });
+}
+
+function activeGenerationStatuses() {
+  return ["queued", "moderating_input", "running", "moderating_output"];
+}
+
+function maxInflightJobs(entitlements: Record<string, Prisma.JsonValue>) {
+  const configured = Number.parseInt(process.env.MAX_INFLIGHT_JOBS_PER_USER ?? "3", 10);
+  const base = Number.isFinite(configured) && configured > 0 ? configured : 3;
+  const plan = entitlements.plan;
+  if (isRecord(plan) && plan.slug === "deluxe") return Math.max(base, 6);
+  return base;
+}
+
+function signedUrlTtlSeconds() {
+  const configured = Number.parseInt(
+    process.env.SIGNED_URL_TTL_SECONDS ?? process.env.SIGNED_URL_TTL ?? "900",
+    10,
+  );
+  return Number.isFinite(configured) && configured > 0 ? configured : 900;
+}
+
+async function generationCost(mode: "image" | "video", outputCount: number, multiplier = 1) {
+  const pricing = await prisma.pricingRule.findFirst({
+    where: { mode, status: "active" },
+    orderBy: [{ effectiveFrom: "desc" }, { version: "desc" }],
+  });
+  const base = pricing?.baseCost ?? (mode === "video" ? 100 : 5);
+  return Math.ceil(base * outputCount * multiplier);
+}
+
+async function selectGenerationProfile(mode: "image" | "video", requested?: string) {
+  const where: Prisma.GenerationModelProfileWhereInput = {
+    mode,
+    status: "active",
+    enabled: true,
+    OR: requested
+      ? [{ profileKey: requested }, { id: requested }, { pipelineModel: requested }]
+      : undefined,
+  };
+  const requestedProfile = requested
+    ? await prisma.generationModelProfile.findFirst({
+        where,
+        orderBy: { version: "desc" },
+      })
+    : null;
+  const fallbackProfile =
+    requestedProfile ??
+    (await prisma.generationModelProfile.findFirst({
+      where: { mode, status: "active", enabled: true },
+      orderBy: [{ costMultiplier: "asc" }, { version: "desc" }],
+    }));
+  if (!fallbackProfile) {
+    throw Errors.internal("No active generation model profile is configured", { mode });
+  }
+  return fallbackProfile;
+}
+
+async function selectPromptTemplate(mode: "image" | "video", useCase: "character" | "freeplay") {
+  const template = await prisma.generationPromptTemplate.findFirst({
+    where: { mode, useCase, status: "active" },
+    orderBy: { version: "desc" },
+  });
+  if (!template) {
+    throw Errors.internal("No active generation prompt template is configured", { mode, useCase });
+  }
+  return template;
+}
+
+async function featureFlagEnabled(key: string) {
+  const flag = await prisma.featureFlag.findUnique({ where: { key } });
+  return Boolean(flag?.enabled);
+}
+
+function profileConfigDTO(profile: {
+  id: string;
+  profileKey: string;
+  label: string;
+  mode: string;
+  allowedOrientations: Prisma.JsonValue;
+  defaultWidth: number;
+  defaultHeight: number;
+  costMultiplier: number;
+  requiredEntitlement: string | null;
+  maxCount: number;
+  rolloutPercent: number;
+  version: number;
+}) {
+  return {
+    id: profile.profileKey,
+    label: profile.label,
+    profileId: profile.profileKey,
+    rowId: profile.id,
+    version: profile.version,
+    mode: profile.mode,
+    orientations: jsonStringArray(profile.allowedOrientations),
+    defaultWidth: profile.defaultWidth,
+    defaultHeight: profile.defaultHeight,
+    costMultiplier: profile.costMultiplier,
+    entitlement: profile.requiredEntitlement,
+    maxCount: profile.maxCount,
+    rolloutPercent: profile.rolloutPercent,
+  };
+}
+
+function templateConfigDTO(template: {
+  id: string;
+  templateKey: string;
+  label: string;
+  mode: string;
+  useCase: string;
+  version: number;
+}) {
+  return {
+    id: template.templateKey,
+    rowId: template.id,
+    label: template.label,
+    mode: template.mode,
+    useCase: template.useCase,
+    version: template.version,
+  };
 }
 
 async function entitlementMap(userId: string) {

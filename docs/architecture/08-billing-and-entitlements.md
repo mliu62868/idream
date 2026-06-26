@@ -121,11 +121,13 @@ async function has(userId: string, key: string): Promise<boolean> {
 
 ## 6. 额度（quota）与权益的区别
 
+> **经济模型已定稿，SSoT 见 `product/ECONOMY_AND_PRICING.md`。** 本节服从该文档；下面只保留工程口径。
+
 - **entitlement**：布尔/配置型能力门（能不能用 custom prompt / video / premium models）。
-- **quota**：消耗型额度（本月还剩多少 images/videos/voice 分钟/messages）。
-  - dreamcoin 是通用消耗货币（生成扣 coin）。
-  - "200 images / 月"这类 plan 内含额度，可实现为"每月发放等值 dreamcoins"或独立计数表。**MVP 建议统一折算成 dreamcoins**（KISS：一种货币、一个 ledger），plan 的 image/video 数字换算成月度 dreamcoin 发放量；语音分钟另设 `voice_usage` 计数（若需要）。
-  - 免费聊天额度用 `chat_usage`（按周期计 messages）。
+- **dreamcoin 是平台唯一消耗型货币**（决策见 ECONOMY §0）。计划卡上的「200 images / 10 videos / 20m voice」**不是独立配额**，而是「当月 dreamcoins ÷ 费率」的上限示意（5 币/图、100 币/视频、50 币/分钟，见 ECONOMY §1）。
+  - 因此 `Plan.features` 不再设 `image_quota / video_quota / voice_minutes` 独立计数；只保留 `monthly_dreamcoins`，UI 数字由 `monthly_dreamcoins ÷ 费率` 动态算出。
+  - 生成扣费走 dreamcoin ledger（§4）；语音通话按分钟扣 coin（ECONOMY §1.1），`voice_enabled` 仅作能力门。
+  - 免费聊天额度（每日 messages）仍用 `chat_usage`（ECONOMY §3）——消息免费，只限频，不走 coin。
 
 ## 7. 退款、争议、降级
 

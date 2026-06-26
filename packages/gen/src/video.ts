@@ -4,10 +4,17 @@
 import { GEN_QUEUES } from "@idream/shared/contracts";
 import { logger } from "./logger";
 import { processVideoGenerate } from "./pipeline";
+import { assertProductionProviderReady } from "./providers";
 import { enqueue, runWorker } from "./queue";
 
+assertProductionProviderReady("video");
+
 const worker = runWorker(GEN_QUEUES.videoGenerate, async (job) => {
-  await processVideoGenerate(job.payload, { enqueue });
+  await processVideoGenerate(job.payload, {
+    enqueue,
+    attemptsMade: job.attemptsMade,
+    maxAttempts: job.maxAttempts,
+  });
 });
 
 worker.on("failed", (job, err) => {

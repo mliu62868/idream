@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
+import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
 import { dispatchV1 } from "./service";
 
 const testEmail = "api-smoke@idream.local";
@@ -130,8 +131,23 @@ describe("ourdream API dispatcher", () => {
       },
       { cookie: cookies },
     );
-    expect(generation.status).toBe(200);
+    expect(generation.status).toBe(202);
     expect(generation.json).toMatchObject({
+      ok: true,
+      data: {
+        job: { status: "queued" },
+        assets: [],
+      },
+    });
+    const generationBody = generation.json as { data: { job: { id: string } } };
+    await drainLocalAiPipeline({ limit: 8, workerId: "service-smoke-worker" });
+    const poll = await call(
+      "GET",
+      `/generation/jobs/${generationBody.data.job.id}`,
+      undefined,
+      { cookie: cookies },
+    );
+    expect(poll.json).toMatchObject({
       ok: true,
       data: {
         job: { status: "completed" },

@@ -253,17 +253,17 @@ export const homeFaqs = [
   {
     question: "What is ourdream.ai's pricing?",
     answer:
-      "The target site presents monthly and yearly upgrade options with unlimited messages, image and video generation access, and dreamcoin allowances.",
+      "Ourdream offers monthly and yearly upgrade options with unlimited messages, image and video generation access, and recurring dreamcoin allowances.",
   },
   {
     question: "Is ourdream ai legit and safe to use?",
     answer:
-      "The target emphasizes privacy, safety moderation, original AI characters, and rules against underage-looking content or real-person deepfakes.",
+      "Ourdream emphasizes privacy, safety moderation, original AI characters, and rules against underage-looking content or real-person deepfakes.",
   },
   {
     question: "Are my AI roleplay chats private on Our Dream AI?",
     answer:
-      "The target FAQ describes private chat history and an emphasis on keeping roleplay conversations secure.",
+      "Private chat history is designed to stay tied to your account, with product controls and moderation paths focused on keeping roleplay conversations secure.",
   },
   {
     question: "What images can I generate on ourdream.ai?",
@@ -273,7 +273,7 @@ export const homeFaqs = [
   {
     question: "Why is ourdream more expensive than others?",
     answer:
-      "The target positions included dreamcoins and unlimited messaging as the comparison point against token-heavy competitor pricing.",
+      "Ourdream pairs unlimited messaging with included dreamcoins, so plan value is based on both chat access and media-generation allowance.",
   },
 ];
 
@@ -486,7 +486,7 @@ const routeOverrides: Record<
   "/create": {
     title: "Create Your Dream AI Girl",
     description:
-      "Character creator clone with style controls, preview cards, and the compact target-site shell.",
+      "Character creator with style controls, preview cards, and guided fields for building a private or public AI companion.",
     template: "create",
   },
   "/custom": {
@@ -504,7 +504,7 @@ const routeOverrides: Record<
   "/upgrade": {
     title: "Upgrade Ourdream",
     description:
-      "Subscription upgrade page with the yearly and monthly plan cards reflected from the target offer structure.",
+      "Subscription upgrade page with yearly and monthly plan cards, dreamcoin allowances, and premium generation controls.",
     template: "upgrade",
   },
   "/ai-girlfriend": {
@@ -532,7 +532,7 @@ const routeOverrides: Record<
   "/videos": {
     title: "AI Video Generators",
     description:
-      "Video category index for the target site's generated video landing pages.",
+      "Video category index for generated media ideas, cinematic roleplay routes, and related adult AI video pages.",
     template: "library",
   },
   "/comparison": {
@@ -556,7 +556,7 @@ const routeOverrides: Record<
   "/terms": {
     title: "Terms & Policies",
     description:
-      "Policy and terms clone page for the publicly linked terms route.",
+      "Clear platform policies for account access, adult content boundaries, creator responsibilities, and safe use.",
     template: "terms",
   },
 };
@@ -601,6 +601,59 @@ function inferTemplate(path: string): OurdreamRouteTemplate {
   return "library";
 }
 
+function defaultDescriptionForRoute({
+  path,
+  template,
+  title,
+}: Pick<OurdreamRoute, "path" | "template" | "title">) {
+  if (path.startsWith("/generate/") || path.startsWith("/generator/")) {
+    return `${title} helps adults create AI image concepts with character-aware controls, premium prompt options, and private gallery storage.`;
+  }
+
+  if (path.startsWith("/videos/")) {
+    return `${title} collects AI video ideas, safety notes, and related generator paths for adults exploring cinematic roleplay media.`;
+  }
+
+  if (path.startsWith("/type/")) {
+    return `${title} highlights a focused companion style with character suggestions, creation prompts, and related roleplay routes.`;
+  }
+
+  if (path.startsWith("/guides/")) {
+    return `${title} explains the workflow, safety boundaries, and practical choices for better AI companion roleplay.`;
+  }
+
+  if (path.startsWith("/sex-chat/")) {
+    return `${title} covers adult AI chat use cases, privacy expectations, and routes into character discovery.`;
+  }
+
+  if (path.startsWith("/comparison/") || path.includes("alternatives")) {
+    return `${title} compares AI companion options across messaging, creation controls, media generation, pricing, and safety.`;
+  }
+
+  switch (template) {
+    case "article":
+      return `${title} is a practical guide for adults using Ourdream character chat, creation tools, and media generation.`;
+    case "comparison":
+      return `${title} compares companion platforms by roleplay depth, creator tools, media features, pricing, and trust signals.`;
+    case "generator":
+      return `${title} gives adults direct access to image and video generation workflows with character selection and gallery management.`;
+    case "library":
+      return `${title} gathers related Ourdream guides, generators, companion types, and discovery pages in one place.`;
+    case "marketing":
+      return `${title} introduces Ourdream's adult AI companion experience, from character discovery to creation and private chat.`;
+    case "profile":
+      return `${title} keeps your companions, media, presets, community activity, and account actions organized.`;
+    case "safety":
+      return `${title} explains platform rules, content boundaries, reporting, and moderation expectations.`;
+    case "terms":
+      return `${title} describes the rules and policies that govern account access, adult use, and platform safety.`;
+    case "upgrade":
+      return `${title} unlocks higher usage limits, dreamcoins, and premium generation controls.`;
+    case "create":
+      return `${title} guides you through appearance, personality, voice, visibility, and profile details for a new companion.`;
+  }
+}
+
 export function getOurdreamRoute(path: string): OurdreamRoute | undefined {
   const normalized = path === "" ? "/" : path.startsWith("/") ? path : `/${path}`;
 
@@ -629,7 +682,7 @@ export function getOurdreamRoute(path: string): OurdreamRoute | undefined {
     title,
     description:
       override?.description ??
-      `${title} page cloned from the public Ourdream sitemap with the same dark AI roleplay visual system, navigation, cards, and footer structure.`,
+      defaultDescriptionForRoute({ path: normalized, template, title }),
     template,
     eyebrow: override?.eyebrow ?? "ourdream.ai",
   };

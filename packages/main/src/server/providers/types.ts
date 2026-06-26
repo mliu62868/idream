@@ -25,7 +25,22 @@ export interface ImageModel {
     prompt: string;
     count: number;
     seed?: string;
-  }): Promise<ProviderResult<{ assets: Array<{ key: string; width: number; height: number }> }>>;
+    negativePrompt?: string | null;
+    model?: string;
+    controls?: Record<string, unknown>;
+    requestId?: string;
+    orientation?: string;
+  }): Promise<
+    ProviderResult<{
+      assets: Array<{
+        key: string;
+        width: number;
+        height: number;
+        body?: Uint8Array;
+        contentType?: string;
+      }>;
+    }>
+  >;
 }
 
 export interface VideoModel {
@@ -33,6 +48,10 @@ export interface VideoModel {
     prompt: string;
     seconds: number;
     seed?: string;
+    negativePrompt?: string | null;
+    model?: string;
+    controls?: Record<string, unknown>;
+    requestId?: string;
   }): Promise<ProviderResult<{ asset: { key: string; seconds: number } }>>;
 }
 
@@ -64,7 +83,7 @@ export interface PaymentProvider {
     metadata?: Record<string, string>;
   }): Promise<
     ProviderResult<{
-      provider: "mock";
+      provider: "mock" | "btcpay";
       invoiceId: string;
       checkoutUrl: string;
       status: "created";
@@ -74,11 +93,12 @@ export interface PaymentProvider {
     providerEventId: string;
     payload: unknown;
     signature?: string;
+    rawBody?: string;
   }): Promise<
     ProviderResult<{
       providerEventId: string;
-      type: "invoice.confirmed";
-      invoiceId: string;
+      type: "invoice.confirmed" | "invoice.ignored";
+      invoiceId?: string;
     }>
   >;
 }
@@ -89,7 +109,11 @@ export interface BlobStore {
     body: Uint8Array;
     contentType: string;
   }): Promise<ProviderResult<{ key: string; size: number }>>;
-  signGetUrl(input: { key: string; expiresInSeconds: number }): Promise<ProviderResult<{ url: string }>>;
+  signGetUrl(input: {
+    key: string;
+    expiresInSeconds: number;
+    downloadFilename?: string;
+  }): Promise<ProviderResult<{ url: string }>>;
   delete(input: { key: string }): Promise<ProviderResult<{ deleted: true }>>;
 }
 
@@ -99,10 +123,23 @@ export interface AgeVerificationProvider {
     jurisdiction?: string;
   }): Promise<
     ProviderResult<{
-      provider: "mock";
+      provider: "mock" | "gocam";
       providerVerificationId: string;
-      status: "not_required";
+      status: "not_required" | "pending" | "verified" | "failed" | "expired";
       url?: string;
+    }>
+  >;
+  parseWebhook(input: {
+    providerEventId: string;
+    payload: unknown;
+    signature?: string;
+    rawBody?: string;
+  }): Promise<
+    ProviderResult<{
+      providerEventId: string;
+      userId?: string;
+      providerVerificationId?: string;
+      status: "pending" | "verified" | "failed" | "expired";
     }>
   >;
 }

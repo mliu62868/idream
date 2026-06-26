@@ -4,10 +4,17 @@
 import { GEN_QUEUES } from "@idream/shared/contracts";
 import { logger } from "./logger";
 import { processImageGenerate } from "./pipeline";
+import { assertProductionProviderReady } from "./providers";
 import { enqueue, runWorker } from "./queue";
 
+assertProductionProviderReady("image");
+
 const worker = runWorker(GEN_QUEUES.imageGenerate, async (job) => {
-  await processImageGenerate(job.payload, { enqueue });
+  await processImageGenerate(job.payload, {
+    enqueue,
+    attemptsMade: job.attemptsMade,
+    maxAttempts: job.maxAttempts,
+  });
 });
 
 worker.on("failed", (job, err) => {

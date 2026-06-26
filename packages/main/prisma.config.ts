@@ -1,8 +1,7 @@
 import "dotenv/config";
 import { defineConfig } from "prisma/config";
 
-const dbProvider = process.env.DB_PROVIDER ?? "sqlite";
-const defaultSqliteUrl = "file:./dev.db";
+const defaultPostgresUrl = "postgresql://postgres:postgres@localhost:5433/idream";
 
 export default defineConfig({
   schema: "prisma/schema.prisma",
@@ -11,8 +10,6 @@ export default defineConfig({
     seed: "tsx prisma/seed.ts",
   },
   datasource: {
-    url:
-      process.env.DATABASE_URL ??
-      (dbProvider === "sqlite" ? defaultSqliteUrl : undefined),
+    url: process.env.DATABASE_URL ?? defaultPostgresUrl,
   },
 });

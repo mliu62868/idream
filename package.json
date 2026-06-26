@@ -14,7 +14,6 @@
   "trustedDependencies": [
     "@prisma/engines",
     "prisma",
-    "better-sqlite3",
     "esbuild",
     "msgpackr-extract",
     "sharp",
@@ -27,9 +26,26 @@
     "test": "turbo run test",
     "check": "turbo run lint typecheck build",
     "dev": "bun run --filter @idream/main dev",
+    "dev:admin": "bun run --filter @idream/admin dev",
     "pm2:start": "pm2 start ecosystem.config.js",
     "pm2:stop": "pm2 stop ecosystem.config.js",
-    "pm2:status": "pm2 status"
+    "pm2:restart": "pm2 restart ecosystem.config.js",
+    "pm2:reload": "pm2 reload ecosystem.config.js",
+    "pm2:status": "pm2 status",
+    "pm2:logs": "pm2 logs",
+    "check:launch": "bun run --filter @idream/main check:launch",
+    "check:launch:direct": "packages/main/node_modules/.bin/tsx packages/main/src/server/launch-readiness.ts",
+    "launch:probe:age": "bun run --filter @idream/main probe:age",
+    "launch:probe:blob": "bun run --filter @idream/main probe:blob",
+    "launch:probe:chat": "bun run --filter @idream/main probe:chat",
+    "launch:probe:chat-service": "bun run --filter @idream/main probe:chat-service",
+    "launch:probe:image:local": "node scripts/run-local-image-probe.mjs",
+    "launch:probe:payment": "bun run --filter @idream/main probe:payment",
+    "launch:probe:product-config": "bun run --filter @idream/main probe:product-config",
+    "launch:probe:safety": "bun run --filter @idream/main probe:safety",
+    "launch:probe:web-surface": "bun run --filter @idream/main probe:web-surface",
+    "launch:probe:voice": "bun run --filter @idream/main probe:voice",
+    "launch:secrets": "node scripts/generate-launch-secrets.mjs"
   },
   "devDependencies": {
     "turbo": "^2.9.18"

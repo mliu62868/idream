@@ -6,6 +6,7 @@ import {
   expectOk,
   grantCoins,
   purgeTestData,
+  runQueuedGenerationJobs,
 } from "@/server/test/helpers";
 
 // SPEC (docs/architecture/11-testing.md §4 — core flows + state machines):
@@ -204,7 +205,7 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
     expect(submit.data.character).toMatchObject({ status: "approved", visibility: "private" });
     const characterId = submit.data.character.id as string;
 
-    const library = await api("GET", "library/created", { userId });
+    const library = await api("GET", "library/created", { userId, ageGate: true });
     expectOk(library);
     expect((library.data.items as Array<{ id: string }>).map((c) => c.id)).toContain(characterId);
   });
@@ -241,19 +242,27 @@ describe("generation → media gallery", () => {
       ageGate: true,
       body: { mode: "image", characterId: charId, outputCount: 1 },
     });
-    expectOk(gen);
-    expect(gen.data.job.status).toBe("completed");
-    const assetId = (gen.data.assets as Array<{ id: string }>)[0].id;
+    expectOk(gen, 202);
+    expect(gen.data.job.status).toBe("queued");
+    await runQueuedGenerationJobs(8);
 
-    const poll = await api("GET", `generation/jobs/${gen.data.job.id}`, { userId });
+    const poll = await api("GET", `generation/jobs/${gen.data.job.id}`, {
+      userId,
+      ageGate: true,
+    });
     expectOk(poll);
     expect(poll.data.job.status).toBe("completed");
+    const assetId = (poll.data.assets as Array<{ id: string }>)[0].id;
 
-    const gallery = await api("GET", "media", { userId, query: { type: "image" } });
+    const gallery = await api("GET", "media", {
+      userId,
+      ageGate: true,
+      query: { type: "image" },
+    });
     expectOk(gallery);
     expect((gallery.data.items as Array<{ id: string }>).map((m) => m.id)).toContain(assetId);
 
-    const libraryMedia = await api("GET", "library/media", { userId });
+    const libraryMedia = await api("GET", "library/media", { userId, ageGate: true });
     expectOk(libraryMedia);
     expect((libraryMedia.data.items as Array<{ id: string }>).map((m) => m.id)).toContain(assetId);
   });

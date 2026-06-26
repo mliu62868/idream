@@ -343,6 +343,18 @@ export const aiFinalizePayloadSchema = z.discriminatedUnion("kind", [
       }),
     })
     .passthrough(),
+  z
+    .object({
+      version: z.literal(1),
+      kind: z.literal("generation.blocked"),
+      requestId: z.string(),
+      generationJobId: z.string(),
+      mode: z.enum(["image", "video"]),
+      policyCode: z.string(),
+      message: z.string(),
+      layer: z.enum(["input", "output", "provider"]).default("input"),
+    })
+    .passthrough(),
 ]);
 
 export type ChatStreamEvent = z.infer<typeof chatStreamEventSchema>;

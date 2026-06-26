@@ -157,7 +157,7 @@ function FeatureGrid() {
   const features = [
     ["Create", "Shape appearance, personality, voice, and style."],
     ["Chat", "Start long-memory roleplay with public or private characters."],
-    ["Generate", "Use image and video controls from the target generator flow."],
+    ["Generate", "Use image and video controls with saved gallery results."],
     ["Upgrade", "Mirror the premium plan and dreamcoin subscription surface."],
   ];
 
@@ -213,9 +213,9 @@ function MarketingPage({ route }: Readonly<{ route: OurdreamRoute }>) {
               Build your dream companion
             </h2>
             <p className="mt-4 text-[14px] font-medium leading-6 text-white/80">
-              The target page combines creator CTAs, feature blocks, testimonials,
-              and internal article cards. This clone preserves that structure for
-              every public marketing route.
+              Discover adult AI companions, customize the details that matter,
+              and move from exploration to private chat or generation without
+              losing context.
             </p>
             <Link
               className="mt-6 inline-flex h-10 items-center justify-center rounded-full bg-white px-5 text-[13px] font-bold text-[rgb(13,13,13)]"
@@ -308,8 +308,8 @@ function LibraryPage({ route }: Readonly<{ route: OurdreamRoute }>) {
                 {card.title}
               </h2>
               <p className="mt-3 text-[13px] font-medium leading-6 text-[rgb(170,170,170)]">
-                Public sitemap route cloned into the shared Ourdream page
-                system.
+                Browse related guides, generators, companion styles, and
+                discovery routes in the Ourdream experience.
               </p>
               <span className="mt-5 inline-flex items-center gap-2 text-[13px] font-bold text-white">
                 Open
@@ -365,11 +365,9 @@ function ArticlePage({ route }: Readonly<{ route: OurdreamRoute }>) {
                   {section}
                 </h2>
                 <p className="mt-4 text-[15px] leading-8 text-[rgb(170,170,170)]">
-                  The original route uses a long editorial article layout with a
-                  dark background, bold white headings, muted body copy, inline
-                  links, and related CTAs. This cloned route preserves that page
-                  architecture for sitemap coverage while keeping backend and
-                  account features out of scope.
+                  Ourdream combines adult character discovery, private chat,
+                  companion creation, generation tools, and safety controls so
+                  each workflow can move from idea to saved experience.
                 </p>
                 {index === 1 && (
                   <div className="mt-5 grid gap-3 md:grid-cols-3">
@@ -458,14 +456,15 @@ function TermsPage({ route }: Readonly<{ route: OurdreamRoute }>) {
           </h1>
           <div className="mt-8 space-y-5 rounded-[18px] border border-white/10 bg-[rgb(18,18,18)] p-6 text-[15px] leading-8 text-[rgb(170,170,170)]">
             <p>
-              This visual clone recreates the public terms route surface and
-              footer navigation. It does not reproduce account systems,
-              payments, moderation tooling, or legally binding policy behavior.
+              Ourdream is intended for adults. By using the service, you agree
+              to follow the platform rules, respect creator and user safety, and
+              avoid content that violates age, consent, likeness, or abuse
+              policies.
             </p>
             <p>
-              The original site links to terms from the age gate and footer. In
-              this clone, the route remains available so every public link has a
-              matching page.
+              Account access, billing, generated media, reports, moderation
+              reviews, and appeals are handled through the product surfaces and
+              support routes linked throughout the app.
             </p>
           </div>
         </div>

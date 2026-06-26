@@ -15,6 +15,11 @@
 docs/product/PRD.md                 ← 产品需求（什么）
 docs/product/ProductFeatureMap.md   ← 功能/页面映射
 docs/product/BackendFeatureSpec.md  ← 后台模块/实体/状态机/API surface/授权矩阵（功能契约）
+docs/product/ECONOMY_AND_PRICING.md ← 经济模型/dreamcoin 费率卡（计费 SSoT）
+docs/product/CONTENT_POLICY.md      ← 内容安全政策/禁止项/申诉流程（政策 SSoT）
+docs/product/IMAGE_GENERATION_SERVICE_PLAN.md ← 图片生成产品/流水线/provider 方案
+docs/product/ADMIN_CONSOLE_PLAN.md  ← 全产品管理后台/配置控制面方案
+docs/product/PRODUCT_PLAN_REVIEW.md ← 产品完整性评审与发布门槛
         │
         ▼
 docs/architecture/*                 ← 技术实现方案（本目录，怎么做）
@@ -36,7 +41,7 @@ prisma/schema.prisma + src/server/* ← 代码（最终事实来源）
 | 04 | [04-api-design.md](./04-api-design.md) | API 规范：响应/错误/校验/分页/鉴权/限流/幂等/SSE | 前后端 |
 | 05 | [05-module-design.md](./05-module-design.md) | 各后台模块的 service/repository 职责与关键流程 | 后台工程 |
 | 06 | [06-async-jobs-and-ai.md](./06-async-jobs-and-ai.md) | Redis/BullMQ、Chat 内部队列、AI provider 抽象、生成流水线 | 后台工程 |
-| 07 | [07-security-and-compliance.md](./07-security-and-compliance.md) | 鉴权、年龄合规、内容审核、CSAM/NCMEC、隐私、密钥、审计 | 全员 + 法务 |
+| 07 | [07-security-and-compliance.md](./07-security-and-compliance.md) | 鉴权、年龄合规、内容审核、隐私、密钥、审计 | 全员 + 法务 |
 | 08 | [08-billing-and-entitlements.md](./08-billing-and-entitlements.md) | 订阅、PSP、webhook 幂等、权益派生、dreamcoin ledger | 后台工程 |
 | 09 | [09-project-structure.md](./09-project-structure.md) | 目录结构、分层约定、命名、模块骨架 | 所有工程 |
 | 10 | [10-operations.md](./10-operations.md) | 环境、env 变量目录、部署、连接池、迁移 runbook、CI、可观测性 | DevOps |
@@ -46,6 +51,7 @@ prisma/schema.prisma + src/server/* ← 代码（最终事实来源）
 | 14 | [14-chat-service-tech-design.md](./14-chat-service-tech-design.md) | Chat Service 技术架构（服务拆分、权限边界、热路径、存储/记忆、服务目录/协议/pm2） | Lead、后端 |
 
 > 实施执行计划见仓库根 [`PLAN.md`](../../PLAN.md)（阶段/任务/验收 SSoT）。
+> 图片生成方案见 [IMAGE_GENERATION_SERVICE_PLAN.md](../product/IMAGE_GENERATION_SERVICE_PLAN.md)，管理后台方案见 [ADMIN_CONSOLE_PLAN.md](../product/ADMIN_CONSOLE_PLAN.md)，产品完整性评审见 [PRODUCT_PLAN_REVIEW.md](../product/PRODUCT_PLAN_REVIEW.md)。
 
 ## 2. 技术栈一览
 
@@ -62,6 +68,7 @@ prisma/schema.prisma + src/server/* ← 代码（最终事实来源）
 | 支付 | 抽象 `PaymentProvider`；**生产用加密货币**（推荐自托管 BTCPay Server，非托管/无 AUP 风险） | 见 02-ADR-4 |
 | 异步 | Redis/BullMQ + worker；Chat Service 内部队列；Image/Video 跨服务队列 | 见 06 |
 | AI | 抽象 `ChatModel`/`ImageModel`/`VideoModel`/`Voice`/`Moderation` | **自托管开源模型，经内部流水线 API（OpenAI 兼容）接入**，见 02-ADR-6 |
+| 管理后台 | `/admin` + `/api/v1/admin/*` | 审核、用户、生成配置、产品配置、计费排障、审计，见 `ADMIN_CONSOLE_PLAN.md` |
 | 对象存储 | 抽象 `BlobStore`；参考 S3 兼容（R2）/ Vercel Blob(private) | 签名 URL，见 02-ADR-8 |
 | 限流 | DB 令牌桶（dev）/ Upstash Redis（prod 推荐） | 见 02-ADR-9 |
 | 部署 | Vercel（主）；`output: standalone` 亦支持 Docker | 见 10 |
@@ -87,10 +94,10 @@ prisma/schema.prisma + src/server/* ← 代码（最终事实来源）
 
 这是一个 **18+ 成人 AI 产品**，下列项是**法律 / 平台政策强制**，不是可选优化（详见 07）：
 
-1. **CSAM / 未成年内容零容忍**：输入与输出都必须过未成年检测；命中即拦截、留证、按法律向 **NCMEC** 等机构上报；角色年龄强制 `>= 18`。
+1. **未成年内容零容忍**：输入与输出命中未成年内容即拦截、留证；角色年龄强制 `>= 18`。（涉未成年素材的自动检测管线与法定上报由**合规/法务侧独立负责，不在本产品/工程设计范围**。）
 2. **年龄门槛 + 身份年龄验证**：成人内容前置 age gate；按司法辖区触发第三方身份验证后才能使用受限路由。
 3. **深度伪造 / 真实人物 / 受版权 IP / 非自愿框架 / 规避尝试**：创建与生成阶段必须检测并拒绝。
-4. **支付与模型供应商**：已定 **加密货币支付 + 自托管开源模型（流水线 API）**，规避卡组织与公有 API 的成人内容封禁。**MVP 阶段支付用 mock**；**CSAM 检测/上报与第三方年龄验证暂缓为上线前 deferred TODO**（设计不弱化，见 12 暂缓项 / 07）。
+4. **支付与模型供应商**：已定 **加密货币支付 + 自托管开源模型（流水线 API）**，规避卡组织与公有 API 的成人内容封禁。**MVP 阶段支付用 mock**；**第三方年龄验证暂缓为上线前 deferred TODO**（设计不弱化，见 12 暂缓项 / 07）。
 5. **隐私**：聊天默认私密；敏感内容不进公开 feed；举报人身份不对被举报方披露。
 
 ## 5. 当前代码现状（基线）

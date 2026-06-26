@@ -16,7 +16,7 @@ export const idempotencyKeys = {
   chatSessionAppend: (assistantMessageId: string, attempt: number) =>
     `chat-session-append:${assistantMessageId}:${attempt}`,
   generation: (jobId: string) => `generation:${jobId}`,
-  generationFinalize: (jobId: string, state: "completed" | "failed") =>
+  generationFinalize: (jobId: string, state: "completed" | "failed" | "blocked") =>
     `generation-finalize:${jobId}:${state}`,
 } as const;
 

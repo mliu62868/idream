@@ -1,13 +1,23 @@
+import "dotenv/config";
 import { defineConfig } from "@playwright/test";
 
 // SPEC (docs/architecture/11-testing.md §5): L4 E2E runs against a real `next dev`
-// server backed by the seeded dev.db with mock providers. SQLite + a single dev
-// server → run serially to avoid write-lock contention.
+// server backed by seeded Postgres with the provider config from the active env.
+// Keep a single dev server so browser flows share the same seeded state.
 //
 // Server management: by default the suite expects a dev server already running at
-// baseURL (start it with `npm run dev`, e.g. in tmux/CI before the run). Set
+// baseURL (start it with `bun run dev`, e.g. in tmux/CI before the run). Set
 // PW_WEBSERVER=1 to let Playwright boot and manage `next dev` itself.
 const managedWebServer = process.env.PW_WEBSERVER === "1";
+const baseURL = process.env.PW_BASE_URL ?? "http://127.0.0.1:3000";
+const basePort = new URL(baseURL).port || "3000";
+const adminBaseURL =
+  process.env.PW_ADMIN_BASE_URL ??
+  (() => {
+    const url = new URL(baseURL);
+    url.port = "3001";
+    return url.toString().replace(/\/$/, "");
+  })();
 
 export default defineConfig({
   testDir: "src",
@@ -18,17 +28,29 @@ export default defineConfig({
   timeout: 90_000,
   expect: { timeout: 15_000 },
   use: {
-    baseURL: "http://127.0.0.1:3000",
+    baseURL,
     actionTimeout: 15_000,
     navigationTimeout: 30_000,
     trace: "retain-on-failure",
   },
   webServer: managedWebServer
-    ? {
-        command: "npm run dev",
-        url: "http://127.0.0.1:3000",
-        reuseExistingServer: true,
-        timeout: 120_000,
-      }
+    ? [
+        {
+          command: `bun run dev -- --port ${basePort}`,
+          url: baseURL,
+          reuseExistingServer: true,
+          timeout: 120_000,
+        },
+        ...(process.env.PW_ADMIN_BASE_URL
+          ? []
+          : [
+              {
+                command: "bun --cwd ../.. run --filter @idream/admin dev",
+                url: adminBaseURL,
+                reuseExistingServer: true,
+                timeout: 120_000,
+              },
+            ]),
+      ]
     : undefined,
 });

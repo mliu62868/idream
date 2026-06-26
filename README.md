@@ -1,171 +1,161 @@
-# AI Website Cloner Template
+# iDream
 
-<a href="https://github.com/JCodesMore/ai-website-cloner-template/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License" /></a> <a href="https://github.com/JCodesMore/ai-website-cloner-template/stargazers"><img src="https://img.shields.io/github/stars/JCodesMore/ai-website-cloner-template?style=flat" alt="Stars" /></a> <a href="https://discord.gg/hrTSX5yTpB"><img src="https://img.shields.io/discord/1400896964597383279?label=discord" alt="Discord" /></a>
+iDream is an AI companion product monorepo. It contains the public web app, admin console, chat service, generation workers, shared contracts, provider adapters, launch probes, and product documentation.
 
-A reusable template for reverse-engineering any website into a clean, modern Next.js codebase using AI coding agents. 
+Current launch status: **not public-launch ready yet**. Local product flows pass, but production launch is blocked until real chat, moderation, payment, object storage, age verification, and observability providers are configured and probed. See:
 
-**Recommended: [Claude Code](https://docs.anthropic.com/en/docs/claude-code) with Opus 4.7 for best results** — but works with a variety of AI coding agents.
+- [Current functional coverage](docs/product/CURRENT_FUNCTIONAL_COVERAGE.md)
+- [Launch readiness audit](docs/product/LAUNCH_READINESS_AUDIT.md)
+- [Operations runbook](docs/architecture/10-operations.md)
 
-Point it at a URL, run `/clone-website`, and your AI agent will inspect the site, extract design tokens and assets, write component specs, and dispatch parallel builders to reconstruct every section.
+## Stack
 
-## Demo
+- Next.js 16, React 19, TypeScript strict
+- Tailwind CSS v4
+- Prisma 7
+- BullMQ + Redis
+- Postgres for production-like tests
+- Playwright E2E
+- PM2 self-hosted process topology
 
-[![Watch the demo](docs/design-references/comparison.png)](https://youtu.be/O669pVZ_qr0)
+## Packages
 
-> Click the image above to watch the full demo on YouTube.
+| Package | Purpose |
+| --- | --- |
+| `packages/main` | Public product app, API/BFF, auth, billing, admin API, finalizer |
+| `packages/admin` | Admin web console on port 3001 |
+| `packages/chat` | Split chat API/SSE service and chat storage |
+| `packages/gen` | Image/video generation workers and pipeline adapters |
+| `packages/shared` | Cross-service contracts, media/storage/moderation helpers |
 
-## Quick Start
-
-> **Important:** Start by making your own copy with GitHub's **Use this template** button. Do not clone this template repository directly for your website project, and do not open pull requests here with your generated website.
-
-1. **Create your own repository from this template**
-
-   On the GitHub page for this project, click **Use this template**, then click **Create a new repository**.
-
-   Give your new repository a name, choose whether it should be public or private, then click **Create repository**. If GitHub shows an **Include all branches** option, you can leave it off.
-
-   This gives you your own separate project to work in, so your website changes stay in your account instead of coming back to the main template.
-
-2. **Open your new repository on your computer**
-
-   After GitHub creates your copy, open that new repository. Click **Code** and open or clone your new repository with your preferred coding tool.
-
-   If you use the terminal, the command will look like this:
-
-   ```bash
-   git clone https://github.com/YOUR-USERNAME/YOUR-NEW-REPOSITORY.git
-   cd YOUR-NEW-REPOSITORY
-   ```
-
-3. **Install dependencies**
-   ```bash
-   npm install
-   ```
-4. **Start your AI agent** — Claude Code recommended:
-   ```bash
-   claude --chrome
-   ```
-5. **Run the skill**:
-   ```
-   /clone-website <target-url1> [<target-url2> ...]
-   ```
-6. **Customize** (optional) — after the base clone is built, modify as needed
-
-> Using a different agent? Open `AGENTS.md` for project instructions — most agents pick it up automatically.
-
-## Supported Platforms
-
-| Agent                                                         | Status                     |
-| ------------------------------------------------------------- | -------------------------- |
-| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | **Recommended** — Opus 4.7 |
-| [Codex CLI](https://github.com/openai/codex)                  | Supported                  |
-| [OpenCode](https://opencode.ai/)                              | Supported                  |
-| [GitHub Copilot](https://github.com/features/copilot)         | Supported                  |
-| [Cursor](https://cursor.com/)                                 | Supported                  |
-| [Windsurf](https://codeium.com/windsurf)                      | Supported                  |
-| [Gemini CLI](https://github.com/google-gemini/gemini-cli)     | Supported                  |
-| [Cline](https://github.com/cline/cline)                       | Supported                  |
-| [Roo Code](https://github.com/RooCodeInc/Roo-Code)            | Supported                  |
-| [Continue](https://continue.dev/)                             | Supported                  |
-| [Amazon Q](https://aws.amazon.com/q/developer/)               | Supported                  |
-| [Augment Code](https://www.augmentcode.com/)                  | Supported                  |
-| [Aider](https://aider.chat/)                                  | Supported                  |
-
-## Prerequisites
-
-- [Node.js](https://nodejs.org/) 24+
-- An AI coding agent (see [Supported Platforms](#supported-platforms))
-
-## Tech Stack
-
-- **Next.js 16** — App Router, React 19, TypeScript strict
-- **shadcn/ui** — Radix primitives + Tailwind CSS v4
-- **Tailwind CSS v4** — oklch design tokens
-- **Lucide React** — default icons (replaced by extracted SVGs during cloning)
-
-## How It Works
-
-The `/clone-website` skill runs a multi-phase pipeline:
-
-1. **Reconnaissance** — screenshots, design token extraction, interaction sweep (scroll, click, hover, responsive)
-2. **Foundation** — updates fonts, colors, globals, downloads all assets
-3. **Component Specs** — writes detailed spec files (`docs/research/components/`) with exact computed CSS values, states, behaviors, and content
-4. **Parallel Build** — dispatches builder agents in git worktrees, one per section/component
-5. **Assembly & QA** — merges worktrees, wires up the page, runs visual diff against the original
-
-Each builder agent receives the full component specification inline — exact `getComputedStyle()` values, interaction models, multi-state content, responsive breakpoints, and asset paths. No guessing.
-
-## Use Cases
-
-- **Platform migration** — rebuild a site you own from WordPress/Webflow/Squarespace into a modern Next.js codebase
-- **Lost source code** — your site is live but the repo is gone, the developer left, or the stack is legacy. Get the code back in a modern format
-- **Learning** — deconstruct how production sites achieve specific layouts, animations, and responsive behavior by working with real code
-
-## Not Intended For
-
-- **Phishing or impersonation** — this project must not be used for deceptive purposes, impersonation, or any activity that breaks the law.
-- **Passing off someone's design as your own** — logos, brand assets, and original copy belong to their owners.
-- **Violating terms of service** — some sites explicitly prohibit scraping or reproduction. Check first.
-
-## Project Structure
-
-```
-src/
-  app/              # Next.js routes
-  components/       # React components
-    ui/             # shadcn/ui primitives
-    icons.tsx       # Extracted SVG icons
-  lib/utils.ts      # cn() utility
-  types/            # TypeScript interfaces
-  hooks/            # Custom React hooks
-public/
-  images/           # Downloaded images from target
-  videos/           # Downloaded videos from target
-  seo/              # Favicons, OG images
-docs/
-  research/         # Extraction output & component specs
-  design-references/ # Screenshots
-scripts/
-  sync-agent-rules.sh  # Regenerate agent instruction files
-  sync-skills.mjs      # Regenerate /clone-website for all platforms
-AGENTS.md           # Agent instructions (single source of truth)
-CLAUDE.md           # Claude Code config (imports AGENTS.md)
-GEMINI.md           # Gemini CLI config (imports AGENTS.md)
-```
-
-## Commands
+## Common Commands
 
 ```bash
-npm run dev    # Start dev server
-npm run build  # Production build
-npm run lint   # ESLint check
-npm run typecheck # TypeScript check
-npm run check  # Run lint + typecheck + build
+bun install
+bun run dev
+bun run dev:admin
+bun run build
+bun run test
+bun run check
+bun run pm2:start
+bun run pm2:status
 ```
 
-### If using docker
+Useful package-level commands:
 
 ```bash
-docker compose up app --build # build and run the app
-docker compose up dev --build # run the app in dev mode on port 3001
+bun run --filter @idream/main test
+bun run --filter @idream/main test:e2e
+bun run --filter @idream/main db:push
+bun run --filter @idream/main db:seed
+bun run --filter @idream/chat test
+bun run --filter @idream/gen test
 ```
 
-## Updating for Other Platforms
+## Local Services
 
-Two source-of-truth files power all platform support. Edit the source, then run the sync script:
+PM2 starts the product topology from `ecosystem.config.js`:
 
-| What                   | Source of truth                         | Sync command                       |
-| ---------------------- | --------------------------------------- | ---------------------------------- |
-| Project instructions   | `AGENTS.md`                             | `bash scripts/sync-agent-rules.sh` |
-| `/clone-website` skill | `.claude/skills/clone-website/SKILL.md` | `node scripts/sync-skills.mjs`     |
+| PM2 app | Default port | Description |
+| --- | --- | --- |
+| `main-web` | 3000 | Public app and `/api/v1/*` |
+| `admin-web` | 3001 | Admin console |
+| `chat` | `CHAT_PORT` | Chat API/SSE |
+| `gen-image` | n/a | Image worker |
+| `gen-video` | n/a | Video worker |
+| `gen-finalizer` | n/a | Main-side generation finalizer |
+| `main-event-consumer` | n/a | Main-side event consumer |
+| `sdcpp-image` | 8091 | Local OpenAI-compatible image gateway wrapper |
 
-Each script regenerates the platform-specific copies automatically. Agents that read the source files natively need no regeneration.
+After `bun run build`, restart web processes before browser verification:
 
+```bash
+pm2 restart main-web admin-web
+```
 
-## Star History
+## Image Generation
 
-[![Star History Chart](https://api.star-history.com/svg?repos=JCodesMore/ai-website-cloner-template&type=Date)](https://star-history.com/#JCodesMore/ai-website-cloner-template&Date)
+Product services do not load `.safetensors` directly and do not call sd.cpp directly. The product boundary is the OpenAI-compatible pipeline gateway:
 
-## License
+```text
+main-web / packages/gen
+  -> GEN_IMAGE_PROVIDER=pipeline
+  -> PIPELINE_API_URL
+  -> pipeline gateway
+  -> optional local sd.cpp runner
+  -> model files
+```
 
-MIT
+For local image smoke, the current runner can wrap:
+
+```text
+~/Downloads/pornmasterZImage_turboV35Bf16.safetensors
+```
+
+behind `sdcpp-image`, while product code only sees `PIPELINE_API_URL`, `PIPELINE_API_TOKEN`, and model alias `pornmaster-zimage-turbo`.
+
+`sdcpp-image` defaults to `/Users/kk/Downloads/pornmasterZImage_turboV35Bf16.safetensors` as `SDCPP_SOURCE_MODEL`. If the runner needs a converted artifact, set `SDCPP_CONVERTED_DIFFUSION_MODEL` or `SDCPP_DIFFUSION_MODEL`; keep `SDCPP_SOURCE_MODEL` pointed at the original safetensors so model provenance remains explicit.
+
+## Launch Checks
+
+Generate production secrets:
+
+```bash
+bun run --silent launch:secrets
+```
+
+Run launch probes:
+
+```bash
+bun run launch:probe:image:local
+bun run launch:probe:web-surface -- --report .tmp/launch-web-surface-probe.json
+bun run launch:probe:product-config -- --report .tmp/launch-product-config-probe.json
+bun run launch:probe:chat-service -- --report .tmp/launch-chat-service-probe.json
+bun run launch:probe:chat -- --report .tmp/launch-chat-probe.json
+bun run launch:probe:voice -- --report .tmp/launch-voice-probe.json
+bun run launch:probe:blob -- --report .tmp/launch-blob-probe.json
+bun run launch:probe:payment -- --report .tmp/launch-payment-probe.json
+bun run launch:probe:age -- --report .tmp/launch-age-probe.json
+bun run launch:probe:safety -- --report .tmp/launch-safety-probe.json
+```
+
+Run the final direct gate:
+
+```bash
+bun run check:launch:direct -- --launch-env-file .tmp/production-launch.env
+```
+
+The final gate must pass with real production values before public launch. The local `.tmp/launch-probe-only.env` file is only a diagnostic input; it intentionally keeps real external providers unconfigured and currently fails on those production dependencies.
+
+## Production Env Templates
+
+Start from these templates and move filled values into a secret manager:
+
+- `packages/main/.env.production.example`
+- `packages/chat/.env.production.example`
+- `packages/gen/.env.production.example`
+
+Do not commit filled production env files.
+
+## Verification Evidence
+
+The current E2E coverage includes:
+
+- age gate
+- signup/session
+- Explore search/filter/pagination
+- character detail
+- Create -> My AI
+- chat send/persist/report
+- image/video generation
+- Upgrade entitlement and dreamcoins
+- community dreamers/report
+- profile settings/redeem/referral/language/media/account deletion
+- public route smoke
+- admin web and admin API
+
+See [Current functional coverage](docs/product/CURRENT_FUNCTIONAL_COVERAGE.md) for the full map.
+
+## Agent Notes
+
+Project-specific agent instructions live in `AGENTS.md`. This repo uses Next.js 16, so read the local Next docs in `node_modules/next/dist/docs/` before making framework-sensitive changes.

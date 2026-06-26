@@ -2,6 +2,11 @@
 
 更新日期：2026-06-13
 
+> 当前实现状态已在 2026-06-25 重新审计，见
+> [CURRENT_FUNCTIONAL_COVERAGE.md](./CURRENT_FUNCTIONAL_COVERAGE.md) 和
+> [LAUNCH_READINESS_AUDIT.md](./LAUNCH_READINESS_AUDIT.md)。本文保留 2026-06-13
+> 对标站功能地图和早期缺口池；其中“未实现/静态实现”的状态不再代表当前代码态。
+
 ## 1. 资料来源
 
 - `src/lib/ourdream-data.ts`
@@ -124,12 +129,14 @@
 
 ### 5.5 Subscription
 
+> **单一货币口径**：dreamcoin 是唯一消耗型货币，图片/视频/语音**无独立配额**。下表中「200 images / 10 videos / 20m voice」等均为「当月 dreamcoin ÷ 费率」的展示示意（动态算出），定价/费率/免费档 SSoT 见 `ECONOMY_AND_PRICING.md`。
+
 | 功能 | 页面 | 数据 | 当前状态 |
 | --- | --- | --- | --- |
 | Upgrade plan cards | `/upgrade` | SubscriptionPlan | 静态实现 |
 | Monthly/Yearly | `/upgrade` | billingPeriod | Chrome 观察：Monthly、Yearly Save 75% + free coins |
-| Premium plan | `/upgrade` | plan=premium | Chrome 观察：$19.99/mo 或 $9.99/mo yearly；1,000 dreamcoins、200 images、20m voice、10 videos |
-| Deluxe plan | `/upgrade` | plan=deluxe | Chrome 观察：$59.99/mo 或 $29.99/mo yearly；Premium models、3x memory、5,000 dreamcoins、1,000 images、100m voice、50 videos |
+| Premium plan | `/upgrade` | plan=premium | Chrome 观察：$19.99/mo 或 $9.99/mo yearly；1,000 dreamcoins（卡面 200 images/20m voice/10 videos 为折算示意，见 economy） |
+| Deluxe plan | `/upgrade` | plan=deluxe | Chrome 观察：$59.99/mo 或 $29.99/mo yearly；Premium models、3x memory、5,000 dreamcoins（卡面 images/voice/videos 为同一套费率折算示意，见 economy） |
 | Promo surfaces | home toast/banner | campaign | 静态实现 |
 | Checkout | `/upgrade` | payment provider | 未实现 |
 | Premium entitlement | app-wide | plan flags | 未实现 |
@@ -179,6 +186,17 @@
 | Moderation docs | `safety.ourdream.ai/moderation/*` | moderation layers、appeals | Chrome 观察：input/output/metadata/human/community layers |
 | Reporting docs | `safety.ourdream.ai/reporting/how-to-report` | reports、regulator/security paths | Chrome 观察：in-product/email/report types |
 | Privacy/safety tools | `safety.ourdream.ai/your-account/*` | privacy、mute、delete、account controls | Chrome 观察：privacy summary and safety tools |
+
+### 5.9 未定义产品域（V1.1 / 暂不实现）
+
+以下功能在 UI/路由/tab 中出现，但**产品语义尚未定义，不属于 MVP**，仅以空态或占位呈现。显式标注以免误读为已规划交付（对齐 12-roadmap V1.1 与 M8 「group-chats/packs 返回空态」）。
+
+| 域 | 出现位置 | 状态 | 一句话范围草图 |
+| --- | --- | --- | --- |
+| Group Chats | My AI tab（§5.6）、Explore 分类 chip | V1.1 / 暂不实现 | 一个会话内多角色参与的群聊；MVP 仅保留 tab 空态，不实现多角色编排与额度。 |
+| Packs | My AI tab（§5.6） | V1.1 / 暂不实现 | 角色/preset 的打包合集（可能可分享或购买）；MVP 仅空态，不实现打包模型与分发。 |
+| Remix | Feed 动作（§5.6）、`/feed` | V1.1 / 暂不实现 | 基于他人公开角色/媒体派生再创作；MVP 不实现派生血缘、版权归属与计费。 |
+| Creator public profile（`/creator/:id`） | Community leaderboard、角色卡 creator 字段 | V1.1 / 暂不实现 | 创作者公开主页（作品集/关注/统计）；MVP 不实现公开 profile 页与关注关系。 |
 
 ## 6. 当前页面族摘要
 

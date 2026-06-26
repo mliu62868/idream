@@ -15,7 +15,7 @@
 
 ## 2. 环境变量目录
 
-`.env`（dev）/ Vercel 环境变量（preview/prod）。**全部经 `lib/env.ts` Zod 校验，缺失即 fail-fast**。提供 `.env.example`。
+`.env`（dev）/ Vercel 环境变量（preview/prod）。**全部经 `lib/env.ts` Zod 校验，缺失即 fail-fast**。本地从 `.env.example` 开始，生产从 `packages/main/.env.production.example` 与 `packages/gen/.env.production.example` 开始，填充值只放在 secret manager。
 
 | 变量 | 环境 | 说明 |
 | --- | --- | --- |
@@ -27,12 +27,186 @@
 | `INTERNAL_TOKEN` | all | 保护 `/api/internal/*` |
 | `CRON_SECRET` | prod | Vercel Cron 调用校验 |
 | `UPSTASH_REDIS_REST_URL`/`_TOKEN` | prod | 限流（dev 可空走 DB 令牌桶） |
-| `PAYMENT_PROVIDER` + 处理器密钥 | prod | 加密处理器（BTCPay：host+API key+store id+webhook secret / NOWPayments：API key+IPN secret） |
-| `PIPELINE_API_URL` / `PIPELINE_API_TOKEN` | prod | 内部自托管开源模型流水线（chat/image/video/voice 共用，OpenAI 兼容；dev 可空走 mock） |
-| `MODERATION_PROVIDER_*` | prod | 审核/CSAM 检测（**独立密钥/服务**，07 §3） |
-| `BLOB_*`（R2/S3 endpoint, key, bucket） | prod | 私有对象存储 |
-| `AGE_VERIFY_PROVIDER_*` | prod | Go.cam 等 |
+| `PAYMENT_PROVIDER` + 处理器密钥 | prod | 加密处理器；支持 `btcpay`，需要 base URL、store id、Greenfield API key、webhook secret |
+| `PIPELINE_API_URL` / `PIPELINE_API_TOKEN` | prod | 内部自托管开源模型流水线（chat/image/video/voice 共用，OpenAI 兼容；dev 可空走 mock）；main 已支持 chat/voice pipeline adapter |
+| `GEN_IMAGE_PROVIDER` | all | `mock` / `pipeline`；主站和 `packages/gen` 只切 provider adapter，不直接切 MLX 或 sd.cpp |
+| `MODERATION_PROVIDER=safety-gateway` + `MODERATION_SERVICE_URL`/`MODERATION_API_KEY` | prod | 审核/CSAM 检测（**独立密钥/服务**，07 §3）；main 与 gen 复用同一 adapter |
+| `BLOB_PROVIDER` + `BLOB_*` | prod | 私有对象存储；支持 `r2` / `s3`，需要 endpoint、bucket、region、access key、secret key |
+| `AGE_VERIFICATION_PROVIDER=gocam` + `AGE_VERIFY_SERVICE_URL`/`AGE_VERIFY_API_KEY`/`AGE_VERIFY_WEBHOOK_SECRET` | prod | Go.cam 身份年龄验证；主站调内部 gateway，gateway 持有 Go.cam SDK/partner keys |
 | `SENTRY_DSN` | prod | 错误追踪 |
+
+模型档位、prompt template、preset、feature flag、价格和 entitlement gate 不应写死在 env。它们属于后台配置数据，详见 [ADMIN_CONSOLE_PLAN.md](../product/ADMIN_CONSOLE_PLAN.md)。env 只保存服务地址、密钥和 adapter 总开关。
+
+生成生产服务 secret：
+
+```bash
+bun run --silent launch:secrets
+```
+
+该命令只输出随机 dotenv 行，不会写文件；把输出复制到 secret manager 后，再填入数据库、Redis、BTCPay、Go.cam gateway、对象存储、Sentry 和 Pipeline gateway 的真实地址/凭据。
+
+生产环境有两层门禁：
+
+当前逐项审计见 [LAUNCH_READINESS_AUDIT.md](../product/LAUNCH_READINESS_AUDIT.md)；
+只有 direct launch gate 与 Chrome 真实流程都通过时，才可以判定为可公开上线运营。
+
+```bash
+SDCPP_IMAGE_PORT=8091 \
+SDCPP_IMAGE_MODEL_ID=pornmaster-zimage-turbo \
+SDCPP_CLI=/Users/kk/code/sdcpp/sd-cli \
+SDCPP_DIFFUSION_MODEL=/Users/kk/Downloads/pornmasterZImage_turboV35Bf16.safetensors \
+SDCPP_LLM=/Users/kk/.localai/models/z-image-components/Qwen3-4B-Instruct-2507-Q4_K_M.gguf \
+SDCPP_VAE=/Users/kk/.localai/models/z-image-components/split_files/vae/ae.safetensors \
+SDCPP_STEPS=1 \
+SDCPP_MAX_COUNT=1 \
+SDCPP_TIMEOUT_MS=300000 \
+bun run --filter @idream/gen serve:sdcpp-image
+```
+
+另开一个 shell 跑真实图片探针和上线门禁：
+
+```bash
+bun run launch:probe:image:local
+bun run launch:probe:web-surface -- --report .tmp/launch-web-surface-probe.json
+bun run launch:probe:product-config -- --report .tmp/launch-product-config-probe.json
+bun run launch:probe:chat-service -- --report .tmp/launch-chat-service-probe.json
+bun run launch:probe:chat -- --report .tmp/launch-chat-probe.json
+bun run launch:probe:voice -- --report .tmp/launch-voice-probe.json
+bun run launch:probe:blob -- --report .tmp/launch-blob-probe.json
+bun run launch:probe:payment -- --report .tmp/launch-payment-probe.json
+bun run launch:probe:age -- --report .tmp/launch-age-probe.json
+bun run launch:probe:safety -- --report .tmp/launch-safety-probe.json
+bun run check:launch:direct -- --launch-env-file .tmp/production-launch.env
+```
+
+等价的显式命令如下，适合临时改 gateway、模型或输出路径时使用：
+
+```bash
+mkdir -p .tmp
+GEN_IMAGE_PROVIDER=pipeline \
+PIPELINE_API_URL=http://127.0.0.1:8091 \
+PIPELINE_API_TOKEN=local-pipeline-token-0123456789 \
+PIPELINE_IMAGE_MODEL_DEFAULT=pornmaster-zimage-turbo \
+PIPELINE_IMAGE_SIZE_DEFAULT=512x512 \
+BLOB_ROOT=/Users/kk/code/idream/.tmp/probe-blob \
+  bun run --filter @idream/gen probe:image -- \
+  --prompt "launch readiness portrait" \
+  --count 1 \
+  --report .tmp/launch-image-probe.json
+
+bun run --filter @idream/main probe:web-surface -- \
+  --report .tmp/launch-web-surface-probe.json
+
+bun run --filter @idream/main probe:blob -- \
+  --report .tmp/launch-blob-probe.json
+
+bun run --filter @idream/main probe:product-config -- \
+  --report .tmp/launch-product-config-probe.json
+
+bun run --filter @idream/main probe:chat-service -- \
+  --report .tmp/launch-chat-service-probe.json
+
+bun run --filter @idream/main probe:chat -- \
+  --report .tmp/launch-chat-probe.json
+
+bun run --filter @idream/main probe:voice -- \
+  --report .tmp/launch-voice-probe.json
+
+bun run --filter @idream/main probe:payment -- \
+  --report .tmp/launch-payment-probe.json
+
+bun run --filter @idream/main probe:age -- \
+  --report .tmp/launch-age-probe.json
+
+bun run --filter @idream/main probe:safety -- \
+  --report .tmp/launch-safety-probe.json
+
+bun run check:launch:direct -- --launch-env-file .tmp/production-launch.env
+```
+
+`.tmp/production-launch.env` 应来自 secret manager 导出，或由
+`packages/main/.env.production.example` 复制后填入真实生产值；不要提交到 git。
+这份文件必须包含 `APP_ENV=production`、所有 provider/密钥/外部服务配置，以及
+`PIPELINE_IMAGE_PROBE_REPORT=.tmp/launch-image-probe.json` 和
+`WEB_SURFACE_PROBE_REPORT=.tmp/launch-web-surface-probe.json`、
+`PRODUCT_CONFIG_PROBE_REPORT=.tmp/launch-product-config-probe.json`、
+`CHAT_SERVICE_PROBE_REPORT=.tmp/launch-chat-service-probe.json`、
+`CHAT_MODEL_PROBE_REPORT=.tmp/launch-chat-probe.json`、
+`VOICE_MODEL_PROBE_REPORT=.tmp/launch-voice-probe.json`、
+`PAYMENT_PROVIDER_PROBE_REPORT=.tmp/launch-payment-probe.json`、
+`AGE_VERIFICATION_PROBE_REPORT=.tmp/launch-age-probe.json`、
+`BLOB_STORAGE_PROBE_REPORT=.tmp/launch-blob-probe.json`、以及
+`SAFETY_GATEWAY_PROBE_REPORT=.tmp/launch-safety-probe.json`。
+`--launch-env-file` 中的值会覆盖当前 shell 的 dev env，适合在部署前做可重复的生产门禁。
+需要机器可读结果时加 `--json`。
+
+`APP_ENV=production` 时主站拒绝使用 mock
+chat/voice/moderation/payment/blob/age-verification provider，且必须配置
+`CHAT_SERVICE_URL` 与 `CHAT_BFF_SIGNING_SECRET`。`check:launch` 会进一步
+检查 Postgres、Redis、Sentry、对象存储、支付 webhook、审核、年龄验证和图片
+Pipeline 配置，并要求 `PIPELINE_IMAGE_PROBE_REPORT` 指向最近一次真实图片
+pipeline probe 报告。报告必须证明 provider 为 `pipeline`、模型和
+`PIPELINE_API_URL` 匹配、finalizer payload 为 `generation.completed`，且至少
+产出 1 个 asset；否则 `check:launch` 失败。这样配置完整但模型服务超时的环境
+不能误报为可上线。门禁还要求 `WEB_SURFACE_PROBE_REPORT` 指向最近一次 web surface
+probe 报告，证明 main-web 首页和 `/generate` 返回健康 HTML、未过 age gate 的公开 API
+按 403 fail-closed、admin-web 未登录时返回 protected state，且 admin JSON API 未登录时按
+401 fail-closed；否则服务进程在线但用户入口或管理入口不可用时不能误报为可上线。门禁还要求
+`PRODUCT_CONFIG_PROBE_REPORT` 指向最近一次 product
+config probe 报告，证明 DB 中至少有 active image model profile、image character/freeplay
+prompt template 和 image pricing rule；如果 `video_gen` feature flag 打开，还必须同时有
+active video profile、video prompt template 和 video pricing rule，并且 `GEN_VIDEO_PROVIDER`
+不能是 mock。`video_gen=false` 时，视频 provider 可保持 mock 且门禁通过。门禁还要求
+`CHAT_SERVICE_PROBE_REPORT` 指向最近一次 chat
+service probe 报告，证明 `/healthz` 可达、BFF 签名的只读 chat 请求返回 200、
+未签名请求返回 401；否则 chat split 不能误报为可上线。`VOICE_MODEL_PROBE_REPORT`
+也必须指向最近一次 voice
+probe 报告，证明当前 `VOICE_PROVIDER` 能通过同一个 pipeline gateway 生成可用
+voice asset；否则语音能力不能误报为可上线。门禁也要求 `BLOB_STORAGE_PROBE_REPORT` 指向最近一次对象存储
+probe 报告，证明当前 `BLOB_PROVIDER` 能对真实 bucket 完成 PUT、signed GET
+读回校验和 DELETE；否则对象存储 env 填了但 credentials、bucket policy 或 endpoint
+不可用时会失败。门禁还要求 `SAFETY_GATEWAY_PROBE_REPORT` 指向最近一次 safety gateway
+probe 报告，证明 `MODERATION_SERVICE_URL` 能鉴权、返回可解析 decision，并且良性文本不会被误拦。
+`CHAT_MODEL_PROBE_REPORT` 则证明 `CHAT_MODEL_BASE_URL`/`PIPELINE_API_URL` 指向的
+OpenAI-compatible chat gateway 能鉴权、返回 assistant 文本并正常结束流式响应。
+`PAYMENT_PROVIDER_PROBE_REPORT` 对 BTCPay 使用无副作用的 Greenfield
+`GET /api/v1/stores/{storeId}`，证明 `BTCPAY_API_KEY` 具备读取目标 store 的权限；
+probe 不创建 invoice，不改变支付状态。
+`AGE_VERIFICATION_PROBE_REPORT` 会通过内部 age gateway 创建一个 probe
+verification session，证明 Go.cam gateway 能鉴权、返回 pending session id 和公开 HTTPS
+验证链接；该 probe 不提交证件或完成年龄认证，但会在 provider/gateway 侧留下一个待处理测试 session。
+门禁也会明确指出“env 已配置但当前代码还没实现真实 adapter”的情况。
+对象存储已支持 R2/S3 兼容 API：主站用同一配置生成私有媒体下载签名，
+gen worker 用同一配置写入生成产物。
+支付已支持 BTCPay Greenfield API：checkout 创建 invoice，webhook 使用
+`BTCPay-Sig`/`x-signature` 对原始请求体做 HMAC 校验，只有 settled invoice
+会激活订阅。
+审核已支持 `safety-gateway` adapter：main-web 和 gen worker 都会把文本/媒体
+审核请求投到 `MODERATION_SERVICE_URL`（根路径默认 `/moderation/check`），用
+`MODERATION_API_KEY` Bearer token 鉴权，并统一解析 `passed/flagged/blocked`、
+`policyCode` 和 `confidence`。
+chat/voice provider 已支持 `pipeline`：chat 调 OpenAI-compatible
+`/chat/completions`（SSE 或 JSON 均可），voice 调 `/audio/speech`，音频可由
+Pipeline 返回对象存储 key，或由 main 写入私有 blob。
+年龄验证已支持 `gocam` adapter：main-web 调内部 age gateway 创建验证
+session，gateway 负责 Go.cam SDK/partnerId/cipherKey/HMAC key；回调到
+`/api/v1/age-verification/webhooks/gocam` 时必须带
+`x-age-verify-signature`、`x-gocam-signature` 或 `x-signature` HMAC 签名。
+
+图片 worker 在 production 下拒绝 `GEN_IMAGE_PROVIDER=mock`；使用 `pipeline`
+时必须配置 `PIPELINE_API_URL`。本地 ComfyUI/Z-Image、MLX 或 sd.cpp 都应挂在
+内部 Pipeline API 后面，产品服务只调用 pipeline adapter。`probe:image` 必须返回
+`ok: true` 且 finalizer payload 为 `generation.completed`，并把 `--report`
+写出的 JSON 提供给 `check:launch` 后，才能继续跑主站 E2E。
+`pornmasterZImage_turboV35Bf16.safetensors` 不是可直接传给 LocalAI 的完整
+model id；它是 Z-Image diffusion model，需要匹配的 Qwen3 4B text encoder
+和 Flux/Z-Image VAE。`serve:sdcpp-image` 用这些组件包装成
+OpenAI-compatible `/images/generations` / `/v1/images/generations` 接口，
+产品层仍只配置 `PIPELINE_API_URL` 与稳定 alias（例如
+`pornmaster-zimage-turbo`）。
+本地容量较弱时可用 `PIPELINE_IMAGE_SIZE_DEFAULT=512x512` 做接口/队列/Blob
+smoke；线上质量尺寸由后台 `GenerationModelProfile.defaultWidth/defaultHeight`
+或 Pipeline Service profile 控制，不能靠产品层静默降级。
 
 `prisma.config.ts`（Prisma 7）：
 
@@ -79,34 +253,61 @@ export const config: VercelConfig = {
 ### 4.2 Docker（备选自托管）
 - 既有 `Dockerfile` + `docker-compose.yml`：app + Postgres。Cron 用容器内调度（如 `node-cron` 触发 drain，或外部 cron 调 `/api/internal`）。
 
+### 4.3 PM2（自托管进程拓扑）
+
+`ecosystem.config.js` 是自托管时的产品服务入口。主站和后台拆成两个独立 Next.js 服务：
+
+| PM2 app | package | 默认端口 | 说明 |
+| --- | --- | --- | --- |
+| `main-web` | `packages/main` | `3000` | 公开产品页、角色、订阅、用户 API 和 BFF |
+| `admin-web` | `packages/admin` | `3001` | 内部管理后台和 `/api/v1/admin/*` 控制面 API |
+| `chat` | `packages/chat` | `CHAT_PORT` | chat API/SSE + worker，单实例本地文件写入 |
+| `gen-image` / `gen-video` | `packages/gen` | n/a | 异步生成 worker |
+| `gen-finalizer` / `main-event-consumer` | `packages/main` | n/a | 主站侧权威写回和事件消费 |
+
+运行命令：
+
+```bash
+bun run build
+bun run pm2:start
+bun run pm2:status
+```
+
+Next.js 服务使用 `output: "standalone"`，构建后会把 `.next/static` 和 `public` 复制进 standalone 目录。PM2 通过 `scripts/start-next-standalone.cjs` 先加载对应 package 的 `.env`，再运行 standalone `server.js`，不使用 `next start`。
+
+如果是在同一个工作目录内执行 `bun run build`，构建完成后必须对 web 进程执行 `pm2 restart main-web admin-web`。不要在 in-place Next.js build 后对 web 进程执行 `pm2 reload`：旧 cluster worker 可能继续引用已被新构建删除的 server chunk，表现为随机 `ChunkLoadError`、路由超时或 client reference manifest 缺失。只有每个进程都指向不可变 release 目录时，`pm2 reload main-web admin-web` 才适合作为零停机切换。
+
+`admin-web` 使用 `packages/admin/.env`，但必须与 `packages/main/.env` 共享 `DATABASE_URL`、`BETTER_AUTH_SECRET`、`INTERNAL_TOKEN`、`CRON_SECRET` 等服务端密钥。PM2 默认给 `main-web` 设置 `PORT=3000`、给 `admin-web` 设置 `PORT=3001`；需要改端口时在启动 PM2 前设置 `MAIN_WEB_PORT` / `ADMIN_WEB_PORT`。
+
 ## 5. CI/CD（`.github/workflows`）
 
-流水线（对齐 global verify 体系 L1–L4）：
+流水线（对齐 global verify 体系 L1-L4）使用 bun workspace、Postgres 和 Redis：
 
 ```
-1. install (node 24, 缓存)
-2. db:generate (DB_PROVIDER=postgresql)
-3. lint (eslint，含 import 边界规则 09 §2)
-4. typecheck (tsc --noEmit)
-5. test:sqlite   (DB_PROVIDER=sqlite db push + vitest)        # L2/L3
-6. test:postgres (docker postgres + migrate deploy + vitest)  # 双库都验证！
-7. build (next build)
-8. (PR) Vercel preview 自动部署 → e2e:preview (playwright)    # L4
-9. (main) migrate deploy (prod, direct URL) → 部署
+1. setup bun 1.3.14 + bun install --frozen-lockfile
+2. install Playwright Chromium
+3. bun run check                         # 全包 lint + typecheck + build
+4. bun run --filter @idream/main test    # 主站 L2/L3，Postgres + Redis
+5. bun run --filter @idream/chat test    # chat 边界和服务测试，Postgres + Redis
+6. bun run --filter @idream/gen test     # 生成 worker/provider 测试
+7. bun run --filter @idream/shared test  # 跨服务 contract 测试
+8. prepare idream_e2e DB + seed
+9. start main-web dev server
+10. bun run --filter @idream/main test:e2e # L4 Playwright
 ```
 
-- **迁移在部署前于 CI 跑** `prisma migrate deploy`（prod direct URL），失败则阻断发布。
-- `npm run check`（已存在 = lint+typecheck+build）作为本地最小门。
+- **迁移在部署前于 CI/部署流水线跑** `prisma migrate deploy`（prod direct URL），失败则阻断发布。
+- `bun run check` 是本地最小门；上线前还必须跑 `bun run --filter @idream/main test:e2e` 和 `bun run check:launch -- --launch-env-file .tmp/production-launch.env`。
 - 数据库迁移 SQL **只能由具备权限者/CI 执行**（global rule：模式变更 SQL 由用户/CI 跑，Claude 只产出）。
 
 ## 6. 迁移 Runbook
 
 | 操作 | 命令 | 谁执行 |
 | --- | --- | --- |
-| dev 改 schema | `npm run db:push`（sqlite，无迁移文件） | 开发者 |
-| 生成 prod 迁移 | `npm run db:migrate:dev`（Docker PG，产生迁移文件，提交 git） | 开发者 |
+| dev 改 schema | `bun run --filter @idream/main db:push`（测试/开发库，无迁移文件） | 开发者 |
+| 生成 prod 迁移 | `bun run --filter @idream/main db:migrate:dev`（Docker PG，产生迁移文件，提交 git） | 开发者 |
 | 加 Postgres-only 索引 | 在迁移目录手写 raw SQL（pg_trgm 等，03 §5） | 开发者 |
-| 部署迁移 | `npm run db:migrate:deploy`（prod direct URL） | CI |
+| 部署迁移 | `bun run --filter @idream/main db:migrate:deploy`（prod direct URL） | CI |
 | 回滚 | 写"down"迁移或新正向修复迁移（Prisma 不自动回滚） | CI + 评审 |
 
 **破坏性变更**（删列/改类型）：分两步（先兼容加列/双写 → 迁移数据 → 再删旧），避免停机。
@@ -138,3 +339,13 @@ export const config: VercelConfig = {
 
 ### 8.5 告警
 - `jobs.status=dead` 增长、生成成功率骤降、webhook 处理失败、CSAM 命中（高优先级人工通道）、错误率/延迟阈值。
+
+### 8.6 管理后台运行指标
+
+后台控制面本身也要监控：
+
+- 配置发布：model profile、prompt template、feature flag、pricing rule 的发布/回滚次数。
+- 高风险操作：封号、下架、ledger adjustment、dead-letter requeue、profile disable。
+- 审计完整性：后台写操作必须有 `AdminAuditLog`；发现缺审计的写路径直接告警。
+- 权限失败：非授权访问 `/api/v1/admin/*` 的次数和来源。
+- 生成运营：按 profile/runner/provider error code 切分成功率、平均等待、退款率、blocked 率。

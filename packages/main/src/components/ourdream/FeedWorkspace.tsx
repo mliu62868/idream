@@ -117,6 +117,14 @@ export function FeedWorkspace() {
             Restart
           </button>
         </div>
+        {status && (
+          <p
+            aria-live="polite"
+            className="mb-5 rounded-[12px] bg-[rgb(36,36,36)] px-4 py-3 text-[13px] font-semibold text-[rgb(220,220,220)]"
+          >
+            {status}
+          </p>
+        )}
         <div className="grid gap-4 md:grid-cols-2">
           {items.map((item) => (
             <article
@@ -151,9 +159,6 @@ export function FeedWorkspace() {
             </article>
           ))}
         </div>
-        {status && (
-          <p className="mt-5 text-[13px] font-semibold text-[rgb(170,170,170)]">{status}</p>
-        )}
       </div>
     </section>
   );
@@ -172,8 +177,10 @@ function ActionButton({
 }: Readonly<{ icon: React.ReactNode; label: string; onClick: () => void }>) {
   return (
     <button
+      aria-label={label}
       className="inline-flex h-10 items-center justify-center gap-1 rounded-full bg-[rgb(36,36,36)] text-[12px] font-bold text-white"
       onClick={onClick}
+      title={label}
       type="button"
     >
       {icon}

@@ -186,11 +186,14 @@
 
 ## 15. admin（内部审核后台）
 
-**职责**：审核队列、用户/内容/任务管理、人工决定、封禁/下架/退款。
+**职责**：审核队列、用户/内容/任务管理、人工决定、封禁/下架/退款、生成配置、产品配置和运营排障。完整产品方案见 [ADMIN_CONSOLE_PLAN.md](../product/ADMIN_CONSOLE_PLAN.md)。
 
 **关键流程**：
 - `GET /admin/moderation/queue`：按 `content_reports(status,priority)` 排序（未成年=优先级 1，可即时隐藏目标）。
 - `POST /admin/moderation/:id/decision`：写 `moderation_reviews` + 改目标状态（角色→removed、媒体→blocked、用户→suspended）+ 记 policyCode + 审计。
-- 仅 `requireAdmin`/moderator；所有操作进审计日志（07 §8）。
+- `GET /admin/generation/jobs/:id`：展示 generation job timeline、profile/template version、provider error、ledger/refund 和 media 状态。
+- `POST /admin/generation/model-profiles/:id/publish`：发布模型 profile 新版本，写审计，触发 `generation/config` 读取新 active profile。
+- `POST /admin/billing/adjustments`：人工补偿只能写 `dreamcoin_ledger` adjustment，不允许直接覆盖余额。
+- 仅 `requireAdmin`/moderator/细粒度 permission；所有写操作进 `AdminAuditLog`。
 
-**MVP**：admin 可以是受保护的内部 Route Handlers + 极简页面（甚至先用 Prisma Studio + 内部 API），P0 目标是"举报能进队列、能被处置"，不追求华丽后台。
+**MVP**：admin 是受保护的内部 Route Handlers + `/admin` 极简页面。P0 目标是"举报能进队列、能被处置；生成任务能排障；模型 profile/prompt template/preset 能配置发布；用户、ledger、订阅能查询且高风险操作可审计"。Prisma Studio 只能作为本地开发辅助，不能作为处理真实用户和资金相关操作的生产后台。

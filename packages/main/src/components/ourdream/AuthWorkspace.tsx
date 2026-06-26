@@ -1,7 +1,14 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import { ArrowRight } from "lucide-react";
+
+type MeResponse = {
+  ok: boolean;
+  data?: {
+    user?: { id: string } | null;
+  };
+};
 
 export function AuthWorkspace({
   mode,
@@ -11,6 +18,23 @@ export function AuthWorkspace({
   const [name, setName] = useState("Dream User");
   const [status, setStatus] = useState("");
   const [pending, setPending] = useState(false);
+
+  const redirectIfAlreadyAuthenticated = useCallback(async () => {
+    try {
+      const response = await fetch("/api/v1/me");
+      if (!response.ok) return false;
+      const payload = (await response.json()) as MeResponse;
+      if (!payload.ok || !payload.data?.user) return false;
+      window.location.replace("/");
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  useEffect(() => {
+    void redirectIfAlreadyAuthenticated();
+  }, [redirectIfAlreadyAuthenticated]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -29,10 +53,11 @@ export function AuthWorkspace({
         error?: { message: string };
       };
       if (!response.ok || !payload.ok) {
+        if (await redirectIfAlreadyAuthenticated()) return;
         setStatus(payload.error?.message ?? "Authentication failed");
         return;
       }
-      window.location.href = "/";
+      window.location.replace("/");
     } finally {
       setPending(false);
     }
@@ -49,8 +74,8 @@ export function AuthWorkspace({
             {mode === "signup" ? "Create your Ourdream account" : "Log in to Ourdream"}
           </h1>
           <p className="mt-5 max-w-xl text-[15px] font-medium leading-7 text-[rgb(170,170,170)]">
-            Use the mock auth flow to unlock Create, Chat, Generate, My AI,
-            dreamcoins, and checkout in this local clone.
+            Sign in to unlock Create, Chat, Generate, My AI, dreamcoins, and
+            checkout across your account.
           </p>
         </div>
         <form

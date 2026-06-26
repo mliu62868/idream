@@ -72,6 +72,34 @@ describe("auth lifecycle (cookie session)", () => {
     expect(goodLogin.setCookies.join(";")).toContain("idream_session=");
   });
 
+  it("allows signup when a reused anonymous id already belongs to another account", async () => {
+    const anonymousId = `${P}shared-anon`;
+    const firstEmail = `${P}anon-owner@test.local`;
+    const secondEmail = `${P}anon-new@test.local`;
+
+    const first = await api("POST", "auth/signup", {
+      ageGate: true,
+      anonymousId,
+      body: { email: firstEmail, password: "password123", name: "Anon Owner" },
+    });
+    expectOk(first);
+
+    const second = await api("POST", "auth/signup", {
+      ageGate: true,
+      anonymousId,
+      body: { email: secondEmail, password: "password123", name: "Anon New" },
+    });
+    expectOk(second);
+
+    const users = await prisma.user.findMany({
+      where: { email: { in: [firstEmail, secondEmail] } },
+      select: { email: true, anonymousId: true },
+    });
+    const anonymousByEmail = new Map(users.map((user) => [user.email, user.anonymousId]));
+    expect(anonymousByEmail.get(firstEmail)).toBe(anonymousId);
+    expect(anonymousByEmail.get(secondEmail)).toBeNull();
+  });
+
   it("returns a null user for anonymous /me", async () => {
     const me = await api("GET", "me");
     expectOk(me);
@@ -119,11 +147,14 @@ describe("ownership scoping", () => {
     await createUser({ id: intruder });
     await createMedia({ id: mediaId, ownerId: owner });
 
-    const download = await api("GET", `media/${mediaId}/download`, { userId: intruder });
+    const download = await api("GET", `media/${mediaId}/download`, {
+      userId: intruder,
+      ageGate: true,
+    });
     expectError(download, 404, "not_found");
 
     // Soft-delete is scoped to the owner; the intruder's call must not delete it.
-    await api("DELETE", `media/${mediaId}`, { userId: intruder });
+    await api("DELETE", `media/${mediaId}`, { userId: intruder, ageGate: true });
     const stillThere = await prisma.mediaAsset.findFirst({
       where: { id: mediaId, deletedAt: null },
     });
@@ -194,7 +225,7 @@ describe("premium entitlement gates (402)", () => {
     const charId = `${P}broke-char`;
     await createUser({ id: userId });
     await createCharacter({ id: charId, creatorId: userId, visibility: "public", status: "approved" });
-    // No coins granted — balance 0, image costs 10.
+    // No coins granted — balance 0, image costs 5.
 
     const result = await api("POST", "generation/jobs", {
       userId,
@@ -202,7 +233,7 @@ describe("premium entitlement gates (402)", () => {
       body: { mode: "image", characterId: charId, outputCount: 1 },
     });
     expectError(result, 402, "payment_required");
-    expect(result.error?.details).toMatchObject({ cost: 10 });
+    expect(result.error?.details).toMatchObject({ cost: 5 });
 
     const entries = await prisma.dreamcoinLedger.count({ where: { userId } });
     expect(entries).toBe(0);

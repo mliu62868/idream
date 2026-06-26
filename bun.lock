@@ -8,6 +8,45 @@
         "turbo": "^2.9.18",
       },
     },
+    "packages/admin": {
+      "name": "@idream/admin",
+      "version": "0.3.1",
+      "dependencies": {
+        "@base-ui/react": "^1.3.0",
+        "@idream/shared": "workspace:*",
+        "@prisma/adapter-pg": "7.6.0",
+        "@prisma/client": "7.6.0",
+        "better-auth": "^1.6.18",
+        "bullmq": "^5.79.0",
+        "class-variance-authority": "^0.7.1",
+        "clsx": "^2.1.1",
+        "dotenv": "^17.4.2",
+        "ioredis": "^5.11.1",
+        "lucide-react": "^1.6.0",
+        "next": "16.2.1",
+        "pg": "^8.21.0",
+        "pino": "^10.3.1",
+        "react": "19.2.4",
+        "react-dom": "19.2.4",
+        "shadcn": "^4.1.0",
+        "tailwind-merge": "^3.5.0",
+        "tw-animate-css": "^1.4.0",
+        "zod": "^4.4.3",
+      },
+      "devDependencies": {
+        "@prisma/engines": "7.6.0",
+        "@tailwindcss/postcss": "^4",
+        "@types/node": "^24",
+        "@types/pg": "^8.20.0",
+        "@types/react": "^19",
+        "@types/react-dom": "^19",
+        "eslint": "^9",
+        "eslint-config-next": "16.2.1",
+        "prisma": "7.6.0",
+        "tailwindcss": "^4.3.1",
+        "typescript": "^5",
+      },
+    },
     "packages/chat": {
       "name": "@idream/chat",
       "version": "0.0.0",
@@ -57,11 +96,9 @@
       "dependencies": {
         "@base-ui/react": "^1.3.0",
         "@idream/shared": "workspace:*",
-        "@prisma/adapter-better-sqlite3": "7.6.0",
         "@prisma/adapter-pg": "7.6.0",
         "@prisma/client": "7.6.0",
         "better-auth": "^1.6.18",
-        "better-sqlite3": "^12.10.0",
         "bullmq": "^5.79.0",
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
@@ -82,7 +119,6 @@
         "@playwright/test": "^1.60.0",
         "@prisma/engines": "7.6.0",
         "@tailwindcss/postcss": "^4",
-        "@types/better-sqlite3": "^7.6.13",
         "@types/node": "^24",
         "@types/pg": "^8.20.0",
         "@types/react": "^19",
@@ -110,13 +146,12 @@
     },
   },
   "trustedDependencies": [
-    "esbuild",
     "sharp",
+    "esbuild",
     "@prisma/engines",
-    "unrs-resolver",
-    "better-sqlite3",
     "msgpackr-extract",
     "prisma",
+    "unrs-resolver",
   ],
   "packages": {
     "@alloc/quick-lru": ["@alloc/quick-lru@5.2.0", "", {}, "sha512-UrcABB+4bUrFABwbluTIBErXwvbsU/V7TZWfmbgJfbkwiBuziS9gxdODUyuiecfdGQ85jglMW6juS3+z5TsKLw=="],
@@ -309,6 +344,8 @@
 
     "@humanwhocodes/retry": ["@humanwhocodes/retry@0.4.3", "", {}, "sha512-bV0Tgo9K4hfPCek+aMAn81RppFKv2ySDQeMoSZuvTASywNTnVJCArCZE2FWqpvIatKu7VMRLWlR1EazvVhDyhQ=="],
 
+    "@idream/admin": ["@idream/admin@workspace:packages/admin"],
+
     "@idream/chat": ["@idream/chat@workspace:packages/chat"],
 
     "@idream/gen": ["@idream/gen@workspace:packages/gen"],
@@ -436,8 +473,6 @@
     "@pinojs/redact": ["@pinojs/redact@0.4.0", "", {}, "sha512-k2ENnmBugE/rzQfEcdWHcCY+/FM3VLzH9cYEsbdsoqrvzAKRhUZeRNhAZvB8OitQJ1TBed3yqWtdjzS6wJKBwg=="],
 
     "@playwright/test": ["@playwright/test@1.61.0", "", { "dependencies": { "playwright": "1.61.0" }, "bin": { "playwright": "cli.js" } }, "sha512-cKA5B6lpFEMyMGjxF54QihfYpB4FkEGH+qZhtArDEG+wezQAJY8Pq6C7T1SjWz+FFzt3TbyoXBQYk/0292TdJA=="],
-
-    "@prisma/adapter-better-sqlite3": ["@prisma/adapter-better-sqlite3@7.6.0", "", { "dependencies": { "@prisma/driver-adapter-utils": "7.6.0", "better-sqlite3": "^12.6.0" } }, "sha512-V0bU2nbFwwqCgzIEFDCmywNoqH9ilCYa6S32hGQxIgRbkgFC2eTl4+AJ6G+jfP0BZs3LXUirreoGNbSY/zbUGQ=="],
 
     "@prisma/adapter-pg": ["@prisma/adapter-pg@7.6.0", "", { "dependencies": { "@prisma/driver-adapter-utils": "7.6.0", "@types/pg": "^8.16.0", "pg": "^8.16.3", "postgres-array": "3.0.4" } }, "sha512-BjHNmJqqa42NqJSDPnXUfwUofWo8LJY7Ui2gqxN4DmAOb+H/gGKv+hln2Xq/1kSJXPW5AXMXuNiPDMpywvyIOw=="],
 
@@ -570,8 +605,6 @@
     "@turbo/windows-arm64": ["@turbo/windows-arm64@2.9.18", "", { "os": "win32", "cpu": "arm64" }, "sha512-nUdR8WqoomUys9iIQmG45TMiizJ+5BV8egSeLLZba/AWblyp3fVBcIH1kSE58OtK4g2YzbMJEth6Ttv9w5rqMA=="],
 
     "@tybys/wasm-util": ["@tybys/wasm-util@0.10.2", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-RoBvJ2X0wuKlWFIjrwffGw1IqZHKQqzIchKaadZZfnNpsAYp2mM0h36JtPCjNDAHGgYez/15uMBpfGwchhiMgg=="],
-
-    "@types/better-sqlite3": ["@types/better-sqlite3@7.6.13", "", { "dependencies": { "@types/node": "*" } }, "sha512-NMv9ASNARoKksWtsq/SHakpYAYnhBrQgGD8zkLYk/jaK8jUGn08CfEdTRgYhMypUQAfzSP8W6gNLe0q19/t4VA=="],
 
     "@types/chai": ["@types/chai@5.2.3", "", { "dependencies": { "@types/deep-eql": "*", "assertion-error": "^2.0.1" } }, "sha512-Mw558oeA9fFbv65/y4mHtXDs9bPnFMZAL/jxdPFUpOHHIXX91mcgEHbS5Lahr+pwZFR8A7GQleRWeI6cGFC2UA=="],
 

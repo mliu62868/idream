@@ -9,7 +9,11 @@
   "exports": {
     ".": "./src/index.ts",
     "./contracts": "./src/contracts/index.ts",
-    "./bff": "./src/bff/signing.ts"
+    "./bff": "./src/bff/signing.ts",
+    "./media/mock-video": "./src/media/mock-video.ts",
+    "./storage": "./src/storage/s3-blob.ts",
+    "./storage/local-blob": "./src/storage/local-blob.ts",
+    "./moderation": "./src/moderation/safety-gateway.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

@@ -64,8 +64,8 @@ export function UpgradeWorkspace() {
               ${(plan.priceCents / 100).toFixed(2)}
             </p>
             <p className="mt-3 text-[14px] leading-6 text-[rgb(170,170,170)]">
-              Includes {plan.includedDreamcoins.toLocaleString()} dreamcoins and
-              mock entitlement activation.
+              Includes {plan.includedDreamcoins.toLocaleString()} dreamcoins,
+              premium generation controls, and account-wide plan benefits.
             </p>
             <button
               className="mt-6 h-11 w-full rounded-full bg-white text-[14px] font-black text-[rgb(13,13,13)] disabled:opacity-70"

@@ -82,7 +82,14 @@ export async function processGenerate(
     return { status: "failed" };
   }
 
-  const content = chunks.join("");
+  let content = chunks.join("");
+  if (!content.trim()) {
+    const fallback = emptyAssistantReply(context.persona.name);
+    seq += 1;
+    chunks.push(fallback);
+    content = fallback;
+    await appendStreamEvent(key, { type: "delta", attempt: payload.attempt, seq, delta: fallback });
+  }
   const model = context.policy.model;
   const usage = {
     promptTokens: estimateTokens(modelMessages.map((m) => m.content).join("\n")),
@@ -254,6 +261,10 @@ async function finalize(input: FinalizeInput): Promise<void> {
       });
     }
   });
+}
+
+function emptyAssistantReply(characterName: string) {
+  return `${characterName || "The character"} is here, but the last model reply came back empty. Please send that again.`;
 }
 
 function buildModelMessages(

@@ -7,11 +7,13 @@ import { Errors } from "../errors";
 
 export interface AuthCtx {
   userId?: string;
-  role?: "user" | "moderator" | "admin";
+  role?: ActorRole;
   anonymousId?: string;
   ageGateAccepted: boolean;
   ageVerificationStatus: "not_required" | "required" | "pending" | "verified" | "failed" | "expired";
 }
+
+export type ActorRole = "user" | "moderator" | "support" | "ops" | "analyst" | "admin";
 
 export const SESSION_COOKIE = "idream_session";
 export const ANONYMOUS_COOKIE = "idream_anonymous_id";
@@ -161,6 +163,12 @@ export function requireAgeVerified(ctx: AuthCtx) {
 export async function mergeAnonymous(userId: string, anonymousId?: string) {
   if (!anonymousId) return;
 
+  const owner = await prisma.user.findUnique({
+    where: { anonymousId },
+    select: { id: true },
+  });
+  if (owner && owner.id !== userId) return;
+
   await prisma.$transaction([
     prisma.ageGateAcceptance.updateMany({
       where: { anonymousId, userId: null },
@@ -230,15 +238,26 @@ async function userFromBetterAuth(request?: Request) {
   }
 }
 
-function roleFromUser(user: User | null, devRole?: string | null) {
+function roleFromUser(user: User | null, devRole?: string | null): ActorRole | undefined {
   if (env.APP_ENV !== "production" && devRole) {
-    if (devRole === "admin" || devRole === "moderator" || devRole === "user") {
+    if (isActorRole(devRole)) {
       return devRole;
     }
   }
 
-  if (user?.role === "admin" || user?.role === "moderator") return user.role;
+  if (user && isActorRole(user.role)) return user.role;
   return user ? "user" : undefined;
+}
+
+function isActorRole(value: string): value is ActorRole {
+  return (
+    value === "user" ||
+    value === "moderator" ||
+    value === "support" ||
+    value === "ops" ||
+    value === "analyst" ||
+    value === "admin"
+  );
 }
 
 async function hasAgeGateAcceptance(input: {

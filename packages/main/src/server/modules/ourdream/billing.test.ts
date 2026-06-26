@@ -9,6 +9,7 @@ import {
   expectOk,
   grantCoins,
   purgeTestData,
+  runQueuedGenerationJobs,
 } from "@/server/test/helpers";
 
 // SPEC (docs/architecture/11-testing.md §4 — billing/ledger):
@@ -79,8 +80,9 @@ describe("checkout (auto-confirm) activates entitlements + grants coins", () => 
       ageGate: true,
       body: { mode: "image", characterId: charId, prompt: "a premium scene", outputCount: 1 },
     });
-    expectOk(gen);
-    expect(gen.data.job.status).toBe("completed");
+    expectOk(gen, 202);
+    expect(gen.data.job.status).toBe("queued");
+    await runQueuedGenerationJobs(8);
   });
 });
 
@@ -135,23 +137,24 @@ describe("dreamcoin ledger invariants", () => {
       ageGate: true,
       body: { mode: "image", characterId: charId, outputCount: 2 },
     });
-    expectOk(gen);
-    expect(gen.data.job.status).toBe("completed");
+    expectOk(gen, 202);
+    expect(gen.data.job.status).toBe("queued");
+    await runQueuedGenerationJobs(8);
 
-    // image costs 10 per output → 20 reserved and settled (no refund).
+    // image costs 5 per output → 10 reserved and settled (no refund).
     const after = await dreamcoinBalance(userId);
-    expect(after).toBe(80);
+    expect(after).toBe(90);
 
     const dc = await api("GET", "dreamcoins", { userId });
     expectOk(dc);
-    expect(dc.data.balance).toBe(80);
+    expect(dc.data.balance).toBe(90);
     // Ledger is append-only and the running sum matches the balance.
     const sum = (dc.data.ledger as Array<{ delta: number }>).reduce((acc, e) => acc + e.delta, 0);
-    expect(sum).toBe(80);
+    expect(sum).toBe(90);
     // The spend entry's balanceAfter reflects the post-spend balance.
     const spend = (dc.data.ledger as Array<{ reason: string; balanceAfter: number }>).find(
       (e) => e.reason === "generation_spend",
     );
-    expect(spend?.balanceAfter).toBe(80);
+    expect(spend?.balanceAfter).toBe(90);
   });
 });

@@ -70,12 +70,14 @@ describe("preset editing (PATCH)", () => {
 
     const created = await api("POST", "generation/presets", {
       userId: owner,
+      ageGate: true,
       body: { type: "background", label: "Beach" },
     });
     const presetId = created.data.preset.id as string;
 
     const edit = await api("PATCH", `generation/presets/${presetId}`, {
       userId: owner,
+      ageGate: true,
       body: { label: "Sunset Beach", visibility: "public" },
     });
     expectOk(edit);
@@ -83,6 +85,7 @@ describe("preset editing (PATCH)", () => {
 
     const intrude = await api("PATCH", `generation/presets/${presetId}`, {
       userId: intruder,
+      ageGate: true,
       body: { label: "Hijacked" },
     });
     expectError(intrude, 404, "not_found");

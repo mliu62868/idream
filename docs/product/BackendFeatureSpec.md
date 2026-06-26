@@ -42,7 +42,7 @@
 | SEO Content | sitemap 内容、文章、比较页、metadata | P1 |
 | Support | helpdesk、工单或外部支持映射 | P1 |
 | Analytics | 产品事件、漏斗、风控指标 | P0 轻量 |
-| Admin/Ops | 审核后台、用户/内容/任务管理 | P0 内部 |
+| Admin/Ops | 审核后台、用户/内容/任务管理、生成配置、产品配置、计费排障、审计 | P0 内部 |
 
 ## 3. 核心实体
 
@@ -167,6 +167,31 @@ Moderation layers:
 - `metadata_behavior`
 - `human_review`
 - `community_report`
+
+### 3.7 Admin/Ops
+
+完整设计见 `docs/product/ADMIN_CONSOLE_PLAN.md`。后台配置和审计可以分期落库，但下列实体是 P0/P1 的目标形态：
+
+| 实体 | 关键字段 |
+| --- | --- |
+| `admin_audit_logs` | `id`, `actor_id`, `actor_role`, `action`, `target_type`, `target_id`, `reason`, `before_json`, `after_json`, `request_id`, `ip_hash`, `user_agent`, `created_at` |
+| `admin_action_requests` | `id`, `requested_by`, `approved_by`, `action`, `target_type`, `target_id`, `status`, `reason`, `payload_json`, `created_at`, `resolved_at` |
+| `feature_flags` | `key`, `status`, `rollout_percent`, `rules_json`, `updated_by`, `updated_at` |
+| `app_settings` | `key`, `value_json`, `version`, `status`, `updated_by`, `updated_at` |
+| `generation_model_profiles` | `id`, `mode`, `label`, `runner`, `pipeline_model`, `params_json`, `cost_multiplier`, `required_entitlement`, `rollout_percent`, `version`, `status`, `updated_by`, `updated_at` |
+| `generation_prompt_templates` | `id`, `mode`, `template_json`, `negative_template_json`, `version`, `status`, `updated_by`, `updated_at` |
+| `pricing_rules` | `id`, `scope`, `rule_json`, `version`, `status`, `updated_by`, `updated_at` |
+| `admin_user_permissions` (P1) | `id`, `user_id`, `permission_key`, `effect`(grant/revoke), `reason`, `created_by`, `created_at` |
+| `support_consent_grants` (P1) | `id`, `target_user_id`, `granted_to`, `scope`, `ticket_id`, `reason`, `expires_at`, `created_by`, `created_at` |
+| `legal_holds` (P1) | `id`, `target_type`, `target_id`, `case_ref`, `reason`, `status`, `created_by`, `released_by`, `released_at`, `created_at` |
+
+Rules:
+
+- 后台写操作必须追加 `admin_audit_logs`；`before_json`/`after_json` 只记 targetId + 元数据，禁写明文 prompt/chat/媒体。
+- `generation_jobs` 应保存当次使用的 profile/template version，保证事后可解释。
+- `feature_flags` 不能覆盖硬安全政策。
+- `pricing_rules` 只能影响新请求，不能回写历史 ledger。
+- 明文 prompt/chat 查看须命中有效 `support_consent_grants`（有时限）或 `legal_holds`（显式解除，不自动过期）；每次查看写 `admin_audit_logs`（详见 `ADMIN_CONSOLE_PLAN §13`）。
 
 ## 4. Required State Machines
 
@@ -344,25 +369,34 @@ GET  /api/v1/chat/streams/:assistantMessageId
 | `DELETE` | `/api/v1/media/:id` | Owner/Admin | Delete media |
 | `GET` | `/api/v1/media/:id/download` | Owner | Signed download URL |
 
-Generation request:
+Generation request（扁平形状为准；详见 `IMAGE_GENERATION_SERVICE_PLAN.md §5.3`）：
 
 ```json
 {
   "mode": "image",
   "characterId": "char_...",
+  "freeplay": false,
   "prompt": "optional premium prompt",
+  "negativePrompt": "optional premium negative prompt",
   "controls": {
     "backgroundPresetId": "preset_...",
     "posePresetId": "preset_...",
     "outfitPresetId": "preset_...",
-    "negativePrompt": "premium optional",
     "orientation": "4:5",
-    "outputCount": 2,
-    "model": "dreamy"
+    "model": "image-default"
   },
-  "presetIds": ["preset_..."]
+  "presetIds": ["preset_..."],
+  "outputCount": 2
 }
 ```
+
+`POST /generation/jobs` 约束（权威定义在 `IMAGE_GENERATION_SERVICE_PLAN.md §5.3`，此处只记契约要点）：
+
+- `characterId` 与 `freeplay` 二选一；`prompt` / `negativePrompt` / premium model 服务端 entitlement gate；`outputCount` 首发 `1..4`。
+- **幂等**：客户端传 `Idempotency-Key` header，按 `(userId, key)` 去重，重复请求返回同一 job，不双建不双扣。
+- **在途并发**：用户非终态 job 数受 `MAX_INFLIGHT_JOBS_PER_USER`（config，默认 3）限制，超限 `429 too_many_active_jobs`。
+- **余额**：`balance ≥ cost` 校验与 `-cost` reserve 在同一事务内（ECONOMY §1.3）；不足 `402 insufficient_coins`，不入队。
+- **retry**：仅 provider failed 可 retry（按当前费率新建 derived job，`derivedFromJobId` 关联）；`blocked` 任务不可 retry，返回 403。
 
 ### 5.6 My AI / User Library
 
@@ -411,7 +445,48 @@ Generation request:
 | `GET` | `/api/v1/admin/moderation/queue` | Admin | Review queue |
 | `POST` | `/api/v1/admin/moderation/:id/decision` | Admin | Record review decision |
 
-### 5.10 Feed & Community P1
+### 5.10 Admin/Ops Control Plane
+
+完整后台产品方案见 `docs/product/ADMIN_CONSOLE_PLAN.md`。P0 后台不能只覆盖审核，还要覆盖生成配置、用户/账单排障、产品开关和审计。
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/api/v1/admin/dashboard` | Admin/Ops | Product, queue, generation, billing, safety summary |
+| `GET` | `/api/v1/admin/users` | Admin/Support | Search users |
+| `GET` | `/api/v1/admin/users/:id` | Admin/Support | User, plan, entitlement, age, ledger summary |
+| `POST` | `/api/v1/admin/users/:id/status` | Admin | Suspend/restore user with audit reason |
+| `POST` | `/api/v1/admin/users/:id/role` | Admin | Change user role with audit reason (P1) |
+| `GET` | `/api/v1/admin/generation/jobs` | Admin/Ops/Support | Search generation jobs |
+| `GET` | `/api/v1/admin/generation/jobs/:id` | Admin/Ops/Support | Job timeline, provider error, ledger/refund, media |
+| `POST` | `/api/v1/admin/generation/jobs/:id/requeue` | Admin/Ops | Requeue eligible dead-letter/failed job with audit |
+| `POST` | `/api/v1/admin/generation/jobs/:id/discard` | Admin/Ops | Discard dead-letter job with reason (no refund replay) (P1) |
+| `GET` | `/api/v1/admin/generation/model-profiles` | Admin/Ops | List model profiles |
+| `POST` | `/api/v1/admin/generation/model-profiles` | Admin/Ops | Create draft model profile |
+| `PATCH` | `/api/v1/admin/generation/model-profiles/:id` | Admin/Ops | Edit draft model profile |
+| `POST` | `/api/v1/admin/generation/model-profiles/:id/publish` | Admin | Publish active profile version |
+| `POST` | `/api/v1/admin/generation/model-profiles/:id/rollback` | Admin | Roll back to prior active version |
+| `GET` | `/api/v1/admin/generation/prompt-templates` | Admin/Ops | List prompt template versions |
+| `POST` | `/api/v1/admin/generation/prompt-templates` | Admin/Ops | Create draft prompt template |
+| `PATCH` | `/api/v1/admin/generation/prompt-templates/:id` | Admin/Ops | Edit draft prompt template |
+| `POST` | `/api/v1/admin/generation/prompt-templates/:id/publish` | Admin | Publish prompt template version |
+| `POST` | `/api/v1/admin/generation/prompt-templates/:id/rollback` | Admin | Roll back to prior template version |
+| `GET` | `/api/v1/admin/billing/ledger` | Admin/Support | Ledger search and reconciliation |
+| `POST` | `/api/v1/admin/billing/adjustments` | Admin | Append-only dreamcoin adjustment |
+| `GET` | `/api/v1/admin/feature-flags` | Admin/Ops | List feature flags |
+| `PATCH` | `/api/v1/admin/feature-flags/:key` | Admin/Ops | Update flag with audit |
+| `GET` | `/api/v1/admin/audit-log` | Admin/Moderator/Support/Ops | Query admin audit log（脱敏，`before/after` 不含明文） |
+
+Rules:
+
+- Admin writes must use domain services and create `AdminAuditLog`.
+- 上表 `Auth` 列为 P0 粗粒度 role；细粒度 **permission key 映射**（如 `generation.config.write`、`billing.ledger.adjust`）的 SSoT 在 `ADMIN_CONSOLE_PLAN.md §3.2`，API 层统一用 `requirePermission(key)`。
+- Dreamcoin balance cannot be overwritten; adjustments append ledger entries.
+- Hard safety policies cannot be disabled by feature flags or model profiles.
+- `AdminAuditLog.before/after` 只记 targetId 与元数据，**禁止写入明文 prompt/chat/媒体**，防止 `audit.read` 成为绕过明文查看门控（`ADMIN_CONSOLE_PLAN §13`）的后门。
+- 明文 prompt/chat 查看须经 support consent 或 legal hold 流程（`ADMIN_CONSOLE_PLAN §13`），每次查看写审计。
+- Production secrets are not editable from admin.
+
+### 5.11 Feed & Community P1
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
@@ -475,7 +550,7 @@ Generation request:
 7. Generation image job API with preset payload, dreamcoin reservation and media gallery.
 8. Billing plans, checkout session, webhook sync, Premium/Deluxe entitlements, dreamcoin ledger.
 9. My AI library tabs for recent, characters, created, presets, and media.
-10. Admin moderation queue for characters, reports, messages, and media.
+10. Admin/Ops control plane for moderation, users, generation config, product config, billing/ledger search, queue health, and audit.
 11. Profile basics: balance, subscription link, redeem code, referral, preferences/language/account management.
 12. Analytics events for age gate, signup, character click, chat start, generation start/completion/failure, checkout, referral, report, appeal.
 

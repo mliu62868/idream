@@ -12,6 +12,7 @@ services:
     environment:
       - NODE_ENV=production
       - NEXT_TELEMETRY_DISABLED=1
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-idream}
       - REDIS_URL=redis://redis:6379/0
       - BULLMQ_PREFIX=${BULLMQ_PREFIX:-idream:prod}
     env_file:
@@ -26,7 +27,10 @@ services:
       retries: 3
       start_period: 10s
     depends_on:
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
 
   dev:
     build:
@@ -40,6 +44,7 @@ services:
     environment:
       - NODE_ENV=development
       - NEXT_TELEMETRY_DISABLED=1
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-idream}
       - REDIS_URL=redis://redis:6379/0
       - BULLMQ_PREFIX=${BULLMQ_PREFIX:-idream:dev}
     env_file:
@@ -58,11 +63,14 @@ services:
       retries: 3
       start_period: 15s
     depends_on:
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
 
-  # Local Postgres for the chat-service boundary (design §2). Host port 5433 to
-  # avoid the native pg / supabase already on 5432. DB `idream` holds main's
-  # public.* base tables + the chat schema/views (bootstrap: db/sql/*).
+  # Local Postgres for main + chat-service boundary. Host port 5433 avoids native
+  # pg / Supabase on 5432. DB `idream` holds main's public.* base tables + chat
+  # schema/views (bootstrap: db/sql/*).
   postgres:
     image: postgres:16-alpine
     container_name: idream-postgres

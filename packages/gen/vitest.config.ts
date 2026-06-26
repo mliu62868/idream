@@ -17,6 +17,16 @@ export default defineConfig({
         "../shared/src/contracts/index.ts",
         import.meta.url,
       ).pathname,
+      "@idream/shared/storage/local-blob": new URL(
+        "../shared/src/storage/local-blob.ts",
+        import.meta.url,
+      ).pathname,
+      "@idream/shared/storage": new URL("../shared/src/storage/s3-blob.ts", import.meta.url)
+        .pathname,
+      "@idream/shared/moderation": new URL(
+        "../shared/src/moderation/safety-gateway.ts",
+        import.meta.url,
+      ).pathname,
       "@idream/shared": new URL("../shared/src/index.ts", import.meta.url).pathname,
     },
   },

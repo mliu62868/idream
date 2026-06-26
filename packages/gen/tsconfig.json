@@ -13,7 +13,10 @@
     "types": ["node"],
     "paths": {
       "@idream/shared": ["../shared/src/index.ts"],
-      "@idream/shared/contracts": ["../shared/src/contracts/index.ts"]
+      "@idream/shared/contracts": ["../shared/src/contracts/index.ts"],
+      "@idream/shared/storage": ["../shared/src/storage/s3-blob.ts"],
+      "@idream/shared/storage/local-blob": ["../shared/src/storage/local-blob.ts"],
+      "@idream/shared/moderation": ["../shared/src/moderation/safety-gateway.ts"]
     }
   },
   "include": ["src/**/*.ts"],

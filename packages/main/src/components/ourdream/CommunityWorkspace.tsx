@@ -25,12 +25,22 @@ type Collection = {
   visibility: string;
 };
 
+type Dreamer = {
+  id: string;
+  displayName: string;
+  image?: string | null;
+  characters: number;
+  followers: number;
+  likes: string;
+  chats: string;
+};
+
 type CommunityPayload = {
   ok?: boolean;
   data?: {
     leaderboards?: {
       characters?: CommunityCharacter[];
-      dreamers?: Array<{ id: string; displayName?: string }>;
+      dreamers?: Dreamer[];
       collections?: Collection[];
     };
     collections?: Collection[];
@@ -40,6 +50,7 @@ type CommunityPayload = {
 
 export function CommunityWorkspace() {
   const [characters, setCharacters] = useState<CommunityCharacter[]>([]);
+  const [dreamers, setDreamers] = useState<Dreamer[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [gender, setGender] = useState("any");
   const [style, setStyle] = useState("any");
@@ -67,6 +78,7 @@ export function CommunityWorkspace() {
         return;
       }
       setCharacters(leaderboardPayload.data?.leaderboards?.characters ?? []);
+      setDreamers(leaderboardPayload.data?.leaderboards?.dreamers ?? []);
       setCollections(collectionsPayload.data?.collections ?? []);
     }
 
@@ -80,6 +92,20 @@ export function CommunityWorkspace() {
     }
     const response = await fetch(`/api/v1/users/${creatorId}/follow`, { method: "POST" });
     setStatus(response.ok ? "Creator followed." : "Sign in to follow creators.");
+  }
+
+  async function reportDreamer(dreamerId: string) {
+    const response = await fetch("/api/v1/reports", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        targetType: "user_profile",
+        targetId: dreamerId,
+        category: "other_prohibited_content",
+        description: "User profile report",
+      }),
+    });
+    setStatus(response.ok ? "Profile report submitted." : "Profile report failed.");
   }
 
   async function report(characterId: string) {
@@ -116,6 +142,80 @@ export function CommunityWorkspace() {
           <FilterButton label={`Gender ${gender}`} onClick={() => setGender(next(gender, ["any", "female", "male", "trans"]))} />
           <FilterButton label={`Style ${style}`} onClick={() => setStyle(next(style, ["any", "realistic", "anime", "hybrid"]))} />
         </div>
+        {status && (
+          <p
+            aria-live="polite"
+            className="mt-5 rounded-[12px] bg-[rgb(36,36,36)] px-4 py-3 text-[13px] font-semibold text-[rgb(220,220,220)]"
+          >
+            {status}
+          </p>
+        )}
+
+        <section className="mt-8">
+          <div className="mb-4 flex items-center gap-2">
+            <Users className="h-5 w-5 text-[rgb(253,95,194)]" />
+            <h2 className="text-[22px] font-black uppercase">Dreamers</h2>
+          </div>
+          <div className="grid gap-3 md:grid-cols-3">
+            {dreamers.length > 0 ? (
+              dreamers.map((dreamer) => (
+                <article
+                  className="rounded-[14px] bg-[rgb(18,18,18)] p-4"
+                  data-testid="community-dreamer-card"
+                  key={dreamer.id}
+                >
+                  <div className="flex items-center gap-3">
+                    {dreamer.image ? (
+                      <Image
+                        alt=""
+                        className="h-12 w-12 rounded-full object-cover"
+                        height={48}
+                        src={dreamer.image}
+                        width={48}
+                      />
+                    ) : (
+                      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[rgb(36,36,36)] text-[14px] font-black uppercase text-white">
+                        {dreamer.displayName.slice(0, 1)}
+                      </div>
+                    )}
+                    <div className="min-w-0">
+                      <h3 className="truncate text-[15px] font-black uppercase">{dreamer.displayName}</h3>
+                      <p className="mt-1 text-[12px] font-medium text-[rgb(170,170,170)]">
+                        {dreamer.characters} characters · {dreamer.followers} followers
+                      </p>
+                    </div>
+                  </div>
+                  <p className="mt-3 text-[12px] font-medium text-[rgb(170,170,170)]">
+                    {dreamer.likes} likes · {dreamer.chats} chats
+                  </p>
+                  <div className="mt-4 flex gap-2">
+                    <button
+                      className="inline-flex h-9 flex-1 items-center justify-center gap-2 rounded-full bg-white text-[12px] font-black text-[rgb(13,13,13)]"
+                      onClick={() => follow(dreamer.id)}
+                      type="button"
+                    >
+                      <HeartHandshake className="h-4 w-4" />
+                      Follow
+                    </button>
+                    <button
+                      aria-label={`Report user profile ${dreamer.displayName}`}
+                      className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[rgb(36,36,36)] text-white"
+                      onClick={() => reportDreamer(dreamer.id)}
+                      title="Report profile"
+                      type="button"
+                    >
+                      <Flag className="h-4 w-4" />
+                    </button>
+                  </div>
+                </article>
+              ))
+            ) : (
+              <p className="text-[13px] font-medium text-[rgb(170,170,170)]">
+                Dreamers with public characters appear here.
+              </p>
+            )}
+          </div>
+        </section>
 
         <div className="mt-8 grid gap-3 md:grid-cols-4">
           {characters.map((character) => (
@@ -130,6 +230,7 @@ export function CommunityWorkspace() {
                   fill
                   sizes="260px"
                   src={character.image}
+                  unoptimized={isPrivateMediaUrl(character.image)}
                 />
               </Link>
               <div className="p-4">
@@ -149,6 +250,7 @@ export function CommunityWorkspace() {
                     Follow
                   </button>
                   <button
+                    aria-label={`Report ${character.title}`}
                     className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[rgb(36,36,36)] text-white"
                     onClick={() => report(character.id)}
                     type="button"
@@ -183,7 +285,6 @@ export function CommunityWorkspace() {
             )}
           </div>
         </section>
-        {status && <p className="mt-5 text-[13px] font-semibold text-[rgb(170,170,170)]">{status}</p>}
       </div>
     </section>
   );
@@ -204,4 +305,8 @@ function FilterButton({ label, onClick }: Readonly<{ label: string; onClick: () 
 function next(current: string, values: string[]) {
   const index = values.indexOf(current);
   return values[(index + 1) % values.length] ?? values[0];
+}
+
+function isPrivateMediaUrl(url: string) {
+  return url.startsWith("/api/v1/media/") || url.startsWith("/user-content/");
 }

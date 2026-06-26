@@ -12,7 +12,9 @@
     "test": "vitest run",
     "build": "echo source-only",
     "start:image": "tsx src/image.ts",
-    "start:video": "tsx src/video.ts"
+    "start:video": "tsx src/video.ts",
+    "probe:image": "tsx src/probe-image-pipeline.ts",
+    "serve:sdcpp-image": "tsx src/sdcpp-openai-image-server.ts"
   },
   "dependencies": {
     "@idream/shared": "workspace:*",

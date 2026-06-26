@@ -1,6 +1,8 @@
-export const DB_PROVIDERS = ["sqlite", "postgresql"] as const;
+export const DB_PROVIDER = "postgresql" as const;
+export const DEFAULT_POSTGRES_DATABASE_URL =
+  "postgresql://postgres:postgres@localhost:5433/idream";
 
-export const ROLES = ["user", "moderator", "admin"] as const;
+export const ROLES = ["user", "moderator", "support", "ops", "analyst", "admin"] as const;
 export const USER_STATUSES = ["active", "suspended", "deleted"] as const;
 
 export const VISIBILITY = ["private", "unlisted", "public"] as const;
@@ -45,5 +47,3 @@ export const POLICY_CODES = [
   "unsafe_request",
   "manual_review",
 ] as const;
-
-export const DEFAULT_SQLITE_DATABASE_URL = "file:./dev.db";

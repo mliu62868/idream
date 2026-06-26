@@ -112,7 +112,7 @@ export type ModerationResult = {
 };
 ```
 
-**provider 注册**（`providers/index.ts`）：按 env 选择实现，统一加超时/重试/熔断/日志。生成（chat/image/video/voice）统一对接**内部自托管开源模型流水线 API**（`PIPELINE_API_URL`+`PIPELINE_API_TOKEN`，OpenAI 兼容，模型名参数化）。**审核（moderation）保持独立**：通用安全分类可同流水线，但 CSAM 哈希匹配 + NCMEC 上报是独立服务、独立密钥（07 §3）。
+**provider 注册**（`providers/index.ts`）：按 env 选择实现，统一加超时/重试/熔断/日志。生成（chat/image/video/voice）统一对接**内部自托管开源模型流水线 API**（`PIPELINE_API_URL`+`PIPELINE_API_TOKEN`，OpenAI 兼容，模型名/profile 参数化）。`packages/gen` 不直接加载 MLX 或 `stable-diffusion.cpp`；Pipeline Service 内部再按后台发布的 model profile 选择 runner。P0 图片生产 runner 优先 `stable-diffusion.cpp`，MLX 只作为 Apple Silicon 本地实验 runner。**审核（moderation）保持独立**：通用安全分类可同流水线，但 CSAM 哈希匹配 + NCMEC 上报是独立服务、独立密钥（07 §3）。
 
 ```ts
 export const providers = {

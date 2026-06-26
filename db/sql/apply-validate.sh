@@ -6,28 +6,33 @@ set -euo pipefail
 DB="${DB:-idream_split_val}"
 SUPER="${SUPER:-kk}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
-psql() { command psql -v ON_ERROR_STOP=1 -q "$@"; }
+psql_super() {
+  PGPASSWORD="${SUPER_PASSWORD:-${PGPASSWORD:-}}" command psql -v ON_ERROR_STOP=1 -q "$@"
+}
+psql_chat() {
+  PGPASSWORD="${CHAT_SERVICE_PASSWORD:-${PGPASSWORD:-}}" command psql -v ON_ERROR_STOP=1 -q "$@"
+}
 
 echo "== applying boundary SQL to $DB =="
-psql -U "$SUPER" -d "$DB" -f "$HERE/01_schemas_roles.sql"
-psql -U "$SUPER" -d "$DB" -c "SET ROLE core_owner;" -f "$HERE/02_core_views.sql"
-psql -U "$SUPER" -d "$DB" -c "SET ROLE chat_owner;" -f "$HERE/03_chat_tables.sql"
-psql -U "$SUPER" -d "$DB" -f "$HERE/04_grants.sql"
+psql_super -U "$SUPER" -d "$DB" -f "$HERE/01_schemas_roles.sql"
+psql_super -U "$SUPER" -d "$DB" -c "SET ROLE core_owner;" -f "$HERE/02_core_views.sql"
+psql_super -U "$SUPER" -d "$DB" -c "SET ROLE chat_owner;" -f "$HERE/03_chat_tables.sql"
+psql_super -U "$SUPER" -d "$DB" -f "$HERE/04_grants.sql"
 echo "== applied =="
 
 echo "== positive: chat_service CAN read the 4 views + write chat.* =="
-psql -U chat_service -d "$DB" -c "SELECT count(*) FROM core.chat_user_view;" >/dev/null
-psql -U chat_service -d "$DB" -c "SELECT count(*) FROM core.chat_character_view;" >/dev/null
-psql -U chat_service -d "$DB" -c "SELECT count(*) FROM billing.chat_entitlement_view;" >/dev/null
-psql -U chat_service -d "$DB" -c "SELECT count(*) FROM compliance.chat_user_eligibility_view;" >/dev/null
-psql -U chat_service -d "$DB" -c "INSERT INTO chat.chat_sessions (id,user_id,character_id) VALUES ('val_s1','val_u1','val_c1');" >/dev/null
-psql -U chat_service -d "$DB" -c "DELETE FROM chat.chat_sessions WHERE id='val_s1';" >/dev/null
+psql_chat -U chat_service -d "$DB" -c "SELECT count(*) FROM core.chat_user_view;" >/dev/null
+psql_chat -U chat_service -d "$DB" -c "SELECT count(*) FROM core.chat_character_view;" >/dev/null
+psql_chat -U chat_service -d "$DB" -c "SELECT count(*) FROM billing.chat_entitlement_view;" >/dev/null
+psql_chat -U chat_service -d "$DB" -c "SELECT count(*) FROM compliance.chat_user_eligibility_view;" >/dev/null
+psql_chat -U chat_service -d "$DB" -c "INSERT INTO chat.chat_sessions (id,user_id,character_id) VALUES ('val_s1','val_u1','val_c1');" >/dev/null
+psql_chat -U chat_service -d "$DB" -c "DELETE FROM chat.chat_sessions WHERE id='val_s1';" >/dev/null
 echo "  OK: views readable, chat.* writable"
 
 # Negative test helper: a statement that MUST be rejected.
 must_reject() {
   local label="$1"; local sql="$2"
-  if command psql -U chat_service -d "$DB" -c "$sql" >/dev/null 2>&1; then
+  if psql_chat -U chat_service -d "$DB" -c "$sql" >/dev/null 2>&1; then
     echo "  FAIL: '$label' was ALLOWED but must be denied"; exit 1
   else
     echo "  OK (denied): $label"
