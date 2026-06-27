@@ -1,12 +1,24 @@
 # iDream 当前功能覆盖审计
 
-更新日期：2026-06-25
+更新日期：2026-06-27
 
 ## 结论
 
 这份文档是当前代码态的功能覆盖表，覆盖的是“用户能否完整使用”和“有没有测试证据”。它补充并修正 `ProductFeatureMap.md` 里 2026-06-13 的旧状态描述。
 
-当前状态：**本地产品闭环通过，公开上线仍被真实生产依赖阻断**。
+当前状态：**本地产品闭环通过，当前目标收窄为内部演示/受控 beta；公开上线仍被真实生产依赖阻断**。
+
+## 2026-06-26 范围决策
+
+以下生产依赖明确延后，先不作为当前里程碑工作：
+
+- Safety Gateway。
+- Go.cam。
+- BTCPay。
+- R2/S3。
+- Sentry。
+
+这意味着当前验收口径不是公开上线。公开上线状态仍保持未就绪，未来恢复公开上线目标时必须重新启用这些 provider，并通过对应 live probe 和最终 launch gate。
 
 ## 对标站当前公开信号
 
@@ -29,14 +41,14 @@
 | Explore | 可用；搜索、分页、排序、gender filter、tag filter、移动端导航状态被验证 | `packages/main/src/e2e/ui-workflows.e2e.ts`：`explore UI syncs filters to URL and paginates results` |
 | 角色详情 | 可用；角色卡进入 `/characters/:id`，Chat action 渲染 | `flows.e2e.ts`：explore grid -> character detail |
 | Create -> My AI | 可用；提交角色，保存到 My AI created tab | `ui-workflows.e2e.ts`：`create UI submits a character and shows it in My AI created tab` |
-| Chat | 可用；从角色详情开会话，发送消息，assistant 回复，刷新后历史仍在 | `ui-workflows.e2e.ts`：chat UI flow；`flows.e2e.ts`：chat API flow |
+| Chat | 可用；从角色详情开会话，发送消息，assistant 回复，刷新后历史仍在；chat model pipeline probe 已通过 | `ui-workflows.e2e.ts`：chat UI flow；`flows.e2e.ts`：chat API flow；`.tmp/launch-chat-probe.json` |
 | Chat report | 可用；用户消息可举报并写入 `ContentReport` | `ui-workflows.e2e.ts`：chat message report |
-| Generate image | 可用；生成排队、worker drain、完成、媒体进入 gallery，`/user-content` 返回真实图片 bytes | `ui-workflows.e2e.ts`：image generation UI；`flows.e2e.ts`：generation API |
+| Generate image | 可用；生成排队、worker drain、完成、媒体进入 gallery，`/user-content` 返回真实图片 bytes；image pipeline probe 已通过 | `ui-workflows.e2e.ts`：image generation UI；`flows.e2e.ts`：generation API；`.tmp/launch-image-probe.json` |
 | Generate video | 条件可用；`video_gen` flag + entitlement 打开后可排队并展示 video asset；默认 launch gate 要求 video 保持关闭或接真实 provider | `ui-workflows.e2e.ts`：video generation UI；`launch-readiness.ts`：video provider gate |
 | 生成配置失败状态 | 可用；配置加载失败时显示错误，不展示假 0 balance，Generate 禁用 | `ui-workflows.e2e.ts`：generator config failure |
 | Gallery report | 可用；生成媒体可举报并写入 `ContentReport` | `ui-workflows.e2e.ts`：generated media report |
 | Upgrade | 本地闭环可用；Premium monthly 激活、dreamcoins 发放、profile 回显、prompt/negative prompt controls 解锁 | `ui-workflows.e2e.ts`：upgrade UI flow |
-| Billing API | 本地/mock provider 闭环可用；真实上线要求 BTCPay provider 和 live probe | `flows.e2e.ts`：billing flow；`LAUNCH_READINESS_AUDIT.md` |
+| Billing API | 本地/mock provider 闭环可用；BTCPay 已延后，真实上线前仍要求 provider 和 live probe | `flows.e2e.ts`：billing flow；`LAUNCH_READINESS_AUDIT.md` |
 | Moderation/report queue | 可用；角色 report 后 admin moderation queue 可查 | `flows.e2e.ts`：moderation flow |
 | Community | 可用；有公开 dreamer 数据时显示 dreamer card，并可举报 user profile；无数据时显示空状态 | `ui-workflows.e2e.ts`：community dreamers/report；Chrome smoke：community empty-state |
 | Profile | 可用；余额、display name、preferences、redeem code、referral、language、billing link、media tab、media report/download/delete | `ui-workflows.e2e.ts`：profile flow |
@@ -50,19 +62,20 @@
 
 | 范围 | 为什么不能直接当线上完成 |
 | --- | --- |
-| 图片生成 | 本地已经通过 pipeline + `sdcpp-image` + `pornmaster-zimage-turbo` probe；公开上线还需要生产 Pipeline URL/token、模型服务容量和 live probe |
-| Chat/voice | 本地/mock 或 pipeline shape 已验证；公开上线必须配置非 mock provider、chat service DB role、durable storage、BFF shared secret、model gateway live probe |
-| Payment | 本地 mock checkout 可验证权益闭环；公开上线必须配置 BTCPay Greenfield credentials、webhook secret、provider live probe |
-| Age verification | 本地 age gate 可用；公开上线必须配置 Go.cam gateway、public HTTPS return/callback URL、webhook signature secret、provider live probe |
-| Blob storage | 本地 blob 可验证 `/user-content`；公开上线必须配置 R2/S3 bucket/endpoint/access keys，并跑 write/sign/read/delete probe |
-| Safety gateway | 本地/reporting/moderation queue 可用；公开上线必须配置真实 safety gateway URL/key 并跑 benign moderation live probe |
-| Sentry | 代码 gate 已要求；公开上线必须配置 `SENTRY_DSN` |
+| 图片生成 | 本地已经通过 pipeline + `sdcpp-image` + `pornmaster-zimage-turbo` probe；内部 beta 用 `bun run launch:probe:pipeline` 固化验证 |
+| Chat | 本地已经通过 `CHAT_MODEL_PROVIDER=pipeline` + OpenAI-compatible oMLX endpoint probe；chat service BFF probe 也通过 |
+| Voice | `PipelineVoiceModel` adapter 已存在；目标模型仍选 MOSS-TTS v1.5。已在 Apple Silicon 本地跑通一个更小的 oMLX smoke path：`Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit`、`http://127.0.0.1:8061/v1`、speaker `serena`。显式 voice pipeline probe 对图片 gateway `http://127.0.0.1:8091` 返回 HTTP 404，说明 sd.cpp 不是 voice runner。若 demo 承诺 voice，必须配置 `PIPELINE_VOICE_API_URL` 并通过 `bun run launch:probe:pipeline -- --include-voice` |
+| Payment | 本地 mock checkout 可验证权益闭环；BTCPay 已延后，公开上线前必须恢复 BTCPay Greenfield credentials、webhook secret、provider live probe |
+| Age verification | 本地 age gate 可用；Go.cam 已延后，公开上线前必须恢复 Go.cam gateway、public HTTPS return/callback URL、webhook signature secret、provider live probe |
+| Blob storage | 本地 blob 可验证 `/user-content`；R2/S3 已延后，公开上线前必须恢复 bucket/endpoint/access keys，并跑 write/sign/read/delete probe |
+| Safety gateway | 本地/reporting/moderation queue 可用；Safety Gateway 已延后，公开上线前必须恢复真实 safety gateway URL/key 并跑 benign moderation live probe |
+| Sentry | Sentry 已延后；公开上线前必须恢复 `SENTRY_DSN` |
 
 ## 与旧 ProductFeatureMap 的差异
 
 `ProductFeatureMap.md` 仍有一些 2026-06-13 的旧缺口描述，例如 Create、Generate、Upgrade、Profile、Community、Admin 等流程标成“未实现”。以当前代码态为准，这些流程已经有功能实现和 E2E 覆盖。
 
-仍然未达到公开上线的不是这些本地产品流程，而是：
+当前暂不追求公开上线。未来重新进入公开上线阶段时，缺口不是这些本地产品流程，而是：
 
 1. 真实生产 provider 从 mock 切换。
 2. 生产 secrets 和公网回调 URL 配置。

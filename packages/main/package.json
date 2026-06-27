@@ -50,6 +50,7 @@
     "start:event-consumer": "tsx src/processes/event-consumer.ts",
     "probe:age": "tsx src/server/probe-age-verification.ts",
     "probe:blob": "tsx src/server/probe-blob-storage.ts",
+    "probe:catalog": "tsx src/server/probe-public-catalog.ts",
     "probe:chat": "tsx src/server/probe-chat-model.ts",
     "probe:chat-service": "tsx src/server/probe-chat-service.ts",
     "probe:payment": "tsx src/server/probe-payment-provider.ts",

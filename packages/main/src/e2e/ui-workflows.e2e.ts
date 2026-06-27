@@ -5,6 +5,14 @@ import { mockVideoMp4Bytes } from "@idream/shared";
 import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
 import { prisma } from "@/server/lib/db";
 
+test.beforeAll(async () => {
+  await cleanupPublicE2EFixtures();
+});
+
+test.afterEach(async () => {
+  await cleanupPublicE2EFixtures();
+});
+
 function uniqueEmail(tag: string) {
   return `e2e-ui-${tag}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@test.local`;
 }
@@ -138,6 +146,65 @@ async function seedDownloadableVideoMedia(email: string) {
     },
   });
   return id;
+}
+
+async function cleanupPublicE2EFixtures() {
+  const fixtureCharacters = await prisma.character.findMany({
+    where: {
+      visibility: "public",
+      status: "approved",
+      OR: [
+        { id: { startsWith: "e2e-ui-" } },
+        { name: { startsWith: "E2E " } },
+        { name: { startsWith: "Dreamer " } },
+        { description: { contains: "seeded for Explore UI filtering" } },
+        { description: { contains: "used to verify community dreamer profile reporting" } },
+        { creator: { is: { email: { endsWith: "@test.local" } } } },
+      ],
+    },
+    select: {
+      id: true,
+      creatorId: true,
+    },
+  });
+  if (fixtureCharacters.length === 0) return;
+
+  const now = new Date();
+  const characterIds = fixtureCharacters.map((character) => character.id);
+  const creatorIds = fixtureCharacters
+    .map((character) => character.creatorId)
+    .filter((creatorId): creatorId is string => Boolean(creatorId));
+
+  await prisma.contentReport.deleteMany({
+    where: {
+      OR: [
+        { targetId: { in: characterIds } },
+        ...(creatorIds.length > 0
+          ? [{ targetType: "user_profile", targetId: { in: creatorIds } }]
+          : []),
+      ],
+    },
+  });
+  await prisma.character.updateMany({
+    where: { id: { in: characterIds } },
+    data: {
+      visibility: "private",
+      status: "removed",
+      deletedAt: now,
+    },
+  });
+
+  if (creatorIds.length === 0) return;
+  await prisma.user.updateMany({
+    where: {
+      id: { in: creatorIds },
+      email: { endsWith: "@test.local" },
+    },
+    data: {
+      status: "deleted",
+      deletedAt: now,
+    },
+  });
 }
 
 async function enableVideoGenerationForUser(email: string) {

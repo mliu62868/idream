@@ -75,24 +75,24 @@ function readArg(name: string) {
   return index >= 0 ? process.argv[index + 1] : undefined;
 }
 
-function readOptions(): ProbeOptions {
+function readOptions(defaultVoiceId: string): ProbeOptions {
   return {
     report: readArg("report") ?? process.env.VOICE_MODEL_PROBE_REPORT ?? null,
     text:
       readArg("text") ??
       "Launch readiness voice probe. This short line should synthesize clearly.",
-    voiceId: readArg("voice") ?? process.env.VOICE_MODEL_PROBE_VOICE_ID ?? "default",
+    voiceId: readArg("voice") ?? process.env.VOICE_MODEL_PROBE_VOICE_ID ?? defaultVoiceId,
   };
 }
 
 async function main() {
-  const options = readOptions();
   const startedAt = Date.now();
   const provider = process.env.VOICE_PROVIDER ?? "mock";
-  const baseUrl = process.env.PIPELINE_API_URL ?? null;
+  const baseUrl = process.env.PIPELINE_VOICE_API_URL ?? process.env.PIPELINE_API_URL ?? null;
   const model =
     process.env.PIPELINE_VOICE_MODEL_DEFAULT ??
     (provider === "mock" ? "mock-voice-probe" : "voice-default");
+  const options = readOptions(defaultVoiceForModel(model));
   const report = await runProbe({
     provider,
     baseUrl,
@@ -194,8 +194,8 @@ function createVoiceModel(input: {
   }
 
   return new PipelineVoiceModel({
-    baseUrl: requireValue("PIPELINE_API_URL", input.baseUrl),
-    apiKey: process.env.PIPELINE_API_TOKEN,
+    baseUrl: requireValue("PIPELINE_VOICE_API_URL or PIPELINE_API_URL", input.baseUrl),
+    apiKey: process.env.PIPELINE_VOICE_API_TOKEN ?? process.env.PIPELINE_API_TOKEN,
     model: requireValue("PIPELINE_VOICE_MODEL_DEFAULT", input.model),
     timeoutMs: Number.parseInt(process.env.PIPELINE_TIMEOUT_MS ?? "60000", 10),
     blob: input.blob,
@@ -209,6 +209,10 @@ function requireValue(name: string, value: string | null | undefined) {
 
 function hasText(value: string | null | undefined) {
   return Boolean(value?.trim());
+}
+
+function defaultVoiceForModel(model: string | null) {
+  return model?.toLowerCase().includes("qwen3-tts") ? "serena" : "default";
 }
 
 function resolveWorkspacePath(filePath: string) {

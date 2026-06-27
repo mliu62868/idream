@@ -63,9 +63,62 @@ SDCPP_TIMEOUT_MS=300000 \
 bun run --filter @idream/gen serve:sdcpp-image
 ```
 
-另开一个 shell 跑真实图片探针和上线门禁：
+另开一个 shell 先跑内部 Pipeline beta 探针：
 
 ```bash
+bun run launch:probe:pipeline
+```
+
+该命令会加载 `packages/main/.env`、`packages/chat/.env` 和
+`packages/gen/.env`，验证 main/admin web surface、产品生成配置、chat service
+BFF 签名、`CHAT_MODEL_PROVIDER=pipeline` 的 chat model，以及
+`GEN_IMAGE_PROVIDER=pipeline` 的图片生成。voice 默认跳过，除非已配置
+Pipeline `/audio/speech` gateway，或显式要求：
+
+```bash
+bun run launch:probe:pipeline -- --include-voice
+```
+
+### MOSS-TTS voice runner
+
+Voice 使用独立的 OpenAI-compatible endpoint，不复用 `sdcpp-image`：
+
+```bash
+PIPELINE_VOICE_API_URL=http://127.0.0.1:8000/v1 \
+PIPELINE_VOICE_MODEL_DEFAULT=OpenMOSS/MOSS-TTS-Local-Transformer-v1.5 \
+bun run launch:probe:voice:local
+```
+
+Apple Silicon 上已经验证过一个更小的 oMLX 路径：
+
+```bash
+set -a; source packages/chat/.env; set +a
+PIPELINE_VOICE_API_URL=http://127.0.0.1:8061/v1 \
+PIPELINE_VOICE_API_TOKEN="$CHAT_MODEL_API_KEY" \
+PIPELINE_VOICE_MODEL_DEFAULT=Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit \
+VOICE_MODEL_PROBE_VOICE_ID=serena \
+bun run launch:probe:voice:local
+```
+
+该模型的可用 speaker 包括 `serena`、`vivian`、`uncle_fu`、`ryan`、`aiden`、
+`ono_anna`、`sohee`、`eric`、`dylan`。探针会在模型名包含 `Qwen3-TTS` 时默认用
+`serena`。
+
+Runner 选择：
+
+- **不要用 sd.cpp 跑 MOSS-TTS**。sd.cpp 只保留为图片 `sdcpp-image` gateway。
+- **生产/共享 GPU 优先 SGLang-Omni**。MOSS-TTS 官方说明 Local-Transformer-v1.5
+  有 SGLang-Omni Day-0 支持，并暴露 OpenAI-compatible `/v1/audio/speech`、
+  streaming 和 voice cloning。
+- **Apple Silicon 本地实验可用 MLX / mlx-audio**。这适合开发机验证音色和延迟，
+  但当前产品接入仍只认 `PIPELINE_VOICE_API_URL`。
+- `PIPELINE_VOICE_API_URL` 优先级高于 `PIPELINE_API_URL`，避免 voice probe 误打到
+  `http://127.0.0.1:8091` 的图片 gateway。
+
+之后再按需要跑真实图片探针和上线门禁：
+
+```bash
+bun run launch:probe:pipeline
 bun run launch:probe:image:local
 bun run launch:probe:web-surface -- --report .tmp/launch-web-surface-probe.json
 bun run launch:probe:product-config -- --report .tmp/launch-product-config-probe.json

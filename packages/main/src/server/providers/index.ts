@@ -118,12 +118,12 @@ function createVoiceProvider(blob: BlobStore) {
 
   return new PipelineVoiceModel({
     baseUrl: requireProviderEnv(
-      "PIPELINE_API_URL",
-      env.PIPELINE_API_URL,
+      "PIPELINE_VOICE_API_URL or PIPELINE_API_URL",
+      env.PIPELINE_VOICE_API_URL ?? env.PIPELINE_API_URL,
       "VOICE_PROVIDER",
       env.VOICE_PROVIDER,
     ),
-    apiKey: env.PIPELINE_API_TOKEN,
+    apiKey: env.PIPELINE_VOICE_API_TOKEN ?? env.PIPELINE_API_TOKEN,
     model: env.PIPELINE_VOICE_MODEL_DEFAULT,
     timeoutMs: env.PIPELINE_TIMEOUT_MS,
     blob,

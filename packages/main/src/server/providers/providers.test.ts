@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createProviderRegistry } from "./index";
+import type { BlobStore } from "./types";
+import { PipelineVoiceModel } from "./voice/pipeline";
 
 const oldEnv = { ...process.env };
 
@@ -318,7 +320,9 @@ describe("mock providers", () => {
       ...oldEnv,
       VOICE_PROVIDER: "pipeline",
       PIPELINE_API_URL: "https://pipeline.internal.example.com/v1",
+      PIPELINE_VOICE_API_URL: "https://moss-tts.internal.example.com/v1",
       PIPELINE_API_TOKEN: "pipeline-token",
+      PIPELINE_VOICE_API_TOKEN: "voice-token",
       PIPELINE_VOICE_MODEL_DEFAULT: "voice-model",
     };
 
@@ -337,15 +341,66 @@ describe("mock providers", () => {
       },
     });
     expect(fetchMock).toHaveBeenCalledWith(
-      new URL("https://pipeline.internal.example.com/v1/audio/speech"),
+      new URL("https://moss-tts.internal.example.com/v1/audio/speech"),
       expect.objectContaining({
         method: "POST",
         headers: expect.objectContaining({
-          authorization: "Bearer pipeline-token",
+          authorization: "Bearer voice-token",
         }),
         body: expect.stringContaining('"voice":"mel"'),
       }),
     );
+  });
+
+  it("stores binary pipeline voice responses with an extension matching the content type", async () => {
+    const audio = new Uint8Array([1, 2, 3, 4]);
+    const fetchMock = vi.fn(async () =>
+      new Response(audio, {
+        headers: {
+          "content-type": "audio/wav",
+        },
+      }),
+    );
+    const stored: Array<{ key: string; body: Uint8Array; contentType: string }> = [];
+    const blob: BlobStore = {
+      async putPrivate(input) {
+        stored.push({
+          key: input.key,
+          body: input.body,
+          contentType: input.contentType,
+        });
+        return { ok: true, data: { key: input.key, size: input.body.byteLength } };
+      },
+      async signGetUrl() {
+        return { ok: true, data: { url: "https://cdn.example.com/voice.wav" } };
+      },
+      async delete() {
+        return { ok: true, data: { deleted: true } };
+      },
+    };
+    const voice = new PipelineVoiceModel({
+      baseUrl: "https://moss-tts.internal.example.com/v1",
+      apiKey: "voice-token",
+      model: "voice-model",
+      blob,
+      fetchImpl: fetchMock,
+    });
+
+    const result = await voice.synthesize({
+      text: "hello",
+      voiceId: "serena",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.key).toMatch(/^voice\/.+\.wav$/);
+    }
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatchObject({
+      contentType: "audio/wav",
+    });
+    expect(stored[0]?.key).toMatch(/^voice\/.+\.wav$/);
+    expect(Array.from(stored[0]?.body ?? [])).toEqual(Array.from(audio));
   });
 
   it("can wire Go.cam age verification through the gateway provider", async () => {

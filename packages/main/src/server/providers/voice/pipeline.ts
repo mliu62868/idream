@@ -64,7 +64,7 @@ export class PipelineVoiceModel implements VoiceModel {
         };
       }
 
-      const key = `voice/${randomUUID()}.mp3`;
+      const key = `voice/${randomUUID()}${audioFileExtension(contentType)}`;
       const body = new Uint8Array(await response.arrayBuffer());
       const stored = await this.blob.putPrivate({ key, body, contentType });
       if (!stored.ok) return stored;
@@ -122,6 +122,20 @@ function voiceFailure(status: number): ProviderResult<never> {
 
 function estimateDurationMs(text: string) {
   return Math.max(500, text.length * 35);
+}
+
+function audioFileExtension(contentType: string) {
+  const mediaType = contentType.split(";")[0]?.trim().toLowerCase();
+  const extensions: Record<string, string> = {
+    "audio/mpeg": ".mp3",
+    "audio/mp3": ".mp3",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+    "audio/ogg": ".ogg",
+    "audio/flac": ".flac",
+    "audio/webm": ".webm",
+  };
+  return mediaType ? (extensions[mediaType] ?? ".bin") : ".bin";
 }
 
 function pipelineEndpoint(baseUrl: string, suffix: string) {

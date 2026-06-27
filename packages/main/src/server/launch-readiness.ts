@@ -762,7 +762,7 @@ function addVoiceModelProbeCheck(
   const problems: string[] = [];
   const reportPath = env.VOICE_MODEL_PROBE_REPORT;
   const configuredProvider = env.VOICE_PROVIDER ?? "mock";
-  const configuredBaseUrl = env.PIPELINE_API_URL;
+  const configuredBaseUrl = env.PIPELINE_VOICE_API_URL ?? env.PIPELINE_API_URL;
   const configuredModel = env.PIPELINE_VOICE_MODEL_DEFAULT;
 
   if (!reportPath) {
@@ -781,7 +781,7 @@ function addVoiceModelProbeCheck(
     }
     if (configuredProvider === "pipeline") {
       if (!sameUrl(probe.baseUrl, configuredBaseUrl)) {
-        problems.push("probe base URL does not match PIPELINE_API_URL");
+        problems.push("probe base URL does not match PIPELINE_VOICE_API_URL or PIPELINE_API_URL");
       }
       if (hasMinLength(configuredModel, 1) && probe.model !== configuredModel) {
         problems.push("probe model does not match PIPELINE_VOICE_MODEL_DEFAULT");
