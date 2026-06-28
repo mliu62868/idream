@@ -87,6 +87,29 @@ describe("checkout (auto-confirm) activates entitlements + grants coins", () => 
     expect(gen.data.job.status).toBe("queued");
     await runQueuedGenerationJobs(8);
   });
+
+  it("is idempotent on repeated auto-confirm checkout: no extra subs or coins", async () => {
+    const userId = await setupUser("repeat");
+    const planId = await setupPlan("repeat", 1000);
+
+    const first = await api("POST", "billing/checkout", {
+      userId,
+      body: { planId, autoConfirm: true },
+    });
+    expectOk(first);
+    expect(first.data.subscription).toMatchObject({ status: "active", planId });
+    expect(await dreamcoinBalance(userId)).toBe(1000);
+
+    // Replaying checkout must not mint coins again or stack a second subscription.
+    const second = await api("POST", "billing/checkout", {
+      userId,
+      body: { planId, autoConfirm: true },
+    });
+    expectOk(second);
+    expect(second.data.subscription.id).toBe(first.data.subscription.id);
+    expect(await dreamcoinBalance(userId)).toBe(1000);
+    expect(await prisma.subscription.count({ where: { userId } })).toBe(1);
+  });
 });
 
 describe("webhook idempotency", () => {
@@ -122,6 +145,32 @@ describe("webhook idempotency", () => {
 
     const subscriptions = await prisma.subscription.count({ where: { userId } });
     expect(subscriptions).toBe(1);
+  });
+
+  it("processes the event but does not activate when the payload omits planId", async () => {
+    const userId = await setupUser("noplan");
+    const planId = await setupPlan("noplan", 700);
+
+    const checkout = await api("POST", "billing/checkout", {
+      userId,
+      body: { planId, autoConfirm: false },
+    });
+    expectOk(checkout);
+    const invoiceId = checkout.data.invoice.invoiceId as string;
+
+    // Controlled-beta: planId is resolved only from the webhook payload (echoed
+    // from invoice metadata). With no payload planId and no CheckoutSession.planId
+    // column, settlement marks the event processed but cannot activate a sub —
+    // this only affects the deferred BTCPay path; auto-confirm carries planId.
+    const webhookBody = { invoiceId, providerEventId: `${P}evt-noplan` };
+    const result = await api("POST", "billing/webhooks/mock", {
+      headers: { "x-provider-event-id": `${P}evt-noplan` },
+      body: webhookBody,
+    });
+    expectOk(result);
+    expect(result.data).toMatchObject({ processed: true });
+    expect(await dreamcoinBalance(userId)).toBe(0);
+    expect(await prisma.subscription.count({ where: { userId } })).toBe(0);
   });
 });
 

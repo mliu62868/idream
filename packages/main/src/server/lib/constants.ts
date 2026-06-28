@@ -18,18 +18,14 @@ export const CHARACTER_STYLES = ["realistic", "anime", "hybrid", "other"] as con
 export const GENDERS = ["female", "male", "trans"] as const;
 
 export const JOB_STATUSES = ["queued", "running", "completed", "failed", "dead"] as const;
+// Wired BullMQ queues with a live producer AND consumer. Names that had only a
+// dead producer (moderation.input / report.triage / age.verification.webhook —
+// their work is done synchronously inline) were removed to avoid orphan queues.
 export const JOB_QUEUES = [
   "ai.image.generate",
   "ai.video.generate",
   "app.ai.finalize",
-  "moderation.input",
-  "moderation.output",
   "character.preview",
-  "billing.webhook",
-  "age.verification.webhook",
-  "reward.ledger",
-  "report.triage",
-  "analytics.events",
 ] as const;
 
 export const PROVIDER_KIND = ["mock", "pipeline", "btcpay", "r2", "vercel_blob"] as const;

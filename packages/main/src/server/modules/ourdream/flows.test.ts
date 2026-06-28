@@ -193,8 +193,16 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
       ageGate: true,
     });
     expectOk(preview);
-    expect(preview.data.previewJob.status).toBe("completed");
-    expect(preview.data.asset).toBeTruthy();
+    // Preview is async now: enqueued queued, settled by the worker, polled via GET.
+    expect(preview.data.previewJob.status).toBe("queued");
+    await runQueuedGenerationJobs(8);
+    const previewState = await api("GET", `character-drafts/${draftId}/preview`, {
+      userId,
+      ageGate: true,
+    });
+    expectOk(previewState);
+    expect(previewState.data.previewJob.status).toBe("completed");
+    expect(previewState.data.asset).toBeTruthy();
 
     const submit = await api("POST", `character-drafts/${draftId}/submit`, {
       userId,

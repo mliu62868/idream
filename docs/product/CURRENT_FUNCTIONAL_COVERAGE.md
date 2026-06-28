@@ -1,12 +1,30 @@
 # iDream 当前功能覆盖审计
 
-更新日期：2026-06-27
+更新日期：2026-06-28
 
 ## 结论
 
 这份文档是当前代码态的功能覆盖表，覆盖的是“用户能否完整使用”和“有没有测试证据”。它补充并修正 `ProductFeatureMap.md` 里 2026-06-13 的旧状态描述。
 
 当前状态：**本地产品闭环通过，当前目标收窄为内部演示/受控 beta；公开上线仍被真实生产依赖阻断**。
+
+## 2026-06-28 PM 全面验证 + 修复（本轮）
+
+对受控 beta 口径做了一次全功能 Chrome 端到端验证 + 多 agent 代码审计 + 修复。基线：`bun run check`（lint+typecheck+build）绿、`bun run test` **251/251** 绿、catalog 探针干净（16 角色/0 fail）、pipeline 内部探针 5/5（voice 未配可选跳过）。
+
+Chrome 实测通过的流程：年龄门禁（拦截 fresh 访客）、注册(发 250 币)、Explore(真实图/筛选)、角色详情→Chat、**Chat hub `/chat`**、**Chat 回复质量**、Create 5 步向导、Generate(真实 sd.cpp 出图/画廊/premium 门控)、Upgrade、Profile、Community、创作者主页 `/creators/:id`、Feed、404 页；Admin：登录(RBAC 门控)、Dashboard、Moderation 队列。
+
+本轮修复（均未提交，留在工作区待 review）：
+
+- **Chat 体验质变**：`packages/chat/src/providers.ts` 对流式请求加 `chat_template_kwargs.enable_thinking=false`，并把 `CHAT_MODEL_NAME` 从 `Qwen3.5-0.8B-8bit`（出戏的通用助手口吻）切到 `Qwen3.5-4B-MLX-4bit`（~0.9s、干净无思维链泄露、稳定在角色内）。更高质量可选 `Qwen3.6-27B-oQ4-mtp`（~2.2s）。
+- **前端 9 项**：`/chat` 改为真实会话中心（ChatHubWorkspace）；Create 向导登出态 401→`/signup`；Explore 去除与 AgeGateBoundary 冲突的冗余年龄门（修复登录新设备空白）；移除 Profile 语言切换器（无 i18n 的假成功死控件）；新增 app-shell `not-found.tsx`；Auth/Upgrade/Profile 网络错误 catch；Upgrade 当前套餐徽章；Explore 搜索 300ms 防抖；Gallery like/unlike + 心形态。
+- **后端经济/生成/审核**：checkout 幂等防重复发币+防重复订阅；生成 worker 异常兜底退款；stale-job 回收接入 finalizer(60s)；moderation 对 `feed_item` 等非 character/media 目标正确下架(不再静默无操作)；admin discard 退款幂等；webhook 原子去重(防 TOCTOU 双结算)；moderationDecision 事务化。
+- **chat/gen 服务**：regenerate 补每日配额门控；gen-video 在 deferred 态优雅退出(不再 prod 崩溃循环)；SSE 复用单例 Redis publisher；prod 缺签名密钥 fail-closed；SSE 读 Last-Event-ID 头；区分未成年审核码。
+- **配置**：`gen/.env` 队列前缀 `idream:gen`→`idream:development`(修漂移)；ecosystem 给 finalizer 设 `GEN_FINALIZER_QUEUES`(不抢生成队列 + 接管 character.preview)、停跑已延后的 gen-video。
+- **Referral 奖励接线（新增）**：`signup` 读 `?ref` 归因并给被邀请人 +150、邀请人 +150 dreamcoins（ledger idempotencyKey 每被邀请人一次）；前端 AuthWorkspace 从 URL 捕获 `?ref`。Chrome+DB 验证：被邀请人 250+150=400、邀请人 +150、Referral 行 completed/granted。新增 2 个回归测试。
+- **Voice 接线（新增）**：`VOICE_PROVIDER=pipeline` 指向本地 oMLX `/v1/audio/speech`(:8061, Qwen3-TTS, speaker `serena`)；`PipelineVoiceModel` 默认 voice 改为可配（修「default」在 speaker-keyed TTS 上 500）。修复 voice **付费权益缺口**：运行 DB 计划缺 `voiceEnabled` feature（seed 已含，DB 陈旧）→ 已补计划 + 启用 `voice_gen` flag + 授权活跃用户。Chrome 验证：UI Play voice → 201 → 真实 WAV 音频播放（付费层；免费层 402 为正确门控）。
+
+剩余/已知（非 beta 阻断，见 REMAINING_WORK / 下方“延后”）：运行 DB 相对 seed 陈旧（缺 `voice_gen` flag、计划缺 `voiceEnabled`——本轮已手工补，建议重跑 seed 彻底同步）；公开上线仍需真实 provider + secrets（Safety Gateway/Go.cam/BTCPay/R2/Sentry）+ prod 应用 `db/sql` 公共 schema 文件 + `APP_ENV=production`(关闭 dev-header 鉴权旁路、避免 admin/main 同源 cookie 串)。
 
 ## 2026-06-26 范围决策
 
@@ -51,7 +69,7 @@
 | Billing API | 本地/mock provider 闭环可用；BTCPay 已延后，真实上线前仍要求 provider 和 live probe | `flows.e2e.ts`：billing flow；`LAUNCH_READINESS_AUDIT.md` |
 | Moderation/report queue | 可用；角色 report 后 admin moderation queue 可查 | `flows.e2e.ts`：moderation flow |
 | Community | 可用；有公开 dreamer 数据时显示 dreamer card，并可举报 user profile；无数据时显示空状态 | `ui-workflows.e2e.ts`：community dreamers/report；Chrome smoke：community empty-state |
-| Profile | 可用；余额、display name、preferences、redeem code、referral、language、billing link、media tab、media report/download/delete | `ui-workflows.e2e.ts`：profile flow |
+| Profile | 可用；余额、display name、preferences、redeem code、referral(邀请码生成，奖励发放未接线)、billing link、media tab、media report/download/delete。语言切换器已移除（无 i18n，曾为假成功死控件） | `ui-workflows.e2e.ts`：profile flow |
 | Account management | 可用；sign out all sessions，delete confirmation gate，delete 后返回 login | `ui-workflows.e2e.ts`：account management flow |
 | Public routes | 可用；核心公开页无 404、无 broken images、无 launch-prohibited clone copy、无 console/page errors | `packages/main/src/e2e/public-routes.e2e.ts` |
 | Admin web | 可用；dashboard、generation jobs/config、moderation、users、billing、audit log；users filter；无 console/page errors | `packages/main/src/e2e/admin-web.e2e.ts` |

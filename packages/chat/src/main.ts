@@ -2,6 +2,7 @@
 // (instances:1 — writes local files). pm2 runs this as `chat`.
 import { startWeb } from "./web.js";
 import { startWorker } from "./worker.js";
+import { closeStreamPublisher } from "./stream.js";
 import { logger } from "./logger.js";
 
 const server = startWeb();
@@ -10,6 +11,7 @@ const worker = startWorker();
 async function shutdown(signal: string): Promise<void> {
   logger.info({ signal }, "chat shutting down");
   await worker.close().catch((err) => logger.error({ err }, "worker close failed"));
+  await closeStreamPublisher().catch((err) => logger.error({ err }, "stream publisher close failed"));
   server.close();
   process.exit(0);
 }

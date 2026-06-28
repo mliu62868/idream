@@ -46,7 +46,15 @@ const signupSchema = z.object({
   email: z.string().email().transform((value) => value.toLowerCase()),
   password: z.string().min(8),
   name: z.string().trim().min(1).max(80).optional(),
+  // Referral code captured from /signup?ref=DREAM-XXXX (invite share link).
+  ref: z.string().trim().min(1).max(64).optional(),
 });
+
+// Referral economy (give/get): both the new user and the inviter receive dreamcoins
+// when an invitee signs up with a valid ref code. Idempotent per invitee via the
+// ledger idempotencyKey, so replays/retries never double-mint.
+const REFERRAL_INVITEE_BONUS = 150;
+const REFERRAL_INVITER_REWARD = 150;
 
 const loginSchema = z.object({
   email: z.string().email().transform((value) => value.toLowerCase()),
@@ -250,6 +258,7 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
     if (!id && method === "POST") return createDraft(request);
     if (id && !action && method === "PATCH") return updateDraft(request, id);
     if (id && action === "preview" && method === "POST") return previewDraft(request, id);
+    if (id && action === "preview" && method === "GET") return previewStatus(request, id);
     if (id && action === "submit" && method === "POST") return submitDraft(request, id);
     if (id && action === "tags" && method === "POST") return updateDraftTags(request, id);
   }
@@ -383,6 +392,32 @@ async function signup(request: Request) {
       },
     });
     await appendLedger(tx, created.id, 250, "signup_bonus", "signup");
+    // Referral give/get: attribute the invite and grant both sides, once per invitee.
+    if (body.ref) {
+      const referral = await tx.referral.findUnique({ where: { code: body.ref } });
+      if (referral && referral.inviterId !== created.id) {
+        await appendLedger(
+          tx,
+          created.id,
+          REFERRAL_INVITEE_BONUS,
+          "referral_bonus",
+          referral.id,
+          `referral_invitee:${created.id}`,
+        );
+        await appendLedger(
+          tx,
+          referral.inviterId,
+          REFERRAL_INVITER_REWARD,
+          "referral_reward",
+          created.id,
+          `referral_inviter:${created.id}`,
+        );
+        await tx.referral.update({
+          where: { id: referral.id },
+          data: { inviteeId: created.id, status: "completed", rewardStatus: "granted" },
+        });
+      }
+    }
     return created;
   });
 
@@ -590,11 +625,6 @@ async function ageVerificationWebhook(request: Request, provider: string) {
     }
   }
 
-  await jobQueue.enqueue({
-    queue: "age.verification.webhook",
-    payload: { providerEventId: eventId, userId },
-    dedupeKey: `age.verification.webhook:${eventId}`,
-  });
   await prisma.providerEvent.update({
     where: { id: event.id },
     data: { processedAt: new Date() },
@@ -830,52 +860,41 @@ async function previewDraft(request: Request, id: string) {
     throw Errors.forbidden("Draft failed safety checks", moderation);
   }
 
+  // Async: enqueue and return the queued job immediately so a slow image provider
+  // never blocks this request. The worker (drainLocalAiPipeline → character.preview)
+  // generates the image and settles the job; the client polls GET .../preview.
   const job = await prisma.characterPreviewJob.create({
     data: {
       draftId: id,
-      status: "running",
+      status: "queued",
       provider: "mock",
     },
   });
   await jobQueue.enqueue({
     queue: "character.preview",
     payload: { draftId: id, previewJobId: job.id },
-    dedupeKey: `character.preview:${id}`,
+    dedupeKey: `character.preview:${job.id}`,
   });
+  return ok({ previewJob: job });
+}
 
-  const image = await providers.image.generate({
-    prompt: draft.name ?? "custom character",
-    count: 1,
-    seed: id,
+// GET character-drafts/:id/preview — poll target for the async preview job.
+// Returns the latest preview job for the draft, plus the asset once completed.
+async function previewStatus(request: Request, id: string) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  const draft = await assertDraftOwner(id, user.id);
+  const job = await prisma.characterPreviewJob.findFirst({
+    where: { draftId: draft.id },
+    orderBy: { createdAt: "desc" },
   });
-  if (!image.ok) throw Errors.internal(image.error.message, image.error);
-
-  const asset = await prisma.mediaAsset.create({
-    data: {
-      ownerId: user.id,
-      type: "image",
-      url: defaultImage,
-      thumbnailUrl: defaultImage,
-      prompt: draft.name,
-      visibility: "private",
-      safetyStatus: "passed",
-      metadata: { providerKey: image.data.assets[0]?.key ?? "mock" },
-    },
-  });
-
-  const completed = await prisma.characterPreviewJob.update({
-    where: { id: job.id },
-    data: {
-      status: "completed",
-      resultAssetId: asset.id,
-      completedAt: new Date(),
-    },
-  });
-  await prisma.characterDraft.update({
-    where: { id },
-    data: { previewJobId: completed.id },
-  });
-  return ok({ previewJob: completed, asset: mediaDTO(asset) });
+  if (!job) return ok({ previewJob: null });
+  if (job.status === "completed" && job.resultAssetId) {
+    const asset = await prisma.mediaAsset.findUnique({ where: { id: job.resultAssetId } });
+    return ok({ previewJob: job, asset: asset ? mediaDTO(asset) : null });
+  }
+  return ok({ previewJob: job });
 }
 
 async function submitDraft(request: Request, id: string) {
@@ -942,11 +961,7 @@ async function submitDraft(request: Request, id: string) {
     return created;
   });
 
-  await jobQueue.enqueue({
-    queue: "moderation.input",
-    payload: { targetType: "character", targetId: character.id },
-    dedupeKey: `moderation.input:character:${character.id}`,
-  });
+  // Input moderation already ran synchronously above (moderateText); no async pass.
   await trackEvent("character_created", { characterId: character.id }, ctx);
   return ok({ character });
 }
@@ -1900,11 +1915,6 @@ async function billingWebhook(request: Request, provider: string) {
   if (!parsed.ok) throw Errors.badRequest(parsed.error.message, parsed.error);
   const providerEventId = parsed.data.providerEventId;
 
-  const already = await prisma.providerEvent.findUnique({
-    where: { provider_providerEventId: { provider, providerEventId } },
-  });
-  if (already?.processedAt) return ok({ processed: false, idempotent: true });
-
   const event = await prisma.providerEvent.upsert({
     where: { provider_providerEventId: { provider, providerEventId } },
     update: { payload: toInputJson(payload) },
@@ -1915,11 +1925,26 @@ async function billingWebhook(request: Request, provider: string) {
       payload: toInputJson(payload),
     },
   });
+
+  // Atomic dedupe: flip processedAt null -> now in a single statement. Only the
+  // winner of this claim settles; concurrent replays observe count 0 and no-op.
+  // (Reading processedAt before the upsert was a TOCTOU that could double-settle.)
+  const claim = await prisma.providerEvent.updateMany({
+    where: { id: event.id, processedAt: null },
+    data: { processedAt: new Date() },
+  });
+  if (claim.count === 0) return ok({ processed: false, idempotent: true });
+
   if (parsed.data.type === "invoice.confirmed" && parsed.data.invoiceId) {
     const checkoutSession = await prisma.checkoutSession.findFirst({
       where: { providerSessionId: parsed.data.invoiceId },
     });
     if (checkoutSession) {
+      // planId is echoed in the webhook payload from the invoice metadata set at
+      // checkout (createInvoice metadata.planId). A CheckoutSession.planId column
+      // fallback was intentionally dropped to avoid a user DB migration in the
+      // controlled-beta scope; re-add the column + fallback when the BTCPay webhook
+      // path is reactivated for providers that don't echo metadata.
       const planId =
         isRecord(payload) && typeof payload.planId === "string" ? payload.planId : undefined;
       if (planId) await activateSubscription(checkoutSession.userId, planId, parsed.data.invoiceId);
@@ -1930,10 +1955,6 @@ async function billingWebhook(request: Request, provider: string) {
     }
   }
 
-  await prisma.providerEvent.update({
-    where: { id: event.id },
-    data: { processedAt: new Date() },
-  });
   return ok({ processed: true });
 }
 
@@ -2261,16 +2282,21 @@ async function submitReport(
 
   // Compliance (roadmap M9 / spec §4.4): underage reports are priority 1 and
   // immediately hide the target pending human review — over-hiding is the safe
-  // failure mode for CSAM-adjacent reports.
+  // failure mode for CSAM-adjacent reports. Auto-hide is best-effort: if the
+  // target can't be resolved we still record + triage the priority-1 report
+  // rather than failing the submission.
   if (underage) {
-    await applyModerationAction(targetType, targetId, body.category);
+    try {
+      await applyModerationAction(targetType, targetId, body.category);
+    } catch (error) {
+      logger.error(
+        { error, targetType, targetId },
+        "underage auto-takedown could not resolve target; escalating via triage",
+      );
+    }
   }
-  await jobQueue.enqueue({
-    queue: "report.triage",
-    payload: { reportId: report.id },
-    priority,
-    dedupeKey: `report.triage:${report.id}`,
-  });
+  // The flagged moderationEvent + priority on the contentReport above are the
+  // triage record the admin review queue reads — no separate async triage pass.
   await trackEvent("content_reported", { targetType, targetId, category: body.category }, ctx);
   return ok({ report });
 }
@@ -3370,6 +3396,15 @@ async function findPlan(input: z.infer<typeof checkoutSchema>) {
 
 async function activateSubscription(userId: string, planId: string, providerSubscriptionId: string) {
   const plan = await prisma.plan.findUniqueOrThrow({ where: { id: planId } });
+  // SPEC: one active subscription per (user, plan). Checkout auto-confirm and the
+  // billing webhook can both fire for the same purchase (and the demo auto-confirm
+  // is replayable), so re-activation must be a no-op rather than stacking subs or
+  // re-minting included dreamcoins. The ledger grant below is also keyed on the
+  // provider invoice id as a second line of defense against concurrent races.
+  const existing = await prisma.subscription.findFirst({
+    where: { userId, planId, status: "active" },
+  });
+  if (existing) return existing;
   const currentPeriodEnd = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30);
   const subscription = await prisma.subscription.create({
     data: {
@@ -3407,6 +3442,7 @@ async function activateSubscription(userId: string, planId: string, providerSubs
       plan.includedDreamcoins,
       "subscription_grant",
       subscription.id,
+      `subscription:grant:${providerSubscriptionId}`,
     );
   });
   return subscription;
@@ -3434,17 +3470,30 @@ async function applyModerationAction(
   targetId: string,
   policyCode?: string,
 ) {
+  // INVARIANT: a takedown must actually remove something. Feed items wrap a
+  // character, so resolve and take that down; unknown target types throw so the
+  // caller can escalate instead of recording a false "blocked" event.
   if (targetType === "character") {
     await prisma.character.updateMany({
       where: { id: targetId },
       data: { status: "removed" },
     });
-  }
-  if (targetType === "media") {
+  } else if (targetType === "media") {
     await prisma.mediaAsset.updateMany({
       where: { id: targetId },
       data: { safetyStatus: "blocked" },
     });
+  } else if (targetType === "feed_item") {
+    const characterId = feedCharacterId(targetId);
+    if (!characterId) {
+      throw Errors.badRequest(`Cannot resolve feed_item moderation target: ${targetId}`);
+    }
+    await prisma.character.updateMany({
+      where: { id: characterId },
+      data: { status: "removed" },
+    });
+  } else {
+    throw Errors.badRequest(`Unsupported moderation target type: ${targetType}`);
   }
   await prisma.moderationEvent.create({
     data: {

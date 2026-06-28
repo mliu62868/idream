@@ -411,4 +411,23 @@ describe("PipelineImageModel", () => {
     );
     expect(init?.method).toBe("PUT");
   });
+
+  it("emits distinct underage policy codes (csam vs other underage terms)", async () => {
+    process.env.GEN_MODERATION_PROVIDER = "mock";
+    delete process.env.APP_ENV;
+
+    const csam = await providers.moderation.check({ targetType: "text", content: "csam material" });
+    const minor = await providers.moderation.check({ targetType: "text", content: "a minor appears" });
+    const safe = await providers.moderation.check({ targetType: "text", content: "a pleasant scene" });
+
+    expect(csam).toMatchObject({
+      ok: true,
+      data: { status: "blocked", policyCode: "potential_underage_content" },
+    });
+    expect(minor).toMatchObject({
+      ok: true,
+      data: { status: "blocked", policyCode: "age_under_18" },
+    });
+    expect(safe).toMatchObject({ ok: true, data: { status: "passed" } });
+  });
 });

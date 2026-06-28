@@ -1,6 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
-import { jobQueue } from "@/server/jobs/queue";
 import {
   api,
   createCharacter,
@@ -229,7 +228,7 @@ describe("jurisdiction age verification gate", () => {
 });
 
 describe("reports, queue, and reporter anonymity", () => {
-  it("files a report, enqueues triage, and writes a moderation event", async () => {
+  it("files a report at default priority and writes a moderation event", async () => {
     const reporter = await freshUser("reporter-1");
     const result = await api("POST", `characters/${CHAR}/report`, {
       userId: reporter,
@@ -239,9 +238,9 @@ describe("reports, queue, and reporter anonymity", () => {
     expectOk(result);
     const reportId = result.data.report.id as string;
 
-    const job = await jobQueue.getByDedupeKey("report.triage", `report.triage:${reportId}`);
-    expect(job).not.toBeNull();
-    expect(job?.priority).toBe(3);
+    // Triage priority lives on the contentReport row (the admin review queue reads it).
+    const report = await prisma.contentReport.findUnique({ where: { id: reportId } });
+    expect(report?.priority).toBe(3);
 
     const event = await prisma.moderationEvent.findFirst({
       where: { targetType: "character", targetId: CHAR, layer: "community_report" },
@@ -279,8 +278,8 @@ describe("reports, queue, and reporter anonymity", () => {
     expectOk(result);
     const reportId = result.data.report.id as string;
 
-    const job = await jobQueue.getByDedupeKey("report.triage", `report.triage:${reportId}`);
-    expect(job?.priority).toBe(1);
+    const report = await prisma.contentReport.findUnique({ where: { id: reportId } });
+    expect(report?.priority).toBe(1);
 
     // Immediate hide (compliance, roadmap M9): target is no longer approved.
     const hidden = await prisma.character.findUnique({ where: { id: target } });

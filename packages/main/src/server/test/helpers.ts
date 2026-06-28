@@ -5,7 +5,7 @@ import { prisma } from "@/server/lib/db";
 import { AGE_GATE_COOKIE, type ActorRole } from "@/server/lib/auth";
 import { dispatchV1 } from "@/server/modules/ourdream/service";
 import { jobQueue } from "@/server/jobs/queue";
-import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
+import { drainLocalAiPipeline, localAiQueueNames } from "@/server/ai/local-pipeline";
 
 // SPEC: Shared integration-test client + fixtures for the /api/v1 surface.
 // INTENT: One ergonomic `api()` that drives dispatchV1 exactly like the route
@@ -269,7 +269,9 @@ export async function dreamcoinBalance(userId: string) {
 
 export async function runQueuedGenerationJobs(limit = 25) {
   return drainLocalAiPipeline({
-    queues: ["ai.image.generate", "ai.video.generate", "app.ai.finalize"],
+    // Mirror the live drain set (image/video/finalize + character.preview) so
+    // tests settle async preview jobs exactly as the worker does.
+    queues: [...localAiQueueNames],
     limit,
     workerId: "test-generation-worker",
   });
@@ -285,11 +287,7 @@ export async function purgeTestData(prefix: string) {
     "ai.image.generate",
     "ai.video.generate",
     "app.ai.finalize",
-    "age.verification.webhook",
     "character.preview",
-    "moderation.input",
-    "report.triage",
-    "analytics.events",
   ]);
 
   await prisma.moderationReview.deleteMany({ where: { OR: [{ id: sw }, { reportId: sw }] } });

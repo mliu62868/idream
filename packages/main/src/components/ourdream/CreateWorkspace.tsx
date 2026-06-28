@@ -224,8 +224,11 @@ export function CreateWorkspace() {
     try {
       const draftId = await ensureDraft();
       await saveStep(3);
-      const payload = await api(`/api/v1/character-drafts/${draftId}/preview`, {});
-      if (payload.data?.asset?.url) setPreview(payload.data.asset.url);
+      // Preview generation is async (worker-backed): enqueue, then poll the job
+      // status until it settles. Keeps the UI responsive for slow image providers.
+      await api(`/api/v1/character-drafts/${draftId}/preview`, {});
+      const asset = await pollPreview(draftId);
+      if (asset?.url) setPreview(asset.url);
       setPreviewStatus("complete");
     } catch (error) {
       setPreviewStatus("failed");
@@ -233,6 +236,19 @@ export function CreateWorkspace() {
     } finally {
       setPending(false);
     }
+  }
+
+  // Poll the preview job until completed (returns the asset) or failed/timeout.
+  async function pollPreview(draftId: string): Promise<{ url?: string } | null> {
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline) {
+      const status = await api(`/api/v1/character-drafts/${draftId}/preview`, undefined, "GET");
+      const job = status.data?.previewJob;
+      if (job?.status === "completed") return status.data?.asset ?? null;
+      if (job?.status === "failed") throw new Error("Preview generation failed. Try again.");
+      await new Promise((resolve) => setTimeout(resolve, 1_200));
+    }
+    throw new Error("Preview timed out. Try again.");
   }
 
   async function submit() {
@@ -601,12 +617,19 @@ function Field({
   );
 }
 
-async function api(path: string, body: unknown, method = "POST") {
+async function api(path: string, body?: unknown, method = "POST") {
   const response = await fetch(path, {
     method,
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
+    // GET/HEAD cannot carry a body — only serialize for write methods.
+    body: method === "GET" || method === "HEAD" ? undefined : JSON.stringify(body),
   });
+  // Logged-out users can't create drafts; send them to sign up instead of
+  // dead-ending on a 401 (mirrors CharacterDetailClient.startChat).
+  if (response.status === 401) {
+    window.location.href = "/signup";
+    throw new Error("Sign in to create a character. Redirecting…");
+  }
   const payload = (await response.json()) as DraftPayload;
   if (!response.ok || payload.ok === false) {
     throw new Error(payload.error?.message ?? "Sign in, accept the age gate, then try again.");

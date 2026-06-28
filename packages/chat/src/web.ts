@@ -75,7 +75,13 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       connection: "keep-alive",
       "x-accel-buffering": "no",
     });
-    const response = createSseResponse(result.streamKey, result.lastEventId ?? request.query?.lastEventId);
+    // Resume cursor precedence: explicit ?lastEventId= → EventSource's Last-Event-ID
+    // header (sent automatically on auto-reconnect). Without the header, a dropped
+    // SSE connection replays from 0 and duplicates every delta on reconnect.
+    const response = createSseResponse(
+      result.streamKey,
+      result.lastEventId ?? request.query?.lastEventId ?? header(req, "last-event-id"),
+    );
     const nodeStream = Readable.fromWeb(response.body as import("node:stream/web").ReadableStream);
     nodeStream.pipe(res);
     req.on("close", () => nodeStream.destroy());
@@ -147,7 +153,22 @@ function safeJson(raw: string): unknown {
   }
 }
 
+// SPEC: in production the BFF signature is the ONLY trust boundary — main-web signs
+// the user context and chat verifies it. With no secret, resolveUser() falls back to
+// trusting the plaintext x-idream-user-id header (a dev/test convenience). Refuse to
+// boot a production chat service in that fail-OPEN state. INVARIANT: APP_ENV/NODE_ENV
+// === "production" ⇒ CHAT_BFF_SIGNING_SECRET must be set.
+function assertBffSecretReady(): void {
+  const isProd = process.env.APP_ENV === "production" || process.env.NODE_ENV === "production";
+  if (isProd && !env.BFF_SIGNING_SECRET) {
+    throw new Error(
+      "CHAT_BFF_SIGNING_SECRET is required in production (refusing to trust plaintext x-idream-user-id headers)",
+    );
+  }
+}
+
 export function startWeb(): ReturnType<typeof createChatServer> {
+  assertBffSecretReady();
   const server = createChatServer();
   server.listen(env.PORT, () => logger.info({ port: env.PORT }, "chat/web listening"));
   return server;

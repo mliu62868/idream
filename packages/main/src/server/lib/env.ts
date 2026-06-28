@@ -75,6 +75,9 @@ const EnvSchema = z.object({
   PIPELINE_CHAT_MODEL_DEFAULT: z.string().min(1).default("chat-default"),
   PIPELINE_IMAGE_MODEL_DEFAULT: z.string().min(1).default("image-default"),
   PIPELINE_VOICE_MODEL_DEFAULT: z.string().min(1).default("voice-default"),
+  // Speaker used when a character has no voiceId. Speaker-keyed TTS (e.g. Qwen3-TTS)
+  // 500s on the generic "default"; set to a real speaker like "serena".
+  PIPELINE_VOICE_DEFAULT_VOICE_ID: z.string().optional(),
   PIPELINE_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
   AGE_VERIFY_SERVICE_URL: z.string().url().optional(),
   AGE_VERIFY_API_KEY: z.string().optional(),

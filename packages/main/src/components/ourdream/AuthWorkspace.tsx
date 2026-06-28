@@ -41,11 +41,17 @@ export function AuthWorkspace({
     setPending(true);
     setStatus("");
     try {
+      // Carry the referral code from /signup?ref=DREAM-XXXX through to the API so the
+      // invitee + inviter both get their dreamcoins.
+      const ref =
+        mode === "signup"
+          ? new URLSearchParams(window.location.search).get("ref")?.trim() || undefined
+          : undefined;
       const response = await fetch(`/api/v1/auth/${mode}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(
-          mode === "signup" ? { email, password, name } : { email, password },
+          mode === "signup" ? { email, password, name, ref } : { email, password },
         ),
       });
       const payload = (await response.json()) as {
@@ -58,6 +64,9 @@ export function AuthWorkspace({
         return;
       }
       window.location.replace("/");
+    } catch {
+      // Network/parse failure: surface it and let the finally re-enable the button.
+      setStatus("Network error. Please check your connection and try again.");
     } finally {
       setPending(false);
     }

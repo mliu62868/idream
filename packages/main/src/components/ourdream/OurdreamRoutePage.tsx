@@ -20,6 +20,7 @@ import { SafetyCenterPage } from "./SafetyCenterPage";
 import { SiteFooter } from "./SiteFooter";
 import { AuthNav } from "./AuthNav";
 import { AuthWorkspace } from "./AuthWorkspace";
+import { ChatHubWorkspace } from "./ChatHubWorkspace";
 import { CommunityWorkspace } from "./CommunityWorkspace";
 import { CreateWorkspace } from "./CreateWorkspace";
 import { FeedWorkspace } from "./FeedWorkspace";
@@ -236,6 +237,14 @@ function CreatePage({ route }: Readonly<{ route: OurdreamRoute }>) {
   return (
     <RouteShell route={route}>
       <CreateWorkspace />
+    </RouteShell>
+  );
+}
+
+function ChatHubPage({ route }: Readonly<{ route: OurdreamRoute }>) {
+  return (
+    <RouteShell route={route}>
+      <ChatHubWorkspace />
     </RouteShell>
   );
 }
@@ -510,6 +519,10 @@ function RelatedRoutes({ route }: Readonly<{ route: OurdreamRoute }>) {
 }
 
 export function OurdreamRoutePage({ route }: Readonly<{ route: OurdreamRoute }>) {
+  // /chat is a real chat hub (sessions list), not the marketing template the
+  // route metadata otherwise resolves to.
+  if (route.path === "/chat") return <ChatHubPage route={route} />;
+
   switch (route.template) {
     case "article":
       return <ArticlePage route={route} />;

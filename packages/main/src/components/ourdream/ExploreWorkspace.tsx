@@ -29,13 +29,15 @@ export function ExploreWorkspace() {
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [ageGateAccepted, setAgeGateAccepted] = useState(false);
   const [initialized, setInitialized] = useState(false);
+  // Debounced mirror of `query`: drives requests/URL so typing doesn't fire one
+  // fetch per keystroke. `query` stays the immediate value bound to the input.
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const requestSerial = useRef(0);
 
   const params = useMemo(() => {
     const next = new URLSearchParams({ sort, limit: String(limit) });
-    if (query.trim()) next.set("q", query.trim());
+    if (debouncedQuery.trim()) next.set("q", debouncedQuery.trim());
     if (activeCategory !== "All") next.set("tags", categoryParam(activeCategory));
     if (gender !== "any") next.set("gender", gender);
     if (style !== "any") next.set("style", style);
@@ -49,7 +51,7 @@ export function ExploreWorkspace() {
     }
     if (age === "35+") next.set("age_min", "35");
     return next;
-  }, [activeCategory, age, gender, limit, query, sort, style]);
+  }, [activeCategory, age, debouncedQuery, gender, limit, sort, style]);
 
   const loadCharacters = useCallback(
     async (cursor?: string) => {
@@ -82,42 +84,41 @@ export function ExploreWorkspace() {
   );
 
   useEffect(() => {
-    if (!initialized || !ageGateAccepted) return;
+    // Rendered behind AgeGateBoundary, so acceptance is already guaranteed here —
+    // load as soon as the URL-derived filters are parsed.
+    if (!initialized) return;
     const timer = window.setTimeout(() => {
       void loadCharacters();
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [ageGateAccepted, initialized, loadCharacters]);
+  }, [initialized, loadCharacters]);
+
+  // Commit the search box to `debouncedQuery` ~300ms after the last keystroke.
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedQuery(query), 300);
+    return () => window.clearTimeout(timer);
+  }, [query]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const initial = parseExploreSearchParams(window.location.search);
       setQuery(initial.query);
+      setDebouncedQuery(initial.query);
       setSort(initial.sort);
       setGender(initial.gender);
       setStyle(initial.style);
       setAge(initial.age);
       setActiveCategory(initial.activeCategory);
       setLimit(initial.limit);
-      setAgeGateAccepted(hasAcceptedAgeGate());
       setInitialized(true);
     }, 0);
-
-    function reload() {
-      setAgeGateAccepted(true);
-    }
-
-    window.addEventListener("idream-age-gate-accepted", reload);
-    return () => {
-      window.clearTimeout(timer);
-      window.removeEventListener("idream-age-gate-accepted", reload);
-    };
+    return () => window.clearTimeout(timer);
   }, []);
 
   useEffect(() => {
     if (!initialized) return;
     const urlParams = new URLSearchParams();
-    if (query.trim()) urlParams.set("q", query.trim());
+    if (debouncedQuery.trim()) urlParams.set("q", debouncedQuery.trim());
     if (sort !== "popular") urlParams.set("sort", sort);
     if (gender !== "female") urlParams.set("gender", gender);
     if (style !== "any") urlParams.set("style", style);
@@ -138,7 +139,7 @@ export function ExploreWorkspace() {
     if (`${window.location.pathname}${window.location.search}` !== nextUrl) {
       window.history.replaceState(null, "", nextUrl);
     }
-  }, [activeCategory, age, gender, initialized, limit, query, sort, style]);
+  }, [activeCategory, age, debouncedQuery, gender, initialized, limit, sort, style]);
 
   return (
     <>
@@ -157,43 +158,19 @@ export function ExploreWorkspace() {
         style={style}
       />
       <div className="pt-2 md:pt-6">
-        {initialized && !ageGateAccepted ? (
-          // Age gate not yet accepted: loadCharacters never runs, so an empty
-          // grid would read as "no results". Show a neutral age-gate prompt
-          // instead. The "idream-age-gate-accepted" listener flips the flag and
-          // triggers a load, so results appear without a manual refresh.
-          <section className="w-full px-2 md:px-[60px]">
-            <div className="flex min-h-64 flex-col items-center justify-center rounded-[16px] border border-white/10 bg-[rgb(18,18,18)] px-6 py-12 text-center">
-              <h2 className="text-[18px] font-black uppercase leading-6 text-white">
-                Confirm you&apos;re 18 or older
-              </h2>
-              <p className="mt-3 max-w-sm text-[13px] font-medium leading-6 text-[rgb(170,170,170)]">
-                Accept the age gate to browse characters.
-              </p>
-            </div>
-          </section>
-        ) : (
-          <CharacterGrid
-            cards={cards}
-            error={error}
-            hasMore={Boolean(nextCursor)}
-            loading={!initialized || (ageGateAccepted && loading)}
-            loadingMore={loadingMore}
-            onLoadMore={() => {
-              if (nextCursor) void loadCharacters(nextCursor);
-            }}
-            onRetry={() => void loadCharacters()}
-          />
-        )}
+        <CharacterGrid
+          cards={cards}
+          error={error}
+          hasMore={Boolean(nextCursor)}
+          loading={!initialized || loading}
+          loadingMore={loadingMore}
+          onLoadMore={() => {
+            if (nextCursor) void loadCharacters(nextCursor);
+          }}
+          onRetry={() => void loadCharacters()}
+        />
       </div>
     </>
-  );
-}
-
-function hasAcceptedAgeGate() {
-  return (
-    localStorage.getItem("AdultContentAcceptedOD") === "true" ||
-    document.cookie.includes("AdultContentAcceptedOD=true")
   );
 }
 

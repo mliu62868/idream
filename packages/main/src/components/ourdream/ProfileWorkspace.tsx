@@ -11,7 +11,6 @@ import {
   Flag,
   Gift,
   ImageIcon,
-  Languages,
   Link2,
   LogOut,
   Save,
@@ -94,7 +93,6 @@ export function ProfileWorkspace() {
   const [profileError, setProfileError] = useState(false);
   const [libraryError, setLibraryError] = useState(false);
   const [redeemCode, setRedeemCode] = useState("");
-  const [locale, setLocale] = useState("en");
   const [emailUpdates, setEmailUpdates] = useState(true);
   const [deleteConfirm, setDeleteConfirm] = useState("");
   const [status, setStatus] = useState("");
@@ -138,7 +136,6 @@ export function ProfileWorkspace() {
       .then((response) => response.json())
       .then((payload: PreferencesPayload) => {
         const preferences = payload.data?.preferences;
-        if (preferences?.locale) setLocale(preferences.locale);
         const notificationSettings = preferences?.notificationSettings ?? {};
         const updates = notificationSettings.productUpdates;
         if (typeof updates === "boolean") setEmailUpdates(updates);
@@ -168,25 +165,34 @@ export function ProfileWorkspace() {
       setStatus("Enter a code.");
       return;
     }
-    const response = await fetch("/api/v1/redeem-codes/redeem", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ code }),
-    });
-    const payload = (await response.json()) as ProfilePayload;
-    if (!response.ok || payload.ok === false) {
-      setStatus(payload.error?.message ?? "Redeem failed");
-      return;
+    try {
+      const response = await fetch("/api/v1/redeem-codes/redeem", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ code }),
+      });
+      const payload = (await response.json()) as ProfilePayload;
+      if (!response.ok || payload.ok === false) {
+        setStatus(payload.error?.message ?? "Redeem failed");
+        return;
+      }
+      setStatus("Code redeemed.");
+      await refreshProfile();
+    } catch {
+      setStatus("Network error. Please try again.");
     }
-    setStatus("Code redeemed.");
-    await refreshProfile();
   }
 
   async function invite() {
-    const response = await fetch("/api/v1/referrals/invite", { method: "POST" });
-    const payload = (await response.json()) as { data?: { shareUrl?: string } };
-    setReferralUrl(payload.data?.shareUrl ?? "");
-    setStatus("Referral invite ready.");
+    setStatus("");
+    try {
+      const response = await fetch("/api/v1/referrals/invite", { method: "POST" });
+      const payload = (await response.json()) as { data?: { shareUrl?: string } };
+      setReferralUrl(payload.data?.shareUrl ?? "");
+      setStatus("Referral invite ready.");
+    } catch {
+      setStatus("Network error. Please try again.");
+    }
   }
 
   async function saveProfile() {
@@ -195,58 +201,65 @@ export function ProfileWorkspace() {
       setStatus("Enter a display name.");
       return;
     }
-    const response = await fetch("/api/v1/profile", {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ displayName: nextName }),
-    });
-    const payload = (await response.json()) as ProfilePayload;
-    if (!response.ok || payload.ok === false) {
-      setStatus(payload.error?.message ?? "Profile update failed.");
-      return;
+    try {
+      const response = await fetch("/api/v1/profile", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ displayName: nextName }),
+      });
+      const payload = (await response.json()) as ProfilePayload;
+      if (!response.ok || payload.ok === false) {
+        setStatus(payload.error?.message ?? "Profile update failed.");
+        return;
+      }
+      setDisplayName(payload.data?.user?.displayName ?? nextName);
+      setProfileName(payload.data?.user?.displayName ?? nextName);
+      setStatus("Profile updated.");
+    } catch {
+      setStatus("Network error. Please try again.");
     }
-    setDisplayName(payload.data?.user?.displayName ?? nextName);
-    setProfileName(payload.data?.user?.displayName ?? nextName);
-    setStatus("Profile updated.");
   }
 
   async function savePreferences() {
-    const response = await fetch("/api/v1/profile/preferences", {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        notificationSettings: { productUpdates: emailUpdates },
-      }),
-    });
-    setStatus(response.ok ? "Preferences updated." : "Preferences update failed.");
-  }
-
-  async function updateLanguage() {
-    const response = await fetch("/api/v1/profile/language", {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ locale }),
-    });
-    setStatus(response.ok ? "Language updated." : "Language update failed.");
+    try {
+      const response = await fetch("/api/v1/profile/preferences", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          notificationSettings: { productUpdates: emailUpdates },
+        }),
+      });
+      setStatus(response.ok ? "Preferences updated." : "Preferences update failed.");
+    } catch {
+      setStatus("Network error. Please try again.");
+    }
   }
 
   async function openBillingPortal() {
-    const response = await fetch("/api/v1/billing/portal", { method: "POST" });
-    const payload = (await response.json()) as { data?: { url?: string } };
-    if (payload.data?.url) {
-      window.location.href = payload.data.url;
-      return;
+    try {
+      const response = await fetch("/api/v1/billing/portal", { method: "POST" });
+      const payload = (await response.json()) as { data?: { url?: string } };
+      if (payload.data?.url) {
+        window.location.href = payload.data.url;
+        return;
+      }
+      setStatus("Billing portal failed.");
+    } catch {
+      setStatus("Network error. Please try again.");
     }
-    setStatus("Billing portal failed.");
   }
 
   async function signOutEverywhere() {
-    const response = await fetch("/api/v1/account/sign-out-all", { method: "POST" });
-    if (response.ok) {
-      window.location.href = "/login";
-      return;
+    try {
+      const response = await fetch("/api/v1/account/sign-out-all", { method: "POST" });
+      if (response.ok) {
+        window.location.href = "/login";
+        return;
+      }
+      setStatus("Sign out failed.");
+    } catch {
+      setStatus("Network error. Please try again.");
     }
-    setStatus("Sign out failed.");
   }
 
   async function requestAccountDeletion() {
@@ -254,91 +267,119 @@ export function ProfileWorkspace() {
       setStatus("Type DELETE to confirm account deletion.");
       return;
     }
-    const response = await fetch("/api/v1/account/delete-request", { method: "POST" });
-    if (response.ok) {
-      window.location.href = "/login";
-      return;
+    try {
+      const response = await fetch("/api/v1/account/delete-request", { method: "POST" });
+      if (response.ok) {
+        window.location.href = "/login";
+        return;
+      }
+      setStatus("Account deletion failed.");
+    } catch {
+      setStatus("Network error. Please try again.");
     }
-    setStatus("Account deletion failed.");
   }
 
   async function deleteMedia(id: string) {
-    await fetch(`/api/v1/media/${id}`, { method: "DELETE" });
-    await refreshLibrary(tab);
+    try {
+      await fetch(`/api/v1/media/${id}`, { method: "DELETE" });
+      await refreshLibrary(tab);
+    } catch {
+      setStatus("Network error. Please try again.");
+    }
   }
 
   async function downloadMedia(id: string) {
     setStatus("");
-    const response = await fetch(`/api/v1/media/${id}/download`);
-    if (!response.ok) {
-      setStatus("Download failed.");
-      return;
-    }
-    const payload = (await response.json()) as { data?: { url?: string } };
-    if (payload.data?.url) {
-      triggerDownload(payload.data.url);
-      setStatus("Download started.");
-    } else {
-      setStatus("Download failed.");
+    try {
+      const response = await fetch(`/api/v1/media/${id}/download`);
+      if (!response.ok) {
+        setStatus("Download failed.");
+        return;
+      }
+      const payload = (await response.json()) as { data?: { url?: string } };
+      if (payload.data?.url) {
+        triggerDownload(payload.data.url);
+        setStatus("Download started.");
+      } else {
+        setStatus("Download failed.");
+      }
+    } catch {
+      setStatus("Network error. Please try again.");
     }
   }
 
   async function duplicateCharacter(id: string) {
     setStatus("");
-    const response = await fetch(`/api/v1/characters/${id}/duplicate`, { method: "POST" });
-    if (!response.ok) {
-      setStatus("Duplicate failed.");
-      return;
+    try {
+      const response = await fetch(`/api/v1/characters/${id}/duplicate`, { method: "POST" });
+      if (!response.ok) {
+        setStatus("Duplicate failed.");
+        return;
+      }
+      setStatus("Character duplicated to your created tab.");
+      await refreshLibrary(tab);
+    } catch {
+      setStatus("Network error. Please try again.");
     }
-    setStatus("Character duplicated to your created tab.");
-    await refreshLibrary(tab);
   }
 
   async function deleteCharacter(id: string) {
     setStatus("");
-    const response = await fetch(`/api/v1/characters/${id}`, { method: "DELETE" });
-    if (!response.ok) {
-      setStatus("Delete failed.");
-      return;
+    try {
+      const response = await fetch(`/api/v1/characters/${id}`, { method: "DELETE" });
+      if (!response.ok) {
+        setStatus("Delete failed.");
+        return;
+      }
+      setStatus("Character deleted.");
+      await refreshLibrary(tab);
+    } catch {
+      setStatus("Network error. Please try again.");
     }
-    setStatus("Character deleted.");
-    await refreshLibrary(tab);
   }
 
   async function toggleCharacterVisibility(id: string, current?: string) {
     // public characters re-enter review on publish; private/unlisted publish straight to review.
     setStatus("");
     const next = current === "public" ? "private" : "public";
-    const response = await fetch(`/api/v1/characters/${id}`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ visibility: next }),
-    });
-    if (!response.ok) {
-      setStatus("Visibility update failed.");
-      return;
+    try {
+      const response = await fetch(`/api/v1/characters/${id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ visibility: next }),
+      });
+      if (!response.ok) {
+        setStatus("Visibility update failed.");
+        return;
+      }
+      setStatus(
+        next === "public"
+          ? "Submitted for review — public characters go live after approval."
+          : "Character set to private.",
+      );
+      await refreshLibrary(tab);
+    } catch {
+      setStatus("Network error. Please try again.");
     }
-    setStatus(
-      next === "public"
-        ? "Submitted for review — public characters go live after approval."
-        : "Character set to private.",
-    );
-    await refreshLibrary(tab);
   }
 
   async function reportMedia(id: string) {
     setStatus("");
-    const response = await fetch("/api/v1/reports", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        targetType: "media",
-        targetId: id,
-        category: "other_prohibited_content",
-        description: "Media report",
-      }),
-    });
-    setStatus(response.ok ? "Report submitted." : "Report failed.");
+    try {
+      const response = await fetch("/api/v1/reports", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          targetType: "media",
+          targetId: id,
+          category: "other_prohibited_content",
+          description: "Media report",
+        }),
+      });
+      setStatus(response.ok ? "Report submitted." : "Report failed.");
+    } catch {
+      setStatus("Network error. Please try again.");
+    }
   }
 
   const normalizedQuery = query.trim().toLowerCase();
@@ -408,7 +449,7 @@ export function ProfileWorkspace() {
             </button>
           ))}
         </div>
-        <div className="mt-6 grid gap-3 md:grid-cols-4">
+        <div className="mt-6 grid gap-3 md:grid-cols-3">
           <label className="rounded-[14px] bg-[rgb(18,18,18)] p-4 text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
             Redeem
             <div className="mt-2 flex gap-2">
@@ -440,30 +481,6 @@ export function ProfileWorkspace() {
               Invite
             </button>
           </div>
-          <label className="rounded-[14px] bg-[rgb(18,18,18)] p-4 text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
-            Language
-            <div className="mt-2 flex gap-2">
-              <select
-                aria-label="Language selector"
-                className="min-w-0 flex-1 rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] normal-case text-white outline-none"
-                onChange={(event) => setLocale(event.target.value)}
-                value={locale}
-              >
-                <option value="en">English</option>
-                <option value="fr">French</option>
-                <option value="de">German</option>
-                <option value="zh">Chinese</option>
-              </select>
-              <button
-                aria-label="Update language"
-                className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white text-[rgb(13,13,13)]"
-                onClick={updateLanguage}
-                type="button"
-              >
-                <Languages className="h-4 w-4" />
-              </button>
-            </div>
-          </label>
           <button
             className="rounded-[14px] bg-[rgb(18,18,18)] p-4 text-left text-[13px] font-black uppercase text-white"
             onClick={openBillingPortal}

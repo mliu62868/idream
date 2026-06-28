@@ -130,7 +130,9 @@ class MockModerationProvider implements ModerationProvider {
         ok: true as const,
         data: {
           status: "blocked" as const,
-          policyCode: blockedTerm === "csam" ? "UNDERAGE" : "UNDERAGE",
+          // Distinct codes preserve the audit distinction (matches chat moderation):
+          // csam → potential_underage_content; underage/minor → age_under_18.
+          policyCode: blockedTerm === "csam" ? "potential_underage_content" : "age_under_18",
           confidence: 0.99,
         },
       };

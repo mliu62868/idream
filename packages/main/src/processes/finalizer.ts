@@ -4,14 +4,21 @@
 // moves image/video generation to a separate queue worker, set
 // GEN_FINALIZER_QUEUES=app.ai.finalize.
 import { randomUUID } from "node:crypto";
-import { drainLocalAiPipeline, localAiQueueNames } from "@/server/ai/local-pipeline";
+import {
+  drainLocalAiPipeline,
+  localAiQueueNames,
+  reconcileStaleGenerationJobs,
+} from "@/server/ai/local-pipeline";
 import { logger } from "@/server/lib/logger";
 
 const BUSY_DELAY_MS = 50;
 const IDLE_DELAY_MS = 1_000;
+const RECONCILE_INTERVAL_MS = 60_000;
 const DEFAULT_FINALIZER_QUEUES = [...localAiQueueNames];
 
 let running = true;
+let reconciling = false;
+let lastReconcileAt = 0;
 
 export async function runFinalizerLoop(): Promise<void> {
   logger.info("gen-finalizer started");
@@ -25,7 +32,27 @@ export async function runFinalizerLoop(): Promise<void> {
     } catch (err) {
       logger.error({ err }, "finalizer drain failed");
     }
+    await maybeReconcileStaleJobs();
     await sleep(processed > 0 ? BUSY_DELAY_MS : IDLE_DELAY_MS);
+  }
+}
+
+// SPEC: periodically recover orphaned queued/running generation jobs that no
+// worker will ever finalize (e.g. a crash mid-generation). Throttled to once per
+// RECONCILE_INTERVAL_MS and guarded so a slow pass can't overlap itself.
+async function maybeReconcileStaleJobs(now = Date.now()): Promise<void> {
+  if (reconciling || now - lastReconcileAt < RECONCILE_INTERVAL_MS) return;
+  reconciling = true;
+  lastReconcileAt = now;
+  try {
+    const result = await reconcileStaleGenerationJobs();
+    if (result.enqueued > 0) {
+      logger.info({ enqueued: result.enqueued }, "finalizer reconciled stale generation jobs");
+    }
+  } catch (err) {
+    logger.error({ err }, "finalizer stale reconcile failed");
+  } finally {
+    reconciling = false;
   }
 }
 

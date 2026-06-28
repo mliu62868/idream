@@ -1,4 +1,5 @@
 import type { Prisma } from "@prisma/client";
+import { z } from "zod";
 import { mockVideoMp4Bytes } from "@idream/shared";
 import { jobQueue } from "@/server/jobs/queue";
 import type { QueueJob } from "@/server/jobs/queue";
@@ -17,6 +18,9 @@ export const localAiQueueNames = [
   "ai.image.generate",
   "ai.video.generate",
   "app.ai.finalize",
+  // character preview: enqueued by previewDraft, drained here so slow image
+  // providers don't block the HTTP request (the client polls the job status).
+  "character.preview",
 ] as const;
 
 export interface LocalAiDrainResult {
@@ -121,12 +125,128 @@ async function processLocalAiJob(job: QueueJob) {
   if (job.queue === "app.ai.finalize") {
     return processFinalize(job.payload);
   }
+  if (job.queue === "character.preview") {
+    return processCharacterPreview(job.payload);
+  }
 
   throw new Error(`Unsupported local AI queue: ${job.queue}`);
 }
 
+// SPEC: async character preview. previewDraft enqueues {draftId, previewJobId};
+// this generates the preview image off the request path and settles the
+// CharacterPreviewJob to completed|failed so the client poll resolves.
+// INVARIANTS: terminal-only outcome (never strands at running); idempotent — a
+// re-delivered job whose preview already completed (or whose job/draft row is
+// gone) is a no-op. ownerId is read from the draft (SSoT), not the payload.
+const previewPayloadSchema = z.object({
+  draftId: z.string().min(1),
+  previewJobId: z.string().min(1),
+});
+
+async function processCharacterPreview(payloadValue: Prisma.JsonValue) {
+  const { draftId, previewJobId } = previewPayloadSchema.parse(payloadValue);
+
+  const job = await prisma.characterPreviewJob.findUnique({ where: { id: previewJobId } });
+  if (!job || job.status === "completed") return; // already settled / gone
+
+  const draft = await prisma.characterDraft.findUnique({ where: { id: draftId } });
+  if (!draft) {
+    await failPreview(previewJobId, "draft_not_found");
+    return;
+  }
+
+  await prisma.characterPreviewJob.update({
+    where: { id: previewJobId },
+    data: { status: "running" },
+  });
+
+  const image = await providers.image.generate({
+    prompt: draft.name ?? "custom character",
+    count: 1,
+    seed: draftId,
+  });
+  if (!image.ok) {
+    await failPreview(previewJobId, image.error.code ?? "preview_generate_failed");
+    return;
+  }
+
+  // Persist the generated image and expose it via the same /user-content route as
+  // normal generation, so the preview shows the REAL character image. Mock
+  // providers return no body → fall back to the placeholder PNG bytes. The storage
+  // key is per-job (previewJobId) so regenerating the same draft can't collide on
+  // the unique storageKey.
+  const generated = image.data.assets[0];
+  const contentType = generated?.contentType ?? "image/png";
+  const key = `preview/${previewJobId}${mediaFileExtension(contentType)}`;
+  const persisted = await providers.blob.putPrivate({
+    key,
+    body: generated?.body ?? new Uint8Array(placeholderImagePng),
+    contentType,
+  });
+  if (!persisted.ok) {
+    await failPreview(previewJobId, "preview_persist_failed");
+    return;
+  }
+
+  const mediaId = `media_${cryptoRandomId()}`;
+  const displayUrl = `/user-content/${mediaRouteToken(mediaId)}/content${mediaFileExtension(contentType)}`;
+  const asset = await prisma.mediaAsset.create({
+    data: {
+      id: mediaId,
+      ownerId: draft.ownerId,
+      type: "image",
+      url: displayUrl,
+      thumbnailUrl: displayUrl,
+      storageKey: key,
+      contentType,
+      width: generated?.width,
+      height: generated?.height,
+      providerAssetId: key,
+      prompt: draft.name,
+      visibility: "private",
+      safetyStatus: "passed",
+      metadata: { providerKey: key, source: "character_preview" },
+    },
+  });
+
+  await prisma.characterPreviewJob.update({
+    where: { id: previewJobId },
+    data: { status: "completed", resultAssetId: asset.id, completedAt: new Date() },
+  });
+  await prisma.characterDraft.update({
+    where: { id: draftId },
+    data: { previewJobId },
+  });
+}
+
+// updateMany (not update) so a job row deleted mid-flight settles to a no-op
+// instead of throwing and forcing a pointless BullMQ retry.
+async function failPreview(previewJobId: string, errorCode: string) {
+  await prisma.characterPreviewJob.updateMany({
+    where: { id: previewJobId },
+    data: { status: "failed", errorCode, completedAt: new Date() },
+  });
+}
+
 async function processImageGenerate(payloadValue: Prisma.JsonValue, jobMeta: QueueJob) {
+  // SPEC: any unhandled error (moderation calls, status writes, provider throws,
+  // finalize enqueue) must not strand the job in a non-terminal state with coins
+  // debited. On the final attempt funnel to a refund-emitting generation.failed;
+  // otherwise rethrow so the queue keeps retrying.
   const payload = imageGeneratePayloadSchema.parse(payloadValue);
+  try {
+    return await runImageGenerate(payload, jobMeta);
+  } catch (error) {
+    if (!isFinalAttempt(jobMeta)) throw error;
+    await enqueueGenerationFailed(
+      payload,
+      "worker_error",
+      errorMessage(error, "Image generation worker failed"),
+    );
+  }
+}
+
+async function runImageGenerate(payload: ImageGeneratePayload, jobMeta: QueueJob) {
   const inputModeration = await markGenerationModeratingInput(payload);
   if (inputModeration.status === "blocked") {
     await enqueueGenerationBlocked(
@@ -223,7 +343,21 @@ async function processImageGenerate(payloadValue: Prisma.JsonValue, jobMeta: Que
 }
 
 async function processVideoGenerate(payloadValue: Prisma.JsonValue, jobMeta: QueueJob) {
+  // Same final-attempt funnel as the image worker — see processImageGenerate.
   const payload = videoGeneratePayloadSchema.parse(payloadValue);
+  try {
+    return await runVideoGenerate(payload, jobMeta);
+  } catch (error) {
+    if (!isFinalAttempt(jobMeta)) throw error;
+    await enqueueGenerationFailed(
+      payload,
+      "worker_error",
+      errorMessage(error, "Video generation worker failed"),
+    );
+  }
+}
+
+async function runVideoGenerate(payload: VideoGeneratePayload, jobMeta: QueueJob) {
   const inputModeration = await markGenerationModeratingInput(payload);
   if (inputModeration.status === "blocked") {
     await enqueueGenerationBlocked(

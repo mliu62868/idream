@@ -66,14 +66,17 @@ module.exports = {
       exec_mode: "fork",
       instances: 2,
     },
-    {
-      name: "gen-video",
-      cwd: dir("packages/gen"),
-      script: "node_modules/tsx/dist/cli.mjs",
-      args: "src/video.ts",
-      exec_mode: "fork",
-      instances: 1,
-    },
+    // gen-video is DEFERRED to V1.1 (video_gen flag is off; see docs/architecture/12-roadmap.md).
+    // Keep it out of the running topology until a real video provider is enabled, so we
+    // don't run an idle/exiting worker. Re-enable this block together with VIDEO_PROVIDER.
+    // {
+    //   name: "gen-video",
+    //   cwd: dir("packages/gen"),
+    //   script: "node_modules/tsx/dist/cli.mjs",
+    //   args: "src/video.ts",
+    //   exec_mode: "fork",
+    //   instances: 1,
+    // },
     // slow · local runner gateway — wraps stable-diffusion.cpp as OpenAI-compatible images
     {
       name: "sdcpp-image",
@@ -108,6 +111,13 @@ module.exports = {
       args: "src/processes/finalizer.ts",
       exec_mode: "fork",
       instances: 1,
+      env: {
+        // Finalize + character.preview — do NOT add ai.image/video.generate, or this
+        // main-side process (IMAGE_PROVIDER defaults to mock) races the dedicated
+        // gen-image worker (GEN_IMAGE_PROVIDER=pipeline) → nondeterministic mock output.
+        // character.preview is main-only (no gen worker owns it), so it is safe here.
+        GEN_FINALIZER_QUEUES: "app.ai.finalize,character.preview",
+      },
     },
     {
       name: "main-event-consumer",

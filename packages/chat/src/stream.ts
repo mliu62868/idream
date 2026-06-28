@@ -15,6 +15,25 @@ function createRedis(): IORedis {
   return new IORedis(env.REDIS_URL, { maxRetriesPerRequest: null });
 }
 
+// SPEC: ONE shared publisher for the non-blocking stream ops (XADD/XRANGE).
+// appendStreamEvent runs once per model delta — hundreds per reply — so a
+// connect/AUTH/quit cycle per call would swamp Redis. The blocking SSE tailer
+// (createSseResponse, XREAD BLOCK) keeps its OWN connection: a blocking read must
+// never share a client with the publisher.
+let publisher: IORedis | null = null;
+function publisherRedis(): IORedis {
+  publisher ??= createRedis();
+  return publisher;
+}
+
+/** Close the shared publisher (graceful shutdown / test reset). */
+export async function closeStreamPublisher(): Promise<void> {
+  const current = publisher;
+  if (!current) return;
+  publisher = null;
+  await current.quit();
+}
+
 export function streamKey(assistantMessageId: string): string {
   return `chat:stream:${assistantMessageId}`;
 }
@@ -29,24 +48,16 @@ export async function appendStreamEvent(
   event: ChatStreamEvent,
 ): Promise<StoredStreamEvent> {
   const parsed = chatStreamEventSchema.parse(event);
-  const redis = createRedis();
-  try {
-    const id = await redis.xadd(key, "MAXLEN", "~", String(STREAM_MAXLEN), "*", "data", JSON.stringify(parsed));
-    return { id: id ?? "", event: parsed };
-  } finally {
-    await redis.quit();
-  }
+  const id = await publisherRedis().xadd(
+    key, "MAXLEN", "~", String(STREAM_MAXLEN), "*", "data", JSON.stringify(parsed),
+  );
+  return { id: id ?? "", event: parsed };
 }
 
 export async function listStreamEvents(key: string, afterId?: string | null): Promise<StoredStreamEvent[]> {
-  const redis = createRedis();
-  try {
-    const min = afterId ? `(${afterId}` : "-";
-    const rows = (await redis.xrange(key, min, "+")) as Array<[string, string[]]>;
-    return rows.flatMap(parseRow);
-  } finally {
-    await redis.quit();
-  }
+  const min = afterId ? `(${afterId}` : "-";
+  const rows = (await publisherRedis().xrange(key, min, "+")) as Array<[string, string[]]>;
+  return rows.flatMap(parseRow);
 }
 
 /** SSE Response that tails the stream with XREAD BLOCK from lastEventId. */

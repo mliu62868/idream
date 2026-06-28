@@ -146,9 +146,9 @@
 | Dreamcoin balance | `/profile`、app-wide | DreamcoinLedger |
 | Subscription link | `/profile/subscription` | Subscription |
 | Redeem code | `/profile/redeem-code` | RedeemCode |
-| Referral program | `/profile` | Referral、RewardLedger（give/get dreamcoins、progress bonus） |
+| Referral program | `/profile`、`/signup?ref=` | 已接线：邀请码生成/分享 + signup 读 `?ref` 归因 + give/get dreamcoins（被邀请人 +150、邀请人 +150，按 ledger idempotencyKey 每被邀请人一次）。前端 AuthWorkspace 捕获 `?ref` 随 signup 提交 |
 | Preferences/notifications | `/profile/notifications` | UserPreferences |
-| Language | `/profile/language` | locale |
+| Language | — | 受控 beta 仅英文；Profile 语言切换器已移除（无 i18n 字典层，曾为"假成功"死控件）。`user_preferences.locale` 字段保留，待未来接入 next-intl 等再启用 |
 | Account management | `/profile/account-management` | User status/deletion |
 | Feed cards | `/feed` | FeedItem |
 | Feed actions | `/feed` | chatStart、remix、like、share、report |

@@ -6,6 +6,7 @@ import {
   createMedia,
   createRedeemCode,
   createUser,
+  dreamcoinBalance,
   expectError,
   expectOk,
   purgeTestData,
@@ -137,6 +138,45 @@ describe("referrals + account", () => {
     const invite = await api("POST", "referrals/invite", { userId });
     expectOk(invite);
     expect(invite.data.shareUrl).toContain("ref=");
+  });
+
+  it("grants give/get dreamcoins when an invitee signs up with a ref code", async () => {
+    const inviterId = `${P}ref-inviter`;
+    await createUser({ id: inviterId });
+    const invite = await api("POST", "referrals/invite", { userId: inviterId });
+    expectOk(invite);
+    const code = invite.data.referral.code as string;
+    const inviterBefore = await dreamcoinBalance(inviterId);
+
+    const signup = await api("POST", "auth/signup", {
+      ageGate: true,
+      body: { email: `${P}invitee@example.com`, password: "password123", name: "Invitee", ref: code },
+    });
+    expectOk(signup);
+    const inviteeId = signup.data.user.id as string;
+
+    // Invitee: 250 signup bonus + 150 referral bonus.
+    expect(await dreamcoinBalance(inviteeId)).toBe(400);
+    // Inviter: +150 give reward, granted exactly once for this invitee.
+    expect(await dreamcoinBalance(inviterId)).toBe(inviterBefore + 150);
+    expect(
+      await prisma.dreamcoinLedger.count({ where: { userId: inviterId, reason: "referral_reward" } }),
+    ).toBe(1);
+
+    // Referral row attributed + marked granted.
+    const referral = await prisma.referral.findUnique({ where: { code } });
+    expect(referral?.inviteeId).toBe(inviteeId);
+    expect(referral?.rewardStatus).toBe("granted");
+  });
+
+  it("ignores an unknown ref code without blocking signup", async () => {
+    const signup = await api("POST", "auth/signup", {
+      ageGate: true,
+      body: { email: `${P}noref@example.com`, password: "password123", name: "NoRef", ref: "DREAM-DOESNOTEXIST" },
+    });
+    expectOk(signup);
+    // Only the base signup bonus — no referral grant from a bogus code.
+    expect(await dreamcoinBalance(signup.data.user.id as string)).toBe(250);
   });
 
   it("signs out all sessions and processes a delete request", async () => {

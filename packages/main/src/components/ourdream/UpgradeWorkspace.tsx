@@ -43,6 +43,9 @@ export function UpgradeWorkspace() {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [status, setStatus] = useState("");
   const [pendingPlan, setPendingPlan] = useState("");
+  // Lowercased "name billingPeriod" of the user's active plan; "" when unknown
+  // (logged out / free / fetch failed) so no card gets marked as current.
+  const [activePlan, setActivePlan] = useState("");
   // P1-D: a failed/slow plans fetch must not masquerade as "no plans". Track
   // load lifecycle so we can show a spinner and a retryable error instead of
   // a blank grid.
@@ -66,6 +69,33 @@ export function UpgradeWorkspace() {
     return () => window.clearTimeout(timer);
   }, [loadPlans]);
 
+  // Best-effort current-plan lookup; any failure simply leaves the cards unmarked.
+  useEffect(() => {
+    let alive = true;
+    const timer = window.setTimeout(() => {
+      void fetch("/api/v1/profile")
+        .then((response) => (response.ok ? response.json() : null))
+        .then(
+          (
+            payload: {
+              data?: {
+                subscription?: { plan?: { name: string; billingPeriod: string } } | null;
+              };
+            } | null,
+          ) => {
+            if (!alive) return;
+            const plan = payload?.data?.subscription?.plan;
+            if (plan) setActivePlan(`${plan.name} ${plan.billingPeriod}`.toLowerCase());
+          },
+        )
+        .catch(() => undefined);
+    }, 0);
+    return () => {
+      alive = false;
+      window.clearTimeout(timer);
+    };
+  }, []);
+
   async function checkout(plan: Plan) {
     setPendingPlan(plan.id);
     setStatus("");
@@ -81,6 +111,8 @@ export function UpgradeWorkspace() {
           ? `${plan.name} activated and dreamcoins granted.`
           : payload.error?.message ?? "Checkout failed",
       );
+    } catch {
+      setStatus("Checkout failed. Please check your connection and try again.");
     } finally {
       setPendingPlan("");
     }
@@ -114,7 +146,11 @@ export function UpgradeWorkspace() {
         </p>
       )}
       <div className="mx-auto grid max-w-5xl gap-4 md:grid-cols-2">
-        {plans.map((plan, index) => (
+        {plans.map((plan, index) => {
+          const isActive =
+            activePlan !== "" &&
+            `${plan.name} ${plan.billingPeriod}`.toLowerCase() === activePlan;
+          return (
           <article
             className={`rounded-[20px] border p-6 ${
               index === 0
@@ -123,7 +159,14 @@ export function UpgradeWorkspace() {
             }`}
             key={plan.id}
           >
-            <Crown className="h-6 w-6 text-[rgb(253,95,194)]" />
+            <div className="flex items-center justify-between">
+              <Crown className="h-6 w-6 text-[rgb(253,95,194)]" />
+              {isActive && (
+                <span className="rounded-full bg-[rgb(253,95,194)] px-3 py-1 text-[11px] font-black uppercase text-[rgb(13,13,13)]">
+                  Current plan
+                </span>
+              )}
+            </div>
             <h2 className="mt-4 text-[26px] font-black uppercase">
               {plan.name} {plan.billingPeriod}
             </h2>
@@ -143,14 +186,15 @@ export function UpgradeWorkspace() {
             </ul>
             <button
               className="mt-6 h-11 w-full rounded-full bg-white text-[14px] font-black text-[rgb(13,13,13)] disabled:opacity-70"
-              disabled={pendingPlan === plan.id}
+              disabled={pendingPlan === plan.id || isActive}
               onClick={() => checkout(plan)}
               type="button"
             >
-              {pendingPlan === plan.id ? "Activating..." : "Upgrade"}
+              {isActive ? "Current plan" : pendingPlan === plan.id ? "Activating..." : "Upgrade"}
             </button>
           </article>
-        ))}
+          );
+        })}
       </div>
       {status && (
         <p className="mx-auto mt-5 max-w-5xl text-[13px] font-bold text-[rgb(170,170,170)]">

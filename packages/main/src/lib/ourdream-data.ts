@@ -480,7 +480,7 @@ const routeOverrides: Record<
   "/chat": {
     title: "NSFW AI Chat",
     description:
-      "Unlimited AI chat entry page with a guide-style FAQ and routes back into Explore and Create.",
+      "Your chat hub — pick up recent AI conversations or start a new one from Explore.",
     template: "marketing",
   },
   "/create": {

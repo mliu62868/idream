@@ -232,6 +232,20 @@ export async function regenerate(
   if (!session || session.userId !== input.userId) {
     throw new ChatError("forbidden", "not your message", 403);
   }
+
+  // Regenerate is a fresh generation: finalize() still increments usage, so it MUST
+  // pass the same gates as sendMessage. Without this a free user at the daily cap —
+  // or a suspended/restricted user — could regenerate without limit (design P0-C).
+  await assertEligible(prisma, input.userId, session.characterId);
+  const entitlement = await prisma.chatEntitlementView.findUnique({ where: { userId: input.userId } });
+  const policy = resolvePolicy(snapshotFromView(entitlement), { memoryEnabled: session.memoryEnabled });
+  if (!policy.unlimitedMessages) {
+    const used = await currentUsage(prisma, input.userId);
+    if (used >= FREE_DAILY_MESSAGES) {
+      throw new ChatError("quota_exceeded", "Daily free message limit reached.", 402);
+    }
+  }
+
   const lastUser = await prisma.message.findFirst({
     where: { sessionId: session.id, role: "user", createdAt: { lt: message.createdAt }, deletedAt: null },
     orderBy: { createdAt: "desc" },

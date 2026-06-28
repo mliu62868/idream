@@ -344,11 +344,19 @@ export function GeneratorWorkspace() {
     void refreshConfig();
   }
 
-  async function likeMedia(id: string) {
-    setMedia((current) =>
-      current.map((item) => (item.id === id ? { ...item, liked: true } : item)),
-    );
-    const response = await fetch(`/api/v1/media/${id}/like`, { method: "POST" });
+  async function toggleLike(item: MediaItem) {
+    const nextLiked = !item.liked;
+    // Optimistic: flip the heart. On the "liked" tab an unlike removes the card,
+    // since it no longer belongs there.
+    setMedia((current) => {
+      if (!nextLiked && galleryTab === "liked") {
+        return current.filter((m) => m.id !== item.id);
+      }
+      return current.map((m) => (m.id === item.id ? { ...m, liked: nextLiked } : m));
+    });
+    const response = await fetch(`/api/v1/media/${item.id}/like`, {
+      method: nextLiked ? "POST" : "DELETE",
+    });
     if (!response.ok) void refreshMedia(galleryTab);
   }
 
@@ -1030,8 +1038,15 @@ export function GeneratorWorkspace() {
                         </button>
                       ) : (
                         <div className="absolute inset-x-2 bottom-2 flex justify-end gap-2 opacity-100 md:opacity-0 md:transition-opacity md:group-hover:opacity-100">
-                          <IconButton label="Like" onClick={() => likeMedia(item.id)}>
-                            <Heart className="h-4 w-4" />
+                          <IconButton
+                            label={item.liked ? "Unlike" : "Like"}
+                            onClick={() => toggleLike(item)}
+                          >
+                            <Heart
+                              className={`h-4 w-4 ${
+                                item.liked ? "fill-current text-[rgb(255,48,170)]" : ""
+                              }`}
+                            />
                           </IconButton>
                           <IconButton label="Download" onClick={() => downloadMedia(item.id)}>
                             <Download className="h-4 w-4" />

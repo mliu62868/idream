@@ -890,17 +890,28 @@ async function discardGenerationJob(request: Request, jobId: string) {
   if (!["failed", "blocked", "refunded"].includes(job.status)) {
     throw Errors.badRequest("Only failed, blocked, or refunded jobs can be discarded");
   }
-  const alreadyRefunded = await prisma.dreamcoinLedger.findFirst({
-    where: { sourceId: job.id, reason: "refund" },
-  });
-  await prisma.$transaction(async (tx) => {
-    if (!alreadyRefunded && job.costDreamcoins > 0) {
-      await appendLedger(tx, job.userId, job.costDreamcoins, "refund", job.id);
+  // Guard + refund inside one transaction, keyed on the same idempotency key the
+  // generation pipeline uses, so a refund already issued elsewhere never doubles.
+  const refundedNow = await prisma.$transaction(async (tx) => {
+    const alreadyRefunded = await tx.dreamcoinLedger.findFirst({
+      where: { sourceId: job.id, reason: "refund" },
+    });
+    const willRefund = !alreadyRefunded && job.costDreamcoins > 0;
+    if (willRefund) {
+      await appendLedger(
+        tx,
+        job.userId,
+        job.costDreamcoins,
+        "refund",
+        job.id,
+        `generation:${job.id}:refund`,
+      );
     }
     await tx.generationJob.update({
       where: { id: job.id },
       data: { status: "refunded", errorCode: job.errorCode ?? "discarded" },
     });
+    return willRefund;
   });
   await writeAudit(request, actor, {
     action: "ops.deadletter.discard",
@@ -908,9 +919,9 @@ async function discardGenerationJob(request: Request, jobId: string) {
     targetId: job.id,
     reason: body.reason,
     before: { status: job.status, errorCode: job.errorCode },
-    after: { status: "refunded", refunded: !alreadyRefunded },
+    after: { status: "refunded", refunded: refundedNow },
   });
-  return ok({ discarded: true, refunded: !alreadyRefunded });
+  return ok({ discarded: true, refunded: refundedNow });
 }
 
 // SPEC: Dead-letter 运营台 —— 列出重试耗尽/不可恢复（failed|blocked）的 job，支持单/批 requeue 与 discard。
@@ -988,7 +999,6 @@ async function discardDeadLetterBatch(request: Request) {
     throw Errors.badRequest("Batch discard requires DISCARD confirmation");
   }
   const jobs = await prisma.generationJob.findMany({ where: { id: { in: body.jobIds } } });
-  const refundedIds = await refundedJobIds(body.jobIds);
   const discarded: string[] = [];
   const refundedNow: string[] = [];
   const skipped: { id: string; reason: string }[] = [];
@@ -997,16 +1007,31 @@ async function discardDeadLetterBatch(request: Request) {
       skipped.push({ id: job.id, reason: "not_discardable" });
       continue;
     }
-    const willRefund = !refundedIds.has(job.id) && job.costDreamcoins > 0;
-    await prisma.$transaction(async (tx) => {
-      if (willRefund) await appendLedger(tx, job.userId, job.costDreamcoins, "refund", job.id);
+    // Re-check + refund inside the transaction, keyed idempotently so a refund
+    // issued by the pipeline (or a concurrent discard) is never doubled.
+    const didRefund = await prisma.$transaction(async (tx) => {
+      const alreadyRefunded = await tx.dreamcoinLedger.findFirst({
+        where: { sourceId: job.id, reason: "refund" },
+      });
+      const willRefund = !alreadyRefunded && job.costDreamcoins > 0;
+      if (willRefund) {
+        await appendLedger(
+          tx,
+          job.userId,
+          job.costDreamcoins,
+          "refund",
+          job.id,
+          `generation:${job.id}:refund`,
+        );
+      }
       await tx.generationJob.update({
         where: { id: job.id },
         data: { status: "refunded", errorCode: job.errorCode ?? "discarded" },
       });
+      return willRefund;
     });
     discarded.push(job.id);
-    if (willRefund) refundedNow.push(job.id);
+    if (didRefund) refundedNow.push(job.id);
   }
   for (const id of missingIds(body.jobIds, jobs)) skipped.push({ id, reason: "not_found" });
   await writeAudit(request, actor, {
@@ -1606,22 +1631,34 @@ async function moderationDecision(request: Request, reportId: string) {
   }
   const report = await prisma.contentReport.findUnique({ where: { id: reportId } });
   if (!report) throw Errors.notFound("Report not found");
-  const review = await prisma.moderationReview.create({
-    data: {
-      reportId,
-      reviewerId: actor.id,
-      decision: body.decision,
-      policyCode: body.policyCode,
-      notes: body.notes,
-    },
+  // Atomic decision: review + report-status + takedown succeed or fail together,
+  // guarded so an already-resolved report can't be re-decided (double takedown /
+  // audit confusion). A failed takedown (e.g. unknown target) rolls everything
+  // back, so the report is never marked handled without content being removed.
+  const { review, updated } = await prisma.$transaction(async (tx) => {
+    const current = await tx.contentReport.findUnique({ where: { id: reportId } });
+    if (!current) throw Errors.notFound("Report not found");
+    if (["actioned", "no_violation", "duplicate", "closed"].includes(current.status)) {
+      throw Errors.conflict("Report already has a terminal decision");
+    }
+    const review = await tx.moderationReview.create({
+      data: {
+        reportId,
+        reviewerId: actor.id,
+        decision: body.decision,
+        policyCode: body.policyCode,
+        notes: body.notes,
+      },
+    });
+    const updated = await tx.contentReport.update({
+      where: { id: reportId },
+      data: { status: body.decision },
+    });
+    if (body.decision === "actioned") {
+      await applyModerationAction(current.targetType, current.targetId, tx);
+    }
+    return { review, updated };
   });
-  const updated = await prisma.contentReport.update({
-    where: { id: reportId },
-    data: { status: body.decision },
-  });
-  if (body.decision === "actioned") {
-    await applyModerationAction(report.targetType, report.targetId);
-  }
   await writeAudit(request, actor, {
     action: "safety.review.decision",
     targetType: report.targetType,
@@ -2764,19 +2801,46 @@ async function plaintextTarget(
   };
 }
 
-async function applyModerationAction(targetType: string, targetId: string) {
+async function applyModerationAction(
+  targetType: string,
+  targetId: string,
+  db: Prisma.TransactionClient | typeof prisma = prisma,
+) {
+  // INVARIANT: "actioned" must actually take content down. Feed items wrap a
+  // character, so resolve and remove it; unknown target types throw so the
+  // decision transaction rolls back instead of marking a report falsely handled.
   if (targetType === "character") {
-    await prisma.character.updateMany({
+    await db.character.updateMany({
       where: { id: targetId },
       data: { status: "removed" },
     });
+    return;
   }
   if (targetType === "media") {
-    await prisma.mediaAsset.updateMany({
+    await db.mediaAsset.updateMany({
       where: { id: targetId },
       data: { safetyStatus: "blocked", visibility: "private" },
     });
+    return;
   }
+  if (targetType === "feed_item") {
+    const characterId = feedItemCharacterId(targetId);
+    if (!characterId) {
+      throw Errors.badRequest(`Cannot resolve feed_item moderation target: ${targetId}`);
+    }
+    await db.character.updateMany({
+      where: { id: characterId },
+      data: { status: "removed" },
+    });
+    return;
+  }
+  throw Errors.badRequest(`Unsupported moderation target type: ${targetType}`);
+}
+
+// Feed item ids are encoded as `character:<id>` (see ourdream feed handlers).
+function feedItemCharacterId(itemId: string) {
+  const decoded = decodeURIComponent(itemId);
+  return decoded.startsWith("character:") ? decoded.slice("character:".length) : null;
 }
 
 async function featureEnabled(key: string) {
@@ -2884,7 +2948,13 @@ async function appendLedger(
   delta: number,
   reason: string,
   sourceId?: string,
+  idempotencyKey?: string,
 ) {
+  if (idempotencyKey) {
+    const existing = await tx.dreamcoinLedger.findUnique({ where: { idempotencyKey } });
+    if (existing) return existing;
+  }
+  await lockUserLedger(tx, userId);
   const balance = await dreamcoinBalance(userId, tx);
   return tx.dreamcoinLedger.create({
     data: {
@@ -2893,8 +2963,13 @@ async function appendLedger(
       balanceAfter: balance + delta,
       reason,
       sourceId,
+      idempotencyKey,
     },
   });
+}
+
+async function lockUserLedger(tx: Prisma.TransactionClient, userId: string) {
+  await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId} FOR UPDATE`;
 }
 
 export async function jsonBody(request: Request): Promise<unknown> {

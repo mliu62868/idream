@@ -7,6 +7,9 @@ export interface PipelineVoiceModelConfig {
   baseUrl: string;
   apiKey?: string;
   model: string;
+  /** Speaker used when a character has no voiceId. Model-specific (e.g. "serena"
+   *  for Qwen3-TTS); the generic "default" 500s on speaker-keyed TTS servers. */
+  defaultVoiceId?: string;
   timeoutMs?: number;
   blob: BlobStore;
   fetchImpl?: FetchLike;
@@ -16,6 +19,7 @@ export class PipelineVoiceModel implements VoiceModel {
   private readonly endpoint: URL;
   private readonly apiKey: string | undefined;
   private readonly model: string;
+  private readonly defaultVoiceId: string;
   private readonly timeoutMs: number;
   private readonly blob: BlobStore;
   private readonly fetchImpl: FetchLike;
@@ -24,6 +28,7 @@ export class PipelineVoiceModel implements VoiceModel {
     this.endpoint = pipelineEndpoint(config.baseUrl, "/audio/speech");
     this.apiKey = config.apiKey;
     this.model = config.model;
+    this.defaultVoiceId = config.defaultVoiceId?.trim() || "default";
     this.timeoutMs = Math.max(250, config.timeoutMs ?? 60_000);
     this.blob = config.blob;
     this.fetchImpl = config.fetchImpl ?? fetch;
@@ -42,7 +47,7 @@ export class PipelineVoiceModel implements VoiceModel {
         body: JSON.stringify({
           model: this.model,
           input: input.text,
-          voice: input.voiceId ?? "default",
+          voice: input.voiceId ?? this.defaultVoiceId,
           response_format: "mp3",
           // OpenAI-compatible delivery control (gpt-4o-mini-tts / MOSS-TTS); omit when absent.
           ...(input.tone ? { instructions: input.tone } : {}),
