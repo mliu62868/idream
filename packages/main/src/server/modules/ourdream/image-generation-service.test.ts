@@ -196,4 +196,74 @@ describe("image generation service contract", () => {
     });
     expect(await dreamcoinBalance(userId)).toBe(95);
   });
+
+  it("folds selected built-in presets into the generation prompt", async () => {
+    const userId = `${P}preset-user`;
+    await createUser({ id: userId });
+    await grantCoins(userId, 100, "seed");
+    const preset = await prisma.generationPreset.create({
+      data: {
+        scope: "built_in",
+        type: "background",
+        label: "Bedroom",
+        controls: { background: "bedroom", lighting: "soft" },
+        visibility: "public",
+        status: "active",
+      },
+    });
+
+    const gen = await api("POST", "generation/jobs", {
+      userId,
+      ageGate: true,
+      body: {
+        mode: "image",
+        characterId: CHAR,
+        outputCount: 1,
+        controls: { backgroundPresetId: preset.id },
+      },
+    });
+    expectOk(gen, 202);
+    const job = await prisma.generationJob.findUniqueOrThrow({
+      where: { id: gen.data.job.id as string },
+    });
+    expect(job.prompt).toContain("bedroom");
+    expect(job.prompt).toContain("soft");
+    await runQueuedGenerationJobs(4);
+  });
+
+  it("ignores preset ids that are not built-in or owned by the user", async () => {
+    const owner = `${P}preset-owner`;
+    const intruder = `${P}preset-intruder`;
+    await createUser({ id: owner });
+    await createUser({ id: intruder });
+    await grantCoins(intruder, 100, "seed");
+    const privatePreset = await prisma.generationPreset.create({
+      data: {
+        ownerId: owner,
+        scope: "user",
+        type: "outfit",
+        label: "Secret",
+        controls: { outfit: "secret-couture" },
+        visibility: "private",
+        status: "active",
+      },
+    });
+
+    const gen = await api("POST", "generation/jobs", {
+      userId: intruder,
+      ageGate: true,
+      body: {
+        mode: "image",
+        characterId: CHAR,
+        outputCount: 1,
+        controls: { outfitPresetId: privatePreset.id },
+      },
+    });
+    expectOk(gen, 202);
+    const job = await prisma.generationJob.findUniqueOrThrow({
+      where: { id: gen.data.job.id as string },
+    });
+    expect(job.prompt).not.toContain("secret-couture");
+    await runQueuedGenerationJobs(4);
+  });
 });

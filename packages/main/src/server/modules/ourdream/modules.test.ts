@@ -354,6 +354,40 @@ describe("feed, community, policies, analytics", () => {
     expect(JSON.stringify(res.data.leaderboards.dreamers)).not.toContain("@test.local");
   });
 
+  it("returns a public creator profile with their characters and follow state", async () => {
+    const viewer = `${P}creator-viewer`;
+    await createUser({ id: viewer });
+
+    const profile = await api("GET", `creators/${SYS}`, { userId: viewer, ageGate: true });
+    expectOk(profile);
+    expect(profile.data.creator).toMatchObject({ id: SYS, isFollowing: false, isSelf: false });
+    expect(profile.data.creator.stats.characters).toBeGreaterThanOrEqual(1);
+    expect(Array.isArray(profile.data.characters)).toBe(true);
+    expect((profile.data.characters as Array<{ creatorId: string }>).every((c) => c.creatorId === SYS)).toBe(true);
+
+    const follow = await api("POST", `users/${SYS}/follow`, { userId: viewer, ageGate: true });
+    expectOk(follow);
+    const after = await api("GET", `creators/${SYS}`, { userId: viewer, ageGate: true });
+    expectOk(after);
+    expect(after.data.creator.isFollowing).toBe(true);
+  });
+
+  it("reflects follow state in community dreamers and 404s unknown creators", async () => {
+    const viewer = `${P}community-follower`;
+    await createUser({ id: viewer });
+    await api("POST", `users/${SYS}/follow`, { userId: viewer, ageGate: true });
+
+    const res = await api("GET", "community/leaderboards", { userId: viewer, ageGate: true });
+    expectOk(res);
+    const dreamer = (res.data.leaderboards.dreamers as Array<{ id: string; isFollowing: boolean }>).find(
+      (d) => d.id === SYS,
+    );
+    expect(dreamer?.isFollowing).toBe(true);
+
+    const missing = await api("GET", `creators/${P}does-not-exist`, { userId: viewer, ageGate: true });
+    expectError(missing, 404);
+  });
+
   it("returns published policies", async () => {
     const res = await api("GET", "policies");
     expectOk(res);

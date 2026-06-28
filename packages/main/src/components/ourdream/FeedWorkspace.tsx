@@ -17,6 +17,8 @@ type FeedItem = {
     likes: string;
     chats: string;
     creator: string;
+    creatorId?: string | null;
+    creatorName?: string | null;
   };
 };
 
@@ -34,14 +36,20 @@ type FeedPayload = {
 export function FeedWorkspace() {
   const [items, setItems] = useState<FeedItem[]>([]);
   const [status, setStatus] = useState("");
+  const [loading, setLoading] = useState(true);
 
   const loadFeed = useCallback(async () => {
-    const payload = await fetchFeedPayload();
-    if (payload.ok === false) {
-      setStatus(payload.error?.message ?? "Accept the age gate to view feed.");
-      return;
+    setLoading(true);
+    try {
+      const payload = await fetchFeedPayload();
+      if (payload.ok === false) {
+        setStatus(payload.error?.message ?? "Accept the age gate to view feed.");
+        return;
+      }
+      setItems(payload.data?.items ?? []);
+    } finally {
+      setLoading(false);
     }
-    setItems(payload.data?.items ?? []);
   }, []);
 
   useEffect(() => {
@@ -57,6 +65,9 @@ export function FeedWorkspace() {
       })
       .catch(() => {
         if (alive) setStatus("Feed unavailable.");
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
       });
 
     return () => {
@@ -149,6 +160,14 @@ export function FeedWorkspace() {
                   </p>
                 </div>
               </Link>
+              {item.character.creatorId && item.character.creatorName && (
+                <Link
+                  className="block px-3 pt-3 text-[12px] font-semibold text-[rgb(170,170,170)] hover:text-white"
+                  href={`/creators/${item.character.creatorId}`}
+                >
+                  by {item.character.creatorName}
+                </Link>
+              )}
               <div className="grid grid-cols-5 gap-2 p-3">
                 <ActionButton icon={<MessageCircle className="h-4 w-4" />} label="Chat" onClick={() => startChat(item.character.id)} />
                 <ActionButton icon={<Repeat2 className="h-4 w-4" />} label="Remix" onClick={() => action(item.id, "remix")} />
@@ -159,6 +178,14 @@ export function FeedWorkspace() {
             </article>
           ))}
         </div>
+        {loading && items.length === 0 && (
+          <p className="mt-6 text-[13px] font-medium text-[rgb(170,170,170)]">Loading feed…</p>
+        )}
+        {!loading && items.length === 0 && !status && (
+          <div className="mt-6 rounded-[12px] border border-white/10 bg-[rgb(18,18,18)] p-6 text-center text-[13px] font-medium text-[rgb(170,170,170)]">
+            No dreams yet. <Link className="underline" href="/explore">Explore characters</Link> to get started.
+          </div>
+        )}
       </div>
     </section>
   );

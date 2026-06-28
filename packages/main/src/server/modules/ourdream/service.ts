@@ -315,6 +315,9 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
   if (resource === "events" && id === "track" && method === "POST") return track(request);
   if (resource === "feed") return feed(request, segments);
   if (resource === "community") return community(request, segments);
+  if (resource === "creators" && id && !action && method === "GET") {
+    return creatorProfile(request, id);
+  }
 
   throw Errors.notFound("API route not found", { path: `/${segments.join("/")}` });
 }
@@ -1012,6 +1015,38 @@ async function generationConfig(request: Request) {
   });
 }
 
+// SPEC: turn selected background/pose/outfit preset ids into a descriptive prompt fragment.
+// INTENT: presets are open to every tier (unlike custom prompt); only built-in or the user's
+// own active presets resolve, so a stranger's id can't be injected. Empty when none selected.
+async function resolvePresetPromptFragment(
+  controls: { backgroundPresetId?: string; posePresetId?: string; outfitPresetId?: string },
+  userId: string,
+): Promise<string> {
+  const ids = [controls.backgroundPresetId, controls.posePresetId, controls.outfitPresetId].filter(
+    (id): id is string => Boolean(id),
+  );
+  if (ids.length === 0) return "";
+  const presets = await prisma.generationPreset.findMany({
+    where: {
+      id: { in: ids },
+      status: "active",
+      OR: [{ scope: "built_in" }, { ownerId: userId }],
+    },
+  });
+  const fragments: string[] = [];
+  for (const id of ids) {
+    const preset = presets.find((item) => item.id === id);
+    if (!preset) continue;
+    const values = isRecord(preset.controls)
+      ? Object.values(preset.controls)
+          .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+          .map((value) => value.trim())
+      : [];
+    fragments.push(values.length ? values.join(", ") : preset.label);
+  }
+  return fragments.join(", ");
+}
+
 async function createGenerationJob(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
@@ -1072,11 +1107,15 @@ async function createGenerationJob(request: Request) {
     height: profile.defaultHeight,
   };
   const cost = await generationCost(body.mode, body.outputCount, profile.costMultiplier);
-  const prompt =
+  // Built-in/owned presets (background/pose/outfit) are open to every tier and
+  // augment the prompt with descriptive fragments so the choice actually changes output.
+  const presetFragment = await resolvePresetPromptFragment(body.controls, user.id);
+  const basePrompt =
     body.prompt ??
     `${body.mode === "video" ? "Video" : "Image"} generation for ${
       character?.name ?? "an original companion"
     }`;
+  const prompt = presetFragment ? `${basePrompt}. ${presetFragment}` : basePrompt;
 
   const job = await prisma.$transaction(async (tx) => {
     await lockUserLedger(tx, user.id);
@@ -2212,6 +2251,19 @@ async function community(request: Request, segments: string[]) {
     }),
     communityDreamerRows(),
   ]);
+  const followingIds = ctx.userId
+    ? new Set(
+        (
+          await prisma.follow.findMany({
+            where: {
+              followerId: ctx.userId,
+              followeeId: { in: dreamerRows.map((dreamer) => dreamer.id) },
+            },
+            select: { followeeId: true },
+          })
+        ).map((row) => row.followeeId),
+      )
+    : new Set<string>();
   const dreamers = dreamerRows.map((dreamer) => ({
     id: dreamer.id,
     displayName: dreamer.displayName,
@@ -2220,6 +2272,7 @@ async function community(request: Request, segments: string[]) {
     followers: numberFromDb(dreamer.followers),
     likes: formatCount(numberFromDb(dreamer.likes)),
     chats: formatCount(numberFromDb(dreamer.chats)),
+    isFollowing: followingIds.has(dreamer.id),
   }));
   return ok({
     leaderboards: {
@@ -2296,6 +2349,52 @@ async function unfollowUser(request: Request, targetId: string) {
     where: { followerId: user.id, followeeId: targetId },
   });
   return ok({ following: false });
+}
+
+// SPEC: public creator profile — displayName + totals + their public/approved characters.
+// INTENT: gives Community/Feed a place to lead to (§G); read-only, age-gated, no private data.
+async function creatorProfile(request: Request, creatorId: string) {
+  const ctx = await getAuthCtx(request);
+  requireAgeGate(ctx);
+  const creator = await prisma.user.findFirst({
+    where: { id: creatorId, status: "active", deletedAt: null },
+    select: { id: true, displayName: true, name: true, image: true, createdAt: true },
+  });
+  if (!creator) throw Errors.notFound("Creator not found");
+  const [characters, followers, following] = await Promise.all([
+    prisma.character.findMany({
+      where: { creatorId, visibility: "public", status: "approved", deletedAt: null },
+      include: characterInclude(ctx.userId),
+      orderBy: [{ stats: { likesCount: "desc" } }, { createdAt: "desc" }],
+      take: 24,
+    }),
+    prisma.follow.count({ where: { followeeId: creatorId } }),
+    ctx.userId
+      ? prisma.follow.findFirst({
+          where: { followerId: ctx.userId, followeeId: creatorId },
+          select: { followerId: true },
+        })
+      : null,
+  ]);
+  const totalLikes = characters.reduce((sum, c) => sum + (c.stats?.likesCount ?? 0), 0);
+  const totalChats = characters.reduce((sum, c) => sum + (c.stats?.chatsCount ?? 0), 0);
+  return ok({
+    creator: {
+      id: creator.id,
+      displayName: creator.displayName ?? creator.name ?? "Dreamer",
+      image: creator.image,
+      createdAt: creator.createdAt,
+      isFollowing: Boolean(following),
+      isSelf: ctx.userId === creator.id,
+      stats: {
+        characters: characters.length,
+        followers,
+        likes: formatCount(totalLikes),
+        chats: formatCount(totalChats),
+      },
+    },
+    characters: characters.map((character) => characterDTO(character)),
+  });
 }
 
 async function duplicateCharacter(request: Request, id: string) {
@@ -2394,6 +2493,7 @@ function characterInclude(userId?: string) {
     imageAsset: true,
     stats: true,
     tags: { include: { tag: true } },
+    creator: { select: { id: true, displayName: true, name: true } },
     likes: userId ? { where: { userId }, select: { userId: true } } : false,
   } satisfies Prisma.CharacterInclude;
 }
@@ -2416,6 +2516,7 @@ function characterDTO(character: CharacterWithPublicRelations) {
     relationship: character.relationship,
     creatorId: character.creatorId,
     creator: character.relationship ?? "@ourdream",
+    creatorName: character.creator?.displayName ?? character.creator?.name ?? null,
     image: character.imageAsset?.url ?? defaultImage,
     thumbnailUrl: character.imageAsset?.thumbnailUrl ?? character.imageAsset?.url ?? defaultImage,
     likes: formatCount(character.stats?.likesCount ?? 0),
@@ -2722,7 +2823,7 @@ async function assertMediaOwner(id: string, userId: string) {
   return media;
 }
 
-async function moderateText(
+export async function moderateText(
   targetType: string,
   targetId: string,
   content: string,

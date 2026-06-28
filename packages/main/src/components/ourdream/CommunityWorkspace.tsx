@@ -33,6 +33,7 @@ type Dreamer = {
   followers: number;
   likes: string;
   chats: string;
+  isFollowing?: boolean;
 };
 
 type CommunityPayload = {
@@ -92,6 +93,38 @@ export function CommunityWorkspace() {
     }
     const response = await fetch(`/api/v1/users/${creatorId}/follow`, { method: "POST" });
     setStatus(response.ok ? "Creator followed." : "Sign in to follow creators.");
+  }
+
+  async function toggleFollowDreamer(dreamer: Dreamer) {
+    const next = !dreamer.isFollowing;
+    setDreamers((current) =>
+      current.map((item) =>
+        item.id === dreamer.id
+          ? {
+              ...item,
+              isFollowing: next,
+              followers: Math.max(0, item.followers + (next ? 1 : -1)),
+            }
+          : item,
+      ),
+    );
+    const response = await fetch(`/api/v1/users/${dreamer.id}/follow`, {
+      method: next ? "POST" : "DELETE",
+    });
+    if (!response.ok) {
+      setDreamers((current) =>
+        current.map((item) =>
+          item.id === dreamer.id
+            ? {
+                ...item,
+                isFollowing: dreamer.isFollowing,
+                followers: dreamer.followers,
+              }
+            : item,
+        ),
+      );
+      setStatus("Sign in to follow creators.");
+    }
   }
 
   async function reportDreamer(dreamerId: string) {
@@ -164,7 +197,7 @@ export function CommunityWorkspace() {
                   data-testid="community-dreamer-card"
                   key={dreamer.id}
                 >
-                  <div className="flex items-center gap-3">
+                  <Link className="flex items-center gap-3" href={`/creators/${dreamer.id}`}>
                     {dreamer.image ? (
                       <Image
                         alt=""
@@ -179,23 +212,29 @@ export function CommunityWorkspace() {
                       </div>
                     )}
                     <div className="min-w-0">
-                      <h3 className="truncate text-[15px] font-black uppercase">{dreamer.displayName}</h3>
+                      <h3 className="truncate text-[15px] font-black uppercase hover:underline">
+                        {dreamer.displayName}
+                      </h3>
                       <p className="mt-1 text-[12px] font-medium text-[rgb(170,170,170)]">
                         {dreamer.characters} characters · {dreamer.followers} followers
                       </p>
                     </div>
-                  </div>
+                  </Link>
                   <p className="mt-3 text-[12px] font-medium text-[rgb(170,170,170)]">
                     {dreamer.likes} likes · {dreamer.chats} chats
                   </p>
                   <div className="mt-4 flex gap-2">
                     <button
-                      className="inline-flex h-9 flex-1 items-center justify-center gap-2 rounded-full bg-white text-[12px] font-black text-[rgb(13,13,13)]"
-                      onClick={() => follow(dreamer.id)}
+                      className={`inline-flex h-9 flex-1 items-center justify-center gap-2 rounded-full text-[12px] font-black ${
+                        dreamer.isFollowing
+                          ? "bg-[rgb(36,36,36)] text-white"
+                          : "bg-white text-[rgb(13,13,13)]"
+                      }`}
+                      onClick={() => toggleFollowDreamer(dreamer)}
                       type="button"
                     >
                       <HeartHandshake className="h-4 w-4" />
-                      Follow
+                      {dreamer.isFollowing ? "Following" : "Follow"}
                     </button>
                     <button
                       aria-label={`Report user profile ${dreamer.displayName}`}

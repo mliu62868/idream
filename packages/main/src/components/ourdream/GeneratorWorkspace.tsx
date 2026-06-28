@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import Link from "next/link";
 import {
   Download,
   Flag,
@@ -37,6 +38,13 @@ type ModelConfig = {
   maxCount: number;
 };
 
+type PresetConfig = {
+  id: string;
+  type: "background" | "pose" | "outfit" | "mode";
+  category: string | null;
+  label: string;
+};
+
 type GenerationConfig = {
   entitlements: Record<string, unknown>;
   dreamcoins: { balance: number };
@@ -53,6 +61,7 @@ type GenerationConfig = {
     requiredEntitlement: string;
     models: ModelConfig[];
   };
+  presets?: PresetConfig[];
 };
 
 type GenerationJob = {
@@ -82,6 +91,9 @@ export function GeneratorWorkspace() {
   const [orientation, setOrientation] = useState("4:5");
   const [count, setCount] = useState(1);
   const [model, setModel] = useState("");
+  const [backgroundPresetId, setBackgroundPresetId] = useState("");
+  const [posePresetId, setPosePresetId] = useState("");
+  const [outfitPresetId, setOutfitPresetId] = useState("");
   const [jobs, setJobs] = useState<GenerationJob[]>([]);
   const [media, setMedia] = useState<MediaItem[]>([]);
   const [galleryTab, setGalleryTab] = useState<GalleryTab>("image");
@@ -112,12 +124,18 @@ export function GeneratorWorkspace() {
       ? (config?.image.models.length ?? 0) > 0
       : Boolean(config?.video.enabled);
   const canUsePrompt = Boolean(config?.entitlements.premium_controls);
+  const insufficientBalance =
+    Boolean(config) && estimatedCost > (config?.dreamcoins.balance ?? 0);
+  const presetsOf = useCallback(
+    (type: PresetConfig["type"]) => (config?.presets ?? []).filter((preset) => preset.type === type),
+    [config],
+  );
   const canSubmit =
     !pending &&
     (freeplay || Boolean(characterId)) &&
     Boolean(config) &&
     modeAvailable &&
-    estimatedCost <= (config?.dreamcoins.balance ?? 0);
+    !insufficientBalance;
 
   const refreshConfig = useCallback(async () => {
     try {
@@ -249,6 +267,9 @@ export function GeneratorWorkspace() {
             orientation,
             model: selectedModel?.id,
             seconds: mode === "video" ? 4 : undefined,
+            backgroundPresetId: mode === "image" && backgroundPresetId ? backgroundPresetId : undefined,
+            posePresetId: mode === "image" && posePresetId ? posePresetId : undefined,
+            outfitPresetId: mode === "image" && outfitPresetId ? outfitPresetId : undefined,
           },
         }),
       });
@@ -490,6 +511,32 @@ export function GeneratorWorkspace() {
               </select>
             </label>
 
+            {mode === "image" && (config?.presets?.length ?? 0) > 0 && (
+              <div className="mt-4 grid gap-3">
+                <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">Presets</p>
+                <div className="grid grid-cols-3 gap-2">
+                  <PresetSelect
+                    label="Background"
+                    onChange={setBackgroundPresetId}
+                    options={presetsOf("background")}
+                    value={backgroundPresetId}
+                  />
+                  <PresetSelect
+                    label="Pose"
+                    onChange={setPosePresetId}
+                    options={presetsOf("pose")}
+                    value={posePresetId}
+                  />
+                  <PresetSelect
+                    label="Outfit"
+                    onChange={setOutfitPresetId}
+                    options={presetsOf("outfit")}
+                    value={outfitPresetId}
+                  />
+                </div>
+              </div>
+            )}
+
             <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
               Prompt
               <textarea
@@ -511,6 +558,33 @@ export function GeneratorWorkspace() {
                 value={negativePrompt}
               />
             </label>
+
+            {!canUsePrompt && (
+              <Link
+                className="mt-2 flex items-center justify-between gap-2 rounded-[10px] bg-[rgb(36,36,36)] px-4 py-3 text-[12px] font-semibold text-[rgb(190,190,190)]"
+                href="/upgrade"
+              >
+                <span>Custom prompt &amp; negative prompt are Premium controls.</span>
+                <span className="rounded-full bg-[rgb(255,48,170)] px-3 py-1 text-[11px] font-black text-white">
+                  Upgrade
+                </span>
+              </Link>
+            )}
+
+            {insufficientBalance && (
+              <Link
+                className="mt-3 flex items-center justify-between gap-2 rounded-[10px] border border-[rgb(255,184,112)]/40 bg-[rgb(36,28,18)] px-4 py-3 text-[12px] font-semibold text-[rgb(255,184,112)]"
+                data-testid="generator-insufficient-balance"
+                href="/upgrade"
+              >
+                <span>
+                  Need {estimatedCost} coins · you have {config?.dreamcoins.balance ?? 0}.
+                </span>
+                <span className="rounded-full bg-[rgb(255,48,170)] px-3 py-1 text-[11px] font-black text-white">
+                  Get coins
+                </span>
+              </Link>
+            )}
 
             <button
               className="mt-4 flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[rgb(255,48,170)] text-[14px] font-black text-white disabled:bg-[rgb(64,64,64)] disabled:text-[rgb(150,150,150)]"
@@ -568,13 +642,32 @@ export function GeneratorWorkspace() {
                       </span>
                     </div>
                     {job.status === "failed" && (
-                      <button
-                        className="mt-3 h-9 rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]"
-                        onClick={() => retryJob(job.id)}
-                        type="button"
-                      >
-                        Retry
-                      </button>
+                      <div className="mt-3 flex flex-col gap-2">
+                        <button
+                          className="h-9 w-fit rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]"
+                          onClick={() => retryJob(job.id)}
+                          type="button"
+                        >
+                          Retry
+                        </button>
+                        <p className="text-[12px] font-medium text-[rgb(170,170,170)]">
+                          Provider hiccup — your coins were refunded. Retry is free of new charges
+                          until it succeeds.
+                        </p>
+                      </div>
+                    )}
+                    {job.status === "blocked" && (
+                      <p className="mt-3 text-[12px] font-medium text-[rgb(255,184,112)]">
+                        This request was blocked by our content policy and can&apos;t be retried.{" "}
+                        <Link className="underline" href="/help">
+                          Get help
+                        </Link>
+                      </p>
+                    )}
+                    {job.status === "refunded" && (
+                      <p className="mt-3 text-[12px] font-medium text-[rgb(170,170,170)]">
+                        Coins for unfinished outputs were refunded to your balance.
+                      </p>
                     )}
                   </div>
                 ))}
@@ -677,6 +770,37 @@ function galleryTabLabel(tab: GalleryTab) {
   if (tab === "image") return "Images";
   if (tab === "video") return "Videos";
   return "Liked";
+}
+
+function PresetSelect({
+  label,
+  options,
+  value,
+  onChange,
+}: {
+  label: string;
+  options: PresetConfig[];
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="block text-[11px] font-bold uppercase text-[rgb(114,113,112)]">
+      {label}
+      <select
+        className="mt-2 h-11 w-full rounded-[10px] bg-[rgb(36,36,36)] px-2 text-[12px] font-semibold text-white outline-none disabled:text-[rgb(114,113,112)]"
+        disabled={options.length === 0}
+        onChange={(event) => onChange(event.target.value)}
+        value={value}
+      >
+        <option value="">None</option>
+        {options.map((preset) => (
+          <option key={preset.id} value={preset.id}>
+            {preset.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
 }
 
 function MediaPreview({

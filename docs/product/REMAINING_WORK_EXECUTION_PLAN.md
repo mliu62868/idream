@@ -176,11 +176,13 @@ Current local result on 2026-06-26:
 
 This confirms the PM audit finding: current demo data is polluted by e2e/test fixtures and should not be used for a customer-facing walkthrough.
 
-### C. Create Experience Depth
+### C. Create Experience Depth — ✅ 已落地（2026-06-28）
 
 Owner: frontend/product.
 
 Goal: Create matches the reference product promise more closely and feels like a guided character builder.
+
+**落地**：`CreateWorkspace.tsx` 重写为 5 步向导（Identity→Appearance→Personality→Preview→Publish），保留既有 draft API 契约（createDraft→分步 PATCH(step)→preview→submit）；每步推进 autosave 到 draft，并以 localStorage 持久化向导状态实现刷新续编（draft API 无 GET，故走客户端持久化）；Preview 步有 idle/generating/complete/failed 态；Publish 区分 private(approved)/unlisted/public(pending_review，文案明确「公开角色经审核后上线」）；新增 18+/禁止内容校验文案与 name/age 校验。E2E (`ui-workflows.e2e.ts`) 改写为走多步流程。
 
 Required work:
 
@@ -199,11 +201,13 @@ Acceptance:
 - Submit public character and see pending review.
 - E2E covers success, validation failure, and preview failure.
 
-### D. Generate Experience Depth
+### D. Generate Experience Depth — ✅ 已落地（2026-06-28）
 
 Owner: frontend/product/backend.
 
 Goal: Generate supports the practical controls users expect from the reference product.
+
+**落地**：内置预设（background/pose/outfit）在 `GeneratorWorkspace` 以选择器暴露并真实生效——`createGenerationJob` 经 `resolvePresetPromptFragment` 把选中预设（仅 built_in 或本人所有，含归属校验）折进 prompt（image-generation-service.test 覆盖正/反例）；premium prompt/negative-prompt 锁定时给 `/upgrade` 升级 CTA；余额不足显式可操作提示 + 购币入口；blocked（不可重试 + Get help）/failed（退款已返还 + 免费重试）/refunded 文案明确。Gallery（like/delete/download/report/filter/empty）此前已完整；Video Beta 维持禁用。**未做（YAGNI）**：媒体批量操作 UI、Collections UI、预设创建 UI、画廊排序/全文搜索——后端能力在但受控 beta 低价值。
 
 Required work:
 
@@ -276,11 +280,13 @@ Future public-launch acceptance:
 - Age verification probe returns a Go.cam provider session with HTTPS verification URL.
 - Known blocked fixture is blocked through the real provider path.
 
-### G. Feed And Community Productization
+### G. Feed And Community Productization — ✅ 已落地（2026-06-28，含明确取舍）
 
 Owner: product/frontend/backend.
 
 Goal: Feed and Community stop looking like a catalog mirror and become credible discovery surfaces.
+
+**落地**：新增创作者公开主页 `GET /api/v1/creators/:id` + 路由 `/creators/[id]`（displayName/头像/统计 + 其 public+approved 角色网格 + isFollowing/isSelf），Community dreamer 卡名链入该页；`characterDTO` 修正为带真实 `creatorName`（include creator User），Feed 卡片加「by {creatorName}」链接；follow 状态持久（已有）+ UI 可切换（Community dreamer 卡 + 创作者主页乐观更新），community dreamers 回 `isFollowing`；Feed 加载/空态补齐。后端测试覆盖 creator profile + follow 状态 + 404；E2E 扩展 community→creator 导航 + follow 切换。**明确取舍（YAGNI / 计划允许"暂隐"）**：Collections（schema/API 在，UI 暂隐返回空）、remix lineage 追踪表、share URL 持久化、feed 多 item 类型与个性化排序——受控 beta 不做，未来公开上线再开。
 
 Required work:
 

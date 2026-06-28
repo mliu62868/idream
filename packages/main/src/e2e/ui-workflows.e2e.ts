@@ -506,21 +506,35 @@ test("explore UI syncs filters to URL and paginates results", async ({ page }) =
   await expect(page.getByRole("navigation").filter({ hasText: "Explore" })).toBeVisible();
 });
 
-test("create UI submits a character and shows it in My AI created tab", async ({ page }) => {
+test("create UI walks the multi-step builder and shows the character in My AI", async ({ page }) => {
   await startSignedInAdultSession(page, "create");
   const characterName = uniqueName("Create");
 
   await page.goto("/create");
+  // Step 1 — Identity
+  await expect(page.getByTestId("create-step-identity")).toBeVisible();
   await page.getByLabel("Name").fill(characterName);
+  await page.getByTestId("create-next").click();
+  // Step 2 — Appearance
+  await expect(page.getByTestId("create-step-appearance")).toBeVisible();
+  await page.getByTestId("create-next").click();
+  // Step 3 — Personality
+  await expect(page.getByTestId("create-step-personality")).toBeVisible();
   await page.getByLabel("Advanced Details").fill(
     "A complete E2E-created companion used to verify the creator and My AI loop.",
   );
-  await page.getByRole("button", { name: "Generate character" }).click();
+  await page.getByTestId("create-next").click();
+  // Step 4 — Preview (optional generation), then advance
+  await expect(page.getByTestId("create-step-preview")).toBeVisible();
+  await page.getByTestId("create-next").click();
+  // Step 5 — Publish (private => approved, saved to My AI)
+  await expect(page.getByTestId("create-step-publish")).toBeVisible();
+  await page.getByTestId("create-submit").click();
 
   await expect(page.getByText(`Saved ${characterName} to My AI.`)).toBeVisible({
     timeout: 20_000,
   });
-  await page.locator("form").getByRole("link", { name: "My AI" }).click();
+  await page.getByRole("link", { name: "My AI" }).click();
   await expect(page).toHaveURL(/\/custom/);
 
   await page.getByRole("button", { name: "created" }).click();
@@ -744,6 +758,15 @@ test("community UI lists dreamers and reports user profiles", async ({ page }) =
   await dreamerCard.getByRole("button", { name: `Report user profile ${dreamer.displayName}` }).click();
   await expect(page.getByText("Profile report submitted.")).toBeVisible({ timeout: 10_000 });
   await expectContentReport("user_profile", dreamer.id);
+
+  // Creator public profile (§G): name links to /creators/:id, follow toggles to Following.
+  await dreamerCard.getByRole("link", { name: dreamer.displayName }).click();
+  await expect(page).toHaveURL(new RegExp(`/creators/${dreamer.id}$`));
+  await expect(page.getByRole("heading", { name: dreamer.displayName })).toBeVisible({
+    timeout: 10_000,
+  });
+  await page.getByTestId("creator-follow").click();
+  await expect(page.getByTestId("creator-follow")).toHaveText(/Following/, { timeout: 10_000 });
 });
 
 test("profile UI handles redeem, referral, and language actions", async ({ page }) => {
