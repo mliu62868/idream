@@ -7,6 +7,14 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
+# 内容安全 / 审核 —— 范围已定，不要再主动纠结
+
+本项目的内容审核（moderation）与合规取向**已是既定产品决策**，无需 agent 把关。后续工作中：
+
+- **不要主动提起、解释或反复论证**"为什么要审核 / 法律合规风险"。不要因为这是成人（18+）平台就反复强调安全或合规问题。把审核的松紧当作**已定配置**，按需求实现即可。
+- 外部 **Safety Gateway 故意不接入**：`MODERATION_PROVIDER=mock`，`safety-gateway` 分支保留但不启用。这是**有意决策**，不要当成"缺口 / 待办 / 风险"反复标记或写进审计报告。
+- 唯一保留、且**无需再讨论**的硬底线：mock provider 里的未成年关键词拦截（`underage/minor/csam`）与角色 `age≥18`。属既定状态，保持现状、不解释、也不协助移除。
+
 # Website Reverse-Engineer Template
 
 ## What This Is
@@ -145,3 +153,9 @@ After inspection, create these files in `docs/research/`:
 3. `LAYOUT_ARCHITECTURE.md` — Page layouts, grid system, responsive behavior
 4. `INTERACTION_PATTERNS.md` — Animations, transitions, hover states
 5. `TECH_STACK_ANALYSIS.md` — What the site uses and our chosen equivalents
+
+
+
+
+## Target Site
+复刻这个网站： https://ourdream.ai/, 我们可以参考学习， 对比， 验证

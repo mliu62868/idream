@@ -11,6 +11,8 @@ export interface ChatChunk {
 
 export interface ChatModel {
   stream(input: {
+    /** Real provider model resolved from the entitlement tier (policy.modelForTier). */
+    model?: string;
     messages: Array<{ role: "system" | "user" | "assistant"; content: string }>;
     characterName?: string;
   }): AsyncIterable<ChatChunk>;
@@ -50,13 +52,16 @@ class OpenAIChatModel implements ChatModel {
   ) {}
 
   async *stream(input: Parameters<ChatModel["stream"]>[0]): AsyncIterable<ChatChunk> {
+    // Per-turn model from policy (tier-resolved) wins; fall back to the deploy
+    // default so an un-tiered config still streams (design P0-D).
+    const model = input.model || this.model;
     const res = await fetch(chatCompletionEndpoint(this.baseUrl), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
       },
-      body: JSON.stringify({ model: this.model, messages: input.messages, stream: true }),
+      body: JSON.stringify({ model, messages: input.messages, stream: true }),
     });
     if (!res.ok || !res.body) {
       throw new Error(`Chat model HTTP ${res.status}: ${await res.text().catch(() => "")}`);
@@ -170,7 +175,30 @@ function requireProviderEnv(
   return value;
 }
 
+// SPEC: refuse to boot the chat service on mock providers in production, mirroring
+// the main/gen provider guards. INTENT: launch-readiness CLI already flags mock chat,
+// but a deploy must also fail closed in-process so a misconfig can't quietly serve
+// templated "Mock … reply" text or skip output moderation. INVARIANT: APP_ENV is the
+// single production switch shared across services.
+function assertProductionChatProvidersReady() {
+  if (process.env.APP_ENV !== "production") return;
+
+  const mockProviders = [
+    ["CHAT_MODEL_PROVIDER", env.CHAT_MODEL_PROVIDER],
+    ["MODERATION_PROVIDER", env.MODERATION_PROVIDER],
+  ]
+    .filter(([, provider]) => provider === "mock")
+    .map(([name]) => name);
+
+  if (mockProviders.length > 0) {
+    throw new Error(
+      `Production requires non-mock chat providers: ${mockProviders.join(", ")}`,
+    );
+  }
+}
+
 export function createProviders(): ChatProviders {
+  assertProductionChatProvidersReady();
   const moderation = createModerationProvider();
 
   switch (env.CHAT_MODEL_PROVIDER) {

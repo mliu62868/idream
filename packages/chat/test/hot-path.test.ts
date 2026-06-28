@@ -119,12 +119,18 @@ describe("chat hot path (P0-3)", () => {
     expect(versions.at(-1)?.attempt).toBe(2);
   });
 
-  it("blocks unsafe input: no generation enqueued, user msg blocked", async () => {
+  it("blocks unsafe input: status=blocked, no streamUrl, no generation enqueued (P0-B)", async () => {
     const session = await createSession({ userId: USER, characterId: CHAR }, { prisma });
     const res = await sendMessage(
       { userId: USER, sessionId: session.id, content: "this mentions csam content" },
       { prisma },
     );
+    // The send response itself declares the block — no empty stream to await.
+    expect(res.status).toBe("blocked");
+    expect(res.streamUrl).toBeNull();
+    expect(res.safety?.layer).toBe("input");
+    expect(res.safety?.policyCode).toBeTruthy();
+
     const assistant = await prisma.message.findUnique({ where: { id: res.assistantMessageId } });
     expect(assistant?.status).toBe("blocked");
     const handled = await drainQueue(CHAT_QUEUES.generate, async () => {});

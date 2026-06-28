@@ -77,6 +77,51 @@ describe("mock providers", () => {
     );
   });
 
+  it("rejects production startup when IMAGE_PROVIDER is still mock", async () => {
+    vi.resetModules();
+    process.env = {
+      ...oldEnv,
+      APP_ENV: "production",
+      DATABASE_URL: "postgresql://postgres:postgres@localhost:5433/idream",
+      BETTER_AUTH_URL: "https://ourdream.ai",
+      BETTER_AUTH_SECRET: "production-secret-please-change-0123456789abcdef",
+      INTERNAL_TOKEN: "production-internal-token-0123456789",
+      CRON_SECRET: "production-cron-token-0123456789",
+      CHAT_SERVICE_URL: "https://chat.internal.example",
+      CHAT_BFF_SIGNING_SECRET: "production-bff-secret-0123456789abcdef",
+      // All launch-critical providers are real except image — image must still be
+      // rejected so main's finalizer cannot write placeholder PNGs in production.
+      CHAT_PROVIDER: "pipeline",
+      PIPELINE_API_URL: "https://pipeline.internal.example.com/v1",
+      PIPELINE_API_TOKEN: "production-pipeline-token-0123456789",
+      IMAGE_PROVIDER: "mock",
+      VOICE_PROVIDER: "pipeline",
+      MODERATION_PROVIDER: "safety-gateway",
+      MODERATION_SERVICE_URL: "https://safety.internal.example.com",
+      MODERATION_API_KEY: "production-moderation-key-0123456789",
+      PAYMENT_PROVIDER: "btcpay",
+      BTCPAY_BASE_URL: "https://btcpay.example.com",
+      BTCPAY_STORE_ID: "store-1",
+      BTCPAY_API_KEY: "btcpay-api-key-0123456789",
+      BTCPAY_WEBHOOK_SECRET: "btcpay-webhook-secret-0123456789",
+      BLOB_PROVIDER: "r2",
+      BLOB_ENDPOINT: "https://account.r2.cloudflarestorage.com",
+      BLOB_BUCKET: "private-media",
+      BLOB_ACCESS_KEY_ID: "access-key",
+      BLOB_SECRET_ACCESS_KEY: "secret-key",
+      AGE_VERIFICATION_PROVIDER: "gocam",
+      AGE_VERIFY_SERVICE_URL: "https://age.internal.example.com",
+      AGE_VERIFY_API_KEY: "age-api-key-0123456789",
+      AGE_VERIFY_WEBHOOK_SECRET: "age-webhook-secret-0123456789",
+      AGE_VERIFY_LINK_BACK_URL: "https://ourdream.ai/age-verification/return",
+      AGE_VERIFY_CALLBACK_URL: "https://ourdream.ai/api/v1/age-verification/webhooks/gocam",
+    };
+
+    await expect(import("./index")).rejects.toThrow(
+      /Production requires non-mock providers:.*IMAGE_PROVIDER/,
+    );
+  });
+
   it("rejects production startup when Better Auth uses a localhost origin", async () => {
     vi.resetModules();
     process.env = {

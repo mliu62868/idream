@@ -3,6 +3,7 @@
 // EXAMPLE: resolvePolicy({modelTier:"deluxe",...}) → { model, maxContextMessages,
 //          maxMemories, rateLimitPerHour, voiceEnabled, allowMemoryWrite, ... }
 import type { ChatEntitlementView } from "./db.js";
+import { env } from "./env.js";
 
 export interface EntitlementSnapshot {
   modelTier: string;
@@ -33,12 +34,7 @@ export function resolvePolicy(
 ): ChatPolicy {
   const tier = ent.modelTier;
   const isPaid = tier === "premium" || tier === "deluxe";
-  const model =
-    tier === "deluxe"
-      ? "pi-agent-local-plus"
-      : tier === "premium"
-        ? "pi-agent-local-plus"
-        : "pi-agent-local-free";
+  const model = modelForTier(tier);
 
   const memoryAllowed = opts.memoryEnabled;
   return {
@@ -53,6 +49,18 @@ export function resolvePolicy(
     allowRelationshipPatch: memoryAllowed,
     outputModerationRequired: true,
   };
+}
+
+/**
+ * Map an entitlement tier to the REAL provider model (design P0-D). Centralized
+ * here so the provider never needs to know product tiers. Deluxe/Premium get the
+ * configured premium model; Free gets the base model. Single-model deploys leave
+ * the CHAT_MODEL_* aliases unset, so every tier resolves to CHAT_MODEL_NAME.
+ */
+export function modelForTier(tier: string): string {
+  if (tier === "deluxe") return env.CHAT_MODEL_DELUXE;
+  if (tier === "premium") return env.CHAT_MODEL_PREMIUM;
+  return env.CHAT_MODEL_FREE;
 }
 
 /** Normalize a Prisma entitlement view row (nullable for unknown users) → snapshot. */

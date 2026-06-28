@@ -1,10 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowLeft, Flag, Send } from "lucide-react";
+import { ArrowLeft, Send } from "lucide-react";
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { AppSidebar } from "./AppSidebar";
 import { MobileBottomNav } from "./MobileBottomNav";
+import { ChatHeaderControls } from "./chat/ChatHeaderControls";
+import { ChatSessionListDrawer } from "./chat/ChatSessionListDrawer";
+import { MemoryPanel } from "./chat/MemoryPanel";
+import { MessageActions } from "./chat/MessageActions";
 
 type ChatMessage = {
   id: string;
@@ -16,6 +20,8 @@ type ChatMessage = {
 type ChatSession = {
   id: string;
   title: string | null;
+  characterId?: string;
+  memoryEnabled?: boolean;
   messages: ChatMessage[];
   character: { name: string };
 };
@@ -26,7 +32,8 @@ type ChatPayload = {
     userMessage?: ChatMessage;
     assistant?: ChatMessage;
     assistantMessageId?: string;
-    streamUrl?: string;
+    streamUrl?: string | null;
+    safety?: { layer: "input" | "output"; policyCode?: string };
   };
 };
 
@@ -36,6 +43,13 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   const [content, setContent] = useState("");
   const [pending, setPending] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  const [quotaReached, setQuotaReached] = useState(false);
+  const [characterId, setCharacterId] = useState<string | null>(null);
+  const [memoryEnabled, setMemoryEnabled] = useState(true);
+  const [memoryPending, setMemoryPending] = useState(false);
+  const [sessionsOpen, setSessionsOpen] = useState(false);
+  const [memoryOpen, setMemoryOpen] = useState(false);
+  const [relationshipRefreshKey, setRelationshipRefreshKey] = useState(0);
   const streamSources = useRef<Map<string, EventSource>>(new Map());
 
   useEffect(() => {
@@ -69,6 +83,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     const text = content.trim();
     if (!text || pending) return;
     setStatus(null);
+    setQuotaReached(false);
     setContent("");
     setPending(true);
     try {
@@ -77,6 +92,13 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ content: text }),
       });
+      // Quota exhausted: keep the user's input and surface the upgrade path (P0-C).
+      if (response.status === 402) {
+        setQuotaReached(true);
+        setStatus("Daily free message limit reached.");
+        setContent(text);
+        return;
+      }
       if (!response.ok) {
         setStatus("Message failed to send. Please try again.");
         setContent(text);
@@ -92,15 +114,20 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
         return;
       }
 
-      if (streamUrl) {
+      // Blocked input (P0-B): the assistant turn is a terminal safety notice with no
+      // stream. Render it in place; do NOT open an EventSource that would never fill.
+      if (assistant.status === "blocked" || !streamUrl) {
+        setMessages((current) => [...current, userMessage, assistant]);
+        if (assistant.status === "blocked") {
+          setStatus("That message was blocked by our safety policy.");
+        }
+      } else {
         setMessages((current) => [
           ...current,
           userMessage,
           { ...assistant, content: "" },
         ]);
         streamAssistant(streamUrl, assistant.id, assistant.content);
-      } else {
-        setMessages((current) => [...current, userMessage, assistant]);
       }
     } finally {
       setPending(false);
@@ -134,6 +161,77 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   function applySession(session: ChatSession) {
     setTitle(session.title ?? session.character.name);
     setMessages(session.messages);
+    if (session.characterId) setCharacterId(session.characterId);
+    if (typeof session.memoryEnabled === "boolean") setMemoryEnabled(session.memoryEnabled);
+  }
+
+  // SPEC: Flip long-term memory for this session; optimistic, reconciled from the
+  //       updated session row the BFF returns (raw, not {ok,data}).
+  async function toggleMemory() {
+    if (memoryPending) return;
+    const next = !memoryEnabled;
+    setMemoryPending(true);
+    try {
+      const response = await fetch(`/api/v1/chat/sessions/${id}/memory`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ memoryEnabled: next }),
+      });
+      if (!response.ok) {
+        setStatus("Couldn't update memory. Please try again.");
+        return;
+      }
+      const row = (await response.json()) as { memoryEnabled?: boolean };
+      setMemoryEnabled(typeof row.memoryEnabled === "boolean" ? row.memoryEnabled : next);
+    } finally {
+      setMemoryPending(false);
+    }
+  }
+
+  async function deleteMessage(messageId: string) {
+    setStatus(null);
+    const response = await fetch(`/api/v1/messages/${encodeURIComponent(messageId)}`, {
+      method: "DELETE",
+    });
+    if (response.ok) {
+      setMessages((current) => current.filter((message) => message.id !== messageId));
+    } else {
+      setStatus("Couldn't delete the message. Please try again.");
+    }
+  }
+
+  // SPEC: Regenerate an assistant turn — POST returns a fresh attempt id + streamUrl;
+  //       swap the bubble to that id, clear it, and reuse streamAssistant() so the
+  //       new reply streams in identically to a normal turn.
+  async function regenerate(messageId: string) {
+    if (pending) return;
+    setStatus(null);
+    const response = await fetch(
+      `/api/v1/messages/${encodeURIComponent(messageId)}/regenerate`,
+      { method: "POST" },
+    );
+    if (!response.ok) {
+      setStatus("Couldn't regenerate. Please try again.");
+      return;
+    }
+    const payload = (await response.json()) as {
+      assistantMessageId?: string;
+      streamUrl?: string | null;
+    };
+    const newId = payload.assistantMessageId;
+    const streamUrl = payload.streamUrl;
+    if (!newId || !streamUrl) {
+      setStatus("Couldn't regenerate. Please try again.");
+      return;
+    }
+    setMessages((current) =>
+      current.map((message) =>
+        message.id === messageId
+          ? { ...message, id: newId, content: "", status: "generating" }
+          : message,
+      ),
+    );
+    streamAssistant(streamUrl, newId, "");
   }
 
   function resumePendingStreams(loadedMessages: ChatMessage[]) {
@@ -229,35 +327,41 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
             Explore
           </Link>
           <h1 className="text-[32px] font-black uppercase leading-9">{title}</h1>
+          <ChatHeaderControls
+            characterId={characterId}
+            memoryEnabled={memoryEnabled}
+            memoryPending={memoryPending}
+            relationshipRefreshKey={relationshipRefreshKey}
+            onToggleMemory={toggleMemory}
+            onOpenSessions={() => setSessionsOpen(true)}
+            onOpenMemory={() => setMemoryOpen(true)}
+          />
           <div className="mt-6 flex min-h-[55vh] flex-1 flex-col gap-3 rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-4">
-            {messages.map((message) => (
-              <div
-                aria-label={message.role === "user" ? "Your message" : "Assistant message"}
-                className={`group relative max-w-[78%] rounded-[16px] px-4 py-3 pr-11 text-[14px] leading-6 ${
-                  message.role === "user"
-                    ? "ml-auto bg-white text-[rgb(13,13,13)]"
-                    : "bg-[rgb(36,36,36)] text-white"
-                }`}
-                data-message-id={message.id}
-                data-testid={`chat-message-${message.role}`}
-                key={message.id}
-              >
-                {message.content}
-                <button
-                  aria-label="Report message"
-                  className={`absolute right-2 top-2 grid h-7 w-7 place-items-center rounded-full opacity-70 transition-opacity hover:opacity-100 ${
-                    message.role === "user"
-                      ? "bg-black/10 text-[rgb(13,13,13)]"
-                      : "bg-black/30 text-white"
+            {messages.map((message) => {
+              const isUser = message.role === "user";
+              return (
+                <div
+                  aria-label={isUser ? "Your message" : "Assistant message"}
+                  className={`group relative max-w-[78%] rounded-[16px] px-4 py-3 text-[14px] leading-6 ${
+                    isUser
+                      ? "ml-auto bg-white text-[rgb(13,13,13)] pr-[76px]"
+                      : "bg-[rgb(36,36,36)] text-white pr-[104px]"
                   }`}
-                  onClick={() => reportMessage(message.id)}
-                  title="Report message"
-                  type="button"
+                  data-message-id={message.id}
+                  data-testid={`chat-message-${message.role}`}
+                  key={message.id}
                 >
-                  <Flag className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            ))}
+                  {message.content}
+                  <MessageActions
+                    isUser={isUser}
+                    pending={pending}
+                    onReport={() => reportMessage(message.id)}
+                    onDelete={() => deleteMessage(message.id)}
+                    onRegenerate={isUser ? undefined : () => regenerate(message.id)}
+                  />
+                </div>
+              );
+            })}
           </div>
           <form className="mt-4 flex gap-2" onSubmit={submit}>
             <input
@@ -279,11 +383,34 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
           {status ? (
             <p className="mt-3 text-[13px] font-semibold text-[#ff7ac8]" role="status">
               {status}
+              {quotaReached ? (
+                <>
+                  {" "}
+                  <Link className="underline hover:text-white" href="/upgrade">
+                    Upgrade for unlimited messages
+                  </Link>
+                  .
+                </>
+              ) : null}
             </p>
           ) : null}
         </section>
       </div>
       <MobileBottomNav activeHref="/chat" />
+      <ChatSessionListDrawer
+        open={sessionsOpen}
+        onClose={() => setSessionsOpen(false)}
+        currentSessionId={id}
+      />
+      <MemoryPanel
+        open={memoryOpen}
+        onClose={() => setMemoryOpen(false)}
+        characterId={characterId}
+        memoryEnabled={memoryEnabled}
+        memoryPending={memoryPending}
+        onToggleMemory={toggleMemory}
+        onRelationshipReset={() => setRelationshipRefreshKey((key) => key + 1)}
+      />
     </main>
   );
 }

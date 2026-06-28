@@ -16,6 +16,9 @@ import { prisma } from "@/server/lib/db";
 
 const HOP_BY_HOP = new Set(["cookie", "host", "connection", "content-length", "transfer-encoding"]);
 
+/** Shown in place of a generated reply when input moderation blocks the turn. */
+const BLOCKED_NOTICE = "I can’t help with that request.";
+
 export function chatServiceEnabled(): boolean {
   return Boolean(env.CHAT_SERVICE_URL);
 }
@@ -116,14 +119,25 @@ async function adaptForFrontend(
     const raw = (await upstream.json()) as {
       userMessageId?: string;
       assistantMessageId?: string;
-      streamUrl?: string;
+      streamUrl?: string | null;
+      status?: "generating" | "blocked";
+      safety?: { layer: "input" | "output"; policyCode?: string };
     };
     const content = safeContent(reqBody);
+    const blocked = raw.status === "blocked";
+    // Blocked input carries no stream — the assistant turn is a terminal safety
+    // notice the UI shows in place (design P0-B). Never hand the client a streamUrl.
     return envelope(
       {
         userMessage: { id: raw.userMessageId, role: "user", content },
-        assistant: { id: raw.assistantMessageId, role: "assistant", content: "" },
-        streamUrl: raw.streamUrl,
+        assistant: {
+          id: raw.assistantMessageId,
+          role: "assistant",
+          content: blocked ? BLOCKED_NOTICE : "",
+          status: raw.status ?? "generating",
+        },
+        streamUrl: blocked ? null : (raw.streamUrl ?? null),
+        ...(raw.safety ? { safety: raw.safety } : {}),
       },
       upstream.status,
     );

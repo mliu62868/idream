@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtemp, rm, writeFile, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { mkdir } from "node:fs/promises";
 import { appendLine, chatFsPaths } from "./chat-fs.js";
-import { retrieveMemories } from "./retrieval.js";
+import { readBoundaries, retrieveMemories } from "./retrieval.js";
 
 let dir: string;
 const U = "u1";
@@ -41,11 +42,26 @@ async function fakeIgrep(stdout: string, sleepSec = 0): Promise<string> {
   return bin;
 }
 
+describe("readBoundaries (P0-G: non-degradable)", () => {
+  it("reads the global boundaries in full", async () => {
+    expect(await readBoundaries(U)).toEqual(["Do not discuss work."]);
+  });
+
+  it("returns [] when the boundaries file is absent (ENOENT)", async () => {
+    expect(await readBoundaries("no_such_user")).toEqual([]);
+  });
+
+  it("fails closed: a genuine read error (not ENOENT) propagates", async () => {
+    // Replace the boundaries FILE path with a directory → readFile throws EISDIR.
+    await mkdir(path.join(dir, ...chatFsPaths.boundaries("u_eisdir")), { recursive: true });
+    await expect(readBoundaries("u_eisdir")).rejects.toThrow();
+  });
+});
+
 describe("retrieveMemories", () => {
-  it("recency (default): returns boundaries + the most recent <= max memories", async () => {
+  it("recency (default): returns the most recent <= max memories", async () => {
     const r = await retrieveMemories({ userId: U, characterId: C, query: "anything", max: 2 });
-    expect(r.boundaries).toEqual(["Do not discuss work."]);
-    expect(r.memories).toEqual(["User is a teacher who loves hiking.", "User enjoys jazz music."]);
+    expect(r).toEqual(["User is a teacher who loves hiking.", "User enjoys jazz music."]);
   });
 
   it("igrep: ranks by relevance, intersected with authoritative memories", async () => {
@@ -55,11 +71,10 @@ describe("retrieveMemories", () => {
     process.env.CHAT_MEMORY_RETRIEVAL = "igrep";
     // max=2 so the igrep ranking fully determines the result (no recency backfill).
     const r = await retrieveMemories({ userId: U, characterId: C, query: "music", max: 2 });
-    expect(r.memories[0]).toBe("User enjoys jazz music."); // igrep relevance owns the top slot
-    expect(r.memories).toContain("User likes being called Mei.");
+    expect(r[0]).toBe("User enjoys jazz music."); // igrep relevance owns the top slot
+    expect(r).toContain("User likes being called Mei.");
     // a line igrep never surfaced (hiking) is absent when max < total
-    expect(r.memories).not.toContain("User is a teacher who loves hiking.");
-    expect(r.boundaries).toEqual(["Do not discuss work."]);
+    expect(r).not.toContain("User is a teacher who loves hiking.");
   });
 
   it("igrep mode backfills with recency so it never drops recent context", async () => {
@@ -68,9 +83,9 @@ describe("retrieveMemories", () => {
     process.env.IGREP_BIN = await fakeIgrep(`{"ref":"memory.md:1-3","score":0.5,"content":"${content}"}\n`);
     process.env.CHAT_MEMORY_RETRIEVAL = "igrep";
     const r = await retrieveMemories({ userId: U, characterId: C, query: "x", max: 2 });
-    expect(r.memories[0]).toBe("User likes being called Mei."); // igrep hit first
-    expect(r.memories[1]).toBe("User enjoys jazz music."); // most-recent backfill
-    expect(r.memories).toHaveLength(2);
+    expect(r[0]).toBe("User likes being called Mei."); // igrep hit first
+    expect(r[1]).toBe("User enjoys jazz music."); // most-recent backfill
+    expect(r).toHaveLength(2);
   });
 
   it("igrep timeout → degrades to recency", async () => {
@@ -78,13 +93,13 @@ describe("retrieveMemories", () => {
     process.env.CHAT_MEMORY_RETRIEVAL = "igrep";
     process.env.CHAT_MEMORY_RETRIEVAL_TIMEOUT_MS = "150";
     const r = await retrieveMemories({ userId: U, characterId: C, query: "music", max: 2 });
-    expect(r.memories).toEqual(["User is a teacher who loves hiking.", "User enjoys jazz music."]);
+    expect(r).toEqual(["User is a teacher who loves hiking.", "User enjoys jazz music."]);
   });
 
   it("igrep empty/garbage output → degrades to recency", async () => {
     process.env.IGREP_BIN = await fakeIgrep("not json\n\n");
     process.env.CHAT_MEMORY_RETRIEVAL = "igrep";
     const r = await retrieveMemories({ userId: U, characterId: C, query: "music", max: 2 });
-    expect(r.memories).toEqual(["User is a teacher who loves hiking.", "User enjoys jazz music."]);
+    expect(r).toEqual(["User is a teacher who loves hiking.", "User enjoys jazz music."]);
   });
 });

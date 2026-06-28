@@ -17,6 +17,7 @@ import { appendLine, chatFsPaths } from "./chat-fs.js";
 import { recordOutbox, scheduleOutboxDelivery } from "./outbox.js";
 import { createId } from "./id.js";
 import { enqueue } from "./queue.js";
+import { companionRole } from "@idream/shared";
 import {
   CHAT_QUEUES,
   CHAT_TO_MAIN_EVENTS,
@@ -63,6 +64,7 @@ export async function processGenerate(
   let seq = 0;
   try {
     for await (const chunk of providers.chat.stream({
+      model: context.policy.model,
       characterName: context.persona.name,
       messages: modelMessages,
     })) {
@@ -116,19 +118,23 @@ export async function processGenerate(
 
   // Agent trace (separate fact). Append-only; raw content kept here, PG holds the
   // user-visible version. Idempotent-ish: one append per attempt.
-  await appendLine(chatFsPaths.sessionLog(session.userId, session.id), JSON.stringify({
-    ts: new Date().toISOString(),
-    kind: "chat.turn",
-    attempt: payload.attempt,
-    assistantMessageId: payload.assistantMessageId,
-    userMessageId: payload.userMessageId,
-    system: modelMessages.find((m) => m.role === "system")?.content ?? "",
-    injectedMemories: context.longTermMemories,
-    boundaries: context.boundaries,
-    rawOutput: content,
-    moderation,
-    model,
-  }));
+  // No-memory / incognito sessions write NO long-term agent trace (design P0-E):
+  // the PG message history is the only record and is cleared with the session.
+  if (session.memoryEnabled) {
+    await appendLine(chatFsPaths.sessionLog(session.userId, session.id), JSON.stringify({
+      ts: new Date().toISOString(),
+      kind: "chat.turn",
+      attempt: payload.attempt,
+      assistantMessageId: payload.assistantMessageId,
+      userMessageId: payload.userMessageId,
+      system: modelMessages.find((m) => m.role === "system")?.content ?? "",
+      injectedMemories: context.longTermMemories,
+      boundaries: context.boundaries,
+      rawOutput: content,
+      moderation,
+      model,
+    }));
+  }
 
   // Derive long-term memory off the hot path (reads jsonl + re-checks PG status).
   if (!blocked && session.memoryEnabled) {
@@ -192,9 +198,9 @@ async function finalize(input: FinalizeInput): Promise<void> {
         },
       });
 
-      // usage++ (period = calendar month)
-      const periodStart = startOfMonth();
-      const periodEnd = startOfNextMonth();
+      // usage++ (period = UTC day; free quota is daily, design P0-C)
+      const periodStart = startOfUtcDay();
+      const periodEnd = startOfNextUtcDay();
       await tx.chatUsage.upsert({
         where: { userId_periodStart: { userId: session.userId, periodStart } },
         update: { messagesUsed: { increment: 1 } },
@@ -272,11 +278,12 @@ function buildModelMessages(
 ): Array<{ role: "system" | "user" | "assistant"; content: string }> {
   const persona = context.persona;
   const system = [
-    `You are ${persona.name}, an adult ${persona.relationship ?? "AI companion"} in a private companion chat.`,
+    `You are ${persona.name}, an adult ${companionRole(persona.relationship)} in a private companion chat.`,
     "Stay in persona; honor the user's stated preferences and boundaries; keep continuity.",
     "Do not claim to remember facts not present in the supplied context.",
     persona.systemPrompt ?? persona.description,
     context.sessionSummary ? `Session summary: ${context.sessionSummary}` : "",
+    relationshipLine(context.relationship),
     context.boundaries.length ? `Boundaries (highest priority):\n${context.boundaries.map((b) => `- ${b}`).join("\n")}` : "",
     context.longTermMemories.length ? `Long-term memories:\n${context.longTermMemories.map((m) => `- ${m}`).join("\n")}` : "",
   ]
@@ -287,6 +294,21 @@ function buildModelMessages(
     { role: "system", content: system },
     ...context.recentMessages.map((m) => ({ role: m.role, content: m.content })),
   ];
+}
+
+// Qualitative relationship line for the system prompt (P1-B). Never numbers/scores
+// — just tone + the narrative summary so replies reflect the bond's progression.
+const STAGE_TONE: Record<string, string> = {
+  new: "You have just met the user; be warm but still getting to know them.",
+  familiar: "You and the user are becoming familiar; reference shared history naturally.",
+  close: "You and the user are close; speak with comfortable intimacy and continuity.",
+  committed: "You and the user share a deep, committed bond; speak with trust and devotion.",
+};
+function relationshipLine(relationship: BuiltContext["relationship"]): string {
+  if (!relationship) return "";
+  const tone = STAGE_TONE[relationship.stage] ?? STAGE_TONE.new;
+  const summary = relationship.summary.trim();
+  return `Relationship: ${tone}${summary ? `\nWhat you remember of the bond:\n${summary}` : ""}`;
 }
 
 function buildSummary(context: BuiltContext, assistantContent: string): string {
@@ -305,11 +327,11 @@ function estimateTokens(text: string): number {
 function clamp(value: string, max: number): string {
   return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
 }
-function startOfMonth(): Date {
+function startOfUtcDay(): Date {
   const now = new Date();
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 }
-function startOfNextMonth(): Date {
+function startOfNextUtcDay(): Date {
   const now = new Date();
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
 }

@@ -1,5 +1,27 @@
-import { describe, expect, it } from "vitest";
-import { resolvePolicy, snapshotFromView } from "./policy.js";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { modelForTier, resolvePolicy, snapshotFromView } from "./policy.js";
+
+// P0-D: the policy resolver maps a tier to a REAL provider model via env aliases.
+const savedEnv = {
+  free: process.env.CHAT_MODEL_FREE,
+  premium: process.env.CHAT_MODEL_PREMIUM,
+  deluxe: process.env.CHAT_MODEL_DELUXE,
+};
+beforeAll(() => {
+  process.env.CHAT_MODEL_FREE = "model-free";
+  process.env.CHAT_MODEL_PREMIUM = "model-premium";
+  process.env.CHAT_MODEL_DELUXE = "model-deluxe";
+});
+afterAll(() => {
+  for (const [k, v] of Object.entries({
+    CHAT_MODEL_FREE: savedEnv.free,
+    CHAT_MODEL_PREMIUM: savedEnv.premium,
+    CHAT_MODEL_DELUXE: savedEnv.deluxe,
+  })) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+});
 
 describe("resolvePolicy (SSoT)", () => {
   it("free tier: small context, base memories, free model", () => {
@@ -9,11 +31,17 @@ describe("resolvePolicy (SSoT)", () => {
       unlimitedMessages: false,
       voiceEnabled: false,
     });
-    expect(p.model).toBe("pi-agent-local-free");
+    expect(p.model).toBe("model-free");
     expect(p.maxContextMessages).toBe(12);
     expect(p.maxMemories).toBe(6);
     expect(p.rateLimitPerHour).toBe(60);
     expect(p.allowGlobalMemoryWrite).toBe(false);
+  });
+
+  it("tiers resolve to distinct real models (Deluxe gets the premium model)", () => {
+    expect(modelForTier("free")).toBe("model-free");
+    expect(modelForTier("premium")).toBe("model-premium");
+    expect(modelForTier("deluxe")).toBe("model-deluxe");
   });
 
   it("deluxe tier: doubled context, multiplied memories, global memory writes", () => {
@@ -23,6 +51,7 @@ describe("resolvePolicy (SSoT)", () => {
       unlimitedMessages: true,
       voiceEnabled: true,
     });
+    expect(p.model).toBe("model-deluxe");
     expect(p.maxContextMessages).toBe(24);
     expect(p.maxMemories).toBe(18);
     expect(p.allowGlobalMemoryWrite).toBe(true);

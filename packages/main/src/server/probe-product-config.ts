@@ -20,6 +20,8 @@ type ProductConfigProbeReport = {
   activeVideoCharacterTemplates: number;
   activeVideoFreeplayTemplates: number;
   activeVideoPricingRules: number;
+  publicCharacters: number;
+  publicCharactersWithSystemPrompt: number;
   failureReasons: string[];
   error: { code: string; message: string; retryable?: boolean } | null;
 };
@@ -67,6 +69,8 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
       activeVideoCharacterTemplates,
       activeVideoFreeplayTemplates,
       activeVideoPricingRules,
+      publicCharacters,
+      publicCharactersWithSystemPrompt,
     ] = await Promise.all([
       prisma.featureFlag.findUnique({ where: { key: "video_gen" } }),
       prisma.generationModelProfile.count({
@@ -89,6 +93,17 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
         where: { mode: "video", useCase: "freeplay", status: "active" },
       }),
       prisma.pricingRule.count({ where: { mode: "video", status: "active" } }),
+      prisma.character.count({
+        where: { visibility: "public", status: "approved", deletedAt: null },
+      }),
+      prisma.character.count({
+        where: {
+          visibility: "public",
+          status: "approved",
+          deletedAt: null,
+          AND: [{ systemPrompt: { not: null } }, { systemPrompt: { not: "" } }],
+        },
+      }),
     ]);
 
     const videoFeatureEnabled = videoFlag?.enabled === true;
@@ -113,6 +128,9 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
       videoFeatureEnabled && activeVideoPricingRules < 1
         ? "video_gen enabled without active video pricing rule"
         : null,
+      publicCharacters > 0 && publicCharactersWithSystemPrompt < 1
+        ? "public characters have no chat system prompts"
+        : null,
     ].filter((reason): reason is string => Boolean(reason));
 
     return {
@@ -128,6 +146,8 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
       activeVideoCharacterTemplates,
       activeVideoFreeplayTemplates,
       activeVideoPricingRules,
+      publicCharacters,
+      publicCharactersWithSystemPrompt,
       failureReasons,
       error:
         failureReasons.length === 0
@@ -152,6 +172,8 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
       activeVideoCharacterTemplates: 0,
       activeVideoFreeplayTemplates: 0,
       activeVideoPricingRules: 0,
+      publicCharacters: 0,
+      publicCharactersWithSystemPrompt: 0,
       failureReasons: ["product config probe failed"],
       error: {
         code: "product_config_probe_failed",

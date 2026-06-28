@@ -5,14 +5,18 @@ import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
+  AlertTriangle,
   BadgeDollarSign,
   Ban,
+  BarChart3,
   Check,
   ChevronRight,
   ClipboardCheck,
+  Coins,
   Flag,
   Gauge,
   History,
+  Inbox,
   Loader2,
   Plus,
   RefreshCcw,
@@ -20,6 +24,7 @@ import {
   Search,
   ShieldAlert,
   SlidersHorizontal,
+  Trash2,
   UploadCloud,
   Users,
   X,
@@ -35,6 +40,8 @@ type AdminConsoleClientProps = {
   actor: Actor | null;
   initialSection: string;
   initialAccess: boolean;
+  // dev-only：展示退出按钮以便切换内置账号。
+  devLogout?: boolean;
 };
 
 type ApiError = {
@@ -66,13 +73,39 @@ type ConfigData = {
   flags: Row[];
 };
 
+type ReconciliationData = {
+  window: { from: string; to: string };
+  activeSubscriptions: number;
+  byReason: Row[];
+  totals: { net: number; entries: number };
+};
+
+type AnalyticsData = {
+  window: { from: string; to: string };
+  funnel: { signups: number; activatedUsers: number; payingUsers: number; conversionRate: number };
+  generation: { total: number; completed: number; failed: number; blocked: number };
+  economy: { coinsGranted: number; coinsSpent: number; net: number; byReason: Row[] };
+  topEvents: Row[];
+};
+
+type AbuseData = {
+  window: { from: string; to: string };
+  deviceClusters: Row[];
+  referralAbuse: Row[];
+  adjustAnomalies: Row[];
+};
+
 type SectionData =
   | { kind: "dashboard"; data: DashboardData }
   | { kind: "jobs"; rows: Row[] }
   | { kind: "config"; data: ConfigData }
   | { kind: "moderation"; reports: Row[]; blockedMedia: Row[]; appeals: Row[] }
   | { kind: "users"; rows: Row[] }
-  | { kind: "billing"; rows: Row[] }
+  | { kind: "billing"; rows: Row[]; subscriptions: Row[]; reconciliation: ReconciliationData }
+  | { kind: "pricing"; rows: Row[] }
+  | { kind: "deadletter"; rows: Row[] }
+  | { kind: "analytics"; data: AnalyticsData }
+  | { kind: "risk"; data: AbuseData }
   | { kind: "audit"; rows: Row[] };
 
 type PendingAction = {
@@ -114,6 +147,14 @@ type TemplateDraft = {
   negativeBase: string;
 };
 
+type PricingDraft = {
+  ruleKey: string;
+  label: string;
+  mode: "image" | "video";
+  baseCost: string;
+  multiplier: string;
+};
+
 const defaultModelDraft: ModelDraft = {
   profileKey: "profile_image_default_v2",
   label: "Default image v2",
@@ -145,13 +186,25 @@ const defaultTemplateDraft: TemplateDraft = {
   negativeBase: "low quality, distorted anatomy, extra fingers, watermark, text",
 };
 
+const defaultPricingDraft: PricingDraft = {
+  ruleKey: "generation_image_default",
+  label: "Image generation default",
+  mode: "image",
+  baseCost: "5",
+  multiplier: "1",
+};
+
 const navItems = [
   { id: "dashboard", label: "Dashboard", href: "/admin", icon: Gauge },
   { id: "generation/jobs", label: "Generation Jobs", href: "/admin/generation/jobs", icon: Activity },
   { id: "generation/config", label: "Generation Config", href: "/admin/generation/config", icon: SlidersHorizontal },
+  { id: "generation/dead-letter", label: "Dead-letter", href: "/admin/generation/dead-letter", icon: Inbox },
   { id: "moderation", label: "Moderation", href: "/admin/moderation", icon: ShieldAlert },
   { id: "users", label: "Users", href: "/admin/users", icon: Users },
   { id: "billing", label: "Billing", href: "/admin/billing", icon: BadgeDollarSign },
+  { id: "pricing", label: "Pricing", href: "/admin/pricing", icon: Coins },
+  { id: "analytics", label: "Analytics", href: "/admin/analytics", icon: BarChart3 },
+  { id: "risk", label: "Risk & Abuse", href: "/admin/risk", icon: AlertTriangle },
   { id: "audit-log", label: "Audit Log", href: "/admin/audit-log", icon: History },
 ];
 
@@ -159,6 +212,7 @@ export function AdminConsoleClient({
   actor,
   initialSection,
   initialAccess,
+  devLogout = false,
 }: AdminConsoleClientProps) {
   const sectionId = normalizeSection(initialSection);
   const activeItem = navItems.find((item) => item.id === sectionId) ?? navItems[0];
@@ -174,6 +228,8 @@ export function AdminConsoleClient({
   const [modelDraft, setModelDraft] = useState<ModelDraft>(defaultModelDraft);
   const [templateDraft, setTemplateDraft] = useState<TemplateDraft>(defaultTemplateDraft);
   const [configBusy, setConfigBusy] = useState<"model" | "template" | null>(null);
+  const [pricingDraft, setPricingDraft] = useState<PricingDraft>(defaultPricingDraft);
+  const [pricingBusy, setPricingBusy] = useState(false);
 
   const filteredData = useMemo(() => filterSectionData(data, query), [data, query]);
 
@@ -258,6 +314,19 @@ export function AdminConsoleClient({
     }
   }
 
+  async function createPricingRule() {
+    setPricingBusy(true);
+    setError(null);
+    try {
+      await apiWrite("/api/v1/admin/pricing/rules", "POST", pricingDraftPayload(pricingDraft));
+      await load();
+    } catch (createError) {
+      setError(createError instanceof Error ? createError.message : "Pricing rule create failed");
+    } finally {
+      setPricingBusy(false);
+    }
+  }
+
   if (!actor || !initialAccess) {
     return (
       <main className="min-h-screen bg-[rgb(13,13,13)] px-6 py-8 text-white">
@@ -330,6 +399,18 @@ export function AdminConsoleClient({
                 {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
                 Refresh
               </button>
+              {devLogout ? (
+                <button
+                  className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm text-[rgb(170,170,170)] hover:bg-white/10"
+                  onClick={async () => {
+                    await fetch("/api/admin-auth/logout", { method: "POST" });
+                    window.location.reload();
+                  }}
+                  type="button"
+                >
+                  退出
+                </button>
+              ) : null}
             </div>
           </header>
 
@@ -356,6 +437,10 @@ export function AdminConsoleClient({
                 configBusy,
                 createModelProfile,
                 createPromptTemplate,
+                pricingDraft,
+                setPricingDraft,
+                pricingBusy,
+                createPricingRule,
               })
             )}
           </div>
@@ -433,6 +518,10 @@ async function fetchSection(sectionId: string): Promise<SectionData> {
     const payload = await apiGet<{ items: Row[] }>("/api/v1/admin/generation/jobs?mode=image");
     return { kind: "jobs", rows: payload.items };
   }
+  if (sectionId === "generation/dead-letter") {
+    const payload = await apiGet<{ items: Row[] }>("/api/v1/admin/generation/dead-letter");
+    return { kind: "deadletter", rows: payload.items };
+  }
   if (sectionId === "generation/config") {
     const [profiles, templates, presets, flags] = await Promise.all([
       apiGet<{ items: Row[] }>("/api/v1/admin/generation/model-profiles"),
@@ -466,8 +555,29 @@ async function fetchSection(sectionId: string): Promise<SectionData> {
     return { kind: "users", rows: payload.items };
   }
   if (sectionId === "billing") {
-    const payload = await apiGet<{ items: Row[] }>("/api/v1/admin/billing/ledger");
-    return { kind: "billing", rows: payload.items };
+    const [ledger, subscriptions, reconciliation] = await Promise.all([
+      apiGet<{ items: Row[] }>("/api/v1/admin/billing/ledger"),
+      apiGet<{ items: Row[] }>("/api/v1/admin/billing/subscriptions"),
+      apiGet<ReconciliationData>("/api/v1/admin/billing/reconciliation"),
+    ]);
+    return {
+      kind: "billing",
+      rows: ledger.items,
+      subscriptions: subscriptions.items,
+      reconciliation,
+    };
+  }
+  if (sectionId === "pricing") {
+    const payload = await apiGet<{ items: Row[] }>("/api/v1/admin/pricing/rules");
+    return { kind: "pricing", rows: payload.items };
+  }
+  if (sectionId === "analytics") {
+    const payload = await apiGet<AnalyticsData>("/api/v1/admin/analytics/overview");
+    return { kind: "analytics", data: payload };
+  }
+  if (sectionId === "risk") {
+    const payload = await apiGet<AbuseData>("/api/v1/admin/risk/abuse");
+    return { kind: "risk", data: payload };
   }
   if (sectionId === "audit-log") {
     const payload = await apiGet<{ items: Row[] }>("/api/v1/admin/audit-log");
@@ -555,6 +665,20 @@ function templateDraftPayload(draft: TemplateDraft): Record<string, unknown> {
   };
 }
 
+function canCreatePricingRule(draft: PricingDraft) {
+  return Boolean(draft.ruleKey.trim() && draft.label.trim() && draft.baseCost.trim() !== "");
+}
+
+function pricingDraftPayload(draft: PricingDraft): Record<string, unknown> {
+  return {
+    ruleKey: draft.ruleKey.trim(),
+    label: draft.label.trim(),
+    mode: draft.mode,
+    baseCost: intFromText(draft.baseCost, 5),
+    multiplier: numberFromText(draft.multiplier, 1),
+  };
+}
+
 function nullableText(value: string) {
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
@@ -600,6 +724,10 @@ function renderSection(
     configBusy: "model" | "template" | null;
     createModelProfile: () => void;
     createPromptTemplate: () => void;
+    pricingDraft: PricingDraft;
+    setPricingDraft: (value: PricingDraft) => void;
+    pricingBusy: boolean;
+    createPricingRule: () => void;
   },
 ) {
   if (!section) return null;
@@ -636,11 +764,30 @@ function renderSection(
       <BillingView
         adjustment={ctx.adjustment}
         openAction={ctx.openAction}
+        reconciliation={section.reconciliation}
         rows={section.rows}
         setAdjustment={ctx.setAdjustment}
+        subscriptions={section.subscriptions}
       />
     );
   }
+  if (section.kind === "pricing") {
+    return (
+      <PricingView
+        busy={ctx.pricingBusy}
+        draft={ctx.pricingDraft}
+        onCreate={ctx.createPricingRule}
+        onDraftChange={ctx.setPricingDraft}
+        openAction={ctx.openAction}
+        rows={section.rows}
+      />
+    );
+  }
+  if (section.kind === "deadletter") {
+    return <DeadLetterView rows={section.rows} openAction={ctx.openAction} />;
+  }
+  if (section.kind === "analytics") return <AnalyticsView data={section.data} />;
+  if (section.kind === "risk") return <RiskView data={section.data} />;
   return <AuditView rows={section.rows} />;
 }
 
@@ -1281,17 +1428,58 @@ function UsersView({
 
 function BillingView({
   rows,
+  subscriptions,
+  reconciliation,
   adjustment,
   setAdjustment,
   openAction,
 }: {
   rows: Row[];
+  subscriptions: Row[];
+  reconciliation: ReconciliationData;
   adjustment: { userId: string; delta: string };
   setAdjustment: (value: { userId: string; delta: string }) => void;
   openAction: (action: PendingAction) => void;
 }) {
   return (
     <div className="space-y-5">
+      <div className="grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-3">
+        <Metric
+          label="Net coins (window)"
+          value={reconciliation.totals.net}
+          meta={`${reconciliation.totals.entries} ledger entries`}
+        />
+        <Metric
+          label="Active subscriptions"
+          value={reconciliation.activeSubscriptions}
+          meta="status = active"
+        />
+        <Metric
+          label="Window"
+          value={`${compactDate(reconciliation.window.from)} →`}
+          meta={compactDate(reconciliation.window.to)}
+        />
+      </div>
+      <DataTable
+        columns={["reason", "totalDelta", "count"]}
+        rows={reconciliation.byReason}
+        title="Reconciliation by reason"
+      />
+      <DataTable
+        columns={[
+          "id",
+          "userId",
+          "userEmail",
+          "plan",
+          "billingPeriod",
+          "provider",
+          "status",
+          "currentPeriodEnd",
+          "cancelAtPeriodEnd",
+        ]}
+        rows={subscriptions}
+        title="Subscriptions"
+      />
       <div className="border border-white/10 bg-[rgb(18,18,18)] p-4">
         <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_140px_auto]">
           <input
@@ -1335,6 +1523,359 @@ function BillingView({
         columns={["id", "userId", "userEmail", "delta", "balanceAfter", "reason", "sourceId", "createdAt"]}
         rows={rows}
         title="Ledger"
+      />
+    </div>
+  );
+}
+
+function PricingView({
+  busy,
+  draft,
+  onCreate,
+  onDraftChange,
+  openAction,
+  rows,
+}: {
+  busy: boolean;
+  draft: PricingDraft;
+  onCreate: () => void;
+  onDraftChange: (value: PricingDraft) => void;
+  openAction: (action: PendingAction) => void;
+  rows: Row[];
+}) {
+  return (
+    <div className="space-y-6">
+      <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold">Create Pricing Rule Draft</h2>
+            <p className="mt-1 text-xs text-[rgb(170,170,170)]">
+              改价走 draft → publish 版本化发布；发布即归档同 mode 旧 active，可一键 rollback。
+            </p>
+          </div>
+          <button
+            className="inline-flex h-9 items-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+            disabled={busy || !canCreatePricingRule(draft)}
+            onClick={onCreate}
+            type="button"
+          >
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+            Create Draft
+          </button>
+        </div>
+        <div className="grid gap-3 md:grid-cols-5">
+          <FormField
+            label="Rule Key"
+            onChange={(value) => onDraftChange({ ...draft, ruleKey: value })}
+            value={draft.ruleKey}
+          />
+          <FormField
+            label="Label"
+            onChange={(value) => onDraftChange({ ...draft, label: value })}
+            value={draft.label}
+          />
+          <FormSelect
+            label="Mode"
+            onChange={(value) => onDraftChange({ ...draft, mode: value as PricingDraft["mode"] })}
+            options={["image", "video"]}
+            value={draft.mode}
+          />
+          <FormField
+            label="Base Cost (coins)"
+            onChange={(value) => onDraftChange({ ...draft, baseCost: value })}
+            value={draft.baseCost}
+          />
+          <FormField
+            label="Multiplier"
+            onChange={(value) => onDraftChange({ ...draft, multiplier: value })}
+            value={draft.multiplier}
+          />
+        </div>
+      </section>
+
+      <DataTable
+        actions={(row) => {
+          const id = stringValue(row.id);
+          const status = stringValue(row.status);
+          return (
+            <div className="flex flex-wrap gap-1">
+              {status === "draft" ? (
+                <IconAction
+                  icon={<UploadCloud className="h-4 w-4" />}
+                  label="Publish"
+                  onClick={() =>
+                    openAction({
+                      title: `Publish pricing ${id}`,
+                      endpoint: `/api/v1/admin/pricing/rules/${id}/publish`,
+                      method: "POST",
+                      confirmText: "PUBLISH",
+                      reasonRequired: true,
+                      body: (actionReason) => ({ reason: actionReason, confirmation: "PUBLISH" }),
+                    })
+                  }
+                />
+              ) : null}
+              {status === "active" ? (
+                <IconAction
+                  icon={<RotateCcw className="h-4 w-4" />}
+                  label="Rollback"
+                  onClick={() =>
+                    openAction({
+                      title: `Rollback pricing ${id}`,
+                      endpoint: `/api/v1/admin/pricing/rules/${id}/rollback`,
+                      method: "POST",
+                      confirmText: "ROLLBACK",
+                      reasonRequired: true,
+                      body: (actionReason) => ({ reason: actionReason, confirmation: "ROLLBACK" }),
+                    })
+                  }
+                />
+              ) : null}
+            </div>
+          );
+        }}
+        columns={[
+          "id",
+          "ruleKey",
+          "label",
+          "mode",
+          "baseCost",
+          "multiplier",
+          "status",
+          "version",
+          "effectiveFrom",
+          "publishedAt",
+        ]}
+        rows={rows}
+        title="Pricing Rules"
+      />
+    </div>
+  );
+}
+
+function DeadLetterView({
+  rows,
+  openAction,
+}: {
+  rows: Row[];
+  openAction: (action: PendingAction) => void;
+}) {
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const rowIds = rows.map((row) => stringValue(row.id)).filter(Boolean);
+  const selectedIds = rowIds.filter((id) => selected.has(id));
+  const allSelected = rowIds.length > 0 && selectedIds.length === rowIds.length;
+
+  function toggle(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAll() {
+    setSelected(allSelected ? new Set() : new Set(rowIds));
+  }
+
+  const columns = ["id", "userId", "mode", "status", "errorCode", "ledgerState", "costDreamcoins", "updatedAt"];
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-3 border border-white/10 bg-[rgb(18,18,18)] px-4 py-3">
+        <span className="text-sm font-semibold">Dead-letter Queue</span>
+        <span className="text-xs text-[rgb(170,170,170)]">{selectedIds.length} selected</span>
+        <div className="ml-auto flex gap-2">
+          <button
+            className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm text-[rgb(230,230,230)] hover:bg-white/10 disabled:opacity-40"
+            disabled={selectedIds.length === 0}
+            onClick={() =>
+              openAction({
+                title: `Requeue ${selectedIds.length} jobs`,
+                endpoint: "/api/v1/admin/generation/dead-letter/requeue",
+                method: "POST",
+                confirmText: "REQUEUE",
+                reasonRequired: true,
+                body: (actionReason) => ({
+                  jobIds: selectedIds,
+                  reason: actionReason,
+                  confirmation: "REQUEUE",
+                }),
+              })
+            }
+            type="button"
+          >
+            <RefreshCcw className="h-4 w-4" />
+            Requeue selected
+          </button>
+          <button
+            className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm text-red-200 hover:bg-white/10 disabled:opacity-40"
+            disabled={selectedIds.length === 0}
+            onClick={() =>
+              openAction({
+                title: `Discard ${selectedIds.length} jobs`,
+                endpoint: "/api/v1/admin/generation/dead-letter/discard",
+                method: "POST",
+                confirmText: "DISCARD",
+                reasonRequired: true,
+                body: (actionReason) => ({
+                  jobIds: selectedIds,
+                  reason: actionReason,
+                  confirmation: "DISCARD",
+                }),
+              })
+            }
+            type="button"
+          >
+            <Trash2 className="h-4 w-4" />
+            Discard selected
+          </button>
+        </div>
+      </div>
+
+      <section className="overflow-hidden border border-white/10 bg-[rgb(18,18,18)]">
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[920px] border-collapse text-left text-sm">
+            <thead className="bg-black/20 text-[11px] uppercase text-[rgb(170,170,170)]">
+              <tr>
+                <th className="border-b border-white/10 px-3 py-2">
+                  <input checked={allSelected} onChange={toggleAll} type="checkbox" />
+                </th>
+                {columns.map((column) => (
+                  <th key={column} className="border-b border-white/10 px-3 py-2 font-semibold">
+                    {column}
+                  </th>
+                ))}
+                <th className="border-b border-white/10 px-3 py-2 font-semibold">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, index) => {
+                const id = stringValue(row.id);
+                const status = stringValue(row.status);
+                return (
+                  <tr key={`${id || "dl"}-${index}`} className="border-b border-white/5 last:border-0">
+                    <td className="px-3 py-2 align-top">
+                      <input checked={selected.has(id)} onChange={() => toggle(id)} type="checkbox" />
+                    </td>
+                    {columns.map((column) => (
+                      <td key={column} className="max-w-[260px] px-3 py-2 align-top text-[rgb(230,230,230)]">
+                        {renderCell(row[column])}
+                      </td>
+                    ))}
+                    <td className="px-3 py-2 align-top">
+                      <div className="flex flex-wrap gap-1">
+                        {status === "failed" ? (
+                          <IconAction
+                            icon={<RefreshCcw className="h-4 w-4" />}
+                            label="Requeue"
+                            onClick={() =>
+                              openAction({
+                                title: `Requeue ${id}`,
+                                endpoint: `/api/v1/admin/generation/jobs/${id}/requeue`,
+                                method: "POST",
+                                confirmText: "REQUEUE",
+                                reasonRequired: false,
+                                body: (actionReason) => ({
+                                  reason: actionReason || undefined,
+                                  confirmation: "REQUEUE",
+                                }),
+                              })
+                            }
+                          />
+                        ) : null}
+                        {status === "failed" || status === "blocked" ? (
+                          <IconAction
+                            icon={<Trash2 className="h-4 w-4" />}
+                            label="Discard"
+                            onClick={() =>
+                              openAction({
+                                title: `Discard ${id}`,
+                                endpoint: `/api/v1/admin/generation/jobs/${id}/discard`,
+                                method: "POST",
+                                confirmText: "DISCARD",
+                                reasonRequired: true,
+                                body: (actionReason) => ({
+                                  reason: actionReason,
+                                  confirmation: "DISCARD",
+                                }),
+                              })
+                            }
+                          />
+                        ) : null}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+              {rows.length === 0 ? (
+                <tr>
+                  <td className="px-3 py-8 text-center text-sm text-[rgb(170,170,170)]" colSpan={columns.length + 2}>
+                    No dead-letter jobs
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function AnalyticsView({ data }: { data: AnalyticsData }) {
+  return (
+    <div className="space-y-5">
+      <p className="text-xs text-[rgb(170,170,170)]">
+        Window {compactDate(data.window.from)} → {compactDate(data.window.to)} · activity funnel
+      </p>
+      <div className="grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-4">
+        <Metric label="Signups" value={data.funnel.signups} meta="new users" />
+        <Metric label="Activated" value={data.funnel.activatedUsers} meta="generated ≥1" />
+        <Metric label="Paying" value={data.funnel.payingUsers} meta="subscribed" />
+        <Metric
+          label="Conversion"
+          value={`${data.funnel.conversionRate}%`}
+          meta="paying / signups"
+        />
+      </div>
+      <div className="grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-4">
+        <Metric label="Generations" value={data.generation.total} meta={`${data.generation.completed} completed`} />
+        <Metric label="Failed" value={data.generation.failed} meta="generation jobs" />
+        <Metric label="Blocked" value={data.generation.blocked} meta="generation jobs" />
+        <Metric label="Coins net" value={data.economy.net} meta={`${data.economy.coinsGranted} granted`} />
+      </div>
+      <DataTable
+        columns={["reason", "totalDelta", "count"]}
+        rows={data.economy.byReason}
+        title="Coin economy by reason"
+      />
+      <DataTable columns={["name", "count"]} rows={data.topEvents} title="Top events" />
+    </div>
+  );
+}
+
+function RiskView({ data }: { data: AbuseData }) {
+  return (
+    <div className="space-y-5">
+      <p className="text-xs text-[rgb(170,170,170)]">
+        Window {compactDate(data.window.from)} → {compactDate(data.window.to)} · 只读告警信号，处置走
+        Users 封禁 / Billing 调整。多账号聚类基于 anonymousId，清 cookie / 无痕可绕，非完备。
+      </p>
+      <DataTable
+        columns={["anonymousId", "accountCount", "userIds"]}
+        rows={data.deviceClusters}
+        title="Multi-account device clusters"
+      />
+      <DataTable
+        columns={["inviterId", "referralCount"]}
+        rows={data.referralAbuse}
+        title="Referral farming (≥3 invites)"
+      />
+      <DataTable
+        columns={["userId", "count", "totalDelta"]}
+        rows={data.adjustAnomalies}
+        title="Manual adjust anomalies"
       />
     </div>
   );
@@ -1443,7 +1984,15 @@ function filterSectionData(section: SectionData | null, query: string): SectionD
     rows.filter((row) => JSON.stringify(row).toLowerCase().includes(q));
   if (section.kind === "jobs") return { ...section, rows: filterRows(section.rows) };
   if (section.kind === "users") return { ...section, rows: filterRows(section.rows) };
-  if (section.kind === "billing") return { ...section, rows: filterRows(section.rows) };
+  if (section.kind === "billing") {
+    return {
+      ...section,
+      rows: filterRows(section.rows),
+      subscriptions: filterRows(section.subscriptions),
+    };
+  }
+  if (section.kind === "pricing") return { ...section, rows: filterRows(section.rows) };
+  if (section.kind === "deadletter") return { ...section, rows: filterRows(section.rows) };
   if (section.kind === "audit") return { ...section, rows: filterRows(section.rows) };
   if (section.kind === "moderation") {
     return {
@@ -1513,6 +2062,10 @@ function normalizeSection(value: string) {
   if (value === "moderation") return value;
   if (value === "users") return value;
   if (value === "billing") return value;
+  if (value === "pricing") return value;
+  if (value === "analytics") return value;
+  if (value === "risk") return value;
+  if (value === "generation/dead-letter") return value;
   if (value === "audit-log") return value;
   return "dashboard";
 }

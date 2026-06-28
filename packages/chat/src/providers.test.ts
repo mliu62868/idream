@@ -28,7 +28,9 @@ describe("chat providers", () => {
     const { createProviders } = await import("./providers.js");
     const providers = createProviders();
     const chunks = [];
+    // P0-D: the per-turn model from policy is what the provider must send.
     for await (const chunk of providers.chat.stream({
+      model: "Qwen3.5-14B-MLX-4bit",
       messages: [{ role: "user", content: "hello" }],
     })) {
       chunks.push(chunk);
@@ -46,6 +48,10 @@ describe("chat providers", () => {
         }),
       }),
     );
+    // The request body carries the policy model, not a fixed env model.
+    const init = (fetchMock.mock.calls[0] as unknown[])[1] as { body: string };
+    const body = JSON.parse(init.body);
+    expect(body.model).toBe("Qwen3.5-14B-MLX-4bit");
   });
 
   it("wires the safety gateway moderation provider", async () => {
@@ -113,6 +119,21 @@ describe("chat providers", () => {
       policyCode: "moderation_unavailable",
       confidence: 1,
     });
+  });
+
+  it("rejects production startup when chat providers are still mock", async () => {
+    vi.resetModules();
+    process.env = {
+      ...oldEnv,
+      APP_ENV: "production",
+      CHAT_MODEL_PROVIDER: "mock",
+      MODERATION_PROVIDER: "mock",
+      CHAT_MODERATION_PROVIDER: "mock",
+    };
+
+    await expect(import("./providers.js")).rejects.toThrow(
+      /Production requires non-mock chat providers:.*CHAT_MODEL_PROVIDER.*MODERATION_PROVIDER/,
+    );
   });
 
   it("rejects safety gateway startup without a service URL", async () => {

@@ -1,6 +1,6 @@
 # iDream 上线可用性审计
 
-更新日期：2026-06-26
+更新日期：2026-06-27
 
 ## 结论
 
@@ -23,6 +23,8 @@
 - 当前不能按公开上线验收，只能按本地/内部演示/受控 beta 验收。
 - `check:launch:direct` 不应因为这些集成延后而被降级放行；公开上线 gate 仍然必须保持严格。
 - 下面的 provider、safety、billing、compliance、storage、observability 项目保留为未来公开上线前必须恢复的清单。
+
+**视频生成（第一期不上线）**：与上述"延后集成"不同，这是产品功能层面的延期——因视频生成耗时过长排入 V1.1（见 `docs/architecture/12-roadmap.md` 2026-06-27 范围决策）。第一期 `video_gen` 功能位保持 `false`，readiness 检查以"视频禁用"为预期通过（产品配置 probe 见 `video_gen=false`），不计为公开上线阻断项。
 
 ## 已验证通过
 

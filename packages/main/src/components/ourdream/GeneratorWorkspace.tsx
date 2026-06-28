@@ -197,7 +197,12 @@ export function GeneratorWorkspace() {
             setFreeplay(true);
             return;
           }
-          setCharacterId((current) => current || items[0]?.id || "");
+          // Chat → Generate deep link (P1-E): preselect the character passed as
+          // ?characterId=. Falls back to the first card when absent/unknown.
+          const desired = new URLSearchParams(window.location.search).get("characterId");
+          const preset = desired && items.some((c) => c.id === desired) ? desired : "";
+          if (preset) setFreeplay(false);
+          setCharacterId((current) => current || preset || items[0]?.id || "");
         })
         .catch(() => {
           setCharacters([]);

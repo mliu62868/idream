@@ -204,6 +204,7 @@ function passingChatProbe(
     model: productionEnv.CHAT_MODEL_NAME,
     chunks: 1,
     characters: 24,
+    assistantPreview: "Launch readiness acknowledged.",
     done: true,
     error: null,
     ...override,
@@ -246,6 +247,8 @@ function passingProductConfigProbe(
     activeVideoCharacterTemplates: 0,
     activeVideoFreeplayTemplates: 0,
     activeVideoPricingRules: 0,
+    publicCharacters: 16,
+    publicCharactersWithSystemPrompt: 16,
     error: null,
     ...override,
   };
@@ -1088,6 +1091,29 @@ describe("launch readiness", () => {
     expect(failedIds(report)).toContain("chat-model-live-probe");
   });
 
+  it("fails when the live chat model probe returns a mock template response", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      imagePipelineProbe: passingImageProbe(),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe({
+        ok: false,
+        assistantPreview: "Mock Launch Probe reply: hello",
+      }),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      now,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(failedIds(report)).toContain("chat-model-live-probe");
+  });
+
   it("fails when the live chat model probe is stale", () => {
     const report = assessLaunchReadiness({
       env: productionEnv,
@@ -1514,6 +1540,34 @@ describe("launch readiness", () => {
         error: {
           code: "product_config_incomplete",
           message: "missing active image model profile",
+        },
+      }),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      now,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(failedIds(report)).toContain("product-config-live-probe");
+  });
+
+  it("fails when public characters have no chat system prompts", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      imagePipelineProbe: passingImageProbe(),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe({
+        ok: false,
+        publicCharacters: 16,
+        publicCharactersWithSystemPrompt: 0,
+        error: {
+          code: "product_config_incomplete",
+          message: "public characters have no chat system prompts",
         },
       }),
       webSurfaceProbe: passingWebSurfaceProbe(),

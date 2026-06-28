@@ -17,6 +17,8 @@ describe("proxyChatRequest", () => {
     vi.unstubAllGlobals();
     delete process.env.CHAT_SERVICE_URL;
     delete process.env.CHAT_BFF_SIGNING_SECRET;
+    // env is parsed at import; reset so each test re-reads the env beforeEach sets.
+    vi.resetModules();
   });
 
   it("forwards with a verifiable HMAC signature and no cookie", async () => {
@@ -85,7 +87,10 @@ describe("proxyChatRequest", () => {
   it("adapts POST messages → echoes user content + assistant placeholder + streamUrl", async () => {
     const { proxyChatRequest } = await import("./chat-proxy");
     fetchMock.mockResolvedValueOnce(
-      jsonResp({ userMessageId: "mu", assistantMessageId: "ma", streamUrl: "/api/v1/chat/messages/ma/stream" }, 202),
+      jsonResp(
+        { userMessageId: "mu", assistantMessageId: "ma", streamUrl: "/api/v1/chat/messages/ma/stream", status: "generating" },
+        202,
+      ),
     );
     const req = new Request("http://localhost/api/v1/chat/sessions/s1/messages", {
       method: "POST",
@@ -95,8 +100,52 @@ describe("proxyChatRequest", () => {
     const res = await proxyChatRequest(req, ["chat", "sessions", "s1", "messages"]);
     const json = (await res.json()) as { data: Record<string, unknown> };
     expect(json.data.userMessage).toEqual({ id: "mu", role: "user", content: "hi there" });
-    expect(json.data.assistant).toEqual({ id: "ma", role: "assistant", content: "" });
+    expect(json.data.assistant).toEqual({ id: "ma", role: "assistant", content: "", status: "generating" });
     expect(json.data.streamUrl).toBe("/api/v1/chat/messages/ma/stream");
+  });
+
+  it("adapts a BLOCKED send → status blocked, null streamUrl, safety notice (P0-B)", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    fetchMock.mockResolvedValueOnce(
+      jsonResp(
+        {
+          userMessageId: "mu",
+          assistantMessageId: "ma",
+          streamUrl: null,
+          status: "blocked",
+          safety: { layer: "input", policyCode: "age_under_18" },
+        },
+        202,
+      ),
+    );
+    const req = new Request("http://localhost/api/v1/chat/sessions/s1/messages", {
+      method: "POST",
+      headers: authedHeaders,
+      body: JSON.stringify({ content: "blocked content" }),
+    });
+    const res = await proxyChatRequest(req, ["chat", "sessions", "s1", "messages"]);
+    const json = (await res.json()) as {
+      data: { assistant: { status: string; content: string }; streamUrl: unknown; safety?: { layer: string } };
+    };
+    expect(json.data.assistant.status).toBe("blocked");
+    expect(json.data.assistant.content).toContain("can");
+    expect(json.data.streamUrl).toBeNull();
+    expect(json.data.safety?.layer).toBe("input");
+  });
+
+  it("returns a structured 503 chat_unavailable when CHAT_SERVICE_URL is unset (P0-A)", async () => {
+    // env is parsed at import, so unset BEFORE a fresh module load.
+    delete process.env.CHAT_SERVICE_URL;
+    vi.resetModules();
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const req = new Request("http://localhost/api/v1/chat/sessions", {
+      method: "GET",
+      headers: { "x-idream-user-id": "seed-dev-user" },
+    });
+    const res = await proxyChatRequest(req, ["chat", "sessions"]);
+    expect(res.status).toBe(503);
+    expect((await res.json()).error).toBe("chat_unavailable");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("adapts GET session → embeds messages + character name", async () => {

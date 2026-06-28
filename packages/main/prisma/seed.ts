@@ -1,4 +1,5 @@
 import { PrismaClient } from "@prisma/client";
+import { buildCharacterSystemPrompt } from "@idream/shared";
 import {
   categoryFilters,
   characterCards,
@@ -199,6 +200,18 @@ async function seedTags() {
 async function seedCharacters() {
   for (const card of characterCards) {
     const mediaAssetId = `seed-image-${card.id}`;
+    const age = parseAge(card.age);
+    const tags = inferredTagSlugs(card);
+    const systemPrompt = buildCharacterSystemPrompt({
+      name: card.title,
+      age,
+      description: card.description,
+      style: card.title.toLowerCase().includes("anime") ? "anime" : "realistic",
+      gender: "female",
+      tags,
+      appearance: { sourceImage: card.image },
+      advancedDetails: {},
+    });
 
     await prisma.mediaAsset.upsert({
       where: { id: mediaAssetId },
@@ -229,8 +242,9 @@ async function seedCharacters() {
       where: { id: card.id },
       update: {
         name: card.title,
-        age: parseAge(card.age),
+        age,
         description: card.description,
+        systemPrompt,
         visibility: "public",
         status: "approved",
         imageAssetId: mediaAssetId,
@@ -240,8 +254,9 @@ async function seedCharacters() {
         id: card.id,
         creatorId: SYSTEM_USER_ID,
         name: card.title,
-        age: parseAge(card.age),
+        age,
         description: card.description,
+        systemPrompt,
         visibility: "public",
         status: "approved",
         style: card.title.toLowerCase().includes("anime") ? "anime" : "realistic",
@@ -269,7 +284,7 @@ async function seedCharacters() {
       },
     });
 
-    for (const slug of inferredTagSlugs(card)) {
+    for (const slug of tags) {
       const tag = await prisma.tag.findUnique({ where: { slug } });
       if (!tag) continue;
 

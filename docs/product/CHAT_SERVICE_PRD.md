@@ -508,7 +508,11 @@ Chat Service:
        - insert user message
        - insert assistant placeholder(status=generating)
        - update session.last_message_at
-  8. 入 Chat 内部队列 `chat.generate`，返回 assistantMessageId + streamUrl。
+  8. 入 Chat 内部队列 `chat.generate`，返回 `{ userMessageId, assistantMessageId, streamUrl, status }`。
+     - 正常：`status="generating"`，`streamUrl` 指向 SSE。
+     - 输入被审核拦截（P0-B）：**不入队、不返回 streamUrl**，返回
+       `{ status:"blocked", streamUrl:null, safety:{ layer:"input", policyCode } }`；
+       前端据此原地展示安全提示，不开启空的 EventSource。
   9. Chat worker 构建上下文：
        - recent messages
        - session summary

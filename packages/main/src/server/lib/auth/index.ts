@@ -16,6 +16,9 @@ export interface AuthCtx {
 export type ActorRole = "user" | "moderator" | "support" | "ops" | "analyst" | "admin";
 
 export const SESSION_COOKIE = "idream_session";
+// SPEC: 后台控制台用独立的登录态，与普通用户的 idream_session 物理隔离。
+// INTENT: 同一 host(localhost) 下普通登录与后台登录互不覆盖；只是 cookie 名不同，复用 Session 表。
+export const ADMIN_SESSION_COOKIE = "idream_admin_session";
 export const ANONYMOUS_COOKIE = "idream_anonymous_id";
 export const AGE_GATE_COOKIE = "AdultContentAcceptedOD";
 const passwordPrefix = "scrypt";
@@ -53,6 +56,26 @@ export function sessionCookie(token: string, expiresAt: Date) {
 
 export function clearSessionCookie() {
   return serializeCookie(SESSION_COOKIE, "", {
+    expires: new Date(0),
+    httpOnly: true,
+    sameSite: "lax",
+    secure: env.APP_ENV === "production",
+    path: "/",
+  });
+}
+
+export function adminSessionCookie(token: string, expiresAt: Date) {
+  return serializeCookie(ADMIN_SESSION_COOKIE, token, {
+    expires: expiresAt,
+    httpOnly: true,
+    sameSite: "lax",
+    secure: env.APP_ENV === "production",
+    path: "/",
+  });
+}
+
+export function clearAdminSessionCookie() {
+  return serializeCookie(ADMIN_SESSION_COOKIE, "", {
     expires: new Date(0),
     httpOnly: true,
     sameSite: "lax",
@@ -109,9 +132,17 @@ export async function getAuthCtx(request?: Request): Promise<AuthCtx> {
   const devUserId =
     env.APP_ENV !== "production" ? headers?.get("x-idream-user-id") : undefined;
   const devUser = devUserId ? await findActiveUser(devUserId) : null;
-  const cookieUser = devUser ? null : await userFromCustomSession(cookies.get(SESSION_COOKIE));
-  const betterAuthUser = devUser || cookieUser ? null : await userFromBetterAuth(request);
-  const user = devUser ?? cookieUser ?? betterAuthUser;
+  // 后台登录态优先于普通用户登录态：同一浏览器下后台 cookie 存在时按后台身份解析。
+  const adminCookieUser = devUser
+    ? null
+    : await userFromCustomSession(cookies.get(ADMIN_SESSION_COOKIE));
+  const cookieUser =
+    devUser || adminCookieUser
+      ? null
+      : await userFromCustomSession(cookies.get(SESSION_COOKIE));
+  const betterAuthUser =
+    devUser || adminCookieUser || cookieUser ? null : await userFromBetterAuth(request);
+  const user = devUser ?? adminCookieUser ?? cookieUser ?? betterAuthUser;
 
   const acceptedInDb = await hasAgeGateAcceptance({
     userId: user?.id,

@@ -1,10 +1,12 @@
 # 12 · 实施路线图
 
-更新日期：2026-06-26
+更新日期：2026-06-27
 
 对齐 `BackendFeatureSpec §8 P0 顺序` 与 `PRD §12 MVP`。每个里程碑给**可验证交付物**与**退出标准**（闭环优先：写完就跑、CLI 验证）。
 
 > **2026-06-26 范围决策**：当前活跃目标是内部演示/受控 beta，不是公开上线。Safety Gateway、Go.cam、BTCPay、R2/S3、Sentry 明确延后；Pipeline 相关本地/内部链路仍可继续推进。公开上线标准不降级，延后项在恢复公开上线目标前必须重新启用并通过 live probe。
+>
+> **2026-06-27 范围决策（视频生成）**：**第一期不上视频生成模块**——原因是视频生成耗时过长、产出体验暂不达标。按"不删除、不弱化设计"原则，保留视频的 API contract、付费门、`packages/gen` video worker 骨架与 mock provider：`VIDEO_PROVIDER`/`GEN_VIDEO_PROVIDER` 保持 `mock`、`video_gen` 功能位保持 `false`，业务层零改动。（这也是 `packages/main` 把 `video` 写死为 `MockVideoModel`、`local-pipeline` 视频路径产出占位 MP4 的原因——是第一期的预期行为，非缺陷。）视频生成正式排入 **V1.1**，届时接真实 video pipeline 并通过 live probe 后再开启。
 
 ## 里程碑总览
 

@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { looksLikeMockChatResponse } from "@idream/shared";
 import { PipelineChatModel } from "./providers/chat/pipeline";
 import type { ChatChunk, ChatModel } from "./providers/types";
 
@@ -18,6 +19,7 @@ type ChatProbeReport = {
   model: string | null;
   chunks: number;
   characters: number;
+  assistantPreview: string | null;
   done: boolean;
   error: { code: string; message: string } | null;
 };
@@ -99,6 +101,7 @@ async function runProbe(input: {
     let chunks = 0;
     let characters = 0;
     let done = false;
+    const pieces: string[] = [];
     for await (const chunk of chat.stream({
       characterName: "Launch Probe",
       messages: [
@@ -115,18 +118,30 @@ async function runProbe(input: {
       if (chunk.delta) {
         chunks += 1;
         characters += chunk.delta.length;
+        pieces.push(chunk.delta);
       }
       if (chunk.done) done = true;
     }
 
+    const assistantText = pieces.join("");
+    const mockTemplate = looksLikeMockChatResponse(assistantText);
+    const ok = chunks > 0 && characters > 0 && done && !mockTemplate;
     return {
       ...baseReport,
-      ok: chunks > 0 && characters > 0 && done,
+      ok,
       durationMs: Date.now() - input.startedAt,
       chunks,
       characters,
+      assistantPreview: assistantText.slice(0, 240) || null,
       done,
-      error: null,
+      error: ok
+        ? null
+        : mockTemplate
+          ? {
+              code: "chat_model_probe_mock_response",
+              message: "chat model probe returned a mock/template response",
+            }
+          : null,
     };
   } catch (error) {
     return {
@@ -135,6 +150,7 @@ async function runProbe(input: {
       durationMs: Date.now() - input.startedAt,
       chunks: 0,
       characters: 0,
+      assistantPreview: null,
       done: false,
       error: {
         code: "chat_model_probe_failed",

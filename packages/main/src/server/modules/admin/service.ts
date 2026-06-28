@@ -43,6 +43,12 @@ const discardSchema = z.object({
   confirmation: z.string().trim().min(1).max(160),
 });
 
+const deadLetterBatchSchema = z.object({
+  jobIds: z.array(z.string().trim().min(1).max(160)).min(1).max(100),
+  reason: z.string().trim().min(3).max(2_000),
+  confirmation: z.string().trim().min(1).max(160),
+});
+
 const flagPatchSchema = z.object({
   enabled: z.boolean().optional(),
   rolloutPercent: z.number().int().min(0).max(100).optional(),
@@ -150,6 +156,29 @@ const presetAdminSchema = z.object({
   status: z.enum(["active", "archived"]).default("active"),
 });
 
+const pricingRuleSchema = z.object({
+  ruleKey: z.string().trim().min(1).max(120),
+  label: z.string().trim().min(1).max(120),
+  mode: z.enum(["image", "video"]).default("image"),
+  baseCost: z.number().int().min(0).max(100_000),
+  multiplier: z.number().min(0.1).max(20).default(1),
+  effectiveFrom: z.string().datetime().optional(),
+});
+
+// ruleKey/mode 在 create 后不可改：避免一条 draft 的 mode 漂离其 ruleKey 版本谱系。
+const pricingRulePatchSchema = z.object({
+  label: z.string().trim().min(1).max(120).optional(),
+  baseCost: z.number().int().min(0).max(100_000).optional(),
+  multiplier: z.number().min(0.1).max(20).optional(),
+  effectiveFrom: z.string().datetime().nullable().optional(),
+});
+
+const pricingPublishSchema = z.object({
+  reason: z.string().trim().min(3).max(2_000),
+  confirmation: z.literal("PUBLISH"),
+  effectiveFrom: z.string().datetime().optional(),
+});
+
 const plaintextViewSchema = z.object({
   targetType: z.enum(["generation_job", "media"]),
   targetId: z.string().trim().min(1).max(160),
@@ -210,6 +239,23 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
       if (!action && method === "POST") return createAdminPreset(request);
       if (action && !child && method === "PATCH") return patchAdminPreset(request, action);
     }
+    if (id === "dead-letter") {
+      if (!action && method === "GET") return deadLetterQueue(request);
+      if (action === "requeue" && method === "POST") return requeueDeadLetterBatch(request);
+      if (action === "discard" && method === "POST") return discardDeadLetterBatch(request);
+    }
+  }
+
+  if (resource === "pricing" && id === "rules") {
+    if (!action && method === "GET") return listPricingRules(request);
+    if (!action && method === "POST") return createPricingRule(request);
+    if (action && !child && method === "PATCH") return patchPricingRule(request, action);
+    if (action && child === "publish" && method === "POST") {
+      return publishPricingRule(request, action);
+    }
+    if (action && child === "rollback" && method === "POST") {
+      return rollbackPricingRule(request, action);
+    }
   }
 
   if (resource === "moderation") {
@@ -221,6 +267,10 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
 
   if (resource === "billing") {
     if (id === "ledger" && !action && method === "GET") return billingLedger(request);
+    if (id === "subscriptions" && !action && method === "GET") return listSubscriptions(request);
+    if (id === "reconciliation" && !action && method === "GET") {
+      return billingReconciliation(request);
+    }
     if (id === "adjustments" && !action && method === "POST") {
       return billingAdjustment(request);
     }
@@ -229,6 +279,14 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
   if (resource === "feature-flags") {
     if (!id && method === "GET") return listFeatureFlags(request);
     if (id && !action && method === "PATCH") return patchFeatureFlag(request, id);
+  }
+
+  if (resource === "analytics" && id === "overview" && !action && method === "GET") {
+    return analyticsOverview(request);
+  }
+
+  if (resource === "risk" && id === "abuse" && !action && method === "GET") {
+    return abuseOverview(request);
   }
 
   if (resource === "audit-log" && !id && method === "GET") return auditLog(request);
@@ -561,6 +619,126 @@ async function discardGenerationJob(request: Request, jobId: string) {
     after: { status: "refunded", refunded: !alreadyRefunded },
   });
   return ok({ discarded: true, refunded: !alreadyRefunded });
+}
+
+// SPEC: Dead-letter 运营台 —— 列出重试耗尽/不可恢复（failed|blocked）的 job，支持单/批 requeue 与 discard。
+// INTENT: requeue/discard 单条 API 已存在且测试覆盖；本节只新增「列表（带退款状态）+ 批量」前端运营所需后端，
+//         不改动单条 handler（零回归）。批量记一条审计 + 子项列表（§12）。
+// INVARIANTS: 退款幂等 —— 已有 refund ledger 的 job 不再二次退款；requeue 跳过已退款 job。
+async function deadLetterQueue(request: Request) {
+  await actorWithPermission(request, "ops.queue.read");
+  const url = new URL(request.url);
+  const statusParam = url.searchParams.get("status");
+  const statuses = statusParam
+    ? statusParam.split(",").map((status) => status.trim()).filter(Boolean)
+    : ["failed", "blocked"];
+  const errorCode = url.searchParams.get("errorCode")?.trim() || undefined;
+  const mode = url.searchParams.get("mode")?.trim();
+  const jobs = await prisma.generationJob.findMany({
+    where: {
+      status: { in: statuses },
+      errorCode: errorCode ? { contains: errorCode } : undefined,
+      mode: mode && mode !== "all" ? mode : undefined,
+    },
+    orderBy: { updatedAt: "desc" },
+    take: clampInt(url.searchParams.get("limit"), 1, 200, 100),
+  });
+  const refundedIds = await refundedJobIds(jobs.map((job) => job.id));
+  return ok({
+    items: jobs.map((job) => ({
+      ...redactJob(job),
+      ledgerState: refundedIds.has(job.id) ? "refunded" : "reserved",
+    })),
+  });
+}
+
+async function requeueDeadLetterBatch(request: Request) {
+  const actor = await actorWithPermission(request, "generation.job.requeue");
+  const body = deadLetterBatchSchema.parse(await jsonBody(request));
+  if (body.confirmation !== "REQUEUE") {
+    throw Errors.badRequest("Batch requeue requires REQUEUE confirmation");
+  }
+  const jobs = await prisma.generationJob.findMany({ where: { id: { in: body.jobIds } } });
+  const refundedIds = await refundedJobIds(body.jobIds);
+  const requeued: string[] = [];
+  const skipped: { id: string; reason: string }[] = [];
+  for (const job of jobs) {
+    if (job.status !== "failed") {
+      skipped.push({ id: job.id, reason: "not_failed" });
+      continue;
+    }
+    if (refundedIds.has(job.id)) {
+      skipped.push({ id: job.id, reason: "refunded" });
+      continue;
+    }
+    await prisma.generationJob.update({
+      where: { id: job.id },
+      data: { status: "queued", errorCode: null },
+    });
+    await enqueueExistingGenerationJob(job);
+    requeued.push(job.id);
+  }
+  for (const id of missingIds(body.jobIds, jobs)) skipped.push({ id, reason: "not_found" });
+  await writeAudit(request, actor, {
+    action: "ops.deadletter.requeue",
+    targetType: "generation_job_batch",
+    targetId: `${body.jobIds.length} jobs`,
+    reason: body.reason,
+    after: { requeued, skipped },
+  });
+  return ok({ requeued, skipped });
+}
+
+async function discardDeadLetterBatch(request: Request) {
+  const actor = await actorWithPermission(request, "ops.deadletter.write");
+  const body = deadLetterBatchSchema.parse(await jsonBody(request));
+  if (body.confirmation !== "DISCARD") {
+    throw Errors.badRequest("Batch discard requires DISCARD confirmation");
+  }
+  const jobs = await prisma.generationJob.findMany({ where: { id: { in: body.jobIds } } });
+  const refundedIds = await refundedJobIds(body.jobIds);
+  const discarded: string[] = [];
+  const refundedNow: string[] = [];
+  const skipped: { id: string; reason: string }[] = [];
+  for (const job of jobs) {
+    if (!["failed", "blocked", "refunded"].includes(job.status)) {
+      skipped.push({ id: job.id, reason: "not_discardable" });
+      continue;
+    }
+    const willRefund = !refundedIds.has(job.id) && job.costDreamcoins > 0;
+    await prisma.$transaction(async (tx) => {
+      if (willRefund) await appendLedger(tx, job.userId, job.costDreamcoins, "refund", job.id);
+      await tx.generationJob.update({
+        where: { id: job.id },
+        data: { status: "refunded", errorCode: job.errorCode ?? "discarded" },
+      });
+    });
+    discarded.push(job.id);
+    if (willRefund) refundedNow.push(job.id);
+  }
+  for (const id of missingIds(body.jobIds, jobs)) skipped.push({ id, reason: "not_found" });
+  await writeAudit(request, actor, {
+    action: "ops.deadletter.discard",
+    targetType: "generation_job_batch",
+    targetId: `${body.jobIds.length} jobs`,
+    reason: body.reason,
+    after: { discarded, refunded: refundedNow, skipped },
+  });
+  return ok({ discarded, refunded: refundedNow, skipped });
+}
+
+async function refundedJobIds(jobIds: string[]) {
+  if (jobIds.length === 0) return new Set<string>();
+  const refunds = await prisma.dreamcoinLedger.findMany({
+    where: { sourceId: { in: jobIds }, reason: "refund" },
+    select: { sourceId: true },
+  });
+  return new Set(refunds.map((entry) => entry.sourceId).filter((id): id is string => Boolean(id)));
+}
+
+function missingIds(requested: string[], found: { id: string }[]) {
+  const foundIds = new Set(found.map((job) => job.id));
+  return requested.filter((id) => !foundIds.has(id));
 }
 
 async function listModelProfiles(request: Request) {
@@ -936,6 +1114,146 @@ async function patchAdminPreset(request: Request, id: string) {
   return ok({ preset });
 }
 
+// SPEC: 定价规则控制面 —— draft→active→archived 版本化发布，复用 model-profile 范式。
+// INTENT: 接通已存在的 PricingRule（generationCost 已按 mode 读 active 规则），让改价可版本化/审计/回滚，
+//         而不再改 seed/代码。读 billing.read（admin+support），写 config.pricing.write（admin only）。
+// INVARIANTS: 每个 mode 至多一个 active 规则（发布时归档同 mode 旧 active）；ruleKey 维护版本号与回滚链。
+// EXAMPLE: image baseCost 5→4 走 create(draft) → publish（旧 active 归档），可一键 rollback 回 v1。
+async function listPricingRules(request: Request) {
+  await actorWithPermission(request, "billing.read");
+  const url = new URL(request.url);
+  const mode = url.searchParams.get("mode") ?? undefined;
+  const status = url.searchParams.get("status") ?? undefined;
+  const rules = await prisma.pricingRule.findMany({
+    where: { mode, status },
+    orderBy: [{ ruleKey: "asc" }, { version: "desc" }],
+  });
+  return ok({ items: rules });
+}
+
+async function createPricingRule(request: Request) {
+  const actor = await actorWithPermission(request, "config.pricing.write");
+  const body = pricingRuleSchema.parse(await jsonBody(request));
+  const latest = await prisma.pricingRule.findFirst({
+    where: { ruleKey: body.ruleKey },
+    orderBy: { version: "desc" },
+  });
+  const rule = await prisma.pricingRule.create({
+    data: {
+      ruleKey: body.ruleKey,
+      label: body.label,
+      mode: body.mode,
+      baseCost: body.baseCost,
+      multiplier: body.multiplier,
+      effectiveFrom: body.effectiveFrom ? new Date(body.effectiveFrom) : null,
+      version: (latest?.version ?? 0) + 1,
+      status: "draft",
+    },
+  });
+  await writeAudit(request, actor, {
+    action: "config.pricing.create",
+    targetType: "pricing_rule",
+    targetId: rule.id,
+    after: pricingAuditSnapshot(rule),
+  });
+  return ok({ rule });
+}
+
+async function patchPricingRule(request: Request, id: string) {
+  const actor = await actorWithPermission(request, "config.pricing.write");
+  const body = pricingRulePatchSchema.parse(await jsonBody(request));
+  const before = await prisma.pricingRule.findUnique({ where: { id } });
+  if (!before) throw Errors.notFound("Pricing rule not found");
+  if (before.status !== "draft") throw Errors.badRequest("Only draft pricing rules can be edited");
+  const updated = await prisma.pricingRule.update({
+    where: { id },
+    data: {
+      label: body.label,
+      baseCost: body.baseCost,
+      multiplier: body.multiplier,
+      effectiveFrom:
+        body.effectiveFrom === undefined
+          ? undefined
+          : body.effectiveFrom === null
+            ? null
+            : new Date(body.effectiveFrom),
+    },
+  });
+  await writeAudit(request, actor, {
+    action: "config.pricing.update",
+    targetType: "pricing_rule",
+    targetId: id,
+    before: pricingAuditSnapshot(before),
+    after: pricingAuditSnapshot(updated),
+  });
+  return ok({ rule: updated });
+}
+
+async function publishPricingRule(request: Request, id: string) {
+  const actor = await actorWithPermission(request, "config.pricing.write");
+  const body = pricingPublishSchema.parse(await jsonBody(request));
+  const rule = await prisma.pricingRule.findUnique({ where: { id } });
+  if (!rule) throw Errors.notFound("Pricing rule not found");
+  if (rule.status !== "draft") throw Errors.badRequest("Only draft pricing rules can be published");
+  // 同 mode 旧 active 全部归档，保证 generationCost 读到的 active 唯一（资金侧 SSoT）。
+  const previous = await prisma.pricingRule.findFirst({
+    where: { mode: rule.mode, status: "active" },
+  });
+  const effectiveFrom = body.effectiveFrom
+    ? new Date(body.effectiveFrom)
+    : (rule.effectiveFrom ?? new Date());
+  const published = await prisma.$transaction(async (tx) => {
+    await tx.pricingRule.updateMany({
+      where: { mode: rule.mode, status: "active" },
+      data: { status: "archived", archivedAt: new Date() },
+    });
+    return tx.pricingRule.update({
+      where: { id },
+      data: { status: "active", effectiveFrom, publishedAt: new Date(), archivedAt: null },
+    });
+  });
+  await writeAudit(request, actor, {
+    action: "config.pricing.publish",
+    targetType: "pricing_rule",
+    targetId: id,
+    reason: body.reason,
+    before: previous ? pricingAuditSnapshot(previous) : null,
+    after: pricingAuditSnapshot(published),
+  });
+  return ok({ rule: published, previousActiveId: previous?.id ?? null });
+}
+
+async function rollbackPricingRule(request: Request, id: string) {
+  const actor = await actorWithPermission(request, "config.pricing.write");
+  const body = rollbackSchema.parse(await jsonBody(request));
+  const current = await prisma.pricingRule.findUnique({ where: { id } });
+  if (!current) throw Errors.notFound("Pricing rule not found");
+  const previous = await prisma.pricingRule.findFirst({
+    where: { ruleKey: current.ruleKey, status: "archived", version: { lt: current.version } },
+    orderBy: { version: "desc" },
+  });
+  if (!previous) throw Errors.notFound("No previous pricing rule version to roll back to");
+  const restored = await prisma.$transaction(async (tx) => {
+    await tx.pricingRule.updateMany({
+      where: { mode: current.mode, status: "active" },
+      data: { status: "archived", archivedAt: new Date() },
+    });
+    return tx.pricingRule.update({
+      where: { id: previous.id },
+      data: { status: "active", publishedAt: new Date(), archivedAt: null },
+    });
+  });
+  await writeAudit(request, actor, {
+    action: "config.pricing.rollback",
+    targetType: "pricing_rule",
+    targetId: current.id,
+    reason: body.reason,
+    before: pricingAuditSnapshot(current),
+    after: pricingAuditSnapshot(restored),
+  });
+  return ok({ rule: restored, fromVersion: current.version, toVersion: restored.version });
+}
+
 async function moderationQueue(request: Request) {
   await actorWithPermission(request, "safety.review.read");
   const url = new URL(request.url);
@@ -1045,6 +1363,73 @@ async function billingLedger(request: Request) {
   });
 }
 
+// SPEC: 订阅运营视图 —— 按 user/status 查订阅，定位"付了钱没生效/要退款"的工单。只读。
+// INTENT: 受控 beta 客服排障所需；订阅级退款仍走 billing.ledger.adjust（带关联 id），不自建退款网关。
+async function listSubscriptions(request: Request) {
+  await actorWithPermission(request, "billing.read");
+  const url = new URL(request.url);
+  const userId = url.searchParams.get("userId")?.trim() || undefined;
+  const status = url.searchParams.get("status")?.trim() || undefined;
+  const subscriptions = await prisma.subscription.findMany({
+    where: { userId, status },
+    include: { plan: true, user: true },
+    orderBy: { createdAt: "desc" },
+    take: clampInt(url.searchParams.get("limit"), 1, 100, 50),
+  });
+  return ok({
+    items: subscriptions.map((subscription) => ({
+      id: subscription.id,
+      userId: subscription.userId,
+      userEmail: subscription.user.email,
+      plan: subscription.plan.slug,
+      billingPeriod: subscription.plan.billingPeriod,
+      provider: subscription.provider,
+      status: subscription.status,
+      currentPeriodEnd: subscription.currentPeriodEnd,
+      cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
+      providerSubscriptionId: subscription.providerSubscriptionId,
+      createdAt: subscription.createdAt,
+    })),
+  });
+}
+
+// SPEC: 资金对账只读报表 —— 按时间窗对 DreamcoinLedger 分 reason 聚合 + 活跃订阅数，给运营每日对账。
+// INTENT: 只读，不写；数与 ledger 求和一致。默认窗口最近 30 天。
+async function billingReconciliation(request: Request) {
+  await actorWithPermission(request, "billing.read");
+  const url = new URL(request.url);
+  const now = new Date();
+  const fromParam = url.searchParams.get("from");
+  const toParam = url.searchParams.get("to");
+  const to = toParam ? new Date(toParam) : now;
+  const from = fromParam ? new Date(fromParam) : new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+    throw Errors.badRequest("Invalid reconciliation window");
+  }
+  const [grouped, activeSubscriptions] = await Promise.all([
+    prisma.dreamcoinLedger.groupBy({
+      by: ["reason"],
+      where: { createdAt: { gte: from, lte: to } },
+      _sum: { delta: true },
+      _count: { _all: true },
+    }),
+    prisma.subscription.count({ where: { status: "active" } }),
+  ]);
+  const byReason = grouped
+    .map((row) => ({ reason: row.reason, totalDelta: row._sum.delta ?? 0, count: row._count._all }))
+    .sort((a, b) => a.reason.localeCompare(b.reason));
+  const totals = byReason.reduce(
+    (acc, row) => ({ net: acc.net + row.totalDelta, entries: acc.entries + row.count }),
+    { net: 0, entries: 0 },
+  );
+  return ok({
+    window: { from: from.toISOString(), to: to.toISOString() },
+    activeSubscriptions,
+    byReason,
+    totals,
+  });
+}
+
 async function billingAdjustment(request: Request) {
   const actor = await actorWithPermission(request, "billing.ledger.adjust");
   const body = ledgerAdjustmentSchema.parse(await jsonBody(request));
@@ -1117,6 +1502,164 @@ async function patchFeatureFlag(request: Request, key: string) {
     after: flagAuditSnapshot(updated),
   });
   return ok({ flag: updated });
+}
+
+// SPEC: Analytics/BI 概览 —— 漏斗（注册→激活→付费）、生成状态、币经济、Top 事件，按时间窗只读聚合。
+// INTENT: 接通早已存在但无 endpoint 的 analytics.export 权限（admin+analyst）；给增长决策一个脱敏聚合看板。
+// INVARIANTS: 只读不写；漏斗为窗口内活动口径（非严格 cohort），数与底层表一致；默认窗口最近 30 天。
+async function analyticsOverview(request: Request) {
+  await actorWithPermission(request, "analytics.export");
+  const url = new URL(request.url);
+  const now = new Date();
+  const fromParam = url.searchParams.get("from");
+  const toParam = url.searchParams.get("to");
+  const to = toParam ? new Date(toParam) : now;
+  const from = fromParam ? new Date(fromParam) : new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+    throw Errors.badRequest("Invalid analytics window");
+  }
+  const createdAt = { gte: from, lte: to };
+  const [
+    signups,
+    activatedRows,
+    payingRows,
+    generationByStatus,
+    grantedAgg,
+    spentAgg,
+    ledgerByReason,
+    eventRows,
+  ] = await Promise.all([
+    prisma.user.count({ where: { createdAt, deletedAt: null } }),
+    prisma.generationJob.groupBy({ by: ["userId"], where: { createdAt } }),
+    prisma.subscription.groupBy({ by: ["userId"], where: { createdAt } }),
+    prisma.generationJob.groupBy({ by: ["status"], where: { createdAt }, _count: { _all: true } }),
+    prisma.dreamcoinLedger.aggregate({ where: { createdAt, delta: { gt: 0 } }, _sum: { delta: true } }),
+    prisma.dreamcoinLedger.aggregate({ where: { createdAt, delta: { lt: 0 } }, _sum: { delta: true } }),
+    prisma.dreamcoinLedger.groupBy({
+      by: ["reason"],
+      where: { createdAt },
+      _sum: { delta: true },
+      _count: { _all: true },
+    }),
+    prisma.analyticsEvent.groupBy({ by: ["name"], where: { createdAt }, _count: { _all: true } }),
+  ]);
+
+  const activatedUsers = activatedRows.length;
+  const payingUsers = payingRows.length;
+  const conversionRate = signups > 0 ? Math.round((payingUsers / signups) * 100) : 0;
+  const statusCount = (status: string) =>
+    generationByStatus.find((row) => row.status === status)?._count._all ?? 0;
+  const generationTotal = generationByStatus.reduce((sum, row) => sum + row._count._all, 0);
+  const coinsGranted = grantedAgg._sum.delta ?? 0;
+  const coinsSpent = spentAgg._sum.delta ?? 0;
+  const byReason = ledgerByReason
+    .map((row) => ({ reason: row.reason, totalDelta: row._sum.delta ?? 0, count: row._count._all }))
+    .sort((a, b) => a.reason.localeCompare(b.reason));
+  const topEvents = eventRows
+    .map((row) => ({ name: row.name, count: row._count._all }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 12);
+
+  return ok({
+    window: { from: from.toISOString(), to: to.toISOString() },
+    funnel: { signups, activatedUsers, payingUsers, conversionRate },
+    generation: {
+      total: generationTotal,
+      completed: statusCount("completed"),
+      failed: statusCount("failed"),
+      blocked: statusCount("blocked"),
+    },
+    economy: { coinsGranted, coinsSpent, net: coinsGranted + coinsSpent, byReason },
+    topEvents,
+  });
+}
+
+// SPEC: 资金侧反滥用只读告警 —— 多账号（共享 anonymousId）、Referral 薅取、异常 admin_adjust，窗口内聚合。
+// INTENT: 注册送 250 币的产品 beta 期会被刷；先让运营「看得见」，处置仍走既有封禁/adjust（本视图不写）。
+// INVARIANTS: 只读；deviceClusters 用 signup 事件的 anonymousId 聚类（同浏览器多账号信号，非完备：清 cookie/无痕可绕）。
+// EXAMPLE: 一个 anonymousId 上挂 3 个 userId → accountCount=3，进多账号告警表。
+async function abuseOverview(request: Request) {
+  await actorWithPermission(request, "billing.read");
+  const url = new URL(request.url);
+  const now = new Date();
+  const fromParam = url.searchParams.get("from");
+  const toParam = url.searchParams.get("to");
+  const to = toParam ? new Date(toParam) : now;
+  const from = fromParam ? new Date(fromParam) : new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+    throw Errors.badRequest("Invalid risk window");
+  }
+  const createdAt = { gte: from, lte: to };
+
+  const [signupGroups, referralGroups, adjustGroups] = await Promise.all([
+    prisma.analyticsEvent.groupBy({
+      by: ["anonymousId"],
+      where: { name: "signup", anonymousId: { not: null }, createdAt },
+      _count: { _all: true },
+    }),
+    prisma.referral.groupBy({
+      by: ["inviterId"],
+      where: { createdAt },
+      _count: { _all: true },
+    }),
+    prisma.dreamcoinLedger.groupBy({
+      by: ["userId"],
+      where: { reason: "admin_adjust", createdAt },
+      _sum: { delta: true },
+      _count: { _all: true },
+    }),
+  ]);
+
+  // 多账号：同 anonymousId 出现 ≥2 次 signup → 取该 anonymousId 下的 distinct userId。
+  const flaggedAnon = signupGroups
+    .filter((group) => group._count._all >= 2)
+    .sort((a, b) => b._count._all - a._count._all)
+    .slice(0, 20)
+    .map((group) => group.anonymousId)
+    .filter((id): id is string => Boolean(id));
+  let deviceClusters: Array<{ anonymousId: string; accountCount: number; userIds: string[] }> = [];
+  if (flaggedAnon.length > 0) {
+    const events = await prisma.analyticsEvent.findMany({
+      where: { name: "signup", anonymousId: { in: flaggedAnon } },
+      select: { anonymousId: true, userId: true },
+    });
+    const byAnon = new Map<string, Set<string>>();
+    for (const event of events) {
+      if (!event.anonymousId || !event.userId) continue;
+      const set = byAnon.get(event.anonymousId) ?? new Set<string>();
+      set.add(event.userId);
+      byAnon.set(event.anonymousId, set);
+    }
+    deviceClusters = flaggedAnon
+      .map((anonymousId) => ({
+        anonymousId,
+        accountCount: byAnon.get(anonymousId)?.size ?? 0,
+        userIds: [...(byAnon.get(anonymousId) ?? [])].slice(0, 10),
+      }))
+      .filter((cluster) => cluster.accountCount >= 2);
+  }
+
+  const referralAbuse = referralGroups
+    .filter((group) => group._count._all >= 3)
+    .map((group) => ({ inviterId: group.inviterId, referralCount: group._count._all }))
+    .sort((a, b) => b.referralCount - a.referralCount)
+    .slice(0, 20);
+
+  const adjustAnomalies = adjustGroups
+    .map((group) => ({
+      userId: group.userId,
+      totalDelta: group._sum.delta ?? 0,
+      count: group._count._all,
+    }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 20);
+
+  return ok({
+    window: { from: from.toISOString(), to: to.toISOString() },
+    deviceClusters,
+    referralAbuse,
+    adjustAnomalies,
+  });
 }
 
 async function auditLog(request: Request) {
@@ -1346,6 +1889,24 @@ function templateAuditSnapshot(template: {
     useCase: template.useCase,
     version: template.version,
     status: template.status,
+  };
+}
+
+function pricingAuditSnapshot(rule: {
+  ruleKey: string;
+  mode: string;
+  baseCost: number;
+  multiplier: number;
+  version: number;
+  status: string;
+}) {
+  return {
+    ruleKey: rule.ruleKey,
+    mode: rule.mode,
+    baseCost: rule.baseCost,
+    multiplier: rule.multiplier,
+    version: rule.version,
+    status: rule.status,
   };
 }
 

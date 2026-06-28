@@ -274,6 +274,101 @@ describe("generation config control plane", () => {
   });
 });
 
+describe("pricing control plane", () => {
+  it("gates pricing reads/writes by permission key", async () => {
+    const admin = await setupActor("admin", "pricing-perm");
+    const support = await setupActor("support", "pricing-perm");
+    const ops = await setupActor("ops", "pricing-perm");
+
+    // 读 billing.read（admin+support 可见），写 config.pricing.write（admin only）。
+    expectOk(await api("GET", "admin/pricing/rules", { userId: support, role: "support" }));
+    expectOk(await api("GET", "admin/pricing/rules", { userId: admin, role: "admin" }));
+    expectError(await api("GET", "admin/pricing/rules", { userId: ops, role: "ops" }), 403);
+    expectError(
+      await api("POST", "admin/pricing/rules", {
+        userId: support,
+        role: "support",
+        body: { ruleKey: `${P}noop`, label: "x", mode: "video", baseCost: 10 },
+      }),
+      403,
+    );
+  });
+
+  it("publishes and rolls back pricing rules with audit, keeping one active per mode", async () => {
+    const admin = await setupActor("admin", "pricing");
+    const ruleKey = `${P}video_base`;
+    await prisma.pricingRule.create({
+      data: {
+        id: `${P}pricing-v1`,
+        ruleKey,
+        label: "Video base v1",
+        mode: "video",
+        baseCost: 80,
+        multiplier: 1,
+        version: 1,
+        status: "active",
+        publishedAt: new Date(),
+      },
+    });
+
+    const draft = await api("POST", "admin/pricing/rules", {
+      userId: admin,
+      role: "admin",
+      body: { ruleKey, label: "Video base v2", mode: "video", baseCost: 60, multiplier: 1 },
+    });
+    expectOk(draft);
+    expect(draft.data.rule).toMatchObject({ status: "draft", version: 2, baseCost: 60 });
+
+    // 只有 draft 能编辑；active 规则改价必须走新 draft + publish。
+    const editActive = await api("PATCH", `admin/pricing/rules/${P}pricing-v1`, {
+      userId: admin,
+      role: "admin",
+      body: { baseCost: 70 },
+    });
+    expectError(editActive, 400, "bad_request");
+
+    const publish = await api("POST", `admin/pricing/rules/${draft.data.rule.id}/publish`, {
+      userId: admin,
+      role: "admin",
+      body: { reason: "promo price drop", confirmation: "PUBLISH" },
+    });
+    expectOk(publish);
+    expect(publish.data.rule).toMatchObject({ status: "active", version: 2, baseCost: 60 });
+    expect(await prisma.pricingRule.findUnique({ where: { id: `${P}pricing-v1` } })).toMatchObject({
+      status: "archived",
+    });
+    // 不变量：每个 mode 至多一个 active 规则（generationCost 的资金侧 SSoT）。
+    expect(
+      await prisma.pricingRule.count({ where: { ruleKey, mode: "video", status: "active" } }),
+    ).toBe(1);
+
+    const rollback = await api("POST", `admin/pricing/rules/${publish.data.rule.id}/rollback`, {
+      userId: admin,
+      role: "admin",
+      body: { reason: "promo ended", confirmation: "ROLLBACK" },
+    });
+    expectOk(rollback);
+    expect(rollback.data).toMatchObject({ fromVersion: 2, toVersion: 1 });
+    expect(await prisma.pricingRule.findUnique({ where: { id: `${P}pricing-v1` } })).toMatchObject({
+      status: "active",
+      baseCost: 80,
+    });
+
+    const actions = (
+      await prisma.adminAuditLog.findMany({
+        where: { actorId: admin, targetType: "pricing_rule" },
+      })
+    ).map((audit) => audit.action);
+    expect(actions).toEqual(
+      expect.arrayContaining([
+        "config.pricing.create",
+        "config.pricing.publish",
+        "config.pricing.rollback",
+      ]),
+    );
+  });
+});
+
 describe("admin writes are audited", () => {
   it("suspends users, adjusts ledger by append-only entry, and blocks hard-policy flags", async () => {
     const admin = await setupActor("admin", "writes");
@@ -356,6 +451,346 @@ describe("admin writes are audited", () => {
       status: "completed",
     });
     expect(await prisma.dreamcoinLedger.count({ where: { userId: target, reason: "refund" } })).toBe(0);
+  });
+});
+
+describe("dead-letter operations console", () => {
+  async function makeJob(id: string, userId: string, status: string, cost = 10, errorCode?: string) {
+    return prisma.generationJob.create({
+      data: {
+        id,
+        userId,
+        mode: "image",
+        controls: {},
+        presetIds: [],
+        status,
+        costDreamcoins: cost,
+        errorCode,
+      },
+    });
+  }
+
+  it("lists failed/blocked jobs with refund state and gates reads", async () => {
+    const ops = await setupActor("ops", "dl-list");
+    const analyst = await setupActor("analyst", "dl-list");
+    const owner = `${P}dl-owner`;
+    await createUser({ id: owner });
+    await makeJob(`${P}dl-failed`, owner, "failed", 10, "provider_timeout");
+    await makeJob(`${P}dl-blocked`, owner, "blocked", 10);
+    await makeJob(`${P}dl-done`, owner, "completed", 10);
+
+    expectError(
+      await api("GET", "admin/generation/dead-letter", { userId: analyst, role: "analyst" }),
+      403,
+    );
+
+    const list = await api("GET", "admin/generation/dead-letter", { userId: ops, role: "ops" });
+    expectOk(list);
+    const items = list.data.items as Array<{ id: string; ledgerState: string }>;
+    const ids = items.map((item) => item.id);
+    expect(ids).toEqual(expect.arrayContaining([`${P}dl-failed`, `${P}dl-blocked`]));
+    expect(ids).not.toContain(`${P}dl-done`);
+    expect(items.find((item) => item.id === `${P}dl-failed`)?.ledgerState).toBe("reserved");
+  });
+
+  it("batch requeues failed jobs, skips refunded/missing, writes one audit", async () => {
+    const admin = await setupActor("admin", "dl-requeue");
+    const owner = `${P}dl-rq-owner`;
+    await createUser({ id: owner });
+    await makeJob(`${P}dl-rq-failed`, owner, "failed", 5);
+    await makeJob(`${P}dl-rq-refunded`, owner, "failed", 5);
+    await prisma.dreamcoinLedger.create({
+      data: {
+        id: `${P}dl-rq-refund`,
+        userId: owner,
+        delta: 5,
+        balanceAfter: 5,
+        reason: "refund",
+        sourceId: `${P}dl-rq-refunded`,
+      },
+    });
+
+    const res = await api("POST", "admin/generation/dead-letter/requeue", {
+      userId: admin,
+      role: "admin",
+      body: {
+        jobIds: [`${P}dl-rq-failed`, `${P}dl-rq-refunded`, `${P}dl-rq-missing`],
+        reason: "provider recovered",
+        confirmation: "REQUEUE",
+      },
+    });
+    expectOk(res);
+    expect(res.data.requeued).toEqual([`${P}dl-rq-failed`]);
+    const skipped = Object.fromEntries(
+      (res.data.skipped as Array<{ id: string; reason: string }>).map((s) => [s.id, s.reason]),
+    );
+    expect(skipped[`${P}dl-rq-refunded`]).toBe("refunded");
+    expect(skipped[`${P}dl-rq-missing`]).toBe("not_found");
+    expect(await prisma.generationJob.findUnique({ where: { id: `${P}dl-rq-failed` } })).toMatchObject({
+      status: "queued",
+    });
+    const audit = await prisma.adminAuditLog.findFirstOrThrow({
+      where: { actorId: admin, action: "ops.deadletter.requeue" },
+    });
+    expect(audit.targetType).toBe("generation_job_batch");
+  });
+
+  it("batch discards with idempotent refund and writes one audit", async () => {
+    const admin = await setupActor("admin", "dl-discard");
+    const owner = `${P}dl-dc-owner`;
+    await createUser({ id: owner });
+    await makeJob(`${P}dl-dc-failed`, owner, "failed", 8);
+    await makeJob(`${P}dl-dc-refunded`, owner, "blocked", 8);
+    await prisma.dreamcoinLedger.create({
+      data: {
+        id: `${P}dl-dc-refund`,
+        userId: owner,
+        delta: 8,
+        balanceAfter: 8,
+        reason: "refund",
+        sourceId: `${P}dl-dc-refunded`,
+      },
+    });
+
+    const res = await api("POST", "admin/generation/dead-letter/discard", {
+      userId: admin,
+      role: "admin",
+      body: {
+        jobIds: [`${P}dl-dc-failed`, `${P}dl-dc-refunded`],
+        reason: "permanent provider outage",
+        confirmation: "DISCARD",
+      },
+    });
+    expectOk(res);
+    expect(res.data.discarded).toEqual(
+      expect.arrayContaining([`${P}dl-dc-failed`, `${P}dl-dc-refunded`]),
+    );
+    expect(res.data.refunded).toEqual([`${P}dl-dc-failed`]);
+    // 幂等：每个 job 至多一条 refund。
+    expect(
+      await prisma.dreamcoinLedger.count({ where: { sourceId: `${P}dl-dc-refunded`, reason: "refund" } }),
+    ).toBe(1);
+    expect(
+      await prisma.dreamcoinLedger.count({ where: { sourceId: `${P}dl-dc-failed`, reason: "refund" } }),
+    ).toBe(1);
+    expect(
+      await prisma.adminAuditLog.count({ where: { actorId: admin, action: "ops.deadletter.discard" } }),
+    ).toBe(1);
+  });
+});
+
+describe("billing operations", () => {
+  it("lists subscriptions with plan + status and gates by billing.read", async () => {
+    const support = await setupActor("support", "billing-subs");
+    const ops = await setupActor("ops", "billing-subs");
+    const owner = `${P}sub-owner`;
+    await createUser({ id: owner });
+    // 复用 seed 的 premium 套餐，避免 (slug, billingPeriod) 唯一约束碰撞。
+    const plan = await prisma.plan.findFirstOrThrow({ where: { slug: "premium" } });
+    await prisma.subscription.create({
+      data: {
+        id: `${P}sub-1`,
+        userId: owner,
+        planId: plan.id,
+        provider: "mock",
+        status: "active",
+        currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      },
+    });
+
+    // ops 无 billing.read。
+    expectError(await api("GET", "admin/billing/subscriptions", { userId: ops, role: "ops" }), 403);
+
+    const list = await api("GET", "admin/billing/subscriptions", {
+      userId: support,
+      role: "support",
+      query: { userId: owner },
+    });
+    expectOk(list);
+    expect(list.data.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: `${P}sub-1`,
+          plan: "premium",
+          status: "active",
+          provider: "mock",
+        }),
+      ]),
+    );
+  });
+
+  it("reconciles ledger by reason over the window with one active-subscription count", async () => {
+    const admin = await setupActor("admin", "billing-recon");
+    const owner = `${P}recon-owner`;
+    await createUser({ id: owner });
+    await prisma.dreamcoinLedger.create({
+      data: {
+        id: `${P}recon-grant`,
+        userId: owner,
+        delta: 250,
+        balanceAfter: 250,
+        reason: "signup_bonus",
+        sourceId: `${P}recon-grant`,
+      },
+    });
+    await prisma.dreamcoinLedger.create({
+      data: {
+        id: `${P}recon-spend-1`,
+        userId: owner,
+        delta: -5,
+        balanceAfter: 245,
+        reason: "generation_spend",
+        sourceId: `${P}recon-spend-1`,
+      },
+    });
+    await prisma.dreamcoinLedger.create({
+      data: {
+        id: `${P}recon-spend-2`,
+        userId: owner,
+        delta: -5,
+        balanceAfter: 240,
+        reason: "generation_spend",
+        sourceId: `${P}recon-spend-2`,
+      },
+    });
+
+    const recon = await api("GET", "admin/billing/reconciliation", { userId: admin, role: "admin" });
+    expectOk(recon);
+    // 全局窗口聚合，断言用 >=/<= 以兼容并发测试数据。
+    const byReason = Object.fromEntries(
+      (recon.data.byReason as Array<{ reason: string; totalDelta: number; count: number }>).map(
+        (row) => [row.reason, row],
+      ),
+    );
+    expect(byReason.signup_bonus?.totalDelta).toBeGreaterThanOrEqual(250);
+    expect(byReason.generation_spend?.totalDelta).toBeLessThanOrEqual(-10);
+    expect(recon.data.totals.entries).toBeGreaterThanOrEqual(3);
+    expect(typeof recon.data.activeSubscriptions).toBe("number");
+  });
+});
+
+describe("analytics overview", () => {
+  it("aggregates funnel/economy and gates by analytics.export", async () => {
+    const analyst = await setupActor("analyst", "analytics");
+    const ops = await setupActor("ops", "analytics");
+    const owner = `${P}an-owner`;
+    await createUser({ id: owner });
+    const plan = await prisma.plan.findFirstOrThrow({ where: { slug: "premium" } });
+    await prisma.subscription.create({
+      data: { id: `${P}an-sub`, userId: owner, planId: plan.id, provider: "mock", status: "active" },
+    });
+    await prisma.generationJob.create({
+      data: {
+        id: `${P}an-job`,
+        userId: owner,
+        mode: "image",
+        controls: {},
+        presetIds: [],
+        status: "completed",
+        costDreamcoins: 5,
+      },
+    });
+    await prisma.dreamcoinLedger.create({
+      data: {
+        id: `${P}an-grant`,
+        userId: owner,
+        delta: 100,
+        balanceAfter: 100,
+        reason: "subscription_grant",
+        sourceId: `${P}an-grant`,
+      },
+    });
+    await prisma.dreamcoinLedger.create({
+      data: {
+        id: `${P}an-spend`,
+        userId: owner,
+        delta: -5,
+        balanceAfter: 95,
+        reason: "generation_spend",
+        sourceId: `${P}an-job`,
+      },
+    });
+
+    // ops 无 analytics.export。
+    expectError(await api("GET", "admin/analytics/overview", { userId: ops, role: "ops" }), 403);
+
+    const overview = await api("GET", "admin/analytics/overview", {
+      userId: analyst,
+      role: "analyst",
+    });
+    expectOk(overview);
+    // 全局窗口聚合，用 >= 兼容并发测试数据。
+    expect(overview.data.funnel.signups).toBeGreaterThanOrEqual(1);
+    expect(overview.data.funnel.activatedUsers).toBeGreaterThanOrEqual(1);
+    expect(overview.data.funnel.payingUsers).toBeGreaterThanOrEqual(1);
+    expect(typeof overview.data.funnel.conversionRate).toBe("number");
+    expect(overview.data.generation.total).toBeGreaterThanOrEqual(1);
+    expect(overview.data.economy.coinsGranted).toBeGreaterThanOrEqual(100);
+    expect(overview.data.economy.coinsSpent).toBeLessThanOrEqual(-5);
+    const eventNames = (overview.data.topEvents as Array<{ name: string }>).map((e) => e.name);
+    expect(Array.isArray(eventNames)).toBe(true);
+  });
+});
+
+describe("risk / abuse overview", () => {
+  it("flags multi-account device clusters, referral farming, and adjust anomalies", async () => {
+    const support = await setupActor("support", "abuse");
+    const ops = await setupActor("ops", "abuse");
+
+    // 多账号：同 anonymousId 下两个账号各一条 signup 事件。
+    const anon = `${P}device-shared`;
+    const accountA = `${P}abuse-a`;
+    const accountB = `${P}abuse-b`;
+    await createUser({ id: accountA });
+    await createUser({ id: accountB });
+    await prisma.analyticsEvent.create({
+      data: { id: `${P}ev-a`, userId: accountA, anonymousId: anon, name: "signup", props: {} },
+    });
+    await prisma.analyticsEvent.create({
+      data: { id: `${P}ev-b`, userId: accountB, anonymousId: anon, name: "signup", props: {} },
+    });
+
+    // Referral 薅取：一个 inviter 三条邀请。
+    const inviter = `${P}abuse-inviter`;
+    await createUser({ id: inviter });
+    for (let i = 0; i < 3; i += 1) {
+      await prisma.referral.create({
+        data: { id: `${P}ref-${i}`, inviterId: inviter, code: `${P}code-${i}` },
+      });
+    }
+
+    // 异常 admin_adjust：一个用户两条人工调整。
+    const adjusted = `${P}abuse-adjusted`;
+    await createUser({ id: adjusted });
+    await prisma.dreamcoinLedger.create({
+      data: { id: `${P}adj-1`, userId: adjusted, delta: 500, balanceAfter: 500, reason: "admin_adjust", sourceId: `${P}adj-1` },
+    });
+    await prisma.dreamcoinLedger.create({
+      data: { id: `${P}adj-2`, userId: adjusted, delta: 500, balanceAfter: 1000, reason: "admin_adjust", sourceId: `${P}adj-2` },
+    });
+
+    // ops 无 billing.read。
+    expectError(await api("GET", "admin/risk/abuse", { userId: ops, role: "ops" }), 403);
+
+    const res = await api("GET", "admin/risk/abuse", { userId: support, role: "support" });
+    expectOk(res);
+
+    const cluster = (res.data.deviceClusters as Array<{ anonymousId: string; accountCount: number; userIds: string[] }>).find(
+      (item) => item.anonymousId === anon,
+    );
+    expect(cluster?.accountCount).toBe(2);
+    expect(cluster?.userIds).toEqual(expect.arrayContaining([accountA, accountB]));
+
+    const referral = (res.data.referralAbuse as Array<{ inviterId: string; referralCount: number }>).find(
+      (item) => item.inviterId === inviter,
+    );
+    expect(referral?.referralCount).toBeGreaterThanOrEqual(3);
+
+    const anomaly = (res.data.adjustAnomalies as Array<{ userId: string; count: number; totalDelta: number }>).find(
+      (item) => item.userId === adjusted,
+    );
+    expect(anomaly?.count).toBe(2);
+    expect(anomaly?.totalDelta).toBe(1000);
   });
 });
 

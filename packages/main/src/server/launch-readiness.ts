@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { looksLikeMockChatResponse } from "@idream/shared";
 import { parse as parseDotenv } from "dotenv";
 
 export type LaunchReadinessStatus = "pass" | "fail" | "warn";
@@ -97,6 +98,7 @@ export interface ChatModelProbeEvidence {
   model?: string | null;
   chunks?: number;
   characters?: number;
+  assistantPreview?: string | null;
   done?: boolean;
   loadError?: string;
   error?: { code?: string; message?: string } | null;
@@ -186,6 +188,8 @@ export interface ProductConfigProbeEvidence {
   activeVideoCharacterTemplates?: number;
   activeVideoFreeplayTemplates?: number;
   activeVideoPricingRules?: number;
+  publicCharacters?: number;
+  publicCharactersWithSystemPrompt?: number;
   loadError?: string;
   error?: { code?: string; message?: string } | null;
 }
@@ -721,6 +725,9 @@ function addChatModelProbeCheck(
     if ((probe.characters ?? 0) < 1) {
       problems.push("probe produced no assistant text");
     }
+    if (looksLikeMockChatResponse(probe.assistantPreview ?? "")) {
+      problems.push("probe assistant text is a mock/template response");
+    }
     if (probe.done !== true) {
       problems.push("probe stream did not finish");
     }
@@ -1143,6 +1150,12 @@ function addProductConfigProbeCheck(
     }
     if ((probe.activeImagePricingRules ?? 0) < 1) {
       problems.push("no active image pricing rule is configured");
+    }
+    if (
+      (probe.publicCharacters ?? 0) > 0 &&
+      (probe.publicCharactersWithSystemPrompt ?? 0) < 1
+    ) {
+      problems.push("public characters have no chat system prompts configured");
     }
 
     if (probe.videoFeatureEnabled === true) {
@@ -1919,6 +1932,8 @@ function normalizeChatModelProbeEvidence(value: unknown): ChatModelProbeEvidence
     chunks: typeof value.chunks === "number" ? value.chunks : undefined,
     characters:
       typeof value.characters === "number" ? value.characters : undefined,
+    assistantPreview:
+      typeof value.assistantPreview === "string" ? value.assistantPreview : null,
     done: typeof value.done === "boolean" ? value.done : false,
     error: normalizeProbeError(value.error),
   };
@@ -2032,6 +2047,12 @@ function normalizeProductConfigProbeEvidence(value: unknown): ProductConfigProbe
     activeVideoPricingRules:
       typeof value.activeVideoPricingRules === "number"
         ? value.activeVideoPricingRules
+        : undefined,
+    publicCharacters:
+      typeof value.publicCharacters === "number" ? value.publicCharacters : undefined,
+    publicCharactersWithSystemPrompt:
+      typeof value.publicCharactersWithSystemPrompt === "number"
+        ? value.publicCharactersWithSystemPrompt
         : undefined,
     error: normalizeProbeError(value.error),
   };

@@ -6,7 +6,8 @@
 import type { ChatPrismaClient, ChatCharacterView } from "./db.js";
 import { env } from "./env.js";
 import { resolvePolicy, snapshotFromView, type ChatPolicy } from "./policy.js";
-import { retrieveMemories } from "./retrieval.js";
+import { readBoundaries, retrieveMemories } from "./retrieval.js";
+import { getRelationshipState } from "./relationship.js";
 
 const MEMORY_READ_TIMEOUT_MS = 250;
 
@@ -17,6 +18,8 @@ export interface BuiltContext {
   recentMessages: Array<{ id: string; role: "user" | "assistant"; content: string }>;
   boundaries: string[];
   longTermMemories: string[];
+  /** Qualitative companion bond for tone/continuity (P1-B). Null when none/incognito. */
+  relationship: { stage: string; summary: string } | null;
 }
 
 export interface BuildContextInput {
@@ -48,11 +51,18 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
     .reverse()
     .map((m) => ({ id: m.id, role: m.role as "user" | "assistant", content: m.content }));
 
-  // File-layer memory retrieval with a timeout budget — degrade on slowness.
-  // Query = the latest user turn (semantic ranking when igrep is enabled).
+  // File-layer retrieval (design §3 step 8 / P0-G). Boundaries and normal memories
+  // are read SEPARATELY with different reliability contracts:
+  //   - boundaries: full read every turn, NO timeout/degrade. A read error fails
+  //     closed (throws) so we never generate a boundary-less reply.
+  //   - long-term memories: degradable. Timeout/error → drop to recent-only.
   let boundaries: string[] = [];
   let longTermMemories: string[] = [];
+  let relationship: BuiltContext["relationship"] = null;
   if (memoryEnabled && policy.maxMemories > 0) {
+    // Fail-closed: a genuine boundaries read error propagates and aborts the turn.
+    boundaries = await readBoundaries(userId);
+
     const query = [...recentMessages].reverse().find((m) => m.role === "user")?.content ?? "";
     const read = retrieveMemories({ userId, characterId, query, max: policy.maxMemories });
     // Outer hot-path cap. recency = 250ms; igrep mode gets its own budget + margin
@@ -61,9 +71,15 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
       env.MEMORY_RETRIEVAL === "igrep"
         ? env.MEMORY_RETRIEVAL_TIMEOUT_MS + MEMORY_READ_TIMEOUT_MS
         : MEMORY_READ_TIMEOUT_MS;
-    const degraded = await withTimeout(read, budget, { boundaries: [], memories: [] });
-    boundaries = degraded.boundaries;
-    longTermMemories = degraded.memories;
+    longTermMemories = await withTimeout(read, budget, []);
+
+    // Relationship: qualitative bond for tone/continuity (P1-B). Degradable like
+    // memories — a slow/failed read drops to null, never blocks the reply. Only
+    // injected once a bond has actually formed (version > 0).
+    const relRead = getRelationshipState(userId, characterId).then((r) =>
+      r.version > 0 ? { stage: r.stage, summary: r.summary } : null,
+    );
+    relationship = await withTimeout(relRead, MEMORY_READ_TIMEOUT_MS, null);
   }
 
   return {
@@ -73,6 +89,7 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
     recentMessages,
     boundaries,
     longTermMemories,
+    relationship,
   };
 }
 

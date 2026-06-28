@@ -1,6 +1,6 @@
 # 图片生成服务产品与实现方案
 
-更新日期：2026-06-24
+更新日期：2026-06-27
 
 ## 1. 文档目的
 
@@ -14,7 +14,7 @@
 - **引擎隔离**：产品侧不直接绑定 MLX 或 `stable-diffusion.cpp`；它们只能作为内部 Pipeline Service 的 runner。P0 生产 runner 优先 `stable-diffusion.cpp`，MLX 作为 Apple Silicon 本地实验/高保真验证 runner。
 - **后台可配置**：模型档位、prompt 模板、preset 片段、价格、权益、灰度和开关必须能在内部管理后台配置和审计，而不是每次改代码部署。
 
-视频生成保留 API contract、付费门和 worker 骨架，但不作为本轮可用用户功能发布。
+视频生成保留 API contract、付费门和 worker 骨架，但**第一期不发布为用户可用功能**——原因是视频生成耗时过长、产出体验暂不达标，正式排入 V1.1（见 `docs/architecture/12-roadmap.md` 的 2026-06-27 范围决策）。第一期内 `VIDEO_PROVIDER`/`GEN_VIDEO_PROVIDER` 保持 `mock`、`video_gen` 功能位保持 `false`。
 
 ## 2. 当前基线分析
 

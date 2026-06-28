@@ -39,8 +39,12 @@ function unsupportedProvider(name: string, value: string, supported: readonly st
 function assertProductionProvidersConfigured() {
   if (env.APP_ENV !== "production") return;
 
+  // VIDEO_PROVIDER is intentionally absent: video generation is deferred to V1.1
+  // (2026-06-27 scope decision — too slow for phase 1), so main never wires a real
+  // video adapter and `video` stays mock by design. See docs/architecture/12-roadmap.md.
   const mockProviders = [
     ["CHAT_PROVIDER", env.CHAT_PROVIDER],
+    ["IMAGE_PROVIDER", env.IMAGE_PROVIDER],
     ["VOICE_PROVIDER", env.VOICE_PROVIDER],
     ["MODERATION_PROVIDER", env.MODERATION_PROVIDER],
     ["PAYMENT_PROVIDER", env.PAYMENT_PROVIDER],
@@ -249,8 +253,13 @@ export function createProviderRegistry(): ProviderRegistry {
     chat: createChatProvider(),
     // Split deployments consume image/video traffic in packages/gen. Main keeps
     // an image pipeline adapter so the local DB-backed queue cannot silently
-    // complete real jobs with mock assets.
+    // complete real jobs with mock assets — IMAGE_PROVIDER must be non-mock in
+    // production (enforced by assertProductionProvidersConfigured).
     image: createImageProvider(),
+    // Video is deferred to V1.1 (2026-06-27 scope decision: video gen too slow for
+    // phase 1). Main intentionally never wires a real video adapter — packages/gen
+    // owns video when it ships — so this stays mock by design and is excluded from
+    // the production non-mock guard. See docs/architecture/12-roadmap.md.
     video: new MockVideoModel(),
     voice: createVoiceProvider(blob),
     moderation: createModerationProvider(),

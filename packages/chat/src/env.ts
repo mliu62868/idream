@@ -37,6 +37,20 @@ export const env = {
   get CHAT_MODEL_NAME() {
     return process.env.CHAT_MODEL_NAME ?? process.env.PIPELINE_CHAT_MODEL_DEFAULT ?? "Qwen3.5-0.8B-8bit";
   },
+  // Tier → real model aliases (design P0-D). The policy resolver maps an
+  // entitlement tier to ONE of these; the provider streams with the resolved
+  // model so Premium/Deluxe "premium chat models" are a real, enforced benefit —
+  // not a label. Each defaults to CHAT_MODEL_NAME so a single-model deploy still
+  // works unchanged.
+  get CHAT_MODEL_FREE() {
+    return process.env.CHAT_MODEL_FREE ?? this.CHAT_MODEL_NAME;
+  },
+  get CHAT_MODEL_PREMIUM() {
+    return process.env.CHAT_MODEL_PREMIUM ?? this.CHAT_MODEL_NAME;
+  },
+  get CHAT_MODEL_DELUXE() {
+    return process.env.CHAT_MODEL_DELUXE ?? this.CHAT_MODEL_NAME;
+  },
   get CHAT_MODEL_API_KEY() {
     return process.env.CHAT_MODEL_API_KEY ?? process.env.PIPELINE_API_TOKEN ?? "";
   },

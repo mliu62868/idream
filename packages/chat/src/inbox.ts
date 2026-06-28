@@ -4,6 +4,7 @@
 // the read-only views (re-checked every turn). Consumers are idempotent on eventId.
 import type { ChatPrismaClient } from "./db.js";
 import { chatPrisma } from "./db.js";
+import { deleteAccount } from "./privacy.js";
 import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 
 export interface InboundEvent {
@@ -47,10 +48,9 @@ export async function consumeInbound(
 
 async function applyEffect(event: InboundEvent, prisma: ChatPrismaClient): Promise<void> {
   switch (event.eventType) {
-    case MAIN_TO_CHAT_EVENTS.userSuspended:
-    case MAIN_TO_CHAT_EVENTS.userDeleted: {
-      // Stop active sessions for the user; new messages were already blocked by
-      // the eligibility view, this just reflects it in chat state.
+    case MAIN_TO_CHAT_EVENTS.userSuspended: {
+      // Reversible: stop active sessions. New messages were already blocked by the
+      // eligibility view; this just reflects suspension in chat state.
       const userId = String(event.payload.userId ?? "");
       if (userId) {
         await prisma.chatSession.updateMany({
@@ -58,6 +58,14 @@ async function applyEffect(event: InboundEvent, prisma: ChatPrismaClient): Promi
           data: { status: "archived" },
         });
       }
+      return;
+    }
+    case MAIN_TO_CHAT_EVENTS.userDeleted: {
+      // Account deletion: erase the chat domain (PG rows + sessions/{u}/ + mem/{u}/)
+      // and emit chat.account_erasure.completed (design P0-F). deleteAccount is
+      // idempotent, so a redelivered user.deleted is safe.
+      const userId = String(event.payload.userId ?? "");
+      if (userId) await deleteAccount({ userId }, prisma);
       return;
     }
     case MAIN_TO_CHAT_EVENTS.characterRemoved: {

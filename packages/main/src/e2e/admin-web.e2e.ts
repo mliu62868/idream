@@ -64,9 +64,13 @@ test("admin web loads all control-plane sections and filters users", async ({ pa
     { path: "/admin", heading: "Dashboard", evidence: "Feature Flags" },
     { path: "/admin/generation/jobs", heading: "Generation Jobs", evidence: "status" },
     { path: "/admin/generation/config", heading: "Generation Config", evidence: "Model Profiles" },
+    { path: "/admin/generation/dead-letter", heading: "Dead-letter", evidence: "Dead-letter Queue" },
     { path: "/admin/moderation", heading: "Moderation", evidence: "Reports" },
     { path: "/admin/users", heading: "Users", evidence: admin.email },
-    { path: "/admin/billing", heading: "Billing", evidence: "Ledger" },
+    { path: "/admin/billing", heading: "Billing", evidence: "Subscriptions" },
+    { path: "/admin/pricing", heading: "Pricing", evidence: "Pricing Rules" },
+    { path: "/admin/analytics", heading: "Analytics", evidence: "Top events" },
+    { path: "/admin/risk", heading: "Risk & Abuse", evidence: "Multi-account device clusters" },
     { path: "/admin/audit-log", heading: "Audit Log", evidence: "Audit" },
   ];
 

@@ -30,6 +30,19 @@ type ProfilePayload = {
   };
 };
 
+// P1-D: describe the chat entitlement that matches the active plan tier so users
+// see what their plan actually unlocks for chat (not a vague "benefits" line).
+function chatEntitlementSummary(plan: string): string {
+  const p = plan.toLowerCase();
+  if (p.includes("deluxe")) {
+    return "Unlimited messages · premium chat model · 3× chat memory · highest rate limit.";
+  }
+  if (p.includes("premium")) {
+    return "Unlimited messages · longer context · advanced generation controls.";
+  }
+  return "Free: 30 messages per day · basic chat model · base memory.";
+}
+
 type LibraryPayload = {
   data?: {
     items?: LibraryItem[];
@@ -281,6 +294,15 @@ export function ProfileWorkspace() {
           >
             Upgrade
           </Link>
+        </div>
+        {/* P1-D: surface the concrete chat entitlement for the active tier. */}
+        <div className="mt-6 rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-4">
+          <p className="text-[12px] font-bold uppercase tracking-wide text-[rgb(114,113,112)]">
+            Chat plan
+          </p>
+          <p className="mt-2 text-[14px] font-semibold leading-6 text-white">
+            {chatEntitlementSummary(plan)}
+          </p>
         </div>
         <div className="mt-6 flex flex-wrap gap-2">
           {tabs.map((item) => (

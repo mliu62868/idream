@@ -563,6 +563,51 @@ test("chat UI starts from character detail, sends a message, and persists histor
   await expectAssistantReplyVisible(page);
 });
 
+// P1-A management controls (plan §10.3): regenerate, delete message, no-memory
+// toggle, and the session list drawer — all over the real chat service.
+test("chat UI exposes regenerate, delete, memory toggle, and the session list", async ({
+  page,
+}) => {
+  await startSignedInAdultSession(page, "chat-manage");
+  const message = `manage me ${Date.now()}`;
+
+  await page.goto("/characters/melissa-burke");
+  await expect(page.getByRole("heading", { name: "Melissa Burke" })).toBeVisible({ timeout: 10_000 });
+  await page.getByRole("button", { name: "Chat" }).click();
+  await expect(page).toHaveURL(/\/chat\/[^/]+$/);
+
+  await page.getByRole("textbox", { name: "Message", exact: true }).fill(message);
+  await page.getByRole("button", { name: "Send message" }).click();
+  await expect(page.getByTestId("chat-message-user").filter({ hasText: message })).toBeVisible({
+    timeout: 10_000,
+  });
+  await expectAssistantReplyVisible(page);
+
+  // Regenerate: the single assistant bubble refreshes its content (no extra bubble).
+  await page.getByTestId("chat-message-assistant").getByTestId("chat-regenerate").click();
+  await expectAssistantReplyVisible(page);
+
+  // No-memory toggle flips the header copy to the incognito explanation.
+  await page.getByTestId("memory-toggle").click();
+  await expect(page.getByText(/No-memory/)).toBeVisible({ timeout: 10_000 });
+
+  // Session list drawer lists at least this conversation.
+  await page.getByTestId("session-list-open").click();
+  await expect(page.getByTestId("session-list-item").first()).toBeVisible({ timeout: 10_000 });
+  await page.getByRole("button", { name: "Close your chats" }).click();
+
+  // Delete the user message; it is gone after a reload (authority-layer delete).
+  await page
+    .getByTestId("chat-message-user")
+    .filter({ hasText: message })
+    .getByTestId("chat-delete-message")
+    .click();
+  await page.reload();
+  await expect(page.getByTestId("chat-message-user").filter({ hasText: message })).toHaveCount(0, {
+    timeout: 10_000,
+  });
+});
+
 test("generator UI explains config load failures instead of showing a fake zero balance", async ({
   page,
 }) => {

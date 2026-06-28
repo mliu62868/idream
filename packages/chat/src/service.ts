@@ -111,7 +111,10 @@ export async function getSession(
 export interface SendResult {
   assistantMessageId: string;
   userMessageId: string;
-  streamUrl: string;
+  /** null when the input was blocked — there is no stream to consume (design P0-B). */
+  streamUrl: string | null;
+  status: "generating" | "blocked";
+  safety?: { layer: "input" | "output"; policyCode?: string };
 }
 
 export async function sendMessage(
@@ -133,8 +136,8 @@ export async function sendMessage(
   const policy = resolvePolicy(snapshotFromView(entitlement), { memoryEnabled: session.memoryEnabled });
   if (!policy.unlimitedMessages) {
     const used = await currentUsage(prisma, input.userId);
-    if (used >= FREE_MONTHLY_MESSAGES) {
-      throw new ChatError("quota_exceeded", "monthly message quota exceeded", 402);
+    if (used >= FREE_DAILY_MESSAGES) {
+      throw new ChatError("quota_exceeded", "Daily free message limit reached.", 402);
     }
   }
 
@@ -190,19 +193,29 @@ export async function sendMessage(
     }
   });
 
-  // Only enqueue generation if the input wasn't blocked.
-  if (moderation.status !== "blocked") {
-    await enqueue({
-      queue: CHAT_QUEUES.generate,
-      payload: { sessionId: session.id, assistantMessageId, userMessageId, attempt: 1 },
-      dedupeKey: idempotencyKeys.chatGenerate(assistantMessageId, 1),
-    });
+  // Blocked input never generates: no queue job, no stream. The UI shows a safety
+  // notice instead of waiting on an empty EventSource (design P0-B).
+  if (moderation.status === "blocked") {
+    return {
+      assistantMessageId,
+      userMessageId,
+      streamUrl: null,
+      status: "blocked",
+      safety: { layer: "input", policyCode: moderation.policyCode },
+    };
   }
+
+  await enqueue({
+    queue: CHAT_QUEUES.generate,
+    payload: { sessionId: session.id, assistantMessageId, userMessageId, attempt: 1 },
+    dedupeKey: idempotencyKeys.chatGenerate(assistantMessageId, 1),
+  });
 
   return {
     assistantMessageId,
     userMessageId,
     streamUrl: `/api/v1/chat/messages/${assistantMessageId}/stream?key=${encodeURIComponent(streamKey(assistantMessageId))}`,
+    status: "generating",
   };
 }
 
@@ -276,10 +289,13 @@ export async function setNoMemory(
   });
 }
 
-const FREE_MONTHLY_MESSAGES = 50;
+// Free tier: 30 text messages per UTC day (ECONOMY_AND_PRICING.md / design P0-C).
+// Paid entitlements set unlimitedMessages and short-circuit this check entirely.
+const FREE_DAILY_MESSAGES = 30;
 
 async function currentUsage(prisma: ChatPrismaClient, userId: string): Promise<number> {
-  const periodStart = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1));
+  const now = new Date();
+  const periodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   const row = await prisma.chatUsage.findUnique({
     where: { userId_periodStart: { userId, periodStart } },
   });

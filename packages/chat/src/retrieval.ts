@@ -21,21 +21,23 @@ export interface RetrieveInput {
   max: number;
 }
 
-export interface MemoryRetrieval {
-  boundaries: string[];
-  memories: string[];
+/**
+ * Read the user's global boundaries IN FULL, every turn (design P0-G). Boundaries
+ * are safety constraints — they are NEVER ranked, capped, or degraded on timeout.
+ * Returns [] when the file is absent (ENOENT). A genuine read error (EISDIR,
+ * EACCES, …) PROPAGATES so the caller can fail closed rather than silently drop a
+ * user's boundaries and risk an out-of-bounds reply.
+ */
+export async function readBoundaries(userId: string): Promise<string[]> {
+  const raw = await readWhole(chatFsPaths.boundaries(userId));
+  return parseTexts(raw, "global");
 }
 
-/** Retrieve boundaries (all) + the most relevant long-term memories (<= max). */
-export async function retrieveMemories(input: RetrieveInput): Promise<MemoryRetrieval> {
-  const [boundariesRaw, memoryRaw] = await Promise.all([
-    readWhole(chatFsPaths.boundaries(input.userId)),
-    readWhole(chatFsPaths.memory(input.userId, input.characterId)),
-  ]);
-
-  const boundaries = parseTexts(boundariesRaw, "global");
+/** Retrieve the most relevant long-term memories (<= max). Degradable on the hot path. */
+export async function retrieveMemories(input: RetrieveInput): Promise<string[]> {
+  const memoryRaw = await readWhole(chatFsPaths.memory(input.userId, input.characterId));
   const all = parseTexts(memoryRaw, input.characterId);
-  if (all.length === 0) return { boundaries, memories: [] };
+  if (all.length === 0) return [];
 
   if (env.MEMORY_RETRIEVAL === "igrep" && input.query.trim()) {
     const ranked = await igrepRank(input, all).catch(() => null);
@@ -47,12 +49,12 @@ export async function retrieveMemories(input: RetrieveInput): Promise<MemoryRetr
       for (let i = all.length - 1; i >= 0 && merged.length < input.max; i--) {
         if (!merged.includes(all[i])) merged.push(all[i]);
       }
-      return { boundaries, memories: merged.slice(0, input.max) };
+      return merged.slice(0, input.max);
     }
   }
 
   // recency baseline: newest entries are appended last.
-  return { boundaries, memories: all.slice(-input.max) };
+  return all.slice(-input.max);
 }
 
 /** Parse a memory file into clean text lines (drops the inline src/mid tags). */

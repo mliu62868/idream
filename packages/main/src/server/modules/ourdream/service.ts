@@ -1,4 +1,5 @@
 import type { Prisma } from "@prisma/client";
+import { buildCharacterSystemPrompt } from "@idream/shared";
 import { resolveLocalBlobPath, resolveLocalBlobRoot } from "@idream/shared/storage/local-blob";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -8,8 +9,9 @@ import type {
   VideoGeneratePayload,
 } from "@/server/ai/schemas";
 import { dispatchAdmin } from "@/server/modules/admin/service";
-import { chatServiceEnabled, proxyChatRequest } from "@/server/bff/chat-proxy";
+import { proxyChatRequest } from "@/server/bff/chat-proxy";
 import { jobQueue } from "@/server/jobs/queue";
+import { MAIN_TO_CHAT_QUEUE, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import {
   clearSessionCookie,
   createAnonymousId,
@@ -232,9 +234,12 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
     if (id && action === "tags" && method === "POST") return updateDraftTags(request, id);
   }
 
-  // Chat Service split: when configured, main-web reverse-proxies all chat traffic
-  // to the chat service with a signed BFF context (design §1/§3). Unset ⇒ monolith.
-  if ((resource === "chat" || resource === "messages") && chatServiceEnabled()) {
+  // Chat Service split (design §1/§3, P0-A): chat is now a HARD dependency — the
+  // in-monolith chat handler is gone. Always route chat/messages to the BFF proxy,
+  // which signs + reverse-proxies when CHAT_SERVICE_URL is set, and returns a
+  // structured 503 chat_unavailable when it is NOT (instead of a misleading
+  // "route not found" fall-through).
+  if (resource === "chat" || resource === "messages") {
     return proxyChatRequest(request, segments);
   }
 
@@ -862,6 +867,18 @@ async function submitDraft(request: Request, id: string) {
   const description =
     body.description ??
     `Custom ${draft.style ?? "realistic"} companion created from the Ourdream creator.`;
+  const style = draft.style ?? "realistic";
+  const gender = draft.gender ?? "female";
+  const systemPrompt = buildCharacterSystemPrompt({
+    name: draftName,
+    age: body.age,
+    description,
+    style,
+    gender,
+    tags: jsonStringArray(draft.tags),
+    appearance: draft.appearance,
+    advancedDetails: draft.advancedDetails,
+  });
   const moderation = await moderateText(
     "character_draft",
     id,
@@ -879,10 +896,11 @@ async function submitDraft(request: Request, id: string) {
         name: draftName,
         age: body.age,
         description,
+        systemPrompt,
         visibility: body.visibility,
         status: body.visibility === "public" ? "pending_review" : "approved",
-        style: draft.style ?? "realistic",
-        gender: draft.gender ?? "female",
+        style,
+        gender,
         appearance: toInputJson(draft.appearance ?? {}),
         advancedDetails: toInputJson(draft.advancedDetails ?? {}),
       },
@@ -1931,6 +1949,25 @@ async function deleteRequest(request: Request) {
     data: { status: "deleted", deletedAt: new Date() },
   });
   await prisma.session.deleteMany({ where: { userId: user.id } });
+
+  // Propagate the deletion to the chat domain so it erases chat rows + the file
+  // layer and emits chat.account_erasure.completed (design P0-F). Best-effort,
+  // at-least-once: the chat consumer is idempotent on eventId; a delivery failure
+  // is logged but must not block the user's deletion response.
+  try {
+    await jobQueue.enqueue({
+      queue: MAIN_TO_CHAT_QUEUE,
+      payload: {
+        eventId: `user_deleted_${user.id}`,
+        eventType: MAIN_TO_CHAT_EVENTS.userDeleted,
+        payload: { userId: user.id },
+      },
+      dedupeKey: `user_deleted_${user.id}`,
+    });
+  } catch (error) {
+    logger.error({ error, userId: user.id }, "failed to enqueue chat account erasure");
+  }
+
   const response = ok({ requested: true });
   response.headers.append("set-cookie", clearSessionCookie());
   return response;
@@ -2235,12 +2272,23 @@ async function duplicateCharacter(request: Request, id: string) {
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const source = await readableCharacter(id, user.id);
+  const name = `${source.name} Copy`;
   const duplicate = await prisma.character.create({
     data: {
       creatorId: user.id,
-      name: `${source.name} Copy`,
+      name,
       age: source.age,
       description: source.description,
+      systemPrompt: buildCharacterSystemPrompt({
+        name,
+        age: source.age,
+        description: source.description,
+        relationship: source.relationship,
+        style: source.style,
+        gender: source.gender,
+        appearance: source.appearance,
+        advancedDetails: source.advancedDetails,
+      }),
       visibility: "private",
       status: "approved",
       style: source.style,
@@ -2267,16 +2315,33 @@ async function updateCharacter(request: Request, id: string) {
       visibility: z.enum(["private", "unlisted", "public"]).optional(),
     })
     .parse(await jsonBody(request));
-  const character = await prisma.character.updateMany({
-    where: { id, creatorId: user.id },
+  const existing = await prisma.character.findFirst({ where: { id, creatorId: user.id } });
+  if (!existing) throw Errors.notFound("Character not found");
+
+  const nextName = body.name ?? existing.name;
+  const nextDescription = body.description ?? existing.description;
+  const shouldRebuildPrompt = body.name !== undefined || body.description !== undefined;
+  await prisma.character.update({
+    where: { id: existing.id },
     data: {
       name: body.name,
       description: body.description,
+      systemPrompt: shouldRebuildPrompt
+        ? buildCharacterSystemPrompt({
+            name: nextName,
+            age: existing.age,
+            description: nextDescription,
+            relationship: existing.relationship,
+            style: existing.style,
+            gender: existing.gender,
+            appearance: existing.appearance,
+            advancedDetails: existing.advancedDetails,
+          })
+        : undefined,
       visibility: body.visibility,
       status: body.visibility === "public" ? "pending_review" : undefined,
     },
   });
-  if (character.count === 0) throw Errors.notFound("Character not found");
   return getCharacter(request, id);
 }
 
