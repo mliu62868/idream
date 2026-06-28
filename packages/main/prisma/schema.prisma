@@ -151,6 +151,7 @@ model Character {
   systemPrompt    String?
   visibility      String    @default("private") // enum: private | unlisted | public
   status          String    @default("draft") // enum: draft | pending_review | approved | rejected | removed | archived
+  source          String    @default("user") // enum: official | user — 官方角色由 admin CMS 生产，跳过用户审核但仍过 moderation
   style           String    @default("realistic") // enum: realistic | anime | hybrid | other
   gender          String    @default("female") // enum: female | male | trans
   relationship    String?
@@ -173,6 +174,7 @@ model Character {
   likes          CharacterLike[]
 
   @@index([visibility, status])
+  @@index([source, visibility, status])
   @@index([creatorId])
   @@index([gender, style])
   @@index([createdAt])
@@ -279,6 +281,31 @@ model CharacterSubmission {
   @@index([status])
   @@index([characterId])
   @@map("character_submissions")
+}
+
+// 角色创建模板（admin 维护的脚手架）。模板 = 一组预填值，用户选用后灌进 CharacterDraft，
+// 选完即脱钩，与已建角色无运行时关联（不做继承/版本化，见 CHARACTER_MANAGEMENT_PLAN §1）。
+model CharacterTemplate {
+  id              String   @id @default(cuid())
+  scope           String   @default("built_in") // enum: built_in | community
+  name            String
+  summary         String?
+  gender          String?
+  style           String?
+  appearance      Json
+  advancedDetails Json
+  tags            Json // string[]
+  coverAssetId    String?
+  isActive        Boolean  @default(true)
+  sortOrder       Int      @default(0)
+  createdById     String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  coverAsset MediaAsset? @relation("TemplateCover", fields: [coverAssetId], references: [id], onDelete: SetNull)
+
+  @@index([isActive, sortOrder])
+  @@map("character_templates")
 }
 
 // Recent-chats read projection (main-owned). The chat service is the authority
@@ -402,6 +429,7 @@ model MediaAsset {
   likes            MediaLike[]
   collections      MediaCollectionItem[]
   characterImageOf Character[]           @relation("CharacterImage")
+  templateCoverOf  CharacterTemplate[]   @relation("TemplateCover")
 
   @@index([ownerId, type, createdAt])
   @@index([sourceJobId])

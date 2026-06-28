@@ -1,6 +1,6 @@
 # 02 · 关键技术决策（ADR）
 
-更新日期：2026-06-13
+更新日期：2026-06-28
 
 本文件逐条解决 `BackendFeatureSpec.md §10 Known Gaps`。每条 ADR 给出：决策、理由、备选、权衡、影响。**当本文件与其它文档冲突，以本文件为准。**
 
@@ -25,34 +25,30 @@
 
 ---
 
-## ADR-2 · 双数据库：单一可移植 schema + provider 切换
+## ADR-2 · 数据库：Postgres-only（dev = prod = Postgres）
 
 **状态**：已采纳（核心约束，全员必读）
 
-**背景硬限制**（已用 Prisma 7.6 文档确认）：
-- Prisma `datasource` 的 **`provider` 不能用 `env()`**，只有 `url` 能。
-- **SQLite 不支持 `enum`、不支持标量数组 `String[]`、不支持 `@db.*` native type、不支持 `mode:'insensitive'`**。
-- SQLite 与 Postgres 的迁移 SQL 不通用。
+> **历史**：早期曾设计「单一可移植 schema + `DB_PROVIDER` 切换（SQLite dev / Postgres prod）」，靠 prebuild 脚本改写 datasource `provider`。该方案**已废弃**：双库可移植子集牺牲了 enum/数组/原生全文检索且两边行为漂移，维护成本大于收益。现已统一为 **Postgres-only**，`scripts/db-provider.mjs` 已删除，SQLite 不再使用（见 11-testing：测试也跑真实 Postgres）。
 
 **决策**：
-1. **单一 `prisma/schema.prisma` 作为"形状 SSoT"，只用双库都支持的特性子集**（见 03 §2 的可移植规则）。
-2. **provider 行按环境切换**：用一个 prebuild 脚本 `scripts/db-provider.mjs` 依据 `DB_PROVIDER`（`sqlite|postgresql`）改写 datasource 的 `provider`，再 `prisma generate`。`url` 由 `prisma.config.ts` 的 `env('DATABASE_URL')` 注入。
-3. **迁移策略分环境**：
-   - **dev（SQLite）**：`prisma db push`，不产生迁移文件，库可随时删档重建（配合 seed）。
-   - **prod（Postgres）**：`prisma migrate dev/deploy`，迁移文件是 **prod DDL 的 SSoT**。
-4. **Postgres-only 性能特性放进 Postgres 迁移 SQL**：全文检索（`pg_trgm`/`tsvector` + GIN 索引）、partial index、`citext` 等，写在 prod 迁移里手工 SQL，**不进可移植 schema**，因此不影响 SQLite dev。
+1. **dev 与 prod 都用 Postgres**（本地 Docker / `docker-compose.yml` 起 `postgres:`），`provider = "postgresql"` 写死在 schema 里，无需运行时切换。
+2. **schema 按包拆分**（多服务，见 14）：
+   - `packages/main/prisma/schema.prisma` —— main 应用的权威表。
+   - `packages/chat/prisma/schema.prisma` —— chat 服务的权威表 + 跨库视图。启用 `previewFeatures = ["multiSchema", "views"]`，`schemas = ["chat","core","billing","compliance"]`。
+   - `url` 由各包 `prisma.config.ts` 的 `process.env.DATABASE_URL` 注入。
+3. **放开使用全部 Postgres 特性**：enum 仍以 `String` + TS 常量 + Zod 表达（产品约定，不是 DB 限制），但数组、`@db.*` native type、`mode:'insensitive'`、`pg_trgm`/`tsvector` + GIN 全文检索、partial index 等可自由使用。
+4. **生产 DB 边界（schema/role/grant/视图）由 `db/sql/*.sql` 手工迁移**，**由用户在 prod 执行**（见 10 §6）；Prisma `migrate` 负责应用内表的 DDL SSoT。
 
 **备选**：
-- (A) 两个 schema 文件（`schema.sqlite/postgres.prisma`）—— 重复维护、易漂移。
-- (B) **Postgres everywhere（dev 用 Docker/Neon 分支）** —— Prisma 故事最干净、能用全部 Postgres 特性，但**违背用户"sqlite dev"诉求**。
-- (C) **采纳：单 schema + provider 切换 + 分环境迁移。**
+- (A) 双库可移植 schema + provider 切换 —— **曾采纳，现废弃**（见上「历史」）。
+- (B) SQLite dev / Postgres prod —— dev/prod 漂移、丢特性，已放弃。
+- (C) **采纳：Postgres everywhere（dev 用 Docker），按包拆分 schema。**
 
-**权衡 / 代价（如实说明）**：
-- 失去 DB 级 enum、数组、原生全文检索（dev 侧）。enum → `String` + TS 常量 + Zod；数组 → `Json` 或关联表。
-- dev 的搜索用 `LIKE`（SQLite `LIKE` 对 ASCII 默认大小写不敏感）；prod 可在迁移里加 `pg_trgm` GIN 提升。两边行为有差异，需在测试中覆盖。
-- **建议**：团队若能接受，长期把本地也切到 Docker Postgres（保留 SQLite 作为"零依赖快速起步"档），可消除差异。这是性价比最高的演进方向，记录在 12-roadmap 的技术债。
+**权衡 / 代价**：
+- dev 多一个 Postgres 依赖（Docker 一条命令起，已在 `docker-compose.yml`）——换来 dev/prod 行为一致、可用全部 PG 特性、无 provider 切换脚本，净收益。
 
-**影响**：03 全文、scripts、CI（见 10）。
+**影响**：03 全文、`db/sql/*`、CI（见 10）、14（按包 schema）。
 
 ---
 
@@ -104,30 +100,28 @@
 
 ---
 
-## ADR-5 · 异步队列：DB 表驱动 + Vercel Cron + `after()`（抽象 `JobQueue`）
+## ADR-5 · 异步队列：BullMQ + Redis（抽象 `JobQueue`）
 
 **状态**：已采纳
 
-**决策**：MVP 不引入 Redis/Kafka。用 `jobs` 表作为持久队列：
-- 入队 = 插一行 `queued`。
-- worker = `app/api/internal/worker/route.ts`，由 **Vercel Cron**（每分钟）触发，认领（claim）一批待处理 job 执行。
-- 轻量 fire-and-forget（埋点）用 Next 16 `after()`。
-- 用接口 `JobQueue { enqueue, claim, complete, fail }` 封装，便于换实现。
+> **历史**：早期 MVP 设计为「`jobs` 表持久队列 + Vercel Cron 每分钟 drain + `after()`」，用 `SELECT ... FOR UPDATE SKIP LOCKED` 认领。该方案**已废弃**：部署形态从 Vercel serverless 转为常驻 pm2 进程（见 10、14），Cron 的分钟级延迟不满足生成类反馈需求。现统一为 **BullMQ + Redis**。
 
-**认领并发安全**：
-- Postgres：`SELECT ... FOR UPDATE SKIP LOCKED`（迁移里用 raw SQL 的 worker 查询）。
-- SQLite（dev 单 worker）：事务内 `UPDATE jobs SET status='running',locked_by=? WHERE id IN (SELECT id ... WHERE status='queued' LIMIT n)`，单 worker 不竞争。
-
-**重试**：`attempts`/`max_attempts` + 指数退避（`next_run_at`）；超限 → `failed` + 死信留存。幂等键 `dedupe_key` 防重复入队。
+**决策**：用 **BullMQ（Redis 后端）** 作为持久队列：
+- 队列封装在 `packages/main/src/server/jobs/queue.ts`（main 侧）与 `packages/chat/src/queue.ts`（chat 侧），均基于 `bullmq` 的 `Queue` / `Worker` + `ioredis`。
+- worker 是常驻进程（pm2，见 `ecosystem.config.js`）：`gen-image` / `gen-video`（`packages/gen`）、`chat`、`gen-finalizer`、`main-event-consumer` 等，各自从对应队列消费。
+- 幂等：`dedupeKey` → 确定性 `jobId`，BullMQ 天然去重。
+- 重试 / 退避 / 延迟（`nextRunAt`）由 BullMQ `JobsOptions` 提供；超限进入 failed，可观测（BullMQ 队列状态）。
+- 跨服务投递（main ↔ chat）走 **outbox/inbox** 事件表 + 共享 Redis，要求 `BULLMQ_PREFIX` + `REDIS_URL` 两边一致。
 
 **备选**：
-- (A) QStash / Vercel Queues（beta）/ Inngest / BullMQ(Redis) —— 更专业，但引入外部依赖与成本，MVP YAGNI。
-- (B) 仅 `after()` —— 不持久、不可重试、随实例回收丢任务，**不可用于生成/支付**。
-- (C) **DB 队列 + Cron（采纳）**：零额外依赖、持久、可重试、可观测（job 表即仪表盘）。
+- (A) DB 表队列 + Vercel Cron —— **曾采纳，现废弃**（见上「历史」）。
+- (B) QStash / Vercel Queues / Inngest —— 托管、引入外部依赖与成本，常驻进程下 YAGNI。
+- (C) 仅 `after()` —— 不持久、随实例回收丢任务，**不可用于生成/支付**。
+- (D) **BullMQ + Redis（采纳）**：成熟、低延迟、原生重试/去重/延迟、与常驻 worker 拓扑契合。
 
-**权衡**：Cron 最小粒度通常 1 分钟，生成类需要更快反馈 → 入队后**同一请求用 `after()` 立即异步触发一次 worker drain**（best-effort），Cron 作为兜底，二者幂等共存。规模上来再换 QStash/Queues，接口不变。
+**权衡**：多一个 Redis 依赖（`docker-compose.yml` 已起 `redis:`），换来秒级反馈与成熟的重试/去重，净收益。
 
-**影响**：06 全文、03（`jobs` 表）、10（Cron 配置）。
+**影响**：06 全文、03（outbox/inbox 事件表）、10（Redis、pm2 worker）、14。
 
 ---
 
@@ -235,10 +229,10 @@
 | Spec §10 Gap | 本文件决策 |
 | --- | --- |
 | backend stack 形态 | ADR-1 模块化单体 |
-| database & migration tool | ADR-2 Prisma 双库 + 分环境迁移 |
+| database & migration tool | ADR-2 Postgres-only（按包 schema）+ `db/sql` 边界迁移 |
 | auth provider | ADR-3 better-auth |
 | payment provider & webhook | ADR-4 抽象 + 加密货币（BTCPay 等），订阅预付周期 |
-| queue implementation | ADR-5 DB 队列 + Cron |
+| queue implementation | ADR-5 BullMQ + Redis（常驻 worker）|
 | model providers（chat/image/video）+ 数据保留 | ADR-6 抽象 + 自托管开源模型/内部流水线 API；prompt 不出内网 |
 | identity age verification | ADR-7 provider 抽象（Go.cam 等） |
 | `/chat/` robots vs authenticated | 见 04 §1：`/api`、`/chat/` 子路径 robots-disallow，但鉴权产品可访问；SSR 私有不索引 |

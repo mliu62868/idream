@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { cookies } from "next/headers";
 import { Geist, Geist_Mono, Inter } from "next/font/google";
 import { AgeGateBoundary } from "@/components/ourdream/AgeGateBoundary";
+import { AnnouncementBanner } from "@/components/ourdream/AnnouncementBanner";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -42,7 +43,10 @@ export default async function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} ${inter.variable} dark h-full antialiased`}
     >
       <body className="min-h-full">
-        <AgeGateBoundary initialAccepted={ageGateAccepted}>{children}</AgeGateBoundary>
+        <AgeGateBoundary initialAccepted={ageGateAccepted}>
+          <AnnouncementBanner />
+          {children}
+        </AgeGateBoundary>
       </body>
     </html>
   );

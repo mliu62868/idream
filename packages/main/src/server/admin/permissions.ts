@@ -8,6 +8,9 @@ export type PermissionKey =
   | "user.role.write"
   | "content.read"
   | "content.takedown.write"
+  | "content.official.write"
+  | "content.template.write"
+  | "content.tag.write"
   | "generation.job.read"
   | "generation.job.requeue"
   | "generation.config.read"
@@ -26,7 +29,10 @@ export type PermissionKey =
   | "growth.promo.read"
   | "growth.promo.write"
   | "chat.ops.read"
-  | "admin.approval.review";
+  | "admin.approval.review"
+  | "content.cms.write"
+  | "compliance.read"
+  | "compliance.write";
 
 export const ROLE_PERMISSIONS: Record<ActorRole, readonly PermissionKey[]> = {
   user: [],
@@ -37,6 +43,9 @@ export const ROLE_PERMISSIONS: Record<ActorRole, readonly PermissionKey[]> = {
     "user.role.write",
     "content.read",
     "content.takedown.write",
+    "content.official.write",
+    "content.template.write",
+    "content.tag.write",
     "generation.job.read",
     "generation.job.requeue",
     "generation.config.read",
@@ -56,12 +65,19 @@ export const ROLE_PERMISSIONS: Record<ActorRole, readonly PermissionKey[]> = {
     "growth.promo.write",
     "chat.ops.read",
     "admin.approval.review",
+    "content.cms.write",
+    "compliance.read",
+    "compliance.write",
   ],
   moderator: [
     "dashboard.read",
     "user.read",
     "content.read",
     "content.takedown.write",
+    "content.official.write",
+    "content.template.write",
+    "content.tag.write",
+    "content.cms.write",
     "generation.job.read",
     "safety.review.read",
     "safety.review.write",
@@ -77,6 +93,7 @@ export const ROLE_PERMISSIONS: Record<ActorRole, readonly PermissionKey[]> = {
     "support.plaintext.view",
     "growth.promo.read",
     "chat.ops.read",
+    "compliance.read",
     "audit.read",
   ],
   ops: [

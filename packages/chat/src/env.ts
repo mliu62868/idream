@@ -2,6 +2,9 @@
 // INTENT: One typed accessor; no scattered process.env reads. All config comes
 // from packages/chat/.env (see .env.example) — loaded here, non-overriding so
 // vitest/pm2-injected vars still win.
+// NOTE: cwd-based. Works under `next dev` and a FULL `pm2 start ecosystem.config.js`
+// (pm2 sets cwd=packages/chat). `pm2 start --only chat` does NOT apply the per-app
+// cwd, so start chat via the full ecosystem (or `bun run pm2:start`), not `--only`.
 import "dotenv/config";
 import path from "node:path";
 

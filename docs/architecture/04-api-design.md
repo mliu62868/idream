@@ -1,44 +1,37 @@
 # 04 · API 设计规范
 
-更新日期：2026-06-13
+更新日期：2026-06-28
 
 完整 API 端点清单见 `BackendFeatureSpec.md §5`（auth/explore/creator/chat/generation/library/profile/billing/safety/feed）。本文件定义**所有端点共享的实现规范**：组织、响应、错误、校验、分页、鉴权、限流、幂等、流式。
 
 ## 1. 路由组织
 
+主站**不是**每个资源一个 `route.ts`。`/api/v1/*` 由**单一 catch-all** 承接，再由 `dispatchV1` 按 `[resource, id, action, child]` 段在 `modules/ourdream/service.ts` 内部分发：
+
 ```
-app/
-  api/
-    v1/
-      auth/[...all]/route.ts        # 交给 better-auth handler
-      me/route.ts
-      age-gate/accept/route.ts
-      age-verification/...
-      characters/route.ts           # GET 列表
-      characters/[id]/route.ts      # GET 详情 / PATCH / DELETE
-      characters/[id]/like/route.ts # POST / DELETE
-      characters/[id]/report/route.ts
-      tags/route.ts
-      search/suggest/route.ts
-      character-drafts/...
-      chat/sessions/...
-      generation/jobs/...
-      generation/presets/...
-      media/...
-      library/...
-      profile/...
-      plans/route.ts
-      billing/checkout/route.ts
-      billing/webhooks/[provider]/route.ts
-      reports/route.ts
-      appeals/route.ts
-      policies/route.ts
-      feed/...                       # P1
-      community/...                  # P1
-      admin/moderation/...           # admin-only
-    internal/
-      worker/route.ts                # Cron/after 触发，INTERNAL_TOKEN 保护
-      cron/[task]/route.ts           # 定时任务
+src/app/api/
+  v1/[...resource]/route.ts   # 唯一 catch-all：GET/POST/PATCH/PUT/DELETE
+                              # → dispatchV1(request, resource)
+  auth/[...all]/route.ts      # 交给 better-auth handler
+  internal/worker/route.ts    # Cron/after 触发，内部密钥保护
+```
+
+`dispatchV1` 内部按 resource 分发（节选，权威清单见 `dispatchV1Unsafe`）：
+
+```
+auth/{signup,login,logout}        me、me/preferences
+age-gate/accept                   age-verification/{status,sessions,webhooks/:provider}
+characters[/:id[/{like,report,duplicate}]]   tags、character-templates、search/suggest
+character-drafts[/:id[/{preview,submit,tags}]]
+chat/*、messages/*                → proxyChatRequest（反向代理到 Chat Service）
+generation/{config,jobs[/:id/retry],voice,presets[/:id]}
+media[/:id/{like,content,download}]、media/bulk
+plans、billing/{checkout,portal,webhooks/:provider}、dreamcoins
+library/:tab、profile[/{preferences,language}]
+redeem-codes/redeem、referrals[/invite]、account/{sign-out-all,delete-request}
+reports[/:id]、appeals、policies、users/:id/follow、events/track
+feed/*、community/*、creators/:id
+admin/*                           → dispatchAdmin（modules/admin）
 ```
 
 约定：
@@ -46,92 +39,106 @@ app/
 - **版本前缀 `/api/v1`**：破坏性变更走 `/api/v2`，老版本保留过渡期。
 - **REST 风格**：资源名复数；动作型子资源（`like`/`report`/`retry`/`regenerate`）用子路径 POST。
 - **robots**：`/api`、`/chat/` 子路径、`/c/`、`/signup/1` 在 `robots.txt` disallow（沿用 spec）。鉴权产品页 SSR 但 `noindex`，不进 sitemap。
-- 每个 `route.ts` 只做 HTTP 适配，逻辑在对应 `modules/<domain>/*.service.ts`（见 01 §2）。
+- catch-all `route.ts` 只做 HTTP 适配，逻辑在 `dispatchV1`/各 handler（见 01 §2）。`dispatchV1` 已统一 try/catch：`AppError`/`ZodError` → 结构化 envelope，其它 → 500（不泄堆栈）。
 
 ## 2. 统一响应 Envelope
 
-对齐全局规则 `patterns.md` 的 `ApiResponse<T>`：
+实际实现（`packages/main/src/server/lib/http/index.ts`，代码为准）：
 
 ```ts
-// src/server/lib/http/envelope.ts
-export type ApiOk<T>  = { success: true;  data: T;  meta?: Meta };
-export type ApiErr    = { success: false; error: ApiError };
-export type ApiError  = { code: string; message: string; details?: unknown };
-export type Meta      = { nextCursor?: string | null; total?: number; limit?: number };
-
-export const ok  = <T>(data: T, meta?: Meta, init?: ResponseInit) =>
-  Response.json({ success: true, data, ...(meta && { meta }) } satisfies ApiOk<T>,
-    { status: 200, ...init });
-
-export const created = <T>(data: T) => ok(data, undefined, { status: 201 });
-export const accepted = <T>(data: T) => ok(data, undefined, { status: 202 });
-
-export const fail = (status: number, code: string, message: string, details?: unknown) =>
-  Response.json({ success: false, error: { code, message, details } } satisfies ApiErr,
-    { status });
+// packages/main/src/server/lib/http/index.ts
+export function ok<T>(data: T, init?: ResponseInit) {
+  return Response.json({ ok: true, data }, init);          // { ok: true, data }
+}
+export function empty(status = 204) {
+  return new Response(null, { status });
+}
+export function fail(error: AppError) {                    // { ok: false, error }
+  return Response.json(
+    {
+      ok: false,
+      error: {
+        code: error.code,
+        message: error.message,
+        details: error.status < 500 ? error.details : undefined,  // 5xx 不外泄 details
+      },
+    },
+    { status: error.status },
+  );
+}
 ```
 
-- 列表统一返回 `{ items, nextCursor }` 在 `data`，或把 `nextCursor` 放 `meta`（二选一，团队定一种，本规范用 `meta.nextCursor`）。
-- 业务侧绝不抛裸 500：未捕获异常由统一 `handle()` 包装器转成 `ApiErr`（见 §3）。
+- 成功统一 `{ ok: true, data }`，失败统一 `{ ok: false, error: { code, message, details? } }`（注意字段是 **`ok`** 不是 `success`）。
+- 列表把 `{ items, nextCursor }` 放进 `data`（无独立 `meta` 层）；HTTP status 由错误 `code` 派生（见 §3），无需手传。
+- 业务侧绝不抛裸 500：未捕获异常由统一 `handle()` 包装器转成失败 envelope（见 §3）。
 
 ## 3. 错误模型
 
-统一错误类型 + 包装器，service 抛领域错误，route 转 HTTP：
+统一错误类型 + 包装器，service 抛领域错误，`handle()` 转 HTTP。**`code` 是固定 8 值小写枚举，HTTP status 由 `code` 派生**（不再手传 status）：
 
 ```ts
-// src/server/lib/errors.ts
+// packages/main/src/server/lib/errors.ts
+export type AppErrorCode =
+  | "bad_request" | "unauthorized" | "forbidden" | "payment_required"
+  | "not_found" | "conflict" | "rate_limited" | "internal";
+
+const statusByCode: Record<AppErrorCode, number> = {
+  bad_request: 400, unauthorized: 401, forbidden: 403, payment_required: 402,
+  not_found: 404, conflict: 409, rate_limited: 429, internal: 500,
+};
+
 export class AppError extends Error {
-  constructor(
-    public code: string,        // 机器可读，稳定
-    public httpStatus: number,
-    message: string,            // 面向用户、可安全展示（不泄敏感信息）
-    public details?: unknown,
-  ) { super(message); }
+  readonly code: AppErrorCode;
+  readonly status: number;       // = statusByCode[code]
+  readonly details?: unknown;
+  constructor(code: AppErrorCode, message: string, details?: unknown) {
+    super(message);
+    this.code = code;
+    this.status = statusByCode[code];
+    this.details = details;
+  }
 }
+
 export const Errors = {
-  unauthorized:  (m = "请先登录") => new AppError("UNAUTHORIZED", 401, m),
-  forbidden:     (m = "无权限")   => new AppError("FORBIDDEN", 403, m),
-  notFound:      (m = "不存在")   => new AppError("NOT_FOUND", 404, m),
-  validation:    (d: unknown)     => new AppError("VALIDATION", 422, "参数校验失败", d),
-  rateLimited:   (retry: number)  => new AppError("RATE_LIMITED", 429, "请求过于频繁", { retry }),
-  ageGate:       ()               => new AppError("AGE_GATE_REQUIRED", 403, "需要确认年满 18 岁"),
-  ageVerify:     ()               => new AppError("AGE_VERIFICATION_REQUIRED", 403, "该地区需身份年龄验证"),
-  insufficientCoins: (need: number, have: number) =>
-                  new AppError("INSUFFICIENT_DREAMCOINS", 402, "dreamcoin 不足", { need, have }),
-  entitlement:   (key: string)    => new AppError("ENTITLEMENT_REQUIRED", 402, "该功能需升级", { key }),
-  blockedByModeration: (policy: string) =>
-                  new AppError("CONTENT_BLOCKED", 422, "内容不符合安全规则", { policy }),
-  conflict:      (m = "状态冲突")  => new AppError("CONFLICT", 409, m),
+  badRequest:      (m = "Bad request", d?: unknown) => new AppError("bad_request", m, d),
+  unauthorized:    (m = "Unauthorized", d?: unknown) => new AppError("unauthorized", m, d),
+  forbidden:       (m = "Forbidden", d?: unknown)    => new AppError("forbidden", m, d),
+  paymentRequired: (m = "Payment required", d?: unknown) => new AppError("payment_required", m, d),
+  notFound:        (m = "Not found", d?: unknown)    => new AppError("not_found", m, d),
+  conflict:        (m = "Conflict", d?: unknown)     => new AppError("conflict", m, d),
+  rateLimited:     (m = "Rate limited", d?: unknown) => new AppError("rate_limited", m, d),
+  internal:        (m = "Internal error", d?: unknown) => new AppError("internal", m, d),
 };
 ```
 
 ```ts
-// src/server/lib/http/handle.ts —— 包装每个 route handler
-export function handle(fn: (req: NextRequest, ctx: RouteCtx) => Promise<Response>) {
-  return async (req: NextRequest, ctx: RouteCtx) => {
-    try { return await fn(req, ctx); }
-    catch (e) {
-      if (e instanceof AppError) {
-        const init = e.code === "RATE_LIMITED"
-          ? { headers: { "Retry-After": String((e.details as any)?.retry ?? 60) } } : undefined;
-        return fail(e.httpStatus, e.code, e.message, e.details, init);
-      }
-      if (e instanceof ZodError) return fail(422, "VALIDATION", "参数校验失败", e.flatten());
-      logger.error({ err: e, path: req.nextUrl.pathname }, "unhandled");  // 详情只进服务端日志
-      return fail(500, "INTERNAL", "服务器开小差了");                       // 不泄漏堆栈
+// packages/main/src/server/lib/http/index.ts —— 包装每个 handler
+export function handle<T>(handler: (req: Request) => Promise<T | Response> | T | Response) {
+  return async (req: Request) => {
+    try {
+      const result = await handler(req);
+      return result instanceof Response ? result : ok(result);
+    } catch (error) {
+      if (error instanceof AppError) return fail(error);
+      if (error instanceof ZodError)
+        return fail(new AppError("bad_request", "Validation failed", error.flatten()));
+      logger.error({ error }, "Unhandled route error");   // 详情只进服务端日志
+      return fail(new AppError("internal", "Internal error"));  // 不泄漏堆栈
     }
   };
 }
 ```
 
-**错误码表**（稳定契约，前端按 `code` 分支）：`UNAUTHORIZED` `FORBIDDEN` `NOT_FOUND` `VALIDATION` `CONFLICT` `RATE_LIMITED` `AGE_GATE_REQUIRED` `AGE_VERIFICATION_REQUIRED` `INSUFFICIENT_DREAMCOINS` `ENTITLEMENT_REQUIRED` `CONTENT_BLOCKED` `INTERNAL`。
+**错误码表**（稳定契约，前端按 `code` 分支）：`bad_request` `unauthorized` `forbidden` `payment_required` `not_found` `conflict` `rate_limited` `internal`。
+
+- 领域语义（dreamcoin 不足、需升级权益、年龄门槛、内容被审核拦截）统一收敛到这 8 个通用 `code`：扣费/权益类用 `payment_required`，年龄/权限类用 `forbidden`，被审核拦截用 `bad_request`，并把判别信息放进 `error.message` / `error.details`（如 `{ need, have, key, policy }`），前端按 `code` + `details` 分支。
 
 ## 4. 输入校验（Zod，系统边界强制）
 
-每模块 `*.schema.ts` 定义入参/出参，route 在调 service 前 `parse`：
+Zod schema 内联在各 handler 旁定义（无独立 `*.schema.ts` 层），handler 在读 ctx 后、动业务前 `parse`：
 
 ```ts
-// modules/catalog/catalog.schema.ts
+// modules/ourdream/service.ts —— listCharacters handler 旁
 export const listCharactersQuery = z.object({
   q: z.string().trim().max(100).optional(),
   gender: z.enum(["female","male","trans"]).optional(),

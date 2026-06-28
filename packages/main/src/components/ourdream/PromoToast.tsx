@@ -3,10 +3,36 @@
 import Image from "next/image";
 import Link from "next/link";
 import { ArrowRight, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+
+const DISMISS_KEY = "od-promo-toast-dismissed";
 
 export function PromoToast() {
-  const [visible, setVisible] = useState(true);
+  // 默认隐藏，挂载后再决定：localStorage 仅浏览器可用，避免 SSR/hydration 闪烁。
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    // localStorage 仅浏览器可用，挂载后再决定可见性；用 setTimeout(0) 推迟到
+    // effect 体外，避免同步 setState 触发级联渲染。
+    const timer = window.setTimeout(() => {
+      try {
+        setVisible(localStorage.getItem(DISMISS_KEY) !== "true");
+      } catch {
+        // localStorage 不可用时默认展示。
+        setVisible(true);
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  function dismiss() {
+    setVisible(false);
+    try {
+      localStorage.setItem(DISMISS_KEY, "true");
+    } catch {
+      // localStorage 不可用时仅当前会话隐藏即可。
+    }
+  }
 
   if (!visible) return null;
 
@@ -23,7 +49,7 @@ export function PromoToast() {
         <button
           aria-label="Close promotion"
           className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded-full bg-black/35 text-white"
-          onClick={() => setVisible(false)}
+          onClick={dismiss}
           type="button"
         >
           <X className="h-3 w-3" />

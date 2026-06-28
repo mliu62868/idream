@@ -9,6 +9,7 @@ import type {
   VideoGeneratePayload,
 } from "@/server/ai/schemas";
 import { dispatchAdmin } from "@/server/modules/admin/service";
+import { listActiveTemplates } from "@/server/modules/admin/characters/templates";
 import { proxyChatRequest } from "@/server/bff/chat-proxy";
 import { jobQueue } from "@/server/jobs/queue";
 import { MAIN_TO_CHAT_QUEUE, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
@@ -31,6 +32,7 @@ import { prisma } from "@/server/lib/db";
 import { nameMatch } from "@/server/lib/db/search";
 import { AppError, Errors } from "@/server/lib/errors";
 import { empty, fail, ok } from "@/server/lib/http";
+import { activeAnnouncements, readAnnouncements } from "@/server/announcements/store";
 import { logger } from "@/server/lib/logger";
 import { providers } from "@/server/providers";
 
@@ -202,6 +204,20 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
     return acceptAgeGate(request);
   }
 
+  // 公开站内公告（无需鉴权/年龄门）：banner 读取，仅回 active + 时间窗内的展示字段。
+  if (resource === "announcements" && !id && method === "GET") {
+    const items = activeAnnouncements(await readAnnouncements(), Date.now());
+    return ok({
+      items: items.map((a) => ({
+        id: a.id,
+        title: a.title,
+        body: a.body,
+        level: a.level,
+        href: a.href,
+      })),
+    });
+  }
+
   if (resource === "age-verification") {
     if (id === "status" && method === "GET") return ageVerificationStatus(request);
     if (id === "sessions" && method === "POST") return createAgeVerificationSession(request);
@@ -224,6 +240,10 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
   }
 
   if (resource === "tags" && !id && method === "GET") return listTags();
+  // 前台创建页拉取可用角色模板（仅 isActive，公开只读，见 CHARACTER_MANAGEMENT_PLAN §B）。
+  if (resource === "character-templates" && !id && method === "GET") {
+    return listActiveTemplates();
+  }
   if (resource === "search" && id === "suggest" && method === "GET") return suggest(request);
 
   if (resource === "character-drafts") {
@@ -246,6 +266,7 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
   if (resource === "generation") {
     if (id === "config" && !action && method === "GET") return generationConfig(request);
     if (id === "jobs" && !action && method === "POST") return createGenerationJob(request);
+    if (id === "voice" && !action && method === "POST") return createVoiceClip(request);
     if (id === "jobs" && !action && method === "GET") return listGenerationJobs(request);
     if (id === "jobs" && action && !child && method === "GET") return getGenerationJob(request, action);
     if (id === "jobs" && action && child === "retry" && method === "POST") {
@@ -1191,6 +1212,197 @@ async function createGenerationJob(request: Request) {
   return ok(generationJobResponse(queued), { status: 202 });
 }
 
+// SPEC: On-demand TTS for a single assistant chat turn ("play voice" button).
+// INTENT: synchronous + cached — voice is fast, so skip the async job pipeline.
+//         One MediaAsset per messageId acts as the cache; replays cost nothing.
+// INVARIANTS: gated by the `voice_enabled` entitlement; charges Dreamcoins once
+//         (refunded if synthesis fails); character must be age>=18.
+// EXAMPLE: POST /api/v1/generation/voice {characterId, messageId, text}
+//          → {assetId, contentUrl, durationMs}
+const voiceClipSchema = z.object({
+  characterId: z.string().min(1),
+  messageId: z.string().min(1),
+  sessionId: z.string().min(1).optional(),
+  text: z.string().trim().min(1).max(2_000),
+});
+
+async function createVoiceClip(request: Request) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  const body = voiceClipSchema.parse(await jsonBody(request));
+
+  // Release gate: a single flag fronts all voice traffic for controlled rollout /
+  // kill-switch, mirroring video_gen.
+  if (!(await featureFlagEnabled("voice_gen"))) {
+    throw Errors.forbidden("Voice generation is disabled");
+  }
+
+  const entitlements = await entitlementMap(user.id);
+  if (entitlements.voice_enabled !== true) {
+    throw Errors.paymentRequired("Voice playback requires a plan with voice enabled", {
+      entitlement: "voice_enabled",
+    });
+  }
+
+  // Cache: a clip already synthesized for this message replays for free.
+  const cacheWhere: Prisma.MediaAssetWhereInput = {
+    ownerId: user.id,
+    type: "voice",
+    deletedAt: null,
+    metadata: { path: ["messageId"], equals: body.messageId },
+  };
+  const cached = await prisma.mediaAsset.findFirst({ where: cacheWhere });
+  if (cached) return ok(voiceClipResponse(cached));
+
+  const character = await readableCharacter(body.characterId, user.id);
+  if (character.age < 18) {
+    throw Errors.badRequest("Character is not eligible for voice", { policyCode: "UNDERAGE" });
+  }
+  const tone = characterVoiceTone(character);
+
+  const overflowCost = await voiceClipCost();
+  // Fast-fail only when the allowance is already exhausted. The authoritative
+  // metering decision happens after synthesis because duration determines coverage.
+  if (
+    overflowCost > 0 &&
+    (await voiceMinutesRemainingMs(user.id, entitlements)) <= 0 &&
+    (await dreamcoinBalance(user.id)) < overflowCost
+  ) {
+    throw Errors.paymentRequired("Insufficient dreamcoins", {
+      cost: overflowCost,
+      required: overflowCost,
+    });
+  }
+
+  const result = await providers.voice.synthesize({
+    text: body.text,
+    voiceId: character.voiceId ?? undefined,
+    tone,
+  });
+  if (!result.ok) throw Errors.internal("Voice synthesis failed", result.error);
+
+  const mediaId = `media_${cryptoRandomId("voice")}`;
+  // Debit + persist atomically under the per-user ledger lock. The lock also makes
+  // the cache re-check race-free, so a concurrent double-click can neither create a
+  // duplicate clip nor double-charge; a create failure rolls the charge back.
+  const asset = await prisma.$transaction(async (tx) => {
+    await lockUserLedger(tx, user.id);
+    const raced = await tx.mediaAsset.findFirst({ where: cacheWhere });
+    if (raced) return raced;
+    const durationMs = Math.max(0, result.data.durationMs);
+    const remainingMs = await voiceMinutesRemainingMs(user.id, entitlements, tx);
+    const cost = remainingMs >= durationMs ? 0 : overflowCost;
+    if (cost > 0) {
+      const balance = await dreamcoinBalance(user.id, tx);
+      if (balance < cost) {
+        throw Errors.paymentRequired("Insufficient dreamcoins", { balance, cost, required: cost });
+      }
+      await appendLedger(
+        tx,
+        user.id,
+        -cost,
+        "generation_spend",
+        mediaId,
+        `voice:${body.messageId}:spend`,
+      );
+    }
+    return tx.mediaAsset.create({
+      data: {
+        id: mediaId,
+        ownerId: user.id,
+        characterId: character.id,
+        type: "voice",
+        url: `/api/v1/media/${mediaId}/content`,
+        storageKey: result.data.key,
+        contentType: voiceContentType(result.data.key),
+        providerAssetId: result.data.key,
+        prompt: body.text.slice(0, 500),
+        visibility: "private",
+        safetyStatus: "passed",
+        metadata: toInputJson({
+          messageId: body.messageId,
+          sessionId: body.sessionId ?? null,
+          voiceId: character.voiceId ?? null,
+          tone,
+          durationMs,
+          providerKey: result.data.key,
+          costDreamcoins: cost,
+        }),
+      },
+    });
+  });
+
+  // 201 when we created the clip; 200 when a concurrent request beat us to it.
+  return ok(voiceClipResponse(asset), { status: asset.id === mediaId ? 201 : 200 });
+}
+
+// Remaining voice milliseconds in the user's rolling 30-day window. The plan grants
+// a `voice_minutes` allowance; consumed time is the sum of prior clip durations.
+async function voiceMinutesRemainingMs(
+  userId: string,
+  entitlements: Record<string, Prisma.JsonValue>,
+  db: Prisma.TransactionClient | typeof prisma = prisma,
+) {
+  const allowanceMinutes =
+    typeof entitlements.voice_minutes === "number" ? entitlements.voice_minutes : 0;
+  if (allowanceMinutes <= 0) return 0;
+  const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const clips = await db.mediaAsset.findMany({
+    where: { ownerId: userId, type: "voice", deletedAt: null, createdAt: { gte: since } },
+    select: { metadata: true },
+  });
+  const consumedMs = clips.reduce((sum, clip) => sum + voiceDurationMs(clip.metadata), 0);
+  return Math.max(0, allowanceMinutes * 60_000 - consumedMs);
+}
+
+function voiceDurationMs(metadata: Prisma.JsonValue) {
+  const record = jsonRecord(metadata);
+  return typeof record.durationMs === "number" ? record.durationMs : 0;
+}
+
+function voiceContentType(key: string) {
+  const ext = key.split(".").pop()?.toLowerCase();
+  const byExt: Record<string, string> = {
+    mp3: "audio/mpeg",
+    wav: "audio/wav",
+    ogg: "audio/ogg",
+    flac: "audio/flac",
+    webm: "audio/webm",
+  };
+  return (ext && byExt[ext]) ?? "audio/mpeg";
+}
+
+// Character-level default delivery. Per-message emotion can later override this.
+function characterVoiceTone(character: {
+  name: string;
+  style: string;
+  relationship: string | null;
+}) {
+  const relationship = character.relationship?.trim();
+  const persona = relationship ? `the user's ${relationship}` : "a close companion";
+  return `Speak as ${character.name}, ${persona}. Warm, intimate, expressive ${character.style} delivery.`;
+}
+
+async function voiceClipCost() {
+  const pricing = await prisma.pricingRule.findFirst({
+    where: { mode: "voice", status: "active" },
+    orderBy: [{ effectiveFrom: "desc" }, { version: "desc" }],
+  });
+  return Math.max(0, pricing?.baseCost ?? 2);
+}
+
+function voiceClipResponse(asset: { id: string; url: string; metadata: Prisma.JsonValue }) {
+  const metadata = jsonRecord(asset.metadata);
+  return {
+    assetId: asset.id,
+    contentUrl: asset.url,
+    durationMs: typeof metadata.durationMs === "number" ? metadata.durationMs : 0,
+    messageId: typeof metadata.messageId === "string" ? metadata.messageId : null,
+  };
+}
+
 async function listGenerationJobs(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
@@ -2114,7 +2326,10 @@ async function feed(request: Request, segments: string[]) {
   requireAgeGate(ctx);
   const [, action, itemId, subAction] = segments;
   if (request.method === "GET") {
-    // 运营策展：feed.featured（AppSetting）里仍 public+approved 的角色置顶，其余按热度补齐到 20。
+    // 运营策展：feed.featured（AppSetting）里仍 public+approved 的角色仅在首页置顶，其余按热度游标分页。
+    const url = new URL(request.url);
+    const limit = clampInt(url.searchParams.get("limit"), 1, 60, 20);
+    const cursor = decodeCursor(url.searchParams.get("cursor"));
     const featuredSetting = await prisma.appSetting.findUnique({
       where: { key: "feed.featured" },
     });
@@ -2124,33 +2339,36 @@ async function feed(request: Request, segments: string[]) {
       status: "approved",
       deletedAt: null,
     } satisfies Prisma.CharacterWhereInput;
-    const [featured, popular] = await Promise.all([
+    const [popular, featured] = await Promise.all([
+      // 热度游标分页：排除置顶角色，稳定排序（热度→新→id）。
       prisma.character.findMany({
-        where: { ...publicWhere, id: { in: featuredIds } },
+        where: { ...publicWhere, id: { notIn: featuredIds } },
         include: characterInclude(ctx.userId),
+        orderBy: [{ stats: { chatsCount: "desc" } }, { createdAt: "desc" }, { id: "desc" }],
+        skip: cursor,
+        take: limit + 1,
       }),
-      prisma.character.findMany({
-        where: publicWhere,
-        include: characterInclude(ctx.userId),
-        orderBy: [{ stats: { chatsCount: "desc" } }],
-        take: 20,
-      }),
+      // 置顶角色只在首页（cursor=0）拉取；后续分页排除它们，避免重复。
+      cursor === 0 && featuredIds.length > 0
+        ? prisma.character.findMany({
+            where: { ...publicWhere, id: { in: featuredIds } },
+            include: characterInclude(ctx.userId),
+          })
+        : [],
     ]);
     const featuredById = new Map(featured.map((character) => [character.id, character]));
     const orderedFeatured = featuredIds
       .map((id) => featuredById.get(id))
       .filter((character): character is (typeof featured)[number] => character !== undefined);
-    const seen = new Set(orderedFeatured.map((character) => character.id));
-    const characters = [...orderedFeatured, ...popular.filter((character) => !seen.has(character.id))].slice(
-      0,
-      20,
-    );
+    const popularPage = popular.slice(0, limit);
+    const characters = [...orderedFeatured, ...popularPage];
     return ok({
       items: characters.map((character) => ({
         id: `character:${character.id}`,
         type: "character",
         character: characterDTO(character),
       })),
+      nextCursor: popular.length > limit ? encodeCursor(cursor + limit) : null,
     });
   }
   if (request.method === "POST" && action === "restart") return ok({ cursor: null });
@@ -2159,28 +2377,38 @@ async function feed(request: Request, segments: string[]) {
     if (!characterId) return ok({ accepted: true });
     if (request.method === "POST") {
       const user = requireUser(ctx);
-      await prisma.characterLike.upsert({
-        where: { userId_characterId: { userId: user.id, characterId } },
-        update: {},
-        create: { userId: user.id, characterId },
+      // 幂等且并发安全：只有真正插入 like 行的请求才推进统计。
+      const createdCount = await prisma.$transaction(async (tx) => {
+        const created = await tx.characterLike.createMany({
+          data: [{ userId: user.id, characterId }],
+          skipDuplicates: true,
+        });
+        if (created.count > 0) {
+          await tx.characterStats.upsert({
+            where: { characterId },
+            update: { likesCount: { increment: 1 } },
+            create: { characterId, likesCount: 1 },
+          });
+        }
+        return created.count;
       });
-      await prisma.characterStats.upsert({
-        where: { characterId },
-        update: { likesCount: { increment: 1 } },
-        create: { characterId, likesCount: 1 },
-      });
-      await trackEvent("feed_item_liked", { itemId }, ctx);
+      if (createdCount > 0) {
+        await trackEvent("feed_item_liked", { itemId }, ctx);
+      }
       return ok({ liked: true });
     }
     if (request.method === "DELETE") {
       const user = requireUser(ctx);
-      await prisma.characterLike.deleteMany({
+      // 对称：仅当确实删除了一行 like 才 -1，且永不低于 0。
+      const removed = await prisma.characterLike.deleteMany({
         where: { userId: user.id, characterId },
       });
-      await prisma.characterStats.updateMany({
-        where: { characterId, likesCount: { gt: 0 } },
-        data: { likesCount: { decrement: 1 } },
-      });
+      if (removed.count > 0) {
+        await prisma.characterStats.updateMany({
+          where: { characterId, likesCount: { gt: 0 } },
+          data: { likesCount: { decrement: 1 } },
+        });
+      }
       return ok({ liked: false });
     }
   }

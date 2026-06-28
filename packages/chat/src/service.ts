@@ -274,6 +274,25 @@ export async function archiveSession(
   return prisma.chatSession.update({ where: { id: session.id }, data: { status: "archived" } });
 }
 
+// Title is user-facing; cap at 80 chars so the drawer row never overflows (US-CH-04).
+const MAX_TITLE_LENGTH = 80;
+
+export async function renameSession(
+  input: { userId: string; sessionId: string; title: string },
+  override?: Partial<ChatContext>,
+) {
+  const { prisma } = ctx(override);
+  const session = await prisma.chatSession.findUnique({ where: { id: input.sessionId } });
+  if (!session || session.userId !== input.userId || session.status === "deleted") {
+    throw new ChatError("session_not_found", "session not found", 404);
+  }
+  const title = input.title.trim();
+  if (!title || title.length > MAX_TITLE_LENGTH) {
+    throw new ChatError("bad_request", `title must be 1-${MAX_TITLE_LENGTH} characters`, 400);
+  }
+  return prisma.chatSession.update({ where: { id: session.id }, data: { title } });
+}
+
 export async function setNoMemory(
   input: { userId: string; sessionId: string; memoryEnabled: boolean },
   override?: Partial<ChatContext>,

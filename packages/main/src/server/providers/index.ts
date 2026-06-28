@@ -118,7 +118,7 @@ function createImageProvider() {
 }
 
 function createVoiceProvider(blob: BlobStore) {
-  if (env.VOICE_PROVIDER === "mock") return new MockVoiceModel();
+  if (env.VOICE_PROVIDER === "mock") return new MockVoiceModel(blob);
 
   return new PipelineVoiceModel({
     baseUrl: requireProviderEnv(

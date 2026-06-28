@@ -31,16 +31,27 @@ export function CharacterDetailClient({ id }: Readonly<{ id: string }>) {
   useEffect(() => {
     fetch(`/api/v1/characters/${id}`)
       .then(async (response) => {
-        if (!response.ok) throw new Error("Character unavailable");
-        return (await response.json()) as CharacterDetailResponse;
-      })
-      .then((payload) => {
+        if (!response.ok) {
+          // Distinguish failure categories: 403 is the age gate, 404 is a
+          // genuine missing character, anything else is a load/server error.
+          if (response.status === 403) {
+            setStatus("Accept the age gate or sign in to view this character.");
+          } else if (response.status === 404) {
+            setStatus("This character could not be found.");
+          } else {
+            setStatus("Could not load this character. Please try again.");
+          }
+          return;
+        }
+        const payload = (await response.json()) as CharacterDetailResponse;
         if (payload.data?.character) {
           setCharacter(payload.data.character);
           setStatus("");
+        } else {
+          setStatus("This character could not be found.");
         }
       })
-      .catch(() => setStatus("Accept the age gate or sign in to view this character."));
+      .catch(() => setStatus("Could not load this character. Please try again."));
   }, [id]);
 
   async function startChat() {

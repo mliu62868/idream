@@ -12,12 +12,19 @@
 // ⚠️ script paths point at real node entry files (.mjs / next's CJS bin), NOT the
 //    pnpm `.bin/*` shell shims — pm2's node interpreter cannot parse a /bin/sh shim
 //    (and cluster mode requires a node-loadable script).
+// Absolute cwds (resolved from this file's dir) so targeted `pm2 start
+// ecosystem.config.js --only <app>` resolves each app's working dir — and thus its
+// dotenv-loaded .env — identically to a full start. Relative cwds resolve against
+// the pm2 daemon's cwd under `--only`, which silently breaks per-app .env loading.
+const path = require("path");
+const dir = (rel) => path.join(__dirname, rel);
+
 module.exports = {
   apps: [
     // fast · synchronous — public pages, characters, billing, library, chat BFF
     {
       name: "main-web",
-      cwd: ".",
+      cwd: dir("."),
       script: "scripts/start-next-standalone.cjs",
       args: "packages/main",
       exec_mode: "cluster",
@@ -30,7 +37,7 @@ module.exports = {
     // fast · synchronous — internal admin control plane, isolated from public web
     {
       name: "admin-web",
-      cwd: ".",
+      cwd: dir("."),
       script: "scripts/start-next-standalone.cjs",
       args: "packages/admin",
       exec_mode: "cluster",
@@ -43,7 +50,7 @@ module.exports = {
     // fast I/O + slow generation — chat/web (API+SSE) + chat/worker, one process
     {
       name: "chat",
-      cwd: "packages/chat",
+      cwd: dir("packages/chat"),
       script: "node_modules/tsx/dist/cli.mjs",
       args: "src/main.ts",
       exec_mode: "fork",
@@ -53,7 +60,7 @@ module.exports = {
     // slow · async — pure generation, only writes blob, horizontally scalable
     {
       name: "gen-image",
-      cwd: "packages/gen",
+      cwd: dir("packages/gen"),
       script: "node_modules/tsx/dist/cli.mjs",
       args: "src/image.ts",
       exec_mode: "fork",
@@ -61,7 +68,7 @@ module.exports = {
     },
     {
       name: "gen-video",
-      cwd: "packages/gen",
+      cwd: dir("packages/gen"),
       script: "node_modules/tsx/dist/cli.mjs",
       args: "src/video.ts",
       exec_mode: "fork",
@@ -70,7 +77,7 @@ module.exports = {
     // slow · local runner gateway — wraps stable-diffusion.cpp as OpenAI-compatible images
     {
       name: "sdcpp-image",
-      cwd: "packages/gen",
+      cwd: dir("packages/gen"),
       script: "node_modules/tsx/dist/cli.mjs",
       args: "src/sdcpp-openai-image-server.ts",
       exec_mode: "fork",
@@ -96,7 +103,7 @@ module.exports = {
     // medium · async — main-side authority write-back
     {
       name: "gen-finalizer",
-      cwd: "packages/main",
+      cwd: dir("packages/main"),
       script: "node_modules/tsx/dist/cli.mjs",
       args: "src/processes/finalizer.ts",
       exec_mode: "fork",
@@ -104,7 +111,7 @@ module.exports = {
     },
     {
       name: "main-event-consumer",
-      cwd: "packages/main",
+      cwd: dir("packages/main"),
       script: "node_modules/tsx/dist/cli.mjs",
       args: "src/processes/event-consumer.ts",
       exec_mode: "fork",

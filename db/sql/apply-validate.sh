@@ -16,6 +16,7 @@ psql_chat() {
 echo "== applying boundary SQL to $DB =="
 psql_super -U "$SUPER" -d "$DB" -f "$HERE/01_schemas_roles.sql"
 psql_super -U "$SUPER" -d "$DB" -c "SET ROLE core_owner;" -f "$HERE/02_core_views.sql"
+psql_super -U "$SUPER" -d "$DB" -f "$HERE/03_character_management.sql"
 psql_super -U "$SUPER" -d "$DB" -c "SET ROLE chat_owner;" -f "$HERE/03_chat_tables.sql"
 psql_super -U "$SUPER" -d "$DB" -f "$HERE/04_grants.sql"
 echo "== applied =="

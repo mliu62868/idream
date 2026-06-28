@@ -174,6 +174,7 @@ test("flow 2: signup through the UI creates an authenticated session", async ({ 
   await page.goto("/signup");
   await dismissAgeGate(page);
 
+  await page.getByLabel("Display name").fill("E2E Signup User");
   await page.locator('input[type="email"]').fill(email);
   await page.locator('input[type="password"]').fill("password123");
   await page.getByRole("button", { name: /join free/i }).click();
@@ -217,6 +218,14 @@ test("flow 3: chat session persists through the real server", async ({ page }) =
   expect(messages.map((message) => message.role)).toEqual(
     expect.arrayContaining(["user", "assistant"]),
   );
+
+  // Rename the session (US-CH-04; the session-list drawer posts this same PATCH).
+  const renamed = await ctx.patch(`/api/v1/chat/sessions/${sessionId}`, {
+    data: { title: "Renamed by e2e" },
+  });
+  expect(renamed.ok(), await renamed.text()).toBeTruthy();
+  const afterRename = await ctx.get(`/api/v1/chat/sessions/${sessionId}`);
+  expect((await afterRename.json()).data.session.title).toBe("Renamed by e2e");
 });
 
 test("flow 4/5/6: generation, billing, and moderation via the real server", async ({

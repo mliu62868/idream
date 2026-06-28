@@ -18,6 +18,35 @@ type DraftPayload = {
 
 type PreviewStatus = "idle" | "generating" | "complete" | "failed";
 
+type CreateTemplate = {
+  id: string;
+  name: string;
+  summary?: string | null;
+  gender?: string | null;
+  style?: string | null;
+  appearance?: unknown;
+  advancedDetails?: unknown;
+  tags?: unknown;
+};
+
+// Templates store free-form Json; pull a usable string for the draft's prompt-shaped fields.
+function pickString(value: unknown, ...keys: string[]): string {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object") {
+    for (const key of keys) {
+      const inner = (value as Record<string, unknown>)[key];
+      if (typeof inner === "string" && inner.trim()) return inner;
+    }
+  }
+  return "";
+}
+
+function pickTags(value: unknown): string {
+  if (Array.isArray(value)) return value.filter((t) => typeof t === "string").join(",");
+  if (typeof value === "string") return value;
+  return "";
+}
+
 const DEFAULT_PREVIEW = "/images/ourdream/card-sarah-mercer.webp";
 const STORAGE_KEY = "ourdream.create.draft.v1";
 
@@ -62,6 +91,8 @@ export function CreateWorkspace() {
   const [createdStatus, setCreatedStatus] = useState("");
   const [pending, setPending] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+  const [templates, setTemplates] = useState<CreateTemplate[]>([]);
+  const [templateId, setTemplateId] = useState("");
 
   const step = state.step;
   const set = useCallback(
@@ -94,6 +125,40 @@ export function CreateWorkspace() {
       // ignore quota/serialization errors
     }
   }, [state, hydrated]);
+
+  // Load admin-curated starting templates (public, active only). Best-effort: the create
+  // flow stays fully usable from scratch if none exist or the fetch fails.
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await fetch("/api/v1/character-templates");
+        if (!res.ok) return;
+        const payload = (await res.json()) as { data?: { items?: CreateTemplate[] } };
+        if (alive && Array.isArray(payload.data?.items)) setTemplates(payload.data.items);
+      } catch {
+        // ignore — templates are optional scaffolding
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  function applyTemplate(template: CreateTemplate) {
+    // Selecting a template seeds the draft; the user is then free to edit everything (no runtime link).
+    setTemplateId(template.id);
+    setState((current) => ({
+      ...current,
+      gender: template.gender || current.gender,
+      style: template.style || current.style,
+      appearance: pickString(template.appearance, "prompt", "summary") || current.appearance,
+      description:
+        pickString(template.advancedDetails, "description") || template.summary || current.description,
+      tags: pickTags(template.tags) || current.tags,
+    }));
+    setStatus(`Started from "${template.name}". Edit any field before publishing.`);
+  }
 
   const nameError = state.name.trim().length < 2 ? "Name needs at least 2 characters." : "";
   const ageError = state.age < 18 || state.age > 99 ? "Age must be between 18 and 99." : "";
@@ -171,6 +236,9 @@ export function CreateWorkspace() {
   }
 
   async function submit() {
+    // Guard against double-submit: once a character is created, don't reuse the same
+    // draft to create a duplicate (the success state already links onward).
+    if (pending || createdCharacterId) return;
     setPending(true);
     setStatus("");
     setCreatedCharacterId("");
@@ -254,6 +322,45 @@ export function CreateWorkspace() {
           </div>
 
           <div className="rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-4 md:p-6">
+            {step === 0 && templates.length > 0 && (
+              <div className="mb-4" data-testid="create-templates">
+                <p className="text-[12px] font-bold uppercase leading-4 text-[rgb(114,113,112)]">
+                  Start from a template
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    className={`h-9 rounded-full px-3 text-[12px] font-bold ${
+                      templateId === ""
+                        ? "bg-white text-[rgb(13,13,13)]"
+                        : "bg-[rgb(36,36,36)] text-white"
+                    }`}
+                    onClick={() => {
+                      setTemplateId("");
+                      setStatus("");
+                    }}
+                    type="button"
+                  >
+                    From scratch
+                  </button>
+                  {templates.map((template) => (
+                    <button
+                      className={`h-9 rounded-full px-3 text-[12px] font-bold ${
+                        templateId === template.id
+                          ? "bg-white text-[rgb(13,13,13)]"
+                          : "bg-[rgb(36,36,36)] text-white"
+                      }`}
+                      key={template.id}
+                      onClick={() => applyTemplate(template)}
+                      title={template.summary ?? undefined}
+                      type="button"
+                    >
+                      {template.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {step === 0 && (
               <div className="grid gap-3 md:grid-cols-2" data-testid="create-step-identity">
                 <Field label="Name">
@@ -406,7 +513,7 @@ export function CreateWorkspace() {
                 <button
                   className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[linear-gradient(0deg,#ff1cac,#fd5fc2_50%,#ff79d1)] text-[14px] font-black text-white disabled:opacity-70"
                   data-testid="create-submit"
-                  disabled={pending}
+                  disabled={pending || Boolean(createdCharacterId)}
                   onClick={() => void submit()}
                   type="button"
                 >

@@ -1,6 +1,6 @@
 "use client";
 
-import { Archive, Compass, Plus, Trash2, X } from "lucide-react";
+import { Archive, Compass, Pencil, Plus, Trash2, X } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
@@ -26,6 +26,9 @@ export function ChatSessionListDrawer({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Inline rename: editingId marks the row in edit mode, draft holds the input value.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
 
   useEffect(() => {
     if (!open) return;
@@ -70,6 +73,48 @@ export function ChatSessionListDrawer({
           ),
         );
       }
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  function startRename(sessionId: string, currentTitle: string | null) {
+    setEditingId(sessionId);
+    setDraft(currentTitle ?? "");
+    setError(null);
+  }
+
+  function cancelRename() {
+    setEditingId(null);
+    setDraft("");
+  }
+
+  async function saveRename(sessionId: string) {
+    const title = draft.trim();
+    if (!title) {
+      cancelRename();
+      return;
+    }
+    setBusyId(sessionId);
+    try {
+      const res = await fetch(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title }),
+      });
+      if (res.ok) {
+        const updated = (await res.json()) as { title: string | null };
+        setSessions((current) =>
+          current.map((row) =>
+            row.id === sessionId ? { ...row, title: updated.title ?? title } : row,
+          ),
+        );
+        cancelRename();
+      } else {
+        setError("Couldn't rename this chat.");
+      }
+    } catch {
+      setError("Couldn't rename this chat.");
     } finally {
       setBusyId(null);
     }
@@ -159,20 +204,54 @@ export function ChatSessionListDrawer({
                 data-testid="session-list-item"
                 key={row.id}
               >
-                <Link
-                  className="flex min-w-0 flex-1 flex-col"
-                  href={`/chat/${row.id}`}
-                  onClick={onClose}
-                >
-                  <span className="truncate text-[14px] font-semibold text-white">
-                    {row.title ?? "Untitled chat"}
-                  </span>
-                  {row.status === "archived" ? (
-                    <span className="text-[11px] font-medium uppercase text-[rgb(114,113,112)]">
-                      Archived
+                {editingId === row.id ? (
+                  <input
+                    aria-label="Rename chat"
+                    autoFocus
+                    className="min-w-0 flex-1 rounded-[8px] border border-white/20 bg-[rgb(28,28,28)] px-2 py-1 text-[14px] font-semibold text-white outline-none focus:border-[#ff79d1]"
+                    disabled={busyId === row.id}
+                    maxLength={80}
+                    onBlur={() => saveRename(row.id)}
+                    onChange={(e) => setDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void saveRename(row.id);
+                      } else if (e.key === "Escape") {
+                        e.preventDefault();
+                        cancelRename();
+                      }
+                    }}
+                    type="text"
+                    value={draft}
+                  />
+                ) : (
+                  <Link
+                    className="flex min-w-0 flex-1 flex-col"
+                    href={`/chat/${row.id}`}
+                    onClick={onClose}
+                  >
+                    <span className="truncate text-[14px] font-semibold text-white">
+                      {row.title ?? "Untitled chat"}
                     </span>
-                  ) : null}
-                </Link>
+                    {row.status === "archived" ? (
+                      <span className="text-[11px] font-medium uppercase text-[rgb(114,113,112)]">
+                        Archived
+                      </span>
+                    ) : null}
+                  </Link>
+                )}
+                <button
+                  aria-label="Rename chat"
+                  className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-[rgb(170,170,170)] hover:bg-black/40 hover:text-white disabled:opacity-50"
+                  data-testid="session-rename"
+                  disabled={busyId === row.id || editingId === row.id}
+                  onClick={() => startRename(row.id, row.title)}
+                  title="Rename chat"
+                  type="button"
+                >
+                  <Pencil className="h-4 w-4" />
+                </button>
                 <button
                   aria-label="Archive chat"
                   className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-[rgb(170,170,170)] hover:bg-black/40 hover:text-white disabled:opacity-50"

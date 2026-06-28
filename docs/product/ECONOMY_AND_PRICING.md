@@ -1,10 +1,10 @@
 # 经济模型与定价（dreamcoin 费率卡）
 
-更新日期：2026-06-24
+更新日期：2026-06-28
 状态：产品定稿（数值最终以商务为准；本表为 SSoT 结构）
 
 > **本文是经济模型的单一事实来源（SSoT）。** 计划权益、生成扣费、免费档配额、退款规则均以此为准。
-> 工程落地见 `architecture/08-billing-and-entitlements.md`；费率数值的代码 SSoT 在 `seed + lib/constants.ts`。
+> 工程落地见 `architecture/08-billing-and-entitlements.md`；**费率与计划数值的代码 SSoT 是 `packages/main/prisma/seed.ts`**（`PricingRule` / `Plan` 种子）。本文出现的具体数字若与 seed 不一致，以 seed 为准并回写本文。
 
 ---
 
@@ -15,7 +15,7 @@
 > **dreamcoin 是平台唯一的消耗型货币。** 一切付费生成（图片、视频、语音）都按费率扣 dreamcoin。
 > 计划卡上的「200 张图 / 10 个视频 / 20 分钟语音」**不是三个独立配额**，而是「把当月 dreamcoin 全部花在该类目时的上限示意」。
 
-官方文案佐证（`docs/research/ourdream-extraction.json`）：
+官方文案佐证（对标站 ourdream.ai 计划卡文案）：
 
 > "1,000 dreamcoins is included in the subscription which **covers all your needs including videos**."
 
@@ -23,16 +23,16 @@
 
 ### 0.1 反推验证（数值自洽性）
 
-| 计划 | 当月币量 | 卡面示意 | 反推单价 |
+| 计划 | 当月币量（seed） | 卡面示意 | 反推单价 |
 | --- | --- | --- | --- |
-| Premium | 1,000 | 200 images | **5 币/图** |
-| Premium | 1,000 | 10 videos | **100 币/视频** |
-| Premium | 1,000 | 20 min voice | **50 币/分钟** |
-| Deluxe | 5,000 | 1,000 images | 5 币/图 ✓ |
-| Deluxe | 5,000 | 50 videos | 100 币/视频 ✓ |
-| Deluxe | 5,000 | 100 min voice | 50 币/分钟 ✓ |
+| Premium | 1,500 | 300 images | **5 币/图** |
+| Premium | 1,500 | 15 videos | **100 币/视频** |
+| Deluxe | 6,000 | 1,200 images | 5 币/图 ✓ |
+| Deluxe | 6,000 | 60 videos | 100 币/视频 ✓ |
 
-两档计划用**同一套单价**完全吻合 → 单一货币模型成立。
+两档计划用**同一套单价**完全吻合 → 单一货币模型成立（币量取自 `seed.ts` 的 `Plan.includedDreamcoins`：Premium 月 1,500 / Deluxe 月 6,000）。
+
+> **语音不走币折算**：语音是按计划的**独立分钟额度**计量（`Plan.features.voiceMinutes`，Premium 30 / Deluxe 120 分钟·月，滚动 30 天窗口），额度用尽后才按 clip 兜底扣 dreamcoin（见 §1.1），因此不纳入上表的「币 ÷ 单价」反推。
 
 ---
 
@@ -46,9 +46,9 @@
 | --- | --- | --- |
 | 图片生成（默认模型，1 张） | **5 币/张** | `count` 张则 ×count，如 4 张 = 20 币 |
 | 视频生成（默认时长） | **100 币/个** | 与默认时长绑定；更长时长 P1 另议 |
-| 语音通话 | **50 币/分钟** | 按实际通话分钟计，向上取整到分钟 |
+| 语音（按条 TTS 朗读） | **计划分钟额度优先；超出后 2 币/条** | 先消耗 `Plan.features.voiceMinutes`（滚动 30 天窗口）；额度用尽后每条 clip 兜底扣币（`PricingRule` mode=`voice`，`baseCost` 默认 2，代码 SSoT 见 `seed.ts`）。同一 `messageId` 只生成/计费一次 |
 | 文字消息 | **0 币** | 订阅用户 unlimited；免费档按 `chat_usage` 周期限量（§3） |
-| 音频消息（TTS 回复） | **0 币** | 订阅用户 unlimited audio messages |
+| 音频消息（额度内 TTS 回复） | **0 币** | 计划分钟额度覆盖范围内不额外扣币 |
 
 ### 1.2 乘数（在基础单价上叠加）
 
@@ -61,7 +61,7 @@
 | `duration_mult`（视频时长） | 默认 1.0 | 视频 | P1 支持更长时长时启用 |
 | `orientation`（画幅比例） | **1.0（不额外计费）** | 图片 | 5 种比例同价，避免定价复杂度 |
 
-> **乘数算法的唯一定义在此**：`base × count × model_mult × duration_mult`，逐项相乘后 `ceil`。其余文档（`IMAGE_GENERATION_SERVICE_PLAN`、`ADMIN_CONSOLE_PLAN`）引用本节，不得另立公式。
+> **乘数算法的唯一定义在此**：`base × count × model_mult × duration_mult`，逐项相乘后 `ceil`（代码实现见 `service.ts` 的 `generationCost`）。其余文档（如 `ADMIN_CONSOLE_PLAN`、`BackendFeatureSpec`）引用本节，不得另立公式。
 
 ### 1.3 扣费时点（与 ledger 一致，见 08 §4）
 
@@ -78,36 +78,42 @@
 
 ## 2. 订阅计划与权益
 
-价格与权益对齐真实站点（`docs/research/CHROME_PRODUCT_EXPLORATION.md` L122–123）。
+价格与权益对齐真实站点 ourdream.ai；**数值 SSoT 为 `seed.ts` 的 `Plan` 种子**（`priceCents` / `includedDreamcoins` / `features`）。
 
-| 计划 | 月付 | 年付（等效月价 / 一次付清） | 当月 dreamcoin | 关键权益 |
+| 计划 | 月付 | 年付（一次付清 / 等效月价） | 当月 dreamcoin | 关键权益 |
 | --- | --- | --- | --- | --- |
 | **Free** | $0 | — | 注册赠币（一次性，见 §3） | 浏览、有限聊天、无付费生成（除非用赠币/充值） |
-| **Premium** | $19.99/mo | $9.99/mo（$119.88/yr 一次付清） | 1,000 / 月 | unlimited messages & audio、custom prompt、negative prompt、video gen、发布角色 |
-| **Deluxe** | $59.99/mo | $29.99/mo（$359.88/yr 一次付清） | 5,000 / 月 | Premium 全部 + **premium chat models** + **3× chat memory** |
+| **Premium** | $19.99/mo | $99.90/yr（≈$8.33/mo） | 1,500 / 月（年付 18,000/年） | unlimited messages、image gen、voice（30 min/月）、video gen |
+| **Deluxe** | $59.99/mo | $299.90/yr（≈$24.99/mo） | 6,000 / 月（年付 72,000/年） | Premium 全部 + **premium models** + voice（120 min/月） + video gen |
 
 ### 2.1 年付促销
 
 - 年付**首次订阅**额外赠 1,000 dreamcoins（一次性，`reason=promo`）。
 - 年付一次性付清（加密支付无自动续费，见 08 §2）。
 
-### 2.2 `Plan.features` 结构（SSoT 在 seed）
+### 2.2 `Plan.features` 结构（SSoT 在 `seed.ts`）
+
+`includedDreamcoins` 是 `Plan` 的**独立顶层列**（不在 `features` 里）。`features` 为 camelCase JSON，实际字段如下（取自 `seed.ts` 的 Premium / Deluxe 月卡）：
 
 ```jsonc
+// Premium 月卡 features
 {
-  "unlimited_messages": true,
-  "audio_messages": true,
-  "custom_prompt": true,
-  "negative_prompt": true,
-  "video_gen": true,
-  "publish_characters": true,
-  "premium_models": false,        // deluxe = true
-  "chat_memory_multiplier": 1,    // deluxe = 3（语义见 CHAT_SERVICE_PRD §7.x）
-  "monthly_dreamcoins": 1000      // deluxe = 5000
+  "unlimitedMessages": true,
+  "imageGeneration": true,
+  "videoGeneration": false,   // deluxe = true
+  "voiceEnabled": true,
+  "voiceMinutes": 30          // deluxe = 120；年卡 360 / 1440
+  // deluxe 额外：premiumModels: true
 }
 ```
 
-> 注意：旧 `features` 里的 `image_quota / video_quota / voice_minutes` 字段**废弃**（已被单一货币模型取代）。计划卡 UI 上的「200 images」等文案由 `monthly_dreamcoins ÷ 费率` 动态算出展示，不再硬编码。
+对应 `Plan` 顶层：`priceCents`（Premium 月 1999 / 年 9990；Deluxe 月 5999 / 年 29990）、`includedDreamcoins`（Premium 月 1500 / 年 18000；Deluxe 月 6000 / 年 72000）。
+
+> 注意：
+> - 旧 `features` 里的 `image_quota / video_quota` 计数器字段**已废弃**（被单一货币模型取代）；图片/视频额度统一折算 dreamcoin。
+> - `voiceMinutes` **仍在使用、并按滚动 30 天窗口计量**（见 §1.1），不是废弃字段。
+> - 计划卡 UI 上的「N images / N videos」文案由 `includedDreamcoins ÷ 费率` 动态算出展示，不硬编码。
+> - 「custom prompt / negative prompt / premium chat models / chat memory multiplier」等高阶权益由 entitlement / Chat Service 层计算，**不落在 `Plan.features`** 内。
 
 ---
 
@@ -117,7 +123,7 @@
 
 | 维度 | 免费档额度 | 说明 |
 | --- | --- | --- |
-| 注册赠币 | **一次性 25 币** | 足够试用约 5 张图，体验生成漏斗；`reason=signup_bonus`，不每月续 |
+| 注册赠币 | **一次性 250 币** | 足够试用约 50 张图，体验生成漏斗；`reason=signup_bonus`（代码 SSoT：`service.ts` signup 授予 250），不每月续 |
 | 文字消息 | **每日 30 条 / 角色不限** | 经 `chat_usage` 按自然日滚动计；超额提示升级 |
 | 聊天模型 | 基础模型 | 非 premium models |
 | 聊天记忆 | `chat_memory_multiplier = 1`（基线） | 见 Chat PRD |
@@ -125,8 +131,8 @@
 | 发布角色 | 不可 | 仅可保存私有（My AI） |
 | 自定义 prompt / negative prompt / 高阶模型 | 不可 | premium 门 |
 
-> **设计意图**：免费档让用户走完「探索→创建→生成一次→看到结果」的 aha 时刻（25 币 ≈ 5 张图），但持续生成必须订阅。消息额度给足以体验聊天黏性，但限制日上限以保护成本与推动转化。
-> 具体数值（25 币 / 30 条）为**可调运营参数**，应进入 A/B 实验（见 PRD 指标章），不写死在代码逻辑中。
+> **设计意图**：免费档让用户走完「探索→创建→生成一次→看到结果」的 aha 时刻（250 币 ≈ 50 张图），但持续生成必须订阅。消息额度给足以体验聊天黏性，但限制日上限以保护成本与推动转化。
+> 具体数值（250 币 / 30 条）为**可调运营参数**，应进入 A/B 实验（见 PRD 指标章）；当前默认值的代码 SSoT 在 `seed.ts` / `service.ts`。
 
 ---
 
@@ -168,7 +174,7 @@
 | 文档 | 引用本文的内容 |
 | --- | --- |
 | `08-billing-and-entitlements.md §6` | 配额→币的折算口径（本文 §0/§1 取代其「建议」表述） |
-| `IMAGE_GENERATION_SERVICE_PLAN.md` | 费率与乘数公式（本文 §1.2 为唯一定义） |
+| `BackendFeatureSpec.md §5.5` | 生成请求契约引用本文 §1.2 的费率与乘数公式 |
 | `ADMIN_CONSOLE_PLAN.md` | `PricingRule` 字段语义；改价走配置版本化 + 审计 |
 | `CHAT_SERVICE_PRD.md` | `chat_memory_multiplier` 数值与语音计费口径 |
 | `PRD.md §6.7` | 计划卡展示口径（动态算出 images 等示意，不硬编码） |

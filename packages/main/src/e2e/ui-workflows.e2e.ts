@@ -246,16 +246,17 @@ async function restoreVideoGenerationFlag(previousFlag: {
 }
 
 async function seedCommunityDreamer() {
+  // Zero out prior e2e dreamers' stats so scores never accumulate across runs. The old
+  // approach (topScore + offset) grew the score ~1.5M every run and eventually overflowed
+  // character_stats.likesCount (INT4). A bounded constant (real seed data tops out well
+  // under 1M) keeps this freshly seeded dreamer the top-ranked one without unbounded growth.
+  await prisma.characterStats.deleteMany({
+    where: { character: { creatorId: { startsWith: "e2e-ui-dreamer-" } } },
+  });
+
   const id = `e2e-ui-dreamer-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
   const characterId = `${id}-character`;
-  const [topScore] = await prisma.$queryRaw<Array<{ score: bigint | number | null }>>`
-    SELECT COALESCE(MAX(COALESCE(cs."likesCount", 0) + COALESCE(cs."chatsCount", 0)), 0)::bigint AS score
-    FROM "character_stats" cs
-  `;
-  const score =
-    Number(topScore?.score ?? 0) +
-    1_000_000 +
-    Math.floor(Math.random() * 1_000_000);
+  const score = 1_000_000 + Math.floor(Math.random() * 1_000);
   const displayName = `Dreamer ${Date.now()} ${Math.floor(Math.random() * 1e6)}`;
   await prisma.user.create({
     data: {
@@ -534,7 +535,8 @@ test("create UI walks the multi-step builder and shows the character in My AI", 
   await expect(page.getByText(`Saved ${characterName} to My AI.`)).toBeVisible({
     timeout: 20_000,
   });
-  await page.getByRole("link", { name: "My AI" }).click();
+  // Use the create-success CTA (in the wizard <section>), not the sidebar nav link of the same name.
+  await page.locator("section").getByRole("link", { name: "My AI" }).click();
   await expect(page).toHaveURL(/\/custom/);
 
   await page.getByRole("button", { name: "created" }).click();
@@ -641,12 +643,15 @@ test("generator UI explains config load failures instead of showing a fake zero 
 
   await page.goto("/generate");
 
-  await expect(page.getByText("Loading...", { exact: true })).toBeVisible({
+  // On config-load failure the balance area shows a clear retry affordance (not a
+  // permanent "Loading..." and not a fake "0 coins"), plus the underlying error message.
+  await expect(page.getByText("Couldn't load generator. Retry.")).toBeVisible({
     timeout: 10_000,
   });
   await expect(page.getByText("Age verification required")).toBeVisible({
     timeout: 10_000,
   });
+  await expect(page.getByText("Loading...", { exact: true })).toHaveCount(0);
   await expect(page.getByText("0 coins", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Generate" })).toBeDisabled();
 });
@@ -660,7 +665,10 @@ test("generator UI queues an image job and surfaces completed media in the galle
 
   await page.goto("/generate");
   const generate = page.getByRole("button", { name: "Generate" });
-  await expect(generate).toBeEnabled({ timeout: 15_000 });
+  // Generate enables once generator config (balance/models) loads. The standalone server
+  // can be slow to serve the first /generate after a heavy suite run on a shared machine
+  // (the page loads in ~3s in isolation); allow generous slack so this isn't flaky.
+  await expect(generate).toBeEnabled({ timeout: 45_000 });
   await generate.click();
 
   await expect(page.getByText("Generation queued.")).toBeVisible({ timeout: 10_000 });
@@ -703,17 +711,18 @@ test("generator UI queues a video job and surfaces completed video in the galler
     await page.goto("/generate");
     await page.getByRole("button", { name: "Video Beta" }).click();
     const generate = page.getByRole("button", { name: "Generate" });
-    await expect(generate).toBeEnabled({ timeout: 15_000 });
+    // Generous slack: generator config can be slow to serve under full-suite load (see image test).
+    await expect(generate).toBeEnabled({ timeout: 45_000 });
     await generate.click();
 
-    await expect(page.getByText("Generation queued.")).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText("Generation queued.")).toBeVisible({ timeout: 30_000 });
     const job = await latestGenerationJob(page.request, "video");
     await drainWorker(page.request, job.id);
 
-    await expect(page.getByText("Generation complete.")).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText("Generation complete.")).toBeVisible({ timeout: 30_000 });
     await expectGeneratedAssetServed(page.request, job.id, "video");
     await page.getByRole("button", { name: "Videos" }).click();
-    await expect(page.getByTestId("gallery-media-video")).toHaveCount(1, { timeout: 10_000 });
+    await expect(page.getByTestId("gallery-media-video")).toHaveCount(1, { timeout: 30_000 });
     await expect(page.getByTestId("gallery-media-video")).toBeVisible();
     await expect(page.getByTestId("gallery-media-video").locator("source")).toHaveAttribute(
       "src",
@@ -722,6 +731,43 @@ test("generator UI queues a video job and surfaces completed video in the galler
   } finally {
     await restoreVideoGenerationFlag(previousFlag);
   }
+});
+
+test("generator user-preset round-trip and bulk media route are wired", async ({ page }) => {
+  await startSignedInAdultSession(page, "presets");
+  const ctx = page.request;
+
+  // Create a user preset (the create page UI posts the same shape).
+  const created = await ctx.post("/api/v1/generation/presets", {
+    data: {
+      type: "mode",
+      label: "E2E Studio Look",
+      controls: { backgroundPresetId: "seed-preset-background-studio" },
+      visibility: "private",
+    },
+  });
+  expect(created.ok(), await created.text()).toBeTruthy();
+  const presetId = (await created.json()).data.preset.id as string;
+
+  // It appears in the user's preset list (My Presets).
+  const list = await ctx.get("/api/v1/generation/presets?scope=user");
+  expect(list.ok()).toBeTruthy();
+  const items = (await list.json()).data.items as Array<{ id: string; controls: unknown }>;
+  const found = items.find((p) => p.id === presetId);
+  expect(found).toBeTruthy();
+
+  // Delete (archive) it.
+  const del = await ctx.delete(`/api/v1/generation/presets/${presetId}`);
+  expect(del.ok()).toBeTruthy();
+  const after = await ctx.get("/api/v1/generation/presets?scope=user");
+  const remaining = (await after.json()).data.items as Array<{ id: string }>;
+  expect(remaining.some((p) => p.id === presetId)).toBe(false);
+
+  // Bulk media route is reachable + schema-valid (no-op on a non-owned id).
+  const bulk = await ctx.post("/api/v1/media/bulk", {
+    data: { ids: ["does-not-exist"], action: "delete" },
+  });
+  expect(bulk.ok(), await bulk.text()).toBeTruthy();
 });
 
 test("upgrade UI activates Premium, grants dreamcoins, and unlocks prompt controls", async ({
@@ -762,7 +808,8 @@ test("community UI lists dreamers and reports user profiles", async ({ page }) =
   // Creator public profile (§G): name links to /creators/:id, follow toggles to Following.
   await dreamerCard.getByRole("link", { name: dreamer.displayName }).click();
   await expect(page).toHaveURL(new RegExp(`/creators/${dreamer.id}$`));
-  await expect(page.getByRole("heading", { name: dreamer.displayName })).toBeVisible({
+  // The profile title is the h1; character cards can repeat the name as an h2 link, so pin level 1.
+  await expect(page.getByRole("heading", { name: dreamer.displayName, level: 1 })).toBeVisible({
     timeout: 10_000,
   });
   await page.getByTestId("creator-follow").click();

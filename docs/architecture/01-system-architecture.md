@@ -1,10 +1,10 @@
 # 01 · 系统架构
 
-更新日期：2026-06-18
+更新日期：2026-06-28
 
 ## 1. 架构风格：模块化单体 + Chat Service 独立边界
 
-主站保持单仓、单部署、按业务模块（domain module）内聚分层。Chat 按独立服务边界设计：它拥有聊天域数据库能力，可以先在同仓/同库里落地，但热路径不再由主站写 chat 表或做 chat finalizer。
+整个仓库是 npm workspaces monorepo（`packages/{main,chat,gen,admin,shared}`）。主站（`packages/main`）按业务域内聚、单部署。Chat 已**物理拆分**为独立服务（`packages/chat`），拥有自己的聊天域 Postgres schema/视图；主站不再写 chat 表、也不做 chat finalizer，只通过 BFF 代理（`server/bff/chat-proxy`）与 outbox 事件与之交互。
 
 为什么：
 
@@ -14,29 +14,37 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│                        Next.js 16 App (单部署)                      │
-│                                                                    │
-│  app/(public)/*          公开 SEO 页（SSR/预渲染，Cache Components） │
-│  app/(app)/*             鉴权后产品页（dynamic）                     │
-│  app/api/v1/*/route.ts   Route Handlers（产品 API）                 │
-│  app/api/internal/*      内部 worker / cron 端点（共享密钥保护）      │
-│  proxy.ts                轻量边缘检查（age gate cookie、安全 header） │
+│              Monorepo（npm workspaces：packages/*）                  │
+│  packages/main    主站 Next.js 16 App（单部署，本架构主体）          │
+│  packages/chat    Chat Service（独立服务 + 独立 Postgres schema）    │
+│  packages/gen     生成 worker（图/视频/语音 pipeline）              │
+│  packages/admin   Admin 控制台（独立 Next App）                     │
+│  packages/shared  跨包共享契约/类型（bff/chat/contracts/media…）    │
+└──────────────────────────────────────────────────────────────────┘
+
+packages/main 内部：
+┌──────────────────────────────────────────────────────────────────┐
+│  src/app/(public)/*       公开 SEO 页（SSR/预渲染，Cache Components）│
+│  src/app/(app)/*          鉴权后产品页（dynamic）                    │
+│  src/app/api/v1/[...resource]/route.ts                             │
+│                           单一 catch-all → dispatchV1 按 resource 分发│
+│  src/app/api/auth/[...all]/route.ts    better-auth handler         │
+│  src/app/api/internal/worker/route.ts  内部 worker 端点（密钥保护）  │
+│  proxy.ts                 轻量边缘检查（age gate cookie、安全 header）│
 │         │                                                          │
 │         ▼                                                          │
 │  src/server/                  ← 后台核心（本架构主体）               │
-│   ├─ modules/<domain>/        每个业务模块自洽（见 §3、09）          │
-│   │    ├─ *.service.ts        业务逻辑 + 事务 + 鉴权断言             │
-│   │    ├─ *.repository.ts     Prisma 数据访问（唯一碰 db 的层）      │
-│   │    ├─ *.schema.ts         Zod 入参/出参契约                      │
-│   │    └─ *.types.ts          模块内类型                            │
-│   ├─ jobs/                    队列定义 + worker handler             │
+│   ├─ modules/ourdream/service.ts  产品域 mega-module（dispatchV1）   │
+│   ├─ modules/admin/               admin 域（service.ts + characters/）│
+│   ├─ jobs/                    队列定义 + claim                       │
 │   ├─ providers/               外部供应商抽象（AI/支付/存储/验证）     │
-│   ├─ lib/                     横切（auth、db、errors、ratelimit…）   │
-│   └─ events/                  分析事件总线                          │
+│   ├─ bff/                     chat-proxy（签名 + 反向代理到 Chat）    │
+│   ├─ admin/                   权限 / dev-login                       │
+│   └─ lib/                     横切（auth、db、errors、http、logger…） │
 └──────────────────────────────────────────────────────────────────┘
         │ Prisma Client（单例）                  │ Provider SDK
         ▼                                        ▼
-   PostgreSQL(prod) / SQLite(dev)         AI / PSP / Blob / Verify / Redis
+   PostgreSQL（Postgres-only，dev/prod 一致）   AI / PSP / Blob / Verify / Redis
 ```
 
 Chat 目标拓扑：
@@ -58,57 +66,57 @@ Chat Service reads only:
 
 ## 2. 分层与依赖方向
 
-严格单向依赖，**禁止反向**（repository 不得 import service，service 不得 import route）：
+严格单向依赖，**禁止反向**（lib/provider 不得 import 业务 service，service 不得 import route）：
 
 ```
-route handler ─▶ service ─▶ repository ─▶ Prisma Client ─▶ DB
-     │              │            
-     │              └─▶ provider 抽象（AI/PSP/Blob/Verify）
-     │              └─▶ job queue（入队，不在请求内做重活）
-     │              └─▶ event bus（埋点，fire-and-forget）
-     └─▶ lib/auth（解析 session）、lib/ratelimit、lib/http（envelope/error）
+catch-all route.ts ─▶ dispatchV1（service mega-module）─▶ Prisma Client ─▶ DB
+                          │
+                          └─▶ provider 抽象（AI/PSP/Blob/Verify）
+                          └─▶ job queue（入队，不在请求内做重活）
+                          └─▶ events（埋点，fire-and-forget）
+                          └─▶ lib/auth（解析 session）、lib/http（envelope/error）
 ```
+
+> 现状已**没有**独立的 repository 层：数据访问直接由 service handler 用 Prisma 完成（见 §3、05）。下表是各角色的职责约束。
 
 | 层 | 唯一职责 | 不允许 |
 | --- | --- | --- |
-| **Route Handler** (`app/api/.../route.ts`) | HTTP 适配：解析请求、Zod 校验、调 service、用统一 envelope 返回；鉴权/限流装饰 | 写业务逻辑、直接用 Prisma |
-| **Service** (`*.service.ts`) | 业务规则、跨表事务、权限断言、入队 job、发埋点；可组合其它 service | 碰 `Request`/`Response`、写 SQL |
-| **Repository** (`*.repository.ts`) | 用 Prisma 读写单一聚合；查询构造、分页 | 业务规则、调用其它模块 |
+| **Route Handler** (`app/api/v1/[...resource]/route.ts`) | HTTP 适配：单一 catch-all 把 method+segments 交给 `dispatchV1` | 写业务逻辑、直接用 Prisma |
+| **Service** (`modules/ourdream/service.ts`、`modules/admin/`) | 业务规则、跨表事务、权限断言、**直接用 Prisma 读写**、入队 job、发埋点 | 碰 `Request` 之外的 HTTP 细节、绕过 provider 直连外部 SDK |
 | **Provider** (`providers/*`) | 把外部供应商封装成稳定接口；处理 SDK、重试、签名 | 业务规则 |
-| **lib/** | 横切能力（auth、db 单例、错误、限流、日志、ID、加密、env） | 业务规则 |
+| **lib/** | 横切能力（auth、db 单例、http、错误、日志、env、constants） | 业务规则、import 业务模块 |
 
-> 这套分层同时满足全局规则里的 Repository Pattern 与 SSoT：业务逻辑在 service 单点、数据访问在 repository 单点。
+> Prisma 访问集中在 service 层（`modules/ourdream` + `modules/admin`），不在 route/provider/lib 里散落，满足 SSoT。
 
 ## 3. 模块清单与依赖
 
-模块边界对齐 `BackendFeatureSpec.md §2`。下表是技术归属（每个模块 = `src/server/modules/<name>/`）：
+下表是**逻辑业务域**划分（对齐 `BackendFeatureSpec.md §2` 与 `dispatchV1` 的 resource 分发）。与早期设计不同，主站后台**不再**按域拆成十几个 `modules/<name>/` 目录：除 admin 外，所有产品域都内聚在单一 mega-module `src/server/modules/ourdream/service.ts`，由 `dispatchV1(request, segments)` 按 `resource` 段分发到对应 handler。chat 已拆成独立服务（`packages/chat`）。
 
-| 模块 | 目录 | 依赖 | P0 |
+| 逻辑域 | 实现位置 | 依赖 | P0 |
 | --- | --- | --- | --- |
-| identity | `modules/identity` | lib/auth | ✅ |
-| compliance（age gate + age verification） | `modules/compliance` | identity, providers/verify | ✅ |
-| catalog（角色目录/搜索/筛选/标签/统计） | `modules/catalog` | — | ✅ |
-| chat | `modules/chat` or Chat Service | read-only core/billing/compliance views, safety policy, providers/chat | ✅ |
-| creator（草稿/预览/提交/审核态） | `modules/creator` | catalog, safety, jobs, providers/image | ✅ |
-| generation（图/视频任务、presets） | `modules/generation` | catalog, billing(dreamcoin), safety, jobs, providers/image,video | ✅(先图) |
-| media（图库 like/manage/download） | `modules/media` | providers/blob | ✅(基础) |
-| billing（计划/订阅/权益/dreamcoin） | `modules/billing` | identity, providers/payment, jobs | ✅ |
-| safety（审核/举报/申诉/政策） | `modules/safety` | jobs, providers/moderation | ✅ |
-| library（My AI 各 tab 聚合） | `modules/library` | catalog, chat, media, generation | ✅(基础) |
-| profile（资料/偏好/语言/兑换码/推荐/账号） | `modules/profile` | identity, billing | P0/P1 |
-| feed（推荐流 + 互动） | `modules/feed` | catalog, media, safety | P1 |
-| community（榜单/创作者/collections） | `modules/community` | catalog, profile | P1 |
-| seo（路由内容/文章/比较页 metadata） | `modules/seo` | — | P1 |
-| support（helpdesk 映射） | `modules/support` | — | P1 |
-| analytics（产品事件/漏斗） | `src/server/events` | — | P0 轻量 |
-| admin（审核后台/用户内容任务管理） | `modules/admin` | safety, catalog, billing, identity | P0 内部 |
+| identity | `ourdream/service.ts`（auth/me/account handler） | lib/auth | ✅ |
+| compliance（age gate + age verification） | `ourdream/service.ts` | providers/verify | ✅ |
+| catalog（角色目录/搜索/筛选/标签/统计） | `ourdream/service.ts` | — | ✅ |
+| chat | **独立服务 `packages/chat`**；主站经 `server/bff/chat-proxy` 代理 | read-only core/billing/compliance views, providers/chat | ✅ |
+| creator（草稿/预览/提交/审核态） | `ourdream/service.ts` | safety, jobs, providers/image | ✅ |
+| generation（图/视频/语音任务、presets） | `ourdream/service.ts`；worker pipeline 在 `packages/gen` | billing(dreamcoin), safety, jobs, providers/image,video,voice | ✅(先图) |
+| media（图库 like/manage/download） | `ourdream/service.ts` | providers/blob | ✅(基础) |
+| billing（计划/订阅/权益/dreamcoin） | `ourdream/service.ts` | providers/payment, jobs | ✅ |
+| safety（审核/举报/申诉/政策） | `ourdream/service.ts` | jobs, providers/moderation | ✅ |
+| library（My AI 各 tab 聚合） | `ourdream/service.ts` | catalog, media, generation | ✅(基础) |
+| profile（资料/偏好/语言/兑换码/推荐/账号） | `ourdream/service.ts` | identity, billing | P0/P1 |
+| feed（推荐流 + 互动） | `ourdream/service.ts` | catalog, media, safety | P1 |
+| community（榜单/创作者/collections） | `ourdream/service.ts` | catalog, profile | P1 |
+| seo（路由内容/文章/比较页 metadata） | `ourdream/service.ts` + `src/app` 路由 | — | P1 |
+| analytics（产品事件/漏斗） | `ourdream/service.ts`（events/track）+ `processes/event-consumer` | — | P0 轻量 |
+| admin（审核后台/角色 CMS/用户内容任务管理） | **`modules/admin/`**（service.ts + characters/）+ `server/admin`（权限） | safety, catalog, billing, identity | P0 内部 |
 
 **依赖治理规则**：
 
-- 跨模块只能 `import` 对方的 `*.service.ts`（公开 API），禁止跨模块 import 对方 repository。
+- 主站产品域目前共处一个 mega-module；硬服务边界只剩两处：**chat（独立服务 `packages/chat`）** 与 **admin 模块（`modules/admin/`）**。
 - 出现双向依赖时，下沉公共概念到 `lib/` 或用 **事件/job** 解耦（如 billing 完成 → 发事件 → library 刷新）。
-- 共享读模型（如"角色卡 DTO"）放对应模块的 `*.types.ts` 并导出。
-- Chat 是特殊边界：主站可以调用/代理 Chat API，也可以消费 Chat outbox；主站不直接写 Chat Service 权威表。Chat 可以只读主站 User/Character/Entitlement/Eligibility view，但不能写主站权威表。
+- 跨包共享读模型/契约放 `packages/shared`（`bff/chat/contracts/media…`）。
+- Chat 是特殊边界：主站经 BFF 代理/消费 Chat outbox；主站不直接写 Chat Service 权威表。Chat 只读主站 User/Character/Entitlement/Eligibility view，但不能写主站权威表。
 
 ## 4. 请求生命周期
 
@@ -120,13 +128,14 @@ Client
   ▼
 proxy.ts          安全 header；可选 age-gate 乐观检查（不做最终鉴权）
   ▼
-route.ts GET      ratelimit(ip) → parse query(Zod) → 调 catalog.service.listPublic()
+[...resource]/route.ts   → dispatchV1(request, ["characters"])
   ▼
-catalog.service   断言 age gate 已接受（从 lib/auth 读 ctx）→ catalog.repository.search()
+dispatchV1        匹配 resource=characters & GET → 调 listCharacters handler
   ▼
-catalog.repo      Prisma 查询（cursor 分页、tag 过滤、可见性=public+approved）
+listCharacters    断言 age gate（从 ctx）→ 直接 Prisma 查询
+                  （cursor 分页、tag 过滤、可见性=public+approved）
   ▼
-route.ts          ok(envelope, { items, nextCursor })  +  after(()=>events.track('explore_...'))
+handler           ok({ items, nextCursor })  +  after(()=>events.track('explore_...'))
 ```
 
 ### 4.2 典型写请求（发消息 `POST /api/v1/chat/sessions/:id/messages`）
@@ -171,7 +180,7 @@ Chat worker:
 | 能力 | Next 16 现状 | 我们的用法 |
 | --- | --- | --- |
 | **Proxy**（原 middleware） | `proxy.ts` 根/`src` 一个文件；官方明确**不要**用于"完整会话管理或鉴权" | 只做：安全 header、age-gate cookie 的**乐观**重定向、维护匿名 `anonymous_id`。真正鉴权在 service 层。 |
-| **Route Handlers** | `app/api/.../route.ts`，Web `Request/Response`；非 GET 默认不缓存 | 全部产品 API；统一 envelope；`export const dynamic` 控制缓存 |
+| **Route Handlers** | Web `Request/Response`；非 GET 默认不缓存 | 单一 catch-all `app/api/v1/[...resource]/route.ts` → `dispatchV1`；统一 envelope；`export const dynamic="force-dynamic"` |
 | **`after()`** (`next/server`) | 响应后执行副作用，受路由 `maxDuration` 约束 | 埋点、轻量日志、**触发**（非执行）job；**不**放长任务 |
 | **`connection()`** | 替代 `unstable_noStore`，强制运行时渲染 | 动态产品页/handler 里需要时调用 |
 | **Cache Components** | `use cache` + `cacheLife` + `cacheTag`，GET handler 也走同模型 | 公开 SEO 页、角色目录读模型缓存；角色更新 `revalidateTag('character:'+id)` |
@@ -213,7 +222,7 @@ Chat worker:
                  │ read-only core views + write chat.*   │
                  └───────────────────────────────────────┘
 
-   dev：本地 `next dev` + SQLite 文件 + provider 的 mock/sandbox 实现
+   dev：本地 `next dev` + 本地 Postgres（Postgres-only）+ provider 的 mock/sandbox 实现
 ```
 
 - **主部署 Vercel**：Fluid Compute（Node.js，非 edge-only），默认函数超时已放宽（见知识更新）；Cron 触发 worker。
@@ -223,12 +232,12 @@ Chat worker:
 
 ## 8. 架构不变量（Invariants，写代码时反复自检）
 
-1. 只有 repository 碰 Prisma；其它层碰 db 即违规。
+1. Prisma 访问集中在 service 层（`modules/ourdream` + `modules/admin`）；route/provider/lib 碰 db 即违规。
 2. 同步 HTTP 路径不调用 AI / 不做重 IO；重活入队。
 3. 余额/额度类数值由 ledger/usage 表派生，不可就地覆盖。
 4. 一切用户可见内容（角色、媒体、消息、feed）可被举报且能进审核队列。
 5. 成人内容前必过 age gate；受限司法辖区必过身份验证。
 6. 客户端传来的 plan / 权益一律不可信，服务端按 entitlements 判定。
 7. provider 回调先验签、再幂等落库、最后入队处理。
-8. schema 只用 SQLite + Postgres 双方都支持的特性子集（见 03 §2）。
+8. 数据库为 Postgres-only（`DB_PROVIDER="postgresql" as const`），dev/prod 一致；Chat Service 用独立 Postgres schema/视图（见 03）。
 9. Chat Service 只读主站 User/Character/Entitlement/Eligibility view，只写 chat domain 表。

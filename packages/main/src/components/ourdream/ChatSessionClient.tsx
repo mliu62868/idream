@@ -50,7 +50,17 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [relationshipRefreshKey, setRelationshipRefreshKey] = useState(0);
+  const [voiceLoadingId, setVoiceLoadingId] = useState<string | null>(null);
+  const [voicePlayingId, setVoicePlayingId] = useState<string | null>(null);
   const streamSources = useRef<Map<string, EventSource>>(new Map());
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+
+  // SPEC: Keep the newest message (and its streaming deltas) in view; without this
+  //       the reply renders below the fold and the input is pushed off-screen.
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages]);
 
   useEffect(() => {
     let cancelled = false;
@@ -75,8 +85,70 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     return () => {
       for (const source of sources.values()) source.close();
       sources.clear();
+      audioRef.current?.pause();
+      audioRef.current = null;
     };
   }, []);
+
+  function stopVoice() {
+    const audio = audioRef.current;
+    if (audio) {
+      audio.pause();
+      audio.src = "";
+    }
+    audioRef.current = null;
+    setVoicePlayingId(null);
+  }
+
+  // SPEC: On-demand TTS playback for an assistant turn. POSTs the message to the
+  //       voice endpoint (server caches per messageId), then streams the audio.
+  // INTENT: clicking again toggles playback off; 402 surfaces the upgrade path.
+  async function playMessage(messageId: string, text: string) {
+    if (!characterId || !text.trim()) return;
+    if (voicePlayingId === messageId) {
+      stopVoice();
+      return;
+    }
+    stopVoice();
+    setStatus(null);
+    setVoiceLoadingId(messageId);
+    try {
+      const response = await fetch("/api/v1/generation/voice", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ characterId, messageId, sessionId: id, text }),
+      });
+      if (response.status === 402) {
+        setQuotaReached(true);
+        setStatus("Voice playback needs a plan with voice enabled.");
+        return;
+      }
+      if (!response.ok) {
+        setStatus("Voice playback failed. Please try again.");
+        return;
+      }
+      const payload = (await response.json()) as { data?: { contentUrl?: string } };
+      const url = payload.data?.contentUrl;
+      if (!url) {
+        setStatus("Voice playback failed. Please try again.");
+        return;
+      }
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.onended = () =>
+        setVoicePlayingId((current) => (current === messageId ? null : current));
+      audio.onerror = () => {
+        setStatus("Voice playback failed. Please try again.");
+        setVoicePlayingId((current) => (current === messageId ? null : current));
+      };
+      await audio.play();
+      setVoicePlayingId(messageId);
+    } catch {
+      setStatus("Voice playback failed. Please try again.");
+    } finally {
+      setVoiceLoadingId((current) => (current === messageId ? null : current));
+    }
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -129,6 +201,11 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
         ]);
         streamAssistant(streamUrl, assistant.id, assistant.content);
       }
+    } catch {
+      // Network/parse failure: surface the error and restore the typed text so the
+      // user's message is never silently lost (P0 — silent message loss).
+      setStatus("Message failed to send. Please try again.");
+      setContent(text);
     } finally {
       setPending(false);
     }
@@ -136,17 +213,21 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
 
   async function reportMessage(messageId: string) {
     setStatus(null);
-    const response = await fetch("/api/v1/reports", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        targetType: "chat_message",
-        targetId: messageId,
-        category: "other_prohibited_content",
-        description: "Chat message report",
-      }),
-    });
-    setStatus(response.ok ? "Report submitted." : "Report failed.");
+    try {
+      const response = await fetch("/api/v1/reports", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          targetType: "chat_message",
+          targetId: messageId,
+          category: "other_prohibited_content",
+          description: "Chat message report",
+        }),
+      });
+      setStatus(response.ok ? "Report submitted." : "Report failed.");
+    } catch {
+      setStatus("Report failed.");
+    }
   }
 
   async function fetchSession(): Promise<ChatSession> {
@@ -190,12 +271,16 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
 
   async function deleteMessage(messageId: string) {
     setStatus(null);
-    const response = await fetch(`/api/v1/messages/${encodeURIComponent(messageId)}`, {
-      method: "DELETE",
-    });
-    if (response.ok) {
-      setMessages((current) => current.filter((message) => message.id !== messageId));
-    } else {
+    try {
+      const response = await fetch(`/api/v1/messages/${encodeURIComponent(messageId)}`, {
+        method: "DELETE",
+      });
+      if (response.ok) {
+        setMessages((current) => current.filter((message) => message.id !== messageId));
+      } else {
+        setStatus("Couldn't delete the message. Please try again.");
+      }
+    } catch {
       setStatus("Couldn't delete the message. Please try again.");
     }
   }
@@ -206,32 +291,36 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   async function regenerate(messageId: string) {
     if (pending) return;
     setStatus(null);
-    const response = await fetch(
-      `/api/v1/messages/${encodeURIComponent(messageId)}/regenerate`,
-      { method: "POST" },
-    );
-    if (!response.ok) {
+    try {
+      const response = await fetch(
+        `/api/v1/messages/${encodeURIComponent(messageId)}/regenerate`,
+        { method: "POST" },
+      );
+      if (!response.ok) {
+        setStatus("Couldn't regenerate. Please try again.");
+        return;
+      }
+      const payload = (await response.json()) as {
+        assistantMessageId?: string;
+        streamUrl?: string | null;
+      };
+      const newId = payload.assistantMessageId;
+      const streamUrl = payload.streamUrl;
+      if (!newId || !streamUrl) {
+        setStatus("Couldn't regenerate. Please try again.");
+        return;
+      }
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === messageId
+            ? { ...message, id: newId, content: "", status: "generating" }
+            : message,
+        ),
+      );
+      streamAssistant(streamUrl, newId, "");
+    } catch {
       setStatus("Couldn't regenerate. Please try again.");
-      return;
     }
-    const payload = (await response.json()) as {
-      assistantMessageId?: string;
-      streamUrl?: string | null;
-    };
-    const newId = payload.assistantMessageId;
-    const streamUrl = payload.streamUrl;
-    if (!newId || !streamUrl) {
-      setStatus("Couldn't regenerate. Please try again.");
-      return;
-    }
-    setMessages((current) =>
-      current.map((message) =>
-        message.id === messageId
-          ? { ...message, id: newId, content: "", status: "generating" }
-          : message,
-      ),
-    );
-    streamAssistant(streamUrl, newId, "");
   }
 
   function resumePendingStreams(loadedMessages: ChatMessage[]) {
@@ -351,19 +440,47 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                   data-testid={`chat-message-${message.role}`}
                   key={message.id}
                 >
-                  {message.content}
+                  {!isUser && !message.content.trim() ? (
+                    <span
+                      aria-label="Assistant is typing"
+                      className="inline-flex items-center gap-1 py-0.5"
+                      role="status"
+                    >
+                      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-white/60 [animation-delay:-0.3s]" />
+                      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-white/60 [animation-delay:-0.15s]" />
+                      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-white/60" />
+                    </span>
+                  ) : (
+                    message.content
+                  )}
                   <MessageActions
                     isUser={isUser}
                     pending={pending}
+                    voiceState={
+                      voiceLoadingId === message.id
+                        ? "loading"
+                        : voicePlayingId === message.id
+                          ? "playing"
+                          : undefined
+                    }
                     onReport={() => reportMessage(message.id)}
                     onDelete={() => deleteMessage(message.id)}
                     onRegenerate={isUser ? undefined : () => regenerate(message.id)}
+                    onPlay={
+                      isUser || !message.content.trim()
+                        ? undefined
+                        : () => playMessage(message.id, message.content)
+                    }
                   />
                 </div>
               );
             })}
+            <div ref={messagesEndRef} />
           </div>
-          <form className="mt-4 flex gap-2" onSubmit={submit}>
+          <form
+            className="sticky bottom-20 z-10 mt-4 flex gap-2 bg-[rgb(13,13,13)] py-2 md:bottom-0"
+            onSubmit={submit}
+          >
             <input
               aria-label="Message"
               className="h-12 min-w-0 flex-1 rounded-full bg-[rgb(36,36,36)] px-5 text-[14px] font-medium outline-none placeholder:text-[rgb(114,113,112)]"

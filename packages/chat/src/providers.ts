@@ -61,7 +61,18 @@ class OpenAIChatModel implements ChatModel {
         "Content-Type": "application/json",
         ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
       },
-      body: JSON.stringify({ model, messages: input.messages, stream: true }),
+      // INVARIANT: Qwen reasoning models (4B/27B via oMLX/SGLang/vLLM) stream their
+      // chain-of-thought into BOTH `reasoning_content` AND `content`. Dropping
+      // reasoning_content (below) is not enough; we must also disable thinking at the
+      // template level or "Thinking Process:" leaks into the reply. `chat_template_kwargs`
+      // is honored by self-hosted OpenAI-compatible servers (the product's only target;
+      // hosted OpenAI is not used) and is a no-op for non-reasoning models (0.8B).
+      body: JSON.stringify({
+        model,
+        messages: input.messages,
+        stream: true,
+        chat_template_kwargs: { enable_thinking: false },
+      }),
     });
     if (!res.ok || !res.body) {
       throw new Error(`Chat model HTTP ${res.status}: ${await res.text().catch(() => "")}`);

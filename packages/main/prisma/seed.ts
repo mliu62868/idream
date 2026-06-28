@@ -317,6 +317,7 @@ async function seedPlans() {
         unlimitedMessages: true,
         imageGeneration: true,
         videoGeneration: false,
+        voiceEnabled: true,
         voiceMinutes: 30,
       },
     },
@@ -330,6 +331,7 @@ async function seedPlans() {
         unlimitedMessages: true,
         imageGeneration: true,
         videoGeneration: false,
+        voiceEnabled: true,
         voiceMinutes: 360,
       },
     },
@@ -343,6 +345,7 @@ async function seedPlans() {
         unlimitedMessages: true,
         imageGeneration: true,
         videoGeneration: true,
+        voiceEnabled: true,
         voiceMinutes: 120,
         premiumModels: true,
       },
@@ -357,6 +360,7 @@ async function seedPlans() {
         unlimitedMessages: true,
         imageGeneration: true,
         videoGeneration: true,
+        voiceEnabled: true,
         voiceMinutes: 1_440,
         premiumModels: true,
       },
@@ -461,6 +465,29 @@ async function seedAdminControlPlane() {
       rolloutPercent: 0,
       targetRoles: [],
       targetPlans: ["deluxe"],
+      hardPolicy: false,
+    },
+  });
+
+  await prisma.featureFlag.upsert({
+    where: { key: "voice_gen" },
+    update: {
+      label: "Voice generation",
+      description: "Single gate for all on-demand voice (TTS) traffic.",
+      enabled: true,
+      rolloutPercent: 100,
+      targetRoles: [],
+      targetPlans: ["premium", "deluxe"],
+      hardPolicy: false,
+    },
+    create: {
+      key: "voice_gen",
+      label: "Voice generation",
+      description: "Single gate for all on-demand voice (TTS) traffic.",
+      enabled: true,
+      rolloutPercent: 100,
+      targetRoles: [],
+      targetPlans: ["premium", "deluxe"],
       hardPolicy: false,
     },
   });
@@ -818,6 +845,32 @@ async function seedAdminControlPlane() {
       status: "active",
       version: 1,
       publishedAt: new Date("2026-06-24T00:00:00.000Z"),
+    },
+  });
+
+  // Per-clip overflow price once a user's monthly voice-minute allowance is spent.
+  await prisma.pricingRule.upsert({
+    where: { id: "seed-pricing-voice-default-v1" },
+    update: {
+      ruleKey: "generation_voice_default",
+      label: "Voice clip overflow",
+      mode: "voice",
+      baseCost: 2,
+      multiplier: 1,
+      status: "active",
+      version: 1,
+      publishedAt: new Date("2026-06-28T00:00:00.000Z"),
+    },
+    create: {
+      id: "seed-pricing-voice-default-v1",
+      ruleKey: "generation_voice_default",
+      label: "Voice clip overflow",
+      mode: "voice",
+      baseCost: 2,
+      multiplier: 1,
+      status: "active",
+      version: 1,
+      publishedAt: new Date("2026-06-28T00:00:00.000Z"),
     },
   });
 }

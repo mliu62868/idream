@@ -15,11 +15,42 @@ import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
+import {
+  listOfficialCharacters,
+  createOfficialCharacter,
+  updateOfficialCharacter,
+  setOfficialState,
+} from "./characters/official";
+import {
+  listTemplates,
+  createTemplate,
+  updateTemplate,
+  setTemplateActive,
+} from "./characters/templates";
+import { listAdminTags, patchTag, mergeTags } from "./characters/tags";
+import { listReviewQueue, reviewSubmission } from "./characters/review";
+import { generateCharacterDraft } from "./characters/assist";
+import { listCmsPages, getCmsPage, createCmsPage, patchCmsPage, publishCmsPage } from "./cms";
+import {
+  exportUserData,
+  eraseUser,
+  listAgeVerifications,
+  overrideAgeVerification,
+} from "./compliance";
+import { profileHealth, profileDryRun } from "./generation-health";
+import { analyticsExport, analyticsRetention } from "./analytics-extra";
+import {
+  listAdminAnnouncements,
+  createAnnouncement,
+  patchAnnouncement,
+  deleteAnnouncement,
+} from "./announcements";
+import { listExperiments } from "./experiments";
 
 const FEATURED_SETTING_KEY = "feed.featured";
 
 type ApiMethod = "GET" | "POST" | "PATCH" | "DELETE" | "PUT";
-type AdminActor = { id: string; role: ActorRole };
+export type AdminActor = { id: string; role: ActorRole };
 type PlaintextFields = Record<string, string | null>;
 
 const adminDecisionSchema = z.object({
@@ -175,7 +206,7 @@ const presetAdminSchema = z.object({
 const pricingRuleSchema = z.object({
   ruleKey: z.string().trim().min(1).max(120),
   label: z.string().trim().min(1).max(120),
-  mode: z.enum(["image", "video"]).default("image"),
+  mode: z.enum(["image", "video", "voice"]).default("image"),
   baseCost: z.number().int().min(0).max(100_000),
   multiplier: z.number().min(0.1).max(20).default(1),
   effectiveFrom: z.string().datetime().optional(),
@@ -396,6 +427,35 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
     if (!action && method === "GET") return getFeaturedCharacters(request);
     if (!action && method === "PUT") return putFeaturedCharacters(request);
   }
+  // A — 官方角色 CMS
+  if (resource === "content" && id === "official") {
+    if (!action && method === "GET") return listOfficialCharacters(request);
+    if (!action && method === "POST") return createOfficialCharacter(request);
+    if (action && !child && method === "PATCH") return updateOfficialCharacter(request, action);
+    if (action && child === "state" && method === "POST") return setOfficialState(request, action);
+  }
+  // B — 角色创建模板库
+  if (resource === "content" && id === "templates") {
+    if (!action && method === "GET") return listTemplates(request);
+    if (!action && method === "POST") return createTemplate(request);
+    if (action && !child && method === "PATCH") return updateTemplate(request, action);
+    if (action && child === "active" && method === "POST") return setTemplateActive(request, action);
+  }
+  // C — 标签分类法治理（merge 字面量须先于通用 {id} 判断）
+  if (resource === "content" && id === "tags") {
+    if (!action && method === "GET") return listAdminTags(request);
+    if (action === "merge" && method === "POST") return mergeTags(request);
+    if (action && action !== "merge" && method === "PATCH") return patchTag(request, action);
+  }
+  // D — 角色审核队列（复用 safety.review.* 权限）
+  if (resource === "content" && id === "review-queue") {
+    if (!action && method === "GET") return listReviewQueue(request);
+    if (action && child === "decision" && method === "POST") return reviewSubmission(request, action);
+  }
+  // AI 辅助生成（官方角色/模板共用，§8 后置增强）
+  if (resource === "content" && id === "character-assist" && !action && method === "POST") {
+    return generateCharacterDraft(request);
+  }
 
   if (resource === "promo") {
     if (id === "redeem-codes" && !action && method === "GET") return listRedeemCodes(request);
@@ -420,6 +480,55 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
       return chatOpsModerationEvents(request);
     }
   }
+
+  // T1 CMS/SEO（path 含 "/"，作为 ?path= / body.path 传递，不放 URL 段）
+  if (resource === "cms" && id === "pages") {
+    if (!action && method === "GET") {
+      return new URL(request.url).searchParams.get("path") ? getCmsPage(request) : listCmsPages(request);
+    }
+    if (!action && method === "POST") return createCmsPage(request);
+    if (!action && method === "PATCH") return patchCmsPage(request);
+    if (action === "publish" && method === "POST") return publishCmsPage(request);
+  }
+
+  // T2 合规（DSAR 导出/擦除 + 年龄验证复核）
+  if (resource === "compliance") {
+    if (id === "users" && action && child === "export" && method === "GET") {
+      return exportUserData(request, action);
+    }
+    if (id === "users" && action && child === "erase" && method === "POST") {
+      return eraseUser(request, action);
+    }
+    if (id === "age-verifications" && !action && method === "GET") {
+      return listAgeVerifications(request);
+    }
+    if (id === "age-verifications" && action && child === "override" && method === "POST") {
+      return overrideAgeVerification(request, action);
+    }
+  }
+
+  // T4 生成 profile 健康度 + dry-run（与既有 model-profiles publish/rollback 正交）
+  if (resource === "generation" && id === "model-profiles" && action) {
+    if (child === "health" && method === "GET") return profileHealth(request, action);
+    if (child === "dry-run" && method === "POST") return profileDryRun(request, action);
+  }
+
+  // T4 analytics 导出 + 留存
+  if (resource === "analytics" && id === "export" && !action && method === "GET") {
+    return analyticsExport(request);
+  }
+  if (resource === "analytics" && id === "retention" && !action && method === "GET") {
+    return analyticsRetention(request);
+  }
+
+  // Phase 4 增长运营：公告 CRUD + 实验度量
+  if (resource === "announcements") {
+    if (!id && method === "GET") return listAdminAnnouncements(request);
+    if (!id && method === "POST") return createAnnouncement(request);
+    if (id && !action && method === "PATCH") return patchAnnouncement(request, id);
+    if (id && !action && method === "DELETE") return deleteAnnouncement(request, id);
+  }
+  if (resource === "experiments" && !id && method === "GET") return listExperiments(request);
 
   throw Errors.notFound("Admin API route not found", { path: `/admin/${segments.join("/")}` });
 }
@@ -1375,25 +1484,28 @@ async function patchPricingRule(request: Request, id: string) {
 async function publishPricingRule(request: Request, id: string) {
   const actor = await actorWithPermission(request, "config.pricing.write");
   const body = pricingPublishSchema.parse(await jsonBody(request));
-  const rule = await prisma.pricingRule.findUnique({ where: { id } });
-  if (!rule) throw Errors.notFound("Pricing rule not found");
-  if (rule.status !== "draft") throw Errors.badRequest("Only draft pricing rules can be published");
-  // 同 mode 旧 active 全部归档，保证 generationCost 读到的 active 唯一（资金侧 SSoT）。
-  const previous = await prisma.pricingRule.findFirst({
-    where: { mode: rule.mode, status: "active" },
-  });
-  const effectiveFrom = body.effectiveFrom
-    ? new Date(body.effectiveFrom)
-    : (rule.effectiveFrom ?? new Date());
-  const published = await prisma.$transaction(async (tx) => {
+  const { previous, published } = await prisma.$transaction(async (tx) => {
+    const rule = await tx.pricingRule.findUnique({ where: { id } });
+    if (!rule) throw Errors.notFound("Pricing rule not found");
+    if (rule.status !== "draft") throw Errors.badRequest("Only draft pricing rules can be published");
+    // 高危：改价发布在硬门控开启时需双人审批凭据（见 enforceApproval）。
+    await enforceApproval("config.pricing.publish", id, tx);
+    // 同 mode 旧 active 全部归档，保证 generationCost 读到的 active 唯一（资金侧 SSoT）。
+    const previous = await tx.pricingRule.findFirst({
+      where: { mode: rule.mode, status: "active" },
+    });
+    const effectiveFrom = body.effectiveFrom
+      ? new Date(body.effectiveFrom)
+      : (rule.effectiveFrom ?? new Date());
     await tx.pricingRule.updateMany({
       where: { mode: rule.mode, status: "active" },
       data: { status: "archived", archivedAt: new Date() },
     });
-    return tx.pricingRule.update({
+    const published = await tx.pricingRule.update({
       where: { id },
       data: { status: "active", effectiveFrom, publishedAt: new Date(), archivedAt: null },
     });
+    return { previous, published };
   });
   await writeAudit(request, actor, {
     action: "config.pricing.publish",
@@ -1619,11 +1731,15 @@ async function billingAdjustment(request: Request) {
   if (body.confirmation !== body.userId && body.confirmation !== "ADJUST") {
     throw Errors.badRequest("Confirmation did not match ledger adjustment target");
   }
-  const user = await prisma.user.findUnique({ where: { id: body.userId } });
-  if (!user) throw Errors.notFound("User not found");
-  const entry = await prisma.$transaction((tx) =>
-    appendLedger(tx, body.userId, body.delta, "admin_adjust", body.sourceId ?? randomUUID()),
-  );
+  const entry = await prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({ where: { id: body.userId } });
+    if (!user) throw Errors.notFound("User not found");
+    // 高危：大额 ledger 调整在硬门控开启时需双人审批凭据。
+    if (Math.abs(body.delta) >= LEDGER_APPROVAL_THRESHOLD) {
+      await enforceApproval("billing.ledger.adjust", body.userId, tx);
+    }
+    return appendLedger(tx, body.userId, body.delta, "admin_adjust", body.sourceId ?? randomUUID());
+  });
   await writeAudit(request, actor, {
     action: "billing.ledger.adjust",
     targetType: "user",
@@ -2436,7 +2552,7 @@ async function chatOpsModerationEvents(request: Request) {
   return ok({ configured: data !== null, ...(isRecord(data) ? data : { items: [] }) });
 }
 
-async function actorWithPermission(request: Request, permission: PermissionKey): Promise<AdminActor> {
+export async function actorWithPermission(request: Request, permission: PermissionKey): Promise<AdminActor> {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
   const effective = await effectivePermissions(user.id, user.role);
@@ -2446,7 +2562,7 @@ async function actorWithPermission(request: Request, permission: PermissionKey):
   return { id: user.id, role: user.role };
 }
 
-async function writeAudit(
+export async function writeAudit(
   request: Request,
   actor: AdminActor,
   input: {
@@ -2668,6 +2784,43 @@ async function featureEnabled(key: string) {
   return Boolean(flag?.enabled);
 }
 
+// SPEC: 双人审批硬门控（ADMIN_PHASE3_DESIGN §5.2）。feature flag `dual_approval_enforced`
+// 开启时，高危执行端点须先存在一条 action+targetId 匹配且 status=approved 的 AdminActionRequest；
+// 执行前消费它（status=consumed，一次性防重放）。flag 关闭（受控 beta 默认）→ 不强制，行为不变。
+// INVARIANTS: 无凭据→403；有凭据→放行并消费；同凭据二次执行→无可用凭据→403。
+export const DUAL_APPROVAL_FLAG = "dual_approval_enforced" as const;
+export const LEDGER_APPROVAL_THRESHOLD = 1000;
+
+async function enforceApproval(
+  action: string,
+  targetId: string,
+  db: Prisma.TransactionClient | typeof prisma = prisma,
+) {
+  const flag = await db.featureFlag.findUnique({ where: { key: DUAL_APPROVAL_FLAG } });
+  if (!flag?.enabled) return;
+  const approved = await db.adminActionRequest.findFirst({
+    where: { action, targetId, status: "approved" },
+    orderBy: { decidedAt: "desc" },
+  });
+  if (!approved) {
+    throw Errors.forbidden("Dual approval required: no approved request for this action", {
+      action,
+      targetId,
+    });
+  }
+  // 条件消费：并发下只有一个请求能从 approved → consumed；其余视为无可用凭据。
+  const consumed = await db.adminActionRequest.updateMany({
+    where: { id: approved.id, status: "approved" },
+    data: { status: "consumed" },
+  });
+  if (consumed.count !== 1) {
+    throw Errors.forbidden("Dual approval required: approved request was already consumed", {
+      action,
+      targetId,
+    });
+  }
+}
+
 async function enqueueExistingGenerationJob(job: {
   id: string;
   userId: string;
@@ -2744,14 +2897,14 @@ async function appendLedger(
   });
 }
 
-async function jsonBody(request: Request): Promise<unknown> {
+export async function jsonBody(request: Request): Promise<unknown> {
   if (request.method === "GET" || request.method === "DELETE") return {};
   const text = await request.text();
   if (!text) return {};
   return JSON.parse(text) as unknown;
 }
 
-function toInputJson(value: unknown): Prisma.InputJsonValue {
+export function toInputJson(value: unknown): Prisma.InputJsonValue {
   return value as Prisma.InputJsonValue;
 }
 
@@ -2813,7 +2966,7 @@ function numericControl(
   return value;
 }
 
-function clampInt(value: string | null, min: number, max: number, fallback: number) {
+export function clampInt(value: string | null, min: number, max: number, fallback: number) {
   const parsed = value ? Number.parseInt(value, 10) : fallback;
   if (!Number.isFinite(parsed)) return fallback;
   return Math.max(min, Math.min(max, parsed));

@@ -292,6 +292,14 @@ describe("pricing control plane", () => {
       }),
       403,
     );
+
+    const voice = await api("POST", "admin/pricing/rules", {
+      userId: admin,
+      role: "admin",
+      body: { ruleKey: `${P}voice_pricing`, label: "Voice overflow", mode: "voice", baseCost: 2 },
+    });
+    expectOk(voice);
+    expect(voice.data.rule).toMatchObject({ mode: "voice", status: "draft" });
   });
 
   it("publishes and rolls back pricing rules with audit, keeping one active per mode", async () => {
@@ -1357,5 +1365,368 @@ describe("admin chat ops proxy (F6)", () => {
     const sessions = await api("GET", "admin/chat/sessions", { userId: admin, role: "admin" });
     expectOk(sessions);
     expect(Array.isArray(sessions.data.items)).toBe(true);
+  });
+});
+
+// ───────────────────────── Phase 3: CMS · 合规 · 生成质量/流程 (ADMIN_PHASE3_DESIGN) ─────────────────────────
+
+describe("admin CMS / SEO (T1)", () => {
+  const path = `/${P}cms-landing`;
+  afterAll(async () => {
+    await prisma.routePage.deleteMany({ where: { path: { startsWith: `/${P}cms` } } });
+  });
+
+  it("CRUD + publish with permission gating and audit", async () => {
+    const admin = await setupActor("admin", "cms");
+    const analyst = await setupActor("analyst", "cms"); // lacks content.cms.write
+
+    expectError(
+      await api("POST", "admin/cms/pages", {
+        userId: analyst,
+        role: "analyst",
+        body: { path, title: "X", description: "d", reason: "x", confirmation: "CMS" },
+      }),
+      403,
+    );
+
+    const created = await api("POST", "admin/cms/pages", {
+      userId: admin,
+      role: "admin",
+      body: {
+        path,
+        title: "AI Girlfriend Guide",
+        description: "Everything about AI companions.",
+        body: { heading: "Guide", sections: [{ heading: "Intro", paragraphs: ["Hello."] }] },
+        contentStatus: "draft",
+        reason: "seed cms page",
+        confirmation: "CMS",
+      },
+    });
+    expectOk(created);
+
+    // bad confirmation → 400
+    expectError(
+      await api("PATCH", "admin/cms/pages", {
+        userId: admin,
+        role: "admin",
+        body: { path, title: "Y", reason: "valid edit reason", confirmation: "nope" },
+      }),
+      400,
+    );
+
+    const published = await api("POST", "admin/cms/pages/publish", {
+      userId: admin,
+      role: "admin",
+      body: { path, contentStatus: "published", reason: "go live", confirmation: "PUBLISH" },
+    });
+    expectOk(published);
+    expect(published.data.page.contentStatus).toBe("published");
+
+    const got = await api("GET", "admin/cms/pages", { userId: admin, role: "admin", query: { path } });
+    expectOk(got);
+    expect(got.data.page.title).toBe("AI Girlfriend Guide");
+
+    const audit = await prisma.adminAuditLog.findFirst({
+      where: { action: "cms.page.publish", targetId: path },
+    });
+    expect(audit).not.toBeNull();
+  });
+});
+
+describe("admin compliance: DSAR + age verification (T2)", () => {
+  it("exports/erases users and overrides age verification with gating", async () => {
+    const admin = await setupActor("admin", "comp");
+    const support = await setupActor("support", "comp"); // has compliance.read, not write
+    const target = `${P}comp-target`;
+    await createUser({ id: target });
+
+    // export: support (read) ok; analyst-like ops would 403 but support has read.
+    const exported = await api("GET", `admin/compliance/users/${target}/export`, {
+      userId: support,
+      role: "support",
+    });
+    expectOk(exported);
+    expect(exported.data.export.user.id).toBe(target);
+
+    // erase: support lacks compliance.write → 403
+    expectError(
+      await api("POST", `admin/compliance/users/${target}/erase`, {
+        userId: support,
+        role: "support",
+        body: { reason: "dsar request", confirmation: "ERASE" },
+      }),
+      403,
+    );
+
+    const erased = await api("POST", `admin/compliance/users/${target}/erase`, {
+      userId: admin,
+      role: "admin",
+      body: { reason: "dsar erasure request", confirmation: "ERASE" },
+    });
+    expectOk(erased);
+    expect(erased.data.erased).toBe(true);
+    // idempotent second erase
+    const again = await api("POST", `admin/compliance/users/${target}/erase`, {
+      userId: admin,
+      role: "admin",
+      body: { reason: "dsar erasure request retry", confirmation: "ERASE" },
+    });
+    expectOk(again);
+    expect(again.data.idempotent).toBe(true);
+
+    // age verification override
+    const avUser = `${P}comp-av`;
+    await createUser({ id: avUser });
+    const av = await prisma.ageVerification.create({
+      data: { userId: avUser, provider: "mock", status: "pending", metadata: {} },
+    });
+    const list = await api("GET", "admin/compliance/age-verifications", {
+      userId: admin,
+      role: "admin",
+      query: { status: "pending" },
+    });
+    expectOk(list);
+    const override = await api("POST", `admin/compliance/age-verifications/${av.id}/override`, {
+      userId: admin,
+      role: "admin",
+      body: { status: "verified", reason: "manual appeal approved", confirmation: "OVERRIDE" },
+    });
+    expectOk(override);
+    expect(override.data.ageVerification.status).toBe("verified");
+  });
+});
+
+describe("admin generation health + dry-run (T4)", () => {
+  it("aggregates profile health and writes a dry-run summary", async () => {
+    const admin = await setupActor("admin", "genh");
+    const support = await setupActor("support", "genh"); // lacks generation.config.read
+    const jobUser = `${P}genh-user`;
+    await createUser({ id: jobUser });
+    const profile = await prisma.generationModelProfile.create({
+      data: {
+        profileKey: `${P}genh-profile`,
+        label: "Health profile",
+        pipelineModel: "test-model",
+        allowedOrientations: ["1:1", "4:5"],
+        status: "active",
+      },
+    });
+    await prisma.generationJob.createMany({
+      data: [
+        { userId: jobUser, mode: "image", controls: {}, presetIds: [], profileId: profile.profileKey, status: "completed", completedAt: new Date() },
+        { userId: jobUser, mode: "image", controls: {}, presetIds: [], profileId: profile.id, status: "failed" },
+      ],
+    });
+
+    expectError(
+      await api("GET", `admin/generation/model-profiles/${profile.id}/health`, { userId: support, role: "support" }),
+      403,
+    );
+
+    const health = await api("GET", `admin/generation/model-profiles/${profile.id}/health`, {
+      userId: admin,
+      role: "admin",
+    });
+    expectOk(health);
+    expect(health.data.metrics.total).toBeGreaterThanOrEqual(2);
+    expect(health.data.metrics.successRate).toBeLessThanOrEqual(100);
+
+    const dryRun = await api("POST", `admin/generation/model-profiles/${profile.id}/dry-run`, {
+      userId: admin,
+      role: "admin",
+      body: { reason: "pre-publish check", confirmation: "DRYRUN" },
+    });
+    expectOk(dryRun);
+    expect(dryRun.data.dryRun.status).toBe("pass");
+    const refreshed = await prisma.generationModelProfile.findUnique({ where: { id: profile.id } });
+    expect(refreshed?.dryRunSummary).not.toBeNull();
+  });
+});
+
+describe("admin dual-approval hard enforcement (T4)", () => {
+  afterAll(async () => {
+    await prisma.featureFlag.deleteMany({ where: { key: "dual_approval_enforced" } });
+  });
+
+  it("blocks high-risk ledger adjust without an approved request, allows with, rejects reuse", async () => {
+    const a1 = await setupActor("admin", "dual1");
+    const a2 = await setupActor("admin", "dual2");
+    const target = `${P}dual-user`;
+    await createUser({ id: target });
+
+    await prisma.featureFlag.upsert({
+      where: { key: "dual_approval_enforced" },
+      update: { enabled: true },
+      create: { key: "dual_approval_enforced", label: "Dual approval", enabled: true, targetRoles: [], targetPlans: [] },
+    });
+    try {
+      const big = { userId: target, delta: 5000, reason: "large comp", confirmation: "ADJUST" };
+
+      // no approval → 403
+      expectError(await api("POST", "admin/billing/adjustments", { userId: a1, role: "admin", body: big }), 403);
+
+      // create + approve a matching request
+      const req = await api("POST", "admin/approvals", {
+        userId: a1,
+        role: "admin",
+        body: {
+          permissionKey: "billing.ledger.adjust",
+          action: "billing.ledger.adjust",
+          targetType: "user",
+          targetId: target,
+          payload: { delta: 5000 },
+          reason: "approve large comp",
+          confirmation: "REQUEST",
+        },
+      });
+      expectOk(req);
+      expectOk(
+        await api("POST", `admin/approvals/${req.data.request.id}/approve`, {
+          userId: a2,
+          role: "admin",
+          body: { reason: "approved ok", confirmation: "APPROVE" },
+        }),
+      );
+
+      // with approval → ok (consumes credential)
+      expectOk(await api("POST", "admin/billing/adjustments", { userId: a1, role: "admin", body: big }));
+
+      // reuse → credential consumed → 403
+      expectError(await api("POST", "admin/billing/adjustments", { userId: a1, role: "admin", body: big }), 403);
+
+      const concurrentReq = await api("POST", "admin/approvals", {
+        userId: a1,
+        role: "admin",
+        body: {
+          permissionKey: "billing.ledger.adjust",
+          action: "billing.ledger.adjust",
+          targetType: "user",
+          targetId: target,
+          payload: { delta: 5000 },
+          reason: "approve concurrent comp",
+          confirmation: "REQUEST",
+        },
+      });
+      expectOk(concurrentReq);
+      expectOk(
+        await api("POST", `admin/approvals/${concurrentReq.data.request.id}/approve`, {
+          userId: a2,
+          role: "admin",
+          body: { reason: "approved once", confirmation: "APPROVE" },
+        }),
+      );
+
+      const concurrent = await Promise.all([
+        api("POST", "admin/billing/adjustments", { userId: a1, role: "admin", body: big }),
+        api("POST", "admin/billing/adjustments", { userId: a1, role: "admin", body: big }),
+      ]);
+      expect(concurrent.filter((res) => res.status === 200)).toHaveLength(1);
+      expect(concurrent.filter((res) => res.status === 403)).toHaveLength(1);
+    } finally {
+      await prisma.featureFlag.deleteMany({ where: { key: "dual_approval_enforced" } });
+    }
+  });
+});
+
+describe("admin analytics export + retention (T4)", () => {
+  it("returns CSV payload and retention cohorts", async () => {
+    const admin = await setupActor("admin", "axp");
+    const ops = await setupActor("ops", "axp"); // lacks analytics.export
+
+    expectError(await api("GET", "admin/analytics/export", { userId: ops, role: "ops" }), 403);
+
+    const csv = await api("GET", "admin/analytics/export", { userId: admin, role: "admin" });
+    expectOk(csv);
+    expect(typeof csv.data.csv).toBe("string");
+    expect(csv.data.csv).toContain("section");
+
+    const retention = await api("GET", "admin/analytics/retention", { userId: admin, role: "admin" });
+    expectOk(retention);
+    expect(Array.isArray(retention.data.items)).toBe(true);
+  });
+});
+
+// ───────────────────────── Phase 4: Growth Ops (公告 + 实验度量) ─────────────────────────
+
+describe("admin announcements (Phase 4)", () => {
+  afterAll(async () => {
+    await prisma.appSetting.deleteMany({ where: { key: "announcements" } });
+  });
+
+  it("CRUD + public read filters active, with permission gating", async () => {
+    const admin = await setupActor("admin", "ann");
+    const analyst = await setupActor("analyst", "ann"); // has growth.promo.read, not write
+    const ops = await setupActor("ops", "ann"); // lacks growth.promo.read
+
+    // ops lacks growth.promo.read → list 403
+    expectError(await api("GET", "admin/announcements", { userId: ops, role: "ops" }), 403);
+    // analyst can't write
+    expectError(
+      await api("POST", "admin/announcements", {
+        userId: analyst,
+        role: "analyst",
+        body: { title: "x", body: "y", reason: "test promo", confirmation: "ANNOUNCE" },
+      }),
+      403,
+    );
+
+    const created = await api("POST", "admin/announcements", {
+      userId: admin,
+      role: "admin",
+      body: {
+        title: "Launch sale",
+        body: "50% off this week",
+        level: "promo",
+        active: true,
+        reason: "promo launch",
+        confirmation: "ANNOUNCE",
+      },
+    });
+    expectOk(created);
+    const id = created.data.announcement.id as string;
+
+    // analyst can read (has growth.promo.read)
+    expectOk(await api("GET", "admin/announcements", { userId: analyst, role: "analyst" }));
+
+    // public read (no auth) includes the active one
+    const pub = await api("GET", "announcements", {});
+    expectOk(pub);
+    expect(pub.data.items.some((a: { id: string }) => a.id === id)).toBe(true);
+
+    // deactivate → public excludes
+    expectOk(
+      await api("PATCH", `admin/announcements/${id}`, {
+        userId: admin,
+        role: "admin",
+        body: { active: false, reason: "pause promo", confirmation: "ANNOUNCE" },
+      }),
+    );
+    const pub2 = await api("GET", "announcements", {});
+    expect(pub2.data.items.some((a: { id: string }) => a.id === id)).toBe(false);
+
+    // delete (DELETE, no body needed) → gone
+    expectOk(await api("DELETE", `admin/announcements/${id}`, { userId: admin, role: "admin" }));
+    const list = await api("GET", "admin/announcements", { userId: admin, role: "admin" });
+    expect(list.data.items.some((a: { id: string }) => a.id === id)).toBe(false);
+
+    // audit (no plaintext concern) recorded
+    const audit = await prisma.adminAuditLog.findFirst({
+      where: { action: "growth.announcement.create", targetId: id },
+    });
+    expect(audit).not.toBeNull();
+  });
+});
+
+describe("admin experiments (Phase 4)", () => {
+  it("lists flags with directional metrics, gated by analytics.export", async () => {
+    const admin = await setupActor("admin", "exp");
+    const ops = await setupActor("ops", "exp"); // lacks analytics.export
+
+    expectError(await api("GET", "admin/experiments", { userId: ops, role: "ops" }), 403);
+
+    const res = await api("GET", "admin/experiments", { userId: admin, role: "admin" });
+    expectOk(res);
+    expect(Array.isArray(res.data.items)).toBe(true);
+    expect(typeof res.data.note).toBe("string");
   });
 });

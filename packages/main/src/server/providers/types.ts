@@ -59,6 +59,9 @@ export interface VoiceModel {
   synthesize(input: {
     text: string;
     voiceId?: string;
+    // Free-form delivery instruction (emotion/persona/intonation). Sourced from the
+    // character today; later a per-message emotion tag from chat can flow in here.
+    tone?: string;
   }): Promise<ProviderResult<{ key: string; durationMs: number }>>;
 }
 

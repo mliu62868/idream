@@ -24,6 +24,11 @@ export default defineConfig({
   testMatch: "**/*.e2e.ts",
   fullyParallel: false,
   workers: 1,
+  // One retry: the suite runs serially against the live standalone server on a shared
+  // machine, where the heaviest tests (chat streaming, generation pipeline) occasionally
+  // exceed a timeout under cumulative load. A real failure still fails on retry; this only
+  // absorbs environmental contention, not product/test defects.
+  retries: 1,
   reporter: "list",
   timeout: 90_000,
   expect: { timeout: 15_000 },

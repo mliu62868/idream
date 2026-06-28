@@ -1,7 +1,7 @@
 "use client";
 
 import { Check, Crown } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 type Plan = {
   id: string;
@@ -43,13 +43,28 @@ export function UpgradeWorkspace() {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [status, setStatus] = useState("");
   const [pendingPlan, setPendingPlan] = useState("");
+  // P1-D: a failed/slow plans fetch must not masquerade as "no plans". Track
+  // load lifecycle so we can show a spinner and a retryable error instead of
+  // a blank grid.
+  const [plansState, setPlansState] = useState<"loading" | "ready" | "error">("loading");
+
+  const loadPlans = useCallback(async () => {
+    setPlansState("loading");
+    try {
+      const response = await fetch("/api/v1/plans");
+      if (!response.ok) throw new Error(`plans request failed (${response.status})`);
+      const payload = (await response.json()) as { data?: { items?: Plan[] } };
+      setPlans(payload.data?.items ?? []);
+      setPlansState("ready");
+    } catch {
+      setPlansState("error");
+    }
+  }, []);
 
   useEffect(() => {
-    fetch("/api/v1/plans")
-      .then((response) => response.json())
-      .then((payload: { data?: { items: Plan[] } }) => setPlans(payload.data?.items ?? []))
-      .catch(() => undefined);
-  }, []);
+    const timer = window.setTimeout(() => void loadPlans(), 0);
+    return () => window.clearTimeout(timer);
+  }, [loadPlans]);
 
   async function checkout(plan: Plan) {
     setPendingPlan(plan.id);
@@ -76,6 +91,28 @@ export function UpgradeWorkspace() {
       <p className="mx-auto mb-4 max-w-5xl text-[13px] font-semibold text-[rgb(170,170,170)]">
         {FREE_CHAT_SUMMARY}
       </p>
+      {plansState === "loading" && (
+        <p className="mx-auto max-w-5xl text-[13px] font-medium text-[rgb(170,170,170)]">
+          Loading plans…
+        </p>
+      )}
+      {plansState === "error" && (
+        <div className="mx-auto max-w-5xl rounded-[12px] border border-white/10 bg-[rgb(18,18,18)] p-6 text-[13px] font-medium text-[rgb(220,220,220)]">
+          Could not load plans.
+          <button
+            className="ml-3 inline-flex h-9 items-center rounded-full bg-white px-4 text-[13px] font-black text-[rgb(13,13,13)]"
+            onClick={() => void loadPlans()}
+            type="button"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+      {plansState === "ready" && plans.length === 0 && (
+        <p className="mx-auto max-w-5xl text-[13px] font-medium text-[rgb(170,170,170)]">
+          No plans available right now.
+        </p>
+      )}
       <div className="mx-auto grid max-w-5xl gap-4 md:grid-cols-2">
         {plans.map((plan, index) => (
           <article

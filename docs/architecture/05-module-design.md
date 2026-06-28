@@ -1,10 +1,10 @@
 # 05 · 模块设计
 
-更新日期：2026-06-18
+更新日期：2026-06-28
 
-每个模块 = `src/server/modules/<name>/`，自洽分层（`*.service.ts` / `*.repository.ts` / `*.schema.ts` / `*.types.ts`）。本文件给每个模块的**职责、关键流程、关键不变量**；端点签名见 `BackendFeatureSpec §5`，数据见 03，跨模块通用机制见 04/06。
+下面各"模块"是**逻辑业务域**，不是独立目录。as-built：除 admin 外的所有产品域都内聚在单一 mega-module `src/server/modules/ourdream/service.ts`，由 `dispatchV1` 按 resource 段分发到对应 handler，handler **直接用 Prisma**（无独立 repository/schema/types 层；Zod 校验内联在 handler 里）。admin 在 `modules/admin/`（service.ts + characters/），chat 已拆为独立服务 `packages/chat`。本文件给每个逻辑域的**职责、关键流程、关键不变量**；端点签名见 `BackendFeatureSpec §5`，数据见 03，跨域通用机制见 04/06。
 
-模块依赖图见 01 §3。下面按 P0 顺序。
+逻辑域依赖图见 01 §3。下面按 P0 顺序。
 
 ---
 
@@ -52,7 +52,7 @@
 
 ## 4. chat
 
-**职责**：Chat Service 拥有聊天域完整能力：会话与消息、消息版本、上下文记忆、关系状态、聊天额度、输入/输出审核、重生成、历史、SSE/stream replay、chat outbox。
+**职责**：Chat Service（**独立服务 `packages/chat`**，独立 Postgres schema/视图）拥有聊天域完整能力：会话与消息、消息版本、上下文记忆、关系状态、聊天额度、输入/输出审核、重生成、历史、SSE/stream replay、chat outbox。主站经 `server/bff/chat-proxy` 签名 + 反向代理（`dispatchV1` 里 `chat`/`messages` resource → `proxyChatRequest`）。
 
 **主站关系**：
 - 主站拥有 `users`、`characters/girlfriends`、billing entitlement、age eligibility 的权威状态。
@@ -186,7 +186,7 @@
 
 ## 15. admin（内部审核后台）
 
-**职责**：审核队列、用户/内容/任务管理、人工决定、封禁/下架/退款、生成配置、产品配置和运营排障。完整产品方案见 [ADMIN_CONSOLE_PLAN.md](../product/ADMIN_CONSOLE_PLAN.md)。
+**职责**：审核队列、用户/内容/任务管理、人工决定、封禁/下架/退款、生成配置、角色 CMS、产品配置和运营排障。as-built：admin 是独立模块 `modules/admin/`（`service.ts` + `characters/`：official/templates/tags/review/assist），权限在 `server/admin`（permissions/effective-permissions/dev-login），经 `dispatchV1` 的 `admin` resource → `dispatchAdmin` 进入。完整产品方案见 [ADMIN_CONSOLE_PLAN.md](../product/ADMIN_CONSOLE_PLAN.md)。
 
 **关键流程**：
 - `GET /admin/moderation/queue`：按 `content_reports(status,priority)` 排序（未成年=优先级 1，可即时隐藏目标）。

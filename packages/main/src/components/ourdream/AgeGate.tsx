@@ -10,6 +10,7 @@ export function AgeGate({
 }: Readonly<{ forceVisible?: boolean; onAccepted?: () => void }>) {
   const [visible, setVisible] = useState(forceVisible);
   const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     if (forceVisible) return;
@@ -27,6 +28,7 @@ export function AgeGate({
 
   async function accept() {
     setPending(true);
+    setError("");
     try {
       const response = await fetch("/api/v1/age-gate/accept", {
         method: "POST",
@@ -42,6 +44,9 @@ export function AgeGate({
       window.dispatchEvent(new Event("idream-age-gate-accepted"));
       onAccepted?.();
       setVisible(false);
+    } catch {
+      // Don't strand the user behind a silent gate — surface a retryable error.
+      setError("Something went wrong. Please try again.");
     } finally {
       setPending(false);
     }
@@ -76,6 +81,9 @@ export function AgeGate({
         >
           {pending ? "Entering..." : "I'm over 18"}
         </button>
+        {error && (
+          <p className="mt-3 text-[12px] font-semibold text-[rgb(255,140,140)]">{error}</p>
+        )}
         <a
           className="mt-4 text-[12px] font-medium leading-4 text-[rgb(114,113,112)]"
           href="https://www.google.com/"

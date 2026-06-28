@@ -3,11 +3,15 @@
 import Image from "next/image";
 import Link from "next/link";
 import {
+  CheckSquare,
   Download,
+  EyeOff,
   Flag,
   Heart,
   ImageIcon,
+  ListChecks,
   RefreshCw,
+  Square,
   Trash2,
   WandSparkles,
 } from "lucide-react";
@@ -44,6 +48,22 @@ type PresetConfig = {
   category: string | null;
   label: string;
 };
+
+// US-GN-04: a user-saved preset. We store the active control selections
+// (background/pose/outfit ids + optional prompt) inside `controls` as a
+// string map, and use type "mode" so it stays a client-side container that
+// the server prompt-fragment resolver leaves untouched.
+type UserPreset = {
+  id: string;
+  type: string;
+  category: string | null;
+  label: string;
+  controls: Record<string, unknown>;
+  visibility: string;
+};
+
+type BulkAction = "delete" | "visibility";
+type BulkVisibility = "private" | "public_pack" | "unlisted";
 
 type GenerationConfig = {
   entitlements: Record<string, unknown>;
@@ -102,6 +122,10 @@ export function GeneratorWorkspace() {
   const [configError, setConfigError] = useState("");
   const [pending, setPending] = useState(false);
   const [failedMediaIds, setFailedMediaIds] = useState<Set<string>>(() => new Set());
+  const [userPresets, setUserPresets] = useState<UserPreset[]>([]);
+  const [presetName, setPresetName] = useState("");
+  const [manageMode, setManageMode] = useState(false);
+  const [selectedMediaIds, setSelectedMediaIds] = useState<Set<string>>(() => new Set());
 
   const availableModels = useMemo(
     () => (mode === "video" ? (config?.video.models ?? []) : (config?.image.models ?? [])),
@@ -178,6 +202,15 @@ export function GeneratorWorkspace() {
     setMedia(payload.data?.items ?? []);
   }, [galleryTab]);
 
+  const refreshPresets = useCallback(async () => {
+    // scope=user yields only the signed-in user's saved presets (built-in
+    // background/pose/outfit presets arrive separately via the config endpoint).
+    const response = await fetch("/api/v1/generation/presets?scope=user");
+    if (!response.ok) return;
+    const payload = (await response.json()) as ApiPayload<{ items: UserPreset[] }>;
+    setUserPresets(payload.data?.items ?? []);
+  }, []);
+
   const pollGeneration = useCallback(async (jobId: string) => {
     const response = await fetch(`/api/v1/generation/jobs/${jobId}`);
     if (!response.ok) return;
@@ -205,6 +238,7 @@ export function GeneratorWorkspace() {
       void refreshConfig();
       void refreshJobs();
       void refreshMedia("image");
+      void refreshPresets();
       fetch("/api/v1/characters?limit=12")
         .then((response) => response.json())
         .then((payload: ApiPayload<{ items: CharacterCardData[] }>) => {
@@ -230,7 +264,7 @@ export function GeneratorWorkspace() {
         });
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [refreshConfig, refreshJobs, refreshMedia]);
+  }, [refreshConfig, refreshJobs, refreshMedia, refreshPresets]);
 
   useEffect(() => {
     const pendingJobs = jobs.filter((job) => !isTerminal(job.status));
@@ -287,6 +321,9 @@ export function GeneratorWorkspace() {
       setView("jobs");
       void refreshConfig();
       void pollGeneration(job.id);
+    } catch {
+      // Network/server failure: surface a clear message instead of a silent no-op.
+      setStatus("Generation request failed. Check your connection and try again.");
     } finally {
       setPending(false);
     }
@@ -353,7 +390,117 @@ export function GeneratorWorkspace() {
   function switchGallery(tab: GalleryTab) {
     setGalleryTab(tab);
     setView("gallery");
+    setManageMode(false);
+    setSelectedMediaIds(new Set());
     void refreshMedia(tab);
+  }
+
+  async function saveCurrentPreset() {
+    const label = presetName.trim();
+    if (!label) {
+      setStatus("Name your preset before saving.");
+      return;
+    }
+    const controls: Record<string, string> = {};
+    if (backgroundPresetId) controls.backgroundPresetId = backgroundPresetId;
+    if (posePresetId) controls.posePresetId = posePresetId;
+    if (outfitPresetId) controls.outfitPresetId = outfitPresetId;
+    if (canUsePrompt && prompt.trim()) controls.prompt = prompt.trim();
+    if (Object.keys(controls).length === 0) {
+      setStatus("Pick a background, pose, outfit, or prompt before saving a preset.");
+      return;
+    }
+    try {
+      const response = await fetch("/api/v1/generation/presets", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ type: "mode", label, controls, visibility: "private" }),
+      });
+      const payload = (await response.json()) as ApiPayload<{ preset: UserPreset }>;
+      if (!response.ok || !payload.ok) {
+        setStatus(payload.error?.message ?? "Couldn't save preset.");
+        return;
+      }
+      setPresetName("");
+      setStatus(`Saved preset "${label}".`);
+      void refreshPresets();
+    } catch {
+      setStatus("Couldn't save preset. Check your connection and try again.");
+    }
+  }
+
+  function applyPreset(preset: UserPreset) {
+    const controls = isRecord(preset.controls) ? preset.controls : {};
+    setBackgroundPresetId(presetControlString(controls, "backgroundPresetId"));
+    setPosePresetId(presetControlString(controls, "posePresetId"));
+    setOutfitPresetId(presetControlString(controls, "outfitPresetId"));
+    const savedPrompt = presetControlString(controls, "prompt");
+    if (savedPrompt && canUsePrompt) setPrompt(savedPrompt);
+    setMode("image");
+    setStatus(`Applied preset "${preset.label}".`);
+  }
+
+  async function deletePreset(id: string) {
+    setUserPresets((current) => current.filter((preset) => preset.id !== id));
+    try {
+      const response = await fetch(`/api/v1/generation/presets/${id}`, { method: "DELETE" });
+      if (!response.ok) {
+        setStatus("Couldn't delete preset.");
+        void refreshPresets();
+      }
+    } catch {
+      setStatus("Couldn't delete preset. Check your connection and try again.");
+      void refreshPresets();
+    }
+  }
+
+  function toggleManage() {
+    setManageMode((current) => !current);
+    setSelectedMediaIds(new Set());
+  }
+
+  function toggleSelect(id: string) {
+    setSelectedMediaIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    setSelectedMediaIds((current) =>
+      current.size === media.length ? new Set() : new Set(media.map((item) => item.id)),
+    );
+  }
+
+  async function runBulkMedia(action: BulkAction, visibility?: BulkVisibility) {
+    const ids = Array.from(selectedMediaIds);
+    if (ids.length === 0) {
+      setStatus("Select media first.");
+      return;
+    }
+    try {
+      const response = await fetch("/api/v1/media/bulk", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ids, action, visibility }),
+      });
+      const payload = (await response.json()) as ApiPayload<{ deleted?: number; updated?: number }>;
+      if (!response.ok || !payload.ok) {
+        setStatus(payload.error?.message ?? "Bulk action failed.");
+        return;
+      }
+      setStatus(
+        action === "delete"
+          ? `Deleted ${ids.length} item${ids.length === 1 ? "" : "s"}.`
+          : `Updated ${ids.length} item${ids.length === 1 ? "" : "s"}.`,
+      );
+      setSelectedMediaIds(new Set());
+      void refreshMedia(galleryTab);
+    } catch {
+      setStatus("Bulk action failed. Check your connection and try again.");
+    }
   }
 
   return (
@@ -384,9 +531,22 @@ export function GeneratorWorkspace() {
                 <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
                   Balance
                 </p>
-                <p className="text-[22px] font-black text-white">
-                  {config ? `${config.dreamcoins.balance.toLocaleString()} coins` : "Loading..."}
-                </p>
+                {config ? (
+                  <p className="text-[22px] font-black text-white">
+                    {`${config.dreamcoins.balance.toLocaleString()} coins`}
+                  </p>
+                ) : configError ? (
+                  <button
+                    className="flex items-center gap-2 text-left text-[14px] font-bold text-[rgb(255,184,112)]"
+                    onClick={() => void refreshConfig()}
+                    type="button"
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                    Couldn&apos;t load generator. Retry.
+                  </button>
+                ) : (
+                  <p className="text-[22px] font-black text-white">Loading...</p>
+                )}
               </div>
               <div className="rounded-full bg-[rgb(36,36,36)] px-3 py-2 text-[12px] font-bold text-white">
                 {estimatedCost} coins
@@ -537,6 +697,67 @@ export function GeneratorWorkspace() {
               </div>
             )}
 
+            {mode === "image" && (
+              <div className="mt-4 grid gap-3" data-testid="my-presets">
+                <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+                  My Presets
+                </p>
+                <div className="flex gap-2">
+                  <input
+                    className="h-11 flex-1 rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] font-semibold text-white outline-none"
+                    onChange={(event) => setPresetName(event.target.value)}
+                    placeholder="Name this preset"
+                    value={presetName}
+                  />
+                  <button
+                    className="h-11 shrink-0 rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)] disabled:bg-[rgb(64,64,64)] disabled:text-[rgb(150,150,150)]"
+                    disabled={!presetName.trim()}
+                    onClick={() => void saveCurrentPreset()}
+                    type="button"
+                  >
+                    Save
+                  </button>
+                </div>
+                {userPresets.length === 0 ? (
+                  <p className="text-[12px] font-medium text-[rgb(114,113,112)]">
+                    Save your current background, pose, outfit, or prompt to reuse later.
+                  </p>
+                ) : (
+                  <ul className="grid gap-2">
+                    {userPresets.map((preset) => (
+                      <li
+                        className="flex items-center justify-between gap-2 rounded-[10px] bg-[rgb(36,36,36)] px-3 py-2"
+                        data-testid="my-preset-item"
+                        key={preset.id}
+                      >
+                        <span className="truncate text-[13px] font-semibold text-white">
+                          {preset.label}
+                        </span>
+                        <span className="flex shrink-0 gap-2">
+                          <button
+                            className="h-8 rounded-full bg-white px-3 text-[11px] font-black text-[rgb(13,13,13)]"
+                            onClick={() => applyPreset(preset)}
+                            type="button"
+                          >
+                            Apply
+                          </button>
+                          <button
+                            aria-label={`Delete preset ${preset.label}`}
+                            className="grid h-8 w-8 place-items-center rounded-full bg-black/40 text-white"
+                            onClick={() => void deletePreset(preset.id)}
+                            title="Delete preset"
+                            type="button"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+
             <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
               Prompt
               <textarea
@@ -659,7 +880,7 @@ export function GeneratorWorkspace() {
                     {job.status === "blocked" && (
                       <p className="mt-3 text-[12px] font-medium text-[rgb(255,184,112)]">
                         This request was blocked by our content policy and can&apos;t be retried.{" "}
-                        <Link className="underline" href="/help">
+                        <Link className="underline" href="/helpdesk">
                           Get help
                         </Link>
                       </p>
@@ -679,7 +900,7 @@ export function GeneratorWorkspace() {
             >
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                 <h2 className="text-[16px] font-black text-white">Gallery</h2>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   {(["image", "video", "liked"] as const).map((tab) => (
                     <button
                       className={`h-9 rounded-full px-4 text-[12px] font-bold ${
@@ -694,16 +915,74 @@ export function GeneratorWorkspace() {
                       {galleryTabLabel(tab)}
                     </button>
                   ))}
+                  <button
+                    className={`flex h-9 items-center gap-2 rounded-full px-4 text-[12px] font-bold ${
+                      manageMode ? "bg-white text-[rgb(13,13,13)]" : "bg-[rgb(36,36,36)] text-white"
+                    }`}
+                    data-testid="gallery-manage-toggle"
+                    disabled={media.length === 0}
+                    onClick={toggleManage}
+                    type="button"
+                  >
+                    <ListChecks className="h-4 w-4" />
+                    {manageMode ? "Done" : "Manage"}
+                  </button>
                 </div>
               </div>
+
+              {manageMode && (
+                <div
+                  className="mb-4 flex flex-wrap items-center gap-2 rounded-[10px] bg-[rgb(36,36,36)] p-3"
+                  data-testid="gallery-bulk-toolbar"
+                >
+                  <button
+                    className="flex h-9 items-center gap-2 rounded-full bg-black/40 px-4 text-[12px] font-bold text-white"
+                    onClick={toggleSelectAll}
+                    type="button"
+                  >
+                    {media.length > 0 && selectedMediaIds.size === media.length ? (
+                      <CheckSquare className="h-4 w-4" />
+                    ) : (
+                      <Square className="h-4 w-4" />
+                    )}
+                    Select all
+                  </button>
+                  <span className="text-[12px] font-semibold text-[rgb(170,170,170)]">
+                    {selectedMediaIds.size} selected
+                  </span>
+                  <span className="ml-auto flex gap-2">
+                    <button
+                      className="flex h-9 items-center gap-2 rounded-full bg-black/40 px-4 text-[12px] font-bold text-white disabled:opacity-50"
+                      disabled={selectedMediaIds.size === 0}
+                      onClick={() => void runBulkMedia("visibility", "private")}
+                      type="button"
+                    >
+                      <EyeOff className="h-4 w-4" />
+                      Make private
+                    </button>
+                    <button
+                      className="flex h-9 items-center gap-2 rounded-full bg-[rgb(255,48,170)] px-4 text-[12px] font-black text-white disabled:bg-[rgb(64,64,64)] disabled:text-[rgb(150,150,150)]"
+                      disabled={selectedMediaIds.size === 0}
+                      onClick={() => void runBulkMedia("delete")}
+                      type="button"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      Delete selected
+                    </button>
+                  </span>
+                </div>
+              )}
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {media.map((item) => {
                   const source = item.thumbnailUrl ?? item.url;
                   const isUnavailable =
                     failedMediaIds.has(item.id) || isBuiltInMediaPlaceholderUrl(source);
+                  const isSelected = selectedMediaIds.has(item.id);
                   return (
                     <div
-                      className="group relative aspect-[4/5] overflow-hidden rounded-[10px] bg-[rgb(36,36,36)]"
+                      className={`group relative aspect-[4/5] overflow-hidden rounded-[10px] bg-[rgb(36,36,36)] ${
+                        manageMode && isSelected ? "ring-2 ring-[rgb(255,48,170)]" : ""
+                      }`}
                       data-media-id={item.id}
                       data-testid="gallery-media-card"
                       key={item.id}
@@ -732,20 +1011,39 @@ export function GeneratorWorkspace() {
                           source={source}
                         />
                       )}
-                      <div className="absolute inset-x-2 bottom-2 flex justify-end gap-2 opacity-100 md:opacity-0 md:transition-opacity md:group-hover:opacity-100">
-                        <IconButton label="Like" onClick={() => likeMedia(item.id)}>
-                          <Heart className="h-4 w-4" />
-                        </IconButton>
-                        <IconButton label="Download" onClick={() => downloadMedia(item.id)}>
-                          <Download className="h-4 w-4" />
-                        </IconButton>
-                        <IconButton label="Report" onClick={() => reportMedia(item.id)}>
-                          <Flag className="h-4 w-4" />
-                        </IconButton>
-                        <IconButton label="Delete" onClick={() => deleteMedia(item.id)}>
-                          <Trash2 className="h-4 w-4" />
-                        </IconButton>
-                      </div>
+                      {manageMode ? (
+                        <button
+                          aria-label={isSelected ? "Deselect media" : "Select media"}
+                          aria-pressed={isSelected}
+                          className="absolute inset-0 grid place-items-start p-2"
+                          data-testid="gallery-media-select"
+                          onClick={() => toggleSelect(item.id)}
+                          type="button"
+                        >
+                          <span className="grid h-7 w-7 place-items-center rounded-full bg-black/70 text-white">
+                            {isSelected ? (
+                              <CheckSquare className="h-4 w-4 text-[rgb(255,48,170)]" />
+                            ) : (
+                              <Square className="h-4 w-4" />
+                            )}
+                          </span>
+                        </button>
+                      ) : (
+                        <div className="absolute inset-x-2 bottom-2 flex justify-end gap-2 opacity-100 md:opacity-0 md:transition-opacity md:group-hover:opacity-100">
+                          <IconButton label="Like" onClick={() => likeMedia(item.id)}>
+                            <Heart className="h-4 w-4" />
+                          </IconButton>
+                          <IconButton label="Download" onClick={() => downloadMedia(item.id)}>
+                            <Download className="h-4 w-4" />
+                          </IconButton>
+                          <IconButton label="Report" onClick={() => reportMedia(item.id)}>
+                            <Flag className="h-4 w-4" />
+                          </IconButton>
+                          <IconButton label="Delete" onClick={() => deleteMedia(item.id)}>
+                            <Trash2 className="h-4 w-4" />
+                          </IconButton>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -866,6 +1164,15 @@ function IconButton({
 
 function isTerminal(status: string) {
   return ["completed", "failed", "blocked", "refunded"].includes(status);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function presetControlString(controls: Record<string, unknown>, key: string): string {
+  const value = controls[key];
+  return typeof value === "string" ? value : "";
 }
 
 function openDownloadWindow() {

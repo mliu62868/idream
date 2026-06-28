@@ -103,6 +103,7 @@ export function CreatorProfileClient({ id }: Readonly<{ id: string }>) {
                     className="h-20 w-20 rounded-full object-cover"
                     height={80}
                     src={creator.image}
+                    unoptimized={isPrivateMediaUrl(creator.image)}
                     width={80}
                   />
                 ) : (
@@ -156,4 +157,8 @@ export function CreatorProfileClient({ id }: Readonly<{ id: string }>) {
       <MobileBottomNav activeHref="/" />
     </main>
   );
+}
+
+function isPrivateMediaUrl(url: string) {
+  return url.startsWith("/api/v1/media/") || url.startsWith("/user-content/");
 }

@@ -41,7 +41,7 @@ export async function applyChatEvent(event: InboundEvent): Promise<void> {
             create: { sessionId: event.aggregateId, userId, characterId, lastMessageAt: new Date() },
             update: {},
           })
-          .catch(() => {});
+          .catch((err) => logger.error({ err, eventType: event.eventType, sessionId: event.aggregateId }, "recentChat projection failed"));
       }
       return;
     }
@@ -65,7 +65,7 @@ export async function applyChatEvent(event: InboundEvent): Promise<void> {
             create: { sessionId, userId, characterId, lastMessageAt: new Date(), status: "active" },
             update: { lastMessageAt: new Date(), status: "active" },
           })
-          .catch(() => {});
+          .catch((err) => logger.error({ err, eventType: event.eventType, sessionId }, "recentChat projection failed"));
       }
       return;
     }
@@ -103,7 +103,12 @@ export function startEventConsumer(): Worker {
   const worker = new Worker(
     MAIN_QUEUES.mainInbound,
     async (job) => {
-      await applyChatEvent(job.data as InboundEvent);
+      // The chat producer (packages/chat enqueue) wraps the event envelope as
+      // { payload: <envelope>, dedupeKey }. Unwrap to the envelope; tolerate an
+      // already-unwrapped shape so either producer convention is consumed.
+      const data = job.data as { payload?: InboundEvent } & Partial<InboundEvent>;
+      const event = (data.payload ?? data) as InboundEvent;
+      await applyChatEvent(event);
     },
     { connection: redisOptions(), prefix: env.BULLMQ_PREFIX, concurrency: 4 },
   );

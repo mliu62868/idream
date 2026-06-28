@@ -57,6 +57,7 @@ export function CommunityWorkspace() {
   const [style, setStyle] = useState("any");
   const [release, setRelease] = useState("all");
   const [status, setStatus] = useState("");
+  const [loading, setLoading] = useState(true);
 
   const query = useMemo(() => {
     const params = new URLSearchParams({ release });
@@ -66,14 +67,17 @@ export function CommunityWorkspace() {
   }, [gender, release, style]);
 
   useEffect(() => {
+    let active = true;
     async function loadCommunity() {
       setStatus("");
+      setLoading(true);
       const [leaderboards, publicCollections] = await Promise.all([
         fetch(`/api/v1/community/leaderboards?${query.toString()}`),
         fetch("/api/v1/community/collections"),
       ]);
       const leaderboardPayload = (await leaderboards.json()) as CommunityPayload;
       const collectionsPayload = (await publicCollections.json()) as CommunityPayload;
+      if (!active) return;
       if (!leaderboards.ok || leaderboardPayload.ok === false) {
         setStatus(leaderboardPayload.error?.message ?? "Accept the age gate to view community.");
         return;
@@ -83,7 +87,17 @@ export function CommunityWorkspace() {
       setCollections(collectionsPayload.data?.collections ?? []);
     }
 
-    loadCommunity().catch(() => setStatus("Community unavailable."));
+    loadCommunity()
+      .catch(() => {
+        if (active) setStatus("Community unavailable.");
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
   }, [query]);
 
   async function follow(creatorId?: string | null) {
@@ -92,7 +106,11 @@ export function CommunityWorkspace() {
       return;
     }
     const response = await fetch(`/api/v1/users/${creatorId}/follow`, { method: "POST" });
-    setStatus(response.ok ? "Creator followed." : "Sign in to follow creators.");
+    if (response.ok) {
+      setStatus("Creator followed.");
+      return;
+    }
+    setStatus(await followErrorMessage(response));
   }
 
   async function toggleFollowDreamer(dreamer: Dreamer) {
@@ -123,7 +141,7 @@ export function CommunityWorkspace() {
             : item,
         ),
       );
-      setStatus("Sign in to follow creators.");
+      setStatus(await followErrorMessage(response));
     }
   }
 
@@ -190,7 +208,9 @@ export function CommunityWorkspace() {
             <h2 className="text-[22px] font-black uppercase">Dreamers</h2>
           </div>
           <div className="grid gap-3 md:grid-cols-3">
-            {dreamers.length > 0 ? (
+            {loading ? (
+              <DreamerSkeletons />
+            ) : dreamers.length > 0 ? (
               dreamers.map((dreamer) => (
                 <article
                   className="rounded-[14px] bg-[rgb(18,18,18)] p-4"
@@ -257,12 +277,17 @@ export function CommunityWorkspace() {
         </section>
 
         <div className="mt-8 grid gap-3 md:grid-cols-4">
+          {loading && <CharacterSkeletons />}
           {characters.map((character) => (
             <article
               className="overflow-hidden rounded-[14px] bg-[rgb(18,18,18)]"
               key={character.id}
             >
-              <Link className="relative block aspect-[4/5]" href={`/characters/${character.id}`}>
+              <Link
+                aria-label={character.title}
+                className="relative block aspect-[4/5]"
+                href={`/characters/${character.id}`}
+              >
                 <Image
                   alt=""
                   className="object-cover object-top"
@@ -308,7 +333,9 @@ export function CommunityWorkspace() {
             <h2 className="text-[22px] font-black uppercase">Collections</h2>
           </div>
           <div className="grid gap-3 md:grid-cols-3">
-            {collections.length > 0 ? (
+            {loading ? (
+              <CollectionSkeletons />
+            ) : collections.length > 0 ? (
               collections.map((collection) => (
                 <div className="rounded-[12px] bg-[rgb(36,36,36)] p-4" key={collection.id}>
                   <p className="text-[15px] font-black uppercase">{collection.name}</p>
@@ -341,6 +368,48 @@ function FilterButton({ label, onClick }: Readonly<{ label: string; onClick: () 
   );
 }
 
+// SPEC: skeleton placeholders shown while the first community fetch is in flight.
+// INTENT: avoid the false "empty" flash before data arrives; genuine empty-states
+// only render once loading is done.
+function DreamerSkeletons() {
+  return (
+    <>
+      {Array.from({ length: 3 }).map((_, index) => (
+        <div
+          className="h-[148px] animate-pulse rounded-[14px] bg-[rgb(18,18,18)]"
+          key={index}
+        />
+      ))}
+    </>
+  );
+}
+
+function CharacterSkeletons() {
+  return (
+    <>
+      {Array.from({ length: 8 }).map((_, index) => (
+        <div
+          className="aspect-[4/5] animate-pulse rounded-[14px] bg-[rgb(18,18,18)]"
+          key={index}
+        />
+      ))}
+    </>
+  );
+}
+
+function CollectionSkeletons() {
+  return (
+    <>
+      {Array.from({ length: 3 }).map((_, index) => (
+        <div
+          className="h-[84px] animate-pulse rounded-[12px] bg-[rgb(36,36,36)]"
+          key={index}
+        />
+      ))}
+    </>
+  );
+}
+
 function next(current: string, values: string[]) {
   const index = values.indexOf(current);
   return values[(index + 1) % values.length] ?? values[0];
@@ -348,4 +417,13 @@ function next(current: string, values: string[]) {
 
 function isPrivateMediaUrl(url: string) {
   return url.startsWith("/api/v1/media/") || url.startsWith("/user-content/");
+}
+
+// SPEC: turn a failed follow response into a user-facing message.
+// INTENT: only show the sign-in hint for genuine auth (401) failures; otherwise
+// surface the real server error (e.g. 400 "Cannot follow yourself").
+async function followErrorMessage(response: Response): Promise<string> {
+  if (response.status === 401) return "Sign in to follow creators.";
+  const payload = (await response.json().catch(() => null)) as CommunityPayload | null;
+  return payload?.error?.message ?? "Could not update follow.";
 }

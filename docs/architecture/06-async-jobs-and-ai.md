@@ -1,6 +1,6 @@
 # 06 · 异步任务与 AI 集成
 
-更新日期：2026-06-18
+更新日期：2026-06-28
 
 本文件落地 Redis + BullMQ 跨服务任务总线与 ADR-6（AI provider 抽象），以及生成/聊天的异步流水线与 dreamcoin 预留结算。Chat Service 拥有 chat domain DB 和内部队列；Image/Video 仍使用主站到 AI worker 的跨服务队列。队列清单对齐 `BackendFeatureSpec §7` 与 `docs/research/SERVICE_INTEGRATION.md`。
 
@@ -20,7 +20,7 @@ waiting ──worker──▶ active ──ok──▶ completed
                        └─超过 attempts──▶ failed（死信，留证 + 告警）
 ```
 
-接口（`src/server/jobs/queue.ts`）：
+接口（`packages/main/src/server/jobs/queue.ts`；chat 侧对称在 `packages/chat/src/queue.ts`）：
 
 ```ts
 export interface JobQueue {
@@ -30,24 +30,17 @@ export interface JobQueue {
 }
 ```
 
-## 3. Worker 触发与认领
+底层用 `bullmq` 的 `Queue` / `Worker` + `ioredis`，`dedupeKey` → 确定性 `jobId` 实现入队去重。
 
-**触发（两路冗余，幂等共存）**：
-1. **Vercel Cron** 每分钟 `GET /api/internal/cron/drain`（兜底，保证最终处理）。
-2. 入队后同请求 `after(() => fetch('/api/internal/worker', {headers:{INTERNAL_TOKEN}}))` **立即异步踢一脚**（降低首字节延迟）。
+## 3. Worker 进程与拓扑
 
-**认领（并发安全，双库差异收敛在一个方法）**：
+**worker 是常驻进程**（pm2，见 `ecosystem.config.js` / 10）——不是 serverless Cron 拉取，也不再用 DB 行 `claim()`：
 
-```ts
-// prod (Postgres)：SELECT ... FOR UPDATE SKIP LOCKED（raw SQL，绕开多 worker 竞争）
-// dev (SQLite)：单 worker，事务内 UPDATE ... WHERE status='queued' 标记 running
-async function claim(worker, max) {
-  if (DB_PROVIDER === "postgresql") return claimPg(worker, max);   // SKIP LOCKED
-  return claimSqlite(worker, max);                                 // 简单事务
-}
-```
+- `gen-image` / `gen-video`（`packages/gen`）消费 `ai.image.generate` / `ai.video.generate`。
+- `chat`（`packages/chat`）单进程内含 API + chat worker，消费 chat.* 队列。
+- `gen-finalizer` / `main-event-consumer`（`packages/main`）做主站侧回写与跨服务事件消费。
 
-worker 处理循环：BullMQ 取 job → 按 queue 分发到 handler → BullMQ 标记 completed/failed，单次 drain 处理一批后返回（受 `maxDuration` 约束），剩余下次 Cron 继续。
+每个 BullMQ `Worker` 从其队列拉 job → 按 queue 分发到 handler → 由 BullMQ 标记 completed/failed（失败按 `attempts` + backoff 重排，超限进 failed 死信）。并发安全由 BullMQ + Redis 原子操作保证，**无需 `SELECT ... FOR UPDATE SKIP LOCKED`**。
 
 **幂等**：每个 handler 必须可重入（如"生成已完成则跳过"、webhook 按 `provider_events` 去重、ledger 按 `sourceId` 去重）。
 
@@ -196,8 +189,8 @@ worker chat.generate:
 
 ## 9. 可靠性与可观测
 
-- job 表即仪表盘：`status=dead` 告警；各 queue 积压量、平均处理时长进 metrics（10）。
-- 重试退避：`nextRunAt = now + base * 2^attempts`（封顶）。
-- 死信留证：`lastError` + payload 保留，便于人工重放（admin 提供 requeue）。
-- 超时：worker handler 各自设软超时；provider 调用必须有超时，防止 worker 卡死占用 `maxDuration`。
-- 升级路径：接口不变，把 `JobQueue` 实现从 DB 换成 **QStash / Vercel Queues / BullMQ**，触发从 Cron 换成 webhook push 即可。
+- BullMQ 队列状态即仪表盘：failed 数告警；各 queue 积压量（waiting/active）、平均处理时长进 metrics（10）。
+- 重试退避：BullMQ `attempts` + 指数 backoff（封顶）。
+- 死信留证：failed job 的 `failedReason` + payload 由 BullMQ 保留，便于人工重放（admin 提供 requeue）。
+- 超时：worker handler 各自设软超时；provider 调用必须有超时，防止 worker 卡死。
+- 跨服务投递：main ↔ chat 经 outbox/inbox 事件表 + 共享 Redis，要求两边 `BULLMQ_PREFIX` + `REDIS_URL` 一致。

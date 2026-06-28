@@ -44,6 +44,8 @@ export class PipelineVoiceModel implements VoiceModel {
           input: input.text,
           voice: input.voiceId ?? "default",
           response_format: "mp3",
+          // OpenAI-compatible delivery control (gpt-4o-mini-tts / MOSS-TTS); omit when absent.
+          ...(input.tone ? { instructions: input.tone } : {}),
         }),
         signal: controller.signal,
       });

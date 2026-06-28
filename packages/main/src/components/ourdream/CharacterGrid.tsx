@@ -1,4 +1,5 @@
 import Image from "next/image";
+import Link from "next/link";
 import { LoaderCircle } from "lucide-react";
 import { characterCards } from "@/lib/ourdream-data";
 import { CharacterCard } from "./CharacterCard";
@@ -28,7 +29,11 @@ export function CharacterGrid({
           <div key={card.id} className="contents">
             <CharacterCard card={card} />
             {index === 5 && (
-              <article className="relative hidden aspect-[240/400] overflow-hidden rounded-[12px] bg-[rgb(36,36,36)] md:block">
+              <Link
+                aria-label="75% Pride Sale — upgrade"
+                className="relative hidden aspect-[240/400] overflow-hidden rounded-[12px] bg-[rgb(36,36,36)] md:block"
+                href="/upgrade"
+              >
                 <Image
                   src="/images/ourdream/pride-card-female.webp"
                   alt="75% Pride Sale"
@@ -36,7 +41,7 @@ export function CharacterGrid({
                   sizes="210px"
                   className="object-cover"
                 />
-              </article>
+              </Link>
             )}
           </div>
         ))}

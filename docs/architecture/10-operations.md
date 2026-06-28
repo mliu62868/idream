@@ -1,17 +1,18 @@
 # 10 · 运维：环境 · 部署 · 迁移 · CI · 可观测性
 
-更新日期：2026-06-13
+更新日期：2026-06-28
 
 ## 1. 环境矩阵
 
+> Postgres-only（ADR-2）：dev = prod = Postgres，无 SQLite、无 provider 切换。
+
 | 环境 | DB | provider 实现 | 用途 |
 | --- | --- | --- | --- |
-| **local dev** | SQLite 文件 | mock（AI/支付/存储/验证） | 零依赖快速开发；`db push` + seed |
-| **local dev (高保真，可选)** | Docker Postgres | mock 或 sandbox | 验证 Postgres 迁移/搜索差异 |
-| **preview**（Vercel PR） | Neon 分支库 | sandbox（BTCPay testnet / mock） | 每 PR 隔离预览 |
-| **production** | Neon/Supabase Postgres | 真实（加密处理器 / 自托管模型流水线 / R2 / Upstash） | 线上 |
+| **local dev** | Docker Postgres（`docker-compose.yml`）+ Redis | mock（AI/支付/存储/验证） | 本地开发；`db:push` + seed |
+| **preview / staging** | Postgres（独立库/分支）+ Redis | sandbox（BTCPay testnet / mock） | 集成验证 |
+| **production** | Postgres + Redis | 真实（加密处理器 / 自托管模型流水线 / R2 / Upstash） | 线上（pm2 自托管，见 §4.3） |
 
-> dev→prod 的双库差异（搜索、SKIP LOCKED）收敛在 `lib/db/search.ts` 与 `jobs/queue.ts` 的 provider 分支，并在 CI 两库都跑测试（§5）。
+> dev 与 prod 同为 Postgres，无行为漂移；搜索性能索引（`pg_trgm`）放在迁移 SQL（03 §5）。CI 跑真实 Postgres + Redis（§5）。
 
 ## 2. 环境变量目录
 
@@ -19,13 +20,14 @@
 
 | 变量 | 环境 | 说明 |
 | --- | --- | --- |
-| `DATABASE_URL` | all | dev=`file:./dev.db`；prod=Neon **pooled** URL |
-| `DIRECT_URL` | prod | Neon **direct** URL（迁移用，绕过 pooler） |
-| `DB_PROVIDER` | all | `sqlite` / `postgresql`（驱动 §3 与搜索/队列分支） |
+| `DATABASE_URL` | all | Postgres URL（prod 用 **pooled**；dev 指向 Docker PG） |
+| `DIRECT_URL` | prod | Postgres **direct** URL（迁移用，绕过 pooler） |
+| `REDIS_URL` | all | BullMQ + 跨服务事件总线（dev=Docker redis） |
+| `BULLMQ_PREFIX` | all | 队列前缀；main↔chat 必须一致（见 06 §9） |
+| `CHAT_DATABASE_URL` / `CHAT_FS_ROOT` | all | chat 服务库连接 + 文件层根（记忆/会话日志，见 03 §3.4） |
 | `BETTER_AUTH_SECRET` | all | ≥32 字节随机 |
 | `BETTER_AUTH_URL` | all | 站点 URL |
 | `INTERNAL_TOKEN` | all | 保护 `/api/internal/*` |
-| `CRON_SECRET` | prod | Vercel Cron 调用校验 |
 | `UPSTASH_REDIS_REST_URL`/`_TOKEN` | prod | 限流（dev 可空走 DB 令牌桶） |
 | `PAYMENT_PROVIDER` + 处理器密钥 | prod | 加密处理器；支持 `btcpay`，需要 base URL、store id、Greenfield API key、webhook secret |
 | `PIPELINE_API_URL` / `PIPELINE_API_TOKEN` | prod | 内部自托管开源模型流水线（chat/image/video/voice 共用，OpenAI 兼容；dev 可空走 mock）；main 已支持 chat/voice pipeline adapter |
@@ -261,15 +263,16 @@ OpenAI-compatible `/images/generations` / `/v1/images/generations` 接口，
 smoke；线上质量尺寸由后台 `GenerationModelProfile.defaultWidth/defaultHeight`
 或 Pipeline Service profile 控制，不能靠产品层静默降级。
 
-`prisma.config.ts`（Prisma 7）：
+`prisma.config.ts`（Prisma 7，**每个包一份**，路径相对各包根目录）：
 
 ```ts
+// packages/main/prisma.config.ts （packages/chat 同构，指向各自 schema）
 import "dotenv/config";
-import { defineConfig, env } from "prisma/config";
+import { defineConfig } from "prisma/config";
 export default defineConfig({
-  schema: "prisma/schema.prisma",
-  migrations: { path: "prisma/migrations" },
-  datasource: { url: env("DATABASE_URL") },     // provider 在 schema，由脚本切换
+  schema: "prisma/schema.prisma",                          // 相对 packages/main
+  migrations: { path: "prisma/migrations", seed: "tsx prisma/seed.ts" },
+  datasource: { url: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5433/idream" },
 });
 ```
 
@@ -282,25 +285,12 @@ export default defineConfig({
 
 ## 4. 部署
 
-### 4.1 Vercel（主）
-- Fluid Compute（Node.js，非 edge-only；中间件/函数底层即 Functions）。
-- `next.config.ts` 已 `output:"standalone"`（亦利于 Docker）。
-- **Cron**（`vercel.ts` 或 `vercel.json`）：
+### 4.1 部署形态
 
-```ts
-// vercel.ts（Next 16 推荐）
-import type { VercelConfig } from "@vercel/config/v1";
-export const config: VercelConfig = {
-  framework: "nextjs",
-  crons: [
-    { path: "/api/internal/cron/drain",   schedule: "* * * * *" },   // 每分钟 drain 队列
-    { path: "/api/internal/cron/cleanup",  schedule: "0 * * * *" },   // 清理过期 session/软删媒体
-    { path: "/api/internal/cron/usage",    schedule: "0 0 * * *" },   // 周期额度结算
-  ],
-};
-```
+**实际部署 = pm2 自托管常驻进程拓扑（见 §4.3，`ecosystem.config.js`）**。队列由 BullMQ 常驻 worker 持续消费（ADR-5），**不需要 Cron drain**。仅周期性维护任务（清理过期 session/软删媒体、额度结算）需要定时器，可用 pm2 cron restart、容器内调度或外部 cron 触发对应 `/api/internal/*` 端点（校验 `INTERNAL_TOKEN`）。
 
-- worker/cron handler 校验 `CRON_SECRET`/`INTERNAL_TOKEN`，`proxy.ts` matcher 排除 `/api/internal`。
+- `next.config.ts` 已 `output:"standalone"`（pm2 与 Docker 均用）。
+- `/api/internal/*` 由 `INTERNAL_TOKEN` 保护，`proxy.ts` matcher 排除 `/api/internal`。
 - 长任务/流式 route 配 `maxDuration`（route segment config）。
 
 ### 4.2 Docker（备选自托管）
@@ -353,17 +343,22 @@ Next.js 服务使用 `output: "standalone"`，构建后会把 `.next/static` 和
 - `bun run check` 是本地最小门；上线前还必须跑 `bun run --filter @idream/main test:e2e` 和 `bun run check:launch -- --launch-env-file .tmp/production-launch.env`。
 - 数据库迁移 SQL **只能由具备权限者/CI 执行**（global rule：模式变更 SQL 由用户/CI 跑，Claude 只产出）。
 
-## 6. 迁移 Runbook
+## 6. 迁移 Runbook（Postgres-only）
+
+应用内表走 Prisma（每包独立 schema/migrations）；**跨服务库边界（schema/role/grant/视图/chat 表）走 `db/sql/*.sql`，由用户在 prod 手工执行**。
 
 | 操作 | 命令 | 谁执行 |
 | --- | --- | --- |
-| dev 改 schema | `bun run --filter @idream/main db:push`（测试/开发库，无迁移文件） | 开发者 |
-| 生成 prod 迁移 | `bun run --filter @idream/main db:migrate:dev`（Docker PG，产生迁移文件，提交 git） | 开发者 |
-| 加 Postgres-only 索引 | 在迁移目录手写 raw SQL（pg_trgm 等，03 §5） | 开发者 |
-| 部署迁移 | `bun run --filter @idream/main db:migrate:deploy`（prod direct URL） | CI |
+| dev 改 schema（应用内表） | `bun run --filter @idream/main db:push`（Postgres dev 库，无迁移文件） | 开发者 |
+| 生成迁移 | `bun run --filter @idream/main db:migrate:dev`（产生迁移文件，提交 git） | 开发者 |
+| 加性能索引 | 在迁移目录手写 raw SQL（`pg_trgm` 等，03 §5） | 开发者 |
+| 部署应用内表迁移 | `bun run --filter @idream/main db:migrate:deploy`（prod direct URL） | CI |
+| **DB 边界变更** | `db/sql/*.sql`（`bash db/sql/apply-validate.sh`）：`01_schemas_roles` / `02_core_views` / `03_character_management` / `03_chat_tables` / `04_grants` / `05_main_recent_chats` | **用户在 prod 执行** |
 | 回滚 | 写"down"迁移或新正向修复迁移（Prisma 不自动回滚） | CI + 评审 |
 
 **破坏性变更**（删列/改类型）：分两步（先兼容加列/双写 → 迁移数据 → 再删旧），避免停机。
+
+> `db/sql/` 是跨服务库边界的 SSoT：chat 服务以 `chat_service` 角色连接、只读 main 的 core/billing/compliance 视图、读写 `chat.*` 表（见 03 §3.4）。这些 DDL 不归 Prisma `db push` 管。
 
 ## 7. 备份与容灾
 
@@ -388,10 +383,10 @@ Next.js 服务使用 `output: "standalone"`，构建后会把 `.next/static` 和
 ### 8.4 运营指标 / 漏斗（PRD §9、§10）
 - 转化漏斗：age gate 通过率、首页→注册、卡片点击率、搜索/筛选使用、首聊启动、创建完成率、生成成功率、免费→付费、举报处理时长。
 - 系统健康：队列积压/死信、生成成功率与时延、provider 错误率、限流命中、DB 连接数。
-- 仪表盘可先用 SQL/Studio 看 `analytics_events`+`jobs`，再接 BI。
+- 仪表盘可先用 SQL/Studio 看 `analytics_events`、BullMQ 队列状态（waiting/active/failed），再接 BI。
 
 ### 8.5 告警
-- `jobs.status=dead` 增长、生成成功率骤降、webhook 处理失败、CSAM 命中（高优先级人工通道）、错误率/延迟阈值。
+- BullMQ failed/积压增长、生成成功率骤降、webhook 处理失败、CSAM 命中（高优先级人工通道）、错误率/延迟阈值。
 
 ### 8.6 管理后台运行指标
 

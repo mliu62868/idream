@@ -217,6 +217,24 @@ describe("feed actions", () => {
     expectOk(report);
     expect(report.data.report.targetType).toBe("feed_item");
   });
+
+  it("keeps duplicate feed likes idempotent under concurrent clicks", async () => {
+    const userId = `${P}feed-race-user`;
+    const characterId = `${P}feed-race-char`;
+    await createUser({ id: userId });
+    await createCharacter({ id: characterId, visibility: "public", status: "approved" });
+    const itemId = `character:${characterId}`;
+
+    const results = await Promise.all([
+      api("POST", `feed/items/${encodeURIComponent(itemId)}/like`, { userId, ageGate: true }),
+      api("POST", `feed/items/${encodeURIComponent(itemId)}/like`, { userId, ageGate: true }),
+    ]);
+
+    for (const result of results) expectOk(result);
+    expect(await prisma.characterLike.count({ where: { userId, characterId } })).toBe(1);
+    const stats = await prisma.characterStats.findUniqueOrThrow({ where: { characterId } });
+    expect(stats.likesCount).toBe(1);
+  });
 });
 
 describe("tags, likes, duplicate", () => {

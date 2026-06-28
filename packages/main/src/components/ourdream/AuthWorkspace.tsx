@@ -13,9 +13,9 @@ type MeResponse = {
 export function AuthWorkspace({
   mode,
 }: Readonly<{ mode: "login" | "signup" }>) {
-  const [email, setEmail] = useState("dreamer@idream.local");
-  const [password, setPassword] = useState("password123");
-  const [name, setName] = useState("Dream User");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
   const [status, setStatus] = useState("");
   const [pending, setPending] = useState(false);
 

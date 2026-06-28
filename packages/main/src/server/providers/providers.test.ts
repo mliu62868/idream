@@ -376,6 +376,7 @@ describe("mock providers", () => {
     const result = await registry.voice.synthesize({
       text: "hello",
       voiceId: "mel",
+      tone: "Warm and intimate",
     });
 
     expect(result).toEqual({
@@ -395,6 +396,38 @@ describe("mock providers", () => {
         body: expect.stringContaining('"voice":"mel"'),
       }),
     );
+    // Tone flows through as the OpenAI-compatible delivery instruction.
+    const voiceBody = (fetchMock.mock.calls as unknown as Array<[unknown, RequestInit]>)[0]?.[1]?.body;
+    expect(voiceBody).toContain('"instructions":"Warm and intimate"');
+  });
+
+  it("omits the voice instructions field when no tone is provided", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "audio/mpeg" } }),
+    );
+    const blob: BlobStore = {
+      async putPrivate(input) {
+        return { ok: true, data: { key: input.key, size: input.body.byteLength } };
+      },
+      async signGetUrl() {
+        return { ok: true, data: { url: "https://cdn.example.com/voice.mp3" } };
+      },
+      async delete() {
+        return { ok: true, data: { deleted: true } };
+      },
+    };
+    const voice = new PipelineVoiceModel({
+      baseUrl: "https://moss-tts.internal.example.com/v1",
+      apiKey: "voice-token",
+      model: "voice-model",
+      blob,
+      fetchImpl: fetchMock,
+    });
+
+    await voice.synthesize({ text: "hello", voiceId: "mel" });
+
+    const voiceBody = (fetchMock.mock.calls as unknown as Array<[unknown, RequestInit]>)[0]?.[1]?.body as string;
+    expect(voiceBody).not.toContain("instructions");
   });
 
   it("stores binary pipeline voice responses with an extension matching the content type", async () => {

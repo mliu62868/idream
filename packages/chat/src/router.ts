@@ -9,6 +9,7 @@ import {
   getSession,
   listSessions,
   regenerate,
+  renameSession,
   sendMessage,
   setNoMemory,
 } from "./service.js";
@@ -83,6 +84,9 @@ async function route(req: ChatRequest): Promise<ChatResponse> {
     const sessionId = segs[1];
     if (segs.length === 2) {
       if (method === "GET") return json(200, await getSession({ userId, sessionId }));
+      if (method === "PATCH") {
+        return json(200, await renameSession({ userId, sessionId, title: str(body(req).title) }));
+      }
       if (method === "DELETE") {
         await deleteSession({ userId, sessionId });
         return json(200, { ok: true });

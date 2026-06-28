@@ -1,7 +1,9 @@
 # 14. Chat Service 技术架构设计
 
+更新日期：2026-06-28
+
 > 本文是 `docs/product/CHAT_SERVICE_PRD.md`（产品/数据边界）和 `docs/research/SERVICE_INTEGRATION.md`（跨服务传输）的**落地技术设计**。
-> PRD 定义 *what*，本文定义 *how*：服务拆分 → 物理拓扑、权限、热路径、可靠性、存储/记忆、事件 → 服务目录、服务间协议、进程管理。实施计划见根目录 `PLAN.md`。
+> PRD 定义 *what*，本文定义 *how*：服务拆分 → 物理拓扑、权限、热路径、可靠性、存储/记忆、事件 → 服务目录、服务间协议、进程管理。**拆分已落地**，本文是已实现的目标设计。
 
 ## 0. 决策记录（已拍板）
 
@@ -13,7 +15,7 @@
 | 记忆检索 | **按"谁读"分存**：账本(messages/usage/审核)入 Postgres，agent session.jsonl/记忆/关系/边界入**本地文件夹**（直接 fs 读写）+ igrep 索引 | 记忆权威=文件本身（agent 友好）；账本权威=PG（ACID/计费/查询）；同一事实只有一个 canonical；不做存储接口抽象（YAGNI），fs 读写集中在一个模块 |
 | P0 第一刀 | **边界重构**：schema 隔离 + 双 role + 只读 view | 写权威成为 DB 层强约束，而非 code review 纪律；也是物理拆分前置 |
 
-> 现状基线（as-built）：单体 Next.js，单 Prisma client，单一扁平 schema；chat 6 张表已建好；热路径走 `sendChatMessage → 入队 ai.chat.generate → 同进程同步 drain → app.ai.finalize`（`src/server/modules/ourdream/service.ts:1300`）。本设计要把 chat 域**切出**这个单体。
+> 现状（as-built）：**拆分已落地**。Chat Service 是独立部署单元（`packages/chat`，pm2 `chat` 进程内同时起 HTTP/SSE + BullMQ worker），拥有自己的 `chat.*` schema（`chat_service` 角色连接，只读 main 的 core/billing/compliance 视图，见 03 §3.4 / `db/sql/`），账本入 PG、记忆/会话日志入文件层（`packages/chat/src/chat-fs.ts`）。main 不再同步 drain chat 生成；chat↔main 经 outbox/inbox 事件（BullMQ + Redis）交互。本文档其余部分描述的即这套已实现的设计。
 
 ---
 
@@ -261,9 +263,9 @@ user_fact/pref  → 按 character + recency + confidence 取 top maxMemories
 
 ## 7. 落地路线
 
-**完整阶段 / 任务 / 验收见根目录 `PLAN.md` §2**（执行 SSoT）。本设计文档只提供各阶段技术细节：§2 权限、§3 热路径、§4 可靠性、§5 存储、§6 事件、§10–12 服务编排。
+**P0 拆分已全部落地**。各阶段技术细节见：§2 权限、§3 热路径、§4 可靠性、§5 存储、§6 事件、§10–12 服务编排。
 
-顺序：**P0-1 边界 → P0-2 抽服务 → P0-3 热路径 → P0-4 可靠 → P0-5 文件层 → P1 记忆/关系/导出/清理**。
+历史执行顺序：**P0-1 边界 → P0-2 抽服务 → P0-3 热路径 → P0-4 可靠 → P0-5 文件层 → P1 记忆/关系/导出/清理**（均已完成）。
 
 **明确 P0 范围外（延后，非遗漏）**：group chat、voice call、记忆向量检索（pgvector/igrep 语义）、`chat_stream_events` DB replay 表（P0 仅 Redis Stream + `MAXLEN`/TTL）。
 
@@ -375,31 +377,39 @@ packages/
 
 ## 12. 进程管理（pm2）
 
-多服务用 pm2 统一启停。生产用 `ecosystem.config.js`：
+多服务用 pm2 统一启停。生产用 `ecosystem.config.js`（**源码直跑**：web 走 Next standalone 输出，服务/worker 走 `tsx` node 入口——非编译后的 `dist/*.js`，也非 `next start`）：
 
 ```js
-// ecosystem.config.js（路径为落地后的 target，P0-2 抽服务时落地）
+// ecosystem.config.js（节选；以实际文件为准）
+const path = require("path");
+const dir = (rel) => path.join(__dirname, rel);
 module.exports = {
   apps: [
-    // 快·同步层
-    { name: 'main-web', script: 'node_modules/.bin/next', args: 'start',
-      exec_mode: 'cluster', instances: 'max', env: { PORT: 3000 } },
-    // chat：单进程 = chat/web(HTTP+SSE) + chat/worker(队列消费) 同进程；写本地文件 ⇒ instances:1
-    { name: 'chat', script: 'packages/chat/dist/main.js',  // main.js 内同时起 web server + BullMQ worker
-      exec_mode: 'fork', instances: 1, env: { PORT: 3100 } },  // ⚠️ 禁止 >1（本地 FS 单写节点）
+    // 快·同步层 — Next standalone（scripts/start-next-standalone.cjs 先加载该包 .env 再起 server.js）
+    { name: 'main-web',  cwd: dir('.'), script: 'scripts/start-next-standalone.cjs',
+      args: 'packages/main',  exec_mode: 'cluster', instances: 'max', env: { PORT: 3000 } },
+    { name: 'admin-web', cwd: dir('.'), script: 'scripts/start-next-standalone.cjs',
+      args: 'packages/admin', exec_mode: 'cluster', instances: 1,     env: { PORT: 3001 } },
+    // chat：单进程 = HTTP/SSE + BullMQ worker 同进程；写本地文件 ⇒ instances:1
+    { name: 'chat', cwd: dir('packages/chat'), script: 'node_modules/tsx/dist/cli.mjs',
+      args: 'src/main.ts', exec_mode: 'fork', instances: 1 },  // ⚠️ 禁止 >1（本地 FS 单写节点）
     // 慢·异步层（gen：纯生成，只写 blob，可扩）
-    { name: 'gen-image', script: 'packages/gen/dist/image.js',
-      exec_mode: 'fork', instances: 2 },
-    { name: 'gen-video', script: 'packages/gen/dist/video.js',
-      exec_mode: 'fork', instances: 1 },
-    // 中·异步层（主站侧权威写回）
-    { name: 'gen-finalizer',       script: 'packages/main/dist/gen-finalizer.js', instances: 1 },
-    { name: 'main-event-consumer', script: 'packages/main/dist/event-consumer.js', instances: 1 },
+    { name: 'gen-image', cwd: dir('packages/gen'), script: 'node_modules/tsx/dist/cli.mjs',
+      args: 'src/image.ts', exec_mode: 'fork', instances: 2 },
+    { name: 'gen-video', cwd: dir('packages/gen'), script: 'node_modules/tsx/dist/cli.mjs',
+      args: 'src/video.ts', exec_mode: 'fork', instances: 1 },
+    // 中·异步层（主站侧权威写回 / 事件消费）
+    { name: 'gen-finalizer',       cwd: dir('packages/main'), script: 'node_modules/tsx/dist/cli.mjs',
+      args: 'src/processes/finalizer.ts', exec_mode: 'fork', instances: 1 },
+    { name: 'main-event-consumer', cwd: dir('packages/main'), script: 'node_modules/tsx/dist/cli.mjs',
+      args: 'src/processes/event-consumer.ts', exec_mode: 'fork', instances: 1 },
+    // 还有 sdcpp-image（本地 SD runner gateway，见 10 §2）
   ],
 }
 ```
 
-> 将来要给 chat HTTP 加 HA：把 `chat` 拆成 `chat-web`(script `dist/web.js`, cluster, 可扩) + `chat-worker`(script `dist/worker.js`, fork, instances:1)——加一个 app、改个入口即可。
+> ⚠️ script 指向真实 node 入口（`.cjs` / `tsx` 的 `cli.mjs`），**不能**指向 pnpm `.bin/*` shell shim——pm2 的 node 解释器无法解析 shim，且 cluster 模式要求可被 node 加载的脚本。
+> 将来要给 chat HTTP 加 HA：把 `chat` 拆成 `chat-web`(cluster, 可扩) + `chat-worker`(fork, instances:1)——加一个 app、改个入口即可。
 
 常用命令：
 ```bash

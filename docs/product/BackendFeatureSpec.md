@@ -1,24 +1,19 @@
 # Ourdream.ai Backend Feature Specification
 
-更新日期：2026-06-13
+更新日期：2026-06-28
 
 ## 1. 目的
 
-本文档把当前 Ourdream.ai 静态 clone、线上抽样、产品功能图、PRD、用户故事和 safety 文档转成后台开发规格。后续实现后台功能时，以这里的模块边界、数据模型、API、状态机、权限和 P0 顺序作为工程拆分依据。
+本文档定义后台开发规格：模块边界、数据模型、API、状态机、权限和 P0 顺序，是后台契约的事实来源之一。Explore、Create、Chat、Generate、My AI、Upgrade、Safety/Report 等闭环**已落地实现**（代码见 `packages/main/src/server/modules/ourdream/`）；本文与代码同步演进，数值/契约以代码为准。
 
 事实来源：
 
 - `ProductFeatureMap.md`
 - `PRD.md`
 - `UserStory.md`
-- `docs/research/SITEMAP_ROUTES.md`
-- `docs/research/ONLINE_PRODUCT_SURVEY.md`
-- `docs/research/CHROME_PRODUCT_EXPLORATION.md`
-- `docs/research/ourdream-safety-docs.json`
-- `src/lib/ourdream-data.ts`
-- `src/components/ourdream/*`
-
-当前本地 clone 是静态前端。后台 MVP 的目标不是继续复制视觉，而是让 Explore、Create、Chat、Generate、My AI、Upgrade、Safety/Report 形成最小可用闭环。
+- `packages/main/src/server/modules/ourdream/service.ts`
+- `packages/main/src/lib/ourdream-data.ts`
+- `packages/main/src/components/ourdream/*`
 
 ## 2. 后台模块边界
 
@@ -369,7 +364,7 @@ GET  /api/v1/chat/streams/:assistantMessageId
 | `DELETE` | `/api/v1/media/:id` | Owner/Admin | Delete media |
 | `GET` | `/api/v1/media/:id/download` | Owner | Signed download URL |
 
-Generation request（扁平形状为准；详见 `IMAGE_GENERATION_SERVICE_PLAN.md §5.3`）：
+Generation request（扁平形状为准；权威定义见本节，对齐代码 `service.ts` 生成 job 处理）：
 
 ```json
 {
@@ -390,12 +385,14 @@ Generation request（扁平形状为准；详见 `IMAGE_GENERATION_SERVICE_PLAN.
 }
 ```
 
-`POST /generation/jobs` 约束（权威定义在 `IMAGE_GENERATION_SERVICE_PLAN.md §5.3`，此处只记契约要点）：
+`POST /generation/jobs` 约束（**权威定义见本节**，对齐代码 `service.ts`；费率公式见 `ECONOMY_AND_PRICING §1.2`）：
 
-- `characterId` 与 `freeplay` 二选一；`prompt` / `negativePrompt` / premium model 服务端 entitlement gate；`outputCount` 首发 `1..4`。
+- `characterId` 与 `freeplay` 二选一；`prompt` / `negativePrompt` / premium model 服务端 entitlement gate；`outputCount` 首发 `1..4`（上限由所选 `GenerationModelProfile.maxCount` 约束，默认 profile = 4）。
+- **扣费**：`cost = ceil(baseCost × outputCount × costMultiplier)`（image baseCost=5 / video=100，premium profile multiplier=1.5；代码见 `generationCost`）。
 - **幂等**：客户端传 `Idempotency-Key` header，按 `(userId, key)` 去重，重复请求返回同一 job，不双建不双扣。
-- **在途并发**：用户非终态 job 数受 `MAX_INFLIGHT_JOBS_PER_USER`（config，默认 3）限制，超限 `429 too_many_active_jobs`。
+- **在途并发**：用户非终态 job 数受 `MAX_INFLIGHT_JOBS_PER_USER`（config，默认 3；deluxe 提升到 6）限制，超限 `429 too_many_active_jobs`。
 - **余额**：`balance ≥ cost` 校验与 `-cost` reserve 在同一事务内（ECONOMY §1.3）；不足 `402 insufficient_coins`，不入队。
+- **video gate**：`video_gen` flag OFF 时 video 请求直接 402/403，不创建 job、不扣费。
 - **retry**：仅 provider failed 可 retry（按当前费率新建 derived job，`derivedFromJobId` 关联）；`blocked` 任务不可 retry，返回 403。
 
 ### 5.6 My AI / User Library

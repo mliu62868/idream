@@ -157,17 +157,34 @@ export function ExploreWorkspace() {
         style={style}
       />
       <div className="pt-2 md:pt-6">
-        <CharacterGrid
-          cards={cards}
-          error={error}
-          hasMore={Boolean(nextCursor)}
-          loading={!initialized || (ageGateAccepted && loading)}
-          loadingMore={loadingMore}
-          onLoadMore={() => {
-            if (nextCursor) void loadCharacters(nextCursor);
-          }}
-          onRetry={() => void loadCharacters()}
-        />
+        {initialized && !ageGateAccepted ? (
+          // Age gate not yet accepted: loadCharacters never runs, so an empty
+          // grid would read as "no results". Show a neutral age-gate prompt
+          // instead. The "idream-age-gate-accepted" listener flips the flag and
+          // triggers a load, so results appear without a manual refresh.
+          <section className="w-full px-2 md:px-[60px]">
+            <div className="flex min-h-64 flex-col items-center justify-center rounded-[16px] border border-white/10 bg-[rgb(18,18,18)] px-6 py-12 text-center">
+              <h2 className="text-[18px] font-black uppercase leading-6 text-white">
+                Confirm you&apos;re 18 or older
+              </h2>
+              <p className="mt-3 max-w-sm text-[13px] font-medium leading-6 text-[rgb(170,170,170)]">
+                Accept the age gate to browse characters.
+              </p>
+            </div>
+          </section>
+        ) : (
+          <CharacterGrid
+            cards={cards}
+            error={error}
+            hasMore={Boolean(nextCursor)}
+            loading={!initialized || (ageGateAccepted && loading)}
+            loadingMore={loadingMore}
+            onLoadMore={() => {
+              if (nextCursor) void loadCharacters(nextCursor);
+            }}
+            onRetry={() => void loadCharacters()}
+          />
+        )}
       </div>
     </>
   );

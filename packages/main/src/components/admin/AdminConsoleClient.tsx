@@ -13,6 +13,7 @@ import {
   ChevronRight,
   ClipboardCheck,
   Coins,
+  FileText,
   Flag,
   Gauge,
   History,
@@ -35,6 +36,16 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { apiGet, apiWrite, type ApiEnvelope } from "@/components/admin/api";
+import { OfficialCharactersView } from "@/components/admin/OfficialCharactersView";
+import { TemplatesView } from "@/components/admin/TemplatesView";
+import { TagsView } from "@/components/admin/TagsView";
+import { ReviewQueueView } from "@/components/admin/ReviewQueueView";
+import { CmsView } from "@/components/admin/CmsView";
+import { ComplianceView } from "@/components/admin/ComplianceView";
+import { InsightsView } from "@/components/admin/InsightsView";
+import { AnnouncementsView } from "@/components/admin/AnnouncementsView";
+import { ExperimentsView } from "@/components/admin/ExperimentsView";
 
 type Actor = {
   id: string;
@@ -48,16 +59,6 @@ type AdminConsoleClientProps = {
   // dev-only：展示退出按钮以便切换内置账号。
   devLogout?: boolean;
 };
-
-type ApiError = {
-  code?: string;
-  message?: string;
-  details?: unknown;
-};
-
-type ApiEnvelope<T> =
-  | { ok: true; data: T }
-  | { ok: false; error: ApiError };
 
 type Row = Record<string, unknown>;
 
@@ -120,6 +121,20 @@ type SectionData =
   | { kind: "content"; characters: Row[]; featured: Row[]; featuredIds: string[] }
   | { kind: "promo"; codes: Row[]; referrals: Row[] }
   | { kind: "approvals"; rows: Row[] }
+  // 自取数视图（组件内部 fetch），section 只需一个标记，不在此预取数据。
+  | {
+      kind: "selfFetch";
+      view:
+        | "official"
+        | "templates"
+        | "tags"
+        | "review-queue"
+        | "cms"
+        | "compliance"
+        | "insights"
+        | "announcements"
+        | "experiments";
+    }
   | {
       kind: "chatops";
       configured: boolean;
@@ -171,7 +186,7 @@ type TemplateDraft = {
 type PricingDraft = {
   ruleKey: string;
   label: string;
-  mode: "image" | "video";
+  mode: "image" | "video" | "voice";
   baseCost: string;
   multiplier: string;
 };
@@ -189,6 +204,9 @@ const PERMISSION_KEYS = [
   "user.role.write",
   "content.read",
   "content.takedown.write",
+  "content.official.write",
+  "content.template.write",
+  "content.tag.write",
   "generation.job.read",
   "generation.job.requeue",
   "generation.config.read",
@@ -208,6 +226,9 @@ const PERMISSION_KEYS = [
   "growth.promo.write",
   "chat.ops.read",
   "admin.approval.review",
+  "content.cms.write",
+  "compliance.read",
+  "compliance.write",
 ];
 
 const defaultModelDraft: ModelDraft = {
@@ -263,13 +284,22 @@ const navItems = [
   { id: "ops/providers", label: "Provider Health", href: "/admin/ops/providers", icon: Server },
   { id: "moderation", label: "Moderation", href: "/admin/moderation", icon: ShieldAlert },
   { id: "content", label: "Content", href: "/admin/content", icon: Library },
+  { id: "content/official", label: "Official Characters", href: "/admin/content/official", icon: ShieldCheck },
+  { id: "content/templates", label: "Templates", href: "/admin/content/templates", icon: SlidersHorizontal },
+  { id: "content/tags", label: "Tags", href: "/admin/content/tags", icon: Flag },
+  { id: "content/review-queue", label: "Review Queue", href: "/admin/content/review-queue", icon: ClipboardCheck },
+  { id: "cms", label: "CMS / SEO", href: "/admin/cms", icon: FileText },
   { id: "chat", label: "Chat Ops", href: "/admin/chat", icon: MessageSquare },
   { id: "users", label: "Users", href: "/admin/users", icon: Users },
   { id: "billing", label: "Billing", href: "/admin/billing", icon: BadgeDollarSign },
   { id: "pricing", label: "Pricing", href: "/admin/pricing", icon: Coins },
   { id: "promo", label: "Promo", href: "/admin/promo", icon: Ticket },
+  { id: "announcements", label: "Announcements", href: "/admin/announcements", icon: MessageSquare },
   { id: "analytics", label: "Analytics", href: "/admin/analytics", icon: BarChart3 },
+  { id: "insights", label: "Insights", href: "/admin/insights", icon: BarChart3 },
+  { id: "experiments", label: "Experiments", href: "/admin/experiments", icon: Flag },
   { id: "risk", label: "Risk & Abuse", href: "/admin/risk", icon: AlertTriangle },
+  { id: "compliance", label: "Compliance", href: "/admin/compliance", icon: ShieldAlert },
   { id: "approvals", label: "Approvals", href: "/admin/approvals", icon: ClipboardCheck },
   { id: "audit-log", label: "Audit Log", href: "/admin/audit-log", icon: History },
 ];
@@ -669,6 +699,15 @@ async function fetchSection(sectionId: string): Promise<SectionData> {
       featuredIds: featured.characterIds,
     };
   }
+  if (sectionId === "content/official") return { kind: "selfFetch", view: "official" };
+  if (sectionId === "content/templates") return { kind: "selfFetch", view: "templates" };
+  if (sectionId === "content/tags") return { kind: "selfFetch", view: "tags" };
+  if (sectionId === "content/review-queue") return { kind: "selfFetch", view: "review-queue" };
+  if (sectionId === "cms") return { kind: "selfFetch", view: "cms" };
+  if (sectionId === "compliance") return { kind: "selfFetch", view: "compliance" };
+  if (sectionId === "insights") return { kind: "selfFetch", view: "insights" };
+  if (sectionId === "announcements") return { kind: "selfFetch", view: "announcements" };
+  if (sectionId === "experiments") return { kind: "selfFetch", view: "experiments" };
   if (sectionId === "promo") {
     const [codes, referrals] = await Promise.all([
       apiGet<{ items: Row[] }>("/api/v1/admin/promo/redeem-codes"),
@@ -699,32 +738,6 @@ async function fetchSection(sectionId: string): Promise<SectionData> {
 
   const payload = await apiGet<DashboardData>("/api/v1/admin/dashboard");
   return { kind: "dashboard", data: payload };
-}
-
-async function apiGet<T>(path: string): Promise<T> {
-  const response = await fetch(path, { cache: "no-store" });
-  const payload = (await response.json()) as ApiEnvelope<T>;
-  if (!payload.ok) {
-    throw new Error(payload.error.message ?? payload.error.code ?? "Request failed");
-  }
-  return payload.data;
-}
-
-async function apiWrite<T>(
-  path: string,
-  method: "POST" | "PATCH" | "PUT",
-  body: Record<string, unknown>,
-): Promise<T> {
-  const response = await fetch(path, {
-    method,
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const payload = (await response.json()) as ApiEnvelope<T>;
-  if (!payload.ok) {
-    throw new Error(payload.error.message ?? payload.error.code ?? "Request failed");
-  }
-  return payload.data;
 }
 
 function canCreateModelProfile(draft: ModelDraft) {
@@ -937,6 +950,17 @@ function renderSection(
   }
   if (section.kind === "approvals") {
     return <ApprovalsView rows={section.rows} openAction={ctx.openAction} />;
+  }
+  if (section.kind === "selfFetch") {
+    if (section.view === "official") return <OfficialCharactersView />;
+    if (section.view === "templates") return <TemplatesView />;
+    if (section.view === "tags") return <TagsView />;
+    if (section.view === "cms") return <CmsView />;
+    if (section.view === "compliance") return <ComplianceView />;
+    if (section.view === "insights") return <InsightsView />;
+    if (section.view === "announcements") return <AnnouncementsView />;
+    if (section.view === "experiments") return <ExperimentsView />;
+    return <ReviewQueueView />;
   }
   if (section.kind === "chatops") {
     return (
@@ -1809,7 +1833,7 @@ function PricingView({
           <FormSelect
             label="Mode"
             onChange={(value) => onDraftChange({ ...draft, mode: value as PricingDraft["mode"] })}
-            options={["image", "video"]}
+            options={["image", "video", "voice"]}
             value={draft.mode}
           />
           <FormField
@@ -2675,9 +2699,18 @@ function normalizeSection(value: string) {
   if (value === "generation/dead-letter") return value;
   if (value === "ops/providers") return value;
   if (value === "content") return value;
+  if (value === "content/official") return value;
+  if (value === "content/templates") return value;
+  if (value === "content/tags") return value;
+  if (value === "content/review-queue") return value;
+  if (value === "cms") return value;
   if (value === "chat") return value;
   if (value === "promo") return value;
   if (value === "approvals") return value;
+  if (value === "compliance") return value;
+  if (value === "insights") return value;
+  if (value === "announcements") return value;
+  if (value === "experiments") return value;
   if (value === "audit-log") return value;
   return "dashboard";
 }

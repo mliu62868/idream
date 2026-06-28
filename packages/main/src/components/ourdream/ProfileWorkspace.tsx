@@ -6,6 +6,7 @@ import {
   Bell,
   Bot,
   Coins,
+  Copy,
   Download,
   Flag,
   Gift,
@@ -14,6 +15,7 @@ import {
   Link2,
   LogOut,
   Save,
+  Search,
   Trash2,
   UserCog,
 } from "lucide-react";
@@ -69,6 +71,8 @@ type LibraryItem = {
   url?: string;
   contentType?: string | null;
   prompt?: string | null;
+  visibility?: string;
+  status?: string;
   character?: {
     id: string;
     title?: string;
@@ -86,6 +90,9 @@ export function ProfileWorkspace() {
   const [profileName, setProfileName] = useState("Dreamer");
   const [tab, setTab] = useState("recent");
   const [items, setItems] = useState<LibraryItem[]>([]);
+  const [query, setQuery] = useState("");
+  const [profileError, setProfileError] = useState(false);
+  const [libraryError, setLibraryError] = useState(false);
   const [redeemCode, setRedeemCode] = useState("");
   const [locale, setLocale] = useState("en");
   const [emailUpdates, setEmailUpdates] = useState(true);
@@ -95,24 +102,35 @@ export function ProfileWorkspace() {
   const [failedImageIds, setFailedImageIds] = useState<Set<string>>(new Set());
 
   const refreshProfile = useCallback(async () => {
-    await fetch("/api/v1/profile")
-      .then((response) => response.json())
-      .then((payload: ProfilePayload) => {
-        const nextName = payload.data?.user?.displayName ?? payload.data?.user?.email ?? "Dreamer";
-        setDisplayName(nextName);
-        setProfileName(nextName);
-        setBalance(payload.data?.balance ?? 0);
-        const sub = payload.data?.subscription;
-        if (sub?.plan) setPlan(`${sub.plan.name} ${sub.plan.billingPeriod}`);
-      })
-      .catch(() => undefined);
+    // Surface a real load failure instead of silently showing a fake "0 dreamcoins · Free".
+    try {
+      const response = await fetch("/api/v1/profile");
+      if (!response.ok) throw new Error("profile fetch failed");
+      const payload = (await response.json()) as ProfilePayload;
+      const nextName = payload.data?.user?.displayName ?? payload.data?.user?.email ?? "Dreamer";
+      setDisplayName(nextName);
+      setProfileName(nextName);
+      setBalance(payload.data?.balance ?? 0);
+      const sub = payload.data?.subscription;
+      if (sub?.plan) setPlan(`${sub.plan.name} ${sub.plan.billingPeriod}`);
+      setProfileError(false);
+    } catch {
+      setProfileError(true);
+    }
   }, []);
 
   const refreshLibrary = useCallback(async (nextTab: string) => {
-    await fetch(`/api/v1/library/${nextTab}`)
-      .then((response) => response.json())
-      .then((payload: LibraryPayload) => setItems(payload.data?.items ?? []))
-      .catch(() => setItems([]));
+    // Distinguish a backend error from a genuinely empty library tab.
+    try {
+      const response = await fetch(`/api/v1/library/${nextTab}`);
+      if (!response.ok) throw new Error("library fetch failed");
+      const payload = (await response.json()) as LibraryPayload;
+      setItems(payload.data?.items ?? []);
+      setLibraryError(false);
+    } catch {
+      setItems([]);
+      setLibraryError(true);
+    }
   }, []);
 
   const refreshPreferences = useCallback(async () => {
@@ -128,13 +146,19 @@ export function ProfileWorkspace() {
       .catch(() => undefined);
   }, []);
 
+  // Defer initial loads to a macrotask so the first render commits before any setState
+  // (matches ExploreWorkspace/FeedWorkspace; avoids react-hooks/set-state-in-effect).
   useEffect(() => {
-    refreshProfile();
-    refreshPreferences();
+    const timer = window.setTimeout(() => {
+      void refreshProfile();
+      void refreshPreferences();
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [refreshPreferences, refreshProfile]);
 
   useEffect(() => {
-    refreshLibrary(tab);
+    const timer = window.setTimeout(() => void refreshLibrary(tab), 0);
+    return () => window.clearTimeout(timer);
   }, [refreshLibrary, tab]);
 
   async function redeem() {
@@ -259,6 +283,49 @@ export function ProfileWorkspace() {
     }
   }
 
+  async function duplicateCharacter(id: string) {
+    setStatus("");
+    const response = await fetch(`/api/v1/characters/${id}/duplicate`, { method: "POST" });
+    if (!response.ok) {
+      setStatus("Duplicate failed.");
+      return;
+    }
+    setStatus("Character duplicated to your created tab.");
+    await refreshLibrary(tab);
+  }
+
+  async function deleteCharacter(id: string) {
+    setStatus("");
+    const response = await fetch(`/api/v1/characters/${id}`, { method: "DELETE" });
+    if (!response.ok) {
+      setStatus("Delete failed.");
+      return;
+    }
+    setStatus("Character deleted.");
+    await refreshLibrary(tab);
+  }
+
+  async function toggleCharacterVisibility(id: string, current?: string) {
+    // public characters re-enter review on publish; private/unlisted publish straight to review.
+    setStatus("");
+    const next = current === "public" ? "private" : "public";
+    const response = await fetch(`/api/v1/characters/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ visibility: next }),
+    });
+    if (!response.ok) {
+      setStatus("Visibility update failed.");
+      return;
+    }
+    setStatus(
+      next === "public"
+        ? "Submitted for review — public characters go live after approval."
+        : "Character set to private.",
+    );
+    await refreshLibrary(tab);
+  }
+
   async function reportMedia(id: string) {
     setStatus("");
     const response = await fetch("/api/v1/reports", {
@@ -274,6 +341,16 @@ export function ProfileWorkspace() {
     setStatus(response.ok ? "Report submitted." : "Report failed.");
   }
 
+  const normalizedQuery = query.trim().toLowerCase();
+  const visibleItems = normalizedQuery
+    ? items.filter((item) =>
+        `${item.title ?? ""} ${item.name ?? ""} ${item.character?.name ?? ""} ${item.prompt ?? ""}`
+          .toLowerCase()
+          .includes(normalizedQuery),
+      )
+    : items;
+  const isCreatedTab = tab === "created";
+
   return (
     <section className="px-4 py-10 md:px-[60px]">
       <div className="mx-auto max-w-5xl">
@@ -283,10 +360,23 @@ export function ProfileWorkspace() {
               My AI
             </h1>
             <p className="mt-2 text-[14px] font-semibold text-white">{displayName}</p>
-            <p className="mt-3 flex items-center gap-2 text-[13px] font-bold text-[rgb(170,170,170)]">
-              <Coins className="h-4 w-4 text-[rgb(253,95,194)]" />
-              {balance.toLocaleString()} dreamcoins · {plan}
-            </p>
+            {profileError ? (
+              <p className="mt-3 flex flex-wrap items-center gap-2 text-[13px] font-bold text-[rgb(255,140,140)]">
+                Couldn&apos;t load your balance and plan.
+                <button
+                  className="rounded-full bg-[rgb(36,36,36)] px-3 py-1 text-[12px] font-bold text-white"
+                  onClick={() => void refreshProfile()}
+                  type="button"
+                >
+                  Retry
+                </button>
+              </p>
+            ) : (
+              <p className="mt-3 flex items-center gap-2 text-[13px] font-bold text-[rgb(170,170,170)]">
+                <Coins className="h-4 w-4 text-[rgb(253,95,194)]" />
+                {balance.toLocaleString()} dreamcoins · {plan}
+              </p>
+            )}
           </div>
           <Link
             className="inline-flex h-10 items-center justify-center rounded-full bg-white px-5 text-[13px] font-black text-[rgb(13,13,13)]"
@@ -472,10 +562,45 @@ export function ProfileWorkspace() {
             </label>
           </div>
         </div>
-        <div className="mt-10 rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-6">
-          {items && items.length > 0 ? (
+        <div className="mt-6 flex items-center gap-2 rounded-[12px] bg-[rgb(18,18,18)] px-3">
+          <Search className="h-4 w-4 text-[rgb(114,113,112)]" />
+          <input
+            aria-label="Search your library"
+            className="h-11 min-w-0 flex-1 bg-transparent text-[14px] text-white outline-none placeholder:text-[rgb(114,113,112)]"
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder={`Search ${tab.replace("-", " ")}…`}
+            value={query}
+          />
+          {query && (
+            <button
+              aria-label="Clear search"
+              className="text-[12px] font-bold text-[rgb(170,170,170)] hover:text-white"
+              onClick={() => setQuery("")}
+              type="button"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+        <div className="mt-4 rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-6">
+          {libraryError ? (
+            <div className="p-10 text-center">
+              <Bot className="mx-auto h-10 w-10 text-[rgb(114,113,112)]" />
+              <h2 className="mt-4 text-[22px] font-black uppercase">Couldn&apos;t load this tab</h2>
+              <p className="mx-auto mt-3 max-w-md text-[14px] leading-6 text-[rgb(170,170,170)]">
+                Something went wrong loading your library. Please try again.
+              </p>
+              <button
+                className="mt-6 inline-flex h-11 items-center justify-center rounded-full bg-white px-5 text-[14px] font-bold text-[rgb(13,13,13)]"
+                onClick={() => void refreshLibrary(tab)}
+                type="button"
+              >
+                Retry
+              </button>
+            </div>
+          ) : visibleItems.length > 0 ? (
             <div className="grid gap-3 md:grid-cols-3">
-              {items.map((item) => (
+              {visibleItems.map((item) => (
                 <LibraryCard
                   failedImageIds={failedImageIds}
                   item={item}
@@ -491,8 +616,20 @@ export function ProfileWorkspace() {
                     })
                   }
                   onReport={reportMedia}
+                  showCharacterActions={isCreatedTab}
+                  onDuplicateCharacter={duplicateCharacter}
+                  onDeleteCharacter={deleteCharacter}
+                  onToggleVisibility={toggleCharacterVisibility}
                 />
               ))}
+            </div>
+          ) : normalizedQuery ? (
+            <div className="p-10 text-center">
+              <Bot className="mx-auto h-10 w-10 text-[rgb(114,113,112)]" />
+              <h2 className="mt-4 text-[22px] font-black uppercase">No matches</h2>
+              <p className="mx-auto mt-3 max-w-md text-[14px] leading-6 text-[rgb(170,170,170)]">
+                Nothing in {tab.replace("-", " ")} matches “{query}”.
+              </p>
             </div>
           ) : (
             <div className="p-10 text-center">
@@ -522,6 +659,10 @@ function LibraryCard({
   onDownload,
   onImageError,
   onReport,
+  showCharacterActions = false,
+  onDuplicateCharacter,
+  onDeleteCharacter,
+  onToggleVisibility,
 }: Readonly<{
   failedImageIds: Set<string>;
   item: LibraryItem;
@@ -529,6 +670,10 @@ function LibraryCard({
   onDownload: (id: string) => void;
   onImageError: (id: string) => void;
   onReport: (id: string) => void;
+  showCharacterActions?: boolean;
+  onDuplicateCharacter?: (id: string) => void;
+  onDeleteCharacter?: (id: string) => void;
+  onToggleVisibility?: (id: string, current?: string) => void;
 }>) {
   const character = item.character;
   const title = item.title ?? item.name ?? character?.title ?? character?.name ?? item.id;
@@ -622,7 +767,50 @@ function LibraryCard({
     </div>
   );
 
-  return href ? <Link href={href}>{content}</Link> : content;
+  const card = href ? <Link href={href}>{content}</Link> : content;
+
+  // Created tab: let owners manage their own characters (US-PF-03). Actions sit OUTSIDE
+  // the card Link so they remain clickable and don't nest interactive elements.
+  if (showCharacterActions && !isMediaItem) {
+    return (
+      <div>
+        {card}
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          {item.status && (
+            <span className="rounded-full bg-black/30 px-2 py-1 text-[11px] font-bold uppercase text-[rgb(170,170,170)]">
+              {item.status.replace("_", " ")}
+            </span>
+          )}
+          <button
+            className="inline-flex h-8 items-center gap-1 rounded-full bg-[rgb(46,46,46)] px-3 text-[12px] font-bold text-white"
+            onClick={() => onToggleVisibility?.(item.id, item.visibility)}
+            type="button"
+          >
+            {item.visibility === "public" ? "Make private" : "Publish"}
+          </button>
+          <button
+            aria-label="Duplicate character"
+            className="inline-flex h-8 items-center gap-1 rounded-full bg-[rgb(46,46,46)] px-3 text-[12px] font-bold text-white"
+            onClick={() => onDuplicateCharacter?.(item.id)}
+            type="button"
+          >
+            <Copy className="h-3.5 w-3.5" />
+            Duplicate
+          </button>
+          <button
+            aria-label="Delete character"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-[rgb(120,25,40)] text-white"
+            onClick={() => onDeleteCharacter?.(item.id)}
+            type="button"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return card;
 }
 
 function triggerDownload(url: string) {

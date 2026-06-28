@@ -37,6 +37,7 @@ async function setupPlan(suffix: string, includedDreamcoins = 1000) {
       unlimitedMessages: true,
       imageGeneration: true,
       videoGeneration: true,
+      voiceEnabled: true,
       customPrompt: true,
     },
   });
@@ -69,6 +70,8 @@ describe("checkout (auto-confirm) activates entitlements + grants coins", () => 
     expect(me.data.entitlements).toMatchObject({
       premium_controls: true,
       video_generation: true,
+      // camelCase plan feature → snake_case entitlement; gates on-demand voice.
+      voice_enabled: true,
       custom_prompt: true,
     });
 
