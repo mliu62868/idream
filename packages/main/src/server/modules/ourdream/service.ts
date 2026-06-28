@@ -2075,12 +2075,37 @@ async function feed(request: Request, segments: string[]) {
   requireAgeGate(ctx);
   const [, action, itemId, subAction] = segments;
   if (request.method === "GET") {
-    const characters = await prisma.character.findMany({
-      where: { visibility: "public", status: "approved", deletedAt: null },
-      include: characterInclude(ctx.userId),
-      orderBy: [{ stats: { chatsCount: "desc" } }],
-      take: 20,
+    // 运营策展：feed.featured（AppSetting）里仍 public+approved 的角色置顶，其余按热度补齐到 20。
+    const featuredSetting = await prisma.appSetting.findUnique({
+      where: { key: "feed.featured" },
     });
+    const featuredIds = featuredCharacterIds(featuredSetting?.value);
+    const publicWhere = {
+      visibility: "public",
+      status: "approved",
+      deletedAt: null,
+    } satisfies Prisma.CharacterWhereInput;
+    const [featured, popular] = await Promise.all([
+      prisma.character.findMany({
+        where: { ...publicWhere, id: { in: featuredIds } },
+        include: characterInclude(ctx.userId),
+      }),
+      prisma.character.findMany({
+        where: publicWhere,
+        include: characterInclude(ctx.userId),
+        orderBy: [{ stats: { chatsCount: "desc" } }],
+        take: 20,
+      }),
+    ]);
+    const featuredById = new Map(featured.map((character) => [character.id, character]));
+    const orderedFeatured = featuredIds
+      .map((id) => featuredById.get(id))
+      .filter((character): character is (typeof featured)[number] => character !== undefined);
+    const seen = new Set(orderedFeatured.map((character) => character.id));
+    const characters = [...orderedFeatured, ...popular.filter((character) => !seen.has(character.id))].slice(
+      0,
+      20,
+    );
     return ok({
       items: characters.map((character) => ({
         id: `character:${character.id}`,
@@ -2141,6 +2166,13 @@ async function feed(request: Request, segments: string[]) {
 function feedCharacterId(itemId: string) {
   const decoded = decodeURIComponent(itemId);
   return decoded.startsWith("character:") ? decoded.slice("character:".length) : null;
+}
+
+// 解析 AppSetting(feed.featured).value = { characterIds: string[] }；脏数据安全降级为空。
+function featuredCharacterIds(value: Prisma.JsonValue | null | undefined): string[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  const ids = (value as Record<string, unknown>).characterIds;
+  return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : [];
 }
 
 async function community(request: Request, segments: string[]) {

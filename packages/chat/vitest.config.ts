@@ -19,6 +19,9 @@ export default defineConfig({
       BULLMQ_PREFIX: "idream:chat:test",
       CHAT_MODEL_PROVIDER: "mock",
       MODERATION_PROVIDER: "mock",
+      // Pin extraction to the deterministic regex so the suite never spawns the
+      // real igrep/omlx LLM. extract.test.ts opts into igrep per-test via a fake bin.
+      CHAT_MEMORY_EXTRACT: "heuristic",
     },
   },
   resolve: {

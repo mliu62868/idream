@@ -3,11 +3,20 @@ import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import type { ImageGeneratePayload, VideoGeneratePayload } from "@/server/ai/schemas";
 import { jobQueue } from "@/server/jobs/queue";
-import { assertPermission, type PermissionKey } from "@/server/admin/permissions";
+import {
+  applyOverrides,
+  isPermissionKey,
+  resolvePermissions,
+  type PermissionKey,
+} from "@/server/admin/permissions";
+import { effectivePermissions } from "@/server/admin/effective-permissions";
 import { getAuthCtx, requireUser, type ActorRole } from "@/server/lib/auth";
 import { prisma } from "@/server/lib/db";
+import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
+
+const FEATURED_SETTING_KEY = "feed.featured";
 
 type ApiMethod = "GET" | "POST" | "PATCH" | "DELETE" | "PUT";
 type AdminActor = { id: string; role: ActorRole };
@@ -29,6 +38,13 @@ const statusChangeSchema = z.object({
 
 const roleChangeSchema = z.object({
   role: z.enum(["user", "moderator", "support", "ops", "analyst", "admin"]),
+  reason: z.string().trim().min(3).max(2_000),
+  confirmation: z.string().trim().min(1).max(160),
+});
+
+const permissionOverrideSchema = z.object({
+  permissionKey: z.string().trim().min(1).max(80),
+  effect: z.enum(["grant", "revoke", "clear"]),
   reason: z.string().trim().min(3).max(2_000),
   confirmation: z.string().trim().min(1).max(160),
 });
@@ -188,6 +204,65 @@ const plaintextViewSchema = z.object({
   confirmation: z.string().trim().min(1).max(160),
 });
 
+const savedViewCreateSchema = z.object({
+  scope: z.string().trim().min(1).max(80),
+  label: z.string().trim().min(1).max(120),
+  filters: z.record(z.string(), z.unknown()).default({}),
+});
+
+const contentVisibilitySchema = z.object({
+  visibility: z.enum(["private", "unlisted", "public"]),
+  reason: z.string().trim().min(3).max(2_000),
+  confirmation: z.string().trim().min(1).max(160),
+});
+
+const contentStatusSchema = z.object({
+  status: z.enum(["approved", "rejected", "removed", "archived"]),
+  reason: z.string().trim().min(3).max(2_000),
+  confirmation: z.string().trim().min(1).max(160),
+});
+
+const featuredPutSchema = z.object({
+  characterIds: z.array(z.string().trim().min(1).max(160)).max(24),
+  reason: z.string().trim().min(3).max(2_000),
+  confirmation: z.string().trim().min(1).max(160),
+});
+
+const redeemCodeCreateSchema = z.object({
+  code: z.string().trim().min(4).max(80),
+  reward: z
+    .object({
+      dreamcoins: z.number().int().min(0).max(1_000_000).optional(),
+      note: z.string().trim().max(200).optional(),
+    })
+    .passthrough(),
+  maxRedemptions: z.number().int().min(1).max(1_000_000).nullable().optional(),
+  expiresAt: z.string().datetime().nullable().optional(),
+  reason: z.string().trim().min(3).max(2_000),
+  confirmation: z.string().trim().min(1).max(160),
+});
+
+const promoDisableSchema = z.object({
+  reason: z.string().trim().min(3).max(2_000),
+  confirmation: z.string().trim().min(1).max(160),
+});
+
+// requestedById≠approvedById、approver 须持 permissionKey、状态单向（ADMIN_CONSOLE_PLAN §11 Phase4）。
+const approvalCreateSchema = z.object({
+  permissionKey: z.string().trim().min(1).max(80),
+  action: z.string().trim().min(1).max(120),
+  targetType: z.string().trim().min(1).max(80),
+  targetId: z.string().trim().min(1).max(160),
+  payload: z.record(z.string(), z.unknown()).default({}),
+  reason: z.string().trim().min(3).max(2_000),
+  confirmation: z.string().trim().min(1).max(160),
+});
+
+const approvalDecisionSchema = z.object({
+  reason: z.string().trim().min(3).max(2_000),
+  confirmation: z.string().trim().min(1).max(160),
+});
+
 export async function dispatchAdmin(request: Request, segments: string[]) {
   const method = request.method as ApiMethod;
   const [resource, id, action, child] = segments;
@@ -199,6 +274,8 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
     if (id && !action && method === "GET") return getUserDetail(request, id);
     if (id && action === "status" && method === "POST") return updateUserStatus(request, id);
     if (id && action === "role" && method === "POST") return updateUserRole(request, id);
+    if (id && action === "permissions" && method === "GET") return listUserPermissions(request, id);
+    if (id && action === "permissions" && method === "POST") return setUserPermission(request, id);
   }
 
   if (resource === "generation") {
@@ -289,10 +366,59 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
     return abuseOverview(request);
   }
 
+  if (resource === "ops" && id === "providers" && !action && method === "GET") {
+    return providerOps(request);
+  }
+
   if (resource === "audit-log" && !id && method === "GET") return auditLog(request);
 
   if (resource === "support" && id === "plaintext" && action === "view" && method === "POST") {
     return viewPlaintext(request);
+  }
+
+  if (resource === "saved-views") {
+    if (!id && method === "GET") return listSavedViews(request);
+    if (!id && method === "POST") return createSavedView(request);
+    if (id && !action && method === "DELETE") return deleteSavedView(request, id);
+  }
+
+  if (resource === "content" && id === "characters") {
+    if (!action && method === "GET") return listContentCharacters(request);
+    if (action && !child && method === "GET") return getContentCharacter(request, action);
+    if (action && child === "visibility" && method === "POST") {
+      return setCharacterVisibility(request, action);
+    }
+    if (action && child === "status" && method === "POST") {
+      return setCharacterStatus(request, action);
+    }
+  }
+  if (resource === "content" && id === "featured") {
+    if (!action && method === "GET") return getFeaturedCharacters(request);
+    if (!action && method === "PUT") return putFeaturedCharacters(request);
+  }
+
+  if (resource === "promo") {
+    if (id === "redeem-codes" && !action && method === "GET") return listRedeemCodes(request);
+    if (id === "redeem-codes" && !action && method === "POST") return createRedeemCode(request);
+    if (id === "redeem-codes" && action && child === "disable" && method === "POST") {
+      return disableRedeemCode(request, action);
+    }
+    if (id === "referrals" && !action && method === "GET") return listReferrals(request);
+  }
+
+  if (resource === "approvals") {
+    if (!id && method === "GET") return listApprovals(request);
+    if (!id && method === "POST") return createApproval(request);
+    if (id && action === "approve" && method === "POST") return approveApproval(request, id);
+    if (id && action === "reject" && method === "POST") return rejectApproval(request, id);
+  }
+
+  if (resource === "chat") {
+    if (id === "overview" && !action && method === "GET") return chatOpsOverview(request);
+    if (id === "sessions" && !action && method === "GET") return chatOpsSessions(request);
+    if (id === "moderation-events" && !action && method === "GET") {
+      return chatOpsModerationEvents(request);
+    }
   }
 
   throw Errors.notFound("Admin API route not found", { path: `/admin/${segments.join("/")}` });
@@ -466,6 +592,63 @@ async function updateUserRole(request: Request, userId: string) {
     after: { role: after.role },
   });
   return ok({ user: publicUser(after) });
+}
+
+// SPEC: 用户级权限覆盖管理 —— 给单个用户 grant/revoke/clear 某 permission key，admin only，全部审计。
+// INTENT: 不动 role 就能精确授予/收回能力（如给某 support 临时 billing.ledger.adjust）；解析见 effective-permissions。
+// INVARIANTS: 一个 key 至多一条 override（写前清同 key 旧 override）；grant 的 key 必须是合法 PermissionKey；硬政策无 key 可授。
+async function listUserPermissions(request: Request, userId: string) {
+  await actorWithPermission(request, "user.role.write");
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) throw Errors.notFound("User not found");
+  const overrides = await prisma.adminUserPermission.findMany({
+    where: { userId },
+    orderBy: { createdAt: "desc" },
+  });
+  const effective = [...applyOverrides(resolvePermissions(user.role as ActorRole), overrides)].sort();
+  return ok({ role: user.role, overrides, effective });
+}
+
+async function setUserPermission(request: Request, userId: string) {
+  const actor = await actorWithPermission(request, "user.role.write");
+  const body = permissionOverrideSchema.parse(await jsonBody(request));
+  if (body.confirmation !== userId && body.confirmation !== "PERMISSION") {
+    throw Errors.badRequest("Confirmation did not match permission-override target");
+  }
+  if (body.effect !== "clear" && !isPermissionKey(body.permissionKey)) {
+    throw Errors.badRequest("Unknown permission key");
+  }
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) throw Errors.notFound("User not found");
+  // 一个 key 至多一条 override：先清同 key 旧记录，再按 effect 写。
+  await prisma.adminUserPermission.deleteMany({
+    where: { userId, permissionKey: body.permissionKey },
+  });
+  const override =
+    body.effect === "clear"
+      ? null
+      : await prisma.adminUserPermission.create({
+          data: {
+            userId,
+            permissionKey: body.permissionKey,
+            effect: body.effect,
+            reason: body.reason,
+            createdById: actor.id,
+          },
+        });
+  await writeAudit(request, actor, {
+    action:
+      body.effect === "grant"
+        ? "admin.permission.grant"
+        : body.effect === "revoke"
+          ? "admin.permission.revoke"
+          : "admin.permission.clear",
+    targetType: "user",
+    targetId: userId,
+    reason: body.reason,
+    after: { permissionKey: body.permissionKey, effect: body.effect },
+  });
+  return ok({ override, cleared: body.effect === "clear" });
 }
 
 async function listGenerationJobs(request: Request) {
@@ -1662,6 +1845,92 @@ async function abuseOverview(request: Request) {
   });
 }
 
+// SPEC: Provider / 成本 / 容量看板 —— 按 provider 聚合生成成功率、单均币成本、p50/p95 延迟，窗口内只读。
+// INTENT: 让 ops 看到各 provider 健康度与成本，定位「哪个 runner 慢/贵/失败率高」。数据全来自 GenerationJob。
+// INVARIANTS: 只读；latency = completedAt − createdAt（仅 completed 计入）；provider 为空记 "unknown"。默认近 30 天。
+async function providerOps(request: Request) {
+  await actorWithPermission(request, "ops.queue.read");
+  const url = new URL(request.url);
+  const now = new Date();
+  const fromParam = url.searchParams.get("from");
+  const toParam = url.searchParams.get("to");
+  const to = toParam ? new Date(toParam) : now;
+  const from = fromParam ? new Date(fromParam) : new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+    throw Errors.badRequest("Invalid provider window");
+  }
+  const createdAt = { gte: from, lte: to };
+  const [grouped, completedJobs] = await Promise.all([
+    prisma.generationJob.groupBy({
+      by: ["provider", "status"],
+      where: { createdAt },
+      _count: { _all: true },
+      _sum: { costDreamcoins: true },
+    }),
+    prisma.generationJob.findMany({
+      where: { createdAt, status: "completed", completedAt: { not: null } },
+      select: { provider: true, createdAt: true, completedAt: true },
+      orderBy: { createdAt: "desc" },
+      take: 5000,
+    }),
+  ]);
+
+  const providerKey = (provider: string | null) => provider ?? "unknown";
+  const stats = new Map<
+    string,
+    { total: number; completed: number; failed: number; blocked: number; coinsCost: number }
+  >();
+  for (const row of grouped) {
+    const key = providerKey(row.provider);
+    const acc = stats.get(key) ?? { total: 0, completed: 0, failed: 0, blocked: 0, coinsCost: 0 };
+    acc.total += row._count._all;
+    acc.coinsCost += row._sum.costDreamcoins ?? 0;
+    if (row.status === "completed") acc.completed += row._count._all;
+    if (row.status === "failed") acc.failed += row._count._all;
+    if (row.status === "blocked") acc.blocked += row._count._all;
+    stats.set(key, acc);
+  }
+
+  const latencies = new Map<string, number[]>();
+  for (const job of completedJobs) {
+    if (!job.completedAt) continue;
+    const ms = job.completedAt.getTime() - job.createdAt.getTime();
+    if (ms < 0) continue;
+    const key = providerKey(job.provider);
+    const arr = latencies.get(key) ?? [];
+    arr.push(ms);
+    latencies.set(key, arr);
+  }
+
+  const providers = [...stats.entries()]
+    .map(([provider, acc]) => {
+      const finished = acc.completed + acc.failed + acc.blocked;
+      const sorted = (latencies.get(provider) ?? []).sort((a, b) => a - b);
+      return {
+        provider,
+        total: acc.total,
+        completed: acc.completed,
+        failed: acc.failed,
+        blocked: acc.blocked,
+        successRate: finished > 0 ? Math.round((acc.completed / finished) * 100) : 0,
+        coinsCost: acc.coinsCost,
+        avgCostPerJob: acc.total > 0 ? Math.round((acc.coinsCost / acc.total) * 10) / 10 : 0,
+        latencyP50Ms: percentile(sorted, 50),
+        latencyP95Ms: percentile(sorted, 95),
+        latencySamples: sorted.length,
+      };
+    })
+    .sort((a, b) => b.total - a.total);
+
+  return ok({ window: { from: from.toISOString(), to: to.toISOString() }, providers });
+}
+
+function percentile(sorted: number[], p: number) {
+  if (sorted.length === 0) return 0;
+  const index = Math.max(0, Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1));
+  return sorted[index];
+}
+
 async function auditLog(request: Request) {
   await actorWithPermission(request, "audit.read");
   const url = new URL(request.url);
@@ -1741,10 +2010,439 @@ async function viewPlaintext(request: Request) {
   });
 }
 
+// ── F1 Saved Views（owner-scoped 个人 UI 偏好；不入审计，见 ADMIN_PHASE2_DESIGN §4） ──
+async function listSavedViews(request: Request) {
+  const actor = await actorWithPermission(request, "dashboard.read");
+  const url = new URL(request.url);
+  const scope = url.searchParams.get("scope") ?? undefined;
+  const items = await prisma.adminSavedView.findMany({
+    where: { ownerId: actor.id, scope },
+    orderBy: { updatedAt: "desc" },
+    take: 100,
+  });
+  return ok({ items });
+}
+
+async function createSavedView(request: Request) {
+  const actor = await actorWithPermission(request, "dashboard.read");
+  const body = savedViewCreateSchema.parse(await jsonBody(request));
+  const view = await prisma.adminSavedView.create({
+    data: {
+      ownerId: actor.id,
+      scope: body.scope,
+      label: body.label,
+      filters: toInputJson(body.filters),
+    },
+  });
+  return ok({ view });
+}
+
+async function deleteSavedView(request: Request, id: string) {
+  const actor = await actorWithPermission(request, "dashboard.read");
+  // owner-scoped：deleteMany 限定 ownerId，非本人删除命中 0 行 → 404，不泄漏他人视图存在性。
+  const result = await prisma.adminSavedView.deleteMany({ where: { id, ownerId: actor.id } });
+  if (result.count === 0) throw Errors.notFound("Saved view not found");
+  return ok({ deleted: true });
+}
+
+// ── F2 Content/Character 目录治理 ──
+async function listContentCharacters(request: Request) {
+  await actorWithPermission(request, "content.read");
+  const url = new URL(request.url);
+  const search = url.searchParams.get("search")?.trim();
+  const status = url.searchParams.get("status") ?? undefined;
+  const visibility = url.searchParams.get("visibility") ?? undefined;
+  const creatorId = url.searchParams.get("creatorId") ?? undefined;
+  const sort = url.searchParams.get("sort") ?? "recent";
+  const where: Prisma.CharacterWhereInput = { status, visibility, creatorId, deletedAt: null };
+  if (search) {
+    where.OR = [{ id: { contains: search } }, { name: { contains: search } }];
+  }
+  const orderBy: Prisma.CharacterOrderByWithRelationInput =
+    sort === "popular" ? { stats: { chatsCount: "desc" } } : { createdAt: "desc" };
+  const items = await prisma.character.findMany({
+    where,
+    orderBy,
+    take: clampInt(url.searchParams.get("limit"), 1, 100, 60),
+    select: {
+      id: true,
+      name: true,
+      gender: true,
+      style: true,
+      status: true,
+      visibility: true,
+      creatorId: true,
+      createdAt: true,
+      stats: { select: { chatsCount: true, likesCount: true, viewsCount: true } },
+    },
+  });
+  return ok({ items });
+}
+
+async function getContentCharacter(request: Request, id: string) {
+  await actorWithPermission(request, "content.read");
+  const character = await prisma.character.findUnique({
+    where: { id },
+    include: {
+      stats: true,
+      creator: { select: { id: true, email: true, displayName: true } },
+      tags: true,
+    },
+  });
+  if (!character) throw Errors.notFound("Character not found");
+  const [reports, recentJobs] = await Promise.all([
+    prisma.contentReport.findMany({
+      where: { targetType: "character", targetId: id },
+      orderBy: { createdAt: "desc" },
+      take: 10,
+    }),
+    prisma.generationJob.findMany({
+      where: { characterId: id },
+      orderBy: { createdAt: "desc" },
+      take: 10,
+      select: { id: true, mode: true, status: true, createdAt: true },
+    }),
+  ]);
+  return ok({ character, reports, recentJobs });
+}
+
+async function setCharacterVisibility(request: Request, id: string) {
+  const actor = await actorWithPermission(request, "content.takedown.write");
+  const body = contentVisibilitySchema.parse(await jsonBody(request));
+  if (body.confirmation !== id && body.confirmation !== "VISIBILITY") {
+    throw Errors.badRequest("Confirmation did not match visibility target");
+  }
+  const before = await prisma.character.findUnique({ where: { id } });
+  if (!before) throw Errors.notFound("Character not found");
+  const after = await prisma.character.update({
+    where: { id },
+    data: { visibility: body.visibility },
+  });
+  await writeAudit(request, actor, {
+    action: "content.visibility.write",
+    targetType: "character",
+    targetId: id,
+    reason: body.reason,
+    before: { visibility: before.visibility },
+    after: { visibility: after.visibility },
+  });
+  return ok({ character: { id: after.id, visibility: after.visibility, status: after.status } });
+}
+
+async function setCharacterStatus(request: Request, id: string) {
+  const actor = await actorWithPermission(request, "content.takedown.write");
+  const body = contentStatusSchema.parse(await jsonBody(request));
+  if (body.confirmation !== id && body.confirmation !== "STATUS") {
+    throw Errors.badRequest("Confirmation did not match status target");
+  }
+  const before = await prisma.character.findUnique({ where: { id } });
+  if (!before) throw Errors.notFound("Character not found");
+  const after = await prisma.character.update({
+    where: { id },
+    data: { status: body.status },
+  });
+  await writeAudit(request, actor, {
+    action: "content.status.write",
+    targetType: "character",
+    targetId: id,
+    reason: body.reason,
+    before: { status: before.status },
+    after: { status: after.status },
+  });
+  return ok({ character: { id: after.id, visibility: after.visibility, status: after.status } });
+}
+
+// ── F3 Featured 策展（AppSetting key=feed.featured；公开 feed 读路径优先展示，见 ourdream/service feed()） ──
+function featuredIdsFromSetting(value: Prisma.JsonValue | undefined): string[] {
+  return isRecord(value) ? jsonStringArray(value.characterIds) : [];
+}
+
+async function getFeaturedCharacters(request: Request) {
+  await actorWithPermission(request, "content.read");
+  const setting = await prisma.appSetting.findUnique({ where: { key: FEATURED_SETTING_KEY } });
+  const ids = featuredIdsFromSetting(setting?.value);
+  const characters = ids.length
+    ? await prisma.character.findMany({
+        where: { id: { in: ids } },
+        select: { id: true, name: true, visibility: true, status: true },
+      })
+    : [];
+  const byId = new Map(characters.map((character) => [character.id, character]));
+  const items = ids.map((cid) => byId.get(cid)).filter((value) => value !== undefined);
+  return ok({ characterIds: ids, items });
+}
+
+async function putFeaturedCharacters(request: Request) {
+  const actor = await actorWithPermission(request, "content.takedown.write");
+  const body = featuredPutSchema.parse(await jsonBody(request));
+  if (body.confirmation !== "FEATURED") {
+    throw Errors.badRequest("Confirmation did not match featured target");
+  }
+  const unique = [...new Set(body.characterIds)];
+  // 仅允许仍 public+approved 的角色进精选，避免精选位指向已下架内容。
+  const valid = unique.length
+    ? await prisma.character.findMany({
+        where: { id: { in: unique }, visibility: "public", status: "approved", deletedAt: null },
+        select: { id: true },
+      })
+    : [];
+  const validSet = new Set(valid.map((character) => character.id));
+  const validIds = unique.filter((id) => validSet.has(id));
+  const before = await prisma.appSetting.findUnique({ where: { key: FEATURED_SETTING_KEY } });
+  await prisma.appSetting.upsert({
+    where: { key: FEATURED_SETTING_KEY },
+    update: { value: toInputJson({ characterIds: validIds }) },
+    create: { key: FEATURED_SETTING_KEY, value: toInputJson({ characterIds: validIds }) },
+  });
+  await writeAudit(request, actor, {
+    action: "content.featured.write",
+    targetType: "app_setting",
+    targetId: FEATURED_SETTING_KEY,
+    reason: body.reason,
+    before: { characterIds: featuredIdsFromSetting(before?.value) },
+    after: { characterIds: validIds },
+  });
+  return ok({ characterIds: validIds, skipped: unique.filter((id) => !validSet.has(id)) });
+}
+
+// ── F4 Redeem code / Referral 运营面 ──
+async function listRedeemCodes(request: Request) {
+  await actorWithPermission(request, "growth.promo.read");
+  const url = new URL(request.url);
+  const status = url.searchParams.get("status") ?? undefined;
+  const codes = await prisma.redeemCode.findMany({
+    where: { status },
+    orderBy: { createdAt: "desc" },
+    take: 100,
+    include: { _count: { select: { redemptions: true } } },
+  });
+  // 不回明文 code（只存 hash），运营按 id + reward 元数据管理。
+  const items = codes.map((code) => ({
+    id: code.id,
+    reward: code.reward,
+    status: code.status,
+    maxRedemptions: code.maxRedemptions,
+    redemptions: code._count.redemptions,
+    expiresAt: code.expiresAt,
+    createdAt: code.createdAt,
+  }));
+  return ok({ items });
+}
+
+async function createRedeemCode(request: Request) {
+  const actor = await actorWithPermission(request, "growth.promo.write");
+  const body = redeemCodeCreateSchema.parse(await jsonBody(request));
+  if (body.confirmation !== "CREATE" && body.confirmation !== body.code) {
+    throw Errors.badRequest("Confirmation did not match");
+  }
+  const codeHash = createHash("sha256").update(body.code).digest("hex");
+  const existing = await prisma.redeemCode.findUnique({ where: { codeHash } });
+  if (existing) throw Errors.badRequest("Redeem code already exists");
+  const code = await prisma.redeemCode.create({
+    data: {
+      codeHash,
+      reward: toInputJson(body.reward),
+      status: "active",
+      maxRedemptions: body.maxRedemptions ?? null,
+      expiresAt: body.expiresAt ? new Date(body.expiresAt) : null,
+    },
+  });
+  // 审计不写明文 code，只记 id + reward 元数据。
+  await writeAudit(request, actor, {
+    action: "promo.redeem_code.create",
+    targetType: "redeem_code",
+    targetId: code.id,
+    reason: body.reason,
+    after: { reward: body.reward, maxRedemptions: code.maxRedemptions, expiresAt: code.expiresAt },
+  });
+  return ok({ id: code.id, status: code.status });
+}
+
+async function disableRedeemCode(request: Request, id: string) {
+  const actor = await actorWithPermission(request, "growth.promo.write");
+  const body = promoDisableSchema.parse(await jsonBody(request));
+  if (body.confirmation !== id && body.confirmation !== "DISABLE") {
+    throw Errors.badRequest("Confirmation did not match disable target");
+  }
+  const before = await prisma.redeemCode.findUnique({ where: { id } });
+  if (!before) throw Errors.notFound("Redeem code not found");
+  const after = await prisma.redeemCode.update({ where: { id }, data: { status: "disabled" } });
+  await writeAudit(request, actor, {
+    action: "promo.redeem_code.disable",
+    targetType: "redeem_code",
+    targetId: id,
+    reason: body.reason,
+    before: { status: before.status },
+    after: { status: after.status },
+  });
+  return ok({ id: after.id, status: after.status });
+}
+
+async function listReferrals(request: Request) {
+  await actorWithPermission(request, "growth.promo.read");
+  const url = new URL(request.url);
+  const inviterId = url.searchParams.get("inviterId") ?? undefined;
+  const status = url.searchParams.get("status") ?? undefined;
+  const items = await prisma.referral.findMany({
+    where: { inviterId, status },
+    orderBy: { createdAt: "desc" },
+    take: 100,
+  });
+  return ok({ items });
+}
+
+// ── F5 双人审批（AdminActionRequest）──
+async function listApprovals(request: Request) {
+  await actorWithPermission(request, "admin.approval.review");
+  const url = new URL(request.url);
+  const status = url.searchParams.get("status") ?? "pending";
+  const items = await prisma.adminActionRequest.findMany({
+    where: { status },
+    orderBy: { createdAt: "desc" },
+    take: 100,
+  });
+  return ok({ items });
+}
+
+async function createApproval(request: Request) {
+  // 发起方须持目标 action 的 permission key（不能请求自己无权做的事）。
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  const body = approvalCreateSchema.parse(await jsonBody(request));
+  if (!isPermissionKey(body.permissionKey)) throw Errors.badRequest("Unknown permission key");
+  const perms = await effectivePermissions(user.id, user.role);
+  if (!perms.has(body.permissionKey)) {
+    throw Errors.forbidden("Cannot request an action you lack permission for", {
+      permission: body.permissionKey,
+    });
+  }
+  const actor: AdminActor = { id: user.id, role: user.role };
+  const created = await prisma.adminActionRequest.create({
+    data: {
+      requestedById: actor.id,
+      permissionKey: body.permissionKey,
+      action: body.action,
+      targetType: body.targetType,
+      targetId: body.targetId,
+      payload: toInputJson(body.payload),
+      status: "pending",
+      reason: body.reason,
+    },
+  });
+  await writeAudit(request, actor, {
+    action: "admin.approval.request",
+    targetType: body.targetType,
+    targetId: body.targetId,
+    reason: body.reason,
+    after: { requestId: created.id, permissionKey: body.permissionKey, action: body.action },
+  });
+  return ok({ request: created });
+}
+
+async function approveApproval(request: Request, id: string) {
+  const actor = await actorWithPermission(request, "admin.approval.review");
+  const body = approvalDecisionSchema.parse(await jsonBody(request));
+  const req = await prisma.adminActionRequest.findUnique({ where: { id } });
+  if (!req) throw Errors.notFound("Approval request not found");
+  if (req.status !== "pending") throw Errors.badRequest("Approval request is not pending");
+  // 不变量：审批人 ≠ 发起人。
+  if (req.requestedById === actor.id) {
+    throw Errors.badRequest("Approver must differ from requester");
+  }
+  // 不变量：审批人须持该请求声明的 permission key。
+  if (!isPermissionKey(req.permissionKey)) {
+    throw Errors.badRequest("Request has an unknown permission key");
+  }
+  const perms = await effectivePermissions(actor.id, actor.role);
+  if (!perms.has(req.permissionKey)) {
+    throw Errors.forbidden("Approver lacks the permission required by this request", {
+      permission: req.permissionKey,
+    });
+  }
+  const updated = await prisma.adminActionRequest.update({
+    where: { id },
+    data: { status: "approved", approvedById: actor.id, decidedAt: new Date() },
+  });
+  await writeAudit(request, actor, {
+    action: "admin.approval.approve",
+    targetType: req.targetType,
+    targetId: req.targetId,
+    reason: body.reason,
+    before: { status: "pending" },
+    after: { status: "approved", requestId: updated.id, permissionKey: req.permissionKey },
+  });
+  return ok({ request: updated });
+}
+
+async function rejectApproval(request: Request, id: string) {
+  const actor = await actorWithPermission(request, "admin.approval.review");
+  const body = approvalDecisionSchema.parse(await jsonBody(request));
+  const req = await prisma.adminActionRequest.findUnique({ where: { id } });
+  if (!req) throw Errors.notFound("Approval request not found");
+  if (req.status !== "pending") throw Errors.badRequest("Approval request is not pending");
+  const updated = await prisma.adminActionRequest.update({
+    where: { id },
+    data: { status: "rejected", approvedById: actor.id, decidedAt: new Date() },
+  });
+  await writeAudit(request, actor, {
+    action: "admin.approval.reject",
+    targetType: req.targetType,
+    targetId: req.targetId,
+    reason: body.reason,
+    before: { status: "pending" },
+    after: { status: "rejected", requestId: updated.id },
+  });
+  return ok({ request: updated });
+}
+
+// ── F6 Chat 运营面（代理到 chat 服务内部 admin 只读 API；尊重 DB 边界，默认不回明文） ──
+// INTENT: chat 服务不可达/未配置时降级返回 configured:false（与既有 chat BFF 降级一致），不抛 500。
+async function proxyChatAdmin(path: string): Promise<unknown | null> {
+  if (!env.CHAT_SERVICE_URL) return null;
+  try {
+    const res = await fetch(`${env.CHAT_SERVICE_URL}${path}`, {
+      headers: { "x-internal-token": env.INTERNAL_TOKEN },
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as unknown;
+  } catch {
+    // 故意降级：chat 服务暂不可达不应让 admin 控制台整体 500。
+    return null;
+  }
+}
+
+async function chatOpsOverview(request: Request) {
+  await actorWithPermission(request, "chat.ops.read");
+  const data = await proxyChatAdmin("/internal/admin/overview");
+  return ok({ configured: data !== null, overview: data });
+}
+
+async function chatOpsSessions(request: Request) {
+  await actorWithPermission(request, "chat.ops.read");
+  const url = new URL(request.url);
+  const params = new URLSearchParams();
+  const userId = url.searchParams.get("userId");
+  if (userId) params.set("userId", userId);
+  params.set("limit", String(clampInt(url.searchParams.get("limit"), 1, 100, 50)));
+  const data = await proxyChatAdmin(`/internal/admin/sessions?${params.toString()}`);
+  return ok({ configured: data !== null, ...(isRecord(data) ? data : { items: [] }) });
+}
+
+async function chatOpsModerationEvents(request: Request) {
+  await actorWithPermission(request, "chat.ops.read");
+  const url = new URL(request.url);
+  const limit = clampInt(url.searchParams.get("limit"), 1, 100, 50);
+  const data = await proxyChatAdmin(`/internal/admin/moderation-events?limit=${limit}`);
+  return ok({ configured: data !== null, ...(isRecord(data) ? data : { items: [] }) });
+}
+
 async function actorWithPermission(request: Request, permission: PermissionKey): Promise<AdminActor> {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
-  assertPermission(user.role, permission);
+  const effective = await effectivePermissions(user.id, user.role);
+  if (!effective.has(permission)) {
+    throw Errors.forbidden("Missing admin permission", { permission });
+  }
   return { id: user.id, role: user.role };
 }
 

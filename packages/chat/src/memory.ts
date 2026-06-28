@@ -5,23 +5,21 @@
 // Each memory line carries source_message_ids back-linking PG.
 import type { ChatPrismaClient } from "./db.js";
 import { chatPrisma } from "./db.js";
-import { appendLine, chatFsPaths } from "./chat-fs.js";
 import { updateRelationship } from "./relationship.js";
+import { consolidateMemories } from "./memories.js";
+import { extractCandidates } from "./extract.js";
+import { resolvePolicy, snapshotFromView } from "./policy.js";
 import { createId } from "./id.js";
 import { CHAT_TO_MAIN_EVENTS } from "@idream/shared/contracts";
+
+// Re-export the extractor surface so existing importers keep their path.
+export { deriveCandidates } from "./extract.js";
+export type { MemoryCandidate } from "./extract.js";
 
 export interface MemoryExtractPayload {
   sessionId: string;
   assistantMessageId: string;
   attempt: number;
-}
-
-export interface MemoryCandidate {
-  scope: "global" | "character" | "session";
-  type: "user_fact" | "preference" | "boundary" | "shared_event";
-  text: string;
-  confidence: number;
-  sourceMessageIds: string[];
 }
 
 export async function processMemoryExtract(
@@ -58,20 +56,30 @@ export async function processMemoryExtract(
     userId: session.userId,
   });
 
-  const candidates = deriveCandidates(userMessage.content, userMessage.id);
+  // Semantic extraction (igrep mem derive) when enabled, regex floor otherwise —
+  // off the hot path, so a slow LLM only delays this worker, never a reply.
+  const candidates = await extractCandidates({
+    userText: userMessage.content,
+    sourceMessageId: userMessage.id,
+    userId: session.userId,
+    characterId: session.characterId,
+  });
   if (candidates.length === 0) return { written: 0, skipped: null };
 
-  for (const c of candidates) {
-    const line = renderMemoryLine(c);
-    if (c.type === "boundary") {
-      await appendLine(chatFsPaths.boundaries(session.userId), line);
-    } else {
-      await appendLine(chatFsPaths.memory(session.userId, session.characterId), line);
-    }
-  }
+  // Consolidate INTO the authority files (dedup + confidence merge + tier cap)
+  // instead of blind-appending, so repeated preferences never stack duplicates
+  // and storage stays bounded by the entitlement (P1-C).
+  const entitlement = await prisma.chatEntitlementView.findUnique({ where: { userId: session.userId } });
+  const policy = resolvePolicy(snapshotFromView(entitlement), { memoryEnabled: true });
+  const { added, merged } = await consolidateMemories(
+    session.userId,
+    session.characterId,
+    candidates,
+    { maxStored: policy.maxStoredMemories },
+  );
   await recordDerivedOutbox(prisma, CHAT_TO_MAIN_EVENTS.memoryUpdated, "user", session.userId, {
     characterId: session.characterId,
-    count: candidates.length,
+    count: added + merged,
   });
 
   // advance the derive watermark (D3) — best effort
@@ -95,36 +103,6 @@ export function canMemorize(message: MemorableMessage): boolean {
     message.deletedAt === null &&
     (message.safetyStatus === "passed" || message.safetyStatus === "unknown")
   );
-}
-
-/** Port of the heuristic extractor (chat-runtime) — EN + ZH name/preference/boundary. */
-export function deriveCandidates(userText: string, sourceMessageId: string): MemoryCandidate[] {
-  const out: MemoryCandidate[] = [];
-  const nickname =
-    userText.match(/\bcall me ([a-z0-9 _-]{1,40})/i)?.[1]?.trim() ??
-    userText.match(/(?:叫我|称呼我为)([\p{Script=Han}a-zA-Z0-9 _-]{1,40})/u)?.[1]?.trim();
-  if (nickname) {
-    out.push({ scope: "character", type: "preference", text: `User likes being called ${nickname}.`, confidence: 0.84, sourceMessageIds: [sourceMessageId] });
-  }
-  const liked =
-    userText.match(/\bi like ([^.?!]{3,80})/i)?.[1]?.trim() ??
-    userText.match(/我喜欢([^。！？\n]{2,80})/u)?.[1]?.trim();
-  if (liked) {
-    out.push({ scope: "character", type: "preference", text: `User likes ${liked}.`, confidence: 0.78, sourceMessageIds: [sourceMessageId] });
-  }
-  const boundary =
-    userText.match(/\b(?:do not|don't) (?:remember|store|talk about) ([^.?!]{3,80})/i)?.[1]?.trim() ??
-    userText.match(/(?:不要|别)(?:记住|保存|聊|提)([^。！？\n]{2,80})/u)?.[1]?.trim();
-  if (boundary) {
-    out.push({ scope: "global", type: "boundary", text: `Do not remember, store, or bring up ${boundary}.`, confidence: 0.9, sourceMessageIds: [sourceMessageId] });
-  }
-  return out;
-}
-
-/** memory.md line: a bullet + an inline source tag (front-matter-lite, parseable).
- * Carries a stable `mid` so the management API (memories.ts) can PATCH/DELETE it. */
-function renderMemoryLine(c: MemoryCandidate): string {
-  return `- [${c.type}] ${c.text} <!-- src:${c.sourceMessageIds.join(",")} mid:${createId("mem")} conf:${c.confidence} -->`;
 }
 
 function clampTurn(text: string): string {

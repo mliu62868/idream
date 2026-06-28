@@ -14,7 +14,17 @@
 - P0-F：inbox `user.deleted` → 调用 `deleteAccount` 擦除（PG + 文件层）并发 `chat.account_erasure.completed`；主站 `deleteRequest` 投递 `user.deleted` 到 chat inbound 队列。
 - P0-G：boundaries 与普通 memory 检索拆分；boundaries 每轮全量读取、读失败 fail-closed，不随 memory 超时降级。
 
-**Phase 2/3（P1 产品化、probe、文档）进行中**：Chat 管理 UI（regenerate/delete/会话列表/记忆面板/关系标签）、Chat→Generate 深链、Upgrade/Profile 权益文案、`probe-chat-service` 端到端 smoke、文档同步。
+**Phase 2/3（P1 产品化、probe、文档）已完成**：
+
+- P1-A：Chat 管理 UI（`ChatHeaderControls/MessageActions/ChatSessionListDrawer/MemoryPanel/RelationshipBadge/MemoryToggle`）接入 regenerate/delete/归档/会话列表/记忆查看编辑删除/记忆开关/关系标签/重置关系。
+- P1-B：relationship 状态注入模型 system prompt（定性 stage tone + summary，不暴露数值），并提供 reset。
+- P1-C：记忆**合并入库**（dedup 同类同义、union 来源、取高置信）+ 分层**存储上限**（Free 30 / Deluxe 90 = 3×），boundary 单独文件不被普通偏好覆盖、不被淘汰；UI 不暴露 confidence。
+- P1-D：Upgrade/Profile 具体 chat 权益文案。
+- P1-E：Chat→Generate 深链（`?characterId=`）。
+- probe：`probe-chat-service` 扩展 create/send/stream/get/no-memory/blocked 端到端 smoke。
+- 文档：PRD 同步 blocked 发送响应。
+
+仍待（运行栈相关）：§10.3 UI E2E 与 probe smoke 已写好，需完整运行栈（dev server + chat service + redis + pg）方可实跑。
 
 ## 1. 目标
 

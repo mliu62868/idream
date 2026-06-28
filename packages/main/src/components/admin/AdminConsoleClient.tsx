@@ -17,13 +17,18 @@ import {
   Gauge,
   History,
   Inbox,
+  Library,
   Loader2,
+  MessageSquare,
   Plus,
   RefreshCcw,
   RotateCcw,
   Search,
+  Server,
   ShieldAlert,
+  ShieldCheck,
   SlidersHorizontal,
+  Ticket,
   Trash2,
   UploadCloud,
   Users,
@@ -95,6 +100,11 @@ type AbuseData = {
   adjustAnomalies: Row[];
 };
 
+type ProviderOpsData = {
+  window: { from: string; to: string };
+  providers: Row[];
+};
+
 type SectionData =
   | { kind: "dashboard"; data: DashboardData }
   | { kind: "jobs"; rows: Row[] }
@@ -106,6 +116,17 @@ type SectionData =
   | { kind: "deadletter"; rows: Row[] }
   | { kind: "analytics"; data: AnalyticsData }
   | { kind: "risk"; data: AbuseData }
+  | { kind: "providers"; data: ProviderOpsData }
+  | { kind: "content"; characters: Row[]; featured: Row[]; featuredIds: string[] }
+  | { kind: "promo"; codes: Row[]; referrals: Row[] }
+  | { kind: "approvals"; rows: Row[] }
+  | {
+      kind: "chatops";
+      configured: boolean;
+      overview: Record<string, unknown> | null;
+      sessions: Row[];
+      events: Row[];
+    }
   | { kind: "audit"; rows: Row[] };
 
 type PendingAction = {
@@ -155,6 +176,40 @@ type PricingDraft = {
   multiplier: string;
 };
 
+type PermissionForm = {
+  userId: string;
+  permissionKey: string;
+  effect: "grant" | "revoke" | "clear";
+};
+
+const PERMISSION_KEYS = [
+  "dashboard.read",
+  "user.read",
+  "user.status.write",
+  "user.role.write",
+  "content.read",
+  "content.takedown.write",
+  "generation.job.read",
+  "generation.job.requeue",
+  "generation.config.read",
+  "generation.config.write",
+  "safety.review.read",
+  "safety.review.write",
+  "billing.read",
+  "billing.ledger.adjust",
+  "config.feature_flag.write",
+  "config.pricing.write",
+  "ops.queue.read",
+  "ops.deadletter.write",
+  "support.plaintext.view",
+  "audit.read",
+  "analytics.export",
+  "growth.promo.read",
+  "growth.promo.write",
+  "chat.ops.read",
+  "admin.approval.review",
+];
+
 const defaultModelDraft: ModelDraft = {
   profileKey: "profile_image_default_v2",
   label: "Default image v2",
@@ -194,17 +249,28 @@ const defaultPricingDraft: PricingDraft = {
   multiplier: "1",
 };
 
+const defaultPermissionForm: PermissionForm = {
+  userId: "",
+  permissionKey: "billing.ledger.adjust",
+  effect: "grant",
+};
+
 const navItems = [
   { id: "dashboard", label: "Dashboard", href: "/admin", icon: Gauge },
   { id: "generation/jobs", label: "Generation Jobs", href: "/admin/generation/jobs", icon: Activity },
   { id: "generation/config", label: "Generation Config", href: "/admin/generation/config", icon: SlidersHorizontal },
   { id: "generation/dead-letter", label: "Dead-letter", href: "/admin/generation/dead-letter", icon: Inbox },
+  { id: "ops/providers", label: "Provider Health", href: "/admin/ops/providers", icon: Server },
   { id: "moderation", label: "Moderation", href: "/admin/moderation", icon: ShieldAlert },
+  { id: "content", label: "Content", href: "/admin/content", icon: Library },
+  { id: "chat", label: "Chat Ops", href: "/admin/chat", icon: MessageSquare },
   { id: "users", label: "Users", href: "/admin/users", icon: Users },
   { id: "billing", label: "Billing", href: "/admin/billing", icon: BadgeDollarSign },
   { id: "pricing", label: "Pricing", href: "/admin/pricing", icon: Coins },
+  { id: "promo", label: "Promo", href: "/admin/promo", icon: Ticket },
   { id: "analytics", label: "Analytics", href: "/admin/analytics", icon: BarChart3 },
   { id: "risk", label: "Risk & Abuse", href: "/admin/risk", icon: AlertTriangle },
+  { id: "approvals", label: "Approvals", href: "/admin/approvals", icon: ClipboardCheck },
   { id: "audit-log", label: "Audit Log", href: "/admin/audit-log", icon: History },
 ];
 
@@ -230,6 +296,7 @@ export function AdminConsoleClient({
   const [configBusy, setConfigBusy] = useState<"model" | "template" | null>(null);
   const [pricingDraft, setPricingDraft] = useState<PricingDraft>(defaultPricingDraft);
   const [pricingBusy, setPricingBusy] = useState(false);
+  const [permissionForm, setPermissionForm] = useState<PermissionForm>(defaultPermissionForm);
 
   const filteredData = useMemo(() => filterSectionData(data, query), [data, query]);
 
@@ -441,6 +508,9 @@ export function AdminConsoleClient({
                 setPricingDraft,
                 pricingBusy,
                 createPricingRule,
+                permissionForm,
+                setPermissionForm,
+                reload: () => void load(),
               })
             )}
           </div>
@@ -522,6 +592,10 @@ async function fetchSection(sectionId: string): Promise<SectionData> {
     const payload = await apiGet<{ items: Row[] }>("/api/v1/admin/generation/dead-letter");
     return { kind: "deadletter", rows: payload.items };
   }
+  if (sectionId === "ops/providers") {
+    const payload = await apiGet<ProviderOpsData>("/api/v1/admin/ops/providers");
+    return { kind: "providers", data: payload };
+  }
   if (sectionId === "generation/config") {
     const [profiles, templates, presets, flags] = await Promise.all([
       apiGet<{ items: Row[] }>("/api/v1/admin/generation/model-profiles"),
@@ -583,6 +657,45 @@ async function fetchSection(sectionId: string): Promise<SectionData> {
     const payload = await apiGet<{ items: Row[] }>("/api/v1/admin/audit-log");
     return { kind: "audit", rows: payload.items };
   }
+  if (sectionId === "content") {
+    const [characters, featured] = await Promise.all([
+      apiGet<{ items: Row[] }>("/api/v1/admin/content/characters"),
+      apiGet<{ items: Row[]; characterIds: string[] }>("/api/v1/admin/content/featured"),
+    ]);
+    return {
+      kind: "content",
+      characters: characters.items,
+      featured: featured.items,
+      featuredIds: featured.characterIds,
+    };
+  }
+  if (sectionId === "promo") {
+    const [codes, referrals] = await Promise.all([
+      apiGet<{ items: Row[] }>("/api/v1/admin/promo/redeem-codes"),
+      apiGet<{ items: Row[] }>("/api/v1/admin/promo/referrals"),
+    ]);
+    return { kind: "promo", codes: codes.items, referrals: referrals.items };
+  }
+  if (sectionId === "approvals") {
+    const payload = await apiGet<{ items: Row[] }>("/api/v1/admin/approvals?status=pending");
+    return { kind: "approvals", rows: payload.items };
+  }
+  if (sectionId === "chat") {
+    const [overview, sessions, events] = await Promise.all([
+      apiGet<{ configured: boolean; overview: Record<string, unknown> | null }>(
+        "/api/v1/admin/chat/overview",
+      ),
+      apiGet<{ configured: boolean; items?: Row[] }>("/api/v1/admin/chat/sessions"),
+      apiGet<{ configured: boolean; items?: Row[] }>("/api/v1/admin/chat/moderation-events"),
+    ]);
+    return {
+      kind: "chatops",
+      configured: overview.configured,
+      overview: overview.overview,
+      sessions: sessions.items ?? [],
+      events: events.items ?? [],
+    };
+  }
 
   const payload = await apiGet<DashboardData>("/api/v1/admin/dashboard");
   return { kind: "dashboard", data: payload };
@@ -599,7 +712,7 @@ async function apiGet<T>(path: string): Promise<T> {
 
 async function apiWrite<T>(
   path: string,
-  method: "POST" | "PATCH",
+  method: "POST" | "PATCH" | "PUT",
   body: Record<string, unknown>,
 ): Promise<T> {
   const response = await fetch(path, {
@@ -728,6 +841,9 @@ function renderSection(
     setPricingDraft: (value: PricingDraft) => void;
     pricingBusy: boolean;
     createPricingRule: () => void;
+    permissionForm: PermissionForm;
+    setPermissionForm: (value: PermissionForm) => void;
+    reload: () => void;
   },
 ) {
   if (!section) return null;
@@ -758,7 +874,16 @@ function renderSection(
       />
     );
   }
-  if (section.kind === "users") return <UsersView rows={section.rows} openAction={ctx.openAction} />;
+  if (section.kind === "users") {
+    return (
+      <UsersView
+        openAction={ctx.openAction}
+        permissionForm={ctx.permissionForm}
+        rows={section.rows}
+        setPermissionForm={ctx.setPermissionForm}
+      />
+    );
+  }
   if (section.kind === "billing") {
     return (
       <BillingView
@@ -788,6 +913,41 @@ function renderSection(
   }
   if (section.kind === "analytics") return <AnalyticsView data={section.data} />;
   if (section.kind === "risk") return <RiskView data={section.data} />;
+  if (section.kind === "providers") return <ProviderOpsView data={section.data} />;
+  if (section.kind === "content") {
+    return (
+      <ContentView
+        characters={section.characters}
+        featured={section.featured}
+        featuredIds={section.featuredIds}
+        openAction={ctx.openAction}
+        reload={ctx.reload}
+      />
+    );
+  }
+  if (section.kind === "promo") {
+    return (
+      <PromoView
+        codes={section.codes}
+        openAction={ctx.openAction}
+        referrals={section.referrals}
+        reload={ctx.reload}
+      />
+    );
+  }
+  if (section.kind === "approvals") {
+    return <ApprovalsView rows={section.rows} openAction={ctx.openAction} />;
+  }
+  if (section.kind === "chatops") {
+    return (
+      <ChatOpsView
+        configured={section.configured}
+        events={section.events}
+        overview={section.overview}
+        sessions={section.sessions}
+      />
+    );
+  }
   return <AuditView rows={section.rows} />;
 }
 
@@ -1388,41 +1548,113 @@ function ModerationView({
 function UsersView({
   rows,
   openAction,
+  permissionForm,
+  setPermissionForm,
 }: {
   rows: Row[];
   openAction: (action: PendingAction) => void;
+  permissionForm: PermissionForm;
+  setPermissionForm: (value: PermissionForm) => void;
 }) {
   return (
-    <DataTable
-      actions={(row) => {
-        const id = stringValue(row.id);
-        const status = stringValue(row.status);
-        const nextStatus = status === "suspended" ? "active" : "suspended";
-        return (
-          <IconAction
-            icon={nextStatus === "active" ? <Check className="h-4 w-4" /> : <Ban className="h-4 w-4" />}
-            label={nextStatus === "active" ? "Restore" : "Suspend"}
+    <div className="space-y-5">
+      <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+        <h2 className="mb-1 text-sm font-semibold">Permission override</h2>
+        <p className="mb-3 text-xs text-[rgb(170,170,170)]">
+          按 user 精确 grant / revoke / clear 单个 permission key（不动 role）。admin only，写审计。
+        </p>
+        <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_140px_auto]">
+          <input
+            className="h-10 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            onChange={(event) => setPermissionForm({ ...permissionForm, userId: event.target.value })}
+            placeholder="User ID"
+            value={permissionForm.userId}
+          />
+          <select
+            className="h-10 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            onChange={(event) =>
+              setPermissionForm({ ...permissionForm, permissionKey: event.target.value })
+            }
+            value={permissionForm.permissionKey}
+          >
+            {PERMISSION_KEYS.map((key) => (
+              <option key={key} value={key}>
+                {key}
+              </option>
+            ))}
+          </select>
+          <select
+            className="h-10 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            onChange={(event) =>
+              setPermissionForm({
+                ...permissionForm,
+                effect: event.target.value as PermissionForm["effect"],
+              })
+            }
+            value={permissionForm.effect}
+          >
+            {["grant", "revoke", "clear"].map((effect) => (
+              <option key={effect} value={effect}>
+                {effect}
+              </option>
+            ))}
+          </select>
+          <button
+            className="inline-flex h-10 items-center justify-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+            disabled={!permissionForm.userId.trim()}
             onClick={() =>
               openAction({
-                title: `${nextStatus === "active" ? "Restore" : "Suspend"} ${id}`,
-                endpoint: `/api/v1/admin/users/${id}/status`,
+                title: `${permissionForm.effect} ${permissionForm.permissionKey}`,
+                endpoint: `/api/v1/admin/users/${permissionForm.userId.trim()}/permissions`,
                 method: "POST",
-                confirmText: nextStatus.toUpperCase(),
+                confirmText: "PERMISSION",
                 reasonRequired: true,
                 body: (actionReason) => ({
-                  status: nextStatus,
+                  permissionKey: permissionForm.permissionKey,
+                  effect: permissionForm.effect,
                   reason: actionReason,
-                  confirmation: nextStatus.toUpperCase(),
+                  confirmation: "PERMISSION",
                 }),
               })
             }
-          />
-        );
-      }}
-      columns={["id", "email", "displayName", "role", "status", "dreamcoins", "createdAt"]}
-      rows={rows}
-      title="Users"
-    />
+            type="button"
+          >
+            <ShieldCheck className="h-4 w-4" />
+            Apply
+          </button>
+        </div>
+      </section>
+      <DataTable
+        actions={(row) => {
+          const id = stringValue(row.id);
+          const status = stringValue(row.status);
+          const nextStatus = status === "suspended" ? "active" : "suspended";
+          return (
+            <IconAction
+              icon={nextStatus === "active" ? <Check className="h-4 w-4" /> : <Ban className="h-4 w-4" />}
+              label={nextStatus === "active" ? "Restore" : "Suspend"}
+              onClick={() =>
+                openAction({
+                  title: `${nextStatus === "active" ? "Restore" : "Suspend"} ${id}`,
+                  endpoint: `/api/v1/admin/users/${id}/status`,
+                  method: "POST",
+                  confirmText: nextStatus.toUpperCase(),
+                  reasonRequired: true,
+                  body: (actionReason) => ({
+                    status: nextStatus,
+                    reason: actionReason,
+                    confirmation: nextStatus.toUpperCase(),
+                  }),
+                })
+              }
+            />
+          );
+        }}
+        columns={["id", "email", "displayName", "role", "status", "dreamcoins", "createdAt"]}
+        rows={rows}
+        title="Users"
+      />
+    </div>
   );
 }
 
@@ -1881,6 +2113,34 @@ function RiskView({ data }: { data: AbuseData }) {
   );
 }
 
+function ProviderOpsView({ data }: { data: ProviderOpsData }) {
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-[rgb(170,170,170)]">
+        Window {compactDate(data.window.from)} → {compactDate(data.window.to)} · latency = completed −
+        created（仅 completed 计入）
+      </p>
+      <DataTable
+        columns={[
+          "provider",
+          "total",
+          "completed",
+          "failed",
+          "blocked",
+          "successRate",
+          "coinsCost",
+          "avgCostPerJob",
+          "latencyP50Ms",
+          "latencyP95Ms",
+          "latencySamples",
+        ]}
+        rows={data.providers}
+        title="Provider health & cost"
+      />
+    </div>
+  );
+}
+
 function AuditView({ rows }: { rows: Row[] }) {
   return (
     <DataTable
@@ -1889,6 +2149,345 @@ function AuditView({ rows }: { rows: Row[] }) {
       title="Audit"
     />
   );
+}
+
+function ContentView({
+  characters,
+  featured,
+  featuredIds,
+  openAction,
+  reload,
+}: {
+  characters: Row[];
+  featured: Row[];
+  featuredIds: string[];
+  openAction: (action: PendingAction) => void;
+  reload: () => void;
+}) {
+  const [featuredInput, setFeaturedInput] = useState(featuredIds.join(", "));
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function saveFeatured() {
+    setBusy(true);
+    setErr(null);
+    try {
+      await apiWrite("/api/v1/admin/content/featured", "PUT", {
+        characterIds: parseCsv(featuredInput),
+        reason: reason.trim(),
+        confirmation: "FEATURED",
+      });
+      setReason("");
+      reload();
+    } catch (error) {
+      setErr(error instanceof Error ? error.message : "Save failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-5">
+      <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+        <h2 className="text-sm font-semibold">Featured curation</h2>
+        <p className="mt-1 text-xs text-[rgb(170,170,170)]">
+          逗号分隔的 character id；仅 public+approved 会被保留，公开 feed 优先展示。
+        </p>
+        <div className="mt-3 grid gap-3 md:grid-cols-[1fr_220px_auto]">
+          <input
+            className="h-10 w-full border border-white/10 bg-black/30 px-3 font-mono text-sm outline-none focus:border-white/30"
+            onChange={(event) => setFeaturedInput(event.target.value)}
+            placeholder="char_a, char_b"
+            value={featuredInput}
+          />
+          <input
+            className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            onChange={(event) => setReason(event.target.value)}
+            placeholder="Reason (≥3 chars)"
+            value={reason}
+          />
+          <button
+            className="inline-flex h-10 items-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+            disabled={busy || reason.trim().length < 3}
+            onClick={() => void saveFeatured()}
+            type="button"
+          >
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flag className="h-4 w-4" />}
+            Save featured
+          </button>
+        </div>
+        {err ? <p className="mt-2 text-xs text-red-300">{err}</p> : null}
+      </section>
+      <DataTable columns={["id", "name", "visibility", "status"]} rows={featured} title="Currently featured" />
+      <DataTable
+        actions={(row) => {
+          const id = stringValue(row.id);
+          return (
+            <div className="flex gap-1">
+              <IconAction
+                icon={<ShieldCheck className="h-4 w-4" />}
+                label="Make private"
+                onClick={() =>
+                  openAction({
+                    title: `Make ${id} private`,
+                    endpoint: `/api/v1/admin/content/characters/${id}/visibility`,
+                    method: "POST",
+                    confirmText: "VISIBILITY",
+                    reasonRequired: true,
+                    body: (actionReason, confirmation) => ({
+                      visibility: "private",
+                      reason: actionReason,
+                      confirmation,
+                    }),
+                  })
+                }
+              />
+              <IconAction
+                icon={<Trash2 className="h-4 w-4" />}
+                label="Remove"
+                onClick={() =>
+                  openAction({
+                    title: `Remove ${id}`,
+                    endpoint: `/api/v1/admin/content/characters/${id}/status`,
+                    method: "POST",
+                    confirmText: "STATUS",
+                    reasonRequired: true,
+                    body: (actionReason, confirmation) => ({
+                      status: "removed",
+                      reason: actionReason,
+                      confirmation,
+                    }),
+                  })
+                }
+              />
+            </div>
+          );
+        }}
+        columns={["id", "name", "gender", "style", "visibility", "status", "createdAt"]}
+        rows={characters}
+        title="Characters"
+      />
+    </div>
+  );
+}
+
+function PromoView({
+  codes,
+  referrals,
+  openAction,
+  reload,
+}: {
+  codes: Row[];
+  referrals: Row[];
+  openAction: (action: PendingAction) => void;
+  reload: () => void;
+}) {
+  const [code, setCode] = useState("");
+  const [dreamcoins, setDreamcoins] = useState("");
+  const [maxRedemptions, setMaxRedemptions] = useState("");
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function createCode() {
+    setBusy(true);
+    setErr(null);
+    try {
+      await apiWrite("/api/v1/admin/promo/redeem-codes", "POST", {
+        code: code.trim(),
+        reward: { dreamcoins: intFromText(dreamcoins, 0) },
+        maxRedemptions: maxRedemptions.trim() ? intFromText(maxRedemptions, 1) : null,
+        reason: reason.trim(),
+        confirmation: "CREATE",
+      });
+      setCode("");
+      setDreamcoins("");
+      setMaxRedemptions("");
+      setReason("");
+      reload();
+    } catch (error) {
+      setErr(error instanceof Error ? error.message : "Create failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-5">
+      <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+        <h2 className="text-sm font-semibold">Create redeem code</h2>
+        <p className="mt-1 text-xs text-[rgb(170,170,170)]">明文 code 仅用于生成 hash，不入库、不回显、不入审计。</p>
+        <div className="mt-3 grid gap-3 md:grid-cols-5">
+          <input
+            className="h-10 w-full border border-white/10 bg-black/30 px-3 font-mono text-sm outline-none focus:border-white/30"
+            onChange={(event) => setCode(event.target.value)}
+            placeholder="Code (≥4)"
+            value={code}
+          />
+          <input
+            className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            onChange={(event) => setDreamcoins(event.target.value)}
+            placeholder="Dreamcoins"
+            value={dreamcoins}
+          />
+          <input
+            className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            onChange={(event) => setMaxRedemptions(event.target.value)}
+            placeholder="Max uses (blank=∞)"
+            value={maxRedemptions}
+          />
+          <input
+            className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            onChange={(event) => setReason(event.target.value)}
+            placeholder="Reason (≥3)"
+            value={reason}
+          />
+          <button
+            className="inline-flex h-10 items-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+            disabled={busy || code.trim().length < 4 || reason.trim().length < 3}
+            onClick={() => void createCode()}
+            type="button"
+          >
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+            Create
+          </button>
+        </div>
+        {err ? <p className="mt-2 text-xs text-red-300">{err}</p> : null}
+      </section>
+      <DataTable
+        actions={(row) => {
+          if (stringValue(row.status) !== "active") return null;
+          const id = stringValue(row.id);
+          return (
+            <IconAction
+              icon={<Ban className="h-4 w-4" />}
+              label="Disable"
+              onClick={() =>
+                openAction({
+                  title: `Disable ${id}`,
+                  endpoint: `/api/v1/admin/promo/redeem-codes/${id}/disable`,
+                  method: "POST",
+                  confirmText: "DISABLE",
+                  reasonRequired: true,
+                  body: (actionReason, confirmation) => ({ reason: actionReason, confirmation }),
+                })
+              }
+            />
+          );
+        }}
+        columns={["id", "status", "reward", "maxRedemptions", "redemptions", "expiresAt", "createdAt"]}
+        rows={codes}
+        title="Redeem codes"
+      />
+      <DataTable
+        columns={["id", "inviterId", "inviteeId", "status", "rewardStatus", "createdAt"]}
+        rows={referrals}
+        title="Referrals"
+      />
+    </div>
+  );
+}
+
+function ApprovalsView({
+  rows,
+  openAction,
+}: {
+  rows: Row[];
+  openAction: (action: PendingAction) => void;
+}) {
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-[rgb(170,170,170)]">
+        高危操作复核队列。审批人须 ≠ 发起人，且持该请求声明的 permission key（不变量在服务端强制）。
+      </p>
+      <DataTable
+        actions={(row) => {
+          const id = stringValue(row.id);
+          return (
+            <div className="flex gap-1">
+              <IconAction
+                icon={<Check className="h-4 w-4" />}
+                label="Approve"
+                onClick={() =>
+                  openAction({
+                    title: `Approve ${id}`,
+                    endpoint: `/api/v1/admin/approvals/${id}/approve`,
+                    method: "POST",
+                    confirmText: "APPROVE",
+                    reasonRequired: true,
+                    body: (actionReason, confirmation) => ({ reason: actionReason, confirmation }),
+                  })
+                }
+              />
+              <IconAction
+                icon={<X className="h-4 w-4" />}
+                label="Reject"
+                onClick={() =>
+                  openAction({
+                    title: `Reject ${id}`,
+                    endpoint: `/api/v1/admin/approvals/${id}/reject`,
+                    method: "POST",
+                    confirmText: "REJECT",
+                    reasonRequired: true,
+                    body: (actionReason, confirmation) => ({ reason: actionReason, confirmation }),
+                  })
+                }
+              />
+            </div>
+          );
+        }}
+        columns={["id", "action", "permissionKey", "targetType", "targetId", "requestedById", "reason", "createdAt"]}
+        rows={rows}
+        title="Pending approvals"
+      />
+    </div>
+  );
+}
+
+function ChatOpsView({
+  configured,
+  overview,
+  sessions,
+  events,
+}: {
+  configured: boolean;
+  overview: Record<string, unknown> | null;
+  sessions: Row[];
+  events: Row[];
+}) {
+  if (!configured) {
+    return (
+      <div className="border border-amber-400/30 bg-amber-950/20 px-4 py-3 text-sm text-amber-100">
+        Chat 服务未配置或暂不可达（CHAT_SERVICE_URL 未设置 / 内部 API 不通）。配置后此处显示会话、额度与审核事件。
+      </div>
+    );
+  }
+  const o = overview ?? {};
+  return (
+    <div className="space-y-5">
+      <div className="grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-4">
+        <Metric label="Active sessions" value={metricNumber(o.activeSessions)} meta="status=active" />
+        <Metric label="Archived" value={metricNumber(o.archivedSessions)} meta="sessions" />
+        <Metric label="Messages 24h" value={metricNumber(o.messages24h)} meta="last 24h" />
+        <Metric label="Moderation 24h" value={metricNumber(o.moderationEvents24h)} meta="events" />
+      </div>
+      <DataTable
+        columns={["id", "userId", "characterId", "status", "memoryEnabled", "messageCount", "lastMessageAt"]}
+        rows={sessions}
+        title="Recent chat sessions (no plaintext)"
+      />
+      <DataTable
+        columns={["id", "targetType", "layer", "status", "policyCode", "confidence", "createdAt"]}
+        rows={events}
+        title="Chat moderation events"
+      />
+    </div>
+  );
+}
+
+function metricNumber(value: unknown): number {
+  return typeof value === "number" ? value : 0;
 }
 
 function DataTable({
@@ -2013,6 +2612,14 @@ function filterSectionData(section: SectionData | null, query: string): SectionD
       },
     };
   }
+  if (section.kind === "content") return { ...section, characters: filterRows(section.characters) };
+  if (section.kind === "promo") {
+    return { ...section, codes: filterRows(section.codes), referrals: filterRows(section.referrals) };
+  }
+  if (section.kind === "approvals") return { ...section, rows: filterRows(section.rows) };
+  if (section.kind === "chatops") {
+    return { ...section, sessions: filterRows(section.sessions), events: filterRows(section.events) };
+  }
   return section;
 }
 
@@ -2066,6 +2673,11 @@ function normalizeSection(value: string) {
   if (value === "analytics") return value;
   if (value === "risk") return value;
   if (value === "generation/dead-letter") return value;
+  if (value === "ops/providers") return value;
+  if (value === "content") return value;
+  if (value === "chat") return value;
+  if (value === "promo") return value;
+  if (value === "approvals") return value;
   if (value === "audit-log") return value;
   return "dashboard";
 }

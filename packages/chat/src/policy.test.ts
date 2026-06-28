@@ -34,6 +34,7 @@ describe("resolvePolicy (SSoT)", () => {
     expect(p.model).toBe("model-free");
     expect(p.maxContextMessages).toBe(12);
     expect(p.maxMemories).toBe(6);
+    expect(p.maxStoredMemories).toBe(30);
     expect(p.rateLimitPerHour).toBe(60);
     expect(p.allowGlobalMemoryWrite).toBe(false);
   });
@@ -53,7 +54,8 @@ describe("resolvePolicy (SSoT)", () => {
     });
     expect(p.model).toBe("model-deluxe");
     expect(p.maxContextMessages).toBe(24);
-    expect(p.maxMemories).toBe(18);
+    expect(p.maxMemories).toBe(18); // 3× Free retrieval top-K
+    expect(p.maxStoredMemories).toBe(90); // 3× Free storage — "3x chat memory"
     expect(p.allowGlobalMemoryWrite).toBe(true);
     expect(p.unlimitedMessages).toBe(true);
     expect(p.rateLimitPerHour).toBe(600);
@@ -65,6 +67,7 @@ describe("resolvePolicy (SSoT)", () => {
       { memoryEnabled: false },
     );
     expect(p.maxMemories).toBe(0);
+    expect(p.maxStoredMemories).toBe(0);
     expect(p.allowMemoryWrite).toBe(false);
     expect(p.allowGlobalMemoryWrite).toBe(false);
     expect(p.allowRelationshipPatch).toBe(false);

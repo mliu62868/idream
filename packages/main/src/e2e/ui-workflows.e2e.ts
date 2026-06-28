@@ -589,7 +589,9 @@ test("chat UI exposes regenerate, delete, memory toggle, and the session list", 
 
   // No-memory toggle flips the header copy to the incognito explanation.
   await page.getByTestId("memory-toggle").click();
-  await expect(page.getByText(/No-memory/)).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText(/No-memory: this character won't read/)).toBeVisible({
+    timeout: 10_000,
+  });
 
   // Session list drawer lists at least this conversation.
   await page.getByTestId("session-list-open").click();

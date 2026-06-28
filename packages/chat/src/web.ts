@@ -5,6 +5,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import { BFF_HEADER, BFF_USER_HEADER, verifyBffContext, type BffContext } from "@idream/shared/bff";
+import { dispatchChatAdmin } from "./admin.js";
 import { env } from "./env.js";
 import { logger } from "./logger.js";
 import { dispatchChat, type ChatRequest } from "./router.js";
@@ -27,6 +28,25 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   if (url.pathname === "/healthz") {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ ok: true, service: "chat" }));
+    return;
+  }
+
+  // Internal admin API (main-web proxy only). Authed by shared INTERNAL_TOKEN,
+  // NOT the BFF user signature — these are service-to-service, user-agnostic reads.
+  if (url.pathname.startsWith("/internal/")) {
+    const token = header(req, "x-internal-token");
+    if (!env.INTERNAL_TOKEN || token !== env.INTERNAL_TOKEN) {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "unauthorized" }));
+      return;
+    }
+    const result = await dispatchChatAdmin({
+      method: req.method ?? "GET",
+      path: url.pathname,
+      query: Object.fromEntries(url.searchParams.entries()),
+    });
+    res.writeHead(result.status, { "content-type": "application/json" });
+    res.end(jsonStringify(result.body));
     return;
   }
 

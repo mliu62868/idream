@@ -9,7 +9,8 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { env } from "./env.js";
-import { listPrefix, readWhole, writeAtomic } from "./chat-fs.js";
+import { chatFsPaths, listPrefix, readWhole, writeAtomic } from "./chat-fs.js";
+import { createId } from "./id.js";
 
 export interface MemoryItem {
   id: string;
@@ -114,6 +115,116 @@ export async function forgetByMessageIds(
     if (changed) await writeAtomic(file.relParts, joinLines(keep));
   }
   return dropped;
+}
+
+// ---- consolidation (P1-C) ---------------------------------------------------
+// Merge newly-derived candidates INTO the authority file instead of blind-
+// appending, so a preference repeated across turns never grows an unbounded
+// stack of duplicate lines. Rules (plan §7 P1-C):
+//   - dedup: same type + same normalized text → ONE line; union source ids,
+//     keep the higher confidence (new high-conf supersedes old low-conf).
+//   - boundary protection: boundaries live in boundaries.md and only ever match
+//     other boundaries, so a preference can never overwrite a boundary.
+//   - cap: character memory.md is trimmed to maxStored (Free baseline, Deluxe 3×),
+//     evicting the lowest-confidence (oldest on ties). Boundaries are never capped.
+
+export interface MemoryCandidateInput {
+  scope: "global" | "character" | "session";
+  type: string;
+  text: string;
+  confidence: number;
+  sourceMessageIds: string[];
+}
+
+export async function consolidateMemories(
+  userId: string,
+  characterId: string,
+  candidates: MemoryCandidateInput[],
+  opts: { maxStored: number },
+): Promise<{ added: number; merged: number }> {
+  const toBoundaries = candidates.filter((c) => c.type === "boundary" || c.scope === "global");
+  const toMemory = candidates.filter((c) => !(c.type === "boundary" || c.scope === "global"));
+  let added = 0;
+  let merged = 0;
+
+  if (toMemory.length) {
+    const rel = chatFsPaths.memory(userId, characterId);
+    const items = await loadItems(rel, characterId);
+    for (const c of toMemory) {
+      if (mergeCandidate(items, c, characterId)) merged += 1;
+      else added += 1;
+    }
+    capItems(items, opts.maxStored);
+    await writeAtomic(rel, renderItemsFile(items));
+  }
+
+  if (toBoundaries.length) {
+    const rel = chatFsPaths.boundaries(userId);
+    const items = await loadItems(rel, "global");
+    for (const c of toBoundaries) {
+      if (mergeCandidate(items, { ...c, type: "boundary" }, "global")) merged += 1;
+      else added += 1;
+    }
+    // Boundaries are safety-critical — dedup but NEVER evict.
+    await writeAtomic(rel, renderItemsFile(items));
+  }
+
+  return { added, merged };
+}
+
+/** Normalize text for dedup: case-insensitive, collapsed spaces, no trailing punctuation. */
+function normalizeText(s: string): string {
+  return s.toLowerCase().replace(/\s+/g, " ").replace(/[.!?。！？]+$/g, "").trim();
+}
+
+function mergeCandidate(items: MemoryItem[], c: MemoryCandidateInput, charId: string): boolean {
+  const existing = items.find((it) => it.type === c.type && normalizeText(it.text) === normalizeText(c.text));
+  if (existing) {
+    existing.sourceMessageIds = Array.from(
+      new Set([...existing.sourceMessageIds, ...c.sourceMessageIds]),
+    );
+    existing.confidence = Math.max(existing.confidence ?? 0, c.confidence);
+    return true;
+  }
+  items.push({
+    id: createId("mem"),
+    characterId: charId === "global" ? null : charId,
+    type: c.type,
+    text: c.text,
+    sourceMessageIds: c.sourceMessageIds,
+    confidence: c.confidence,
+  });
+  return false;
+}
+
+/** Evict lowest-confidence (oldest on ties) until within the storage cap. */
+function capItems(items: MemoryItem[], maxStored: number): void {
+  if (maxStored <= 0) return;
+  while (items.length > maxStored) {
+    let evict = 0;
+    for (let i = 1; i < items.length; i++) {
+      if ((items[i].confidence ?? 0) < (items[evict].confidence ?? 0)) evict = i;
+    }
+    items.splice(evict, 1);
+  }
+}
+
+async function loadItems(relParts: string[], charId: string): Promise<MemoryItem[]> {
+  const raw = (await readWhole(relParts)) ?? "";
+  const lines = raw.split("\n");
+  const out: MemoryItem[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const parsed = parseLine(charId, lines[i], i);
+    if (!parsed) continue;
+    const { lineNo: _drop, ...item } = parsed;
+    void _drop;
+    out.push(item);
+  }
+  return out;
+}
+
+function renderItemsFile(items: MemoryItem[]): string {
+  return items.length ? `${items.map(renderLine).join("\n")}\n` : "";
 }
 
 // ---- internals --------------------------------------------------------------

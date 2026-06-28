@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { AdminConsoleClient } from "@/components/admin/AdminConsoleClient";
 import { AdminDevLogin } from "@/components/admin/AdminDevLogin";
-import { hasPermission } from "@/server/admin/permissions";
+import { userHasPermission } from "@/server/admin/effective-permissions";
 import { getAuthCtx } from "@/server/lib/auth";
 import { devLoginEnabled } from "@/server/admin/dev-login";
 import { DEV_ADMIN_ACCOUNT_HINTS } from "@/server/admin/dev-login-accounts";
@@ -32,7 +32,7 @@ export default async function AdminPage({ params }: AdminPageProps) {
       headers: headerList,
     }),
   );
-  const canReadDashboard = hasPermission(ctx.role, "dashboard.read");
+  const canReadDashboard = await userHasPermission(ctx.userId, ctx.role, "dashboard.read");
 
   // 本地开发：无后台权限时给出内置账号的快捷登录，而非裸的 access denied。
   if (!canReadDashboard && devLoginEnabled()) {

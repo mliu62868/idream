@@ -26,10 +26,10 @@
 | Dead-letter / Queue 运营 UI | ✅ **已落地**（§4.3，2026-06-27） | 🔴 Tier 0 | P-beta-1 |
 | 资金侧反滥用（薅币/支付欺诈基础） | ✅ **已落地**（§5，2026-06-28） | 🟠 Tier 1 | P-beta-2 |
 | Analytics / BI（漏斗·转化·币经济·Top 事件） | ✅ **已落地**（§5，2026-06-28） | 🟠 Tier 1 | P-beta-2 |
-| Provider / 成本 / 容量看板 | 无 | 🟠 Tier 1 | P-beta-2 |
-| admin 写操作 + 权限拦截 E2E | **仅页面 smoke** | 🟠 Tier 1（质量） | P-beta-2 |
+| Provider / 成本 / 容量看板 | ✅ **已落地**（§5，2026-06-28） | 🟠 Tier 1 | P-beta-2 |
+| admin 写操作 + 权限拦截 E2E | **仅页面 smoke**（环境受阻，见 §5） | 🟠 Tier 1（质量） | P-beta-2 |
 | 双人审批（AdminActionRequest） | model 有，未接 | 🟡 Tier 2 | V1.1 |
-| 用户级权限覆盖（AdminUserPermission） | model 有，未接 | 🟡 Tier 2 | V1.1 |
+| 用户级权限覆盖（AdminUserPermission） | ✅ **已落地**（§6，2026-06-28） | 🟡 Tier 2 | V1.1 |
 | Saved Views（AdminSavedView） | model 有，未接 | 🟡 Tier 2 | V1.1 |
 | Community/Feed 治理、CMS/公告、A/B 实验度量 | 无 | 🟡 Tier 2 | V1.1 |
 | Voice 配置控制面 | 无 | 🟡 Tier 2 | 语音上线时 |
@@ -98,12 +98,15 @@
 
 - ✅ **Analytics / BI**（2026-06-28 已落地）：接通 `analytics.export`——`GET /api/v1/admin/analytics/overview`（admin+analyst，只读）返回活动漏斗（注册→激活→付费 + 转化率）、生成状态分布、币经济（发放/消耗/净额 + 分 reason）、Top 事件。数据源 = 核心表 + `AnalyticsEvent`，默认窗口近 30 天。UI 新增 Analytics 分区（metrics + 经济表 + 事件表）。测试覆盖权限门控 + 漏斗/经济聚合；admin E2E 纳入。代码见 `admin/service.ts` `analyticsOverview`、`AdminConsoleClient.tsx` `AnalyticsView`。**未做（延后）**：次日/7日留存（需按天 cohort，避免 raw SQL，待真实流量再补）、单均毛利的精确成本归集。
 - ✅ **资金侧反滥用基础**（2026-06-28 已落地）：`GET /api/v1/admin/risk/abuse`（`billing.read`，只读）三类告警——多账号设备聚类（同 `anonymousId` 的 signup 事件挂 ≥2 账号）、Referral 薅取（inviter ≥3 邀请）、异常 admin_adjust（按 user 聚合调整次数/总额）。UI 新增 Risk & Abuse 分区；处置仍走既有封禁/adjust。**非完备**：清 cookie/无痕可绕过 anonymousId 聚类；无 IP/支付指纹（signup 未采集 IP，待接真实支付/风控再补）。代码见 `admin/service.ts` `abuseOverview`、`AdminConsoleClient.tsx` `RiskView`。
-- **Provider / 成本 / 容量看板**：GPU/provider 花费、成功率、p95 延迟、单均成本，挂在 Dashboard 或独立 Ops 看板。
-- **admin E2E 补全**：现有 `admin-web.e2e.ts` 仅页面 smoke。补封禁/发布/审核决定/改价/越权 403 的写操作 + 权限拦截用例，锁死控制面行为。
+- ✅ **Provider / 成本 / 容量看板**（2026-06-28 已落地）：`GET /api/v1/admin/ops/providers`（`ops.queue.read`，只读）按 provider 聚合 `GenerationJob`——成功率、单均币成本、p50/p95 延迟（completedAt − createdAt）、样本数。UI 新增 Provider Health 分区。测试覆盖权限门控 + 成功率/成本/延迟聚合；admin E2E 纳入。代码见 `admin/service.ts` `providerOps`、`AdminConsoleClient.tsx` `ProviderOpsView`。
+- **admin E2E 补全（待环境）**：现有 `admin-web.e2e.ts` 仅页面 smoke，已随每个新分区扩展（Pricing/Dead-letter/Provider/Analytics/Risk 全部纳入冒烟）。**写操作 + 越权 403 的浏览器级 E2E 暂缓**：本机 dev 栈对 E2E 不健康（baseline `admin-web.e2e.ts` 在既有 Dashboard 断言即失败，与本轮改动无关），不在不可绿验证的环境下硬写。各写操作的权限门控 + 落库行为已由 `admin-console.test.ts` 集成测试充分覆盖（19 例）。待 dev 栈恢复健康后补浏览器级写操作用例。
 
-## 6. Tier 2 概要（V1.1，团队规模化）
+## 6. Tier 2（V1.1，团队规模化）
 
-接通三张已建未用的 model：双人审批 `AdminActionRequest`（`requested_by ≠ approved_by`）、用户级权限覆盖 `AdminUserPermission`、`AdminSavedView`；以及 Community/Feed 治理、CMS/公告、A/B 实验度量、Voice 配置控制面。详见 `ADMIN_CONSOLE_PLAN §11 Phase 4`。
+- ✅ **用户级权限覆盖 `AdminUserPermission`**（2026-06-28 已落地）：`roleKeys ∪ granted − revoked`（ADMIN_CONSOLE_PLAN §3.1 P1）。新增纯函数 `applyOverrides`/`isPermissionKey`（`permissions.ts`）+ 异步 SSoT `effectivePermissions`（`effective-permissions.ts`，page 初始门与每个 admin API 统一走它）。API `GET/POST /api/v1/admin/users/:id/permissions`（gate `user.role.write`，admin only）grant/revoke/clear 单 key，一个 key 至多一条 override，写审计（`admin.permission.grant|revoke|clear`）。UI：Users 分区新增 Permission override 面板。测试覆盖 grant→获能力、revoke→失能力、clear→恢复、未知 key 400、管理 admin-only、审计。**非完备**：硬政策不存在 permission key（配置层无法触达，与设计一致）。
+- ⬜ **双人审批 `AdminActionRequest`**（`requested_by ≠ approved_by`）：高危操作从 confirm/typed 升级到可选双人审批。
+- ⬜ **Saved Views `AdminSavedView`**：per-admin 保存筛选视图。
+- ⬜ Community/Feed 治理、CMS/公告、A/B 实验度量、Voice 配置控制面。详见 `ADMIN_CONSOLE_PLAN §11 Phase 4`。
 
 ## 7. 落地顺序与进度
 

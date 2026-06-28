@@ -794,6 +794,194 @@ describe("risk / abuse overview", () => {
   });
 });
 
+describe("provider ops dashboard", () => {
+  it("aggregates per-provider success rate, cost, and latency; gates by ops.queue.read", async () => {
+    const ops = await setupActor("ops", "prov");
+    const analyst = await setupActor("analyst", "prov");
+    const owner = `${P}prov-owner`;
+    await createUser({ id: owner });
+    const provider = `${P}runner`;
+    const t0 = new Date();
+    await prisma.generationJob.create({
+      data: {
+        id: `${P}prov-c1`,
+        userId: owner,
+        mode: "image",
+        controls: {},
+        presetIds: [],
+        status: "completed",
+        costDreamcoins: 5,
+        provider,
+        createdAt: t0,
+        completedAt: new Date(t0.getTime() + 2000),
+      },
+    });
+    await prisma.generationJob.create({
+      data: {
+        id: `${P}prov-c2`,
+        userId: owner,
+        mode: "image",
+        controls: {},
+        presetIds: [],
+        status: "completed",
+        costDreamcoins: 5,
+        provider,
+        createdAt: t0,
+        completedAt: new Date(t0.getTime() + 4000),
+      },
+    });
+    await prisma.generationJob.create({
+      data: {
+        id: `${P}prov-f1`,
+        userId: owner,
+        mode: "image",
+        controls: {},
+        presetIds: [],
+        status: "failed",
+        costDreamcoins: 5,
+        provider,
+      },
+    });
+
+    // analyst 无 ops.queue.read。
+    expectError(await api("GET", "admin/ops/providers", { userId: analyst, role: "analyst" }), 403);
+
+    const res = await api("GET", "admin/ops/providers", { userId: ops, role: "ops" });
+    expectOk(res);
+    const row = (res.data.providers as Array<Record<string, number | string>>).find(
+      (item) => item.provider === provider,
+    );
+    expect(row).toBeTruthy();
+    expect(row?.total).toBe(3);
+    expect(row?.completed).toBe(2);
+    expect(row?.failed).toBe(1);
+    expect(row?.successRate).toBe(67); // round(2/3*100)
+    expect(row?.coinsCost).toBe(15);
+    expect(row?.avgCostPerJob).toBe(5);
+    expect(row?.latencySamples).toBe(2);
+    expect(Number(row?.latencyP95Ms)).toBeGreaterThanOrEqual(2000);
+  });
+});
+
+describe("user permission overrides", () => {
+  it("grants, revokes, and clears effective permissions with audit; admin-only", async () => {
+    const admin = await setupActor("admin", "perm-mgr");
+    const support = await setupActor("support", "perm-target");
+
+    // baseline：support 无 billing.ledger.adjust。
+    expectError(
+      await api("POST", "admin/billing/adjustments", {
+        userId: support,
+        role: "support",
+        body: { userId: support, delta: 1, reason: "noop baseline", confirmation: "ADJUST" },
+      }),
+      403,
+    );
+
+    // 管理 override 是 admin only：support 不能自授。
+    expectError(
+      await api("POST", `admin/users/${support}/permissions`, {
+        userId: support,
+        role: "support",
+        body: {
+          permissionKey: "billing.ledger.adjust",
+          effect: "grant",
+          reason: "self grant attempt",
+          confirmation: "PERMISSION",
+        },
+      }),
+      403,
+    );
+
+    // admin 授予 support billing.ledger.adjust → 现在能调整 ledger。
+    expectOk(
+      await api("POST", `admin/users/${support}/permissions`, {
+        userId: admin,
+        role: "admin",
+        body: {
+          permissionKey: "billing.ledger.adjust",
+          effect: "grant",
+          reason: "temp finance cover",
+          confirmation: "PERMISSION",
+        },
+      }),
+    );
+    expectOk(
+      await api("POST", "admin/billing/adjustments", {
+        userId: support,
+        role: "support",
+        body: { userId: support, delta: 1, reason: "granted adjust", confirmation: "ADJUST" },
+      }),
+    );
+
+    // revoke billing.read → support 看不了 ledger。
+    expectOk(
+      await api("POST", `admin/users/${support}/permissions`, {
+        userId: admin,
+        role: "admin",
+        body: {
+          permissionKey: "billing.read",
+          effect: "revoke",
+          reason: "scope down",
+          confirmation: "PERMISSION",
+        },
+      }),
+    );
+    expectError(await api("GET", "admin/billing/ledger", { userId: support, role: "support" }), 403);
+
+    const list = await api("GET", `admin/users/${support}/permissions`, {
+      userId: admin,
+      role: "admin",
+    });
+    expectOk(list);
+    expect(list.data.effective).toContain("billing.ledger.adjust");
+    expect(list.data.effective).not.toContain("billing.read");
+
+    // clear revoke → billing.read 恢复。
+    expectOk(
+      await api("POST", `admin/users/${support}/permissions`, {
+        userId: admin,
+        role: "admin",
+        body: {
+          permissionKey: "billing.read",
+          effect: "clear",
+          reason: "restore",
+          confirmation: "PERMISSION",
+        },
+      }),
+    );
+    expectOk(await api("GET", "admin/billing/ledger", { userId: support, role: "support" }));
+
+    // 未知 key 拒绝。
+    expectError(
+      await api("POST", `admin/users/${support}/permissions`, {
+        userId: admin,
+        role: "admin",
+        body: {
+          permissionKey: "not.a.real.key",
+          effect: "grant",
+          reason: "bad key",
+          confirmation: "PERMISSION",
+        },
+      }),
+      400,
+    );
+
+    const actions = (
+      await prisma.adminAuditLog.findMany({
+        where: { actorId: admin, targetType: "user", targetId: support },
+      })
+    ).map((audit) => audit.action);
+    expect(actions).toEqual(
+      expect.arrayContaining([
+        "admin.permission.grant",
+        "admin.permission.revoke",
+        "admin.permission.clear",
+      ]),
+    );
+  });
+});
+
 describe("support plaintext gate", () => {
   it("requires consent or legal hold and redacts audit payloads", async () => {
     const support = await setupActor("support", "plaintext");
@@ -889,5 +1077,285 @@ describe("support plaintext gate", () => {
     expect(JSON.stringify(audit)).not.toContain("secret prompt text");
     expect(JSON.stringify(audit)).not.toContain("secret negative");
     expect(JSON.stringify(audit.after)).toContain("viewedFields");
+  });
+});
+
+// ───────────────────────── Phase 2 admin capabilities (ADMIN_PHASE2_DESIGN) ─────────────────────────
+
+describe("admin saved views (F1)", () => {
+  it("are owner-scoped: create/list/delete only touch the actor's own views", async () => {
+    const a = await setupActor("admin", "sv-a");
+    const b = await setupActor("admin", "sv-b");
+
+    const created = await api("POST", "admin/saved-views", {
+      userId: a,
+      role: "admin",
+      body: { scope: "moderation", label: "My queue", filters: { status: "open" } },
+    });
+    expectOk(created);
+    const viewId = created.data.view.id as string;
+
+    const listA = await api("GET", "admin/saved-views", { userId: a, role: "admin", query: { scope: "moderation" } });
+    expectOk(listA);
+    expect(listA.data.items).toHaveLength(1);
+
+    // B cannot see A's view, and cannot delete it (owner-scoped → 404).
+    const listB = await api("GET", "admin/saved-views", { userId: b, role: "admin", query: { scope: "moderation" } });
+    expectOk(listB);
+    expect(listB.data.items).toHaveLength(0);
+    expectError(await api("DELETE", `admin/saved-views/${viewId}`, { userId: b, role: "admin" }), 404);
+
+    expectOk(await api("DELETE", `admin/saved-views/${viewId}`, { userId: a, role: "admin" }));
+    const listAfter = await api("GET", "admin/saved-views", { userId: a, role: "admin", query: { scope: "moderation" } });
+    expect(listAfter.data.items).toHaveLength(0);
+  });
+});
+
+describe("admin content/character governance (F2)", () => {
+  it("lists, filters, and takes down characters with audit + permission gating", async () => {
+    const admin = await setupActor("admin", "content");
+    const ops = await setupActor("ops", "content"); // lacks content.read
+    const charId = `${P}gov-char`;
+    await createCharacter({ id: charId, name: "Governable", visibility: "public", status: "approved" });
+
+    // ops lacks content.read → 403 on both read and write.
+    expectError(await api("GET", "admin/content/characters", { userId: ops, role: "ops" }), 403);
+    expectError(
+      await api("POST", `admin/content/characters/${charId}/visibility`, {
+        userId: ops,
+        role: "ops",
+        body: { visibility: "private", reason: "test", confirmation: "VISIBILITY" },
+      }),
+      403,
+    );
+
+    const list = await api("GET", "admin/content/characters", {
+      userId: admin,
+      role: "admin",
+      query: { search: "Governable" },
+    });
+    expectOk(list);
+    expect(list.data.items.some((c: { id: string }) => c.id === charId)).toBe(true);
+
+    const detail = await api("GET", `admin/content/characters/${charId}`, { userId: admin, role: "admin" });
+    expectOk(detail);
+    expect(detail.data.character.id).toBe(charId);
+
+    // Takedown: set status=removed (typed+reason), audited.
+    const removed = await api("POST", `admin/content/characters/${charId}/status`, {
+      userId: admin,
+      role: "admin",
+      body: { status: "removed", reason: "policy violation", confirmation: "STATUS" },
+    });
+    expectOk(removed);
+    expect(removed.data.character.status).toBe("removed");
+
+    const audit = await prisma.adminAuditLog.findFirst({
+      where: { action: "content.status.write", targetId: charId },
+    });
+    expect(audit).not.toBeNull();
+
+    // Bad confirmation → 400.
+    expectError(
+      await api("POST", `admin/content/characters/${charId}/visibility`, {
+        userId: admin,
+        role: "admin",
+        body: { visibility: "private", reason: "x", confirmation: "wrong" },
+      }),
+      400,
+    );
+  });
+});
+
+describe("admin featured curation (F3)", () => {
+  afterAll(async () => {
+    await prisma.appSetting.deleteMany({ where: { key: "feed.featured" } });
+  });
+
+  it("only keeps public+approved ids and surfaces them first in the public feed", async () => {
+    const admin = await setupActor("admin", "feat");
+    const user = await setupActor("user", "feat");
+    const hot = `${P}feat-hot`;
+    const cold = `${P}feat-cold`;
+    const priv = `${P}feat-priv`;
+    await createCharacter({ id: hot, name: "Hot", chats: 999, visibility: "public", status: "approved" });
+    await createCharacter({ id: cold, name: "Cold", chats: 0, visibility: "public", status: "approved" });
+    await createCharacter({ id: priv, name: "Priv", visibility: "private", status: "draft" });
+
+    // Feature the cold (low-traffic) one + a private one; private must be dropped.
+    const put = await api("PUT", "admin/content/featured", {
+      userId: admin,
+      role: "admin",
+      body: { characterIds: [cold, priv], reason: "promo push", confirmation: "FEATURED" },
+    });
+    expectOk(put);
+    expect(put.data.characterIds).toEqual([cold]);
+    expect(put.data.skipped).toContain(priv);
+
+    // Public feed: the featured cold char appears before the hotter one.
+    const feed = await api("GET", "feed", { userId: user, role: "user", ageGate: true });
+    expectOk(feed);
+    const ids: string[] = feed.data.items.map((i: { character: { id: string } }) => i.character.id);
+    expect(ids[0]).toBe(cold);
+    expect(ids).toContain(hot);
+  });
+});
+
+describe("admin promo: redeem codes + referrals (F4)", () => {
+  it("creates/lists/disables redeem codes (no plaintext) with permission gating", async () => {
+    const admin = await setupActor("admin", "promo");
+    const analyst = await setupActor("analyst", "promo"); // has growth.promo.read, not write
+    const ops = await setupActor("ops", "promo"); // has neither
+
+    expectError(await api("GET", "admin/promo/redeem-codes", { userId: ops, role: "ops" }), 403);
+
+    const created = await api("POST", "admin/promo/redeem-codes", {
+      userId: admin,
+      role: "admin",
+      body: {
+        code: `${P}WELCOME50`,
+        reward: { dreamcoins: 50, note: "welcome" },
+        maxRedemptions: 100,
+        reason: "launch promo",
+        confirmation: "CREATE",
+      },
+    });
+    expectOk(created);
+    const codeId = created.data.id as string;
+
+    // analyst can read, cannot write.
+    expectOk(await api("GET", "admin/promo/redeem-codes", { userId: analyst, role: "analyst" }));
+    expectError(
+      await api("POST", `admin/promo/redeem-codes/${codeId}/disable`, {
+        userId: analyst,
+        role: "analyst",
+        body: { reason: "x", confirmation: "DISABLE" },
+      }),
+      403,
+    );
+
+    // Plaintext code never returned by list.
+    const list = await api("GET", "admin/promo/redeem-codes", { userId: admin, role: "admin" });
+    expect(JSON.stringify(list.json)).not.toContain("WELCOME50");
+
+    const disabled = await api("POST", `admin/promo/redeem-codes/${codeId}/disable`, {
+      userId: admin,
+      role: "admin",
+      body: { reason: "fraud", confirmation: "DISABLE" },
+    });
+    expectOk(disabled);
+    expect(disabled.data.status).toBe("disabled");
+
+    // Audit must not leak the plaintext code.
+    const audit = await prisma.adminAuditLog.findFirst({
+      where: { action: "promo.redeem_code.create", targetId: codeId },
+    });
+    expect(audit).not.toBeNull();
+    expect(JSON.stringify(audit)).not.toContain("WELCOME50");
+
+    expectOk(await api("GET", "admin/promo/referrals", { userId: admin, role: "admin" }));
+  });
+});
+
+describe("admin dual-approval (F5)", () => {
+  it("enforces requester holds the key, approver differs from requester, single-shot state", async () => {
+    const a1 = await setupActor("admin", "appr-1");
+    const a2 = await setupActor("admin", "appr-2");
+    const support = await setupActor("support", "appr"); // lacks config.pricing.write & approval.review
+
+    // Requester must hold the target key: support cannot request config.pricing.write.
+    expectError(
+      await api("POST", "admin/approvals", {
+        userId: support,
+        role: "support",
+        body: {
+          permissionKey: "config.pricing.write",
+          action: "config.pricing.publish",
+          targetType: "pricing_rule",
+          targetId: `${P}rule`,
+          payload: { baseCost: 4 },
+          reason: "drop image price",
+          confirmation: "REQUEST",
+        },
+      }),
+      403,
+    );
+
+    const created = await api("POST", "admin/approvals", {
+      userId: a1,
+      role: "admin",
+      body: {
+        permissionKey: "config.pricing.write",
+        action: "config.pricing.publish",
+        targetType: "pricing_rule",
+        targetId: `${P}rule`,
+        payload: { baseCost: 4 },
+        reason: "drop image price",
+        confirmation: "REQUEST",
+      },
+    });
+    expectOk(created);
+    const reqId = created.data.request.id as string;
+
+    // support lacks approval.review → 403.
+    expectError(
+      await api("POST", `admin/approvals/${reqId}/approve`, {
+        userId: support,
+        role: "support",
+        body: { reason: "ok", confirmation: "APPROVE" },
+      }),
+      403,
+    );
+
+    // Requester cannot self-approve.
+    expectError(
+      await api("POST", `admin/approvals/${reqId}/approve`, {
+        userId: a1,
+        role: "admin",
+        body: { reason: "self", confirmation: "APPROVE" },
+      }),
+      400,
+    );
+
+    // A different admin approves.
+    const approved = await api("POST", `admin/approvals/${reqId}/approve`, {
+      userId: a2,
+      role: "admin",
+      body: { reason: "looks right", confirmation: "APPROVE" },
+    });
+    expectOk(approved);
+    expect(approved.data.request.status).toBe("approved");
+    expect(approved.data.request.approvedById).toBe(a2);
+
+    // Cannot re-decide a settled request.
+    expectError(
+      await api("POST", `admin/approvals/${reqId}/reject`, {
+        userId: a2,
+        role: "admin",
+        body: { reason: "again", confirmation: "REJECT" },
+      }),
+      400,
+    );
+
+    const pending = await api("GET", "admin/approvals", { userId: a1, role: "admin", query: { status: "pending" } });
+    expectOk(pending);
+    expect(pending.data.items.some((r: { id: string }) => r.id === reqId)).toBe(false);
+  });
+});
+
+describe("admin chat ops proxy (F6)", () => {
+  it("gates on chat.ops.read and degrades when chat service is not configured", async () => {
+    const admin = await setupActor("admin", "chatops");
+    const analyst = await setupActor("analyst", "chatops"); // lacks chat.ops.read
+
+    expectError(await api("GET", "admin/chat/overview", { userId: analyst, role: "analyst" }), 403);
+
+    const overview = await api("GET", "admin/chat/overview", { userId: admin, role: "admin" });
+    expectOk(overview);
+    expect(typeof overview.data.configured).toBe("boolean");
+
+    const sessions = await api("GET", "admin/chat/sessions", { userId: admin, role: "admin" });
+    expectOk(sessions);
+    expect(Array.isArray(sessions.data.items)).toBe(true);
   });
 });

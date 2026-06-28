@@ -19,7 +19,7 @@ Branch: master (direct, per user global instructions)
 
 ## Phase 3 — P1-B/C + probe + docs + E2E
 [x] P1-B relationship injection + reset
-- [ ] memory quality (defer-heavy parts)
+[x] P1-C memory consolidation + tier storage caps
 [x] probe expanded
 [x] docs synced
 [x] E2E added (needs stack)
@@ -33,3 +33,6 @@ Phase 3: P1-B relationship injection DONE+tested; probe-chat-service e2e smoke e
   docs synced (PRD blocked-response); §10.3 management E2E added (needs running stack).
 P1-C semantic memory upgrade: NOT done (plan frames it as a path; deferred — heaviest item).
 Verification: chat 61 tests, main 190 tests, all typecheck+lint green, main production build green.
+
+## P1-C DONE (2026-06-28)
+memory consolidation (dedup+max-conf+union sources) + tier storage cap (Free 30 / Deluxe 90); boundary protection; UI hides confidence. chat tests now 65.

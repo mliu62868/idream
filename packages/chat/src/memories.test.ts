@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { appendLine, chatFsPaths, readWhole } from "./chat-fs.js";
 import {
+  consolidateMemories,
   deleteMemory,
   forgetByMessageIds,
   listMemories,
@@ -96,5 +97,66 @@ describe("memories", () => {
     const remaining = await listMemories("u1");
     expect(remaining.map((m) => m.text)).toEqual(["User is a teacher."]);
     expect(await forgetByMessageIds("u1", [])).toBe(0);
+  });
+});
+
+describe("consolidateMemories (P1-C)", () => {
+  const pref = (text: string, confidence: number, src: string) => ({
+    scope: "character" as const,
+    type: "preference",
+    text,
+    confidence,
+    sourceMessageIds: [src],
+  });
+
+  it("dedups a repeated preference into ONE line (unions sources, keeps max confidence)", async () => {
+    await consolidateMemories("u1", "c1", [pref("User likes jazz.", 0.7, "m1")], { maxStored: 30 });
+    await consolidateMemories("u1", "c1", [pref("User likes jazz.", 0.9, "m2")], { maxStored: 30 });
+    await consolidateMemories("u1", "c1", [pref("user likes jazz", 0.5, "m3")], { maxStored: 30 });
+
+    const items = await listMemories("u1", "c1");
+    const jazz = items.filter((m) => m.text.toLowerCase().includes("jazz"));
+    expect(jazz).toHaveLength(1); // no unbounded duplicate stack
+    expect(jazz[0].confidence).toBe(0.9); // new high-confidence supersedes old low
+    expect(jazz[0].sourceMessageIds.sort()).toEqual(["m1", "m2", "m3"]); // union
+  });
+
+  it("keeps distinct preferences as separate lines", async () => {
+    await consolidateMemories(
+      "u1",
+      "c1",
+      [pref("User likes jazz.", 0.7, "m1"), pref("User likes hiking.", 0.7, "m2")],
+      { maxStored: 30 },
+    );
+    const items = await listMemories("u1", "c1");
+    expect(items.filter((m) => m.type === "preference")).toHaveLength(2);
+  });
+
+  it("enforces the storage cap by evicting the lowest-confidence memory", async () => {
+    await consolidateMemories(
+      "u1",
+      "c1",
+      [pref("Likes A.", 0.9, "m1"), pref("Likes B.", 0.3, "m2"), pref("Likes C.", 0.8, "m3")],
+      { maxStored: 2 },
+    );
+    const items = await listMemories("u1", "c1");
+    expect(items).toHaveLength(2);
+    expect(items.map((m) => m.text)).not.toContain("Likes B."); // lowest conf evicted
+  });
+
+  it("routes boundaries to boundaries.md and never caps them", async () => {
+    await consolidateMemories(
+      "u1",
+      "c1",
+      [
+        { scope: "global", type: "boundary", text: "Do not discuss work.", confidence: 0.9, sourceMessageIds: ["m1"] },
+        { scope: "global", type: "boundary", text: "Do not discuss work.", confidence: 0.95, sourceMessageIds: ["m2"] },
+      ],
+      { maxStored: 1 },
+    );
+    const boundaries = (await listMemories("u1")).filter((m) => m.type === "boundary");
+    expect(boundaries).toHaveLength(1); // deduped
+    expect(boundaries[0].characterId).toBeNull(); // global scope file
+    expect(boundaries[0].sourceMessageIds.sort()).toEqual(["m1", "m2"]);
   });
 });

@@ -12,9 +12,12 @@ export const env = {
   get REDIS_URL(): string {
     return process.env.GEN_REDIS_URL ?? process.env.REDIS_URL ?? "redis://127.0.0.1:6379/0";
   },
-  /** BullMQ key prefix — isolates gen queues from chat/main in the same Redis. */
+  // CROSS-SERVICE INVARIANT: the BullMQ prefix MUST match main (and chat) — main
+  // enqueues generation jobs that gen workers consume, so a different prefix means
+  // gen never sees them. Default mirrors main's `idream:${APP_ENV}`. (Queue NAMES,
+  // not the prefix, are what isolate gen/chat/main traffic within the shared Redis.)
   get BULLMQ_PREFIX(): string {
-    return process.env.BULLMQ_PREFIX ?? "idream:gen";
+    return process.env.BULLMQ_PREFIX ?? `idream:${process.env.APP_ENV ?? "development"}`;
   },
   /** Root dir the mock blob store writes generated assets under. */
   get BLOB_ROOT(): string {
