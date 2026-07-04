@@ -9,6 +9,7 @@ import { AppSidebar } from "./AppSidebar";
 import { CharacterCard } from "./CharacterCard";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { SiteFooter } from "./SiteFooter";
+import { authHrefForTarget } from "./authRedirect";
 
 type CreatorProfile = {
   id: string;
@@ -77,7 +78,13 @@ export function CreatorProfileClient({ id }: Readonly<{ id: string }>) {
             }
           : current,
       );
-      setStatus("Sign in to follow creators.");
+      if (response.status === 401) {
+        window.location.assign(
+          authHrefForTarget("/signup", `/creators/${encodeURIComponent(id)}`),
+        );
+        return;
+      }
+      setStatus("Could not update follow. Please try again.");
     }
   }
 
@@ -137,9 +144,23 @@ export function CreatorProfileClient({ id }: Readonly<{ id: string }>) {
                 )}
               </header>
 
+              {status && (
+                <p
+                  className="mt-4 text-[13px] font-bold text-[rgb(255,138,210)]"
+                  data-testid="creator-profile-status"
+                >
+                  {status}
+                </p>
+              )}
+
               <div className="mt-8 grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-5">
-                {characters.map((card) => (
-                  <CharacterCard card={card} key={card.id} />
+                {characters.map((card, index) => (
+                  <CharacterCard
+                    card={card}
+                    imageLoading={index < 5 ? "eager" : "lazy"}
+                    imageUnoptimized={index < 5}
+                    key={card.id}
+                  />
                 ))}
               </div>
               {characters.length === 0 && (

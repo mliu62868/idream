@@ -54,6 +54,32 @@ CREATE TABLE IF NOT EXISTS chat.message_versions (
 CREATE INDEX IF NOT EXISTS message_versions_message_idx
   ON chat.message_versions (message_id);
 
+-- Chat-visible generated media attachments. The media authority remains in main
+-- MediaAsset; chat stores only status + ids for rendering and recovery.
+CREATE TABLE IF NOT EXISTS chat.message_attachments (
+  id                text PRIMARY KEY,
+  session_id        text NOT NULL,
+  message_id        text NOT NULL,
+  kind              text NOT NULL,                         -- generated_image
+  status            text NOT NULL DEFAULT 'proposed',       -- proposed|requesting|queued|running|completed|failed|blocked|refunded|canceled
+  generation_job_id text,
+  media_asset_id    text,
+  cost_dreamcoins   integer,
+  prompt_hint       text,
+  width             integer,
+  height            integer,
+  error_code        text,
+  metadata          jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at        timestamp NOT NULL DEFAULT (timezone('utc', now())),
+  updated_at        timestamp NOT NULL DEFAULT (timezone('utc', now()))
+);
+CREATE INDEX IF NOT EXISTS message_attachments_message_idx
+  ON chat.message_attachments (message_id);
+CREATE INDEX IF NOT EXISTS message_attachments_session_status_idx
+  ON chat.message_attachments (session_id, status);
+CREATE INDEX IF NOT EXISTS message_attachments_generation_job_idx
+  ON chat.message_attachments (generation_job_id);
+
 CREATE TABLE IF NOT EXISTS chat.chat_usage (
   id            text PRIMARY KEY,
   user_id       text NOT NULL,

@@ -869,7 +869,8 @@ model GenerationModelProfile {                     // 可治理的生成模型�
   defaultHeight       Int       @default(1024)
   allowedOrientations Json
   steps               Int       @default(28)
-  sampler             String    @default("dpmpp_2m")
+  sampler             String    @default("dpm++2m")
+  scheduler           String    @default("model_default")
   cfgScale            Float     @default(7)
   negativeTemplateId  String?
   costMultiplier      Float     @default(1)

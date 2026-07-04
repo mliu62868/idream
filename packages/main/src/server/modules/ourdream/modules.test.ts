@@ -6,6 +6,7 @@ import {
   createMedia,
   createRedeemCode,
   createUser,
+  cookieHeader,
   dreamcoinBalance,
   expectError,
   expectOk,
@@ -24,7 +25,14 @@ const CHAR = `${P}char`;
 beforeAll(async () => {
   await purgeTestData(P);
   await createUser({ id: SYS });
-  await createCharacter({ id: CHAR, creatorId: SYS, visibility: "public", status: "approved" });
+  await createCharacter({
+    id: CHAR,
+    creatorId: SYS,
+    visibility: "public",
+    status: "approved",
+    likes: 100_000,
+    chats: 100_000,
+  });
 });
 
 afterAll(async () => {
@@ -148,25 +156,46 @@ describe("referrals + account", () => {
     const code = invite.data.referral.code as string;
     const inviterBefore = await dreamcoinBalance(inviterId);
 
-    const signup = await api("POST", "auth/signup", {
+    const firstSignup = await api("POST", "auth/signup", {
       ageGate: true,
       body: { email: `${P}invitee@example.com`, password: "password123", name: "Invitee", ref: code },
     });
-    expectOk(signup);
-    const inviteeId = signup.data.user.id as string;
+    expectOk(firstSignup);
+    const firstInviteeId = firstSignup.data.user.id as string;
 
     // Invitee: 250 signup bonus + 150 referral bonus.
-    expect(await dreamcoinBalance(inviteeId)).toBe(400);
-    // Inviter: +150 give reward, granted exactly once for this invitee.
-    expect(await dreamcoinBalance(inviterId)).toBe(inviterBefore + 150);
+    expect(await dreamcoinBalance(firstInviteeId)).toBe(400);
+
+    const secondSignup = await api("POST", "auth/signup", {
+      ageGate: true,
+      body: {
+        email: `${P}invitee2@example.com`,
+        password: "password123",
+        name: "Invitee 2",
+        ref: code,
+      },
+    });
+    expectOk(secondSignup);
+    const secondInviteeId = secondSignup.data.user.id as string;
+    expect(await dreamcoinBalance(secondInviteeId)).toBe(400);
+
+    // Inviter: +150 give reward per invitee, granted exactly once for each.
+    expect(await dreamcoinBalance(inviterId)).toBe(inviterBefore + 300);
     expect(
       await prisma.dreamcoinLedger.count({ where: { userId: inviterId, reason: "referral_reward" } }),
-    ).toBe(1);
+    ).toBe(2);
 
-    // Referral row attributed + marked granted.
-    const referral = await prisma.referral.findUnique({ where: { code } });
-    expect(referral?.inviteeId).toBe(inviteeId);
-    expect(referral?.rewardStatus).toBe("granted");
+    // Parent invite row remains reusable; conversions are one row per invitee.
+    const parent = await prisma.referral.findFirst({ where: { code, inviteeId: null } });
+    const conversions = await prisma.referral.findMany({
+      where: { code, inviteeId: { not: null } },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(parent).not.toBeNull();
+    expect(conversions.map((referral) => referral.inviteeId)).toEqual(
+      expect.arrayContaining([firstInviteeId, secondInviteeId]),
+    );
+    expect(conversions.every((referral) => referral.rewardStatus === "granted")).toBe(true);
   });
 
   it("ignores an unknown ref code without blocking signup", async () => {
@@ -195,6 +224,35 @@ describe("referrals + account", () => {
     const user = await prisma.user.findUnique({ where: { id: userId } });
     expect(user?.status).toBe("deleted");
   });
+
+  it("delete request clears live sessions and blocks credential login", async () => {
+    const email = `${P}account-delete-login@example.com`;
+    const password = "password123";
+    const signup = await api("POST", "auth/signup", {
+      body: { email, password, name: "Delete Login" },
+    });
+    expectOk(signup);
+    const userId = signup.data.user.id as string;
+    await prisma.session.create({
+      data: { userId, token: `${P}tok-delete-extra`, expiresAt: new Date(Date.now() + 100000) },
+    });
+    expect(await prisma.session.count({ where: { userId } })).toBe(2);
+
+    const deleted = await api("POST", "account/delete-request", {
+      cookie: cookieHeader(signup.setCookies),
+    });
+    expectOk(deleted);
+    expect(deleted.setCookies.join(";")).toContain("idream_session=;");
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    expect(user?.status).toBe("deleted");
+    expect(user?.deletedAt).toBeInstanceOf(Date);
+    expect(await prisma.session.count({ where: { userId } })).toBe(0);
+
+    const login = await api("POST", "auth/login", { body: { email, password } });
+    expectError(login, 403, "forbidden");
+    expect(login.error?.message).toBe("Account is not active");
+  });
 });
 
 describe("library tabs", () => {
@@ -212,6 +270,11 @@ describe("library tabs", () => {
     expectOk(groupChats);
     expect(groupChats.data.items).toEqual([]);
     expect(groupChats.data.emptyCta).toBe("/create");
+
+    const packs = await api("GET", "library/packs", { userId, ageGate: true });
+    expectOk(packs);
+    expect(packs.data.items).toEqual([]);
+    expect(packs.data.emptyCta).toBe("/create");
 
     const recent = await api("GET", "library/recent", { userId, ageGate: true });
     expectOk(recent);
@@ -234,6 +297,14 @@ describe("feed actions", () => {
     expectOk(like);
     expect(like.data.liked).toBe(true);
     expect(await prisma.characterLike.count({ where: { userId, characterId: CHAR } })).toBe(1);
+
+    const feedAfterLike = await api("GET", "feed", { userId, ageGate: true });
+    expectOk(feedAfterLike);
+    const likedFeedItem = (feedAfterLike.data.items as Array<{
+      id: string;
+      character?: { liked?: boolean };
+    }>).find((item) => item.id === itemId);
+    expect(likedFeedItem?.character?.liked).toBe(true);
 
     const share = await api("POST", `feed/items/${encodeURIComponent(itemId)}/share`, {
       userId,
@@ -278,10 +349,29 @@ describe("feed actions", () => {
 });
 
 describe("tags, likes, duplicate", () => {
-  it("lists tags", async () => {
+  it("lists tags with public character counts", async () => {
+    const tag = await prisma.tag.create({
+      data: { id: `${P}tag-counted`, slug: `${P}counted`, label: "Counted" },
+    });
+    await createCharacter({ id: `${P}tag-public`, creatorId: SYS, visibility: "public", status: "approved" });
+    await createCharacter({ id: `${P}tag-private`, creatorId: SYS, visibility: "private", status: "approved" });
+    await createCharacter({ id: `${P}tag-removed`, creatorId: SYS, visibility: "public", status: "removed" });
+    await prisma.characterTag.createMany({
+      data: [
+        { characterId: `${P}tag-public`, tagId: tag.id },
+        { characterId: `${P}tag-private`, tagId: tag.id },
+        { characterId: `${P}tag-removed`, tagId: tag.id },
+      ],
+    });
+
     const res = await api("GET", "tags");
     expectOk(res);
     expect(Array.isArray(res.data.items)).toBe(true);
+    expect(
+      (res.data.items as Array<{ publicCharacterCount?: number; slug: string }>).find(
+        (item) => item.slug === `${P}counted`,
+      ),
+    ).toMatchObject({ publicCharacterCount: 1 });
   });
 
   it("likes then unlikes a character and adjusts stats", async () => {
@@ -380,18 +470,22 @@ describe("feed, community, policies, analytics", () => {
     const restart = await api("POST", "feed/restart", { userId, ageGate: true });
     expectOk(restart);
 
-    const share = await api("POST", `feed/items/${CHAR}/share`, { userId, ageGate: true });
+    const itemId = `character:${CHAR}`;
+    const share = await api("POST", `feed/items/${encodeURIComponent(itemId)}/share`, {
+      userId,
+      ageGate: true,
+    });
     expectOk(share);
     expect(share.data.shareUrl).toContain(CHAR);
 
-    const report = await api("POST", `feed/items/${CHAR}/report`, {
+    const report = await api("POST", `feed/items/${encodeURIComponent(itemId)}/report`, {
       userId,
       ageGate: true,
       body: { category: "spam" },
     });
     expectOk(report);
     const row = await prisma.contentReport.findFirst({
-      where: { targetType: "feed_item", targetId: CHAR },
+      where: { targetType: "feed_item", targetId: itemId },
     });
     expect(row).not.toBeNull();
   });
@@ -465,6 +559,126 @@ describe("feed, community, policies, analytics", () => {
     });
     expect(row).not.toBeNull();
   });
+
+  it("creates a tracked support request for a signed-in adult user", async () => {
+    const userId = `${P}support-requester`;
+    await createUser({ id: userId });
+
+    const res = await api("POST", "support/requests", {
+      userId,
+      ageGate: true,
+      body: {
+        category: "generation",
+        subject: "Image job stuck",
+        description: "The latest image generation job stayed queued for several minutes.",
+        diagnosticConsent: true,
+        sourcePath: "/helpdesk",
+      },
+    });
+
+    expectOk(res, 201);
+    expect(res.data.request.ticketId).toMatch(/^SUP-/);
+    const request = await prisma.supportRequest.findUnique({
+      where: { ticketId: res.data.request.ticketId },
+    });
+    expect(request).toMatchObject({
+      id: res.data.request.id,
+      userId,
+      category: "generation",
+      subject: "Image job stuck",
+      status: "received",
+      diagnosticConsent: true,
+      sourcePath: "/helpdesk",
+    });
+    const row = await prisma.analyticsEvent.findFirst({
+      where: { userId, name: "support_request_submitted" },
+    });
+    expect(row).not.toBeNull();
+    expect(row?.props).toMatchObject({
+      ticketId: res.data.request.ticketId,
+      category: "generation",
+      subject: "Image job stuck",
+      diagnosticConsent: true,
+      sourcePath: "/helpdesk",
+    });
+  });
+
+  it("requires age gate before creating a support request", async () => {
+    const userId = `${P}support-no-age`;
+    await createUser({ id: userId });
+
+    const res = await api("POST", "support/requests", {
+      userId,
+      body: {
+        category: "bug",
+        subject: "Broken button",
+        description: "Clicking the button does not show any response.",
+      },
+    });
+
+    expectError(res, 403, "forbidden");
+  });
+
+  it("lists roadmap feedback and lets signed-in adults submit and vote", async () => {
+    const userId = `${P}feedback-voter`;
+    await createUser({ id: userId });
+
+    const list = await api("GET", "feedback/items");
+    expectOk(list);
+    expect(list.data.items.length).toBeGreaterThanOrEqual(3);
+    const defaultItem = list.data.items.find(
+      (item: { title: string }) => item.title === "Saved generator recipes",
+    );
+    expect(defaultItem).toBeTruthy();
+
+    const created = await api("POST", "feedback/items", {
+      userId,
+      ageGate: true,
+      body: {
+        category: "feature",
+        title: `${P}Feature voting in Help Desk`,
+        description: "Let beta users submit a feature idea and vote on roadmap priorities.",
+      },
+    });
+    expectOk(created, 201);
+    expect(created.data.item).toMatchObject({
+      title: `${P}Feature voting in Help Desk`,
+      voteCount: 1,
+      userVoted: true,
+    });
+
+    const vote = await api("POST", `feedback/items/${defaultItem.id}/vote`, {
+      userId,
+      ageGate: true,
+    });
+    expectOk(vote);
+    expect(vote.data.item.userVoted).toBe(true);
+    expect(vote.data.item.voteCount).toBe(defaultItem.voteCount + 1);
+
+    const unvote = await api("DELETE", `feedback/items/${defaultItem.id}/vote`, {
+      userId,
+      ageGate: true,
+    });
+    expectOk(unvote);
+    expect(unvote.data.item.userVoted).toBe(false);
+    expect(unvote.data.item.voteCount).toBe(defaultItem.voteCount);
+  });
+
+  it("requires age gate before creating roadmap feedback", async () => {
+    const userId = `${P}feedback-no-age`;
+    await createUser({ id: userId });
+
+    const res = await api("POST", "feedback/items", {
+      userId,
+      body: {
+        category: "feature",
+        title: `${P}No age feedback`,
+        description: "This request is missing the accepted age gate cookie.",
+      },
+    });
+
+    expectError(res, 403, "forbidden");
+  });
 });
 
 describe("appeals", () => {
@@ -473,9 +687,25 @@ describe("appeals", () => {
     await createUser({ id: userId });
     const res = await api("POST", "appeals", {
       userId,
+      ageGate: true,
       body: { targetType: "character", targetId: CHAR, appealText: "please review again" },
     });
     expectOk(res);
     expect(res.data.appeal).toMatchObject({ targetId: CHAR });
+  });
+
+  it("rejects unsupported appeal target types", async () => {
+    const userId = `${P}appealer-bad-target`;
+    await createUser({ id: userId });
+    const res = await api("POST", "appeals", {
+      userId,
+      ageGate: true,
+      body: {
+        targetType: "random_surface",
+        targetId: CHAR,
+        appealText: "please review this unsupported target type",
+      },
+    });
+    expectError(res, 400);
   });
 });

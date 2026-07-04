@@ -53,6 +53,7 @@
     "probe:catalog": "tsx src/server/probe-public-catalog.ts",
     "probe:chat": "tsx src/server/probe-chat-model.ts",
     "probe:chat-service": "tsx src/server/probe-chat-service.ts",
+    "probe:generation-model-candidates": "tsx src/server/probe-generation-model-candidates.ts",
     "probe:payment": "tsx src/server/probe-payment-provider.ts",
     "probe:product-config": "tsx src/server/probe-product-config.ts",
     "probe:safety": "tsx src/server/probe-safety-gateway.ts",

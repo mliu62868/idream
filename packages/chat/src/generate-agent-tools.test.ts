@@ -1,0 +1,228 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { CHAT_TO_MAIN_EVENTS } from "@idream/shared/contracts";
+import type { ChatPrismaClient } from "./db.js";
+
+const completeMock = vi.hoisted(() => vi.fn());
+const streamMock = vi.hoisted(() => vi.fn());
+const moderationMock = vi.hoisted(() => vi.fn());
+const buildContextMock = vi.hoisted(() => vi.fn());
+const appendStreamEventMock = vi.hoisted(() => vi.fn(async () => ({ id: "stream-id", event: {} })));
+const appendLineMock = vi.hoisted(() => vi.fn(async () => {}));
+const enqueueMock = vi.hoisted(() => vi.fn(async () => {}));
+
+vi.mock("./db.js", () => ({ chatPrisma: {} }));
+vi.mock("./providers.js", () => ({
+  providers: {
+    chat: {
+      complete: completeMock,
+      stream: streamMock,
+    },
+    moderation: {
+      check: moderationMock,
+    },
+  },
+}));
+vi.mock("./context.js", () => ({ buildContext: buildContextMock }));
+vi.mock("./stream.js", () => ({
+  appendStreamEvent: appendStreamEventMock,
+  streamKey: (assistantMessageId: string) => `chat:stream:${assistantMessageId}`,
+}));
+vi.mock("./chat-fs.js", () => ({
+  appendLine: appendLineMock,
+  chatFsPaths: { sessionLog: () => "/tmp/session.jsonl" },
+}));
+vi.mock("./queue.js", () => ({ enqueue: enqueueMock }));
+
+const { processGenerate } = await import("./generate.js");
+
+type CreateCall = { data: Record<string, unknown> };
+
+function fakePrisma() {
+  const attachmentCreates: CreateCall[] = [];
+  const outboxCreates: CreateCall[] = [];
+  const messageUpdates: CreateCall[] = [];
+  const rootMessageUpdates: CreateCall[] = [];
+
+  const tx = {
+    message: {
+      findUnique: async () => ({ id: "msg_assistant", status: "generating", attempt: 1 }),
+      updateMany: async (call: CreateCall) => {
+        messageUpdates.push(call);
+        return { count: 1 };
+      },
+    },
+    messageVersion: {
+      updateMany: async () => ({}),
+      create: async () => ({}),
+    },
+    chatUsage: {
+      upsert: async () => ({}),
+    },
+    chatSession: {
+      update: async () => ({}),
+    },
+    chatModerationEvent: {
+      create: async () => ({}),
+    },
+    chatOutboxEvent: {
+      create: async (call: CreateCall) => {
+        outboxCreates.push(call);
+        return {};
+      },
+    },
+    messageAttachment: {
+      create: async (call: CreateCall) => {
+        attachmentCreates.push(call);
+        return {};
+      },
+    },
+  };
+
+  const prisma = {
+    message: {
+      findUnique: async () => ({ id: "msg_assistant", status: "generating", attempt: 1 }),
+      updateMany: async (call: CreateCall) => {
+        rootMessageUpdates.push(call);
+        return { count: 1 };
+      },
+    },
+    chatSession: {
+      findUnique: async () => ({
+        id: "sess_1",
+        userId: "user_1",
+        characterId: "char_1",
+        memoryEnabled: true,
+        status: "active",
+      }),
+    },
+    $transaction: async <T>(callback: (client: typeof tx) => Promise<T>) => callback(tx),
+  } as unknown as ChatPrismaClient;
+
+  return { prisma, attachmentCreates, outboxCreates, messageUpdates, rootMessageUpdates };
+}
+
+const context = {
+  persona: {
+    characterId: "char_1",
+    creatorId: "creator_1",
+    name: "Melissa",
+    age: 38,
+    description: "A realistic adult companion.",
+    systemPrompt: null,
+    relationship: "companion",
+    visibility: "public",
+    status: "approved",
+    voiceId: null,
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
+  },
+  policy: {
+    model: "local-model",
+    maxContextMessages: 12,
+    maxMemories: 0,
+    maxStoredMemories: 0,
+    rateLimitPerHour: 60,
+    unlimitedMessages: false,
+    voiceEnabled: false,
+    allowMemoryWrite: true,
+    allowGlobalMemoryWrite: false,
+    allowRelationshipPatch: true,
+    outputModerationRequired: true,
+  },
+  sessionSummary: null,
+  recentMessages: [
+    { id: "msg_user", role: "user", content: "给我一张靠窗的照片" },
+  ],
+  boundaries: [],
+  longTermMemories: [],
+  relationship: null,
+  canUpdateSessionSummary: true,
+};
+
+describe("chat generate agent image tool", () => {
+  beforeEach(() => {
+    completeMock.mockReset();
+    streamMock.mockReset();
+    moderationMock.mockReset();
+    buildContextMock.mockReset();
+    appendStreamEventMock.mockClear();
+    appendLineMock.mockClear();
+    enqueueMock.mockClear();
+    buildContextMock.mockResolvedValue(context);
+    moderationMock.mockResolvedValue({ status: "passed", confidence: 0.5 });
+  });
+
+  it("executes the model-selected async image tool by creating a requesting attachment and outbox event", async () => {
+    completeMock.mockResolvedValue({
+      content: JSON.stringify({
+        tool: {
+          name: "generate_image_async",
+          arguments: {
+            prompt: "Realistic in-character portrait of Melissa sitting beside a sunlit window, soft afternoon light, 4:5 composition",
+            caption: "我给你生成一张靠窗的照片。",
+            orientation: "4:5",
+            outputCount: 1,
+          },
+        },
+      }),
+    });
+    streamMock.mockImplementation(async function* emptyStream() {
+      yield { delta: "", done: true };
+    });
+    const { prisma, attachmentCreates, outboxCreates, messageUpdates } = fakePrisma();
+
+    const result = await processGenerate(
+      { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+      prisma,
+    );
+
+    expect(result.status).toBe("sent");
+    expect(streamMock).not.toHaveBeenCalled();
+    expect(messageUpdates[0]?.data).toMatchObject({
+      status: "sent",
+      content: "我给你生成一张靠窗的照片。",
+    });
+    expect(attachmentCreates[0]?.data).toMatchObject({
+      messageId: "msg_assistant",
+      kind: "generated_image",
+      status: "requesting",
+      promptHint: expect.stringContaining("sunlit window"),
+    });
+    const imageOutbox = outboxCreates.find((call) => call.data.eventType === CHAT_TO_MAIN_EVENTS.imageRequested);
+    expect(imageOutbox?.data).toMatchObject({
+      eventType: CHAT_TO_MAIN_EVENTS.imageRequested,
+      aggregateType: "message_attachment",
+    });
+    expect(imageOutbox?.data.payload).toMatchObject({
+      kind: "chat.image.requested",
+      promptHint: expect.stringContaining("sunlit window"),
+      controls: { orientation: "4:5", outputCount: 1 },
+    });
+  });
+
+  it("marks the assistant failed when the provider dies after streaming has started", async () => {
+    buildContextMock.mockResolvedValue({
+      ...context,
+      recentMessages: [{ id: "msg_user", role: "user", content: "hello" }],
+    });
+    streamMock.mockImplementation(async function* brokenStream() {
+      yield { delta: "partial", done: false };
+      throw new Error("provider disconnected");
+    });
+    const { prisma, rootMessageUpdates, messageUpdates } = fakePrisma();
+
+    const result = await processGenerate(
+      { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+      prisma,
+    );
+
+    expect(result.status).toBe("failed");
+    expect(rootMessageUpdates.at(-1)?.data).toMatchObject({ status: "failed" });
+    expect(messageUpdates).toHaveLength(0);
+    expect(enqueueMock).not.toHaveBeenCalled();
+    expect(moderationMock).not.toHaveBeenCalled();
+    expect(appendStreamEventMock).toHaveBeenCalledWith(
+      "chat:stream:msg_assistant",
+      expect.objectContaining({ type: "error", code: "provider_failed", retryable: false }),
+    );
+  });
+});

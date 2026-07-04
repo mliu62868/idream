@@ -7,11 +7,17 @@ import type { ChatPrismaClient } from "./db.js";
 import { chatPrisma } from "./db.js";
 import { providers } from "./providers.js";
 import { createId } from "./id.js";
+import { FREE_DAILY_MESSAGES } from "./limits.js";
 import { enqueue } from "./queue.js";
 import { streamKey } from "./stream.js";
-import { recordOutbox } from "./outbox.js";
+import { recordOutbox, scheduleOutboxDelivery } from "./outbox.js";
 import { resolvePolicy, snapshotFromView } from "./policy.js";
-import { CHAT_QUEUES, CHAT_TO_MAIN_EVENTS, idempotencyKeys } from "@idream/shared/contracts";
+import {
+  CHAT_QUEUES,
+  CHAT_TO_MAIN_EVENTS,
+  idempotencyKeys,
+  type ChatImageRequestedPayload,
+} from "@idream/shared/contracts";
 
 export class ChatError extends Error {
   constructor(
@@ -105,7 +111,21 @@ export async function getSession(
     orderBy: { createdAt: "asc" },
     take: 200,
   });
-  return { session, messages };
+  const attachments = await prisma.messageAttachment.findMany({
+    where: { sessionId: session.id },
+    orderBy: { createdAt: "asc" },
+  });
+  const byMessage = new Map<string, typeof attachments>();
+  for (const attachment of attachments) {
+    byMessage.set(attachment.messageId, [...(byMessage.get(attachment.messageId) ?? []), attachment]);
+  }
+  return {
+    session,
+    messages: messages.map((message) => ({
+      ...message,
+      attachments: byMessage.get(message.id) ?? [],
+    })),
+  };
 }
 
 export interface SendResult {
@@ -116,6 +136,8 @@ export interface SendResult {
   status: "generating" | "blocked";
   safety?: { layer: "input" | "output"; policyCode?: string };
 }
+
+export type EditMessageResult = SendResult;
 
 export async function sendMessage(
   input: { userId: string; sessionId: string; content: string },
@@ -219,6 +241,153 @@ export async function sendMessage(
   };
 }
 
+export async function editUserMessage(
+  input: { userId: string; messageId: string; content: string },
+  override?: Partial<ChatContext>,
+): Promise<EditMessageResult> {
+  const { prisma } = ctx(override);
+  const message = await prisma.message.findUnique({ where: { id: input.messageId } });
+  if (!message || message.role !== "user" || message.deletedAt || message.status === "deleted") {
+    throw new ChatError("message_not_found", "user message not found", 404);
+  }
+  const session = await prisma.chatSession.findUnique({ where: { id: message.sessionId } });
+  if (!session || session.userId !== input.userId) {
+    throw new ChatError("forbidden", "not your message", 403);
+  }
+  if (session.status !== "active") {
+    throw new ChatError("session_not_active", "session is not active", 409);
+  }
+
+  const content = input.content.trim();
+  if (!content) throw new ChatError("empty_message", "message is empty", 400);
+
+  const latestUser = await prisma.message.findFirst({
+    where: { sessionId: session.id, role: "user", deletedAt: null, status: { not: "deleted" } },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
+  });
+  if (latestUser?.id !== message.id) {
+    throw new ChatError("message_not_editable", "only the latest user message can be edited", 409);
+  }
+
+  let assistant = await prisma.message.findFirst({
+    where: {
+      sessionId: session.id,
+      role: "assistant",
+      deletedAt: null,
+      createdAt: { gte: message.createdAt },
+    },
+    orderBy: { createdAt: "asc" },
+  });
+  if (assistant && ["generating", "pending"].includes(assistant.status)) {
+    throw new ChatError("message_generating", "reply is still generating", 409);
+  }
+
+  await assertEligible(prisma, input.userId, session.characterId);
+  const entitlement = await prisma.chatEntitlementView.findUnique({ where: { userId: input.userId } });
+  const policy = resolvePolicy(snapshotFromView(entitlement), { memoryEnabled: session.memoryEnabled });
+  if (!policy.unlimitedMessages) {
+    const used = await currentUsage(prisma, input.userId);
+    if (used >= FREE_DAILY_MESSAGES) {
+      throw new ChatError("quota_exceeded", "Daily free message limit reached.", 402);
+    }
+  }
+
+  const moderation = await providers.moderation.check({ targetType: "text", content });
+  const assistantMessageId = assistant?.id ?? createId("msg");
+  const attempt = (assistant?.attempt ?? 0) + 1;
+
+  await prisma.$transaction(async (tx) => {
+    await tx.message.update({
+      where: { id: message.id },
+      data: {
+        content,
+        status: moderation.status === "blocked" ? "blocked" : "sent",
+        safetyStatus: moderation.status === "blocked" ? "blocked" : "passed",
+      },
+    });
+
+    if (assistant) {
+      await tx.messageVersion.updateMany({
+        where: { messageId: assistant.id, selected: true },
+        data: { selected: false },
+      });
+      await tx.messageAttachment.deleteMany({ where: { messageId: assistant.id } });
+      await tx.message.update({
+        where: { id: assistant.id },
+        data: {
+          content: "",
+          status: moderation.status === "blocked" ? "blocked" : "generating",
+          attempt,
+          model: null,
+          tokenCount: null,
+          safetyStatus: moderation.status === "blocked" ? "blocked" : "unknown",
+        },
+      });
+    } else {
+      assistant = await tx.message.create({
+        data: {
+          id: assistantMessageId,
+          sessionId: session.id,
+          role: "assistant",
+          content: "",
+          status: moderation.status === "blocked" ? "blocked" : "generating",
+          attempt,
+          safetyStatus: moderation.status === "blocked" ? "blocked" : "unknown",
+        },
+      });
+    }
+
+    await tx.chatSession.update({
+      where: { id: session.id },
+      data: { lastMessageAt: new Date() },
+    });
+
+    if (moderation.status === "blocked") {
+      await tx.chatModerationEvent.create({
+        data: {
+          id: createId("mod"),
+          targetType: "message",
+          targetId: message.id,
+          layer: "input",
+          status: "blocked",
+          policyCode: moderation.policyCode ?? null,
+          confidence: moderation.confidence,
+        },
+      });
+      await recordOutbox(tx, {
+        eventType: CHAT_TO_MAIN_EVENTS.safetyFlagged,
+        aggregateType: "message",
+        aggregateId: message.id,
+        payload: { sessionId: session.id, userId: input.userId, layer: "input", policyCode: moderation.policyCode },
+      });
+    }
+  });
+
+  if (moderation.status === "blocked") {
+    return {
+      assistantMessageId,
+      userMessageId: message.id,
+      streamUrl: null,
+      status: "blocked",
+      safety: { layer: "input", policyCode: moderation.policyCode },
+    };
+  }
+
+  await enqueue({
+    queue: CHAT_QUEUES.generate,
+    payload: { sessionId: session.id, assistantMessageId, userMessageId: message.id, attempt },
+    dedupeKey: idempotencyKeys.chatGenerate(assistantMessageId, attempt),
+  });
+
+  return {
+    assistantMessageId,
+    userMessageId: message.id,
+    streamUrl: `/api/v1/chat/messages/${assistantMessageId}/stream?key=${encodeURIComponent(streamKey(assistantMessageId))}`,
+    status: "generating",
+  };
+}
+
 export async function regenerate(
   input: { userId: string; messageId: string },
   override?: Partial<ChatContext>,
@@ -231,6 +400,15 @@ export async function regenerate(
   const session = await prisma.chatSession.findUnique({ where: { id: message.sessionId } });
   if (!session || session.userId !== input.userId) {
     throw new ChatError("forbidden", "not your message", 403);
+  }
+  if (session.status !== "active") {
+    throw new ChatError("session_not_active", "session is not active", 409);
+  }
+  if (message.deletedAt || ["blocked", "deleted"].includes(message.status)) {
+    throw new ChatError("message_not_regenerable", "message cannot be regenerated", 409);
+  }
+  if (message.status === "generating") {
+    throw new ChatError("message_generating", "message is already generating", 409);
   }
 
   // Regenerate is a fresh generation: finalize() still increments usage, so it MUST
@@ -247,9 +425,14 @@ export async function regenerate(
   }
 
   const lastUser = await prisma.message.findFirst({
-    where: { sessionId: session.id, role: "user", createdAt: { lt: message.createdAt }, deletedAt: null },
+    // user + assistant placeholder are inserted in the same transaction, so
+    // PostgreSQL now() can give them the same created_at.
+    where: { sessionId: session.id, role: "user", createdAt: { lte: message.createdAt }, deletedAt: null },
     orderBy: { createdAt: "desc" },
   });
+  if (!lastUser) {
+    throw new ChatError("missing_user_turn", "assistant message has no user turn", 409);
+  }
 
   const attempt = message.attempt + 1;
   await prisma.message.update({
@@ -274,6 +457,20 @@ export async function regenerate(
     attempt,
     streamUrl: `/api/v1/chat/messages/${message.id}/stream?key=${encodeURIComponent(streamKey(message.id))}`,
   };
+}
+
+export async function assertMessageStreamAccess(
+  input: { userId: string; messageId: string },
+  override?: Partial<ChatContext>,
+): Promise<void> {
+  const { prisma } = ctx(override);
+  const message = await prisma.message.findUnique({
+    where: { id: input.messageId },
+    include: { session: true },
+  });
+  if (!message || message.session.userId !== input.userId || message.session.status === "deleted") {
+    throw new ChatError("message_not_found", "message not found", 404);
+  }
 }
 
 export async function archiveSession(
@@ -318,14 +515,91 @@ export async function setNoMemory(
   }
   return prisma.chatSession.update({
     where: { id: session.id },
-    data: { memoryEnabled: input.memoryEnabled },
+    data: {
+      memoryEnabled: input.memoryEnabled,
+      ...(!input.memoryEnabled ? { memorySummary: null } : {}),
+    },
   });
 }
 
-// Free tier: 30 text messages per UTC day (ECONOMY_AND_PRICING.md / design P0-C).
-// Paid entitlements set unlimitedMessages and short-circuit this check entirely.
-const FREE_DAILY_MESSAGES = 30;
+export async function confirmImageAttachment(
+  input: { userId: string; attachmentId: string },
+  override?: Partial<ChatContext>,
+) {
+  const { prisma } = ctx(override);
+  const attachment = await prisma.messageAttachment.findUnique({ where: { id: input.attachmentId } });
+  if (!attachment) throw new ChatError("attachment_not_found", "attachment not found", 404);
+  const session = await prisma.chatSession.findUnique({ where: { id: attachment.sessionId } });
+  if (!session || session.userId !== input.userId || session.status === "deleted") {
+    throw new ChatError("attachment_not_found", "attachment not found", 404);
+  }
+  await assertEligible(prisma, input.userId, session.characterId);
 
+  if (["requesting", "queued", "running", "completed"].includes(attachment.status)) {
+    return attachment;
+  }
+  if (!["proposed", "failed", "refunded"].includes(attachment.status)) {
+    throw new ChatError("attachment_not_confirmable", "attachment cannot be confirmed", 409);
+  }
+
+  const recent = await prisma.message.findMany({
+    where: { sessionId: session.id, deletedAt: null, status: { not: "deleted" } },
+    orderBy: { createdAt: "desc" },
+    take: 8,
+  });
+  // Re-confirm/retry must preserve the controls the agent originally planned (stored in
+  // attachment.metadata by generate.ts), not silently downgrade to 4:5 / 1 output. Fall back
+  // to the defaults only when no planned controls were recorded.
+  const plannedControls = (attachment.metadata ?? {}) as {
+    orientation?: unknown;
+    outputCount?: unknown;
+  };
+  const payload: ChatImageRequestedPayload = {
+    version: 1,
+    kind: "chat.image.requested",
+    requestId: createId("chat_img_req"),
+    attachmentId: attachment.id,
+    sessionId: session.id,
+    messageId: attachment.messageId,
+    userId: session.userId,
+    characterId: session.characterId,
+    promptHint: attachment.promptHint,
+    conversationContext: [...recent]
+      .reverse()
+      .map((message) => `${message.role}: ${message.content}`)
+      .join("\n")
+      .slice(0, 2_000),
+    controls: {
+      orientation:
+        typeof plannedControls.orientation === "string" ? plannedControls.orientation : "4:5",
+      outputCount:
+        typeof plannedControls.outputCount === "number" ? plannedControls.outputCount : 1,
+    },
+  };
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const current = await tx.messageAttachment.findUnique({ where: { id: attachment.id } });
+    if (!current || ["requesting", "queued", "running", "completed"].includes(current.status)) {
+      return current ?? attachment;
+    }
+    const row = await tx.messageAttachment.update({
+      where: { id: attachment.id },
+      data: { status: "requesting", errorCode: null },
+    });
+    await recordOutbox(tx, {
+      eventType: CHAT_TO_MAIN_EVENTS.imageRequested,
+      aggregateType: "message_attachment",
+      aggregateId: attachment.id,
+      payload,
+    });
+    return row;
+  });
+
+  await scheduleOutboxDelivery();
+  return updated;
+}
+
+// Paid entitlements set unlimitedMessages and short-circuit this check entirely.
 async function currentUsage(prisma: ChatPrismaClient, userId: string): Promise<number> {
   const now = new Date();
   const periodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));

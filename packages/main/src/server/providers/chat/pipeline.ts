@@ -40,6 +40,9 @@ export class PipelineChatModel implements ChatModel {
           messages: input.messages,
           characterName: input.characterName,
           stream: true,
+          // Match the chat service adapter: self-hosted Qwen reasoning models can
+          // spend the whole probe budget in hidden thinking before emitting content.
+          chat_template_kwargs: { enable_thinking: false },
         }),
         signal: controller.signal,
       });

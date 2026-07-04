@@ -63,7 +63,7 @@ const chatModelName =
   process.env.PIPELINE_CHAT_MODEL_DEFAULT ??
   chatEnv.CHAT_MODEL_NAME ??
   mainEnv.PIPELINE_CHAT_MODEL_DEFAULT ??
-  "Qwen3.5-0.8B-8bit";
+  "Qwen3.6-35B-A3B-uncensored-heretic-Native-MTP-Preserved-mlx-8Bit";
 const chatModelApiKey =
   process.env.CHAT_MODEL_API_KEY ??
   process.env.PIPELINE_CHAT_API_TOKEN ??
@@ -82,6 +82,14 @@ const voicePipelineModel =
   process.env.MOSS_TTS_MODEL ??
   mainEnv.PIPELINE_VOICE_MODEL_DEFAULT ??
   "OpenMOSS/MOSS-TTS-Local-Transformer-v1.5";
+const voicePipelineToken =
+  process.env.PIPELINE_VOICE_API_TOKEN ??
+  process.env.MOSS_TTS_API_TOKEN ??
+  process.env.PIPELINE_API_TOKEN ??
+  mainEnv.PIPELINE_VOICE_API_TOKEN ??
+  mainEnv.MOSS_TTS_API_TOKEN ??
+  mainEnv.PIPELINE_API_TOKEN ??
+  "";
 const voiceProbeVoiceId =
   process.env.VOICE_MODEL_PROBE_VOICE_ID ?? defaultVoiceForModel(voicePipelineModel);
 
@@ -195,18 +203,8 @@ if (includeVoice || voicePipelineUrl) {
       ...baseEnv,
       VOICE_PROVIDER: "pipeline",
       PIPELINE_API_URL: voicePipelineUrl ?? imagePipelineUrl,
-      PIPELINE_API_TOKEN:
-        process.env.PIPELINE_VOICE_API_TOKEN ??
-        process.env.MOSS_TTS_API_TOKEN ??
-        process.env.PIPELINE_API_TOKEN ??
-        mainEnv.PIPELINE_API_TOKEN ??
-        "",
-      PIPELINE_VOICE_API_TOKEN:
-        process.env.PIPELINE_VOICE_API_TOKEN ??
-        process.env.MOSS_TTS_API_TOKEN ??
-        process.env.PIPELINE_API_TOKEN ??
-        mainEnv.PIPELINE_API_TOKEN ??
-        "",
+      PIPELINE_API_TOKEN: voicePipelineToken,
+      PIPELINE_VOICE_API_TOKEN: voicePipelineToken,
       PIPELINE_VOICE_MODEL_DEFAULT: voicePipelineModel,
       VOICE_MODEL_PROBE_VOICE_ID: voiceProbeVoiceId,
     },
@@ -342,5 +340,8 @@ function stripQuotes(value) {
 }
 
 function defaultVoiceForModel(model) {
-  return model.toLowerCase().includes("qwen3-tts") ? "serena" : "default";
+  const normalized = model.toLowerCase();
+  if (normalized.includes("qwen3-tts")) return "serena";
+  if (normalized.includes("kokoro")) return "af_heart";
+  return "default";
 }

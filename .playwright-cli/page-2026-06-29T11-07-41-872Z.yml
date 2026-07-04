@@ -1,0 +1,155 @@
+- generic [active] [ref=e1]:
+  - button "Open Next.js Dev Tools" [ref=e9] [cursor=pointer]:
+    - img [ref=e10]
+  - alert [ref=e3]
+  - main [ref=e21]:
+    - generic [ref=e22]:
+      - complementary [ref=e23]:
+        - generic [ref=e24]:
+          - img "ourdream.ai" [ref=e26]
+          - navigation [ref=e28]:
+            - link "Create" [ref=e29] [cursor=pointer]:
+              - /url: /create
+              - img [ref=e30]
+              - generic [ref=e32]: Create
+            - link "Explore" [ref=e33] [cursor=pointer]:
+              - /url: /
+              - img [ref=e34]
+              - generic [ref=e37]: Explore
+            - link "Chat" [ref=e38] [cursor=pointer]:
+              - /url: /chat
+              - img [ref=e39]
+              - generic [ref=e41]: Chat
+            - link "Generate" [ref=e42] [cursor=pointer]:
+              - /url: /generate
+              - img [ref=e43]
+              - generic [ref=e46]: Generate
+            - link "My AI" [ref=e47] [cursor=pointer]:
+              - /url: /custom
+              - img [ref=e48]
+              - generic [ref=e51]: My AI
+            - link "Feed" [ref=e52] [cursor=pointer]:
+              - /url: /feed
+              - img [ref=e53]
+              - generic [ref=e56]: Feed
+            - link "Community" [ref=e57] [cursor=pointer]:
+              - /url: /community
+              - img [ref=e58]
+              - generic [ref=e62]: Community
+          - navigation [ref=e64]:
+            - link "Help Desk" [ref=e65] [cursor=pointer]:
+              - /url: /helpdesk
+              - img [ref=e66]
+              - generic [ref=e69]: Help Desk
+            - link "Safety Center" [ref=e70] [cursor=pointer]:
+              - /url: /safety/introduction
+              - img [ref=e71]
+              - generic [ref=e74]: Safety Center
+            - link "Discord" [ref=e75] [cursor=pointer]:
+              - /url: https://discord.gg/P47YU7je5D
+              - img [ref=e76]
+              - generic [ref=e81]: Discord
+            - link "More" [ref=e82] [cursor=pointer]:
+              - /url: /resources-hub
+              - img [ref=e83]
+              - generic [ref=e87]: More
+          - generic [ref=e88]:
+            - link "Profile" [ref=e90] [cursor=pointer]:
+              - /url: /profile
+              - img [ref=e91]
+              - text: Profile
+            - link "Upgrade" [ref=e94] [cursor=pointer]:
+              - /url: /upgrade
+              - img [ref=e95]
+              - text: Upgrade
+            - generic [ref=e97]:
+              - paragraph [ref=e98]: 2026 OURDREAM.AI
+              - paragraph [ref=e99]: "USA: Dream Studio USA, Inc."
+              - paragraph [ref=e100]: "Cyprus: TEKTOPIA LTD (HE 473775)"
+      - generic [ref=e101]:
+        - generic [ref=e103]:
+          - link "ourdream.ai" [ref=e104] [cursor=pointer]:
+            - /url: /
+            - img "ourdream.ai" [ref=e105]
+          - generic [ref=e106]:
+            - button "Search" [ref=e107]:
+              - img [ref=e108]
+            - searchbox "Search characters, guides, and generators" [ref=e111]
+          - generic [ref=e112]:
+            - link "Login" [ref=e113] [cursor=pointer]:
+              - /url: /login
+            - link "Join Free" [ref=e114] [cursor=pointer]:
+              - /url: /signup
+        - generic [ref=e116]:
+          - generic [ref=e117]:
+            - paragraph [ref=e118]: Join free
+            - heading "Create your Ourdream account" [level=1] [ref=e119]
+            - paragraph [ref=e120]: Sign in to unlock Create, Chat, Generate, My AI, dreamcoins, and checkout across your account.
+          - generic [ref=e121]:
+            - generic [ref=e122]:
+              - text: Display name
+              - textbox "Display name" [ref=e123]
+            - generic [ref=e124]:
+              - text: Email
+              - textbox "Email" [ref=e125]
+            - generic [ref=e126]:
+              - text: Password
+              - textbox "Password" [ref=e127]
+            - button "Join Free" [ref=e128]:
+              - text: Join Free
+              - img [ref=e129]
+    - generic [ref=e132]:
+      - generic [ref=e133]:
+        - heading "Learn" [level=2] [ref=e134]
+        - navigation [ref=e135]:
+          - link "Resources Hub" [ref=e136] [cursor=pointer]:
+            - /url: /resources-hub
+          - link "AI Girlfriend Types" [ref=e137] [cursor=pointer]:
+            - /url: /type
+          - link "Comparisons" [ref=e138] [cursor=pointer]:
+            - /url: /comparison
+          - link "Videos" [ref=e139] [cursor=pointer]:
+            - /url: /videos
+          - link "AI Instructions" [ref=e140] [cursor=pointer]:
+            - /url: /ai-instructions
+      - generic [ref=e141]:
+        - heading "Popular" [level=2] [ref=e142]
+        - navigation [ref=e143]:
+          - link "AI Girlfriend" [ref=e144] [cursor=pointer]:
+            - /url: /ai-girlfriend
+          - link "AI Boyfriend" [ref=e145] [cursor=pointer]:
+            - /url: /ai-boyfriend
+          - link "AI Anime" [ref=e146] [cursor=pointer]:
+            - /url: /type/anime-ai-girlfriend
+          - link "Games" [ref=e147] [cursor=pointer]:
+            - /url: /games
+          - link "Romantasy" [ref=e148] [cursor=pointer]:
+            - /url: /romantasy
+          - link "our dream ai" [ref=e149] [cursor=pointer]:
+            - /url: /
+      - generic [ref=e150]:
+        - heading "Help" [level=2] [ref=e151]
+        - navigation [ref=e152]:
+          - link "Help Centre" [ref=e153] [cursor=pointer]:
+            - /url: https://help.ourdream.ai/
+          - link "Affiliates" [ref=e154] [cursor=pointer]:
+            - /url: https://www.ourdreamaiaffiliate.com/
+          - link "Help Desk" [ref=e155] [cursor=pointer]:
+            - /url: /helpdesk
+          - link "Safety" [ref=e156] [cursor=pointer]:
+            - /url: /safety/introduction
+      - generic [ref=e157]:
+        - generic [ref=e158]:
+          - paragraph [ref=e159]: 2026 OURDREAM.AI
+          - paragraph [ref=e160]: "USA: Dream Studio USA, Inc."
+          - paragraph [ref=e161]: "Cyprus: TEKTOPIA LTD (HE 473775)"
+        - generic [ref=e162]:
+          - link "Discord" [ref=e163] [cursor=pointer]:
+            - /url: https://discord.gg/P47YU7je5D
+            - img [ref=e164]
+          - link "Reddit" [ref=e166] [cursor=pointer]:
+            - /url: https://reddit.com/r/ourdream_ai
+            - img [ref=e167]
+          - link "Twitter / X" [ref=e172] [cursor=pointer]:
+            - /url: https://x.com/ourdreamai
+            - img [ref=e173]

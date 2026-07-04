@@ -18,6 +18,15 @@
 // the pm2 daemon's cwd under `--only`, which silently breaks per-app .env loading.
 const path = require("path");
 const dir = (rel) => path.join(__dirname, rel);
+// REDIS_URL must resolve IDENTICALLY across main-web (which enqueues) and the main-side
+// workers gen-finalizer / main-event-consumer (which consume) — otherwise jobs and chat→main
+// events are produced on one Redis and consumed on another (split-brain: jobs stick forever,
+// events silently drop). main's env.ts loads .env NON-overridingly, so a hardcoded fallback
+// here would override .env for the pm2-injected workers while main-web kept the .env value.
+// So: inject the override ONLY when it is set in the shell, and apply the SAME value to all
+// three. When unset, none are injected and all three fall back to packages/main/.env.
+const mainRedisUrl = process.env.MAIN_REDIS_URL ?? process.env.REDIS_URL;
+const mainRedisEnv = mainRedisUrl ? { REDIS_URL: mainRedisUrl } : {};
 
 module.exports = {
   apps: [
@@ -28,9 +37,13 @@ module.exports = {
       script: "scripts/start-next-standalone.cjs",
       args: "packages/main",
       exec_mode: "cluster",
-      instances: "max",
+      // Was "max" → one worker per CPU core, which floods `pm2 list` on many-core
+      // machines. Cap to a small fixed count (override with MAIN_WEB_INSTANCES).
+      // Cluster mode still load-balances across these workers on one port.
+      instances: process.env.MAIN_WEB_INSTANCES ?? 1,
       env: {
         PORT: process.env.MAIN_WEB_PORT ?? "3000",
+        ...mainRedisEnv,
       },
       // config from packages/main/.env (next + dotenv load it)
     },
@@ -88,10 +101,10 @@ module.exports = {
       env: {
         SDCPP_IMAGE_PORT: process.env.SDCPP_IMAGE_PORT ?? "8091",
         SDCPP_IMAGE_MODEL_ID: process.env.SDCPP_IMAGE_MODEL_ID ?? "pornmaster-zimage-turbo",
-        SDCPP_CLI: process.env.SDCPP_CLI ?? "/Users/kk/code/sdcpp/sd-cli",
+        SDCPP_CLI: process.env.SDCPP_CLI ?? "/Users/kk/bin/sd-cli",
         SDCPP_SOURCE_MODEL:
           process.env.SDCPP_SOURCE_MODEL ??
-          "/Users/kk/Downloads/pornmasterZImage_turboV35Bf16.safetensors",
+          "/Users/kk/Downloads/models/pornmasterZImage_turboV35Bf16.safetensors",
         SDCPP_LLM:
           process.env.SDCPP_LLM ??
           "/Users/kk/.localai/models/z-image-components/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
@@ -112,6 +125,7 @@ module.exports = {
       exec_mode: "fork",
       instances: 1,
       env: {
+        ...mainRedisEnv,
         // Finalize + character.preview — do NOT add ai.image/video.generate, or this
         // main-side process (IMAGE_PROVIDER defaults to mock) races the dedicated
         // gen-image worker (GEN_IMAGE_PROVIDER=pipeline) → nondeterministic mock output.
@@ -126,6 +140,9 @@ module.exports = {
       args: "src/processes/event-consumer.ts",
       exec_mode: "fork",
       instances: 1,
+      env: {
+        ...mainRedisEnv,
+      },
     },
   ],
 };

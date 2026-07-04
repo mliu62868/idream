@@ -13,6 +13,7 @@ import {
 import { getAuthCtx } from "@/server/lib/auth";
 import { env } from "@/server/lib/env";
 import { prisma } from "@/server/lib/db";
+import { isReusablePlatformAssetWhere } from "@/server/modules/ourdream/chat-image-reuse";
 
 const HOP_BY_HOP = new Set(["cookie", "host", "connection", "content-length", "transfer-encoding"]);
 
@@ -71,7 +72,7 @@ export async function proxyChatRequest(request: Request, segments: string[]): Pr
   // speaks a lean raw protocol, while the frontend expects the monolith's
   // { ok, data } envelope with embedded/echoed objects. Adapt ONLY these 2xx JSON
   // responses; everything else (SSE streams, management endpoints) streams through.
-  const adapted = await adaptForFrontend(request.method, segments, body, upstream);
+  const adapted = await adaptForFrontend(request.method, segments, body, upstream, auth.userId);
   if (adapted) return adapted;
 
   // Pass through status + body (streaming-safe for SSE).
@@ -86,6 +87,7 @@ async function adaptForFrontend(
   segments: string[],
   reqBody: string,
   upstream: Response,
+  userId: string,
 ): Promise<Response | null> {
   if (!upstream.ok) return null;
   if (!(upstream.headers.get("content-type") ?? "").includes("application/json")) return null;
@@ -101,15 +103,28 @@ async function adaptForFrontend(
   if (method === "GET" && s.length === 3 && s[0] === "chat" && s[1] === "sessions") {
     const raw = (await upstream.json()) as {
       session?: { characterId?: string } & Record<string, unknown>;
-      messages?: unknown[];
+      messages?: Array<Record<string, unknown>>;
     };
     const session = raw.session ?? {};
     const characterId = session.characterId;
     const character = characterId
-      ? await prisma.character.findUnique({ where: { id: characterId }, select: { name: true } })
+      ? await prisma.character.findUnique({
+          where: { id: characterId },
+          select: { creatorId: true, name: true },
+        })
       : null;
+    const messages = await enrichAttachmentMedia(raw.messages ?? [], userId);
     return envelope(
-      { session: { ...session, character: { name: character?.name ?? "" }, messages: raw.messages ?? [] } },
+      {
+        session: {
+          ...session,
+          character: {
+            name: character?.name ?? "",
+            canUpdateIdentity: character?.creatorId === userId,
+          },
+          messages,
+        },
+      },
       upstream.status,
     );
   }
@@ -144,6 +159,53 @@ async function adaptForFrontend(
   }
 
   return null;
+}
+
+async function enrichAttachmentMedia(messages: Array<Record<string, unknown>>, userId: string) {
+  const ids = new Set<string>();
+  for (const message of messages) {
+    const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+    for (const attachment of attachments) {
+      if (!isRecord(attachment)) continue;
+      const mediaAssetId = typeof attachment.mediaAssetId === "string" ? attachment.mediaAssetId : null;
+      if (mediaAssetId) ids.add(mediaAssetId);
+    }
+  }
+  if (ids.size === 0) return messages;
+
+  const assets = await prisma.mediaAsset.findMany({
+    where: {
+      id: { in: [...ids] },
+      deletedAt: null,
+      ...isReusablePlatformAssetWhere(userId),
+    },
+    select: { id: true, url: true, thumbnailUrl: true, width: true, height: true },
+  });
+  const byId = new Map(assets.map((asset) => [asset.id, asset]));
+  return messages.map((message) => {
+    const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+    return {
+      ...message,
+      attachments: attachments.map((attachment) => {
+        if (!isRecord(attachment)) return attachment;
+        const mediaAssetId = typeof attachment.mediaAssetId === "string" ? attachment.mediaAssetId : null;
+        const asset = mediaAssetId ? byId.get(mediaAssetId) : null;
+        return asset
+          ? {
+              ...attachment,
+              mediaUrl: asset.url,
+              thumbnailUrl: asset.thumbnailUrl ?? asset.url,
+              width: attachment.width ?? asset.width,
+              height: attachment.height ?? asset.height,
+            }
+          : attachment;
+      }),
+    };
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function envelope(data: unknown, status: number): Response {

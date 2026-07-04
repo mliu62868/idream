@@ -25,22 +25,33 @@ export function ChatHeaderControls({
   onOpenSessions: () => void;
   onOpenMemory: () => void;
 }>) {
-  const generateHref = characterId
-    ? `/generate?characterId=${encodeURIComponent(characterId)}`
-    : "/generate";
+  const generateHref = characterId ? `/generate?characterId=${encodeURIComponent(characterId)}` : null;
 
   return (
     <div className="mt-4">
       <div className="flex flex-wrap items-center gap-2">
         <RelationshipBadge characterId={characterId} refreshKey={relationshipRefreshKey} />
         <MemoryToggle enabled={memoryEnabled} pending={memoryPending} onToggle={onToggleMemory} />
-        <Link
-          className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-[rgb(36,36,36)] px-3 py-1 text-[12px] font-semibold text-[rgb(170,170,170)] transition-colors hover:text-white"
-          href={generateHref}
-        >
-          <Sparkles className="h-3.5 w-3.5" />
-          Generate
-        </Link>
+        {generateHref ? (
+          <Link
+            className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-[rgb(36,36,36)] px-3 py-1 text-[12px] font-semibold text-[rgb(170,170,170)] transition-colors hover:text-white"
+            data-testid="chat-generate-link"
+            href={generateHref}
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            Generate
+          </Link>
+        ) : (
+          <button
+            aria-label="Generate is loading"
+            className="inline-flex cursor-wait items-center gap-1.5 rounded-full border border-white/10 bg-[rgb(36,36,36)] px-3 py-1 text-[12px] font-semibold text-[rgb(114,113,112)]"
+            disabled
+            type="button"
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            Generate
+          </button>
+        )}
         <div className="ml-auto flex items-center gap-2">
           <button
             aria-label="Open your chats"

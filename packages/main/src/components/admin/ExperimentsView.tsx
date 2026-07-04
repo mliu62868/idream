@@ -5,6 +5,7 @@
 import { useEffect, useState } from "react";
 import { Loader2, RefreshCcw } from "lucide-react";
 import { apiGet } from "@/components/admin/api";
+import { useAdminI18n } from "@/components/admin/i18n";
 
 type ExperimentRow = {
   key: string;
@@ -16,6 +17,7 @@ type ExperimentRow = {
 };
 
 export function ExperimentsView() {
+  const { t } = useAdminI18n();
   const [items, setItems] = useState<ExperimentRow[]>([]);
   const [note, setNote] = useState<string>("");
   const [loading, setLoading] = useState(true);
@@ -45,7 +47,7 @@ export function ExperimentsView() {
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold">Experiments ({items.length})</h2>
+        <h2 className="text-sm font-semibold">{t("Experiments")} ({items.length})</h2>
         <button
           className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm disabled:opacity-50"
           disabled={loading}
@@ -53,7 +55,7 @@ export function ExperimentsView() {
           type="button"
         >
           {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-          Refresh
+          {t("Refresh")}
         </button>
       </div>
       {note ? <p className="text-xs text-[rgb(170,170,170)]">{note}</p> : null}
@@ -63,19 +65,19 @@ export function ExperimentsView() {
         <table className="w-full text-left text-sm">
           <thead className="border-b border-white/10 text-xs text-[rgb(170,170,170)]">
             <tr>
-              <th className="px-3 py-2 font-medium">flag</th>
-              <th className="px-3 py-2 font-medium">enabled</th>
-              <th className="px-3 py-2 font-medium">rollout %</th>
-              <th className="px-3 py-2 font-medium">signups</th>
-              <th className="px-3 py-2 font-medium">activated</th>
-              <th className="px-3 py-2 font-medium">paying</th>
+              <th className="px-3 py-2 font-medium">{t("flag")}</th>
+              <th className="px-3 py-2 font-medium">{t("enabled")}</th>
+              <th className="px-3 py-2 font-medium">{t("rollout %")}</th>
+              <th className="px-3 py-2 font-medium">{t("signups")}</th>
+              <th className="px-3 py-2 font-medium">{t("activated")}</th>
+              <th className="px-3 py-2 font-medium">{t("paying")}</th>
             </tr>
           </thead>
           <tbody>
             {items.map((row) => (
               <tr key={row.key} className="border-b border-white/5">
                 <td className="px-3 py-2 font-mono text-xs">{row.key}</td>
-                <td className="px-3 py-2">{row.enabled ? "yes" : "no"}</td>
+                <td className="px-3 py-2">{row.enabled ? t("yes") : t("no")}</td>
                 <td className="px-3 py-2">{row.rolloutPercent}%</td>
                 <td className="px-3 py-2">{row.metrics.signups}</td>
                 <td className="px-3 py-2">{row.metrics.activatedUsers}</td>
@@ -85,7 +87,7 @@ export function ExperimentsView() {
             {items.length === 0 && !loading ? (
               <tr>
                 <td className="px-3 py-6 text-center text-xs text-[rgb(170,170,170)]" colSpan={6}>
-                  No feature flags.
+                  {t("No feature flags.")}
                 </td>
               </tr>
             ) : null}

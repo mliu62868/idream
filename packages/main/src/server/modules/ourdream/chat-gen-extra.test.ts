@@ -147,11 +147,11 @@ describe("generation retry", () => {
 });
 
 describe("billing portal", () => {
-  it("returns a portal URL for an authenticated user", async () => {
+  it("returns an upgrade URL when the authenticated user has no active subscription", async () => {
     const userId = `${P}portal`;
     await createUser({ id: userId });
     const res = await api("POST", "billing/portal", { userId });
     expectOk(res);
-    expect(res.data.url).toContain("billing");
+    expect(res.data).toMatchObject({ mode: "subscribe", url: "/upgrade", subscription: null });
   });
 });

@@ -45,9 +45,20 @@ export function AdminDevLogin({ accounts, actor }: AdminDevLoginProps) {
 
   async function logout() {
     setBusy(true);
+    setError(null);
     try {
-      await fetch("/api/admin-auth/logout", { method: "POST" });
+      const response = await fetch("/api/admin-auth/logout", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ includeUserSession: true }),
+      });
+      if (!response.ok) {
+        setError("退出失败，请重试");
+        return;
+      }
       window.location.reload();
+    } catch {
+      setError("网络错误，请重试");
     } finally {
       setBusy(false);
     }
@@ -146,7 +157,7 @@ export function AdminDevLogin({ accounts, actor }: AdminDevLoginProps) {
             disabled={busy}
             className="mt-4 w-full border border-white/10 py-2 text-xs text-[rgb(170,170,170)] hover:border-white/30 disabled:opacity-60"
           >
-            退出当前登录
+            退出当前前台登录
           </button>
         )}
       </div>

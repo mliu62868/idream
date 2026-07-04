@@ -1,27 +1,32 @@
 "use client";
 
 import Link from "next/link";
-import type { ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, type ReactNode, type WheelEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
   BadgeDollarSign,
   Ban,
   BarChart3,
+  Bookmark,
   Check,
   ChevronRight,
   ClipboardCheck,
   Coins,
+  ExternalLink,
   FileText,
   Flag,
   Gauge,
   History,
+  ImageIcon,
   Inbox,
+  Languages,
   Library,
   Loader2,
   MessageSquare,
   Plus,
+  Play,
   RefreshCcw,
   RotateCcw,
   Search,
@@ -36,7 +41,7 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { apiGet, apiWrite, type ApiEnvelope } from "@/components/admin/api";
+import { apiDelete, apiForm, apiGet, apiWrite, formatApiError, type ApiEnvelope } from "@/components/admin/api";
 import { OfficialCharactersView } from "@/components/admin/OfficialCharactersView";
 import { TemplatesView } from "@/components/admin/TemplatesView";
 import { TagsView } from "@/components/admin/TagsView";
@@ -46,6 +51,21 @@ import { ComplianceView } from "@/components/admin/ComplianceView";
 import { InsightsView } from "@/components/admin/InsightsView";
 import { AnnouncementsView } from "@/components/admin/AnnouncementsView";
 import { ExperimentsView } from "@/components/admin/ExperimentsView";
+import {
+  AssetLibraryView,
+  PlacementsView,
+  ProductionStudioView,
+} from "@/components/admin/ContentOpsViews";
+import {
+  AdminI18nProvider,
+  adminDateLocale,
+  adminValueLabel,
+  getStoredAdminLocale,
+  storeAdminLocale,
+  translateAdmin,
+  type AdminLocale,
+  useAdminI18n,
+} from "@/components/admin/i18n";
 
 type Actor = {
   id: string;
@@ -62,6 +82,32 @@ type AdminConsoleClientProps = {
 
 type Row = Record<string, unknown>;
 
+type SavedView = {
+  id: string;
+  scope: string;
+  label: string;
+  filters: unknown;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type SupportStatusFilter =
+  | "all"
+  | "active"
+  | "received"
+  | "open"
+  | "waiting_on_user"
+  | "resolved"
+  | "closed";
+type SupportSlaFilter = "all" | "overdue" | "due_soon" | "on_track" | "paused" | "closed";
+
+type SupportRequestFilters = {
+  query: string;
+  status: SupportStatusFilter;
+  sla: SupportSlaFilter;
+  category: string;
+};
+
 type DashboardData = {
   metrics: {
     users: { active: number; suspended: number };
@@ -77,7 +123,10 @@ type ConfigData = {
   templates: Row[];
   presets: Row[];
   flags: Row[];
+  recentJobs: Row[];
 };
+
+type ConfigTab = "drafts" | "published" | "templates" | "settings";
 
 type ReconciliationData = {
   window: { from: string; to: string };
@@ -106,6 +155,23 @@ type ProviderOpsData = {
   providers: Row[];
 };
 
+type ChatOpsDiagnostics = {
+  reason?: string;
+  status?: number;
+  serviceUrlConfigured: boolean;
+};
+
+type ChatOpsFilters = {
+  userId: string;
+  characterId: string;
+  sessionStatus: string;
+  eventStatus: string;
+  eventLayer: string;
+  policyCode: string;
+  targetId: string;
+  limit: string;
+};
+
 type SectionData =
   | { kind: "dashboard"; data: DashboardData }
   | { kind: "jobs"; rows: Row[] }
@@ -120,12 +186,16 @@ type SectionData =
   | { kind: "providers"; data: ProviderOpsData }
   | { kind: "content"; characters: Row[]; featured: Row[]; featuredIds: string[] }
   | { kind: "promo"; codes: Row[]; referrals: Row[] }
+  | { kind: "support"; rows: Row[] }
   | { kind: "approvals"; rows: Row[] }
   // 自取数视图（组件内部 fetch），section 只需一个标记，不在此预取数据。
   | {
       kind: "selfFetch";
       view:
         | "official"
+        | "production"
+        | "assets"
+        | "placements"
         | "templates"
         | "tags"
         | "review-queue"
@@ -138,8 +208,11 @@ type SectionData =
   | {
       kind: "chatops";
       configured: boolean;
+      diagnostics: ChatOpsDiagnostics | null;
       overview: Record<string, unknown> | null;
+      providerHealth: Row[];
       sessions: Row[];
+      usage: Row[];
       events: Row[];
     }
   | { kind: "audit"; rows: Row[] };
@@ -150,10 +223,33 @@ type PendingAction = {
   method: "POST" | "PATCH";
   confirmText: string;
   reasonRequired: boolean;
-  body: (reason: string, confirmation: string) => Record<string, unknown>;
+  review?: "image_consistency";
+  verification?: ProfileVerificationSummary;
+  body: (
+    reason: string,
+    confirmation: string,
+    review?: ActionReviewDraft,
+  ) => Record<string, unknown>;
+};
+
+type ActionReviewDraft = {
+  sampleCount: string;
+  passCount: string;
+  reviewUrl: string;
+  notes: string;
+};
+
+type ProfileVerificationSummary = {
+  status: string;
+  tone: "good" | "bad" | "warn";
+  meta: string;
+  failureMode: string;
+  blockedReason: string;
+  components: Array<{ key: string; status: string; tone: "good" | "bad" | "warn" }>;
 };
 
 type ModelDraft = {
+  profileTemplate: ModelProfileTemplateId;
   profileKey: string;
   label: string;
   mode: "image" | "video";
@@ -162,16 +258,81 @@ type ModelDraft = {
   sourceModelPath: string;
   convertedModelPath: string;
   modelFormat: "safetensors" | "gguf" | "diffusers" | "external";
+  diffusionModelPath: string;
+  llmPath: string;
+  vaePath: string;
+  llmVisionPath: string;
+  backend: string;
+  conversionEnabled: boolean;
+  conversionType: string;
+  conversionSourceArg: "model" | "diffusion-model";
+  loraModelDir: string;
+  loraApplyMode: "auto" | "immediately" | "at_runtime";
+  lorasJson: string;
   defaultWidth: string;
   defaultHeight: string;
   allowedOrientations: string;
   steps: string;
   sampler: string;
+  scheduler: string;
   cfgScale: string;
   costMultiplier: string;
   requiredEntitlement: string;
   maxCount: string;
   runnerConfigJson: string;
+};
+
+type ModelProfileTemplateId =
+  | "text_identity_sdcpp"
+  | "reference_identity_sdcpp"
+  | "reference_identity_comfyui"
+  | "advanced_custom";
+
+type ModelImportKind = "model" | "lora" | "llm" | "vae";
+
+type ModelImportAsset = {
+  kind: ModelImportKind;
+  name: string;
+  path: string;
+  format: "safetensors" | "gguf";
+  sizeBytes: number;
+  modifiedAt: string;
+  draftPatch: Record<string, unknown>;
+};
+
+type ModelImportLibrary = {
+  roots: Record<string, string>;
+  maxUploadBytes: number;
+  items: ModelImportAsset[];
+};
+
+type ModelImportResult = {
+  asset?: ModelImportAsset;
+  assets?: ModelImportAsset[];
+  roots: Record<string, string>;
+};
+
+type GenerationJobDetail = {
+  job: Row;
+  user: Row | null;
+  character: Row | null;
+  assets: Row[];
+  providerError: Row | null;
+  ledger: Row[];
+  timeline: Array<{
+    at: string;
+    type: string;
+    message: string;
+    metadata?: unknown;
+  }>;
+};
+
+type LoraDraft = {
+  key: string;
+  path: string;
+  fileName?: string;
+  weight: number;
+  enabled: boolean;
 };
 
 type TemplateDraft = {
@@ -207,6 +368,10 @@ const PERMISSION_KEYS = [
   "content.official.write",
   "content.template.write",
   "content.tag.write",
+  "content.production.write",
+  "content.asset.read",
+  "content.asset.review",
+  "content.placement.write",
   "generation.job.read",
   "generation.job.requeue",
   "generation.config.read",
@@ -231,27 +396,62 @@ const PERMISSION_KEYS = [
   "compliance.write",
 ];
 
-const defaultModelDraft: ModelDraft = {
-  profileKey: "profile_image_default_v2",
-  label: "Default image v2",
-  mode: "image",
-  runner: "sd_cpp",
-  pipelineModel: "pornmaster-zimage-turbo",
-  sourceModelPath: "/Users/kk/Downloads/pornmasterZImage_turboV35Bf16.safetensors",
-  convertedModelPath: "",
-  modelFormat: "safetensors",
-  defaultWidth: "768",
-  defaultHeight: "1024",
-  allowedOrientations: "1:1,4:5,3:4,9:16,16:9",
-  steps: "28",
-  sampler: "dpmpp_2m",
-  cfgScale: "7",
-  costMultiplier: "1",
-  requiredEntitlement: "",
-  maxCount: "4",
-  runnerConfigJson:
-    '{"cliPath":"/Users/kk/code/sdcpp/sd-cli","llmPath":"/Users/kk/.localai/models/z-image-components/Qwen3-4B-Instruct-2507-Q4_K_M.gguf","vaePath":"/Users/kk/.localai/models/z-image-components/split_files/vae/ae.safetensors"}',
-};
+const textIdentityCapabilities = {
+  textToImage: true,
+  stableSeed: true,
+  referenceImages: false,
+  initImage: false,
+  lora: false,
+} satisfies Record<string, boolean>;
+
+const referenceIdentityCapabilities = {
+  textToImage: true,
+  stableSeed: true,
+  referenceImages: true,
+  initImage: true,
+  lora: false,
+} satisfies Record<string, boolean>;
+
+const comfyReferenceIdentityCapabilities = {
+  textToImage: false,
+  stableSeed: true,
+  referenceImages: true,
+  initImage: true,
+  lora: false,
+} satisfies Record<string, boolean>;
+
+const modelProfileTemplates: Array<{
+  id: ModelProfileTemplateId;
+  label: string;
+  description: string;
+  intent: string;
+}> = [
+  {
+    id: "text_identity_sdcpp",
+    label: "Text identity template",
+    description: "CVP identity prompt + stable seed. No reference image is sent.",
+    intent: "text_to_image_identity_seed",
+  },
+  {
+    id: "reference_identity_sdcpp",
+    label: "Reference identity template",
+    description: "CVP identity prompt + anchor/reference images through sd.cpp.",
+    intent: "image_to_image_identity_reference",
+  },
+  {
+    id: "reference_identity_comfyui",
+    label: "ComfyUI reference template",
+    description: "Reference-image candidate for external ComfyUI workflows.",
+    intent: "comfyui_reference_identity",
+  },
+  {
+    id: "advanced_custom",
+    label: "Advanced custom profile",
+    description: "Full runner control for model operations.",
+    intent: "advanced_custom",
+  },
+];
+const fallbackModelProfileTemplate = modelProfileTemplates[0]!;
 
 const defaultTemplateDraft: TemplateDraft = {
   templateKey: "template_image_character_v2",
@@ -276,32 +476,131 @@ const defaultPermissionForm: PermissionForm = {
   effect: "grant",
 };
 
+const defaultChatOpsFilters: ChatOpsFilters = {
+  userId: "",
+  characterId: "",
+  sessionStatus: "active",
+  eventStatus: "all",
+  eventLayer: "all",
+  policyCode: "",
+  targetId: "",
+  limit: "50",
+};
+
+const SUPPORT_REQUEST_SAVED_VIEW_SCOPE = "support.requests";
+const defaultSupportRequestFilters: SupportRequestFilters = {
+  query: "",
+  status: "all",
+  sla: "all",
+  category: "",
+};
+const supportStatusOptions: Array<{ value: SupportStatusFilter; label: string }> = [
+  { value: "all", label: "All" },
+  { value: "active", label: "Active support" },
+  { value: "received", label: "received" },
+  { value: "open", label: "open" },
+  { value: "waiting_on_user", label: "waiting_on_user" },
+  { value: "resolved", label: "resolved" },
+  { value: "closed", label: "closed" },
+];
+const supportSlaOptions: Array<{ value: SupportSlaFilter; label: string }> = [
+  { value: "all", label: "All SLA" },
+  { value: "overdue", label: "overdue" },
+  { value: "due_soon", label: "due_soon" },
+  { value: "on_track", label: "on_track" },
+  { value: "paused", label: "paused" },
+  { value: "closed", label: "closed" },
+];
+
+const samplerOptions = [
+  { value: "euler", label: "Euler", aliases: ["euler"] },
+  { value: "euler_a", label: "Euler a", aliases: ["euler a", "euler_a", "euler ancestral"] },
+  { value: "heun", label: "Heun", aliases: ["heun"] },
+  { value: "dpm2", label: "DPM2", aliases: ["dpm2"] },
+  { value: "dpm++2s_a", label: "DPM++ 2S a", aliases: ["dpm++ 2s a", "dpmpp 2s a", "dpmpp_2s_a"] },
+  {
+    value: "dpm++2m",
+    label: "DPM++ 2M",
+    aliases: [
+      "dpm++ 2m",
+      "dpmpp 2m",
+      "dpmpp_2m",
+      "dpm++ 2m sde",
+      "dpmpp 2m sde",
+      "dpmpp_2m_sde",
+      "dpm++ 3m sde",
+      "dpmpp 3m sde",
+      "dpmpp_3m_sde",
+    ],
+  },
+  { value: "dpm++2mv2", label: "DPM++ 2M v2", aliases: ["dpm++ 2m v2", "dpmpp 2m v2", "dpmpp_2mv2"] },
+  { value: "ipndm", label: "IPNDM", aliases: ["ipndm"] },
+  { value: "ipndm_v", label: "IPNDM v", aliases: ["ipndm v", "ipndm_v"] },
+  { value: "lcm", label: "LCM", aliases: ["lcm"] },
+  { value: "ddim_trailing", label: "DDIM trailing", aliases: ["ddim trailing", "ddim_trailing", "ddim"] },
+  { value: "tcd", label: "TCD", aliases: ["tcd"] },
+  { value: "res_multistep", label: "Res multistep", aliases: ["res multistep", "res_multistep"] },
+  { value: "res_2s", label: "Res 2S", aliases: ["res 2s", "res_2s"] },
+  { value: "er_sde", label: "ER_SDE", aliases: ["er_sde", "er sde", "dpmpp_sde"] },
+  {
+    value: "euler_cfg_pp",
+    label: "Euler CFG++",
+    aliases: ["euler cfg pp", "euler_cfg_pp"],
+  },
+  {
+    value: "euler_a_cfg_pp",
+    label: "Euler a CFG++",
+    aliases: ["euler a cfg pp", "euler_a_cfg_pp"],
+  },
+];
+
+const schedulerOptions = [
+  { value: "model_default", label: "Model default", aliases: ["model default", "model-specific", "model specific"] },
+  { value: "discrete", label: "Discrete", aliases: ["discrete"] },
+  { value: "karras", label: "Karras", aliases: ["karras"] },
+  { value: "exponential", label: "Exponential", aliases: ["exponential"] },
+  { value: "ays", label: "AYS", aliases: ["ays"] },
+  { value: "gits", label: "GITS", aliases: ["gits"] },
+  { value: "smoothstep", label: "Smoothstep", aliases: ["smoothstep"] },
+  { value: "sgm_uniform", label: "SGM Uniform", aliases: ["sgm uniform", "sgm_uniform"] },
+  { value: "simple", label: "Simple", aliases: ["simple"] },
+  { value: "kl_optimal", label: "KL Optimal", aliases: ["kl optimal", "kl_optimal"] },
+  { value: "lcm", label: "LCM", aliases: ["lcm"] },
+  { value: "bong_tangent", label: "Bong Tangent", aliases: ["bong tangent", "bong_tangent"] },
+  { value: "ltx2", label: "LTX2", aliases: ["ltx2"] },
+  { value: "logit_normal", label: "Logit Normal", aliases: ["logit normal", "logit_normal"] },
+];
+
 const navItems = [
-  { id: "dashboard", label: "Dashboard", href: "/admin", icon: Gauge },
-  { id: "generation/jobs", label: "Generation Jobs", href: "/admin/generation/jobs", icon: Activity },
-  { id: "generation/config", label: "Generation Config", href: "/admin/generation/config", icon: SlidersHorizontal },
-  { id: "generation/dead-letter", label: "Dead-letter", href: "/admin/generation/dead-letter", icon: Inbox },
-  { id: "ops/providers", label: "Provider Health", href: "/admin/ops/providers", icon: Server },
-  { id: "moderation", label: "Moderation", href: "/admin/moderation", icon: ShieldAlert },
-  { id: "content", label: "Content", href: "/admin/content", icon: Library },
-  { id: "content/official", label: "Official Characters", href: "/admin/content/official", icon: ShieldCheck },
-  { id: "content/templates", label: "Templates", href: "/admin/content/templates", icon: SlidersHorizontal },
-  { id: "content/tags", label: "Tags", href: "/admin/content/tags", icon: Flag },
-  { id: "content/review-queue", label: "Review Queue", href: "/admin/content/review-queue", icon: ClipboardCheck },
-  { id: "cms", label: "CMS / SEO", href: "/admin/cms", icon: FileText },
-  { id: "chat", label: "Chat Ops", href: "/admin/chat", icon: MessageSquare },
-  { id: "users", label: "Users", href: "/admin/users", icon: Users },
-  { id: "billing", label: "Billing", href: "/admin/billing", icon: BadgeDollarSign },
-  { id: "pricing", label: "Pricing", href: "/admin/pricing", icon: Coins },
-  { id: "promo", label: "Promo", href: "/admin/promo", icon: Ticket },
-  { id: "announcements", label: "Announcements", href: "/admin/announcements", icon: MessageSquare },
-  { id: "analytics", label: "Analytics", href: "/admin/analytics", icon: BarChart3 },
-  { id: "insights", label: "Insights", href: "/admin/insights", icon: BarChart3 },
-  { id: "experiments", label: "Experiments", href: "/admin/experiments", icon: Flag },
-  { id: "risk", label: "Risk & Abuse", href: "/admin/risk", icon: AlertTriangle },
-  { id: "compliance", label: "Compliance", href: "/admin/compliance", icon: ShieldAlert },
-  { id: "approvals", label: "Approvals", href: "/admin/approvals", icon: ClipboardCheck },
-  { id: "audit-log", label: "Audit Log", href: "/admin/audit-log", icon: History },
+  { id: "dashboard", label: "Dashboard", href: "/admin", icon: Gauge, group: "Overview" },
+  { id: "generation/jobs", label: "Jobs & Incidents", href: "/admin/generation/jobs", icon: Activity, group: "Generation Ops" },
+  { id: "generation/config", label: "Profiles & Rollout", href: "/admin/generation/config", icon: SlidersHorizontal, group: "Generation Ops" },
+  { id: "generation/dead-letter", label: "Dead-letter", href: "/admin/generation/dead-letter", icon: Inbox, group: "Generation Ops" },
+  { id: "ops/providers", label: "Provider Health", href: "/admin/ops/providers", icon: Server, group: "Generation Ops" },
+  { id: "content/production", label: "Production Studio", href: "/admin/content/production", icon: Play, group: "Content Ops" },
+  { id: "content/assets", label: "Asset Library", href: "/admin/content/assets", icon: ImageIcon, group: "Content Ops" },
+  { id: "content/placements", label: "Placements", href: "/admin/content/placements", icon: Bookmark, group: "Content Ops" },
+  { id: "content", label: "Content", href: "/admin/content", icon: Library, group: "Content Ops" },
+  { id: "content/official", label: "Official Characters", href: "/admin/content/official", icon: ShieldCheck, group: "Content Ops" },
+  { id: "content/templates", label: "Templates", href: "/admin/content/templates", icon: SlidersHorizontal, group: "Content Ops" },
+  { id: "content/tags", label: "Tags", href: "/admin/content/tags", icon: Flag, group: "Content Ops" },
+  { id: "content/review-queue", label: "Review Queue", href: "/admin/content/review-queue", icon: ClipboardCheck, group: "Content Ops" },
+  { id: "cms", label: "CMS / SEO", href: "/admin/cms", icon: FileText, group: "Content Ops" },
+  { id: "moderation", label: "Moderation", href: "/admin/moderation", icon: ShieldAlert, group: "Trust Ops" },
+  { id: "chat", label: "Chat Ops", href: "/admin/chat", icon: MessageSquare, group: "Trust Ops" },
+  { id: "support", label: "Support Requests", href: "/admin/support", icon: Ticket, group: "Trust Ops" },
+  { id: "users", label: "Users", href: "/admin/users", icon: Users, group: "Business Ops" },
+  { id: "billing", label: "Billing", href: "/admin/billing", icon: BadgeDollarSign, group: "Business Ops" },
+  { id: "pricing", label: "Pricing", href: "/admin/pricing", icon: Coins, group: "Business Ops" },
+  { id: "promo", label: "Promo", href: "/admin/promo", icon: Ticket, group: "Business Ops" },
+  { id: "announcements", label: "Announcements", href: "/admin/announcements", icon: MessageSquare, group: "Business Ops" },
+  { id: "analytics", label: "Analytics", href: "/admin/analytics", icon: BarChart3, group: "Insights" },
+  { id: "insights", label: "Insights", href: "/admin/insights", icon: BarChart3, group: "Insights" },
+  { id: "experiments", label: "Experiments", href: "/admin/experiments", icon: Flag, group: "Insights" },
+  { id: "risk", label: "Risk & Abuse", href: "/admin/risk", icon: AlertTriangle, group: "Insights" },
+  { id: "compliance", label: "Compliance", href: "/admin/compliance", icon: ShieldAlert, group: "System" },
+  { id: "approvals", label: "Approvals", href: "/admin/approvals", icon: ClipboardCheck, group: "System" },
+  { id: "audit-log", label: "Audit Log", href: "/admin/audit-log", icon: History, group: "System" },
 ];
 
 export function AdminConsoleClient({
@@ -310,6 +609,7 @@ export function AdminConsoleClient({
   initialAccess,
   devLogout = false,
 }: AdminConsoleClientProps) {
+  const sidebarNavRef = useRef<HTMLElement | null>(null);
   const sectionId = normalizeSection(initialSection);
   const activeItem = navItems.find((item) => item.id === sectionId) ?? navItems[0];
   const [data, setData] = useState<SectionData | null>(null);
@@ -319,23 +619,49 @@ export function AdminConsoleClient({
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [reason, setReason] = useState("");
   const [confirmation, setConfirmation] = useState("");
+  const [actionStatus, setActionStatus] = useState<string | null>(null);
+  const [actionReview, setActionReview] = useState<ActionReviewDraft>({
+    sampleCount: "",
+    passCount: "",
+    reviewUrl: "",
+    notes: "",
+  });
   const [actionBusy, setActionBusy] = useState(false);
   const [adjustment, setAdjustment] = useState({ userId: "", delta: "" });
-  const [modelDraft, setModelDraft] = useState<ModelDraft>(defaultModelDraft);
+  const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
   const [templateDraft, setTemplateDraft] = useState<TemplateDraft>(defaultTemplateDraft);
-  const [configBusy, setConfigBusy] = useState<"model" | "template" | null>(null);
+  const [configBusy, setConfigBusy] = useState<"template" | null>(null);
   const [pricingDraft, setPricingDraft] = useState<PricingDraft>(defaultPricingDraft);
   const [pricingBusy, setPricingBusy] = useState(false);
   const [permissionForm, setPermissionForm] = useState<PermissionForm>(defaultPermissionForm);
+  const [chatOpsFilters, setChatOpsFilters] = useState<ChatOpsFilters>(defaultChatOpsFilters);
+  const [locale, setLocale] = useState<AdminLocale>("en");
+  const [localeReady, setLocaleReady] = useState(false);
+  const t = (key: string, values?: Record<string, string | number>) =>
+    translateAdmin(locale, key, values);
 
   const filteredData = useMemo(() => filterSectionData(data, query), [data, query]);
 
-  async function load() {
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      setLocale(getStoredAdminLocale());
+      setLocaleReady(true);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
+
+  useEffect(() => {
+    if (!localeReady) return;
+    document.documentElement.lang = locale === "zh" ? "zh-CN" : "en";
+    storeAdminLocale(locale);
+  }, [locale, localeReady]);
+
+  async function load(nextChatOpsFilters: ChatOpsFilters = chatOpsFilters) {
     if (!initialAccess) return;
     setLoading(true);
     setError(null);
     try {
-      setData(await fetchSection(sectionId));
+      setData(await fetchSection(sectionId, { chatOps: nextChatOpsFilters }));
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Failed to load admin data");
     } finally {
@@ -355,6 +681,8 @@ export function AdminConsoleClient({
   function openAction(action: PendingAction) {
     setReason("");
     setConfirmation("");
+    setActionReview({ sampleCount: "", passCount: "", reviewUrl: "", notes: "" });
+    setActionStatus(null);
     setPendingAction(action);
   }
 
@@ -366,31 +694,25 @@ export function AdminConsoleClient({
       const response = await fetch(pendingAction.endpoint, {
         method: pendingAction.method,
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(pendingAction.body(reason, confirmation)),
+        body: JSON.stringify(pendingAction.body(reason, confirmation, actionReview)),
       });
       const payload = (await response.json()) as ApiEnvelope<unknown>;
       if (!payload.ok) {
-        throw new Error(payload.error.message ?? payload.error.code ?? "Admin action failed");
+        throw new Error(formatApiError(payload.error, "Admin action failed"));
       }
+      const completedEndpoint = pendingAction.endpoint;
+      const completedTitle = pendingAction.title;
       setPendingAction(null);
+      setActionStatus(`${completedTitle} completed.`);
+      if (completedEndpoint === "/api/v1/admin/billing/adjustments") {
+        setAdjustment({ userId: "", delta: "" });
+      }
       await load();
     } catch (actionError) {
+      setActionStatus(null);
       setError(actionError instanceof Error ? actionError.message : "Admin action failed");
     } finally {
       setActionBusy(false);
-    }
-  }
-
-  async function createModelProfile() {
-    setConfigBusy("model");
-    setError(null);
-    try {
-      await apiWrite("/api/v1/admin/generation/model-profiles", "POST", modelDraftPayload(modelDraft));
-      await load();
-    } catch (createError) {
-      setError(createError instanceof Error ? createError.message : "Model profile create failed");
-    } finally {
-      setConfigBusy(null);
     }
   }
 
@@ -424,16 +746,42 @@ export function AdminConsoleClient({
     }
   }
 
+  const handleSidebarWheel = useCallback((event: WheelEvent<HTMLElement>) => {
+    if (event.ctrlKey) return;
+
+    const nav = sidebarNavRef.current;
+    if (!nav) return;
+
+    const maxScrollTop = nav.scrollHeight - nav.clientHeight;
+    if (maxScrollTop <= 0) return;
+
+    const deltaY =
+      event.deltaMode === 1
+        ? event.deltaY * 16
+        : event.deltaMode === 2
+          ? event.deltaY * nav.clientHeight
+          : event.deltaY;
+
+    if (deltaY === 0) return;
+
+    nav.scrollTop = Math.max(0, Math.min(maxScrollTop, nav.scrollTop + deltaY));
+    event.preventDefault();
+    event.stopPropagation();
+  }, []);
+
+  const pendingVerification = pendingAction?.verification;
+  const pendingVerificationBlocked = Boolean(pendingVerification?.blockedReason);
+
   if (!actor || !initialAccess) {
     return (
       <main className="min-h-screen bg-[rgb(13,13,13)] px-6 py-8 text-white">
         <div className="mx-auto max-w-xl border border-white/10 bg-[rgb(18,18,18)] p-6">
           <div className="flex items-center gap-3">
             <Ban className="h-5 w-5 text-red-300" />
-            <h1 className="text-lg font-semibold">Admin access denied</h1>
+            <h1 className="text-lg font-semibold">{t("Admin access denied")}</h1>
           </div>
           <p className="mt-3 text-sm text-[rgb(170,170,170)]">
-            Signed-in internal roles only.
+            {t("Signed-in internal roles only.")}
           </p>
         </div>
       </main>
@@ -441,32 +789,43 @@ export function AdminConsoleClient({
   }
 
   return (
+    <AdminI18nProvider locale={locale}>
     <main className="min-h-screen bg-[rgb(13,13,13)] text-white">
       <div className="flex min-h-screen">
-        <aside className="sticky top-0 hidden h-screen w-[248px] shrink-0 border-r border-white/10 bg-[rgb(18,18,18)] md:block">
-          <div className="flex h-14 items-center border-b border-white/10 px-5">
+        <aside
+          className="sticky top-0 hidden h-screen w-[248px] shrink-0 overflow-hidden border-r border-white/10 bg-[rgb(18,18,18)] lg:flex lg:flex-col"
+          onWheel={handleSidebarWheel}
+        >
+          <div className="flex h-14 shrink-0 items-center border-b border-white/10 px-5">
             <div>
               <p className="text-sm font-semibold">iDream Admin</p>
               <p className="text-[11px] text-[rgb(170,170,170)]">{actor.role}</p>
             </div>
           </div>
-          <nav className="p-3">
-            {navItems.map((item) => {
+          <nav ref={sidebarNavRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
+            {navItems.map((item, index) => {
               const Icon = item.icon;
               const active = item.id === sectionId;
+              const showGroup = index === 0 || item.group !== navItems[index - 1]?.group;
               return (
-                <Link
-                  key={item.id}
-                  className={cn(
-                    "mb-1 flex h-10 items-center gap-3 rounded-md px-3 text-[13px] font-medium text-[rgb(170,170,170)] transition-colors hover:bg-white/10 hover:text-white",
-                    active && "bg-white/10 text-white",
-                  )}
-                  href={item.href}
-                >
-                  <Icon className="h-4 w-4" />
-                  <span>{item.label}</span>
-                  {active ? <ChevronRight className="ml-auto h-4 w-4" /> : null}
-                </Link>
+                <Fragment key={item.id}>
+                  {showGroup ? (
+                    <p className="px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-normal text-[rgb(114,113,112)] first:pt-0">
+                      {t(item.group)}
+                    </p>
+                  ) : null}
+                  <Link
+                    className={cn(
+                      "mb-1 flex h-10 items-center gap-3 rounded-md px-3 text-[13px] font-medium text-[rgb(170,170,170)] transition-colors hover:bg-white/10 hover:text-white",
+                      active && "bg-white/10 text-white",
+                    )}
+                    href={item.href}
+                  >
+                    <Icon className="h-4 w-4" />
+                    <span>{t(item.label)}</span>
+                    {active ? <ChevronRight className="ml-auto h-4 w-4" /> : null}
+                  </Link>
+                </Fragment>
               );
             })}
           </nav>
@@ -474,41 +833,82 @@ export function AdminConsoleClient({
 
         <section className="min-w-0 flex-1">
           <header className="sticky top-0 z-20 border-b border-white/10 bg-[rgba(13,13,13,0.92)] backdrop-blur">
-            <div className="flex min-h-14 flex-wrap items-center gap-3 px-4 py-3 md:px-6">
-              <div>
-                <h1 className="text-base font-semibold md:text-lg">{activeItem.label}</h1>
-                <p className="text-[11px] text-[rgb(170,170,170)]">{actor.id}</p>
+            <div className="grid gap-3 px-4 py-3 md:px-6 lg:flex lg:min-h-14 lg:items-center">
+              <div className="min-w-0">
+                <h1 className="text-base font-semibold md:text-lg">{t(activeItem.label)}</h1>
+                <p className="truncate text-[11px] text-[rgb(170,170,170)]">{actor.id}</p>
               </div>
-              <div className="ml-auto flex h-9 min-w-[220px] items-center gap-2 border border-white/10 bg-[rgb(18,18,18)] px-3">
-                <Search className="h-4 w-4 text-[rgb(170,170,170)]" />
-                <input
-                  className="h-full min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-[rgb(114,113,112)]"
-                  onChange={(event) => setQuery(event.target.value)}
-                  placeholder="Filter"
-                  value={query}
-                />
+              <div className="grid gap-2 sm:grid-cols-[1fr_auto] lg:ml-auto lg:flex lg:items-center">
+                <div className="flex h-9 min-w-0 items-center gap-2 border border-white/10 bg-[rgb(18,18,18)] px-3 lg:w-[260px]">
+                  <Search className="h-4 w-4 shrink-0 text-[rgb(170,170,170)]" />
+                  <input
+                    aria-label={t("Filter")}
+                    className="h-full min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-[rgb(114,113,112)]"
+                    onChange={(event) => setQuery(event.target.value)}
+                    placeholder={t("Filter")}
+                    value={query}
+                  />
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="inline-flex h-9 items-center gap-2 border border-white/10 bg-[rgb(18,18,18)] px-3 text-sm text-[rgb(230,230,230)]">
+                    <Languages className="h-4 w-4 text-[rgb(170,170,170)]" />
+                    <span className="sr-only">{t("Language")}</span>
+                    <select
+                      aria-label={t("Language")}
+                      className="h-full bg-transparent text-sm outline-none"
+                      onChange={(event) => setLocale(event.target.value as AdminLocale)}
+                      value={locale}
+                    >
+                      <option className="bg-[rgb(18,18,18)] text-white" value="en">
+                        English
+                      </option>
+                      <option className="bg-[rgb(18,18,18)] text-white" value="zh">
+                        中文
+                      </option>
+                    </select>
+                  </label>
+                  <button
+                    className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm text-[rgb(230,230,230)] hover:bg-white/10"
+                    onClick={() => void load()}
+                    type="button"
+                  >
+                    {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+                    {t("Refresh")}
+                  </button>
+                  {devLogout ? (
+                    <button
+                      className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm text-[rgb(170,170,170)] hover:bg-white/10"
+                      onClick={async () => {
+                        await fetch("/api/admin-auth/logout", { method: "POST" });
+                        window.location.reload();
+                      }}
+                      type="button"
+                    >
+                      {t("Logout")}
+                    </button>
+                  ) : null}
+                </div>
               </div>
-              <button
-                className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm text-[rgb(230,230,230)] hover:bg-white/10"
-                onClick={() => void load()}
-                type="button"
-              >
-                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-                Refresh
-              </button>
-              {devLogout ? (
-                <button
-                  className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm text-[rgb(170,170,170)] hover:bg-white/10"
-                  onClick={async () => {
-                    await fetch("/api/admin-auth/logout", { method: "POST" });
-                    window.location.reload();
-                  }}
-                  type="button"
-                >
-                  退出
-                </button>
-              ) : null}
             </div>
+            <nav className="flex gap-2 overflow-x-auto border-t border-white/10 px-4 py-2 md:px-6 lg:hidden">
+              {navItems.map((item) => {
+                const Icon = item.icon;
+                const active = item.id === sectionId;
+                return (
+                  <Link
+                    className={cn(
+                      "inline-flex h-9 shrink-0 items-center gap-2 border border-white/10 px-3 text-xs font-medium text-[rgb(170,170,170)]",
+                      active && "bg-white text-black",
+                    )}
+                    href={item.href}
+                    key={item.id}
+                  >
+                    <Icon className="h-4 w-4" />
+                    {t(item.label)}
+                  </Link>
+                );
+              })}
+            </nav>
           </header>
 
           <div className="p-4 md:p-6">
@@ -517,22 +917,29 @@ export function AdminConsoleClient({
                 {error}
               </div>
             ) : null}
+            {actionStatus ? (
+              <div
+                className="mb-4 border border-emerald-400/30 bg-emerald-950/30 px-4 py-3 text-sm text-emerald-100"
+                data-testid="admin-action-status"
+              >
+                {actionStatus}
+              </div>
+            ) : null}
             {loading && !filteredData ? (
               <div className="flex h-48 items-center justify-center text-[rgb(170,170,170)]">
                 <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                Loading
+                {t("Loading")}
               </div>
             ) : (
               renderSection(filteredData, {
                 openAction,
                 adjustment,
                 setAdjustment,
-                modelDraft,
-                setModelDraft,
+                selectedProfileId,
+                setSelectedProfileId,
                 templateDraft,
                 setTemplateDraft,
                 configBusy,
-                createModelProfile,
                 createPromptTemplate,
                 pricingDraft,
                 setPricingDraft,
@@ -540,6 +947,12 @@ export function AdminConsoleClient({
                 createPricingRule,
                 permissionForm,
                 setPermissionForm,
+                chatOpsFilters,
+                setChatOpsFilters,
+                applyChatOpsFilters: (next) => {
+                  setChatOpsFilters(next);
+                  void load(next);
+                },
                 reload: () => void load(),
               })
             )}
@@ -563,16 +976,99 @@ export function AdminConsoleClient({
             </div>
             <div className="mt-4 space-y-3">
               <label className="block">
-                <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">Reason</span>
+                <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">{t("Reason")}</span>
                 <textarea
                   className="min-h-20 w-full resize-y border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-white/30"
                   onChange={(event) => setReason(event.target.value)}
                   value={reason}
                 />
               </label>
+              {pendingAction.review === "image_consistency" ? (
+                <div className="border border-white/10 bg-black/20 p-3">
+                  <div className="mb-3">
+                    <h3 className="text-sm font-semibold">{t("Image consistency review")}</h3>
+                    <p className="mt-1 text-xs leading-5 text-[rgb(170,170,170)]">
+                      {t("Publish needs at least 20 reviewed image samples and 80% identity consistency.")}
+                    </p>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <FormField
+                      label="Reviewed samples"
+                      onChange={(value) => setActionReview({ ...actionReview, sampleCount: value })}
+                      value={actionReview.sampleCount}
+                    />
+                    <FormField
+                      label="Consistent samples"
+                      onChange={(value) => setActionReview({ ...actionReview, passCount: value })}
+                      value={actionReview.passCount}
+                    />
+                  </div>
+                  <div className="mt-3 space-y-3">
+                    <FormField
+                      label="Review URL"
+                      onChange={(value) => setActionReview({ ...actionReview, reviewUrl: value })}
+                      value={actionReview.reviewUrl}
+                    />
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">
+                        {t("Review notes")}
+                      </span>
+                      <textarea
+                        className="min-h-16 w-full resize-y border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-white/30"
+                        onChange={(event) => setActionReview({ ...actionReview, notes: event.target.value })}
+                        value={actionReview.notes}
+                      />
+                    </label>
+                    <p className="text-xs text-[rgb(170,170,170)]">
+                      {t("Consistency rate")}: {formatPercent(consistencyRateFromReview(actionReview))}
+                    </p>
+                  </div>
+                </div>
+              ) : null}
+              {pendingVerification ? (
+                <div
+                  className={cn(
+                    "border p-3",
+                    pendingVerificationBlocked
+                      ? "border-red-400/30 bg-red-950/20"
+                      : "border-white/10 bg-black/20",
+                  )}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="text-sm font-semibold">{t("Model verification")}</h3>
+                    <Status locale={locale} value={pendingVerification.status} tone={pendingVerification.tone} />
+                  </div>
+                  <p className="mt-2 text-xs leading-5 text-[rgb(170,170,170)]">
+                    {t(pendingVerification.meta)}
+                  </p>
+                  {pendingVerification.failureMode ? (
+                    <p className="mt-2 break-all text-xs leading-5 text-red-100">
+                      {t("Failure mode")}: {pendingVerification.failureMode}
+                    </p>
+                  ) : null}
+                  {pendingVerification.blockedReason ? (
+                    <p className="mt-2 text-xs leading-5 text-red-100">
+                      {t(pendingVerification.blockedReason)}
+                    </p>
+                  ) : null}
+                  {pendingVerification.components.length > 0 ? (
+                    <div className="mt-3 space-y-1">
+                      {pendingVerification.components.slice(0, 5).map((component) => (
+                        <div
+                          className="flex min-w-0 items-center justify-between gap-2 text-xs"
+                          key={component.key}
+                        >
+                          <span className="min-w-0 truncate text-[rgb(170,170,170)]">{component.key}</span>
+                          <Status locale={locale} value={component.status} tone={component.tone} />
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               <label className="block">
                 <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">
-                  Confirmation
+                  {t("Confirmation")}
                 </span>
                 <input
                   className="h-10 w-full border border-white/10 bg-black/30 px-3 font-mono text-sm outline-none focus:border-white/30"
@@ -590,30 +1086,36 @@ export function AdminConsoleClient({
                 onClick={() => setPendingAction(null)}
                 type="button"
               >
-                Cancel
+                {t("Cancel")}
               </button>
               <button
                 className="inline-flex h-9 items-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
                 disabled={
                   actionBusy ||
                   confirmation !== pendingAction.confirmText ||
-                  (pendingAction.reasonRequired && reason.trim().length < 3)
+                  (pendingAction.reasonRequired && reason.trim().length < 3) ||
+                  !actionReviewComplete(pendingAction, actionReview) ||
+                  pendingVerificationBlocked
                 }
                 onClick={() => void submitAction()}
                 type="button"
               >
                 {actionBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
-                Confirm
+                {t("Confirm")}
               </button>
             </div>
           </div>
         </div>
       ) : null}
     </main>
+    </AdminI18nProvider>
   );
 }
 
-async function fetchSection(sectionId: string): Promise<SectionData> {
+async function fetchSection(
+  sectionId: string,
+  options: { chatOps?: ChatOpsFilters } = {},
+): Promise<SectionData> {
   if (sectionId === "generation/jobs") {
     const payload = await apiGet<{ items: Row[] }>("/api/v1/admin/generation/jobs?mode=image");
     return { kind: "jobs", rows: payload.items };
@@ -622,16 +1124,20 @@ async function fetchSection(sectionId: string): Promise<SectionData> {
     const payload = await apiGet<{ items: Row[] }>("/api/v1/admin/generation/dead-letter");
     return { kind: "deadletter", rows: payload.items };
   }
+  if (sectionId === "generation/models") {
+    return fetchSection("generation/config", options);
+  }
   if (sectionId === "ops/providers") {
     const payload = await apiGet<ProviderOpsData>("/api/v1/admin/ops/providers");
     return { kind: "providers", data: payload };
   }
   if (sectionId === "generation/config") {
-    const [profiles, templates, presets, flags] = await Promise.all([
+    const [profiles, templates, presets, flags, jobs] = await Promise.all([
       apiGet<{ items: Row[] }>("/api/v1/admin/generation/model-profiles"),
       apiGet<{ items: Row[] }>("/api/v1/admin/generation/prompt-templates"),
       apiGet<{ items: Row[] }>("/api/v1/admin/generation/presets"),
       apiGet<{ items: Row[] }>("/api/v1/admin/feature-flags"),
+      apiGet<{ items: Row[] }>("/api/v1/admin/generation/jobs?mode=image&limit=12"),
     ]);
     return {
       kind: "config",
@@ -640,6 +1146,7 @@ async function fetchSection(sectionId: string): Promise<SectionData> {
         templates: templates.items,
         presets: presets.items,
         flags: flags.items,
+        recentJobs: jobs.items,
       },
     };
   }
@@ -687,6 +1194,10 @@ async function fetchSection(sectionId: string): Promise<SectionData> {
     const payload = await apiGet<{ items: Row[] }>("/api/v1/admin/audit-log");
     return { kind: "audit", rows: payload.items };
   }
+  if (sectionId === "support") {
+    const payload = await apiGet<{ items: Row[] }>("/api/v1/admin/support/requests");
+    return { kind: "support", rows: payload.items };
+  }
   if (sectionId === "content") {
     const [characters, featured] = await Promise.all([
       apiGet<{ items: Row[] }>("/api/v1/admin/content/characters"),
@@ -699,6 +1210,9 @@ async function fetchSection(sectionId: string): Promise<SectionData> {
       featuredIds: featured.characterIds,
     };
   }
+  if (sectionId === "content/production") return { kind: "selfFetch", view: "production" };
+  if (sectionId === "content/assets") return { kind: "selfFetch", view: "assets" };
+  if (sectionId === "content/placements") return { kind: "selfFetch", view: "placements" };
   if (sectionId === "content/official") return { kind: "selfFetch", view: "official" };
   if (sectionId === "content/templates") return { kind: "selfFetch", view: "templates" };
   if (sectionId === "content/tags") return { kind: "selfFetch", view: "tags" };
@@ -720,24 +1234,78 @@ async function fetchSection(sectionId: string): Promise<SectionData> {
     return { kind: "approvals", rows: payload.items };
   }
   if (sectionId === "chat") {
-    const [overview, sessions, events] = await Promise.all([
-      apiGet<{ configured: boolean; overview: Record<string, unknown> | null }>(
+    const filters = options.chatOps ?? defaultChatOpsFilters;
+    const common = {
+      userId: filters.userId,
+      limit: filters.limit,
+    };
+    const sessionQuery = queryString({
+      ...common,
+      characterId: filters.characterId,
+      status: filters.sessionStatus,
+    });
+    const usageQuery = queryString(common);
+    const eventQuery = queryString({
+      limit: filters.limit,
+      status: filters.eventStatus,
+      layer: filters.eventLayer,
+      policyCode: filters.policyCode,
+      targetId: filters.targetId,
+    });
+    const [overview, providerHealth, sessions, events] = await Promise.all([
+      apiGet<{
+        configured: boolean;
+        diagnostics?: ChatOpsDiagnostics;
+        overview: Record<string, unknown> | null;
+      }>(
         "/api/v1/admin/chat/overview",
       ),
-      apiGet<{ configured: boolean; items?: Row[] }>("/api/v1/admin/chat/sessions"),
-      apiGet<{ configured: boolean; items?: Row[] }>("/api/v1/admin/chat/moderation-events"),
+      apiGet<{ configured: boolean; diagnostics?: ChatOpsDiagnostics; items?: Row[] }>(
+        "/api/v1/admin/chat/provider-health",
+      ),
+      apiGet<{ configured: boolean; diagnostics?: ChatOpsDiagnostics; items?: Row[] }>(
+        `/api/v1/admin/chat/sessions${sessionQuery}`,
+      ),
+      apiGet<{ configured: boolean; diagnostics?: ChatOpsDiagnostics; items?: Row[] }>(
+        `/api/v1/admin/chat/moderation-events${eventQuery}`,
+      ),
     ]);
+    const usage = await apiGet<{ configured: boolean; diagnostics?: ChatOpsDiagnostics; items?: Row[] }>(
+      `/api/v1/admin/chat/usage${usageQuery}`,
+    );
+    const configured = overview.configured || providerHealth.configured || sessions.configured || events.configured || usage.configured;
+    const diagnostics =
+      overview.diagnostics ??
+      providerHealth.diagnostics ??
+      sessions.diagnostics ??
+      events.diagnostics ??
+      usage.diagnostics ??
+      null;
     return {
       kind: "chatops",
-      configured: overview.configured,
+      configured,
+      diagnostics,
       overview: overview.overview,
+      providerHealth: providerHealth.items ?? [],
       sessions: sessions.items ?? [],
+      usage: usage.items ?? [],
       events: events.items ?? [],
     };
   }
 
   const payload = await apiGet<DashboardData>("/api/v1/admin/dashboard");
   return { kind: "dashboard", data: payload };
+}
+
+function queryString(params: Record<string, string | undefined>) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    const trimmed = value?.trim();
+    if (!trimmed || trimmed === "all") continue;
+    query.set(key, trimmed);
+  }
+  const serialized = query.toString();
+  return serialized ? `?${serialized}` : "";
 }
 
 function canCreateModelProfile(draft: ModelDraft) {
@@ -749,31 +1317,26 @@ function canCreateModelProfile(draft: ModelDraft) {
   );
 }
 
-function modelDraftPayload(draft: ModelDraft): Record<string, unknown> {
-  return {
-    profileKey: draft.profileKey.trim(),
-    label: draft.label.trim(),
-    mode: draft.mode,
-    runner: draft.runner,
-    pipelineModel: draft.pipelineModel.trim(),
-    sourceModelPath: nullableText(draft.sourceModelPath),
-    convertedModelPath: nullableText(draft.convertedModelPath),
-    modelFormat: draft.modelFormat,
-    defaultWidth: intFromText(draft.defaultWidth, 768),
-    defaultHeight: intFromText(draft.defaultHeight, 1024),
-    allowedOrientations: parseCsv(draft.allowedOrientations),
-    steps: intFromText(draft.steps, 28),
-    sampler: draft.sampler.trim() || "dpmpp_2m",
-    cfgScale: numberFromText(draft.cfgScale, 7),
-    costMultiplier: numberFromText(draft.costMultiplier, 1),
-    requiredEntitlement: nullableText(draft.requiredEntitlement),
-    maxCount: intFromText(draft.maxCount, 4),
-    concurrencyLimit: 1,
-    enabled: true,
-    rolloutPercent: 100,
-    runnerConfig: jsonRecordFromText(draft.runnerConfigJson),
-    dryRunSummary: { source: "admin_console", status: "draft_created" },
-  };
+function runnerConfigForProfileTemplate(template: ModelProfileTemplateId) {
+  if (template === "text_identity_sdcpp") {
+    return {
+      templateIntent: "text_to_image_identity_seed",
+      capabilities: textIdentityCapabilities,
+    };
+  }
+  if (template === "reference_identity_sdcpp") {
+    return {
+      templateIntent: "image_to_image_identity_reference",
+      capabilities: referenceIdentityCapabilities,
+    };
+  }
+  if (template === "reference_identity_comfyui") {
+    return {
+      templateIntent: "comfyui_reference_identity",
+      capabilities: comfyReferenceIdentityCapabilities,
+    };
+  }
+  return {};
 }
 
 function templateDraftPayload(draft: TemplateDraft): Record<string, unknown> {
@@ -829,12 +1392,668 @@ function numberFromText(value: string, fallback: number) {
 
 function jsonRecordFromText(value: string) {
   const trimmed = value.trim();
-  if (!trimmed) return undefined;
+  if (!trimmed) return {};
   const parsed = JSON.parse(trimmed) as unknown;
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new Error("Runner Config must be a JSON object");
   }
   return parsed as Record<string, unknown>;
+}
+
+function stringRecordValue(value: Record<string, unknown>, key: string) {
+  const child = value[key];
+  return typeof child === "string" && child.trim() ? child.trim() : undefined;
+}
+
+function runnerConfigJsonWithApiModelId(
+  value: string,
+  apiModelId: string,
+  patch: Record<string, unknown> = {},
+) {
+  const config = jsonRecordFromText(value);
+  const patchConfig = isRecord(patch.runnerConfig) ? patch.runnerConfig : {};
+  const backend = stringPatch(patch, "backend");
+  const llmVisionPath = stringPatch(patch, "llmVisionPath");
+  return JSON.stringify(pruneUndefined({
+    ...config,
+    ...patchConfig,
+    apiModelId: stringRecordValue(patchConfig, "apiModelId") ?? apiModelId,
+    backend: backend || stringRecordValue(patchConfig, "backend") || stringRecordValue(config, "backend"),
+    llmVisionPath:
+      llmVisionPath ||
+      stringRecordValue(patchConfig, "llmVisionPath") ||
+      stringRecordValue(config, "llmVisionPath"),
+  }));
+}
+
+function runnerConfigJsonWithTemplate(
+  value: string,
+  template: ModelProfileTemplateId,
+  patch: Record<string, unknown> = {},
+) {
+  const config = jsonRecordFromTextOrEmpty(value);
+  const templateConfig = runnerConfigForProfileTemplate(template);
+  return JSON.stringify(pruneUndefined({
+    ...config,
+    ...patch,
+    profileTemplate: template,
+    templateIntent: templateConfig.templateIntent ?? stringRecordValue(config, "templateIntent"),
+    capabilities: templateConfig.capabilities ?? config.capabilities,
+  }));
+}
+
+function jsonRecordFromTextOrEmpty(value: string) {
+  try {
+    return jsonRecordFromText(value);
+  } catch {
+    return {};
+  }
+}
+
+function jsonArrayFromText(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return [];
+  const parsed = JSON.parse(trimmed) as unknown;
+  if (!Array.isArray(parsed)) throw new Error("LoRAs must be a JSON array");
+  return parsed;
+}
+
+function loraDraftsFromText(value: string): LoraDraft[] {
+  return jsonArrayFromText(value)
+    .map((item): LoraDraft | null => {
+      if (typeof item !== "object" || item === null || Array.isArray(item)) return null;
+      const record = item as Record<string, unknown>;
+      const key = typeof record.key === "string" ? record.key : "";
+      const pathValue = typeof record.path === "string" ? record.path : "";
+      const fileName = typeof record.fileName === "string" ? record.fileName : undefined;
+      const weight = typeof record.weight === "number" && Number.isFinite(record.weight) ? record.weight : 1;
+      const enabled = typeof record.enabled === "boolean" ? record.enabled : true;
+      if (!key.trim() && !pathValue.trim()) return null;
+      return { key, path: pathValue, fileName, weight, enabled };
+    })
+    .filter((item): item is LoraDraft => item !== null);
+}
+
+function loraDraftsToText(items: LoraDraft[]) {
+  return JSON.stringify(
+    items.map((item) =>
+      pruneUndefined({
+        key: item.key.trim() || undefined,
+        path: item.path.trim() || undefined,
+        fileName: item.fileName?.trim() || undefined,
+        weight: item.weight,
+        enabled: item.enabled,
+      }),
+    ),
+  );
+}
+
+function isSubmittableLora(item: LoraDraft) {
+  return item.enabled && Boolean(item.path.trim() || item.fileName?.trim());
+}
+
+type ParsedCivitaiConfig = {
+  steps?: number;
+  sampler?: string;
+  scheduler?: string;
+  cfgScale?: number;
+  width?: number;
+  height?: number;
+  modelName?: string;
+  vaeName?: string;
+  loras: Array<{ name: string; weight?: number }>;
+};
+
+type CivitaiApplyResult = {
+  draft: ModelDraft;
+  applied: string[];
+  warnings: string[];
+};
+
+function applyCivitaiConfig(
+  draft: ModelDraft,
+  input: string,
+  assets: ModelImportAsset[],
+  options: { includeLoras: boolean } = { includeLoras: false },
+): CivitaiApplyResult {
+  const parsed = parseCivitaiConfig(input);
+  let next = { ...draft };
+  const applied: string[] = [];
+  const warnings: string[] = [];
+
+  if (parsed.steps !== undefined) {
+    next = { ...next, steps: String(parsed.steps) };
+    applied.push("Steps");
+  }
+  if (parsed.cfgScale !== undefined) {
+    next = { ...next, cfgScale: String(parsed.cfgScale) };
+    applied.push("CFG");
+  }
+  if (parsed.width !== undefined) {
+    next = { ...next, defaultWidth: String(parsed.width) };
+    applied.push("Width");
+  }
+  if (parsed.height !== undefined) {
+    next = { ...next, defaultHeight: String(parsed.height) };
+    applied.push("Height");
+  }
+  if (parsed.sampler) {
+    const sampler = normalizeSamplerValue(parsed.sampler);
+    if (sampler) {
+      next = { ...next, sampler };
+      applied.push("Sampler");
+    } else {
+      warnings.push("Sampler was not recognized");
+    }
+  }
+  if (parsed.scheduler) {
+    const scheduler = normalizeSchedulerValue(parsed.scheduler);
+    if (scheduler) {
+      next = { ...next, scheduler };
+      applied.push("Scheduler");
+    } else {
+      warnings.push("Scheduler was not recognized");
+    }
+  }
+  if (parsed.modelName) {
+    const matchedModel = matchImportAsset(assets, parsed.modelName, "model");
+    if (matchedModel) {
+      next = applyModelImport(next, matchedModel);
+      applied.push("Main model");
+    } else {
+      const slug = slugFromName(parsed.modelName);
+      if (slug) {
+        next = {
+          ...next,
+          profileKey: `sdcpp_${slug}`,
+          label: titleFromName(parsed.modelName),
+          pipelineModel: slug,
+        };
+        applied.push("Model name");
+      }
+    }
+  }
+  if (parsed.vaeName) {
+    const matchedVae = matchImportAsset(assets, parsed.vaeName, "vae");
+    if (matchedVae) {
+      next = applyModelImport(next, matchedVae);
+      applied.push("VAE");
+    } else if (looksLikeModelPath(parsed.vaeName)) {
+      next = { ...next, vaePath: parsed.vaeName };
+      applied.push("VAE");
+    }
+  }
+  if (parsed.loras.length > 0 && !options.includeLoras) {
+    warnings.push("LoRA tags ignored by default");
+  }
+  if (parsed.loras.length > 0 && options.includeLoras) {
+    const existing = loraDraftsFromText(next.lorasJson);
+    const imported = parsed.loras.flatMap((lora) => {
+      const matched = matchImportAsset(assets, lora.name, "lora");
+      if (!matched) {
+        warnings.push("Some LoRA tags need matching local files");
+        return [];
+      }
+      return [{
+        key: slugFromName(lora.name) || lora.name,
+        path: matched.path,
+        fileName: matched.name,
+        weight: lora.weight ?? 1,
+        enabled: true,
+      }];
+    });
+    if (imported.length > 0) {
+      const merged = mergeLoraDrafts(existing, imported);
+      const firstMatched = imported.find((item) => item.path);
+      next = {
+        ...next,
+        loraModelDir: firstMatched?.path ? pathDirName(firstMatched.path) : next.loraModelDir,
+        lorasJson: loraDraftsToText(merged),
+      };
+      applied.push("LoRA Stack");
+    }
+  }
+
+  return { draft: next, applied: [...new Set(applied)], warnings: [...new Set(warnings)] };
+}
+
+function parseCivitaiConfig(input: string): ParsedCivitaiConfig {
+  const json = parseMaybeJson(input);
+  const text = input.trim();
+  const widthHeight = extractSize(text, json);
+  const loras = mergeCivitaiLoras(extractTextLoras(text), json ? collectJsonLoras(json) : []);
+  const sampler =
+    stringFromUnknown(findJsonValue(json, ["sampler", "samplername", "samplingmethod"])) ??
+    firstText(text, /(?:^|[,;\n])\s*Sampler\s*:\s*([^,\n]+)/i);
+  return {
+    steps: numberFromUnknown(findJsonValue(json, ["steps", "stepcount"])) ?? firstNumber(text, /(?:^|[,;\n])\s*Steps\s*:\s*([\d.]+)/i),
+    sampler,
+    scheduler:
+      stringFromUnknown(findJsonValue(json, ["scheduler", "schedulername", "schedule", "sigmascheduler"])) ??
+      firstText(text, /(?:^|[,;\n])\s*Scheduler\s*:\s*([^,\n]+)/i) ??
+      schedulerFromSamplerText(sampler),
+    cfgScale:
+      numberFromUnknown(findJsonValue(json, ["cfg", "cfgscale", "guidancescale", "scale"])) ??
+      firstNumber(text, /(?:^|[,;\n])\s*(?:CFG scale|CFG|Guidance scale)\s*:\s*([\d.]+)/i),
+    width: widthHeight.width,
+    height: widthHeight.height,
+    modelName:
+      stringFromUnknown(findJsonValue(json, ["model", "modelname", "checkpoint", "checkpointname"])) ??
+      firstText(text, /(?:^|[,;\n])\s*Model\s*:\s*([^,\n]+)/i),
+    vaeName:
+      stringFromUnknown(findJsonValue(json, ["vae", "vaename"])) ??
+      firstText(text, /(?:^|[,;\n])\s*VAE\s*:\s*([^,\n]+)/i),
+    loras,
+  };
+}
+
+function parseMaybeJson(input: string): unknown {
+  const trimmed = input.trim();
+  if (!trimmed || !["{", "["].includes(trimmed[0] ?? "")) return null;
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function extractSize(input: string, json: unknown): { width?: number; height?: number } {
+  const width = numberFromUnknown(findJsonValue(json, ["width", "w"]));
+  const height = numberFromUnknown(findJsonValue(json, ["height", "h"]));
+  if (width !== undefined && height !== undefined) return { width, height };
+  const sizeText = stringFromUnknown(findJsonValue(json, ["size", "resolution"]));
+  const sizeMatch = (sizeText ?? input).match(/(\d{2,5})\s*[xX]\s*(\d{2,5})/);
+  if (!sizeMatch) return {};
+  return {
+    width: Number.parseInt(sizeMatch[1] ?? "", 10),
+    height: Number.parseInt(sizeMatch[2] ?? "", 10),
+  };
+}
+
+function findJsonValue(value: unknown, keys: string[]): unknown {
+  if (value === null || value === undefined) return undefined;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findJsonValue(item, keys);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+  if (typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  for (const [key, child] of Object.entries(record)) {
+    if (keys.includes(normalizeMetadataKey(key))) return child;
+  }
+  for (const child of Object.values(record)) {
+    const found = findJsonValue(child, keys);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+function collectJsonLoras(value: unknown, fromLoraContainer = false): Array<{ name: string; weight?: number }> {
+  if (value === null || value === undefined) return [];
+  if (Array.isArray(value)) return value.flatMap((item) => collectJsonLoras(item, fromLoraContainer));
+  if (typeof value !== "object") return [];
+  const record = value as Record<string, unknown>;
+  const normalizedType = stringFromUnknown(record.type ?? record.modelType ?? record.resourceType)?.toLowerCase() ?? "";
+  const isLora = fromLoraContainer || normalizedType.includes("lora");
+  const name = stringFromUnknown(record.name ?? record.modelName ?? record.modelVersionName ?? record.loraName);
+  const current = isLora && name ? [{ name, weight: numberFromUnknown(record.weight ?? record.strength) }] : [];
+  const childLoras = Object.entries(record).flatMap(([key, child]) =>
+    collectJsonLoras(child, fromLoraContainer || normalizeMetadataKey(key).includes("lora")),
+  );
+  return mergeCivitaiLoras(current, childLoras);
+}
+
+function extractTextLoras(input: string): Array<{ name: string; weight?: number }> {
+  const loras: Array<{ name: string; weight?: number }> = [];
+  const loraRegex = /<lora:([^:>]+)(?::([\d.]+))?>/gi;
+  for (const match of input.matchAll(loraRegex)) {
+    const name = match[1]?.trim();
+    if (!name) continue;
+    loras.push({ name, weight: match[2] ? Number(match[2]) : undefined });
+  }
+  return mergeCivitaiLoras(loras);
+}
+
+function mergeCivitaiLoras(
+  first: Array<{ name: string; weight?: number }>,
+  second: Array<{ name: string; weight?: number }> = [],
+) {
+  const merged = new Map<string, { name: string; weight?: number }>();
+  for (const item of [...first, ...second]) {
+    const key = slugFromName(item.name);
+    if (!key) continue;
+    merged.set(key, item);
+  }
+  return [...merged.values()];
+}
+
+function mergeLoraDrafts(existing: LoraDraft[], incoming: LoraDraft[]) {
+  const merged = new Map<string, LoraDraft>();
+  for (const item of [...existing, ...incoming]) {
+    const key = item.path || item.key;
+    if (!key) continue;
+    merged.set(key, item);
+  }
+  return [...merged.values()];
+}
+
+function firstNumber(input: string, pattern: RegExp) {
+  const value = firstText(input, pattern);
+  if (!value) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function firstText(input: string, pattern: RegExp) {
+  return input.match(pattern)?.[1]?.trim();
+}
+
+function normalizeSamplerValue(input: string) {
+  const fingerprint = samplerFingerprint(input);
+  return (
+    samplerOptions.find((option) =>
+      [option.value, option.label, ...option.aliases].some((candidate) => samplerFingerprint(candidate) === fingerprint),
+    )?.value ?? ""
+  );
+}
+
+function samplerFingerprint(value: string) {
+  return value
+    .toLowerCase()
+    .replace(
+      /\b(model default|model-specific|model specific|discrete|karras|exponential|ays|gits|smoothstep|sgm uniform|sgm_uniform|simple|kl optimal|kl_optimal|bong tangent|bong_tangent|ltx2|logit normal|logit_normal|normal|scheduler|schedule)\b/g,
+      "",
+    )
+    .replace(/\+/g, "p")
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function normalizeSchedulerValue(input: string) {
+  const fingerprint = schedulerFingerprint(input);
+  return (
+    schedulerOptions.find((option) =>
+      [option.value, option.label, ...option.aliases].some((candidate) => schedulerFingerprint(candidate) === fingerprint),
+    )?.value ?? ""
+  );
+}
+
+function schedulerFromSamplerText(input: string | undefined) {
+  if (!input) return undefined;
+  const normalizedInput = input.toLowerCase().replace(/_/g, " ");
+  return schedulerOptions
+    .filter((option) => option.value !== "model_default" && option.value !== "lcm")
+    .find((option) =>
+      [option.value, option.label, ...option.aliases].some((candidate) =>
+        normalizedInput.includes(candidate.toLowerCase().replace(/_/g, " ")),
+      ),
+    )?.value;
+}
+
+function schedulerFingerprint(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/model[-_\s]?specific/g, "model default")
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function normalizeMetadataKey(key: string) {
+  return key.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function numberFromUnknown(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string") return undefined;
+  const parsed = Number(value.trim());
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function stringFromUnknown(value: unknown) {
+  if (typeof value === "string") return value.trim() || undefined;
+  if (typeof value === "number") return String(value);
+  return undefined;
+}
+
+function matchImportAsset(assets: ModelImportAsset[], name: string, kind: ModelImportKind) {
+  const target = slugFromName(name);
+  if (!target) return undefined;
+  return assets.find((asset) => asset.kind === kind && slugFromName(asset.name).includes(target));
+}
+
+function slugFromName(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/\.[a-z0-9]+$/i, "")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80);
+}
+
+function titleFromName(value: string) {
+  const words = value.replace(/\.[a-z0-9]+$/i, "").replace(/[_-]+/g, " ").trim();
+  return words || value.trim();
+}
+
+function looksLikeModelPath(value: string) {
+  return value.startsWith("/") || /\.(safetensors|gguf|ckpt|pt)$/i.test(value);
+}
+
+function pathDirName(value: string) {
+  const parts = value.split("/");
+  parts.pop();
+  return parts.join("/") || "";
+}
+
+function applyModelImport(draft: ModelDraft, asset: ModelImportAsset): ModelDraft {
+  const patch = asset.draftPatch;
+  if (asset.kind === "lora") {
+    const incoming = loraFromPatch(patch);
+    if (!incoming) return draft;
+    const loras = loraDraftsFromText(draft.lorasJson);
+    const nextLoras = [
+      ...loras.filter((item) => (item.path || item.key) !== (incoming.path || incoming.key)),
+      incoming,
+    ];
+    return {
+      ...draft,
+      loraModelDir: stringPatch(patch, "loraModelDir") || draft.loraModelDir,
+      lorasJson: loraDraftsToText(nextLoras),
+    };
+  }
+  if (asset.kind === "llm") {
+    return { ...draft, llmPath: stringPatch(patch, "llmPath") || draft.llmPath };
+  }
+  if (asset.kind === "vae") {
+    return { ...draft, vaePath: stringPatch(patch, "vaePath") || draft.vaePath };
+  }
+  const pipelineModel = stringPatch(patch, "pipelineModel") || draft.pipelineModel;
+  const profileTemplate = modelProfileTemplatePatch(patch) ?? draft.profileTemplate;
+  const patchedRunner = modelRunnerPatch(patch);
+  const runner =
+    patchedRunner ??
+    (profileTemplate === "reference_identity_comfyui"
+      ? "comfyui"
+      : profileTemplate === "advanced_custom"
+        ? draft.runner
+        : "sd_cpp");
+  return {
+    ...draft,
+    profileTemplate,
+    profileKey: stringPatch(patch, "profileKey") || draft.profileKey,
+    label: stringPatch(patch, "label") || draft.label,
+    runner,
+    pipelineModel,
+    sourceModelPath: stringPatch(patch, "sourceModelPath") || draft.sourceModelPath,
+    diffusionModelPath: stringPatch(patch, "diffusionModelPath") || draft.diffusionModelPath,
+    convertedModelPath:
+      typeof patch.convertedModelPath === "string" ? stringPatch(patch, "convertedModelPath") : draft.convertedModelPath,
+    modelFormat: asset.format,
+    conversionEnabled: booleanPatch(patch, "conversionEnabled", draft.conversionEnabled),
+    conversionType: stringPatch(patch, "conversionType") || draft.conversionType,
+    conversionSourceArg:
+      stringPatch(patch, "conversionSourceArg") === "model" ? "model" : "diffusion-model",
+    llmPath: stringPatch(patch, "llmPath") || draft.llmPath,
+    vaePath: stringPatch(patch, "vaePath") || draft.vaePath,
+    llmVisionPath: stringPatch(patch, "llmVisionPath") || draft.llmVisionPath,
+    backend: stringPatch(patch, "backend") || draft.backend,
+    steps: stringPatch(patch, "steps") || draft.steps,
+    sampler: stringPatch(patch, "sampler") || draft.sampler,
+    scheduler: stringPatch(patch, "scheduler") || draft.scheduler,
+    cfgScale: stringPatch(patch, "cfgScale") || draft.cfgScale,
+    runnerConfigJson: runnerConfigJsonWithApiModelId(draft.runnerConfigJson, pipelineModel, patch),
+  };
+}
+
+function modelProfileTemplatePatch(patch: Record<string, unknown>): ModelProfileTemplateId | null {
+  const value = stringPatch(patch, "profileTemplate");
+  return value === "text_identity_sdcpp" ||
+    value === "reference_identity_sdcpp" ||
+    value === "reference_identity_comfyui" ||
+    value === "advanced_custom"
+    ? value
+    : null;
+}
+
+function modelRunnerPatch(patch: Record<string, unknown>): ModelDraft["runner"] | null {
+  const value = stringPatch(patch, "runner");
+  return value === "pipeline" ||
+    value === "sd_cpp" ||
+    value === "mlx" ||
+    value === "comfyui" ||
+    value === "external"
+    ? value
+    : null;
+}
+
+function applyModelProfileTemplate(draft: ModelDraft, template: ModelProfileTemplateId): ModelDraft {
+  const base = { ...draft, profileTemplate: template };
+  if (template === "text_identity_sdcpp") {
+    return {
+      ...base,
+      mode: "image",
+      runner: "sd_cpp",
+      modelFormat: base.modelFormat === "external" ? "safetensors" : base.modelFormat,
+      defaultWidth: "960",
+      defaultHeight: "1440",
+      allowedOrientations: "3:4,4:5,1:1",
+      steps: "10",
+      sampler: "er_sde",
+      scheduler: "simple",
+      cfgScale: "1",
+      maxCount: "1",
+      runnerConfigJson: runnerConfigJsonWithTemplate(base.runnerConfigJson, template, {
+        apiModelId: base.pipelineModel,
+      }),
+    };
+  }
+  if (template === "reference_identity_sdcpp") {
+    return {
+      ...base,
+      mode: "image",
+      runner: "sd_cpp",
+      modelFormat: base.modelFormat === "external" ? "safetensors" : base.modelFormat,
+      defaultWidth: "768",
+      defaultHeight: "1024",
+      allowedOrientations: "4:5,3:4,1:1",
+      steps: "12",
+      sampler: "euler",
+      scheduler: "model_default",
+      cfgScale: "1",
+      maxCount: "1",
+      runnerConfigJson: runnerConfigJsonWithTemplate(base.runnerConfigJson, template, {
+        apiModelId: base.pipelineModel,
+      }),
+    };
+  }
+  if (template === "reference_identity_comfyui") {
+    return {
+      ...base,
+      mode: "image",
+      runner: "comfyui",
+      modelFormat: "safetensors",
+      defaultWidth: "512",
+      defaultHeight: "640",
+      allowedOrientations: "4:5,3:4,1:1",
+      steps: "8",
+      sampler: "euler",
+      scheduler: "model_default",
+      cfgScale: "1",
+      maxCount: "1",
+      conversionEnabled: false,
+      runnerConfigJson: runnerConfigJsonWithTemplate(base.runnerConfigJson, template, {
+        apiModelId: base.pipelineModel,
+        requiredComponents: ["reference workflow", "text encoder", "vae", "reference adapter"],
+      }),
+    };
+  }
+  return {
+    ...base,
+    runnerConfigJson: runnerConfigJsonWithTemplate(base.runnerConfigJson, template),
+  };
+}
+
+function mergeImportAsset(
+  current: ModelImportLibrary | null,
+  result: ModelImportResult,
+): ModelImportLibrary {
+  const items = current?.items ?? [];
+  const incoming = modelImportResultAssets(result);
+  const incomingPaths = new Set(incoming.map((item) => item.path));
+  return {
+    roots: result.roots,
+    maxUploadBytes: current?.maxUploadBytes ?? 0,
+    items: [...incoming, ...items.filter((item) => !incomingPaths.has(item.path))],
+  };
+}
+
+function modelImportResultAssets(result: ModelImportResult) {
+  if (result.assets?.length) return result.assets;
+  return result.asset ? [result.asset] : [];
+}
+
+function loraFromPatch(patch: Record<string, unknown>): LoraDraft | null {
+  const lora = patch.lora;
+  if (typeof lora !== "object" || lora === null || Array.isArray(lora)) return null;
+  const record = lora as Record<string, unknown>;
+  const key = typeof record.key === "string" ? record.key : "";
+  const pathValue = typeof record.path === "string" ? record.path : "";
+  if (!key.trim() && !pathValue.trim()) return null;
+  return {
+    key,
+    path: pathValue,
+    fileName: typeof record.fileName === "string" ? record.fileName : undefined,
+    weight: typeof record.weight === "number" && Number.isFinite(record.weight) ? record.weight : 1,
+    enabled: typeof record.enabled === "boolean" ? record.enabled : true,
+  };
+}
+
+function stringPatch(patch: Record<string, unknown>, key: string) {
+  const value = patch[key];
+  return typeof value === "string" ? value : "";
+}
+
+function booleanPatch(patch: Record<string, unknown>, key: string, fallback: boolean) {
+  const value = patch[key];
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function formatBytes(value: number) {
+  if (value < 1024) return `${value} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let size = value / 1024;
+  let unit = units[0];
+  for (let index = 1; index < units.length && size >= 1024; index += 1) {
+    size /= 1024;
+    unit = units[index];
+  }
+  return `${size >= 10 ? size.toFixed(0) : size.toFixed(1)} ${unit}`;
+}
+
+function pruneUndefined(value: Record<string, unknown>) {
+  return Object.fromEntries(Object.entries(value).filter(([, child]) => child !== undefined));
 }
 
 function renderSection(
@@ -843,12 +2062,11 @@ function renderSection(
     openAction: (action: PendingAction) => void;
     adjustment: { userId: string; delta: string };
     setAdjustment: (value: { userId: string; delta: string }) => void;
-    modelDraft: ModelDraft;
-    setModelDraft: (value: ModelDraft) => void;
+    selectedProfileId: string | null;
+    setSelectedProfileId: (value: string | null) => void;
     templateDraft: TemplateDraft;
     setTemplateDraft: (value: TemplateDraft) => void;
-    configBusy: "model" | "template" | null;
-    createModelProfile: () => void;
+    configBusy: "template" | null;
     createPromptTemplate: () => void;
     pricingDraft: PricingDraft;
     setPricingDraft: (value: PricingDraft) => void;
@@ -856,7 +2074,10 @@ function renderSection(
     createPricingRule: () => void;
     permissionForm: PermissionForm;
     setPermissionForm: (value: PermissionForm) => void;
-    reload: () => void;
+    chatOpsFilters: ChatOpsFilters;
+    setChatOpsFilters: (value: ChatOpsFilters) => void;
+    applyChatOpsFilters: (value: ChatOpsFilters) => void;
+    reload: () => void | Promise<void>;
   },
 ) {
   if (!section) return null;
@@ -866,12 +2087,12 @@ function renderSection(
     return (
       <ConfigView
         configBusy={ctx.configBusy}
-        createModelProfile={ctx.createModelProfile}
         createPromptTemplate={ctx.createPromptTemplate}
         data={section.data}
-        modelDraft={ctx.modelDraft}
         openAction={ctx.openAction}
-        setModelDraft={ctx.setModelDraft}
+        reload={ctx.reload}
+        selectedProfileId={ctx.selectedProfileId}
+        setSelectedProfileId={ctx.setSelectedProfileId}
         setTemplateDraft={ctx.setTemplateDraft}
         templateDraft={ctx.templateDraft}
       />
@@ -948,10 +2169,16 @@ function renderSection(
       />
     );
   }
+  if (section.kind === "support") {
+    return <SupportRequestsView rows={section.rows} openAction={ctx.openAction} />;
+  }
   if (section.kind === "approvals") {
     return <ApprovalsView rows={section.rows} openAction={ctx.openAction} />;
   }
   if (section.kind === "selfFetch") {
+    if (section.view === "production") return <ProductionStudioView />;
+    if (section.view === "assets") return <AssetLibraryView />;
+    if (section.view === "placements") return <PlacementsView />;
     if (section.view === "official") return <OfficialCharactersView />;
     if (section.view === "templates") return <TemplatesView />;
     if (section.view === "tags") return <TagsView />;
@@ -966,9 +2193,15 @@ function renderSection(
     return (
       <ChatOpsView
         configured={section.configured}
+        diagnostics={section.diagnostics}
         events={section.events}
+        filters={ctx.chatOpsFilters}
         overview={section.overview}
+        onApplyFilters={ctx.applyChatOpsFilters}
+        onFiltersChange={ctx.setChatOpsFilters}
+        providerHealth={section.providerHealth}
         sessions={section.sessions}
+        usage={section.usage}
       />
     );
   }
@@ -976,11 +2209,21 @@ function renderSection(
 }
 
 function DashboardView({ data }: { data: DashboardData }) {
+  const { t } = useAdminI18n();
+
   return (
     <div className="space-y-5">
       <div className="grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-4">
-        <Metric label="Users" value={data.metrics.users.active} meta={`${data.metrics.users.suspended} suspended`} />
-        <Metric label="Generation" value={`${data.metrics.generation.successRate}%`} meta={`${data.metrics.generation.queued} queued`} />
+        <Metric
+          label="Users"
+          value={data.metrics.users.active}
+          meta={t("{count} suspended", { count: data.metrics.users.suspended })}
+        />
+        <Metric
+          label="Generation"
+          value={`${data.metrics.generation.successRate}%`}
+          meta={t("{count} queued", { count: data.metrics.generation.queued })}
+        />
         <Metric label="Moderation" value={data.metrics.moderation.openReports} meta="open reports" />
         <Metric label="Billing" value={data.metrics.billing.activeSubscriptions} meta="active subscriptions" />
       </div>
@@ -1000,376 +2243,2331 @@ function JobsView({
   rows: Row[];
   openAction: (action: PendingAction) => void;
 }) {
+  const { locale, t } = useAdminI18n();
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+  const [detail, setDetail] = useState<GenerationJobDetail | null>(null);
+  const [detailBusy, setDetailBusy] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
+
+  async function openJobDetail(id: string) {
+    if (!id) return;
+    setSelectedJobId(id);
+    setDetail(null);
+    setDetailError(null);
+    setDetailBusy(true);
+    try {
+      setDetail(await apiGet<GenerationJobDetail>(`/api/v1/admin/generation/jobs/${id}`));
+    } catch (error) {
+      setDetailError(error instanceof Error ? error.message : t("Job detail load failed"));
+    } finally {
+      setDetailBusy(false);
+    }
+  }
+
   return (
-    <DataTable
-      actions={(row) => {
-        const id = stringValue(row.id);
-        const status = stringValue(row.status);
-        if (status !== "failed") return null;
+    <div className="space-y-4">
+      <DataTable
+        actions={(row) => {
+          const id = stringValue(row.id);
+          const status = stringValue(row.status);
+          return (
+            <div className="flex flex-wrap gap-1">
+              <IconAction
+                icon={<FileText className="h-4 w-4" />}
+                label="Details"
+                onClick={() => void openJobDetail(id)}
+              />
+              {status === "failed" ? (
+                <IconAction
+                  icon={<RefreshCcw className="h-4 w-4" />}
+                  label="Requeue"
+                  onClick={() =>
+                    openAction({
+                      title: `Requeue ${id}`,
+                      endpoint: `/api/v1/admin/generation/jobs/${id}/requeue`,
+                      method: "POST",
+                      confirmText: "REQUEUE",
+                      reasonRequired: false,
+                      body: (actionReason) => ({
+                        reason: actionReason || undefined,
+                        confirmation: "REQUEUE",
+                      }),
+                    })
+                  }
+                />
+              ) : null}
+            </div>
+          );
+        }}
+        columns={["id", "userId", "mode", "status", "profileId", "profileVersion", "costDreamcoins", "errorCode", "createdAt"]}
+        rows={rows}
+        title="Generation Jobs"
+      />
+      {selectedJobId ? (
+        <GenerationJobInspector
+          detail={detail}
+          error={detailError}
+          jobId={selectedJobId}
+          loading={detailBusy}
+          locale={locale}
+          onClose={() => {
+            setSelectedJobId(null);
+            setDetail(null);
+            setDetailError(null);
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function GenerationJobInspector({
+  detail,
+  error,
+  jobId,
+  loading,
+  locale,
+  onClose,
+}: {
+  detail: GenerationJobDetail | null;
+  error: string | null;
+  jobId: string;
+  loading: boolean;
+  locale: AdminLocale;
+  onClose: () => void;
+}) {
+  const { t, value } = useAdminI18n();
+  const job = detail?.job ?? null;
+  const assets = detail?.assets ?? [];
+  const providerError = detail?.providerError ?? null;
+  const timeline = detail?.timeline ?? [];
+
+  return (
+    <section className="border border-white/10 bg-[rgb(18,18,18)]">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-white/10 p-4">
+        <div className="min-w-0">
+          <p className="text-xs font-semibold uppercase text-[rgb(170,170,170)]">{t("Generation job detail")}</p>
+          <h2 className="mt-1 truncate font-mono text-base font-semibold">{shortId(jobId)}</h2>
+        </div>
+        <button
+          aria-label={t("Close")}
+          className="grid h-8 w-8 place-items-center border border-white/10 text-[rgb(170,170,170)] hover:bg-white/10"
+          onClick={onClose}
+          type="button"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+
+      {loading ? (
+        <div className="flex h-28 items-center justify-center text-sm text-[rgb(170,170,170)]">
+          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          {t("Loading job detail")}
+        </div>
+      ) : null}
+
+      {error ? (
+        <div className="m-4 border border-red-400/30 bg-red-950/30 px-3 py-2 text-sm text-red-100">
+          {error}
+        </div>
+      ) : null}
+
+      {job ? (
+        <div className="grid gap-px bg-white/10 lg:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
+          <div className="space-y-4 bg-[rgb(18,18,18)] p-4">
+            <div className="grid gap-3 sm:grid-cols-4">
+              <Metric label="Status" value={value(stringValue(job.status) || "-")} meta={compactDate(stringValue(job.createdAt), locale)} />
+              <Metric label="Mode" value={value(stringValue(job.mode) || "-")} meta={stringValue(job.provider) || "-"} />
+              <Metric label="Profile" value={shortId(stringValue(job.profileId) || "-")} meta={`v${numberValue(job.profileVersion) || "-"}`} />
+              <Metric label="Cost" value={numberValue(job.costDreamcoins)} meta="dreamcoins" />
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <TextPanel label="Prompt" value={stringValue(job.prompt)} />
+              <TextPanel label="Negative prompt" value={stringValue(job.negativePrompt)} />
+            </div>
+            {providerError ? (
+              <div className="border border-red-400/30 bg-red-950/20 p-3 text-xs text-red-100">
+                <p className="font-semibold">{t("Provider error")}</p>
+                <code className="mt-2 block break-words text-red-100/80">
+                  {JSON.stringify(providerError)}
+                </code>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="space-y-4 bg-[rgb(18,18,18)] p-4">
+            <div>
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-sm font-semibold">{t("Generated assets")}</h3>
+                <span className="text-xs text-[rgb(170,170,170)]">{assets.length}</span>
+              </div>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                {assets.map((asset) => {
+                  const url = stringValue(asset.thumbnailUrl) || stringValue(asset.url);
+                  return (
+                    <div className="border border-white/10 bg-black/20 p-2" key={stringValue(asset.id) || url}>
+                      <SafeImagePreview alt={t("Generated asset")} src={url} />
+                      <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-[rgb(170,170,170)]">
+                        <span>{value(stringValue(asset.type))}</span>
+                        <span>{value(stringValue(asset.safetyStatus))}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+                {assets.length === 0 ? (
+                  <div className="border border-white/10 bg-black/20 px-3 py-8 text-center text-sm text-[rgb(170,170,170)] sm:col-span-2">
+                    {t("No generated assets")}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-sm font-semibold">{t("Timeline")}</h3>
+                <span className="text-xs text-[rgb(170,170,170)]">{timeline.length}</span>
+              </div>
+              <div className="mt-3 max-h-72 overflow-y-auto border border-white/10">
+                {timeline.map((event, index) => (
+                  <div className="border-b border-white/5 p-3 text-xs last:border-0" key={`${event.at}-${event.type}-${index}`}>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-semibold text-[rgb(230,230,230)]">{value(event.type)}</span>
+                      <span className="text-[rgb(114,113,112)]">{compactDate(event.at, locale)}</span>
+                    </div>
+                    <p className="mt-1 text-[rgb(170,170,170)]">{event.message}</p>
+                  </div>
+                ))}
+                {timeline.length === 0 ? (
+                  <div className="px-3 py-8 text-center text-sm text-[rgb(170,170,170)]">
+                    {t("No timeline events")}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function ProfileReleaseWorkbench({
+  jobs,
+  onOpenAction,
+  onReload,
+  onSelectProfile,
+  profiles,
+  selectedProfile,
+}: {
+  jobs: Row[];
+  onOpenAction: (action: PendingAction) => void;
+  onReload: () => void | Promise<void>;
+  onSelectProfile: (value: string | null) => void;
+  profiles: Row[];
+  selectedProfile: Row | null;
+}) {
+  const { locale, t, value } = useAdminI18n();
+  const [testPrompt, setTestPrompt] = useState("cinematic portrait, natural skin texture, soft studio lighting");
+  const [testBusy, setTestBusy] = useState(false);
+  const [testNotice, setTestNotice] = useState<string | null>(null);
+  const [testError, setTestError] = useState<string | null>(null);
+  const [watchJobId, setWatchJobId] = useState<string | null>(null);
+
+  const selectedId = stringValue(selectedProfile?.id);
+  const selectedKey = stringValue(selectedProfile?.profileKey);
+  const selectedStatus = stringValue(selectedProfile?.status);
+  const selectedMode = stringValue(selectedProfile?.mode);
+  const selectedVersion = numberValue(selectedProfile?.version);
+  const selectedOrientation = firstString(jsonStringArrayValue(selectedProfile?.allowedOrientations), "1:1");
+  const relatedJobs = useMemo(
+    () => profileRelatedJobs(jobs, selectedProfile),
+    [jobs, selectedProfile],
+  );
+  const latestJob = relatedJobs[0] ?? null;
+  const latestAsset = latestImageAsset(relatedJobs);
+  const watchedJob = watchJobId ? jobs.find((job) => stringValue(job.id) === watchJobId) ?? null : null;
+  const dryRun = dryRunSummary(selectedProfile?.dryRunSummary);
+  const verification = profileVerificationSummary(selectedProfile);
+  const canTest = Boolean(selectedProfile && selectedMode === "image" && selectedStatus !== "archived");
+  const canPublish = Boolean(selectedProfile && selectedStatus === "draft");
+  const publishBlocked = Boolean(verification.blockedReason);
+
+  useEffect(() => {
+    if (!watchJobId) return;
+    if (watchedJob && isTerminalJobStatus(stringValue(watchedJob.status))) {
+      const timer = window.setTimeout(() => setWatchJobId(null), 0);
+      return () => window.clearTimeout(timer);
+    }
+    const timer = window.setInterval(() => {
+      void onReload();
+    }, 2_000);
+    return () => window.clearInterval(timer);
+  }, [onReload, watchedJob, watchJobId]);
+
+  async function createTestImage() {
+    if (!selectedId || !canTest) return;
+    setTestBusy(true);
+    setTestNotice(null);
+    setTestError(null);
+    try {
+      const result = await apiWrite<{ job: Row }>(
+        `/api/v1/admin/generation/model-profiles/${selectedId}/test-job`,
+        "POST",
+        {
+          prompt: testPrompt.trim() || undefined,
+          orientation: selectedOrientation,
+          outputCount: 1,
+          reason: "Admin image test from Generation Config",
+          confirmation: "TEST",
+        },
+      );
+      const jobId = stringValue(result.job.id);
+      setWatchJobId(jobId || null);
+      setTestNotice(jobId ? t("Test image queued: {id}", { id: shortId(jobId) }) : t("Test image queued"));
+      await onReload();
+    } catch (error) {
+      setTestError(error instanceof Error ? error.message : t("Test image failed"));
+    } finally {
+      setTestBusy(false);
+    }
+  }
+
+  if (!selectedProfile) {
+    return (
+      <section className="min-w-0 border border-white/10 bg-[rgb(18,18,18)] p-4">
+        <div className="flex items-center gap-2 text-sm text-[rgb(170,170,170)]">
+          <ImageIcon className="h-4 w-4" />
+          {t("No built-in generation profiles are seeded yet.")}
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="min-w-0 border border-white/10 bg-[rgb(18,18,18)]">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-white/10 p-4">
+        <div className="min-w-0">
+          <p className="text-xs font-semibold uppercase text-[rgb(170,170,170)]">
+            {t("Publish test workspace")}
+          </p>
+          <h2 className="mt-1 truncate text-lg font-semibold">{adminValueLabel(locale, stringValue(selectedProfile.label) || selectedKey)}</h2>
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[rgb(170,170,170)]">
+            <Status locale={locale} value={selectedStatus} tone={selectedStatus === "active" ? "good" : "warn"} />
+            <span className="max-w-full break-all font-mono">{selectedKey}</span>
+            <span>v{selectedVersion || "-"}</span>
+            <span>{value(selectedMode)}</span>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Link
+            className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm text-[rgb(230,230,230)] hover:bg-white/10"
+            href="/admin/generation/jobs"
+          >
+            <ExternalLink className="h-4 w-4" />
+            {t("Open jobs")}
+          </Link>
+          <button
+            className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm text-[rgb(230,230,230)] hover:bg-white/10"
+            onClick={() => void onReload()}
+            type="button"
+          >
+            <RefreshCcw className="h-4 w-4" />
+            {t("Refresh")}
+          </button>
+        </div>
+      </div>
+
+      <div className="grid min-w-0 gap-px bg-white/10 lg:grid-cols-[minmax(0,1fr)_380px]">
+        <div className="min-w-0 space-y-4 bg-[rgb(18,18,18)] p-4">
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">
+              {t("Selected profile")}
+            </span>
+            <select
+              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+              onChange={(event) => onSelectProfile(event.target.value || null)}
+              value={selectedId}
+            >
+              {profileOptions(profiles).map((profile) => (
+                <option key={stringValue(profile.id)} value={stringValue(profile.id)}>
+                  {profileOptionLabel(profile)}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <div className="grid min-w-0 gap-3 md:grid-cols-4">
+            <Metric label="Dry Run" value={value(dryRun.status)} meta={dryRun.meta} />
+            <Metric label="Verification" value={value(verification.status)} meta={verification.meta} />
+            <Metric label="Latest job" value={latestJob ? value(stringValue(latestJob.status)) : "-"} meta={latestJob ? shortId(stringValue(latestJob.id)) : t("No test jobs")} />
+            <Metric
+              label="Output size"
+              value={`${numberValue(selectedProfile.defaultWidth) || "-"}x${numberValue(selectedProfile.defaultHeight) || "-"}`}
+              meta={selectedOrientation}
+            />
+          </div>
+          <ProfileVerificationPanel summary={verification} />
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm text-[rgb(230,230,230)] hover:bg-white/10"
+              onClick={() =>
+                onOpenAction({
+                  title: `Dry run profile ${selectedId}`,
+                  endpoint: `/api/v1/admin/generation/model-profiles/${selectedId}/dry-run`,
+                  method: "POST",
+                  confirmText: "DRYRUN",
+                  reasonRequired: true,
+                  body: (actionReason) => ({ reason: actionReason, confirmation: "DRYRUN" }),
+                })
+              }
+              type="button"
+            >
+              <Activity className="h-4 w-4" />
+              {t("Dry Run")}
+            </button>
+            <button
+              className="inline-flex h-9 items-center gap-2 bg-white px-3 text-sm font-semibold text-black hover:bg-[rgb(230,230,230)] disabled:opacity-50"
+              disabled={!canTest || testBusy}
+              onClick={() => void createTestImage()}
+              type="button"
+            >
+              {testBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              {t("Test Image")}
+            </button>
+            <button
+              className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm text-[rgb(230,230,230)] hover:bg-white/10 disabled:opacity-50"
+              disabled={!canPublish || publishBlocked}
+              onClick={() => onOpenAction(publishProfileAction(selectedId, selectedMode, selectedProfile))}
+              type="button"
+            >
+              <UploadCloud className="h-4 w-4" />
+              {t("Publish")}
+            </button>
+          </div>
+
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">
+              {t("Test prompt")}
+            </span>
+            <textarea
+              className="min-h-24 w-full resize-y border border-white/10 bg-black/30 px-3 py-2 text-sm leading-6 outline-none focus:border-white/30"
+              onChange={(event) => setTestPrompt(event.target.value)}
+              value={testPrompt}
+            />
+          </label>
+
+          {testNotice ? (
+            <div className="border border-emerald-400/30 bg-emerald-950/20 px-3 py-2 text-sm text-emerald-100">
+              {testNotice}
+            </div>
+          ) : null}
+          {testError ? (
+            <div className="border border-red-400/30 bg-red-950/30 px-3 py-2 text-sm text-red-100">
+              {testError}
+            </div>
+          ) : null}
+        </div>
+
+        <div className="min-w-0 bg-[rgb(18,18,18)] p-4">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-sm font-semibold">{t("Latest test image")}</h3>
+            {latestJob ? (
+              <span className="text-xs text-[rgb(170,170,170)]">{compactDate(stringValue(latestJob.createdAt), locale)}</span>
+            ) : null}
+          </div>
+          <div className="mt-3 aspect-[4/5] overflow-hidden border border-white/10 bg-black/30">
+            {latestAsset ? (
+              <a href={latestAsset.url} rel="noreferrer" target="_blank">
+                <SafeImagePreview alt={t("Latest test image")} src={latestAsset.thumbnailUrl || latestAsset.url} />
+              </a>
+            ) : (
+              <div className="flex h-full items-center justify-center px-6 text-center text-sm text-[rgb(170,170,170)]">
+                {latestJob
+                  ? isTerminalJobStatus(stringValue(latestJob.status))
+                    ? t("No image generated: {status}", { status: value(stringValue(latestJob.status)) })
+                    : t("Waiting for generated asset")
+                  : t("No test image yet")}
+              </div>
+            )}
+          </div>
+          <div className="mt-3 space-y-2 text-xs text-[rgb(170,170,170)]">
+            {relatedJobs.slice(0, 4).map((job) => (
+              <div key={stringValue(job.id)} className="flex items-center justify-between gap-2 border border-white/10 px-2 py-1">
+                <span className="font-mono">{shortId(stringValue(job.id))}</span>
+                <span>{value(stringValue(job.status))}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ConfigOverviewHeader({
+  jobs,
+  profiles,
+  templates,
+}: {
+  jobs: Row[];
+  profiles: Row[];
+  templates: Row[];
+}) {
+  const { t } = useAdminI18n();
+  const draftCount = profiles.filter((profile) => stringValue(profile.status) === "draft").length;
+  const activeCount = profiles.filter((profile) => stringValue(profile.status) === "active").length;
+  const completedJobs = jobs.filter((job) => stringValue(job.status) === "completed").length;
+
+  return (
+    <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <p className="text-xs font-semibold uppercase text-[rgb(170,170,170)]">{t("Profiles & Rollout")}</p>
+          <h2 className="mt-1 text-lg font-semibold">{t("Built-in profiles, test, publish, monitor")}</h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-[rgb(170,170,170)]">
+            {t("Operate seeded generation profiles here; model files and runner templates stay in engineering-owned config.")}
+          </p>
+        </div>
+      </div>
+      <div className="mt-4 grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-4">
+        <Metric label="Drafts" value={draftCount} meta="ready to test" />
+        <Metric label="Published" value={activeCount} meta="status = active" />
+        <Metric label="Test jobs" value={jobs.length} meta={`${completedJobs} completed`} />
+        <Metric label="Prompt Recipes" value={templates.length} meta="recipe records" />
+      </div>
+    </section>
+  );
+}
+
+function ConfigTabNav({
+  active,
+  counts,
+  onChange,
+}: {
+  active: ConfigTab;
+  counts: Record<ConfigTab, number | string>;
+  onChange: (tab: ConfigTab) => void;
+}) {
+  const { t } = useAdminI18n();
+  const items: Array<{ id: ConfigTab; label: string; meta: string }> = [
+    { id: "drafts", label: "Drafts", meta: "Test and publish" },
+    { id: "published", label: "Published", meta: "Active and archived" },
+    { id: "templates", label: "Prompt Recipes", meta: "Prompt drafts" },
+    { id: "settings", label: "Settings", meta: "Presets and flags" },
+  ];
+
+  return (
+    <div className="grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-4">
+      {items.map((item) => {
+        const selected = active === item.id;
         return (
-          <IconAction
-            icon={<RefreshCcw className="h-4 w-4" />}
-            label="Requeue"
-            onClick={() =>
-              openAction({
-                title: `Requeue ${id}`,
-                endpoint: `/api/v1/admin/generation/jobs/${id}/requeue`,
-                method: "POST",
-                confirmText: "REQUEUE",
-                reasonRequired: false,
-                body: (actionReason) => ({
-                  reason: actionReason || undefined,
-                  confirmation: "REQUEUE",
-                }),
-              })
-            }
-          />
+          <button
+            aria-current={selected ? "page" : undefined}
+            className={cn(
+              "bg-[rgb(18,18,18)] px-3 py-3 text-left hover:bg-white/[0.06]",
+              selected && "bg-white text-black hover:bg-white",
+            )}
+            key={item.id}
+            onClick={() => onChange(item.id)}
+            type="button"
+          >
+            <span className="flex items-center justify-between gap-2">
+              <span className="text-sm font-semibold">{t(item.label)}</span>
+              <span
+                className={cn(
+                  "font-mono text-xs",
+                  selected ? "text-black/60" : "text-[rgb(170,170,170)]",
+                )}
+              >
+                {counts[item.id]}
+              </span>
+            </span>
+            <span className={cn("mt-1 block text-xs", selected ? "text-black/60" : "text-[rgb(170,170,170)]")}>
+              {t(item.meta)}
+            </span>
+          </button>
         );
-      }}
-      columns={["id", "userId", "mode", "status", "profileId", "profileVersion", "costDreamcoins", "errorCode", "createdAt"]}
-      rows={rows}
-      title="Generation Jobs"
-    />
+      })}
+    </div>
+  );
+}
+
+function ProfileDraftManager({
+  drafts,
+  jobs,
+  onOpenAction,
+  onSelectProfile,
+  selectedProfileId,
+}: {
+  drafts: Row[];
+  jobs: Row[];
+  onOpenAction: (action: PendingAction) => void;
+  onSelectProfile: (value: string | null) => void;
+  selectedProfileId: string | null;
+}) {
+  const { locale, t, value } = useAdminI18n();
+  const sortedDrafts = profileOptions(drafts);
+
+  return (
+    <section className="min-w-0 border border-white/10 bg-[rgb(18,18,18)]">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-white/10 p-4">
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold">{t("Draft manager")}</h2>
+          <p className="mt-1 text-xs leading-5 text-[rgb(170,170,170)]">
+            {t("Drafts are seeded from built-in profiles so operators can test readiness without managing model files.")}
+          </p>
+        </div>
+      </div>
+
+      <div className="min-w-0 divide-y divide-white/10">
+        {sortedDrafts.map((profile) => {
+          const id = stringValue(profile.id);
+          const selected = selectedProfileId === id;
+          const dryRun = dryRunSummary(profile.dryRunSummary);
+          const verification = profileVerificationSummary(profile);
+          const publishBlocked = Boolean(verification.blockedReason);
+          const latestJob = profileRelatedJobs(jobs, profile)[0] ?? null;
+          const source = profileSourceLabel(profile);
+          return (
+            <article
+              className={cn(
+                "min-w-0 p-4",
+                selected && "bg-white/[0.06]",
+              )}
+              key={id || stringValue(profile.profileKey)}
+            >
+              <div className="flex min-w-0 items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h3 className="truncate text-sm font-semibold">
+                    {profileDisplayName(profile, locale)}
+                  </h3>
+                  <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-xs text-[rgb(170,170,170)]">
+                    <span className="max-w-full break-all font-mono">{stringValue(profile.profileKey) || id}</span>
+                    <span>v{numberValue(profile.version) || "-"}</span>
+                    <span>{value(stringValue(profile.runner))}</span>
+                  </div>
+                </div>
+                <Status locale={locale} value="draft" tone="warn" />
+              </div>
+
+              <div className="mt-3 grid min-w-0 gap-2 text-xs sm:grid-cols-2">
+                <SummaryRow label="Source" value={source || "-"} />
+                <SummaryRow
+                  label="Size"
+                  value={`${numberValue(profile.defaultWidth) || "-"} x ${numberValue(profile.defaultHeight) || "-"}`}
+                />
+                <SummaryRow label="Dry Run" value={`${value(dryRun.status)} (${dryRun.meta})`} />
+                <SummaryRow label="Verification" value={`${value(verification.status)} (${verification.meta})`} />
+                <SummaryRow
+                  label="Latest job"
+                  value={latestJob ? `${shortId(stringValue(latestJob.id))} ${value(stringValue(latestJob.status))}` : t("No test jobs")}
+                />
+              </div>
+              <ProfileVerificationPanel compact summary={verification} />
+
+              <div className="mt-3 flex flex-wrap gap-2">
+                <IconAction
+                  icon={<Check className="h-4 w-4" />}
+                  label="Select"
+                  onClick={() => onSelectProfile(id || null)}
+                />
+                <IconAction
+                  icon={<Activity className="h-4 w-4" />}
+                  label="Dry Run"
+                  onClick={() => onOpenAction(dryRunProfileAction(id))}
+                />
+                <IconAction
+                  icon={<UploadCloud className="h-4 w-4" />}
+                  label="Publish"
+                  disabled={publishBlocked}
+                  onClick={() => onOpenAction(publishProfileAction(id, stringValue(profile.mode), profile))}
+                />
+              </div>
+            </article>
+          );
+        })}
+        {sortedDrafts.length === 0 ? (
+          <div className="p-6 text-sm text-[rgb(170,170,170)]">
+            <p>{t("No built-in draft profiles are seeded yet.")}</p>
+          </div>
+        ) : null}
+      </div>
+    </section>
   );
 }
 
 function ConfigView({
   configBusy,
-  createModelProfile,
   createPromptTemplate,
   data,
-  modelDraft,
   openAction,
-  setModelDraft,
+  reload,
+  selectedProfileId,
+  setSelectedProfileId,
   setTemplateDraft,
   templateDraft,
 }: {
-  configBusy: "model" | "template" | null;
-  createModelProfile: () => void;
+  configBusy: "template" | null;
   createPromptTemplate: () => void;
   data: ConfigData;
-  modelDraft: ModelDraft;
   openAction: (action: PendingAction) => void;
-  setModelDraft: (value: ModelDraft) => void;
+  reload: () => void | Promise<void>;
+  selectedProfileId: string | null;
+  setSelectedProfileId: (value: string | null) => void;
   setTemplateDraft: (value: TemplateDraft) => void;
   templateDraft: TemplateDraft;
 }) {
+  const [initialUrlState] = useState(() => readConfigUrlState());
+  const [configTab, setConfigTab] = useState<ConfigTab>(() => initialUrlState.tab ?? "drafts");
+  const selectedProfile = useMemo(
+    () => selectedGenerationProfile(data.profiles, selectedProfileId),
+    [data.profiles, selectedProfileId],
+  );
+  const draftProfiles = useMemo(
+    () => data.profiles.filter((profile) => stringValue(profile.status) === "draft"),
+    [data.profiles],
+  );
+  const publishedProfiles = useMemo(
+    () => data.profiles.filter((profile) => stringValue(profile.status) !== "draft"),
+    [data.profiles],
+  );
+  const tabCounts = useMemo<Record<ConfigTab, number | string>>(
+    () => ({
+      drafts: draftProfiles.length,
+      published: publishedProfiles.length,
+      templates: data.templates.length,
+      settings: data.presets.length + data.flags.length,
+    }),
+    [data.flags.length, data.presets.length, data.templates.length, draftProfiles.length, publishedProfiles.length],
+  );
+
+  useEffect(() => {
+    if (selectedProfileId || !selectedProfile) return;
+    const profileId = stringValue(selectedProfile.id);
+    if (profileId) setSelectedProfileId(profileId);
+  }, [selectedProfile, selectedProfileId, setSelectedProfileId]);
+
   return (
     <div className="space-y-6">
-      <ModelProfileDraftForm
-        busy={configBusy === "model"}
-        draft={modelDraft}
-        onCreate={createModelProfile}
-        onDraftChange={setModelDraft}
-      />
-      <PromptTemplateDraftForm
-        busy={configBusy === "template"}
-        draft={templateDraft}
-        onCreate={createPromptTemplate}
-        onDraftChange={setTemplateDraft}
-      />
-      <DataTable
-        actions={(row) => {
-          const id = stringValue(row.id);
-          const status = stringValue(row.status);
-          const enabled = Boolean(row.enabled);
-          return (
-            <div className="flex flex-wrap gap-1">
-              {status === "draft" ? (
-                <IconAction
-                  icon={<UploadCloud className="h-4 w-4" />}
-                  label="Publish"
-                  onClick={() =>
-                    openAction({
-                      title: `Publish profile ${id}`,
-                      endpoint: `/api/v1/admin/generation/model-profiles/${id}/publish`,
-                      method: "POST",
-                      confirmText: "PUBLISH",
-                      reasonRequired: true,
-                      body: (actionReason) => ({
-                        reason: actionReason,
-                        confirmation: "PUBLISH",
-                        dryRunSummary: { source: "admin_console" },
-                      }),
-                    })
-                  }
-                />
-              ) : null}
-              {status === "active" ? (
-                <IconAction
-                  icon={<RotateCcw className="h-4 w-4" />}
-                  label="Rollback"
-                  onClick={() =>
-                    openAction({
-                      title: `Rollback profile ${id}`,
-                      endpoint: `/api/v1/admin/generation/model-profiles/${id}/rollback`,
-                      method: "POST",
-                      confirmText: "ROLLBACK",
-                      reasonRequired: true,
-                      body: (actionReason) => ({ reason: actionReason, confirmation: "ROLLBACK" }),
-                    })
-                  }
-                />
-              ) : null}
-              {enabled ? (
-                <IconAction
-                  icon={<Ban className="h-4 w-4" />}
-                  label="Disable"
-                  onClick={() =>
-                    openAction({
-                      title: `Disable profile ${id}`,
-                      endpoint: `/api/v1/admin/generation/model-profiles/${id}`,
-                      method: "PATCH",
-                      confirmText: "DISABLE",
-                      reasonRequired: true,
-                      body: (actionReason) => ({
-                        enabled: false,
-                        reason: actionReason,
-                        confirmation: "DISABLE",
-                      }),
-                    })
-                  }
-                />
-              ) : null}
-            </div>
-          );
-        }}
-        columns={[
-          "id",
-          "profileKey",
-          "label",
-          "mode",
-          "runner",
-          "pipelineModel",
-          "sourceModelPath",
-          "convertedModelPath",
-          "modelFormat",
-          "status",
-          "version",
-          "enabled",
-          "rolloutPercent",
-          "requiredEntitlement",
-        ]}
-        rows={data.profiles}
-        title="Model Profiles"
-      />
+      <ConfigOverviewHeader jobs={data.recentJobs} profiles={data.profiles} templates={data.templates} />
+      <ConfigTabNav active={configTab} counts={tabCounts} onChange={setConfigTab} />
 
-      <DataTable
-        actions={(row) => {
-          const id = stringValue(row.id);
-          const status = stringValue(row.status);
-          return (
-            <div className="flex flex-wrap gap-1">
-              {status === "draft" ? (
-                <IconAction
-                  icon={<UploadCloud className="h-4 w-4" />}
-                  label="Publish"
-                  onClick={() =>
-                    openAction({
-                      title: `Publish template ${id}`,
-                      endpoint: `/api/v1/admin/generation/prompt-templates/${id}/publish`,
-                      method: "POST",
-                      confirmText: "PUBLISH",
-                      reasonRequired: true,
-                      body: (actionReason) => ({
-                        reason: actionReason,
-                        confirmation: "PUBLISH",
-                        dryRunSummary: { source: "admin_console" },
-                      }),
-                    })
-                  }
-                />
-              ) : null}
-              {status === "active" ? (
-                <IconAction
-                  icon={<RotateCcw className="h-4 w-4" />}
-                  label="Rollback"
-                  onClick={() =>
-                    openAction({
-                      title: `Rollback template ${id}`,
-                      endpoint: `/api/v1/admin/generation/prompt-templates/${id}/rollback`,
-                      method: "POST",
-                      confirmText: "ROLLBACK",
-                      reasonRequired: true,
-                      body: (actionReason) => ({ reason: actionReason, confirmation: "ROLLBACK" }),
-                    })
-                  }
-                />
-              ) : null}
-            </div>
-          );
-        }}
-        columns={["id", "templateKey", "label", "mode", "useCase", "status", "version"]}
-        rows={data.templates}
-        title="Prompt Templates"
-      />
+      {configTab === "drafts" && (
+        <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(360px,440px)_minmax(0,1fr)]">
+          <ProfileDraftManager
+            drafts={draftProfiles}
+            jobs={data.recentJobs}
+            onOpenAction={openAction}
+            onSelectProfile={setSelectedProfileId}
+            selectedProfileId={selectedProfileId}
+          />
+          <ProfileReleaseWorkbench
+            jobs={data.recentJobs}
+            onOpenAction={openAction}
+            onReload={reload}
+            onSelectProfile={setSelectedProfileId}
+            profiles={data.profiles}
+            selectedProfile={selectedProfile}
+          />
+        </div>
+      )}
 
-      <DataTable
-        columns={["id", "type", "category", "label", "visibility", "status"]}
-        rows={data.presets}
-        title="Built-in Presets"
-      />
+      {configTab === "published" && (
+        <DataTable
+          actions={(row) => profileTableActions(row, openAction, setSelectedProfileId)}
+          columns={[
+            "id",
+            "profileKey",
+            "label",
+            "mode",
+            "runner",
+            "pipelineModel",
+            "status",
+            "version",
+            "enabled",
+            "rolloutPercent",
+            "requiredEntitlement",
+            "dryRunSummary",
+          ]}
+          rows={publishedProfiles}
+          title="Published profiles"
+        />
+      )}
 
-      <DataTable
-        actions={(row) => {
-          const key = stringValue(row.key);
-          const enabled = Boolean(row.enabled);
-          return (
-            <IconAction
-              icon={<Flag className="h-4 w-4" />}
-              label={enabled ? "Disable" : "Enable"}
-              onClick={() =>
-                openAction({
-                  title: `${enabled ? "Disable" : "Enable"} ${key}`,
-                  endpoint: `/api/v1/admin/feature-flags/${key}`,
-                  method: "PATCH",
-                  confirmText: "FLAG",
-                  reasonRequired: true,
-                  body: (actionReason) => ({
-                    enabled: !enabled,
-                    reason: actionReason,
-                    confirmation: "FLAG",
-                  }),
-                })
-              }
-            />
-          );
-        }}
-        columns={["key", "enabled", "rolloutPercent", "version", "hardPolicy"]}
-        rows={data.flags}
-        title="Feature Flags"
-      />
+      {configTab === "templates" && (
+        <>
+          <PromptTemplateDraftForm
+            busy={configBusy === "template"}
+            draft={templateDraft}
+            onCreate={createPromptTemplate}
+            onDraftChange={setTemplateDraft}
+          />
+          <DataTable
+            actions={(row) => templateTableActions(row, openAction)}
+            columns={["id", "templateKey", "label", "mode", "useCase", "status", "version"]}
+            rows={data.templates}
+            title="Prompt Recipes"
+          />
+        </>
+      )}
+
+      {configTab === "settings" && (
+        <>
+          <DataTable
+            columns={["id", "type", "category", "label", "visibility", "status"]}
+            rows={data.presets}
+            title="Built-in Presets"
+          />
+
+          <DataTable
+            actions={(row) => featureFlagActions(row, openAction)}
+            columns={["key", "enabled", "rolloutPercent", "version", "hardPolicy"]}
+            rows={data.flags}
+            title="Feature Flags"
+          />
+        </>
+      )}
     </div>
   );
 }
 
+function profileTableActions(
+  row: Row,
+  openAction: (action: PendingAction) => void,
+  setSelectedProfileId: (value: string | null) => void,
+) {
+  const id = stringValue(row.id);
+  if (!id) return null;
+  const status = stringValue(row.status);
+  const enabled = Boolean(row.enabled);
+
+  return (
+    <div className="flex flex-wrap gap-1">
+      <IconAction
+        icon={<Check className="h-4 w-4" />}
+        label="Select"
+        onClick={() => setSelectedProfileId(id)}
+      />
+      {status === "draft" ? (
+        <>
+          <IconAction
+            icon={<Activity className="h-4 w-4" />}
+            label="Dry Run"
+            onClick={() => openAction(dryRunProfileAction(id))}
+          />
+          <IconAction
+            icon={<UploadCloud className="h-4 w-4" />}
+            label="Publish"
+            disabled={Boolean(profileVerificationSummary(row).blockedReason)}
+            onClick={() => openAction(publishProfileAction(id, stringValue(row.mode), row))}
+          />
+        </>
+      ) : null}
+      {status === "active" ? (
+        <IconAction
+          icon={<RotateCcw className="h-4 w-4" />}
+          label="Rollback"
+          onClick={() => openAction(rollbackProfileAction(id))}
+        />
+      ) : null}
+      {enabled ? (
+        <IconAction
+          icon={<Ban className="h-4 w-4" />}
+          label="Disable"
+          onClick={() => openAction(disableProfileAction(id))}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function templateTableActions(row: Row, openAction: (action: PendingAction) => void) {
+  const id = stringValue(row.id);
+  if (!id) return null;
+  const status = stringValue(row.status);
+
+  return (
+    <div className="flex flex-wrap gap-1">
+      {status === "draft" ? (
+        <IconAction
+          icon={<UploadCloud className="h-4 w-4" />}
+          label="Publish"
+          onClick={() => openAction(publishTemplateAction(id))}
+        />
+      ) : null}
+      {status === "active" ? (
+        <IconAction
+          icon={<RotateCcw className="h-4 w-4" />}
+          label="Rollback"
+          onClick={() => openAction(rollbackTemplateAction(id))}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function featureFlagActions(row: Row, openAction: (action: PendingAction) => void) {
+  const key = stringValue(row.key);
+  if (!key) return null;
+  const enabled = Boolean(row.enabled);
+
+  return (
+    <IconAction
+      icon={<Flag className="h-4 w-4" />}
+      label={enabled ? "Disable" : "Enable"}
+      onClick={() => openAction(toggleFeatureFlagAction(key, enabled))}
+    />
+  );
+}
+
+function dryRunProfileAction(id: string): PendingAction {
+  return {
+    title: `Dry run profile ${id}`,
+    endpoint: `/api/v1/admin/generation/model-profiles/${id}/dry-run`,
+    method: "POST",
+    confirmText: "DRYRUN",
+    reasonRequired: true,
+    body: (actionReason) => ({ reason: actionReason, confirmation: "DRYRUN" }),
+  };
+}
+
+function publishProfileAction(id: string, mode: string, profile?: Row | null): PendingAction {
+  const requiresReview = mode === "image";
+  return {
+    title: `Publish profile ${id}`,
+    endpoint: `/api/v1/admin/generation/model-profiles/${id}/publish`,
+    method: "POST",
+    confirmText: "PUBLISH",
+    reasonRequired: true,
+    review: requiresReview ? "image_consistency" : undefined,
+    verification: profile ? profileVerificationSummary(profile) : undefined,
+    body: (actionReason, _confirmation, review) => ({
+      reason: actionReason,
+      confirmation: "PUBLISH",
+      ...(requiresReview ? { dryRunSummary: actionReviewDryRunSummary(review) } : {}),
+    }),
+  };
+}
+
+function rollbackProfileAction(id: string): PendingAction {
+  return {
+    title: `Rollback profile ${id}`,
+    endpoint: `/api/v1/admin/generation/model-profiles/${id}/rollback`,
+    method: "POST",
+    confirmText: "ROLLBACK",
+    reasonRequired: true,
+    body: (actionReason) => ({ reason: actionReason, confirmation: "ROLLBACK" }),
+  };
+}
+
+function disableProfileAction(id: string): PendingAction {
+  return {
+    title: `Disable profile ${id}`,
+    endpoint: `/api/v1/admin/generation/model-profiles/${id}`,
+    method: "PATCH",
+    confirmText: "DISABLE",
+    reasonRequired: true,
+    body: (actionReason) => ({
+      enabled: false,
+      reason: actionReason,
+      confirmation: "DISABLE",
+    }),
+  };
+}
+
+function publishTemplateAction(id: string): PendingAction {
+  return {
+    title: `Publish template ${id}`,
+    endpoint: `/api/v1/admin/generation/prompt-templates/${id}/publish`,
+    method: "POST",
+    confirmText: "PUBLISH",
+    reasonRequired: true,
+    body: (actionReason) => ({
+      reason: actionReason,
+      confirmation: "PUBLISH",
+      dryRunSummary: { source: "admin_console" },
+    }),
+  };
+}
+
+function rollbackTemplateAction(id: string): PendingAction {
+  return {
+    title: `Rollback template ${id}`,
+    endpoint: `/api/v1/admin/generation/prompt-templates/${id}/rollback`,
+    method: "POST",
+    confirmText: "ROLLBACK",
+    reasonRequired: true,
+    body: (actionReason) => ({ reason: actionReason, confirmation: "ROLLBACK" }),
+  };
+}
+
+function toggleFeatureFlagAction(key: string, enabled: boolean): PendingAction {
+  return {
+    title: `${enabled ? "Disable" : "Enable"} ${key}`,
+    endpoint: `/api/v1/admin/feature-flags/${key}`,
+    method: "PATCH",
+    confirmText: "FLAG",
+    reasonRequired: true,
+    body: (actionReason) => ({
+      enabled: !enabled,
+      reason: actionReason,
+      confirmation: "FLAG",
+    }),
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- retained for engineering-only model diagnostics; no product route renders it.
+function ModelManagementView() {
+  const { t } = useAdminI18n();
+  const [library, setLibrary] = useState<ModelImportLibrary | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [serverImportKind, setServerImportKind] = useState<ModelImportKind>("model");
+  const [serverImportPath, setServerImportPath] = useState("");
+
+  async function refreshLibrary() {
+    setBusy("refresh");
+    setError(null);
+    setNotice(null);
+    try {
+      setLibrary(await apiGet<ModelImportLibrary>("/api/v1/admin/generation/model-imports"));
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Model library load failed");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void refreshLibrary();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  async function uploadAsset(kind: ModelImportKind, file: File | null) {
+    if (!file) return;
+    setBusy(`upload-${kind}`);
+    setError(null);
+    setNotice(null);
+    try {
+      const form = new FormData();
+      form.set("kind", kind);
+      form.set("file", file);
+      const result = await apiForm<ModelImportResult>("/api/v1/admin/generation/model-imports/upload", form);
+      setLibrary((current) => mergeImportAsset(current, result));
+      setNotice(t("{count} assets imported", { count: modelImportResultAssets(result).length }));
+    } catch (uploadError) {
+      setError(uploadError instanceof Error ? uploadError.message : "Model upload failed");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function registerAsset(kind: ModelImportKind, filePath: string) {
+    const trimmed = filePath.trim();
+    if (!trimmed) return;
+    setBusy(`register-${kind}`);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await apiWrite<ModelImportResult>(
+        "/api/v1/admin/generation/model-imports/register",
+        "POST",
+        { kind, path: trimmed, reason: "admin model import" },
+      );
+      setLibrary((current) => mergeImportAsset(current, result));
+      setServerImportPath("");
+      setNotice(t("{count} assets imported from server path", { count: modelImportResultAssets(result).length }));
+    } catch (registerError) {
+      setError(registerError instanceof Error ? registerError.message : "Model import failed");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const items = library?.items ?? [];
+  const mainModels = items.filter((item) => item.kind === "model");
+  const loras = items.filter((item) => item.kind === "lora");
+  const components = items.filter((item) => item.kind === "llm" || item.kind === "vae");
+
+  return (
+    <div className="space-y-5">
+      <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold uppercase text-[rgb(170,170,170)]">
+              {t("Engineering diagnostics")}
+            </p>
+            <h2 className="mt-1 text-lg font-semibold">{t("Model diagnostics library")}</h2>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-[rgb(170,170,170)]">
+              {t("Engineering-only model diagnostics. Operators use seeded profiles in Profiles & Rollout.")}
+            </p>
+          </div>
+          <button
+            className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm text-[rgb(230,230,230)] hover:bg-white/10 disabled:opacity-50"
+            disabled={busy === "refresh"}
+            onClick={() => void refreshLibrary()}
+            type="button"
+          >
+            {busy === "refresh" ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+            {t("Refresh library")}
+          </button>
+        </div>
+        <div className="mt-4 grid gap-2 lg:grid-cols-4">
+          <WorkflowStep
+            active={mainModels.length === 0}
+            index={1}
+            meta={mainModels.length ? t("{count} main models", { count: mainModels.length }) : t("Import one checkpoint")}
+            title={t("Diagnostic import")}
+          />
+          <WorkflowStep
+            active={mainModels.length > 0}
+            index={2}
+            meta={loras.length ? t("{count} LoRA attached", { count: loras.length }) : t("LoRA optional")}
+            title={t("Attach LoRA")}
+          />
+          <WorkflowStep
+            active={mainModels.length > 0}
+            index={3}
+            meta={components.length ? t("{count} components", { count: components.length }) : t("Use defaults or register components")}
+            title={t("Configure profile")}
+          />
+          <WorkflowStep
+            active={mainModels.length > 0}
+            index={4}
+            meta={t("Dry run and test image")}
+            title={t("Publish")}
+          />
+        </div>
+        <div className="mt-4 grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-4">
+          <Metric label="Main Models" value={mainModels.length} meta={library ? t("Library root: {path}", { path: library.roots.root }) : "missing"} />
+          <Metric label="LoRA Models" value={loras.length} meta="optional adapters" />
+          <Metric label="Model components" value={components.length} meta="LLM / VAE" />
+          <Metric label="Max upload" value={library ? formatBytes(library.maxUploadBytes) : "-"} meta="local file upload" />
+        </div>
+      </section>
+
+      {error ? (
+        <div className="border border-red-400/30 bg-red-950/30 px-3 py-2 text-sm text-red-100">
+          {error}
+        </div>
+      ) : null}
+      {notice ? (
+        <div className="border border-emerald-400/30 bg-emerald-950/20 px-3 py-2 text-sm text-emerald-100">
+          {notice}
+        </div>
+      ) : null}
+
+      <section className="grid gap-4 xl:grid-cols-[1fr_1fr]">
+        <ModelImportPanel
+          accept=".safetensors,.gguf"
+          busy={busy === "upload-model"}
+          description="Upload or register a checkpoint once. Generation profiles can select it later."
+          onUpload={(file) => void uploadAsset("model", file)}
+          title="Diagnostic model import"
+          uploadLabel="Upload diagnostic model"
+        />
+        <ModelImportPanel
+          accept=".safetensors"
+          busy={busy === "upload-lora"}
+          description="LoRA files are optional adapters. Import them here before attaching them to a profile."
+          onUpload={(file) => void uploadAsset("lora", file)}
+          title="LoRA import"
+          uploadLabel="Upload LoRA"
+        />
+      </section>
+
+      <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+        <div className="mb-3">
+          <h3 className="text-sm font-semibold">{t("Import from server path")}</h3>
+          <p className="mt-1 text-xs leading-5 text-[rgb(170,170,170)]">
+            {t("Enter a server file path or a directory path. Directory import registers all supported files under that folder.")}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="min-w-[160px]">
+            <FormSelect
+              label="Asset kind"
+              onChange={(value) => setServerImportKind(value as ModelImportKind)}
+              options={["model", "lora", "llm", "vae"]}
+              value={serverImportKind}
+            />
+          </div>
+          <label className="min-w-[260px] flex-1">
+            <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">
+              {t("Server file or directory path")}
+            </span>
+            <input
+              className="h-10 w-full min-w-0 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+              onChange={(event) => setServerImportPath(event.target.value)}
+              placeholder={t("/Users/kk/Downloads/models or /path/model.safetensors")}
+              value={serverImportPath}
+            />
+          </label>
+          <button
+            className="inline-flex h-10 items-center justify-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+            disabled={Boolean(busy) || !serverImportPath.trim()}
+            onClick={() => void registerAsset(serverImportKind, serverImportPath)}
+            type="button"
+          >
+            {busy?.startsWith("register") ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+            {t("Import Path")}
+          </button>
+        </div>
+      </section>
+
+      <ModelAssetLibraryTable items={items} />
+    </div>
+  );
+}
+
+function ModelImportPanel({
+  accept,
+  busy,
+  description,
+  onUpload,
+  title,
+  uploadLabel,
+}: {
+  accept: string;
+  busy: boolean;
+  description: string;
+  onUpload: (file: File | null) => void;
+  title: string;
+  uploadLabel: string;
+}) {
+  const { t } = useAdminI18n();
+  return (
+    <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+      <h3 className="text-sm font-semibold">{t(title)}</h3>
+      <p className="mt-1 text-xs leading-5 text-[rgb(170,170,170)]">{t(description)}</p>
+      <label className="mt-4 inline-flex h-10 cursor-pointer items-center justify-center gap-2 bg-white px-3 text-sm font-semibold text-black hover:bg-[rgb(230,230,230)] focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-white">
+        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
+        {t(uploadLabel)}
+        <input
+          accept={accept}
+          aria-label={t(uploadLabel)}
+          className="sr-only"
+          disabled={busy}
+          onChange={(event) => {
+            const file = event.target.files?.[0] ?? null;
+            event.target.value = "";
+            onUpload(file);
+          }}
+          type="file"
+        />
+      </label>
+    </section>
+  );
+}
+
+function ModelAssetLibraryTable({ items }: { items: ModelImportAsset[] }) {
+  const { t } = useAdminI18n();
+  return (
+    <section className="overflow-hidden border border-white/10 bg-[rgb(18,18,18)]">
+      <div className="flex h-11 items-center justify-between border-b border-white/10 px-4">
+        <h2 className="text-sm font-semibold">{t("Imported model assets")}</h2>
+        <span className="text-xs text-[rgb(170,170,170)]">{items.length}</span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-left text-xs">
+          <thead className="bg-black/20 text-[rgb(170,170,170)]">
+            <tr>
+              {["Asset kind", "Name", "Format", "Size", "Path", "Updated", "Actions"].map((column) => (
+                <th key={column} className="border-b border-white/10 px-3 py-2 font-semibold">
+                  {t(column)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((item) => (
+              <tr key={`${item.kind}-${item.path}`} className="border-b border-white/5 last:border-0">
+                <td className="px-3 py-2 align-top">
+                  <span className="border border-white/10 px-2 py-1 text-[11px] text-[rgb(230,230,230)]">
+                    {item.kind}
+                  </span>
+                </td>
+                <td className="max-w-[220px] px-3 py-2 align-top text-[rgb(230,230,230)]">
+                  <span className="break-words">{item.name}</span>
+                </td>
+                <td className="px-3 py-2 align-top text-[rgb(170,170,170)]">{item.format}</td>
+                <td className="px-3 py-2 align-top font-mono text-[rgb(170,170,170)]">{formatBytes(item.sizeBytes)}</td>
+                <td className="max-w-[440px] px-3 py-2 align-top font-mono text-[rgb(170,170,170)]">
+                  <span className="break-all">{item.path}</span>
+                </td>
+                <td className="px-3 py-2 align-top text-[rgb(170,170,170)]">{compactDate(item.modifiedAt)}</td>
+                <td className="px-3 py-2 align-top">
+                  <Link
+                    className="inline-flex h-8 items-center gap-2 border border-white/10 px-2 text-xs text-[rgb(230,230,230)] hover:bg-white/10"
+                    href={modelAssetConfigureHref(item)}
+                  >
+                    <SlidersHorizontal className="h-4 w-4" />
+                    {item.kind === "model" ? t("Use in profile") : t("Attach to profile")}
+                  </Link>
+                </td>
+              </tr>
+            ))}
+            {items.length === 0 ? (
+              <tr>
+                <td className="px-3 py-8 text-center text-sm text-[rgb(170,170,170)]" colSpan={7}>
+                  {t("No model assets imported")}
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- retained for engineering-only model diagnostics; no product route renders it.
 function ModelProfileDraftForm({
   busy,
   draft,
+  initialAssetPath,
   onCreate,
   onDraftChange,
 }: {
   busy: boolean;
   draft: ModelDraft;
+  initialAssetPath: string;
   onCreate: () => void;
   onDraftChange: (value: ModelDraft) => void;
 }) {
+  const { t } = useAdminI18n();
+  const [library, setLibrary] = useState<ModelImportLibrary | null>(null);
+  const [importBusy, setImportBusy] = useState<string | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [selectedAssetPath, setSelectedAssetPath] = useState("");
+  const [manualLora, setManualLora] = useState({ key: "", path: "", weight: "1" });
+  const [showCivitai, setShowCivitai] = useState(false);
+  const [importCivitaiLoras, setImportCivitaiLoras] = useState(false);
+  const [civitaiText, setCivitaiText] = useState("");
+  const [appliedInitialAssetPath, setAppliedInitialAssetPath] = useState("");
+  const [civitaiStatus, setCivitaiStatus] = useState<{
+    tone: "good" | "warn" | "bad";
+    message: string;
+  } | null>(null);
+  const loraItems = useMemo(() => {
+    try {
+      return loraDraftsFromText(draft.lorasJson);
+    } catch {
+      return [];
+    }
+  }, [draft.lorasJson]);
+
+  async function refreshImports() {
+    setImportBusy("refresh");
+    setImportError(null);
+    try {
+      setLibrary(await apiGet<ModelImportLibrary>("/api/v1/admin/generation/model-imports"));
+    } catch (loadError) {
+      setImportError(loadError instanceof Error ? loadError.message : "Model library load failed");
+    } finally {
+      setImportBusy(null);
+    }
+  }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void refreshImports();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!initialAssetPath || appliedInitialAssetPath === initialAssetPath || !library) return;
+    const asset = library.items.find((item) => item.path === initialAssetPath);
+    if (!asset) return;
+
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      if (cancelled) return;
+      setSelectedAssetPath(asset.path);
+      onDraftChange(applyModelImport(draft, asset));
+      setAppliedInitialAssetPath(initialAssetPath);
+    }, 0);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [appliedInitialAssetPath, draft, initialAssetPath, library, onDraftChange]);
+
+  function useSelectedAsset() {
+    const asset = library?.items.find((item) => item.path === selectedAssetPath);
+    if (!asset) return;
+    setAppliedInitialAssetPath(asset.path);
+    onDraftChange(applyModelImport(draft, asset));
+  }
+
+  function setLoras(items: LoraDraft[]) {
+    onDraftChange({ ...draft, lorasJson: loraDraftsToText(items) });
+  }
+
+  function clearLoras() {
+    onDraftChange({ ...draft, loraModelDir: "", lorasJson: "[]" });
+  }
+
+  function addManualLora() {
+    const key = manualLora.key.trim();
+    const loraPath = manualLora.path.trim();
+    if (!key && !loraPath) return;
+    const weight = numberFromText(manualLora.weight, 1);
+    setLoras([
+      ...loraItems,
+      {
+        key,
+        path: loraPath,
+        fileName: loraPath ? loraPath.split("/").pop() : undefined,
+        weight,
+        enabled: true,
+      },
+    ]);
+    setManualLora({ key: "", path: "", weight: "1" });
+  }
+
+  function applyCivitaiPaste(source: string) {
+    if (!source.trim()) {
+      setCivitaiStatus({ tone: "bad", message: t("Paste Civitai config first.") });
+      return;
+    }
+    const result = applyCivitaiConfig(draft, source, library?.items ?? [], {
+      includeLoras: importCivitaiLoras,
+    });
+    if (result.applied.length === 0) {
+      setCivitaiStatus({ tone: "bad", message: t("No supported Civitai fields found.") });
+      return;
+    }
+    onDraftChange(result.draft);
+    setCivitaiStatus({
+      tone: result.warnings.length ? "warn" : "good",
+      message: [
+        t("{count} fields applied", { count: result.applied.length }),
+        ...result.warnings.map((warning) => t(warning)),
+      ].join(" · "),
+    });
+  }
+
+  async function pasteFromClipboard() {
+    try {
+      const text = await navigator.clipboard.readText();
+      setCivitaiText(text);
+      applyCivitaiPaste(text);
+    } catch {
+      setCivitaiStatus({ tone: "bad", message: t("Clipboard read failed. Paste manually.") });
+    }
+  }
+
+  const selectedAsset = library?.items.find((item) => item.path === selectedAssetPath);
+  const selectedTemplate =
+    modelProfileTemplates.find((template) => template.id === draft.profileTemplate) ?? fallbackModelProfileTemplate;
+  const modelAssetOptions = library?.items.filter((item) => item.kind === "model") ?? [];
+  const requiresModelFile = draft.runner === "sd_cpp" || draft.runner === "comfyui";
+  const requiresSdcppComponents = draft.runner === "sd_cpp";
+  const hasMainModel =
+    !requiresModelFile || Boolean(draft.sourceModelPath.trim() || draft.diffusionModelPath.trim());
+  const hasConversionTarget =
+    draft.runner !== "sd_cpp" || !draft.conversionEnabled || Boolean(draft.convertedModelPath.trim());
+  const hasComponents = !requiresSdcppComponents || Boolean(draft.llmPath.trim() && draft.vaePath.trim());
+  const hasValidLorasJson = useMemo(() => {
+    try {
+      jsonArrayFromText(draft.lorasJson);
+      return true;
+    } catch {
+      return false;
+    }
+  }, [draft.lorasJson]);
+  const usableLoraItems = useMemo(() => loraItems.filter(isSubmittableLora), [loraItems]);
+  const incompleteLoraCount = loraItems.length - usableLoraItems.length;
+  const canCreate = canCreateModelProfile(draft) && hasValidLorasJson;
+  const civitaiExpanded = showCivitai || Boolean(civitaiText.trim() || civitaiStatus);
+  const readinessItems = [
+    { label: "Built-in template selected", passed: Boolean(selectedTemplate) },
+    { label: "Main model selected", passed: hasMainModel },
+    { label: "Conversion target ready", passed: hasConversionTarget },
+    { label: "Runner components configured", passed: hasComponents },
+    { label: "LoRA optional", passed: hasValidLorasJson },
+    { label: "Draft can be created", passed: canCreate },
+  ];
+  const libraryCount = library?.items.length ?? 0;
+
   return (
-    <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold">Create Model Profile Draft</h2>
-        <button
-          className="inline-flex h-9 items-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
-          disabled={busy || !canCreateModelProfile(draft)}
-          onClick={onCreate}
-          type="button"
-        >
-          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-          Create Draft
-        </button>
-      </div>
-      <div className="grid gap-3 md:grid-cols-4">
-        <FormField
-          label="Profile Key"
-          onChange={(value) => onDraftChange({ ...draft, profileKey: value })}
-          value={draft.profileKey}
-        />
-        <FormField
-          label="Label"
-          onChange={(value) => onDraftChange({ ...draft, label: value })}
-          value={draft.label}
-        />
-        <FormSelect
-          label="Mode"
-          onChange={(value) => onDraftChange({ ...draft, mode: value as ModelDraft["mode"] })}
-          options={["image", "video"]}
-          value={draft.mode}
-        />
-        <FormSelect
-          label="Runner"
-          onChange={(value) => onDraftChange({ ...draft, runner: value as ModelDraft["runner"] })}
-          options={["sd_cpp", "pipeline", "mlx", "comfyui", "external"]}
-          value={draft.runner}
-        />
-        <FormField
-          label="Pipeline Model"
-          onChange={(value) => onDraftChange({ ...draft, pipelineModel: value })}
-          value={draft.pipelineModel}
-        />
-        <FormSelect
-          label="Format"
-          onChange={(value) => onDraftChange({ ...draft, modelFormat: value as ModelDraft["modelFormat"] })}
-          options={["safetensors", "gguf", "diffusers", "external"]}
-          value={draft.modelFormat}
-        />
-        <FormField
-          label="Width"
-          onChange={(value) => onDraftChange({ ...draft, defaultWidth: value })}
-          value={draft.defaultWidth}
-        />
-        <FormField
-          label="Height"
-          onChange={(value) => onDraftChange({ ...draft, defaultHeight: value })}
-          value={draft.defaultHeight}
-        />
-        <FormField
-          label="Steps"
-          onChange={(value) => onDraftChange({ ...draft, steps: value })}
-          value={draft.steps}
-        />
-        <FormField
-          label="Sampler"
-          onChange={(value) => onDraftChange({ ...draft, sampler: value })}
-          value={draft.sampler}
-        />
-        <FormField
-          label="CFG"
-          onChange={(value) => onDraftChange({ ...draft, cfgScale: value })}
-          value={draft.cfgScale}
-        />
-        <FormField
-          label="Max Count"
-          onChange={(value) => onDraftChange({ ...draft, maxCount: value })}
-          value={draft.maxCount}
-        />
-        <FormField
-          label="Cost Multiplier"
-          onChange={(value) => onDraftChange({ ...draft, costMultiplier: value })}
-          value={draft.costMultiplier}
-        />
-        <FormField
-          label="Entitlement"
-          onChange={(value) => onDraftChange({ ...draft, requiredEntitlement: value })}
-          value={draft.requiredEntitlement}
-        />
-        <FormField
-          label="Orientations"
-          onChange={(value) => onDraftChange({ ...draft, allowedOrientations: value })}
-          value={draft.allowedOrientations}
-        />
-        <FormField
-          label="Source Model"
-          onChange={(value) => onDraftChange({ ...draft, sourceModelPath: value })}
-          value={draft.sourceModelPath}
-        />
-      </div>
-      <div className="mt-3 grid gap-3 md:grid-cols-2">
-        <FormField
-          label="Converted Model"
-          onChange={(value) => onDraftChange({ ...draft, convertedModelPath: value })}
-          value={draft.convertedModelPath}
-        />
-        <label className="block">
-          <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">Runner Config</span>
-          <textarea
-            className="min-h-20 w-full resize-y border border-white/10 bg-black/30 px-3 py-2 font-mono text-xs outline-none focus:border-white/30"
-            onChange={(event) => onDraftChange({ ...draft, runnerConfigJson: event.target.value })}
-            value={draft.runnerConfigJson}
+    <section className="border border-white/10 bg-[rgb(18,18,18)]">
+      <div className="border-b border-white/10 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <p className="text-xs font-semibold uppercase text-[rgb(170,170,170)]">
+              {t("sdcpp operations")}
+            </p>
+            <h2 className="mt-1 text-lg font-semibold">{t("Generation profile setup")}</h2>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-[rgb(170,170,170)]">
+              {t("Select an imported model, tune generation defaults, then create a draft for dry run and publish.")}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm text-[rgb(230,230,230)] hover:bg-white/10 disabled:opacity-50"
+              disabled={importBusy === "refresh"}
+              onClick={() => void refreshImports()}
+              type="button"
+            >
+              {importBusy === "refresh" ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCcw className="h-4 w-4" />
+              )}
+              {t("Refresh library")}
+            </button>
+            <button
+              className="inline-flex h-9 items-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+              disabled={busy || !canCreate}
+              onClick={onCreate}
+              type="button"
+            >
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+              {t("Create Draft")}
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-4 grid gap-2 lg:grid-cols-3">
+          <WorkflowStep
+            active={!selectedTemplate}
+            index={1}
+            meta={selectedTemplate ? t(selectedTemplate.label) : t("Choose a template")}
+            title={t("Choose template")}
           />
-        </label>
+          <WorkflowStep
+            active={Boolean(selectedTemplate) && !hasMainModel}
+            index={2}
+            meta={hasMainModel ? pathFileName(draft.sourceModelPath || draft.diffusionModelPath) : t("Waiting for main model")}
+            title={t("Select model")}
+          />
+          <WorkflowStep
+            active={hasMainModel && (!hasConversionTarget || !hasComponents)}
+            index={3}
+            meta={usableLoraItems.length ? t("{count} LoRA attached", { count: usableLoraItems.length }) : t("No LoRA")}
+            title={t("Review configuration")}
+          />
+          <WorkflowStep
+            active={canCreate}
+            index={4}
+            meta={canCreate ? t("Draft is ready") : t("Complete required checks")}
+            title={t("Create and dry run")}
+          />
+        </div>
+      </div>
+
+      <div className="grid gap-4 p-4 xl:grid-cols-[minmax(0,1fr)_340px]">
+        <div className="space-y-4">
+          <section className="border border-white/10 bg-black/20 p-3">
+            <SectionHeader
+              description="Start from the consistency path, then adjust only what this model needs."
+              eyebrow="Step 1"
+              title="Built-in generation template"
+            />
+            <div className="mt-3 grid gap-2 lg:grid-cols-4">
+              {modelProfileTemplates.map((template) => {
+                const selected = template.id === draft.profileTemplate;
+                return (
+                  <button
+                    aria-pressed={selected}
+                    className="min-h-28 border border-white/10 bg-black/30 p-3 text-left hover:bg-white/5 aria-pressed:border-white aria-pressed:bg-white aria-pressed:text-black"
+                    key={template.id}
+                    onClick={() => onDraftChange(applyModelProfileTemplate(draft, template.id))}
+                    type="button"
+                  >
+                    <span className="block text-sm font-semibold">{t(template.label)}</span>
+                    <span className={cn("mt-2 block text-xs leading-5", selected ? "text-black/70" : "text-[rgb(170,170,170)]")}>
+                      {t(template.description)}
+                    </span>
+                    <span className={cn("mt-3 block font-mono text-[11px]", selected ? "text-black/60" : "text-[rgb(114,113,112)]")}>
+                      {template.intent}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+
+          <div className="border border-white/10 bg-black/20 p-3">
+            <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-semibold">{t("Select model from library")}</h3>
+                <p className="mt-1 max-w-2xl text-xs leading-5 text-[rgb(170,170,170)]">
+                  {t("Engineering imports are hidden diagnostics; default Admin uses seeded profiles.")}
+                </p>
+              </div>
+              <Link
+                className="inline-flex h-8 items-center gap-2 border border-white/10 px-2 text-xs text-[rgb(230,230,230)] hover:bg-white/10"
+                href="/admin/generation/config"
+              >
+                <Library className="h-4 w-4" />
+                {t("Open Profiles & Rollout")}
+              </Link>
+            </div>
+            {importError ? (
+              <div className="mb-3 border border-red-400/30 bg-red-950/30 px-3 py-2 text-xs text-red-100">
+                {importError}
+              </div>
+            ) : null}
+            <div className="grid gap-2 md:grid-cols-[1fr_auto]">
+              <label className="block min-w-0">
+                <span className="sr-only">{t("Select from model library")}</span>
+                <select
+                  aria-label={t("Select from model library")}
+                  className="h-10 w-full min-w-0 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+                  onChange={(event) => setSelectedAssetPath(event.target.value)}
+                  value={selectedAssetPath}
+                >
+                  <option value="">{t("Select from model library")}</option>
+                  {modelAssetOptions.map((asset) => (
+                    <option key={asset.path} value={asset.path}>
+                      {asset.name} · {asset.format} · {formatBytes(asset.sizeBytes)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                className="inline-flex h-10 items-center justify-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+                disabled={!selectedAsset}
+                onClick={useSelectedAsset}
+                type="button"
+              >
+                <Check className="h-4 w-4" />
+                {t("Use")}
+              </button>
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[rgb(170,170,170)]">
+              <span>{selectedAsset ? `${selectedAsset.kind} · ${selectedAsset.path}` : t("No model asset selected")}</span>
+              {library ? <span>· {t("{count} assets", { count: libraryCount })}</span> : null}
+              {importBusy === "refresh" ? <span>· {t("Loading…")}</span> : null}
+              <button
+                className="ml-auto inline-flex h-7 items-center gap-1 border border-white/10 px-2 text-[11px] text-[rgb(230,230,230)] hover:bg-white/10 disabled:opacity-50"
+                disabled={importBusy === "refresh"}
+                onClick={() => void refreshImports()}
+                type="button"
+              >
+                <RefreshCcw className="h-3 w-3" />
+                {t("Refresh library")}
+              </button>
+            </div>
+            {modelAssetOptions.length === 0 ? (
+              <div className="mt-3 border border-amber-300/30 bg-amber-400/10 px-3 py-2 text-xs leading-5 text-amber-100">
+                {t("No diagnostic model assets available. Default Admin uses seeded profiles.")}
+              </div>
+            ) : null}
+          </div>
+
+          <section className="border border-white/10 bg-black/20">
+            <button
+              aria-expanded={civitaiExpanded}
+              className="flex w-full items-center justify-between gap-3 px-3 py-3 text-left hover:bg-white/5"
+              onClick={() => setShowCivitai(!civitaiExpanded)}
+              type="button"
+            >
+              <span>
+                <span className="block text-xs font-semibold uppercase text-[rgb(114,113,112)]">
+                  {t("Optional")}
+                </span>
+                <span className="mt-1 block text-sm font-semibold">{t("Civitai config paste")}</span>
+                <span className="mt-1 block text-xs leading-5 text-[rgb(170,170,170)]">
+                  {t("Paste Civitai metadata when you want to prefill generation defaults.")}
+                </span>
+              </span>
+              <ChevronRight className={cn("h-4 w-4 shrink-0 transition-transform", civitaiExpanded && "rotate-90")} />
+            </button>
+            {civitaiExpanded ? (
+              <div className="border-t border-white/10 p-3">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <label className="inline-flex h-8 items-center gap-2 border border-white/10 px-2 text-xs text-[rgb(230,230,230)]">
+                    <input
+                      checked={importCivitaiLoras}
+                      className="h-3 w-3 accent-white"
+                      onChange={(event) => setImportCivitaiLoras(event.target.checked)}
+                      type="checkbox"
+                    />
+                    {t("Import LoRA tags")}
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      className="inline-flex h-8 items-center gap-2 border border-white/10 px-2 text-xs text-[rgb(230,230,230)] hover:bg-white/10"
+                      onClick={() => void pasteFromClipboard()}
+                      type="button"
+                    >
+                      <ClipboardCheck className="h-4 w-4" />
+                      {t("Paste from clipboard")}
+                    </button>
+                    <button
+                      className="inline-flex h-8 items-center gap-2 bg-white px-2 text-xs font-semibold text-black disabled:opacity-50"
+                      disabled={!civitaiText.trim()}
+                      onClick={() => applyCivitaiPaste(civitaiText)}
+                      type="button"
+                    >
+                      <Check className="h-4 w-4" />
+                      {t("Apply Civitai config")}
+                    </button>
+                  </div>
+                </div>
+                <textarea
+                  className="min-h-24 w-full resize-y border border-white/10 bg-black/30 px-3 py-2 font-mono text-xs outline-none placeholder:text-[rgb(114,113,112)] focus:border-white/30"
+                  onChange={(event) => {
+                    setCivitaiText(event.target.value);
+                    setCivitaiStatus(null);
+                  }}
+                  placeholder={t("Paste Civitai generation data or JSON here")}
+                  value={civitaiText}
+                />
+                {civitaiStatus ? (
+                  <p
+                    className={cn(
+                      "mt-2 text-xs leading-5",
+                      civitaiStatus.tone === "good" && "text-emerald-300",
+                      civitaiStatus.tone === "warn" && "text-amber-200",
+                      civitaiStatus.tone === "bad" && "text-red-300",
+                    )}
+                  >
+                    {civitaiStatus.message}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+          </section>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <section className="border border-white/10 bg-black/20 p-3">
+              <SectionHeader
+                description="This is what operators will find later in dry run, publish, and rollback tables."
+                eyebrow="Step 2"
+                title="Profile identity"
+              />
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <FormField
+                  label="Profile Key"
+                  onChange={(value) => onDraftChange({ ...draft, profileKey: value })}
+                  value={draft.profileKey}
+                />
+                <FormField
+                  label="Label"
+                  onChange={(value) => onDraftChange({ ...draft, label: value })}
+                  value={draft.label}
+                />
+                <FormSelect
+                  label="Mode"
+                  onChange={(value) => onDraftChange({ ...draft, mode: value as ModelDraft["mode"] })}
+                  options={["image", "video"]}
+                  value={draft.mode}
+                />
+                <FormSelect
+                  label="Runner"
+                  onChange={(value) => onDraftChange({ ...draft, runner: value as ModelDraft["runner"] })}
+                  options={["sd_cpp", "pipeline", "mlx", "comfyui", "external"]}
+                  value={draft.runner}
+                />
+                <FormField
+                  label="Pipeline Model"
+                  onChange={(value) => onDraftChange({ ...draft, pipelineModel: value })}
+                  value={draft.pipelineModel}
+                />
+                <FormSelect
+                  label="Format"
+                  onChange={(value) => onDraftChange({ ...draft, modelFormat: value as ModelDraft["modelFormat"] })}
+                  options={["safetensors", "gguf", "diffusers", "external"]}
+                  value={draft.modelFormat}
+                />
+              </div>
+            </section>
+
+            <section className="border border-white/10 bg-black/20 p-3">
+              <SectionHeader
+                description="Keep the common operating knobs visible; deeper runner details are below."
+                eyebrow="Step 3"
+                title="Generation defaults"
+              />
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <FormField
+                  label="Width"
+                  onChange={(value) => onDraftChange({ ...draft, defaultWidth: value })}
+                  value={draft.defaultWidth}
+                />
+                <FormField
+                  label="Height"
+                  onChange={(value) => onDraftChange({ ...draft, defaultHeight: value })}
+                  value={draft.defaultHeight}
+                />
+                <FormField
+                  label="Steps"
+                  onChange={(value) => onDraftChange({ ...draft, steps: value })}
+                  value={draft.steps}
+                />
+                <SamplerSelect
+                  label="Sampler"
+                  onChange={(value) => onDraftChange({ ...draft, sampler: value })}
+                  value={draft.sampler}
+                />
+                <SchedulerSelect
+                  label="Scheduler"
+                  onChange={(value) => onDraftChange({ ...draft, scheduler: value })}
+                  value={draft.scheduler}
+                />
+                <FormField
+                  label="CFG"
+                  onChange={(value) => onDraftChange({ ...draft, cfgScale: value })}
+                  value={draft.cfgScale}
+                />
+                <FormField
+                  label="Max Count"
+                  onChange={(value) => onDraftChange({ ...draft, maxCount: value })}
+                  value={draft.maxCount}
+                />
+                <FormField
+                  label="Cost Multiplier"
+                  onChange={(value) => onDraftChange({ ...draft, costMultiplier: value })}
+                  value={draft.costMultiplier}
+                />
+                <FormField
+                  label="Entitlement"
+                  onChange={(value) => onDraftChange({ ...draft, requiredEntitlement: value })}
+                  value={draft.requiredEntitlement}
+                />
+                <div className="sm:col-span-2">
+                  <FormField
+                    label="Orientations"
+                    onChange={(value) => onDraftChange({ ...draft, allowedOrientations: value })}
+                    value={draft.allowedOrientations}
+                  />
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <section className="border border-white/10 bg-black/20 p-3">
+            <SectionHeader
+              description="Review the generated source paths and GGUF output before draft creation."
+              eyebrow="Step 4"
+              title="Model components and conversion"
+            />
+            <div className="mt-3 grid gap-3 md:grid-cols-2">
+              <FormField
+                label="Source Model"
+                onChange={(value) => onDraftChange({ ...draft, sourceModelPath: value })}
+                value={draft.sourceModelPath}
+              />
+              <FormField
+                label="Diffusion Model"
+                onChange={(value) => onDraftChange({ ...draft, diffusionModelPath: value })}
+                value={draft.diffusionModelPath}
+              />
+              <FormField
+                label="LLM Encoder"
+                onChange={(value) => onDraftChange({ ...draft, llmPath: value })}
+                value={draft.llmPath}
+              />
+              <FormField
+                label="LLM Vision Encoder"
+                onChange={(value) => onDraftChange({ ...draft, llmVisionPath: value })}
+                value={draft.llmVisionPath}
+              />
+              <FormField
+                label="VAE"
+                onChange={(value) => onDraftChange({ ...draft, vaePath: value })}
+                value={draft.vaePath}
+              />
+              <FormField
+                label="Backend"
+                onChange={(value) => onDraftChange({ ...draft, backend: value })}
+                value={draft.backend}
+              />
+              <FormField
+                label="Converted Model"
+                onChange={(value) => onDraftChange({ ...draft, convertedModelPath: value })}
+                value={draft.convertedModelPath}
+              />
+              <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto]">
+                <FormField
+                  label="Conversion Type"
+                  onChange={(value) => onDraftChange({ ...draft, conversionType: value })}
+                  value={draft.conversionType}
+                />
+                <FormSelect
+                  label="Convert Source"
+                  onChange={(value) => onDraftChange({ ...draft, conversionSourceArg: value as ModelDraft["conversionSourceArg"] })}
+                  options={["model", "diffusion-model"]}
+                  value={draft.conversionSourceArg}
+                />
+                <button
+                  aria-pressed={draft.conversionEnabled}
+                  className="flex h-10 items-center justify-center gap-2 self-end border border-white/10 bg-black/30 px-3 text-left text-sm text-[rgb(230,230,230)] aria-pressed:bg-white aria-pressed:text-black"
+                  onClick={() => onDraftChange({ ...draft, conversionEnabled: !draft.conversionEnabled })}
+                  type="button"
+                >
+                  <span className="grid h-4 w-4 place-items-center border border-current">
+                    {draft.conversionEnabled ? <Check className="h-3 w-3" /> : null}
+                  </span>
+                  <span>{t("Convert to GGUF")}</span>
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <section className="border border-white/10 bg-black/20 p-3">
+            <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+              <SectionHeader
+                description="Attach optional style or character adapters without editing runner JSON."
+                eyebrow="Step 5"
+                title="LoRA stack"
+              />
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="border border-white/10 px-2 py-1 text-[11px] text-[rgb(170,170,170)]">
+                  {usableLoraItems.length
+                    ? t("{count} LoRA attached", { count: usableLoraItems.length })
+                    : t("No LoRA")}
+                </span>
+                {incompleteLoraCount > 0 ? (
+                  <span className="border border-amber-300/30 bg-amber-400/10 px-2 py-1 text-[11px] text-amber-200">
+                    {t("{count} incomplete LoRA skipped", { count: incompleteLoraCount })}
+                  </span>
+                ) : null}
+                <button
+                  className="inline-flex h-7 items-center gap-1 border border-white/10 px-2 text-[11px] text-[rgb(230,230,230)] hover:bg-white/10 disabled:opacity-50"
+                  disabled={loraItems.length === 0}
+                  onClick={clearLoras}
+                  type="button"
+                >
+                  <Trash2 className="h-3 w-3" />
+                  {t("Clear LoRA")}
+                </button>
+              </div>
+            </div>
+            <div className="border border-white/10 bg-black/20">
+              <div className="grid gap-2 border-b border-white/10 p-2 md:grid-cols-[1fr_1.5fr_96px_auto]">
+                <label className="block">
+                  <span className="sr-only">{t("LoRA key")}</span>
+                  <input
+                    aria-label={t("LoRA key")}
+                    className="h-9 w-full min-w-0 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+                    onChange={(event) => setManualLora({ ...manualLora, key: event.target.value })}
+                    placeholder={t("LoRA key")}
+                    value={manualLora.key}
+                  />
+                </label>
+                <label className="block">
+                  <span className="sr-only">{t("LoRA file path")}</span>
+                  <input
+                    aria-label={t("LoRA file path")}
+                    className="h-9 w-full min-w-0 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+                    onChange={(event) => setManualLora({ ...manualLora, path: event.target.value })}
+                    placeholder={t("LoRA file path")}
+                    value={manualLora.path}
+                  />
+                </label>
+                <label className="block">
+                  <span className="sr-only">{t("Weight")}</span>
+                  <input
+                    aria-label={t("Weight")}
+                    className="h-9 w-full min-w-0 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+                    onChange={(event) => setManualLora({ ...manualLora, weight: event.target.value })}
+                    placeholder={t("Weight")}
+                    value={manualLora.weight}
+                  />
+                </label>
+                <button
+                  className="inline-flex h-9 items-center justify-center gap-2 border border-white/10 px-3 text-sm text-[rgb(230,230,230)] hover:bg-white/10"
+                  onClick={addManualLora}
+                  type="button"
+                >
+                  <Plus className="h-4 w-4" />
+                  {t("Add LoRA")}
+                </button>
+              </div>
+              <div className="max-h-52 overflow-y-auto">
+                {loraItems.map((item, index) => (
+                  <div
+                    className="grid gap-2 border-b border-white/5 p-2 text-xs last:border-0 md:grid-cols-[1fr_1.5fr_84px_84px]"
+                    key={`${item.path || item.key}-${index}`}
+                  >
+                    <input
+                      aria-label={t("LoRA key")}
+                      className="h-8 min-w-0 border border-white/10 bg-black/30 px-2 outline-none focus:border-white/30"
+                      onChange={(event) => {
+                        const next = [...loraItems];
+                        next[index] = { ...item, key: event.target.value };
+                        setLoras(next);
+                      }}
+                      value={item.key}
+                    />
+                    <input
+                      aria-label={t("LoRA file path")}
+                      className="h-8 min-w-0 border border-white/10 bg-black/30 px-2 font-mono outline-none focus:border-white/30"
+                      onChange={(event) => {
+                        const next = [...loraItems];
+                        next[index] = { ...item, path: event.target.value };
+                        setLoras(next);
+                      }}
+                      value={item.path}
+                    />
+                    <input
+                      aria-label={t("Weight")}
+                      className="h-8 min-w-0 border border-white/10 bg-black/30 px-2 outline-none focus:border-white/30"
+                      onChange={(event) => {
+                        const next = [...loraItems];
+                        next[index] = { ...item, weight: numberFromText(event.target.value, item.weight) };
+                        setLoras(next);
+                      }}
+                      value={String(item.weight)}
+                    />
+                    <div className="flex gap-1">
+                      <button
+                        aria-label={item.enabled ? t("Disable LoRA") : t("Enable LoRA")}
+                        aria-pressed={item.enabled}
+                        className="grid h-8 w-8 place-items-center border border-white/10 text-[rgb(230,230,230)] hover:bg-white/10 aria-pressed:bg-white aria-pressed:text-black"
+                        onClick={() => {
+                          const next = [...loraItems];
+                          next[index] = { ...item, enabled: !item.enabled };
+                          setLoras(next);
+                        }}
+                        title={item.enabled ? t("Disable LoRA") : t("Enable LoRA")}
+                        type="button"
+                      >
+                        <Check className="h-4 w-4" />
+                      </button>
+                      <button
+                        aria-label={t("Remove LoRA")}
+                        className="grid h-8 w-8 place-items-center border border-white/10 text-[rgb(170,170,170)] hover:bg-white/10"
+                        onClick={() => setLoras(loraItems.filter((_, childIndex) => childIndex !== index))}
+                        title={t("Remove LoRA")}
+                        type="button"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                {loraItems.length === 0 ? (
+                  <div className="px-3 py-6 text-center text-xs text-[rgb(170,170,170)]">
+                    {t("No LoRA models added. This model will run without LoRA.")}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </section>
+
+          <section className="border border-white/10 bg-black/20">
+            <button
+              aria-expanded={showAdvanced}
+              className="flex w-full items-center justify-between gap-3 px-3 py-3 text-left text-sm font-semibold text-[rgb(230,230,230)] hover:bg-white/5"
+              onClick={() => setShowAdvanced(!showAdvanced)}
+              type="button"
+            >
+              <span>{t("Advanced runner details")}</span>
+              <ChevronRight className={cn("h-4 w-4 transition-transform", showAdvanced && "rotate-90")} />
+            </button>
+            {showAdvanced ? (
+              <div className="grid gap-3 border-t border-white/10 p-3 md:grid-cols-2">
+                <FormField
+                  label="LoRA Dir"
+                  onChange={(value) => onDraftChange({ ...draft, loraModelDir: value })}
+                  value={draft.loraModelDir}
+                />
+                <FormSelect
+                  label="LoRA Apply"
+                  onChange={(value) => onDraftChange({ ...draft, loraApplyMode: value as ModelDraft["loraApplyMode"] })}
+                  options={["auto", "immediately", "at_runtime"]}
+                  value={draft.loraApplyMode}
+                />
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">
+                    {t("Runner Config")}
+                  </span>
+                  <textarea
+                    className="min-h-20 w-full resize-y border border-white/10 bg-black/30 px-3 py-2 font-mono text-xs outline-none focus:border-white/30"
+                    onChange={(event) => onDraftChange({ ...draft, runnerConfigJson: event.target.value })}
+                    value={draft.runnerConfigJson}
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">
+                    {t("LoRA JSON")}
+                  </span>
+                  <textarea
+                    className={cn(
+                      "min-h-20 w-full resize-y border bg-black/30 px-3 py-2 font-mono text-xs outline-none focus:border-white/30",
+                      hasValidLorasJson ? "border-white/10" : "border-red-400/40",
+                    )}
+                    onChange={(event) => onDraftChange({ ...draft, lorasJson: event.target.value })}
+                    value={draft.lorasJson}
+                  />
+                </label>
+              </div>
+            ) : null}
+          </section>
+        </div>
+
+        <aside className="space-y-4 xl:sticky xl:top-20 xl:self-start">
+          <section className="border border-white/10 bg-black/20 p-3">
+            <h3 className="text-sm font-semibold">{t("Draft readiness")}</h3>
+            <div className="mt-3 space-y-2">
+              {readinessItems.map((item) => (
+                <ReadinessItem key={item.label} label={t(item.label)} passed={item.passed} />
+              ))}
+            </div>
+            <button
+              className="mt-4 inline-flex h-10 w-full items-center justify-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+              disabled={busy || !canCreate}
+              onClick={onCreate}
+              type="button"
+            >
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+              {t("Create Draft")}
+            </button>
+            <p className="mt-2 text-xs leading-5 text-[rgb(170,170,170)]">
+              {t("After creation, the draft appears in Drafts for testing and publish.")}
+            </p>
+          </section>
+          <section className="border border-white/10 bg-black/20 p-3">
+            <h3 className="text-sm font-semibold">{t("Current draft summary")}</h3>
+            <div className="mt-3 space-y-3 text-xs">
+              <SummaryRow label="Profile" value={draft.profileKey || "-"} />
+              <SummaryRow
+                label="Main model"
+                value={pathFileName(draft.sourceModelPath || draft.diffusionModelPath) || "-"}
+              />
+              <SummaryRow label="Format" value={draft.modelFormat} />
+              <SummaryRow
+                label="GGUF target"
+                value={draft.conversionEnabled ? pathFileName(draft.convertedModelPath) || "-" : t("Disabled")}
+              />
+              <SummaryRow
+                label="LoRA"
+                value={usableLoraItems.length ? t("{count} LoRA attached", { count: usableLoraItems.length }) : t("No LoRA")}
+              />
+              <SummaryRow label="Size" value={`${draft.defaultWidth} x ${draft.defaultHeight}`} />
+            </div>
+          </section>
+        </aside>
       </div>
     </section>
   );
+}
+
+function WorkflowStep({
+  active,
+  index,
+  meta,
+  title,
+}: {
+  active: boolean;
+  index: number;
+  meta: string;
+  title: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "border border-white/10 bg-black/20 p-3",
+        active && "border-white/30 bg-white/[0.06]",
+      )}
+    >
+      <div className="flex items-center gap-3">
+        <span
+          className={cn(
+            "grid h-7 w-7 place-items-center border border-white/10 font-mono text-xs text-[rgb(170,170,170)]",
+            active && "border-white bg-white text-black",
+          )}
+        >
+          {index}
+        </span>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-[rgb(230,230,230)]">{title}</p>
+          <p className="mt-0.5 truncate text-xs text-[rgb(170,170,170)]">{meta}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SectionHeader({
+  description,
+  eyebrow,
+  title,
+}: {
+  description: string;
+  eyebrow: string;
+  title: string;
+}) {
+  const { t } = useAdminI18n();
+
+  return (
+    <div>
+      <p className="text-[11px] font-semibold uppercase text-[rgb(114,113,112)]">{t(eyebrow)}</p>
+      <h3 className="mt-1 text-sm font-semibold">{t(title)}</h3>
+      <p className="mt-1 text-xs leading-5 text-[rgb(170,170,170)]">{t(description)}</p>
+    </div>
+  );
+}
+
+function TextPanel({ label, value }: { label: string; value: string }) {
+  const { t } = useAdminI18n();
+  return (
+    <div className="border border-white/10 bg-black/20 p-3">
+      <p className="text-xs font-semibold uppercase text-[rgb(114,113,112)]">{t(label)}</p>
+      <p className="mt-2 max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-sm leading-6 text-[rgb(230,230,230)]">
+        {value || "-"}
+      </p>
+    </div>
+  );
+}
+
+function SafeImagePreview({ alt, src }: { alt: string; src: string }) {
+  const { t } = useAdminI18n();
+  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    let nextObjectUrl: string | null = null;
+    if (!src) {
+      const missingTimer = window.setTimeout(() => {
+        if (!cancelled) setFailed(true);
+      }, 0);
+      return () => {
+        cancelled = true;
+        window.clearTimeout(missingTimer);
+      };
+    }
+
+    const resetTimer = window.setTimeout(() => {
+      if (cancelled) return;
+      setObjectUrl(null);
+      setFailed(false);
+    }, 0);
+
+    void fetch(src, { cache: "no-store" })
+      .then((response) => {
+        if (!response.ok) throw new Error(`Image unavailable: ${response.status}`);
+        return response.blob();
+      })
+      .then((blob) => {
+        if (cancelled) return;
+        nextObjectUrl = URL.createObjectURL(blob);
+        setObjectUrl(nextObjectUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(resetTimer);
+      if (nextObjectUrl) URL.revokeObjectURL(nextObjectUrl);
+    };
+  }, [src]);
+
+  if (objectUrl) {
+    return (
+      // Generated admin assets may be local blob URLs or transient signed URLs; Next Image cannot optimize them reliably.
+      // eslint-disable-next-line @next/next/no-img-element
+      <img alt={alt} className="aspect-[4/5] w-full object-cover" src={objectUrl} />
+    );
+  }
+
+  return (
+    <div className="grid aspect-[4/5] place-items-center bg-black/30 px-4 text-center text-xs text-[rgb(170,170,170)]">
+      {failed ? t("Asset unavailable") : t("Checking asset")}
+    </div>
+  );
+}
+
+function ReadinessItem({ label, passed }: { label: string; passed: boolean }) {
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <span
+        className={cn(
+          "grid h-5 w-5 place-items-center border",
+          passed
+            ? "border-emerald-300/40 bg-emerald-400/10 text-emerald-300"
+            : "border-white/10 text-[rgb(114,113,112)]",
+        )}
+      >
+        {passed ? <Check className="h-3 w-3" /> : null}
+      </span>
+      <span className={passed ? "text-[rgb(230,230,230)]" : "text-[rgb(170,170,170)]"}>{label}</span>
+    </div>
+  );
+}
+
+function SummaryRow({ label, value }: { label: string; value: string }) {
+  const { t } = useAdminI18n();
+
+  return (
+    <div className="grid min-w-0 grid-cols-[76px_minmax(0,1fr)] gap-3 sm:grid-cols-[96px_minmax(0,1fr)]">
+      <span className="text-[rgb(114,113,112)]">{t(label)}</span>
+      <span className="min-w-0 truncate font-mono text-[rgb(230,230,230)]" title={value}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function ProfileVerificationPanel({
+  compact = false,
+  summary,
+}: {
+  compact?: boolean;
+  summary: ProfileVerificationSummary;
+}) {
+  const { locale, t } = useAdminI18n();
+  const shouldShowComponents = !compact || summary.blockedReason || summary.failureMode;
+
+  return (
+    <div
+      className={cn(
+        "mt-3 border px-3 py-2 text-xs",
+        summary.blockedReason
+          ? "border-red-400/30 bg-red-950/20"
+          : "border-white/10 bg-black/20",
+      )}
+    >
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+        <span className="font-medium text-[rgb(230,230,230)]">{t("Model verification")}</span>
+        <Status locale={locale} value={summary.status} tone={summary.tone} />
+      </div>
+      <p className="mt-1 break-words leading-5 text-[rgb(170,170,170)]">{t(summary.meta)}</p>
+      {summary.failureMode ? (
+        <p className="mt-1 break-all leading-5 text-red-100">
+          {t("Failure mode")}: {summary.failureMode}
+        </p>
+      ) : null}
+      {summary.blockedReason ? (
+        <p className="mt-1 leading-5 text-red-100">{t(summary.blockedReason)}</p>
+      ) : null}
+      {shouldShowComponents && summary.components.length > 0 ? (
+        <div className="mt-2 grid gap-1">
+          {summary.components.slice(0, compact ? 3 : 8).map((component) => (
+            <div className="flex min-w-0 items-center justify-between gap-2" key={component.key}>
+              <span className="min-w-0 truncate text-[rgb(170,170,170)]" title={component.key}>
+                {component.key}
+              </span>
+              <Status locale={locale} value={component.status} tone={component.tone} />
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function pathFileName(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  return trimmed.split("/").filter(Boolean).pop() ?? trimmed;
 }
 
 function PromptTemplateDraftForm({
@@ -1383,10 +4581,12 @@ function PromptTemplateDraftForm({
   onCreate: () => void;
   onDraftChange: (value: TemplateDraft) => void;
 }) {
+  const { t } = useAdminI18n();
+
   return (
     <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold">Create Prompt Template Draft</h2>
+        <h2 className="text-sm font-semibold">{t("Create Prompt Template Draft")}</h2>
         <button
           className="inline-flex h-9 items-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
           disabled={busy || !draft.templateKey.trim() || !draft.label.trim() || !draft.body.trim()}
@@ -1394,7 +4594,7 @@ function PromptTemplateDraftForm({
           type="button"
         >
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-          Create Draft
+          {t("Create Draft")}
         </button>
       </div>
       <div className="grid gap-3 md:grid-cols-4">
@@ -1423,7 +4623,7 @@ function PromptTemplateDraftForm({
       </div>
       <div className="mt-3 grid gap-3 md:grid-cols-2">
         <label className="block">
-          <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">Body</span>
+          <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">{t("Body")}</span>
           <textarea
             className="min-h-24 w-full resize-y border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-white/30"
             onChange={(event) => onDraftChange({ ...draft, body: event.target.value })}
@@ -1431,7 +4631,9 @@ function PromptTemplateDraftForm({
           />
         </label>
         <label className="block">
-          <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">Negative Base</span>
+          <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">
+            {t("Negative Base")}
+          </span>
           <textarea
             className="min-h-24 w-full resize-y border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-white/30"
             onChange={(event) => onDraftChange({ ...draft, negativeBase: event.target.value })}
@@ -1452,9 +4654,11 @@ function FormField({
   onChange: (value: string) => void;
   value: string;
 }) {
+  const { t } = useAdminI18n();
+
   return (
     <label className="block">
-      <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">{label}</span>
+      <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">{t(label)}</span>
       <input
         className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
         onChange={(event) => onChange(event.target.value)}
@@ -1475,9 +4679,11 @@ function FormSelect({
   options: string[];
   value: string;
 }) {
+  const { t, value: valueLabel } = useAdminI18n();
+
   return (
     <label className="block">
-      <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">{label}</span>
+      <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">{t(label)}</span>
       <select
         className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
         onChange={(event) => onChange(event.target.value)}
@@ -1485,7 +4691,67 @@ function FormSelect({
       >
         {options.map((option) => (
           <option key={option} value={option}>
-            {option}
+            {valueLabel(option)}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function SamplerSelect({
+  label,
+  onChange,
+  value,
+}: {
+  label: string;
+  onChange: (value: string) => void;
+  value: string;
+}) {
+  const { t } = useAdminI18n();
+  const normalizedValue = samplerOptions.some((option) => option.value === value) ? value : "euler";
+
+  return (
+    <label className="block">
+      <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">{t(label)}</span>
+      <select
+        className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+        onChange={(event) => onChange(event.target.value)}
+        value={normalizedValue}
+      >
+        {samplerOptions.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function SchedulerSelect({
+  label,
+  onChange,
+  value,
+}: {
+  label: string;
+  onChange: (value: string) => void;
+  value: string;
+}) {
+  const { t } = useAdminI18n();
+  const normalizedValue = schedulerOptions.some((option) => option.value === value) ? value : "model_default";
+
+  return (
+    <label className="block">
+      <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">{t(label)}</span>
+      <select
+        className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+        onChange={(event) => onChange(event.target.value)}
+        value={normalizedValue}
+      >
+        {schedulerOptions.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
           </option>
         ))}
       </select>
@@ -1561,6 +4827,70 @@ function ModerationView({
         title="Blocked Media"
       />
       <DataTable
+        actions={(row) => {
+          const id = stringValue(row.id);
+          return (
+            <div className="flex flex-wrap gap-1">
+              <IconAction
+                icon={<Check className="h-4 w-4" />}
+                label="Uphold"
+                onClick={() =>
+                  openAction({
+                    title: `Uphold appeal ${id}`,
+                    endpoint: `/api/v1/admin/moderation/appeals/${id}`,
+                    method: "PATCH",
+                    confirmText: "UPHOLD",
+                    reasonRequired: true,
+                    body: (actionReason, confirmation) => ({
+                      outcome: "upheld",
+                      notes: actionReason,
+                      reason: actionReason,
+                      confirmation,
+                    }),
+                  })
+                }
+              />
+              <IconAction
+                icon={<RotateCcw className="h-4 w-4" />}
+                label="Overturn"
+                onClick={() =>
+                  openAction({
+                    title: `Overturn appeal ${id}`,
+                    endpoint: `/api/v1/admin/moderation/appeals/${id}`,
+                    method: "PATCH",
+                    confirmText: "OVERTURN",
+                    reasonRequired: true,
+                    body: (actionReason, confirmation) => ({
+                      outcome: "overturned",
+                      notes: actionReason,
+                      reason: actionReason,
+                      confirmation,
+                    }),
+                  })
+                }
+              />
+              <IconAction
+                icon={<ClipboardCheck className="h-4 w-4" />}
+                label="Modify"
+                onClick={() =>
+                  openAction({
+                    title: `Modify appeal ${id}`,
+                    endpoint: `/api/v1/admin/moderation/appeals/${id}`,
+                    method: "PATCH",
+                    confirmText: "MODIFY",
+                    reasonRequired: true,
+                    body: (actionReason, confirmation) => ({
+                      outcome: "modified",
+                      notes: actionReason,
+                      reason: actionReason,
+                      confirmation,
+                    }),
+                  })
+                }
+              />
+            </div>
+          );
+        }}
         columns={["id", "userId", "targetType", "targetId", "status", "createdAt"]}
         rows={appeals}
         title="Appeals"
@@ -1580,10 +4910,12 @@ function UsersView({
   permissionForm: PermissionForm;
   setPermissionForm: (value: PermissionForm) => void;
 }) {
+  const { t, value: valueLabel } = useAdminI18n();
+
   return (
     <div className="space-y-5">
       <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
-        <h2 className="mb-1 text-sm font-semibold">Permission override</h2>
+        <h2 className="mb-1 text-sm font-semibold">{t("Permission override")}</h2>
         <p className="mb-3 text-xs text-[rgb(170,170,170)]">
           按 user 精确 grant / revoke / clear 单个 permission key（不动 role）。admin only，写审计。
         </p>
@@ -1591,7 +4923,7 @@ function UsersView({
           <input
             className="h-10 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
             onChange={(event) => setPermissionForm({ ...permissionForm, userId: event.target.value })}
-            placeholder="User ID"
+            placeholder={t("User ID")}
             value={permissionForm.userId}
           />
           <select
@@ -1619,7 +4951,7 @@ function UsersView({
           >
             {["grant", "revoke", "clear"].map((effect) => (
               <option key={effect} value={effect}>
-                {effect}
+                {valueLabel(effect)}
               </option>
             ))}
           </select>
@@ -1644,7 +4976,7 @@ function UsersView({
             type="button"
           >
             <ShieldCheck className="h-4 w-4" />
-            Apply
+            {t("Apply")}
           </button>
         </div>
       </section>
@@ -1697,13 +5029,15 @@ function BillingView({
   setAdjustment: (value: { userId: string; delta: string }) => void;
   openAction: (action: PendingAction) => void;
 }) {
+  const { locale, t } = useAdminI18n();
+
   return (
     <div className="space-y-5">
       <div className="grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-3">
         <Metric
           label="Net coins (window)"
           value={reconciliation.totals.net}
-          meta={`${reconciliation.totals.entries} ledger entries`}
+          meta={t("{count} ledger entries", { count: reconciliation.totals.entries })}
         />
         <Metric
           label="Active subscriptions"
@@ -1712,8 +5046,8 @@ function BillingView({
         />
         <Metric
           label="Window"
-          value={`${compactDate(reconciliation.window.from)} →`}
-          meta={compactDate(reconciliation.window.to)}
+          value={`${compactDate(reconciliation.window.from, locale)} →`}
+          meta={compactDate(reconciliation.window.to, locale)}
         />
       </div>
       <DataTable
@@ -1739,15 +5073,18 @@ function BillingView({
       <div className="border border-white/10 bg-[rgb(18,18,18)] p-4">
         <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_140px_auto]">
           <input
+            aria-label={t("Adjustment user ID")}
             className="h-10 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
             onChange={(event) => setAdjustment({ ...adjustment, userId: event.target.value })}
-            placeholder="User ID"
+            placeholder={t("User ID")}
             value={adjustment.userId}
           />
           <input
+            aria-label={t("Adjustment delta")}
             className="h-10 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            inputMode="numeric"
             onChange={(event) => setAdjustment({ ...adjustment, delta: event.target.value })}
-            placeholder="Delta"
+            placeholder={t("Delta")}
             value={adjustment.delta}
           />
           <button
@@ -1771,7 +5108,7 @@ function BillingView({
             type="button"
           >
             <BadgeDollarSign className="h-4 w-4" />
-            Adjust
+            {t("Adjust")}
           </button>
         </div>
       </div>
@@ -1799,12 +5136,14 @@ function PricingView({
   openAction: (action: PendingAction) => void;
   rows: Row[];
 }) {
+  const { t } = useAdminI18n();
+
   return (
     <div className="space-y-6">
       <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h2 className="text-sm font-semibold">Create Pricing Rule Draft</h2>
+            <h2 className="text-sm font-semibold">{t("Create Pricing Rule Draft")}</h2>
             <p className="mt-1 text-xs text-[rgb(170,170,170)]">
               改价走 draft → publish 版本化发布；发布即归档同 mode 旧 active，可一键 rollback。
             </p>
@@ -1816,7 +5155,7 @@ function PricingView({
             type="button"
           >
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-            Create Draft
+            {t("Create Draft")}
           </button>
         </div>
         <div className="grid gap-3 md:grid-cols-5">
@@ -1916,6 +5255,7 @@ function DeadLetterView({
   rows: Row[];
   openAction: (action: PendingAction) => void;
 }) {
+  const { column: columnLabel, locale, t } = useAdminI18n();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const rowIds = rows.map((row) => stringValue(row.id)).filter(Boolean);
   const selectedIds = rowIds.filter((id) => selected.has(id));
@@ -1939,8 +5279,10 @@ function DeadLetterView({
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3 border border-white/10 bg-[rgb(18,18,18)] px-4 py-3">
-        <span className="text-sm font-semibold">Dead-letter Queue</span>
-        <span className="text-xs text-[rgb(170,170,170)]">{selectedIds.length} selected</span>
+        <span className="text-sm font-semibold">{t("Dead-letter Queue")}</span>
+        <span className="text-xs text-[rgb(170,170,170)]">
+          {t("{count} selected", { count: selectedIds.length })}
+        </span>
         <div className="ml-auto flex gap-2">
           <button
             className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm text-[rgb(230,230,230)] hover:bg-white/10 disabled:opacity-40"
@@ -1962,7 +5304,7 @@ function DeadLetterView({
             type="button"
           >
             <RefreshCcw className="h-4 w-4" />
-            Requeue selected
+            {t("Requeue selected")}
           </button>
           <button
             className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm text-red-200 hover:bg-white/10 disabled:opacity-40"
@@ -1984,7 +5326,7 @@ function DeadLetterView({
             type="button"
           >
             <Trash2 className="h-4 w-4" />
-            Discard selected
+            {t("Discard selected")}
           </button>
         </div>
       </div>
@@ -1995,14 +5337,19 @@ function DeadLetterView({
             <thead className="bg-black/20 text-[11px] uppercase text-[rgb(170,170,170)]">
               <tr>
                 <th className="border-b border-white/10 px-3 py-2">
-                  <input checked={allSelected} onChange={toggleAll} type="checkbox" />
+                  <input
+                    aria-label="Select all dead-letter jobs"
+                    checked={allSelected}
+                    onChange={toggleAll}
+                    type="checkbox"
+                  />
                 </th>
                 {columns.map((column) => (
                   <th key={column} className="border-b border-white/10 px-3 py-2 font-semibold">
-                    {column}
+                    {columnLabel(column)}
                   </th>
                 ))}
-                <th className="border-b border-white/10 px-3 py-2 font-semibold">Actions</th>
+                <th className="border-b border-white/10 px-3 py-2 font-semibold">{t("Actions")}</th>
               </tr>
             </thead>
             <tbody>
@@ -2012,11 +5359,16 @@ function DeadLetterView({
                 return (
                   <tr key={`${id || "dl"}-${index}`} className="border-b border-white/5 last:border-0">
                     <td className="px-3 py-2 align-top">
-                      <input checked={selected.has(id)} onChange={() => toggle(id)} type="checkbox" />
+                      <input
+                        aria-label={`Select dead-letter job ${id || index + 1}`}
+                        checked={selected.has(id)}
+                        onChange={() => toggle(id)}
+                        type="checkbox"
+                      />
                     </td>
                     {columns.map((column) => (
                       <td key={column} className="max-w-[260px] px-3 py-2 align-top text-[rgb(230,230,230)]">
-                        {renderCell(row[column])}
+                        {renderCell(row[column], locale)}
                       </td>
                     ))}
                     <td className="px-3 py-2 align-top">
@@ -2024,7 +5376,7 @@ function DeadLetterView({
                         {status === "failed" ? (
                           <IconAction
                             icon={<RefreshCcw className="h-4 w-4" />}
-                            label="Requeue"
+                            label={t("Requeue")}
                             onClick={() =>
                               openAction({
                                 title: `Requeue ${id}`,
@@ -2043,7 +5395,7 @@ function DeadLetterView({
                         {status === "failed" || status === "blocked" ? (
                           <IconAction
                             icon={<Trash2 className="h-4 w-4" />}
-                            label="Discard"
+                            label={t("Discard")}
                             onClick={() =>
                               openAction({
                                 title: `Discard ${id}`,
@@ -2067,7 +5419,7 @@ function DeadLetterView({
               {rows.length === 0 ? (
                 <tr>
                   <td className="px-3 py-8 text-center text-sm text-[rgb(170,170,170)]" colSpan={columns.length + 2}>
-                    No dead-letter jobs
+                    {t("No dead-letter jobs")}
                   </td>
                 </tr>
               ) : null}
@@ -2080,10 +5432,13 @@ function DeadLetterView({
 }
 
 function AnalyticsView({ data }: { data: AnalyticsData }) {
+  const { locale, t } = useAdminI18n();
+
   return (
     <div className="space-y-5">
       <p className="text-xs text-[rgb(170,170,170)]">
-        Window {compactDate(data.window.from)} → {compactDate(data.window.to)} · activity funnel
+        {t("Window")} {compactDate(data.window.from, locale)} → {compactDate(data.window.to, locale)} ·{" "}
+        {t("activity funnel")}
       </p>
       <div className="grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-4">
         <Metric label="Signups" value={data.funnel.signups} meta="new users" />
@@ -2096,10 +5451,18 @@ function AnalyticsView({ data }: { data: AnalyticsData }) {
         />
       </div>
       <div className="grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-4">
-        <Metric label="Generations" value={data.generation.total} meta={`${data.generation.completed} completed`} />
+        <Metric
+          label="Generations"
+          value={data.generation.total}
+          meta={t("{count} completed", { count: data.generation.completed })}
+        />
         <Metric label="Failed" value={data.generation.failed} meta="generation jobs" />
         <Metric label="Blocked" value={data.generation.blocked} meta="generation jobs" />
-        <Metric label="Coins net" value={data.economy.net} meta={`${data.economy.coinsGranted} granted`} />
+        <Metric
+          label="Coins net"
+          value={data.economy.net}
+          meta={t("{count} granted", { count: data.economy.coinsGranted })}
+        />
       </div>
       <DataTable
         columns={["reason", "totalDelta", "count"]}
@@ -2112,10 +5475,12 @@ function AnalyticsView({ data }: { data: AnalyticsData }) {
 }
 
 function RiskView({ data }: { data: AbuseData }) {
+  const { locale, t } = useAdminI18n();
+
   return (
     <div className="space-y-5">
       <p className="text-xs text-[rgb(170,170,170)]">
-        Window {compactDate(data.window.from)} → {compactDate(data.window.to)} · 只读告警信号，处置走
+        {t("Window")} {compactDate(data.window.from, locale)} → {compactDate(data.window.to, locale)} · 只读告警信号，处置走
         Users 封禁 / Billing 调整。多账号聚类基于 anonymousId，清 cookie / 无痕可绕，非完备。
       </p>
       <DataTable
@@ -2138,10 +5503,12 @@ function RiskView({ data }: { data: AbuseData }) {
 }
 
 function ProviderOpsView({ data }: { data: ProviderOpsData }) {
+  const { locale, t } = useAdminI18n();
+
   return (
     <div className="space-y-4">
       <p className="text-xs text-[rgb(170,170,170)]">
-        Window {compactDate(data.window.from)} → {compactDate(data.window.to)} · latency = completed −
+        {t("Window")} {compactDate(data.window.from, locale)} → {compactDate(data.window.to, locale)} · latency = completed −
         created（仅 completed 计入）
       </p>
       <DataTable
@@ -2188,6 +5555,7 @@ function ContentView({
   openAction: (action: PendingAction) => void;
   reload: () => void;
 }) {
+  const { t } = useAdminI18n();
   const [featuredInput, setFeaturedInput] = useState(featuredIds.join(", "));
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -2214,7 +5582,7 @@ function ContentView({
   return (
     <div className="space-y-5">
       <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
-        <h2 className="text-sm font-semibold">Featured curation</h2>
+        <h2 className="text-sm font-semibold">{t("Featured curation")}</h2>
         <p className="mt-1 text-xs text-[rgb(170,170,170)]">
           逗号分隔的 character id；仅 public+approved 会被保留，公开 feed 优先展示。
         </p>
@@ -2228,7 +5596,7 @@ function ContentView({
           <input
             className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
             onChange={(event) => setReason(event.target.value)}
-            placeholder="Reason (≥3 chars)"
+            placeholder={t("Reason (≥3 chars)")}
             value={reason}
           />
           <button
@@ -2238,7 +5606,7 @@ function ContentView({
             type="button"
           >
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flag className="h-4 w-4" />}
-            Save featured
+            {t("Save featured")}
           </button>
         </div>
         {err ? <p className="mt-2 text-xs text-red-300">{err}</p> : null}
@@ -2307,6 +5675,7 @@ function PromoView({
   openAction: (action: PendingAction) => void;
   reload: () => void;
 }) {
+  const { t } = useAdminI18n();
   const [code, setCode] = useState("");
   const [dreamcoins, setDreamcoins] = useState("");
   const [maxRedemptions, setMaxRedemptions] = useState("");
@@ -2340,31 +5709,31 @@ function PromoView({
   return (
     <div className="space-y-5">
       <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
-        <h2 className="text-sm font-semibold">Create redeem code</h2>
+        <h2 className="text-sm font-semibold">{t("Create redeem code")}</h2>
         <p className="mt-1 text-xs text-[rgb(170,170,170)]">明文 code 仅用于生成 hash，不入库、不回显、不入审计。</p>
         <div className="mt-3 grid gap-3 md:grid-cols-5">
           <input
             className="h-10 w-full border border-white/10 bg-black/30 px-3 font-mono text-sm outline-none focus:border-white/30"
             onChange={(event) => setCode(event.target.value)}
-            placeholder="Code (≥4)"
+            placeholder={t("Code (≥4)")}
             value={code}
           />
           <input
             className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
             onChange={(event) => setDreamcoins(event.target.value)}
-            placeholder="Dreamcoins"
+            placeholder={t("Dreamcoins")}
             value={dreamcoins}
           />
           <input
             className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
             onChange={(event) => setMaxRedemptions(event.target.value)}
-            placeholder="Max uses (blank=∞)"
+            placeholder={t("Max uses (blank=∞)")}
             value={maxRedemptions}
           />
           <input
             className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
             onChange={(event) => setReason(event.target.value)}
-            placeholder="Reason (≥3)"
+            placeholder={t("Reason (≥3)")}
             value={reason}
           />
           <button
@@ -2374,7 +5743,7 @@ function PromoView({
             type="button"
           >
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-            Create
+            {t("Create")}
           </button>
         </div>
         {err ? <p className="mt-2 text-xs text-red-300">{err}</p> : null}
@@ -2411,6 +5780,392 @@ function PromoView({
       />
     </div>
   );
+}
+
+function SupportRequestsView({
+  rows,
+  openAction,
+}: {
+  rows: Row[];
+  openAction: (action: PendingAction) => void;
+}) {
+  const { t, value: valueLabel } = useAdminI18n();
+  const [filters, setFilters] = useState<SupportRequestFilters>(defaultSupportRequestFilters);
+  const [savedViews, setSavedViews] = useState<SavedView[]>([]);
+  const [savedViewsLoading, setSavedViewsLoading] = useState(true);
+  const [savedViewLabel, setSavedViewLabel] = useState("");
+  const [savingView, setSavingView] = useState(false);
+  const [savedViewError, setSavedViewError] = useState<string | null>(null);
+
+  const visibleRows = useMemo(
+    () => rows.filter((row) => matchesSupportRequestFilters(row, filters)),
+    [filters, rows],
+  );
+  const activeFilterCount =
+    (filters.query.trim() ? 1 : 0) +
+    (filters.category.trim() ? 1 : 0) +
+    (filters.status === "all" ? 0 : 1) +
+    (filters.sla === "all" ? 0 : 1);
+
+  const loadSavedViews = useCallback(async () => {
+    setSavedViewsLoading(true);
+    setSavedViewError(null);
+    try {
+      const data = await apiGet<{ items: SavedView[] }>(
+        `/api/v1/admin/saved-views?scope=${encodeURIComponent(SUPPORT_REQUEST_SAVED_VIEW_SCOPE)}`,
+      );
+      setSavedViews(data.items);
+    } catch (err) {
+      setSavedViewError(err instanceof Error ? err.message : "Saved views failed");
+    } finally {
+      setSavedViewsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadSavedViews();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [loadSavedViews]);
+
+  async function saveCurrentView() {
+    const label = savedViewLabel.trim();
+    if (!label || savingView) return;
+    setSavingView(true);
+    setSavedViewError(null);
+    try {
+      await apiWrite<{ view: SavedView }>("/api/v1/admin/saved-views", "POST", {
+        scope: SUPPORT_REQUEST_SAVED_VIEW_SCOPE,
+        label,
+        filters: normalizeSupportRequestFilters(filters),
+      });
+      setSavedViewLabel("");
+      await loadSavedViews();
+    } catch (err) {
+      setSavedViewError(err instanceof Error ? err.message : "Save failed");
+    } finally {
+      setSavingView(false);
+    }
+  }
+
+  async function deleteSavedView(view: SavedView) {
+    setSavedViewError(null);
+    try {
+      await apiDelete<{ deleted: true }>(`/api/v1/admin/saved-views/${view.id}`);
+      setSavedViews((current) => current.filter((item) => item.id !== view.id));
+    } catch (err) {
+      setSavedViewError(err instanceof Error ? err.message : "Delete failed");
+    }
+  }
+
+  function applySavedView(view: SavedView) {
+    setSavedViewError(null);
+    setFilters(supportRequestFiltersFromUnknown(view.filters));
+  }
+
+  return (
+    <div className="space-y-4">
+      <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+        <div className="grid gap-3 xl:grid-cols-[1fr_160px_160px_160px_300px] xl:items-end">
+          <label className="flex min-w-0 flex-col gap-1">
+            <span className="text-xs font-semibold text-[rgb(170,170,170)]">{t("Support search")}</span>
+            <input
+              aria-label={t("Support search")}
+              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm text-[rgb(230,230,230)] outline-none focus:border-white/30"
+              onChange={(event) => setFilters((current) => ({ ...current, query: event.target.value }))}
+              placeholder={t("Ticket, user, subject, or notes")}
+              value={filters.query}
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-semibold text-[rgb(170,170,170)]">{t("Status")}</span>
+            <select
+              aria-label={t("Support status")}
+              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm text-[rgb(230,230,230)] outline-none focus:border-white/30"
+              onChange={(event) =>
+                setFilters((current) => ({
+                  ...current,
+                  status: supportStatusFromUnknown(event.target.value),
+                }))
+              }
+              value={filters.status}
+            >
+              {supportStatusOptions.map((option) => (
+                <option className="bg-[rgb(18,18,18)] text-white" key={option.value} value={option.value}>
+                  {option.value === "all" || option.value === "active" ? t(option.label) : valueLabel(option.label)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-semibold text-[rgb(170,170,170)]">{t("SLA")}</span>
+            <select
+              aria-label={t("Support SLA")}
+              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm text-[rgb(230,230,230)] outline-none focus:border-white/30"
+              onChange={(event) =>
+                setFilters((current) => ({
+                  ...current,
+                  sla: supportSlaFromUnknown(event.target.value),
+                }))
+              }
+              value={filters.sla}
+            >
+              {supportSlaOptions.map((option) => (
+                <option className="bg-[rgb(18,18,18)] text-white" key={option.value} value={option.value}>
+                  {option.value === "all" ? t(option.label) : valueLabel(option.label)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-semibold text-[rgb(170,170,170)]">{t("Category")}</span>
+            <input
+              aria-label={t("Support category")}
+              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm text-[rgb(230,230,230)] outline-none focus:border-white/30"
+              onChange={(event) => setFilters((current) => ({ ...current, category: event.target.value }))}
+              placeholder="generation"
+              value={filters.category}
+            />
+          </label>
+          <form
+            className="flex min-w-0 flex-col gap-1"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void saveCurrentView();
+            }}
+          >
+            <span className="text-xs font-semibold text-[rgb(170,170,170)]">{t("Saved view")}</span>
+            <div className="flex gap-2">
+              <input
+                aria-label={t("Support saved view label")}
+                className="h-10 min-w-0 flex-1 border border-white/10 bg-black/30 px-3 text-sm text-[rgb(230,230,230)] outline-none focus:border-white/30"
+                onChange={(event) => setSavedViewLabel(event.target.value)}
+                placeholder={t("Saved view label")}
+                value={savedViewLabel}
+              />
+              <button
+                className="inline-flex h-10 shrink-0 items-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+                disabled={!savedViewLabel.trim() || savingView}
+                type="submit"
+              >
+                {savingView ? <Loader2 className="h-4 w-4 animate-spin" /> : <Bookmark className="h-4 w-4" />}
+                {t("Save view")}
+              </button>
+            </div>
+          </form>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center gap-2 text-xs font-semibold text-[rgb(170,170,170)]">
+            <SlidersHorizontal className="h-4 w-4" />
+            {t("Saved views")}
+          </span>
+          {savedViews.map((view) => (
+            <span className="inline-flex h-8 items-center border border-white/10" key={view.id}>
+              <button
+                className="h-full px-3 text-xs text-[rgb(230,230,230)] hover:bg-white/10"
+                onClick={() => applySavedView(view)}
+                type="button"
+              >
+                {view.label}
+              </button>
+              <button
+                aria-label={t("Delete saved view {label}", { label: view.label })}
+                className="flex h-full w-8 items-center justify-center border-l border-white/10 text-[rgb(170,170,170)] hover:text-white"
+                onClick={() => void deleteSavedView(view)}
+                title={t("Delete saved view {label}", { label: view.label })}
+                type="button"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </span>
+          ))}
+          {savedViewsLoading ? <span className="text-xs text-[rgb(170,170,170)]">{t("Loading…")}</span> : null}
+          {!savedViewsLoading && savedViews.length === 0 ? (
+            <span className="text-xs text-[rgb(110,110,110)]">{t("No saved views.")}</span>
+          ) : null}
+          {activeFilterCount > 0 ? (
+            <button
+              className="h-8 border border-white/10 px-3 text-xs text-[rgb(230,230,230)] hover:border-white/30"
+              onClick={() => setFilters(defaultSupportRequestFilters)}
+              type="button"
+            >
+              {t("Reset filters")}
+            </button>
+          ) : null}
+          <span className="text-xs text-[rgb(114,113,112)]">
+            {t("{visible}/{total} requests", { visible: visibleRows.length, total: rows.length })}
+          </span>
+        </div>
+        {savedViewError ? <p className="mt-2 text-xs text-red-300">{savedViewError}</p> : null}
+      </section>
+
+      <DataTable
+        actions={(row) => {
+          const ticketId = stringValue(row.ticketId);
+          const status = stringValue(row.status);
+          const slaState = stringValue(row.slaState);
+          const slaEscalatedAt = stringValue(row.slaEscalatedAt);
+          const canEscalate =
+            (slaState === "overdue" || slaState === "due_soon") &&
+            !slaEscalatedAt &&
+            status !== "resolved" &&
+            status !== "closed";
+          const actions: Array<{
+            label: string;
+            nextStatus?: string;
+            icon: ReactNode;
+            endpoint?: string;
+            method?: "POST" | "PATCH";
+            notes?: boolean;
+          }> = [];
+          if (canEscalate) {
+            actions.push({
+              endpoint: `/api/v1/admin/support/requests/${ticketId}/escalate`,
+              icon: <AlertTriangle className="h-4 w-4" />,
+              label: "Escalate",
+              method: "POST",
+            });
+          }
+          if (status === "received") {
+            actions.push({ icon: <Inbox className="h-4 w-4" />, label: "Open", nextStatus: "open" });
+          }
+          if (status !== "waiting_on_user" && status !== "resolved" && status !== "closed") {
+            actions.push({
+              icon: <MessageSquare className="h-4 w-4" />,
+              label: "Waiting",
+              nextStatus: "waiting_on_user",
+            });
+          }
+          if (status !== "resolved" && status !== "closed") {
+            actions.push({
+              icon: <ClipboardCheck className="h-4 w-4" />,
+              label: "Resolve",
+              nextStatus: "resolved",
+              notes: true,
+            });
+          }
+          if (status !== "closed") {
+            actions.push({
+              icon: <Check className="h-4 w-4" />,
+              label: "Close",
+              nextStatus: "closed",
+              notes: true,
+            });
+          }
+
+          return (
+            <div className="flex flex-wrap gap-1">
+              {actions.map((item) => (
+                <IconAction
+                  icon={item.icon}
+                  key={`${ticketId}-${item.nextStatus}`}
+                  label={item.label}
+                  onClick={() =>
+                    openAction({
+                      title: `${item.label} ${ticketId}`,
+                      endpoint: item.endpoint ?? `/api/v1/admin/support/requests/${ticketId}`,
+                      method: item.method ?? "PATCH",
+                      confirmText: ticketId,
+                      reasonRequired: true,
+                      body: (actionReason, actionConfirmation) => ({
+                        confirmation: actionConfirmation,
+                        reason: actionReason,
+                        resolutionNotes: item.notes ? actionReason : undefined,
+                        status: item.nextStatus,
+                      }),
+                    })
+                  }
+                />
+              ))}
+            </div>
+          );
+        }}
+        columns={[
+          "ticketId",
+          "userEmail",
+          "category",
+          "subject",
+          "description",
+          "status",
+          "priority",
+          "slaState",
+          "slaDueAt",
+          "slaHoursRemaining",
+          "slaEscalatedAt",
+          "slaEscalationReason",
+          "diagnosticConsent",
+          "sourcePath",
+          "assignedToEmail",
+          "resolutionNotes",
+          "createdAt",
+        ]}
+        rows={visibleRows}
+        title="Support Requests"
+      />
+    </div>
+  );
+}
+
+function normalizeSupportRequestFilters(filters: SupportRequestFilters): SupportRequestFilters {
+  return {
+    query: filters.query.trim(),
+    status: filters.status,
+    sla: filters.sla,
+    category: filters.category.trim(),
+  };
+}
+
+function supportRequestFiltersFromUnknown(value: unknown): SupportRequestFilters {
+  if (typeof value !== "object" || value === null) return defaultSupportRequestFilters;
+  const record = value as Record<string, unknown>;
+  return {
+    query: typeof record.query === "string" ? record.query : "",
+    status: supportStatusFromUnknown(record.status),
+    sla: supportSlaFromUnknown(record.sla),
+    category: typeof record.category === "string" ? record.category : "",
+  };
+}
+
+function supportStatusFromUnknown(value: unknown): SupportStatusFilter {
+  return supportStatusOptions.some((option) => option.value === value)
+    ? (value as SupportStatusFilter)
+    : "all";
+}
+
+function supportSlaFromUnknown(value: unknown): SupportSlaFilter {
+  return supportSlaOptions.some((option) => option.value === value)
+    ? (value as SupportSlaFilter)
+    : "all";
+}
+
+function matchesSupportRequestFilters(row: Row, filters: SupportRequestFilters) {
+  const status = stringValue(row.status);
+  if (filters.status === "active" && (status === "resolved" || status === "closed")) return false;
+  if (filters.status !== "all" && filters.status !== "active" && status !== filters.status) return false;
+  if (filters.sla !== "all" && stringValue(row.slaState) !== filters.sla) return false;
+
+  const category = filters.category.trim().toLowerCase();
+  if (category && stringValue(row.category).toLowerCase() !== category) return false;
+
+  const query = filters.query.trim().toLowerCase();
+  if (!query) return true;
+  const haystack = [
+    row.ticketId,
+    row.userEmail,
+    row.userId,
+    row.category,
+    row.subject,
+    row.description,
+    row.status,
+    row.assignedToEmail,
+    row.resolutionNotes,
+    row.sourcePath,
+  ]
+    .map((value) => (value === null || value === undefined ? "" : String(value)))
+    .join(" ")
+    .toLowerCase();
+  return haystack.includes(query);
 }
 
 function ApprovalsView({
@@ -2471,43 +6226,247 @@ function ApprovalsView({
 
 function ChatOpsView({
   configured,
+  diagnostics,
   overview,
+  providerHealth,
   sessions,
+  usage,
   events,
+  filters,
+  onApplyFilters,
+  onFiltersChange,
 }: {
   configured: boolean;
+  diagnostics: ChatOpsDiagnostics | null;
   overview: Record<string, unknown> | null;
+  providerHealth: Row[];
   sessions: Row[];
+  usage: Row[];
   events: Row[];
+  filters: ChatOpsFilters;
+  onApplyFilters: (value: ChatOpsFilters) => void;
+  onFiltersChange: (value: ChatOpsFilters) => void;
 }) {
-  if (!configured) {
-    return (
-      <div className="border border-amber-400/30 bg-amber-950/20 px-4 py-3 text-sm text-amber-100">
-        Chat 服务未配置或暂不可达（CHAT_SERVICE_URL 未设置 / 内部 API 不通）。配置后此处显示会话、额度与审核事件。
-      </div>
-    );
-  }
+  const { locale, t } = useAdminI18n();
   const o = overview ?? {};
   return (
     <div className="space-y-5">
+      <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold">{t("Chat Service status")}</span>
+              <Status
+                locale={locale}
+                value={configured ? "connected" : "disconnected"}
+                tone={configured ? "good" : "warn"}
+              />
+            </div>
+            <p className="mt-1 text-xs text-[rgb(170,170,170)]">
+              {configured
+                ? t("Internal admin API is reachable.")
+                : t(chatOpsDiagnosticText(diagnostics))}
+            </p>
+          </div>
+          <div className="grid min-w-[220px] gap-1 text-xs text-[rgb(170,170,170)]">
+            <div className="flex justify-between gap-4">
+              <span>{t("CHAT_SERVICE_URL")}</span>
+              <span className="font-mono text-[rgb(230,230,230)]">
+                {diagnostics?.serviceUrlConfigured ? t("configured") : t("missing")}
+              </span>
+            </div>
+            {diagnostics?.status ? (
+              <div className="flex justify-between gap-4">
+                <span>{t("HTTP status")}</span>
+                <span className="font-mono text-[rgb(230,230,230)]">{diagnostics.status}</span>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </section>
+
+      <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+        <div className="grid gap-3 lg:grid-cols-[1fr_1fr_160px_160px]">
+          <input
+            className="h-10 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            onChange={(event) => onFiltersChange({ ...filters, userId: event.target.value })}
+            placeholder={t("User ID")}
+            value={filters.userId}
+          />
+          <input
+            className="h-10 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            onChange={(event) => onFiltersChange({ ...filters, characterId: event.target.value })}
+            placeholder={t("Character ID")}
+            value={filters.characterId}
+          />
+          <select
+            className="h-10 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            onChange={(event) => onFiltersChange({ ...filters, sessionStatus: event.target.value })}
+            value={filters.sessionStatus}
+          >
+            {["active", "archived", "deleted", "all"].map((status) => (
+              <option key={status} value={status}>
+                {t(status)}
+              </option>
+            ))}
+          </select>
+          <select
+            className="h-10 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            onChange={(event) => onFiltersChange({ ...filters, limit: event.target.value })}
+            value={filters.limit}
+          >
+            {["25", "50", "100"].map((limit) => (
+              <option key={limit} value={limit}>
+                {t("{count} rows", { count: limit })}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="mt-3 grid gap-3 lg:grid-cols-[160px_160px_1fr_1fr_auto_auto]">
+          <select
+            className="h-10 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            onChange={(event) => onFiltersChange({ ...filters, eventStatus: event.target.value })}
+            value={filters.eventStatus}
+          >
+            {["all", "blocked", "flagged", "passed"].map((status) => (
+              <option key={status} value={status}>
+                {t(status)}
+              </option>
+            ))}
+          </select>
+          <select
+            className="h-10 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            onChange={(event) => onFiltersChange({ ...filters, eventLayer: event.target.value })}
+            value={filters.eventLayer}
+          >
+            {["all", "input", "output"].map((layer) => (
+              <option key={layer} value={layer}>
+                {t(layer)}
+              </option>
+            ))}
+          </select>
+          <input
+            className="h-10 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            onChange={(event) => onFiltersChange({ ...filters, policyCode: event.target.value })}
+            placeholder={t("Policy code")}
+            value={filters.policyCode}
+          />
+          <input
+            className="h-10 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            onChange={(event) => onFiltersChange({ ...filters, targetId: event.target.value })}
+            placeholder={t("Target ID")}
+            value={filters.targetId}
+          />
+          <button
+            className="inline-flex h-10 items-center justify-center gap-2 border border-white/10 px-3 text-sm text-[rgb(230,230,230)] hover:bg-white/10"
+            onClick={() => onApplyFilters(filters)}
+            type="button"
+          >
+            <Search className="h-4 w-4" />
+            {t("Apply")}
+          </button>
+          <button
+            className="inline-flex h-10 items-center justify-center gap-2 border border-white/10 px-3 text-sm text-[rgb(170,170,170)] hover:bg-white/10"
+            onClick={() => {
+              onFiltersChange(defaultChatOpsFilters);
+              onApplyFilters(defaultChatOpsFilters);
+            }}
+            type="button"
+          >
+            <RotateCcw className="h-4 w-4" />
+            {t("Reset")}
+          </button>
+        </div>
+      </section>
+
       <div className="grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-4">
         <Metric label="Active sessions" value={metricNumber(o.activeSessions)} meta="status=active" />
         <Metric label="Archived" value={metricNumber(o.archivedSessions)} meta="sessions" />
         <Metric label="Messages 24h" value={metricNumber(o.messages24h)} meta="last 24h" />
         <Metric label="Moderation 24h" value={metricNumber(o.moderationEvents24h)} meta="events" />
       </div>
+      <div className="grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-4">
+        <Metric label="Messages used today" value={metricNumber(o.messagesUsedToday)} meta="quota ledger" />
+        <Metric label="Users at daily limit" value={metricNumber(o.usersAtDailyLimit)} meta="free tier" />
+        <Metric label="Unlimited users" value={metricNumber(o.unlimitedEntitlements)} meta="entitlements" />
+        <Metric label="Blocked moderation 24h" value={metricNumber(o.blockedModeration24h)} meta="events" />
+      </div>
       <DataTable
-        columns={["id", "userId", "characterId", "status", "memoryEnabled", "messageCount", "lastMessageAt"]}
+        columns={[
+          "provider",
+          "adapter",
+          "status",
+          "ok",
+          "model",
+          "endpoint",
+          "latencyMs",
+          "httpStatus",
+          "modelListed",
+          "error",
+        ]}
+        rows={providerHealth}
+        title="Chat provider health"
+      />
+      <DataTable
+        columns={[
+          "userId",
+          "modelTier",
+          "unlimitedMessages",
+          "messagesUsed",
+          "freeDailyLimit",
+          "freeRemaining",
+          "quotaStatus",
+          "activeSessions",
+          "messages24h",
+          "periodStart",
+        ]}
+        rows={usage}
+        title="Chat usage and quota"
+      />
+      <DataTable
+        columns={[
+          "id",
+          "userId",
+          "characterId",
+          "title",
+          "status",
+          "memoryEnabled",
+          "messageCount",
+          "lastMessageRole",
+          "lastMessageStatus",
+          "lastSafetyStatus",
+          "lastMessageAt",
+        ]}
         rows={sessions}
         title="Recent chat sessions (no plaintext)"
       />
       <DataTable
-        columns={["id", "targetType", "layer", "status", "policyCode", "confidence", "createdAt"]}
+        columns={["id", "targetType", "targetId", "layer", "status", "policyCode", "confidence", "createdAt"]}
         rows={events}
         title="Chat moderation events"
       />
     </div>
   );
+}
+
+function chatOpsDiagnosticText(diagnostics: ChatOpsDiagnostics | null) {
+  if (!diagnostics) return "Chat Service is not connected.";
+  if (diagnostics.reason === "missing_url") {
+    return "Chat Service is not connected: CHAT_SERVICE_URL is missing.";
+  }
+  if (diagnostics.reason === "unauthorized") {
+    return "Chat Service rejected the internal admin token.";
+  }
+  if (diagnostics.reason === "bad_json") {
+    return "Chat Service responded, but the internal admin API returned invalid JSON.";
+  }
+  if (diagnostics.reason === "upstream_error") {
+    return "Chat Service internal admin API returned an error.";
+  }
+  if (diagnostics.reason === "unreachable") {
+    return "Chat Service is configured but unreachable.";
+  }
+  return "Chat Service is not connected.";
 }
 
 function metricNumber(value: unknown): number {
@@ -2525,10 +6484,12 @@ function DataTable({
   columns: string[];
   actions?: (row: Row) => React.ReactNode;
 }) {
+  const { column: columnLabel, locale, t } = useAdminI18n();
+
   return (
     <section className="overflow-hidden border border-white/10 bg-[rgb(18,18,18)]">
       <div className="flex h-11 items-center justify-between border-b border-white/10 px-4">
-        <h2 className="text-sm font-semibold">{title}</h2>
+        <h2 className="text-sm font-semibold">{t(title)}</h2>
         <span className="text-xs text-[rgb(170,170,170)]">{rows.length}</span>
       </div>
       <div className="overflow-x-auto">
@@ -2537,10 +6498,14 @@ function DataTable({
             <tr>
               {columns.map((column) => (
                 <th key={column} className="border-b border-white/10 px-3 py-2 font-semibold">
-                  {column}
+                  {columnLabel(column)}
                 </th>
               ))}
-              {actions ? <th className="border-b border-white/10 px-3 py-2 font-semibold">Actions</th> : null}
+              {actions ? (
+                <th className="sticky right-0 z-10 border-b border-l border-white/10 bg-black/30 px-3 py-2 font-semibold">
+                  {t("Actions")}
+                </th>
+              ) : null}
             </tr>
           </thead>
           <tbody>
@@ -2548,16 +6513,20 @@ function DataTable({
               <tr key={`${stringValue(row.id) || stringValue(row.key) || title}-${index}`} className="border-b border-white/5 last:border-0">
                 {columns.map((column) => (
                   <td key={column} className="max-w-[260px] px-3 py-2 align-top text-[rgb(230,230,230)]">
-                    {renderCell(row[column])}
+                    {renderCell(row[column], locale)}
                   </td>
                 ))}
-                {actions ? <td className="px-3 py-2 align-top">{actions(row)}</td> : null}
+                {actions ? (
+                  <td className="sticky right-0 border-l border-white/10 bg-[rgb(18,18,18)] px-3 py-2 align-top shadow-[-12px_0_18px_rgba(0,0,0,0.22)]">
+                    {actions(row)}
+                  </td>
+                ) : null}
               </tr>
             ))}
             {rows.length === 0 ? (
               <tr>
                 <td className="px-3 py-8 text-center text-sm text-[rgb(170,170,170)]" colSpan={columns.length + (actions ? 1 : 0)}>
-                  Empty
+                  {t("Empty")}
                 </td>
               </tr>
             ) : null}
@@ -2569,33 +6538,41 @@ function DataTable({
 }
 
 function Metric({ label, value, meta }: { label: string; value: string | number; meta: string }) {
+  const { t } = useAdminI18n();
+
   return (
     <div className="bg-[rgb(18,18,18)] p-4">
-      <p className="text-xs font-medium text-[rgb(170,170,170)]">{label}</p>
+      <p className="text-xs font-medium text-[rgb(170,170,170)]">{t(label)}</p>
       <p className="mt-2 text-2xl font-semibold">{value}</p>
-      <p className="mt-1 text-xs text-[rgb(114,113,112)]">{meta}</p>
+      <p className="mt-1 text-xs text-[rgb(114,113,112)]">{t(meta)}</p>
     </div>
   );
 }
 
 function IconAction({
+  disabled = false,
   icon,
   label,
   onClick,
 }: {
+  disabled?: boolean;
   icon: ReactNode;
   label: string;
   onClick: () => void;
 }) {
+  const { t } = useAdminI18n();
+  const displayLabel = t(label);
+
   return (
     <button
-      className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs text-[rgb(230,230,230)] hover:bg-white/10"
+      className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs text-[rgb(230,230,230)] hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+      disabled={disabled}
       onClick={onClick}
-      title={label}
+      title={displayLabel}
       type="button"
     >
       {icon}
-      <span>{label}</span>
+      <span>{displayLabel}</span>
     </button>
   );
 }
@@ -2633,6 +6610,7 @@ function filterSectionData(section: SectionData | null, query: string): SectionD
         templates: filterRows(section.data.templates),
         presets: filterRows(section.data.presets),
         flags: filterRows(section.data.flags),
+        recentJobs: filterRows(section.data.recentJobs),
       },
     };
   }
@@ -2640,6 +6618,7 @@ function filterSectionData(section: SectionData | null, query: string): SectionD
   if (section.kind === "promo") {
     return { ...section, codes: filterRows(section.codes), referrals: filterRows(section.referrals) };
   }
+  if (section.kind === "support") return { ...section, rows: filterRows(section.rows) };
   if (section.kind === "approvals") return { ...section, rows: filterRows(section.rows) };
   if (section.kind === "chatops") {
     return { ...section, sessions: filterRows(section.sessions), events: filterRows(section.events) };
@@ -2647,21 +6626,50 @@ function filterSectionData(section: SectionData | null, query: string): SectionD
   return section;
 }
 
-function renderCell(value: unknown) {
+function modelAssetConfigureHref(item: ModelImportAsset) {
+  const params = new URLSearchParams({ tab: "drafts", asset: item.path });
+  return `/admin/generation/config?${params.toString()}`;
+}
+
+function readConfigUrlState(): { tab: ConfigTab | null; assetPath: string } {
+  if (typeof window === "undefined") return { tab: null, assetPath: "" };
+  const params = new URLSearchParams(window.location.search);
+  const tab = configTabValue(params.get("tab"));
+  return {
+    tab,
+    assetPath: params.get("asset") ?? "",
+  };
+}
+
+function configTabValue(value: string | null): ConfigTab | null {
+  if (value === "create") return "drafts";
+  if (value === "drafts" || value === "published" || value === "templates" || value === "settings") {
+    return value;
+  }
+  return null;
+}
+
+function renderCell(value: unknown, locale: AdminLocale = "en") {
   if (typeof value === "boolean") {
     return (
       <span className={cn("inline-flex items-center gap-1 text-xs", value ? "text-emerald-300" : "text-[rgb(170,170,170)]")}>
         {value ? <Check className="h-3 w-3" /> : <X className="h-3 w-3" />}
-        {String(value)}
+        {locale === "zh" ? (value ? "是" : "否") : String(value)}
       </span>
     );
   }
   if (typeof value === "string") {
-    if (value.includes("T") && value.endsWith("Z")) return compactDate(value);
-    if (["active", "completed", "approved", "actioned"].includes(value)) return <Status value={value} tone="good" />;
-    if (["failed", "blocked", "suspended", "removed", "refunded"].includes(value)) return <Status value={value} tone="bad" />;
-    if (["draft", "queued", "pending", "open"].includes(value)) return <Status value={value} tone="warn" />;
-    return <span className="break-words">{value}</span>;
+    if (value.includes("T") && value.endsWith("Z")) return compactDate(value, locale);
+    if (["active", "completed", "approved", "actioned", "sent", "passed", "connected", "unlimited", "free_remaining", "resolved", "closed", "on_track"].includes(value)) {
+      return <Status locale={locale} value={value} tone="good" />;
+    }
+    if (["failed", "blocked", "suspended", "removed", "refunded", "rejected", "disconnected", "free_at_limit", "overdue"].includes(value)) {
+      return <Status locale={locale} value={value} tone="bad" />;
+    }
+    if (["draft", "queued", "pending", "open", "required", "generating", "flagged", "received", "waiting_on_user", "due_soon", "paused"].includes(value)) {
+      return <Status locale={locale} value={value} tone="warn" />;
+    }
+    return <span className="break-words">{adminValueLabel(locale, value)}</span>;
   }
   if (typeof value === "number") return <span className="font-mono">{value}</span>;
   if (value === null || value === undefined) return <span className="text-[rgb(114,113,112)]">-</span>;
@@ -2672,7 +6680,15 @@ function renderCell(value: unknown) {
   );
 }
 
-function Status({ value, tone }: { value: string; tone: "good" | "bad" | "warn" }) {
+function Status({
+  locale,
+  value,
+  tone,
+}: {
+  locale: AdminLocale;
+  value: string;
+  tone: "good" | "bad" | "warn";
+}) {
   return (
     <span
       className={cn(
@@ -2682,13 +6698,14 @@ function Status({ value, tone }: { value: string; tone: "good" | "bad" | "warn" 
         tone === "warn" && "bg-amber-400/10 text-amber-200",
       )}
     >
-      {value}
+      {adminValueLabel(locale, value)}
     </span>
   );
 }
 
 function normalizeSection(value: string) {
   if (value === "generation/jobs") return value;
+  if (value === "generation/models") return "generation/config";
   if (value === "generation/config") return value;
   if (value === "moderation") return value;
   if (value === "users") return value;
@@ -2699,12 +6716,16 @@ function normalizeSection(value: string) {
   if (value === "generation/dead-letter") return value;
   if (value === "ops/providers") return value;
   if (value === "content") return value;
+  if (value === "content/production") return value;
+  if (value === "content/assets") return value;
+  if (value === "content/placements") return value;
   if (value === "content/official") return value;
   if (value === "content/templates") return value;
   if (value === "content/tags") return value;
   if (value === "content/review-queue") return value;
   if (value === "cms") return value;
   if (value === "chat") return value;
+  if (value === "support") return value;
   if (value === "promo") return value;
   if (value === "approvals") return value;
   if (value === "compliance") return value;
@@ -2715,14 +6736,323 @@ function normalizeSection(value: string) {
   return "dashboard";
 }
 
+function selectedGenerationProfile(profiles: Row[], selectedId: string | null) {
+  const options = profileOptions(profiles);
+  if (selectedId) {
+    const selected = options.find((profile) => stringValue(profile.id) === selectedId);
+    if (selected) return selected;
+  }
+  return options.find((profile) => stringValue(profile.status) === "draft") ?? options[0] ?? null;
+}
+
+function profileOptions(profiles: Row[]) {
+  return [...profiles].sort((a, b) => {
+    const statusDelta = profileStatusRank(a) - profileStatusRank(b);
+    if (statusDelta !== 0) return statusDelta;
+    const timeDelta = rowTimestamp(b) - rowTimestamp(a);
+    if (timeDelta !== 0) return timeDelta;
+    return numberValue(b.version) - numberValue(a.version);
+  });
+}
+
+function profileStatusRank(profile: Row) {
+  const status = stringValue(profile.status);
+  if (status === "draft") return 0;
+  if (status === "active") return 1;
+  return 2;
+}
+
+function profileOptionLabel(profile: Row) {
+  const label = stringValue(profile.label) || stringValue(profile.profileKey) || stringValue(profile.id);
+  const status = stringValue(profile.status) || "unknown";
+  const version = numberValue(profile.version) || "-";
+  return `${label} · ${status} · v${version}`;
+}
+
+function profileDisplayName(profile: Row, locale: AdminLocale) {
+  const label = stringValue(profile.label) || stringValue(profile.profileKey) || stringValue(profile.id);
+  return adminValueLabel(locale, label);
+}
+
+function profileSourceLabel(profile: Row) {
+  const sourcePath =
+    stringValue(profile.sourceModelPath) ||
+    stringValue(profile.diffusionModelPath) ||
+    stringValue(profile.convertedModelPath);
+  return pathFileName(sourcePath) || stringValue(profile.pipelineModel);
+}
+
+function profileVerificationSummary(profile: Row | null): ProfileVerificationSummary {
+  if (!profile) {
+    return {
+      status: "missing",
+      tone: "warn",
+      meta: "No profile selected.",
+      failureMode: "",
+      blockedReason: "",
+      components: [],
+    };
+  }
+  const runnerConfig = isRecord(profile.runnerConfig) ? profile.runnerConfig : {};
+  const dryRunRecord = isRecord(profile.dryRunSummary) ? profile.dryRunSummary : {};
+  const verificationStatus = stringValue(runnerConfig.verificationStatus);
+  const failureMode = stringValue(dryRunRecord.failureMode);
+  const needsVerification = profileRequiresModelVerification(profile, runnerConfig);
+  const components = profileComponentStatuses(runnerConfig.componentStatus);
+  const badComponents = components.filter((component) => component.tone === "bad");
+  const goodStatus = isPassedVerificationStatus(verificationStatus);
+
+  let blockedReason = "";
+  if (failureMode) {
+    blockedReason = "Publish blocked until dry run has no failureMode.";
+  } else if (verificationStatus && !goodStatus) {
+    blockedReason = "Publish blocked until model verification passes.";
+  } else if (!verificationStatus && needsVerification) {
+    blockedReason = "Publish blocked until model verification passes.";
+  } else if (badComponents.length > 0) {
+    blockedReason = "Publish blocked until required model components are available.";
+  }
+
+  const status = verificationStatus || (needsVerification ? "missing" : "not_required");
+  const tone: ProfileVerificationSummary["tone"] = blockedReason
+    ? "bad"
+    : goodStatus || !needsVerification
+      ? "good"
+      : "warn";
+  const componentMeta =
+    components.length > 0
+      ? `${badComponents.length}/${components.length} component issues`
+      : "No component status recorded";
+  const meta = verificationMeta(status, needsVerification, componentMeta);
+
+  return {
+    status,
+    tone,
+    meta,
+    failureMode,
+    blockedReason,
+    components,
+  };
+}
+
+function profileRequiresModelVerification(profile: Row, runnerConfig: Record<string, unknown>) {
+  if (stringValue(profile.mode) !== "image") return false;
+  return Boolean(
+    stringValue(profile.sourceModelPath) ||
+      stringValue(profile.convertedModelPath) ||
+      stringValue(profile.diffusionModelPath) ||
+      stringValue(runnerConfig.diffusionModelPath) ||
+      stringValue(runnerConfig.modelPath) ||
+      stringValue(runnerConfig.workflowPath),
+  );
+}
+
+function profileComponentStatuses(value: unknown): ProfileVerificationSummary["components"] {
+  const componentStatus = isRecord(value) ? value : {};
+  return Object.entries(componentStatus).map(([key, rawValue]) => {
+    const status = componentStatusValue(rawValue) || "configured";
+    return { key, status, tone: componentStatusTone(status) };
+  });
+}
+
+function componentStatusValue(value: unknown) {
+  const rawStatus = typeof value === "string" ? value : isRecord(value) ? stringValue(value.status) : "";
+  const status = rawStatus.trim();
+  const normalized = status.toLowerCase();
+  if (normalized.startsWith("available:")) return "available";
+  if (normalized.startsWith("missing:")) return "missing";
+  if (normalized.startsWith("failed:")) return "failed";
+  if (normalized.startsWith("unsupported:")) return "unsupported";
+  return status;
+}
+
+function componentStatusTone(status: string): ProfileVerificationSummary["tone"] {
+  const normalized = status.toLowerCase();
+  if (
+    normalized.includes("missing") ||
+    normalized.includes("failed") ||
+    normalized.includes("unsupported") ||
+    normalized.includes("not_imported")
+  ) {
+    return "bad";
+  }
+  if (
+    normalized.includes("available") ||
+    normalized.includes("passed") ||
+    normalized.includes("verified") ||
+    normalized === "ok" ||
+    normalized === "present"
+  ) {
+    return "good";
+  }
+  return "warn";
+}
+
+function isPassedVerificationStatus(status: string) {
+  return ["passed", "verified", "manual_passed"].includes(status);
+}
+
+function verificationMeta(status: string, needsVerification: boolean, componentMeta: string) {
+  if (status === "not_required") return `No local model verification required · ${componentMeta}`;
+  if (status === "missing" && needsVerification) return `Verification status missing · ${componentMeta}`;
+  if (isPassedVerificationStatus(status)) return `Model verification passed · ${componentMeta}`;
+  return `verificationStatus is ${status} · ${componentMeta}`;
+}
+
+function profileRelatedJobs(jobs: Row[], profile: Row | null) {
+  if (!profile) return [];
+  const profileId = stringValue(profile.id);
+  const profileKey = stringValue(profile.profileKey);
+  const profileVersion = numberValue(profile.version);
+  return [...jobs]
+    .filter((job) => {
+      const jobProfileId = stringValue(job.profileId);
+      if (jobProfileId !== profileKey && jobProfileId !== profileId) return false;
+      const jobVersion = numberValue(job.profileVersion);
+      return !profileVersion || !jobVersion || jobVersion === profileVersion;
+    })
+    .sort((a, b) => rowTimestamp(b) - rowTimestamp(a));
+}
+
+function latestImageAsset(jobs: Row[]) {
+  for (const job of jobs) {
+    const asset = jobAssets(job).find((item) => item.type === "image");
+    if (asset) return asset;
+  }
+  return null;
+}
+
+function jobAssets(job: Row) {
+  return Array.isArray(job.assets)
+    ? job.assets
+        .map((asset): { id: string; type: string; url: string; thumbnailUrl: string; safetyStatus: string } | null => {
+          if (!isRecord(asset)) return null;
+          const url = stringValue(asset.url);
+          if (!url) return null;
+          return {
+            id: stringValue(asset.id),
+            type: stringValue(asset.type),
+            url,
+            thumbnailUrl: stringValue(asset.thumbnailUrl) || url,
+            safetyStatus: stringValue(asset.safetyStatus),
+          };
+        })
+        .filter((asset): asset is { id: string; type: string; url: string; thumbnailUrl: string; safetyStatus: string } => asset !== null)
+    : [];
+}
+
+function dryRunSummary(value: unknown) {
+  const record = isRecord(value) ? value : null;
+  if (!record) return { status: "missing", meta: "Run Dry Run before publish" };
+  const status = stringValue(record.status) || "recorded";
+  const passed = numberValue(record.passed);
+  const total = numberValue(record.total);
+  const sampleCount = numberValue(record.sampleCount);
+  const consistencyRate = numberValue(record.consistencyRate);
+  if (sampleCount > 0) {
+    return {
+      status,
+      meta: `${sampleCount} samples${consistencyRate > 0 ? ` · ${formatPercent(consistencyRate)}` : ""}`,
+    };
+  }
+  return {
+    status,
+    meta: total > 0 ? `${passed}/${total} samples` : "dry-run summary exists",
+  };
+}
+
+function actionReviewComplete(action: PendingAction, review: ActionReviewDraft) {
+  if (action.review !== "image_consistency") return true;
+  const sampleCount = actionReviewCount(review.sampleCount);
+  const passCount = actionReviewCount(review.passCount);
+  const consistencyRate = consistencyRateFromReview(review);
+  return Boolean(
+    sampleCount !== undefined &&
+      passCount !== undefined &&
+      sampleCount >= 20 &&
+      passCount <= sampleCount &&
+      consistencyRate !== undefined &&
+      consistencyRate >= 0.8,
+  );
+}
+
+function actionReviewDryRunSummary(review: ActionReviewDraft | undefined) {
+  const sampleCount = actionReviewCount(review?.sampleCount ?? "") ?? 0;
+  const passCount = actionReviewCount(review?.passCount ?? "") ?? 0;
+  const consistencyRate = sampleCount > 0 ? passCount / sampleCount : 0;
+  return {
+    source: "admin_console_manual_consistency_review",
+    status: "manual_passed",
+    sampleCount,
+    successRate: 1,
+    consistencyPassCount: passCount,
+    consistencyRate,
+    reviewUrl: review?.reviewUrl.trim() || undefined,
+    reviewNotes: review?.notes.trim() || undefined,
+  };
+}
+
+function consistencyRateFromReview(review: ActionReviewDraft) {
+  const sampleCount = actionReviewCount(review.sampleCount);
+  const passCount = actionReviewCount(review.passCount);
+  if (!sampleCount || passCount === undefined || passCount > sampleCount) return undefined;
+  return passCount / sampleCount;
+}
+
+function actionReviewCount(value: string) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function formatPercent(value: number | undefined) {
+  return value === undefined ? "-" : `${Math.round(value * 100)}%`;
+}
+
+function isTerminalJobStatus(status: string) {
+  return ["completed", "failed", "blocked", "refunded"].includes(status);
+}
+
+function firstString(values: string[], fallback: string) {
+  return values.find(Boolean) ?? fallback;
+}
+
+function jsonStringArrayValue(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function rowTimestamp(row: Row) {
+  const updated = Date.parse(stringValue(row.updatedAt));
+  if (Number.isFinite(updated)) return updated;
+  const created = Date.parse(stringValue(row.createdAt));
+  return Number.isFinite(created) ? created : 0;
+}
+
+function shortId(value: string) {
+  if (value.length <= 10) return value;
+  return value.slice(0, 6);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function stringValue(value: unknown) {
   return typeof value === "string" ? value : "";
 }
 
-function compactDate(value: string) {
+function numberValue(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string") return 0;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function compactDate(value: string, locale: AdminLocale = "en") {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString(undefined, {
+  return date.toLocaleString(adminDateLocale(locale), {
     month: "short",
     day: "2-digit",
     hour: "2-digit",

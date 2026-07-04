@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { ArrowLeft, ArrowRight, Check, Loader2, Wand2 } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, ImageIcon, Loader2, Sparkles, Wand2 } from "lucide-react";
 
 type DraftPayload = {
   ok?: boolean;
@@ -11,12 +11,18 @@ type DraftPayload = {
   data?: {
     draft?: { id: string };
     character?: { id: string; name: string; status?: string };
-    asset?: { url: string };
+    asset?: { id?: string; url: string };
     previewJob?: { id: string; status: string };
   };
 };
 
 type PreviewStatus = "idle" | "generating" | "complete" | "failed";
+
+type PreviewCandidate = {
+  previewJobId: string;
+  assetId: string;
+  url: string;
+};
 
 type CreateTemplate = {
   id: string;
@@ -86,6 +92,8 @@ export function CreateWorkspace() {
   const [state, setState] = useState<WizardState>(INITIAL);
   const [preview, setPreview] = useState(DEFAULT_PREVIEW);
   const [previewStatus, setPreviewStatus] = useState<PreviewStatus>("idle");
+  const [previewCandidates, setPreviewCandidates] = useState<PreviewCandidate[]>([]);
+  const [selectedPreviewJobId, setSelectedPreviewJobId] = useState("");
   const [status, setStatus] = useState("");
   const [createdCharacterId, setCreatedCharacterId] = useState("");
   const [createdStatus, setCreatedStatus] = useState("");
@@ -221,14 +229,37 @@ export function CreateWorkspace() {
     setPending(true);
     setPreviewStatus("generating");
     setStatus("");
+    setPreviewCandidates([]);
+    setSelectedPreviewJobId("");
     try {
       const draftId = await ensureDraft();
       await saveStep(3);
-      // Preview generation is async (worker-backed): enqueue, then poll the job
-      // status until it settles. Keeps the UI responsive for slow image providers.
-      await api(`/api/v1/character-drafts/${draftId}/preview`, {});
-      const asset = await pollPreview(draftId);
-      if (asset?.url) setPreview(asset.url);
+      const generated: PreviewCandidate[] = [];
+      for (let index = 0; index < 4; index += 1) {
+        // Preview generation is async (worker-backed): enqueue, then poll the job
+        // status until it settles. We generate candidates one-by-one so GET .../preview
+        // always points at the job we just created.
+        const queued = await api(`/api/v1/character-drafts/${draftId}/preview`, {});
+        const previewJobId = queued.data?.previewJob?.id;
+        if (!previewJobId) throw new Error("Preview generation failed. Try again.");
+        const result = await pollPreview(draftId, previewJobId);
+        if (!result?.asset?.url || !result.asset.id) continue;
+        const candidate = {
+          previewJobId,
+          assetId: result.asset.id,
+          url: result.asset.url,
+        };
+        generated.push(candidate);
+        setPreviewCandidates([...generated]);
+        if (index === 0) {
+          setPreview(candidate.url);
+          setSelectedPreviewJobId(candidate.previewJobId);
+        }
+      }
+      const selected = generated.find((candidate) => candidate.previewJobId === selectedPreviewJobId) ?? generated[0];
+      if (selected) {
+        await selectPreviewCandidate(draftId, selected);
+      }
       setPreviewStatus("complete");
     } catch (error) {
       setPreviewStatus("failed");
@@ -239,16 +270,43 @@ export function CreateWorkspace() {
   }
 
   // Poll the preview job until completed (returns the asset) or failed/timeout.
-  async function pollPreview(draftId: string): Promise<{ url?: string } | null> {
-    const deadline = Date.now() + 60_000;
-    while (Date.now() < deadline) {
+  async function pollPreview(
+    draftId: string,
+    previewJobId: string,
+  ): Promise<{ asset?: { id?: string; url?: string } | null } | null> {
+    for (let attempt = 0; attempt < 50; attempt += 1) {
       const status = await api(`/api/v1/character-drafts/${draftId}/preview`, undefined, "GET");
       const job = status.data?.previewJob;
-      if (job?.status === "completed") return status.data?.asset ?? null;
+      if (job?.id !== previewJobId) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        continue;
+      }
+      if (job?.status === "completed") return { asset: status.data?.asset ?? null };
       if (job?.status === "failed") throw new Error("Preview generation failed. Try again.");
       await new Promise((resolve) => setTimeout(resolve, 1_200));
     }
     throw new Error("Preview timed out. Try again.");
+  }
+
+  async function selectPreviewCandidate(draftId: string, candidate: PreviewCandidate) {
+    setPreview(candidate.url);
+    setSelectedPreviewJobId(candidate.previewJobId);
+    await api(`/api/v1/character-drafts/${draftId}/preview-anchor`, {
+      previewJobId: candidate.previewJobId,
+    });
+  }
+
+  async function handleCandidateSelect(candidate: PreviewCandidate) {
+    setStatus("");
+    setPreview(candidate.url);
+    setSelectedPreviewJobId(candidate.previewJobId);
+    try {
+      const draftId = await ensureDraft();
+      await selectPreviewCandidate(draftId, candidate);
+      setStatus("Identity image selected.");
+    } catch (error) {
+      setStatus(messageFrom(error));
+    }
   }
 
   async function submit() {
@@ -319,7 +377,7 @@ export function CreateWorkspace() {
 
         <div className="mt-8 grid gap-4 md:grid-cols-[360px_1fr]">
           <div className="relative min-h-[560px] overflow-hidden rounded-[20px] bg-[rgb(18,18,18)]">
-            <Image alt="" className="object-cover object-top" fill priority sizes="360px" src={preview} />
+            <Image alt="" className="object-cover object-top" fill loading="eager" sizes="360px" src={preview} />
             <div className="absolute inset-0 bg-[linear-gradient(0deg,rgba(0,0,0,.82),rgba(0,0,0,.1)_62%,transparent)]" />
             {previewStatus === "generating" && (
               <div className="absolute inset-0 grid place-items-center bg-black/50 text-[13px] font-bold text-white">
@@ -472,7 +530,7 @@ export function CreateWorkspace() {
             {step === 3 && (
               <div className="grid gap-4" data-testid="create-step-preview">
                 <p className="text-[13px] font-medium text-[rgb(170,170,170)]">
-                  Generate a preview to see how {state.name} looks before publishing.
+                  Generate four identity candidates, then choose the image that should define how {state.name} looks.
                 </p>
                 <button
                   className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[rgb(36,36,36)] text-[14px] font-black text-white disabled:opacity-60"
@@ -485,8 +543,62 @@ export function CreateWorkspace() {
                   ) : (
                     <Wand2 className="h-4 w-4" />
                   )}
-                  {previewStatus === "complete" ? "Regenerate preview" : "Generate preview"}
+                  {previewStatus === "complete" ? "Regenerate preview candidates" : "Generate preview candidates"}
                 </button>
+                {previewCandidates.length > 0 && (
+                  <div className="grid grid-cols-2 gap-3" data-testid="create-preview-candidates">
+                    {previewCandidates.map((candidate, index) => {
+                      const selected = selectedPreviewJobId === candidate.previewJobId;
+                      return (
+                        <button
+                          aria-pressed={selected}
+                          className={`relative aspect-[4/5] overflow-hidden rounded-[14px] border text-left ${
+                            selected ? "border-[rgb(253,95,194)]" : "border-white/10"
+                          }`}
+                          key={candidate.previewJobId}
+                          onClick={() => void handleCandidateSelect(candidate)}
+                          type="button"
+                        >
+                          <Image
+                            alt={`Identity candidate ${index + 1}`}
+                            className="object-cover object-top"
+                            fill
+                            sizes="180px"
+                            src={candidate.url}
+                          />
+                          <span className="absolute left-2 top-2 rounded-full bg-black/70 px-2 py-1 text-[11px] font-black text-white">
+                            {selected ? "Identity" : `Option ${index + 1}`}
+                          </span>
+                          {selected && (
+                            <span className="absolute bottom-2 left-2 inline-flex items-center gap-1 rounded-full bg-[rgb(253,95,194)] px-2 py-1 text-[11px] font-black text-white">
+                              <Check className="h-3 w-3" />
+                              Selected
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+                {previewStatus === "complete" && previewCandidates.length > 0 && (
+                  <div className="grid gap-2 rounded-[12px] bg-black/25 p-3">
+                    <p className="flex items-center gap-2 text-[13px] font-semibold text-[rgb(120,220,170)]">
+                      <ImageIcon className="h-4 w-4" />
+                      Identity candidate selected. This image becomes the character anchor when you publish.
+                    </p>
+                    <button
+                      className="inline-flex h-9 w-fit items-center gap-2 rounded-full bg-white px-3 text-[12px] font-black text-[rgb(13,13,13)]"
+                      onClick={() => {
+                        set("step", 1);
+                        setStatus("Adjust appearance traits, then return to Preview.");
+                      }}
+                      type="button"
+                    >
+                      <Sparkles className="h-3.5 w-3.5" />
+                      Edit traits
+                    </button>
+                  </div>
+                )}
                 {previewStatus === "complete" && (
                   <p className="text-[13px] font-semibold text-[rgb(120,220,170)]">Preview ready.</p>
                 )}
@@ -627,7 +739,8 @@ async function api(path: string, body?: unknown, method = "POST") {
   // Logged-out users can't create drafts; send them to sign up instead of
   // dead-ending on a 401 (mirrors CharacterDetailClient.startChat).
   if (response.status === 401) {
-    window.location.href = "/signup";
+    const next = encodeURIComponent(`${window.location.pathname}${window.location.search}${window.location.hash}`);
+    window.location.href = `/signup?next=${next || "%2Fcreate"}`;
     throw new Error("Sign in to create a character. Redirecting…");
   }
   const payload = (await response.json()) as DraftPayload;

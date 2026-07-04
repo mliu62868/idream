@@ -1,11 +1,11 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
-import { AdminConsoleClient } from "@/components/admin/AdminConsoleClient";
 import { AdminDevLogin } from "@/components/admin/AdminDevLogin";
 import { userHasPermission } from "@/server/admin/effective-permissions";
 import { getAuthCtx } from "@/server/lib/auth";
 import { devLoginEnabled } from "@/server/admin/dev-login";
 import { DEV_ADMIN_ACCOUNT_HINTS } from "@/server/admin/dev-login-accounts";
+import { AdminConsoleClientOnly } from "../AdminConsoleClientOnly";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -45,7 +45,7 @@ export default async function AdminPage({ params }: AdminPageProps) {
   }
 
   return (
-    <AdminConsoleClient
+    <AdminConsoleClientOnly
       actor={ctx.userId ? { id: ctx.userId, role: ctx.role ?? "user" } : null}
       initialAccess={canReadDashboard}
       initialSection={section.join("/") || "dashboard"}

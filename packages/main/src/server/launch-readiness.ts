@@ -110,6 +110,8 @@ export interface ChatServiceProbeEvidence {
   durationMs?: number;
   serviceUrl?: string | null;
   userId?: string | null;
+  characterId?: string | null;
+  characterSource?: string | null;
   usedSignedBff?: boolean;
   loadError?: string;
   health?: {
@@ -127,6 +129,36 @@ export interface ChatServiceProbeEvidence {
   unsignedRequest?: {
     ok?: boolean;
     status?: number;
+    error?: string | null;
+  } | null;
+  conversation?: {
+    ok?: boolean;
+    attempted?: boolean;
+    createSession?: { ok?: boolean; status?: number; error?: string | null } | null;
+    sendMessage?: { ok?: boolean; status?: number; error?: string | null } | null;
+    stream?: {
+      ok?: boolean;
+      status?: number;
+      sawStart?: boolean;
+      sawDelta?: boolean;
+      sawDone?: boolean;
+      error?: string | null;
+    } | null;
+    getSession?: {
+      ok?: boolean;
+      status?: number;
+      assistantMessageId?: string;
+      assistantSent?: boolean;
+      assistantStatus?: string | null;
+      error?: string | null;
+    } | null;
+    noMemory?: { ok?: boolean; status?: number; error?: string | null } | null;
+    blockedInput?: {
+      ok?: boolean;
+      status?: number;
+      status_?: string | null;
+      error?: string | null;
+    } | null;
     error?: string | null;
   } | null;
   error?: { code?: string; message?: string } | null;
@@ -157,6 +189,11 @@ export interface PaymentProviderProbeEvidence {
   storeId?: string | null;
   canViewStore?: boolean;
   returnedStoreId?: string | null;
+  canCreateInvoice?: boolean;
+  invoiceId?: string | null;
+  checkoutUrl?: string | null;
+  invoiceAmountCents?: number;
+  invoiceCurrency?: string | null;
   loadError?: string;
   error?: { code?: string; message?: string } | null;
 }
@@ -232,6 +269,7 @@ export interface WebSurfaceProbeEvidence {
     bytes?: number;
     contentType?: string | null;
     protected?: boolean;
+    protectedReason?: string | null;
     nextErrorShell?: boolean;
     error?: string | null;
   } | null;
@@ -248,6 +286,7 @@ type EnvLike = Record<string, string | undefined>;
 
 const criticalProviderKeys = [
   "CHAT_PROVIDER",
+  "IMAGE_PROVIDER",
   "VOICE_PROVIDER",
   "MODERATION_PROVIDER",
   "PAYMENT_PROVIDER",
@@ -295,6 +334,7 @@ export interface LaunchReadinessCliOptions {
 export const currentLaunchCapabilities: LaunchReadinessCapabilities = {
   mainProviderImplementations: {
     CHAT_PROVIDER: ["mock", "pipeline"],
+    IMAGE_PROVIDER: ["mock", "pipeline"],
     VOICE_PROVIDER: ["mock", "pipeline"],
     MODERATION_PROVIDER: ["mock", "safety-gateway"],
     PAYMENT_PROVIDER: ["mock", "btcpay"],
@@ -521,16 +561,21 @@ function addProviderChecks(
   for (const key of criticalProviderKeys) {
     const configured = env[key] ?? "mock";
     const providerId = kebab(key);
+    const mockAllowed = key === "MODERATION_PROVIDER";
 
     addCheck(checks, {
       id: `${providerId}-non-mock`,
       area: "Providers",
-      status: configured !== "mock" ? "pass" : "fail",
+      status: configured !== "mock" || mockAllowed ? "pass" : "fail",
       message:
         configured !== "mock"
           ? `${key}=${configured} is not mock.`
+          : mockAllowed
+            ? `${key}=mock is allowed by the current launch scope.`
           : `${key} is still mock.`,
-      remediation: `Configure a production ${key} adapter and credentials before launch.`,
+      remediation: mockAllowed
+        ? undefined
+        : `Configure a production ${key} adapter and credentials before launch.`,
     });
 
     if (configured === "mock") continue;
@@ -656,6 +701,39 @@ function addChatServiceProbeCheck(
     if (probe.unsignedRequest?.status !== 401) {
       problems.push("unsigned chat request was not rejected with HTTP 401");
     }
+    if (probe.conversation?.attempted !== true || probe.conversation.ok !== true) {
+      problems.push("conversation smoke did not complete");
+    } else {
+      if (probe.conversation.createSession?.ok !== true) {
+        problems.push("conversation smoke did not create a session");
+      }
+      if (probe.conversation.sendMessage?.ok !== true) {
+        problems.push("conversation smoke did not send a message");
+      }
+      if (
+        probe.conversation.stream?.ok !== true ||
+        probe.conversation.stream.sawStart !== true ||
+        probe.conversation.stream.sawDelta !== true ||
+        probe.conversation.stream.sawDone !== true
+      ) {
+        problems.push("conversation smoke did not observe start/delta/done stream events");
+      }
+      if (
+        probe.conversation.getSession?.ok !== true ||
+        probe.conversation.getSession.assistantSent !== true
+      ) {
+        problems.push("conversation smoke did not reload the assistant message");
+      }
+      if (probe.conversation.noMemory?.ok !== true) {
+        problems.push("conversation smoke did not send a no-memory message");
+      }
+      if (
+        probe.conversation.blockedInput?.ok !== true ||
+        probe.conversation.blockedInput.status_ !== "blocked"
+      ) {
+        problems.push("conversation smoke did not prove blocked input handling");
+      }
+    }
     const checkedAt = parseProbeDate(probe.checkedAt);
     if (!checkedAt) {
       problems.push("probe checkedAt is missing or invalid");
@@ -676,7 +754,7 @@ function addChatServiceProbeCheck(
     status: problems.length === 0 ? "pass" : "fail",
     message:
       problems.length === 0
-        ? "Recent chat service probe reached healthz and a signed read-only chat endpoint."
+        ? "Recent chat service probe reached healthz, signed BFF endpoints, unsigned rejection, and a conversation smoke."
         : `Chat service probe evidence is missing or invalid: ${problems.join("; ")}.`,
     remediation:
       problems.length === 0
@@ -835,14 +913,31 @@ function addVoiceModelProbeCheck(
 function addChatModerationChecks(checks: LaunchReadinessCheck[], env: EnvLike) {
   const chatModerationProvider =
     env.CHAT_MODERATION_PROVIDER ?? env.MODERATION_PROVIDER ?? "mock";
+  const externalModerationEnabled = chatModerationProvider === "safety-gateway";
   addCheck(checks, {
     id: "chat-moderation-provider",
     area: "Chat",
-    status: chatModerationProvider === "safety-gateway" ? "pass" : "fail",
+    status: chatModerationProvider === "mock" || externalModerationEnabled ? "pass" : "fail",
     message: `Chat moderation provider is ${chatModerationProvider}.`,
     remediation:
-      "Set CHAT_MODERATION_PROVIDER=safety-gateway or share MODERATION_PROVIDER=safety-gateway with packages/chat.",
+      "Set CHAT_MODERATION_PROVIDER to a supported provider: mock or safety-gateway.",
   });
+
+  if (!externalModerationEnabled) {
+    addCheck(checks, {
+      id: "chat-moderation-service-url",
+      area: "Chat",
+      status: "pass",
+      message: `Chat moderation provider ${chatModerationProvider} does not require CHAT_MODERATION_SERVICE_URL.`,
+    });
+    addCheck(checks, {
+      id: "chat-moderation-api-key",
+      area: "Chat",
+      status: "pass",
+      message: `Chat moderation provider ${chatModerationProvider} does not require CHAT_MODERATION_API_KEY.`,
+    });
+    return;
+  }
 
   addValueCheck(checks, {
     id: "chat-moderation-service-url",
@@ -899,6 +994,15 @@ function addPaymentProviderProbeCheck(
       if (probe.canViewStore !== true) {
         problems.push("probe could not read the BTCPay store");
       }
+      if (probe.canCreateInvoice !== true) {
+        problems.push("probe could not create a BTCPay invoice");
+      }
+      if (!hasMinLength(probe.invoiceId ?? undefined, 1)) {
+        problems.push("probe did not return a BTCPay invoice id");
+      }
+      if (!isPublicHttpsUrl(probe.checkoutUrl ?? undefined)) {
+        problems.push("probe did not return a public HTTPS BTCPay checkout URL");
+      }
       if (
         hasMinLength(env.BTCPAY_STORE_ID, 1) &&
         probe.returnedStoreId &&
@@ -927,12 +1031,12 @@ function addPaymentProviderProbeCheck(
     status: problems.length === 0 ? "pass" : "fail",
     message:
       problems.length === 0
-        ? "Recent payment provider probe authenticated and read provider store metadata."
+        ? "Recent payment provider probe authenticated, read provider store metadata, and created a BTCPay checkout invoice."
         : `Payment provider probe evidence is missing or invalid: ${problems.join("; ")}.`,
     remediation:
       problems.length === 0
         ? undefined
-        : "Run `bun run --filter @idream/main probe:payment -- --report .tmp/launch-payment-probe.json` against the real payment provider, then set PAYMENT_PROVIDER_PROBE_REPORT before check:launch.",
+        : "Run `bun run --filter @idream/main probe:payment -- --report .tmp/launch-payment-probe.json` against the real payment provider. The BTCPay probe creates a small launch-test invoice, so the API key must include Create invoice permission. Then set PAYMENT_PROVIDER_PROBE_REPORT before check:launch.",
   });
 }
 
@@ -1450,6 +1554,16 @@ function addSafetyGatewayProbeCheck(
   const reportPath = env.SAFETY_GATEWAY_PROBE_REPORT;
   const configuredProvider = env.MODERATION_PROVIDER ?? "mock";
 
+  if (configuredProvider !== "safety-gateway") {
+    addCheck(checks, {
+      id: "safety-gateway-live-probe",
+      area: "Safety",
+      status: "pass",
+      message: `MODERATION_PROVIDER=${configuredProvider}; external probe evidence is not required for this provider.`,
+    });
+    return;
+  }
+
   if (!reportPath) {
     problems.push("SAFETY_GATEWAY_PROBE_REPORT is not set");
   }
@@ -1901,6 +2015,25 @@ function normalizeChatServiceProbeEvidence(value: unknown): ChatServiceProbeEvid
             : null,
       }
     : null;
+  const conversation = isRecord(value.conversation)
+    ? {
+        ok: typeof value.conversation.ok === "boolean" ? value.conversation.ok : false,
+        attempted:
+          typeof value.conversation.attempted === "boolean"
+            ? value.conversation.attempted
+            : false,
+        createSession: normalizeProbeOperation(value.conversation.createSession),
+        sendMessage: normalizeProbeOperation(value.conversation.sendMessage),
+        stream: normalizeChatStreamProbeOperation(value.conversation.stream),
+        getSession: normalizeChatGetSessionProbeOperation(value.conversation.getSession),
+        noMemory: normalizeProbeOperation(value.conversation.noMemory),
+        blockedInput: normalizeChatBlockedInputProbeOperation(value.conversation.blockedInput),
+        error:
+          typeof value.conversation.error === "string"
+            ? value.conversation.error
+            : null,
+      }
+    : null;
 
   return {
     ok: typeof value.ok === "boolean" ? value.ok : false,
@@ -1908,12 +2041,61 @@ function normalizeChatServiceProbeEvidence(value: unknown): ChatServiceProbeEvid
     durationMs: typeof value.durationMs === "number" ? value.durationMs : undefined,
     serviceUrl: typeof value.serviceUrl === "string" ? value.serviceUrl : null,
     userId: typeof value.userId === "string" ? value.userId : null,
+    characterId: typeof value.characterId === "string" ? value.characterId : null,
+    characterSource:
+      typeof value.characterSource === "string" ? value.characterSource : null,
     usedSignedBff:
       typeof value.usedSignedBff === "boolean" ? value.usedSignedBff : false,
     health,
     signedRequest,
     unsignedRequest,
+    conversation,
     error: normalizeProbeError(value.error),
+  };
+}
+
+function normalizeProbeOperation(value: unknown) {
+  if (!isRecord(value)) return null;
+  return {
+    ok: typeof value.ok === "boolean" ? value.ok : false,
+    status: typeof value.status === "number" ? value.status : undefined,
+    error: typeof value.error === "string" ? value.error : null,
+  };
+}
+
+function normalizeChatStreamProbeOperation(value: unknown) {
+  const operation = normalizeProbeOperation(value);
+  if (!operation || !isRecord(value)) return operation;
+  return {
+    ...operation,
+    sawStart: typeof value.sawStart === "boolean" ? value.sawStart : false,
+    sawDelta: typeof value.sawDelta === "boolean" ? value.sawDelta : false,
+    sawDone: typeof value.sawDone === "boolean" ? value.sawDone : false,
+  };
+}
+
+function normalizeChatGetSessionProbeOperation(value: unknown) {
+  const operation = normalizeProbeOperation(value);
+  if (!operation || !isRecord(value)) return operation;
+  return {
+    ...operation,
+    assistantMessageId:
+      typeof value.assistantMessageId === "string"
+        ? value.assistantMessageId
+        : undefined,
+    assistantSent:
+      typeof value.assistantSent === "boolean" ? value.assistantSent : false,
+    assistantStatus:
+      typeof value.assistantStatus === "string" ? value.assistantStatus : null,
+  };
+}
+
+function normalizeChatBlockedInputProbeOperation(value: unknown) {
+  const operation = normalizeProbeOperation(value);
+  if (!operation || !isRecord(value)) return operation;
+  return {
+    ...operation,
+    status_: typeof value.status_ === "string" ? value.status_ : null,
   };
 }
 
@@ -1977,6 +2159,16 @@ function normalizePaymentProviderProbeEvidence(value: unknown): PaymentProviderP
       typeof value.canViewStore === "boolean" ? value.canViewStore : false,
     returnedStoreId:
       typeof value.returnedStoreId === "string" ? value.returnedStoreId : null,
+    canCreateInvoice:
+      typeof value.canCreateInvoice === "boolean" ? value.canCreateInvoice : false,
+    invoiceId: typeof value.invoiceId === "string" ? value.invoiceId : null,
+    checkoutUrl: typeof value.checkoutUrl === "string" ? value.checkoutUrl : null,
+    invoiceAmountCents:
+      typeof value.invoiceAmountCents === "number"
+        ? value.invoiceAmountCents
+        : undefined,
+    invoiceCurrency:
+      typeof value.invoiceCurrency === "string" ? value.invoiceCurrency : null,
     error: normalizeProbeError(value.error),
   };
 }
@@ -2122,6 +2314,8 @@ function normalizeAdminWebEvidence(value: unknown) {
       typeof value.contentType === "string" ? value.contentType : null,
     protected:
       typeof value.protected === "boolean" ? value.protected : undefined,
+    protectedReason:
+      typeof value.protectedReason === "string" ? value.protectedReason : null,
     nextErrorShell:
       typeof value.nextErrorShell === "boolean"
         ? value.nextErrorShell
@@ -2327,22 +2521,37 @@ export function assessLaunchReadiness(
   addVideoPipelineChecks(checks, env, capabilities, productConfigProbe);
   addVoiceModelProbeCheck(checks, env, voiceModelProbe, now);
 
-  addRequiredCheck(checks, env, {
-    id: "moderation-service-url",
-    area: "Safety",
-    key: "MODERATION_SERVICE_URL",
-    label: "Moderation service URL",
-    url: true,
-    remediation: "Set MODERATION_SERVICE_URL to the production safety gateway.",
-  });
-  addRequiredCheck(checks, env, {
-    id: "moderation-api-key",
-    area: "Safety",
-    key: "MODERATION_API_KEY",
-    label: "Moderation API key",
-    minLength: 16,
-    remediation: "Set MODERATION_API_KEY to the production safety gateway token.",
-  });
+  if ((env.MODERATION_PROVIDER ?? "mock") === "safety-gateway") {
+    addRequiredCheck(checks, env, {
+      id: "moderation-service-url",
+      area: "Safety",
+      key: "MODERATION_SERVICE_URL",
+      label: "Moderation service URL",
+      url: true,
+      remediation: "Set MODERATION_SERVICE_URL for the configured provider.",
+    });
+    addRequiredCheck(checks, env, {
+      id: "moderation-api-key",
+      area: "Safety",
+      key: "MODERATION_API_KEY",
+      label: "Moderation API key",
+      minLength: 16,
+      remediation: "Set MODERATION_API_KEY for the configured provider.",
+    });
+  } else {
+    addCheck(checks, {
+      id: "moderation-service-url",
+      area: "Safety",
+      status: "pass",
+      message: `MODERATION_PROVIDER=${env.MODERATION_PROVIDER ?? "mock"} does not require MODERATION_SERVICE_URL.`,
+    });
+    addCheck(checks, {
+      id: "moderation-api-key",
+      area: "Safety",
+      status: "pass",
+      message: `MODERATION_PROVIDER=${env.MODERATION_PROVIDER ?? "mock"} does not require MODERATION_API_KEY.`,
+    });
+  }
   addSafetyGatewayProbeCheck(checks, env, safetyGatewayProbe, now);
   addAtLeastOneCheck(checks, env, {
     id: "payment-api-key",

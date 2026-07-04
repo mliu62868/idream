@@ -23,6 +23,7 @@ interface FakeData {
   eligibility?: unknown;
   entitlement?: unknown;
   usage?: unknown;
+  lastUser?: unknown;
 }
 
 function fakePrisma(data: FakeData): ChatPrismaClient {
@@ -30,7 +31,7 @@ function fakePrisma(data: FakeData): ChatPrismaClient {
   return {
     message: {
       findUnique: unique(data.message ?? null),
-      findFirst: async () => null,
+      findFirst: unique(data.lastUser ?? { id: "msg_user" }),
       update: async () => ({}),
     },
     chatSession: { findUnique: unique(data.session ?? null) },
@@ -131,5 +132,21 @@ describe("regenerate quota + eligibility guard (P0-C)", () => {
     await expect(regenerate({ userId: "u1", messageId: "msg_a" }, { prisma })).rejects.toBeInstanceOf(
       ChatError,
     );
+  });
+
+  it.each([
+    ["deleted", { ...assistantMessage, status: "deleted", deletedAt: new Date("2026-01-01T00:00:01Z") }],
+    ["blocked", { ...assistantMessage, status: "blocked", deletedAt: null }],
+    ["generating", { ...assistantMessage, status: "generating", deletedAt: null }],
+  ])("rejects %s assistant messages before enqueue", async (_case, message) => {
+    const prisma = fakePrisma({
+      message,
+      session,
+    });
+
+    await expect(regenerate({ userId: "u1", messageId: "msg_a" }, { prisma })).rejects.toMatchObject({
+      status: 409,
+    });
+    expect(enqueueMock).not.toHaveBeenCalled();
   });
 });

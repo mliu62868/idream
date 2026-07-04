@@ -1,0 +1,32 @@
+- generic [active] [ref=e1]:
+  - main [ref=e2]:
+    - generic [ref=e3]:
+      - generic [ref=e4]:
+        - img [ref=e5]
+        - heading "后台登录" [level=1] [ref=e8]
+        - generic [ref=e9]: DEV ONLY
+      - paragraph [ref=e10]: 内置开发账号，仅本地可用。
+      - generic [ref=e11]:
+        - generic [ref=e12]:
+          - text: 账号
+          - textbox "账号" [ref=e13]: admin
+        - generic [ref=e14]:
+          - text: 密码
+          - textbox "密码" [ref=e15]: admin123
+        - button "登录" [ref=e16]:
+          - img [ref=e17]
+          - text: 登录
+      - generic [ref=e20]:
+        - paragraph [ref=e21]: 快捷账号
+        - generic [ref=e22]:
+          - button "admin / admin123 Admin · 全部权限" [ref=e23]:
+            - img [ref=e24]
+            - generic [ref=e36]: admin
+            - generic [ref=e37]: / admin123
+            - generic [ref=e38]: Admin · 全部权限
+          - button "support / support123 Support · 只读 + 工单" [ref=e39]:
+            - img [ref=e40]
+            - generic [ref=e52]: support
+            - generic [ref=e53]: / support123
+            - generic [ref=e54]: Support · 只读 + 工单
+  - alert [ref=e55]

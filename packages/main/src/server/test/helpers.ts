@@ -300,6 +300,15 @@ export async function purgeTestData(prefix: string) {
   await prisma.supportConsentGrant.deleteMany({
     where: { OR: [{ id: sw }, { userId: sw }, { targetId: sw }, { ticketId: sw }] },
   });
+  await prisma.supportRequest.deleteMany({
+    where: { OR: [{ id: sw }, { ticketId: sw }, { userId: sw }, { assignedToId: sw }] },
+  });
+  await prisma.productFeedbackVote.deleteMany({
+    where: { OR: [{ id: sw }, { userId: sw }, { itemId: sw }] },
+  });
+  await prisma.productFeedbackItem.deleteMany({
+    where: { OR: [{ id: sw }, { sourceKey: sw }, { createdById: sw }, { title: sw }] },
+  });
   await prisma.legalHold.deleteMany({
     where: {
       OR: [
@@ -316,6 +325,23 @@ export async function purgeTestData(prefix: string) {
     where: { OR: [{ id: sw }, { userId: sw }, { createdById: sw }] },
   });
   await prisma.adminSavedView.deleteMany({ where: { OR: [{ id: sw }, { ownerId: sw }] } });
+  await prisma.mediaAssetPlacement.deleteMany({
+    where: { OR: [{ id: sw }, { mediaAssetId: sw }, { targetId: sw }, { createdById: sw }] },
+  });
+  await prisma.contentProductionItem.deleteMany({
+    where: {
+      OR: [
+        { id: sw },
+        { batchId: sw },
+        { jobId: sw },
+        { mediaAssetId: sw },
+        { reviewedById: sw },
+      ],
+    },
+  });
+  await prisma.contentProductionBatch.deleteMany({
+    where: { OR: [{ id: sw }, { targetId: sw }, { createdById: sw }, { title: sw }] },
+  });
   await prisma.generationModelProfile.deleteMany({ where: { OR: [{ id: sw }, { profileKey: sw }] } });
   await prisma.generationPromptTemplate.deleteMany({
     where: { OR: [{ id: sw }, { templateKey: sw }] },

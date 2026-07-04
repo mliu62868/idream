@@ -11,8 +11,9 @@ function FooterLink({
     return (
       <a
         className="text-[14px] font-medium leading-5 text-white transition-colors hover:text-[rgb(170,170,170)]"
+        data-link-kind="external"
         href={href}
-        rel="noopener"
+        rel="noopener noreferrer"
         target="_blank"
       >
         {label}
@@ -23,6 +24,7 @@ function FooterLink({
   return (
     <Link
       className="text-[14px] font-medium leading-5 text-white transition-colors hover:text-[rgb(170,170,170)]"
+      data-link-kind="internal"
       href={href}
     >
       {label}
@@ -61,8 +63,9 @@ export function SiteFooter() {
             <a
               aria-label="Discord"
               className="text-white transition-colors hover:text-[rgb(170,170,170)]"
+              data-link-kind="external"
               href="https://discord.gg/P47YU7je5D"
-              rel="noopener"
+              rel="noopener noreferrer"
               target="_blank"
             >
               <MessageCircle className="h-5 w-5" />
@@ -70,8 +73,9 @@ export function SiteFooter() {
             <a
               aria-label="Reddit"
               className="text-white transition-colors hover:text-[rgb(170,170,170)]"
+              data-link-kind="external"
               href="https://reddit.com/r/ourdream_ai"
-              rel="noopener"
+              rel="noopener noreferrer"
               target="_blank"
             >
               <Disc3 className="h-5 w-5" />
@@ -79,8 +83,9 @@ export function SiteFooter() {
             <a
               aria-label="Twitter / X"
               className="text-white transition-colors hover:text-[rgb(170,170,170)]"
+              data-link-kind="external"
               href="https://x.com/ourdreamai"
-              rel="noopener"
+              rel="noopener noreferrer"
               target="_blank"
             >
               <AtSign className="h-5 w-5" />

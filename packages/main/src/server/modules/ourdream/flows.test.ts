@@ -18,6 +18,7 @@ import {
 
 const P = "zt-flow-";
 const TOKEN = "ZZQFLOW"; // unique, collision-free search token
+const FOLLOW_TOKEN = "ZZQFOLLOW"; // unique, collision-free following sort token
 
 async function seedChar(opts: {
   id: string;
@@ -26,6 +27,7 @@ async function seedChar(opts: {
   chats?: number;
   likes?: number;
   createdAt?: Date;
+  age?: number;
   gender?: string;
   tagSlug?: string;
 }) {
@@ -34,7 +36,7 @@ async function seedChar(opts: {
       id: opts.id,
       creatorId: opts.creatorId,
       name: opts.name,
-      age: 24,
+      age: opts.age ?? 24,
       description: "Flow fixture.",
       visibility: "public",
       status: "approved",
@@ -73,14 +75,21 @@ afterAll(async () => {
 
 describe("explore: search, filter, sort, pagination", () => {
   const sys = `${P}sys`;
+  const followedCreator = `${P}followed-creator`;
+  const otherCreator = `${P}other-creator`;
+  const follower = `${P}follower`;
 
   beforeAll(async () => {
+    await createUser({ id: followedCreator });
+    await createUser({ id: otherCreator });
+    await createUser({ id: follower });
     await seedChar({
       id: `${P}c-alpha`,
       name: `${TOKEN} Alpha`,
       creatorId: sys,
       chats: 300,
       createdAt: new Date("2026-01-01T00:00:00Z"),
+      age: 22,
       gender: "female",
       tagSlug: `${P}cosplay`,
     });
@@ -90,6 +99,7 @@ describe("explore: search, filter, sort, pagination", () => {
       creatorId: sys,
       chats: 200,
       createdAt: new Date("2026-03-01T00:00:00Z"),
+      age: 30,
       gender: "male",
     });
     await seedChar({
@@ -98,8 +108,46 @@ describe("explore: search, filter, sort, pagination", () => {
       creatorId: sys,
       chats: 100,
       createdAt: new Date("2026-06-01T00:00:00Z"),
+      age: 38,
       gender: "female",
     });
+    await seedChar({
+      id: `${P}follow-old`,
+      name: `${FOLLOW_TOKEN} Old`,
+      creatorId: followedCreator,
+      chats: 10,
+      createdAt: new Date("2026-01-01T00:00:00Z"),
+      gender: "female",
+    });
+    await seedChar({
+      id: `${P}follow-new`,
+      name: `${FOLLOW_TOKEN} New`,
+      creatorId: followedCreator,
+      chats: 20,
+      createdAt: new Date("2026-06-01T00:00:00Z"),
+      gender: "female",
+    });
+    await seedChar({
+      id: `${P}follow-hidden`,
+      name: `${FOLLOW_TOKEN} Hidden`,
+      creatorId: otherCreator,
+      chats: 999,
+      createdAt: new Date("2026-07-01T00:00:00Z"),
+      gender: "female",
+    });
+    await prisma.follow.create({
+      data: { followerId: follower, followeeId: followedCreator },
+    });
+  });
+
+  it("treats for-you as the default recommendation sort", async () => {
+    const res = await api("GET", "characters", {
+      ageGate: true,
+      query: { q: TOKEN, sort: "for-you", limit: 28 },
+    });
+    expectOk(res);
+    const ids = (res.data.items as Array<{ id: string }>).map((c) => c.id);
+    expect(ids).toEqual([`${P}c-alpha`, `${P}c-beta`, `${P}c-gamma`]);
   });
 
   it("searches by name and sorts by popularity (chats desc)", async () => {
@@ -121,6 +169,27 @@ describe("explore: search, filter, sort, pagination", () => {
     expect(ids).toEqual([`${P}c-gamma`, `${P}c-beta`, `${P}c-alpha`]);
   });
 
+  it("filters following mode to followed creators and sorts newest first", async () => {
+    const res = await api("GET", "characters", {
+      userId: follower,
+      ageGate: true,
+      query: { q: FOLLOW_TOKEN, sort: "following", limit: 28 },
+    });
+    expectOk(res);
+    const ids = (res.data.items as Array<{ id: string }>).map((c) => c.id);
+    expect(ids).toEqual([`${P}follow-new`, `${P}follow-old`]);
+  });
+
+  it("returns an empty following mode for anonymous users", async () => {
+    const res = await api("GET", "characters", {
+      ageGate: true,
+      query: { q: FOLLOW_TOKEN, sort: "following", limit: 28 },
+    });
+    expectOk(res);
+    expect(res.data.items).toEqual([]);
+    expect(res.data.nextCursor).toBeNull();
+  });
+
   it("filters by gender", async () => {
     const res = await api("GET", "characters", {
       ageGate: true,
@@ -128,6 +197,43 @@ describe("explore: search, filter, sort, pagination", () => {
     });
     const ids = (res.data.items as Array<{ id: string }>).map((c) => c.id);
     expect(ids).toEqual([`${P}c-beta`]);
+  });
+
+  it("filters by age range", async () => {
+    const twenties = await api("GET", "characters", {
+      ageGate: true,
+      query: { q: TOKEN, age_min: "25", age_max: "34" },
+    });
+    expectOk(twenties);
+    expect((twenties.data.items as Array<{ id: string }>).map((c) => c.id)).toEqual([
+      `${P}c-beta`,
+    ]);
+
+    const mature = await api("GET", "characters", {
+      ageGate: true,
+      query: { q: TOKEN, age_min: "35" },
+    });
+    expectOk(mature);
+    expect((mature.data.items as Array<{ id: string }>).map((c) => c.id)).toEqual([
+      `${P}c-gamma`,
+    ]);
+  });
+
+  it("treats any or unknown public filters as unfiltered", async () => {
+    const res = await api("GET", "characters", {
+      ageGate: true,
+      query: { q: TOKEN, gender: "any", style: "any", sort: "popular" },
+    });
+    expectOk(res);
+    const ids = (res.data.items as Array<{ id: string }>).map((c) => c.id);
+    expect(ids).toEqual([`${P}c-alpha`, `${P}c-beta`, `${P}c-gamma`]);
+
+    const unknown = await api("GET", "characters", {
+      ageGate: true,
+      query: { q: TOKEN, gender: "robot", style: "claymation", sort: "popular" },
+    });
+    expectOk(unknown);
+    expect((unknown.data.items as Array<{ id: string }>).map((c) => c.id)).toEqual(ids);
   });
 
   it("filters by tag slug", async () => {

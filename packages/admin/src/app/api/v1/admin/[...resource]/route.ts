@@ -2,6 +2,7 @@ import { ZodError } from "zod";
 import { dispatchAdmin } from "@/server/modules/admin/service";
 import { AppError } from "@/server/lib/errors";
 import { fail } from "@/server/lib/http";
+import { logger } from "@/server/lib/logger";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -23,6 +24,7 @@ async function route(request: Request, context: AdminApiRouteContext) {
       return fail(new AppError("bad_request", "Validation failed", error.flatten()));
     }
 
+    logger.error({ error }, "Unhandled admin API route error");
     return fail(new AppError("internal", "Internal error"));
   }
 }

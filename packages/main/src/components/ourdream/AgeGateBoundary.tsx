@@ -9,6 +9,8 @@ const AGE_GATE_STORAGE_KEY = "AdultContentAcceptedOD";
 const AGE_GATE_COOKIE_NAME = "AdultContentAcceptedOD";
 const AGE_GATE_COOKIE =
   "AdultContentAcceptedOD=true; path=/; max-age=31536000; samesite=lax";
+const ageGateBypassPrefixes = ["/safety"];
+const ageGateBypassExact = new Set(["/terms"]);
 
 type MePayload = {
   ok?: boolean;
@@ -29,7 +31,9 @@ export function AgeGateBoundary({
   );
 
   useEffect(() => {
-    if (window.location.pathname.startsWith("/admin")) {
+    const pathname = window.location.pathname;
+
+    if (isAgeGateBypassPath(pathname) || pathname.startsWith("/admin")) {
       const timer = window.setTimeout(() => setState("accepted"), 0);
       return () => window.clearTimeout(timer);
     }
@@ -88,6 +92,15 @@ function hasAgeGateCookie() {
   return document.cookie
     .split(";")
     .some((cookie) => cookie.trim() === `${AGE_GATE_COOKIE_NAME}=true`);
+}
+
+function isAgeGateBypassPath(pathname: string) {
+  return (
+    ageGateBypassExact.has(pathname) ||
+    ageGateBypassPrefixes.some(
+      (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
+    )
+  );
 }
 
 async function restoreAgeGateCookie() {

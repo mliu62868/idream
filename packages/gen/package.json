@@ -14,6 +14,9 @@
     "start:image": "tsx src/image.ts",
     "start:video": "tsx src/video.ts",
     "probe:image": "tsx src/probe-image-pipeline.ts",
+    "probe:character-consistency": "tsx src/probe-character-consistency.ts",
+    "probe:redcraft-comfyui": "tsx src/probe-redcraft-comfyui.ts",
+    "serve:comfyui-image": "tsx src/comfyui-openai-image-server.ts",
     "serve:sdcpp-image": "tsx src/sdcpp-openai-image-server.ts"
   },
   "dependencies": {

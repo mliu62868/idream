@@ -7,6 +7,7 @@
 import { useEffect, useState } from "react";
 import { Activity, Download, Loader2, RefreshCcw } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
+import { useAdminI18n } from "@/components/admin/i18n";
 
 const inputClass =
   "h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30";
@@ -36,6 +37,7 @@ export function InsightsView() {
 }
 
 function RetentionSection() {
+  const { t } = useAdminI18n();
   const [rows, setRows] = useState<RetentionRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -81,7 +83,7 @@ function RetentionSection() {
   return (
     <section className="border border-white/10 bg-[rgb(18,18,18)]">
       <div className="flex items-center justify-between border-b border-white/10 p-3">
-        <h2 className="text-sm font-semibold">Retention cohorts (D1 / D7)</h2>
+        <h2 className="text-sm font-semibold">{t("Retention cohorts (D1 / D7)")}</h2>
         <div className="flex items-center gap-2">
           <button
             className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm disabled:opacity-50"
@@ -90,7 +92,7 @@ function RetentionSection() {
             type="button"
           >
             {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-            Export CSV
+            {t("Export CSV")}
           </button>
           <button
             className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm disabled:opacity-50"
@@ -99,7 +101,7 @@ function RetentionSection() {
             type="button"
           >
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-            Refresh
+            {t("Refresh")}
           </button>
         </div>
       </div>
@@ -107,8 +109,8 @@ function RetentionSection() {
       <table className="w-full text-left text-sm">
         <thead className="border-b border-white/10 text-xs text-[rgb(170,170,170)]">
           <tr>
-            <th className="px-3 py-2 font-medium">cohort</th>
-            <th className="px-3 py-2 font-medium">size</th>
+            <th className="px-3 py-2 font-medium">{t("cohort")}</th>
+            <th className="px-3 py-2 font-medium">{t("size")}</th>
             <th className="px-3 py-2 font-medium">D1</th>
             <th className="px-3 py-2 font-medium">D7</th>
           </tr>
@@ -125,7 +127,7 @@ function RetentionSection() {
           {rows.length === 0 && !loading ? (
             <tr>
               <td className="px-3 py-6 text-center text-xs text-[rgb(170,170,170)]" colSpan={4}>
-                No cohorts in window.
+                {t("No cohorts in window.")}
               </td>
             </tr>
           ) : null}
@@ -136,6 +138,7 @@ function RetentionSection() {
 }
 
 function ProfileHealthSection() {
+  const { t } = useAdminI18n();
   const [profileId, setProfileId] = useState("");
   const [health, setHealth] = useState<Health | null>(null);
   const [busy, setBusy] = useState<"health" | "dryrun" | null>(null);
@@ -170,7 +173,13 @@ function ProfileHealthSection() {
         "POST",
         { reason: reason.trim(), confirmation: "DRYRUN" },
       );
-      setNote(`Dry-run ${data.dryRun.status}: ${data.dryRun.passed}/${data.dryRun.total} samples passed.`);
+      setNote(
+        t("Dry-run {status}: {passed}/{total} samples passed.", {
+          status: data.dryRun.status,
+          passed: data.dryRun.passed,
+          total: data.dryRun.total,
+        }),
+      );
     } catch (error) {
       setErr(error instanceof Error ? error.message : "Dry-run failed");
     } finally {
@@ -180,7 +189,7 @@ function ProfileHealthSection() {
 
   return (
     <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
-      <h2 className="text-sm font-semibold">Profile health + dry-run</h2>
+      <h2 className="text-sm font-semibold">{t("Profile health + dry-run")}</h2>
       <p className="mt-1 text-xs text-[rgb(170,170,170)]">
         发布前依据：输入 model profile id 查近 30 天健康度，或跑配置 dry-run。
       </p>
@@ -188,7 +197,7 @@ function ProfileHealthSection() {
         <input
           className={inputClass}
           onChange={(e) => setProfileId(e.target.value)}
-          placeholder="Model profile id"
+          placeholder={t("Model profile id")}
           value={profileId}
         />
         <button
@@ -198,7 +207,7 @@ function ProfileHealthSection() {
           type="button"
         >
           {busy === "health" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4" />}
-          Health
+          {t("Health")}
         </button>
         <button
           className="inline-flex h-10 items-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
@@ -207,7 +216,7 @@ function ProfileHealthSection() {
           type="button"
         >
           {busy === "dryrun" ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-          Dry-run
+          {t("Dry-run")}
         </button>
       </div>
       {err ? <p className="mt-2 text-xs text-red-300">{err}</p> : null}
@@ -229,9 +238,11 @@ function ProfileHealthSection() {
 }
 
 function Metric({ label, value }: { label: string; value: string | number }) {
+  const { t } = useAdminI18n();
+
   return (
     <div className="bg-[rgb(18,18,18)] p-3">
-      <p className="text-xs text-[rgb(170,170,170)]">{label}</p>
+      <p className="text-xs text-[rgb(170,170,170)]">{t(label)}</p>
       <p className="mt-1 text-lg font-semibold">{value}</p>
     </div>
   );

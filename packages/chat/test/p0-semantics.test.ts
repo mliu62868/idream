@@ -21,7 +21,15 @@ const prisma = createChatPrisma();
 const superPool = new Pool({ connectionString: process.env.CHAT_TEST_SUPER_URL });
 let fsRoot: string;
 
-const USERS = ["u_p0_quota", "u_p0_nomem", "u_p0_bound", "u_p0_erase", "u_p0_model", "u_p1_rel"] as const;
+const USERS = [
+  "u_p0_quota",
+  "u_p0_nomem",
+  "u_p0_nomem_summary",
+  "u_p0_bound",
+  "u_p0_erase",
+  "u_p0_model",
+  "u_p1_rel",
+] as const;
 const CHAR = "c_p0";
 
 async function exists(p: string): Promise<boolean> {
@@ -103,6 +111,30 @@ describe("P0-E: no-memory / incognito", () => {
     // The PG message history still exists for the active session.
     const msgs = await prisma.message.findMany({ where: { sessionId: session.id } });
     expect(msgs.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("clears and stops writing rolling summary after memory is disabled", async () => {
+    const user = "u_p0_nomem_summary";
+    const session = await createSession({ userId: user, characterId: CHAR }, { prisma });
+
+    await sendMessage(
+      { userId: user, sessionId: session.id, content: "remember this summary seed" },
+      { prisma },
+    );
+    expect(await generateOnce()).toBe(1);
+    expect((await prisma.chatSession.findUnique({ where: { id: session.id } }))?.memorySummary).toContain(
+      "summary seed",
+    );
+
+    await setNoMemory({ userId: user, sessionId: session.id, memoryEnabled: false }, { prisma });
+    expect((await prisma.chatSession.findUnique({ where: { id: session.id } }))?.memorySummary).toBeNull();
+
+    await sendMessage(
+      { userId: user, sessionId: session.id, content: "this should not enter summary" },
+      { prisma },
+    );
+    expect(await generateOnce()).toBe(1);
+    expect((await prisma.chatSession.findUnique({ where: { id: session.id } }))?.memorySummary).toBeNull();
   });
 });
 

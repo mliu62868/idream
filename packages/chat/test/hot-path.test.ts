@@ -9,9 +9,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Pool } from "pg";
 import { createChatPrisma } from "../src/db.js";
-import { createSession, sendMessage, regenerate } from "../src/service.js";
+import { createSession, editUserMessage, sendMessage, regenerate } from "../src/service.js";
 import { processGenerate } from "../src/generate.js";
 import { drainQueue, obliterate } from "../src/queue.js";
+import { listStreamEvents, streamKey } from "../src/stream.js";
 import { CHAT_QUEUES } from "@idream/shared/contracts";
 
 const prisma = createChatPrisma();
@@ -19,6 +20,8 @@ const superPool = new Pool({ connectionString: process.env.CHAT_TEST_SUPER_URL }
 let fsRoot: string;
 
 const USER = "u_hot";
+const TURN_USER = "u_hot_turn";
+const EDIT_USER = "u_hot_edit";
 const CHAR = "c_hot";
 
 beforeAll(async () => {
@@ -31,6 +34,16 @@ beforeAll(async () => {
     `INSERT INTO public.users (id, email, status, "createdAt", "updatedAt")
      VALUES ($1, $2, 'active', now(), now()) ON CONFLICT (id) DO NOTHING`,
     [USER, "hot@test.dev"],
+  );
+  await superPool.query(
+    `INSERT INTO public.users (id, email, status, "createdAt", "updatedAt")
+     VALUES ($1, $2, 'active', now(), now()) ON CONFLICT (id) DO NOTHING`,
+    [TURN_USER, "hot-turn@test.dev"],
+  );
+  await superPool.query(
+    `INSERT INTO public.users (id, email, status, "createdAt", "updatedAt")
+     VALUES ($1, $2, 'active', now(), now()) ON CONFLICT (id) DO NOTHING`,
+    [EDIT_USER, "hot-edit@test.dev"],
   );
   await superPool.query(
     `INSERT INTO public.characters (id, name, age, description, visibility, status, style, gender, appearance, "advancedDetails", "createdAt", "updatedAt")
@@ -69,6 +82,8 @@ describe("chat hot path (P0-3)", () => {
     const after = await prisma.message.findUnique({ where: { id: res.assistantMessageId } });
     expect(after?.status).toBe("sent");
     expect(after?.content).toContain("Mock");
+    const streamEvents = await listStreamEvents(streamKey(res.assistantMessageId));
+    expect(streamEvents.map((e) => e.event.type)).toEqual(expect.arrayContaining(["start", "delta", "done"]));
 
     // selected version exists
     const version = await prisma.messageVersion.findFirst({
@@ -117,6 +132,75 @@ describe("chat hot path (P0-3)", () => {
     expect(versions.length).toBe(2);
     expect(versions.filter((v) => v.selected).length).toBe(1);
     expect(versions.at(-1)?.attempt).toBe(2);
+  });
+
+  it("edits the latest user turn and regenerates the paired assistant reply", async () => {
+    const session = await createSession({ userId: EDIT_USER, characterId: CHAR }, { prisma });
+    const first = await sendMessage(
+      { userId: EDIT_USER, sessionId: session.id, content: "before edit apples" },
+      { prisma },
+    );
+    await drainQueue(CHAT_QUEUES.generate, async (job) => {
+      await processGenerate(job.payload as Parameters<typeof processGenerate>[0], prisma);
+    });
+
+    const edited = await editUserMessage(
+      { userId: EDIT_USER, messageId: first.userMessageId, content: "after edit pears" },
+      { prisma },
+    );
+    expect(edited.assistantMessageId).toBe(first.assistantMessageId);
+    expect(edited.userMessageId).toBe(first.userMessageId);
+    expect(edited.status).toBe("generating");
+    expect(edited.streamUrl).toContain(first.assistantMessageId);
+
+    const handled = await drainQueue(CHAT_QUEUES.generate, async (job) => {
+      await processGenerate(job.payload as Parameters<typeof processGenerate>[0], prisma);
+    });
+    expect(handled).toBe(1);
+
+    const userMessage = await prisma.message.findUnique({ where: { id: first.userMessageId } });
+    const assistant = await prisma.message.findUnique({ where: { id: first.assistantMessageId } });
+    expect(userMessage?.content).toBe("after edit pears");
+    expect(assistant?.status).toBe("sent");
+    expect(assistant?.attempt).toBe(2);
+    expect(assistant?.content).toContain("after edit pears");
+    expect(assistant?.content).not.toContain("before edit apples");
+
+    const versions = await prisma.messageVersion.findMany({
+      where: { messageId: first.assistantMessageId },
+      orderBy: { attempt: "asc" },
+    });
+    expect(versions.length).toBe(2);
+    expect(versions.at(-1)?.attempt).toBe(2);
+    expect(versions.filter((version) => version.selected).length).toBe(1);
+  });
+
+  it("regenerating an old assistant turn uses that turn, not newer session context", async () => {
+    const session = await createSession({ userId: TURN_USER, characterId: CHAR }, { prisma });
+    const first = await sendMessage(
+      { userId: TURN_USER, sessionId: session.id, content: "first turn apples" },
+      { prisma },
+    );
+    await drainQueue(CHAT_QUEUES.generate, async (job) => {
+      await processGenerate(job.payload as Parameters<typeof processGenerate>[0], prisma);
+    });
+
+    await sendMessage(
+      { userId: TURN_USER, sessionId: session.id, content: "second turn bananas" },
+      { prisma },
+    );
+    await drainQueue(CHAT_QUEUES.generate, async (job) => {
+      await processGenerate(job.payload as Parameters<typeof processGenerate>[0], prisma);
+    });
+
+    await regenerate({ userId: TURN_USER, messageId: first.assistantMessageId }, { prisma });
+    await drainQueue(CHAT_QUEUES.generate, async (job) => {
+      await processGenerate(job.payload as Parameters<typeof processGenerate>[0], prisma);
+    });
+
+    const regenerated = await prisma.message.findUnique({ where: { id: first.assistantMessageId } });
+    expect(regenerated?.content).toContain("first turn apples");
+    expect(regenerated?.content).not.toContain("second turn bananas");
   });
 
   it("blocks unsafe input: status=blocked, no streamUrl, no generation enqueued (P0-B)", async () => {

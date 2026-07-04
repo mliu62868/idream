@@ -11,6 +11,9 @@ import { defineConfig } from "@playwright/test";
 const managedWebServer = process.env.PW_WEBSERVER === "1";
 const baseURL = process.env.PW_BASE_URL ?? "http://127.0.0.1:3000";
 const basePort = new URL(baseURL).port || "3000";
+if (managedWebServer && !process.env.BULLMQ_PREFIX) {
+  process.env.BULLMQ_PREFIX = `idream:e2e:${basePort}`;
+}
 const adminBaseURL =
   process.env.PW_ADMIN_BASE_URL ??
   (() => {

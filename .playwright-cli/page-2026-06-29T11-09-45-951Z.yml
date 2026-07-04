@@ -1,0 +1,121 @@
+- generic [active] [ref=e1]:
+  - main [ref=e2]:
+    - generic [ref=e3]:
+      - complementary [ref=e4]:
+        - generic [ref=e5]:
+          - img "ourdream.ai" [ref=e7]
+          - navigation [ref=e9]:
+            - link "Create" [ref=e10] [cursor=pointer]:
+              - /url: /create
+              - img [ref=e11]
+              - generic [ref=e13]: Create
+            - link "Explore" [ref=e14] [cursor=pointer]:
+              - /url: /
+              - img [ref=e15]
+              - generic [ref=e18]: Explore
+            - link "Chat" [ref=e19] [cursor=pointer]:
+              - /url: /chat
+              - img [ref=e20]
+              - generic [ref=e22]: Chat
+            - link "Generate" [ref=e23] [cursor=pointer]:
+              - /url: /generate
+              - img [ref=e24]
+              - generic [ref=e27]: Generate
+            - link "My AI" [ref=e28] [cursor=pointer]:
+              - /url: /custom
+              - img [ref=e29]
+              - generic [ref=e32]: My AI
+            - link "Feed" [ref=e33] [cursor=pointer]:
+              - /url: /feed
+              - img [ref=e34]
+              - generic [ref=e37]: Feed
+            - link "Community" [ref=e38] [cursor=pointer]:
+              - /url: /community
+              - img [ref=e39]
+              - generic [ref=e43]: Community
+          - navigation [ref=e45]:
+            - link "Help Desk" [ref=e46] [cursor=pointer]:
+              - /url: /helpdesk
+              - img [ref=e47]
+              - generic [ref=e50]: Help Desk
+            - link "Safety Center" [ref=e51] [cursor=pointer]:
+              - /url: /safety/introduction
+              - img [ref=e52]
+              - generic [ref=e55]: Safety Center
+            - link "Discord" [ref=e56] [cursor=pointer]:
+              - /url: https://discord.gg/P47YU7je5D
+              - img [ref=e57]
+              - generic [ref=e62]: Discord
+            - link "More" [ref=e63] [cursor=pointer]:
+              - /url: /resources-hub
+              - img [ref=e64]
+              - generic [ref=e68]: More
+          - generic [ref=e69]:
+            - link "Profile" [ref=e71] [cursor=pointer]:
+              - /url: /profile
+              - img [ref=e72]
+              - text: Profile
+            - link "Upgrade" [ref=e75] [cursor=pointer]:
+              - /url: /upgrade
+              - img [ref=e76]
+              - text: Upgrade
+            - generic [ref=e78]:
+              - paragraph [ref=e79]: 2026 OURDREAM.AI
+              - paragraph [ref=e80]: "USA: Dream Studio USA, Inc."
+              - paragraph [ref=e81]: "Cyprus: TEKTOPIA LTD (HE 473775)"
+      - generic [ref=e82]:
+        - link "Explore" [ref=e83] [cursor=pointer]:
+          - /url: /
+          - img [ref=e84]
+          - text: Explore
+        - heading "Melissa Burke" [level=1] [ref=e117]
+        - generic [ref=e87]:
+          - generic [ref=e88]:
+            - status [ref=e118]:
+              - img [ref=e119]
+              - text: Getting to know each other
+            - button "Memory on. Turn off memory." [pressed] [ref=e89]:
+              - img [ref=e90]
+              - text: Memory on
+            - link "Generate" [ref=e98] [cursor=pointer]:
+              - /url: /generate?characterId=melissa-burke
+              - img [ref=e99]
+              - text: Generate
+            - generic [ref=e102]:
+              - button "Open your chats" [ref=e103]:
+                - img [ref=e104]
+              - button "Open memory settings" [ref=e105]:
+                - img [ref=e106]
+          - paragraph [ref=e109]: "Memory on: this character remembers details across your chats."
+        - generic [ref=e110]:
+          - generic "Your message" [ref=e131]:
+            - text: 给我发一张图，温暖室内灯光，半身肖像
+            - generic [ref=e132]:
+              - button "Delete message" [ref=e133]:
+                - img [ref=e134]
+              - button "Report message" [ref=e137]:
+                - img [ref=e138]
+          - generic "Assistant message" [ref=e140]:
+            - text: "Mock Melissa Burke reply: 给我发一张图，温暖室内灯光，半身肖像"
+            - generic [ref=e147]:
+              - img [ref=e175]
+              - generic [ref=e153]:
+                - paragraph [ref=e154]: Generating image
+                - paragraph [ref=e155]: 给我发一张图，温暖室内灯光，半身肖像
+            - generic [ref=e161]:
+              - button "Play voice" [ref=e177]:
+                - img [ref=e178]
+              - button "Regenerate reply" [ref=e162]:
+                - img [ref=e163]
+              - button "Delete message" [ref=e168]:
+                - img [ref=e169]
+              - button "Report message" [ref=e172]:
+                - img [ref=e173]
+        - generic [ref=e111]:
+          - textbox "Message" [ref=e112]:
+            - /placeholder: Message...
+          - button "Send message" [ref=e113]:
+            - img [ref=e114]
+  - button "Open Next.js Dev Tools" [ref=e126] [cursor=pointer]:
+    - img [ref=e127]
+  - alert [ref=e130]

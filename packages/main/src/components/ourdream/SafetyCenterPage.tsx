@@ -11,12 +11,9 @@ import {
   IdCard,
   Mail,
   Menu,
-  Moon,
   Monitor,
-  Search,
   Shield,
   ShieldCheck,
-  Sun,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import {
@@ -515,7 +512,7 @@ function SafetyMarkdown({ markdown }: Readonly<{ markdown: string }>) {
   return <div className="relative mt-8 mb-14">{nodes}</div>;
 }
 
-function SafetyHeader() {
+function SafetyHeader({ activePath }: Readonly<{ activePath: string }>) {
   return (
     <header className="fixed top-0 z-30 w-full border-b border-white/[0.07] bg-[#0d0d0d]/95 font-safety-docs backdrop-blur lg:sticky">
       <div className="flex h-16 items-center gap-4 px-4 lg:px-12">
@@ -524,21 +521,12 @@ function SafetyHeader() {
             alt="ourdream Trust & Safety home page"
             className="h-6 w-auto"
             height={15}
-            priority
+            loading="eager"
             src="/images/ourdream/safety/logo-dark.svg"
             width={130}
           />
         </Link>
-        <button className="mx-auto flex h-9 w-full max-w-[440px] items-center justify-between rounded-xl border border-white/10 bg-[#0d0d0d] px-3 text-left text-[14px] text-[#777276] shadow-[0_1px_2px_rgba(0,0,0,0.25)]">
-          <span className="flex items-center gap-2">
-            <Search className="h-4 w-4" />
-            <span>Search...</span>
-          </span>
-          <span className="hidden text-[12px] font-semibold text-[#8f898d] sm:block">
-            ⌘K
-          </span>
-        </button>
-        <nav className="hidden items-center gap-6 text-[14px] font-semibold text-[#8f898d] md:flex">
+        <nav className="ml-auto hidden items-center gap-6 text-[14px] font-semibold text-[#8f898d] md:flex">
           <Link className="transition-colors hover:text-white" href="/">
             ourdream
           </Link>
@@ -548,9 +536,6 @@ function SafetyHeader() {
           >
             Report a problem
           </Link>
-          <button aria-label="Toggle dark mode" className="text-[#777276]">
-            <Moon className="h-4 w-4" />
-          </button>
         </nav>
       </div>
       <div className="flex h-12 items-center border-t border-white/[0.06] px-4 lg:px-12">
@@ -560,10 +545,42 @@ function SafetyHeader() {
         >
           Trust & Safety
         </Link>
-        <button className="ml-auto inline-flex items-center gap-2 text-[14px] font-semibold text-[#a6a1a4] lg:hidden">
-          <Menu className="h-4 w-4" />
-          Navigation
-        </button>
+        <details className="relative ml-auto lg:hidden">
+          <summary className="inline-flex cursor-pointer list-none items-center gap-2 text-[14px] font-semibold text-[#a6a1a4] transition-colors hover:text-[#e6e1e4] [&::-webkit-details-marker]:hidden">
+            <Menu className="h-4 w-4" />
+            Navigation
+          </summary>
+          <div className="absolute right-0 top-8 z-40 max-h-[70vh] w-[min(88vw,340px)] overflow-y-auto rounded-2xl border border-white/[0.08] bg-[#121112] p-4 shadow-2xl shadow-black/50">
+            {safetyNavGroups.map((group) => (
+              <div className="mt-5 first:mt-0" key={group.title}>
+                <h3 className="mb-2 text-[12px] font-semibold uppercase tracking-[0.08em] text-[#777276]">
+                  {group.title}
+                </h3>
+                <ul className="space-y-px">
+                  {group.items.map((item) => {
+                    const active = item.path === activePath;
+                    return (
+                      <li key={item.path}>
+                        <Link
+                          aria-current={active ? "page" : undefined}
+                          className={cn(
+                            "block rounded-xl px-3 py-2 text-[14px] leading-5 transition-colors",
+                            active
+                              ? "bg-[#f17bb6]/10 font-semibold text-[#f17bb6]"
+                              : "text-[#d7d2d5] hover:bg-white/[0.05] hover:text-white",
+                          )}
+                          href={toSafetyHref(item.path)}
+                        >
+                          {item.title}
+                        </Link>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </details>
       </div>
     </header>
   );
@@ -584,6 +601,7 @@ function SafetySidebar({ activePath }: Readonly<{ activePath: string }>) {
                 return (
                   <li key={item.path}>
                     <Link
+                      aria-current={active ? "page" : undefined}
                       className={cn(
                         "flex min-h-9 w-64 items-start rounded-xl px-4 py-1.5 text-[14px] leading-6 transition-colors",
                         active
@@ -670,16 +688,9 @@ function SafetyFooter() {
           </Link>
         </div>
         <div className="mt-16 border-t border-white/[0.07] pt-10">
-          <div className="flex items-center justify-between">
-            <p className="text-[13px] font-semibold">
-              Powered by <span className="text-[#a6a1a4]">mintlify</span>
-            </p>
-            <div className="flex items-center gap-5">
-              <Monitor className="h-4 w-4" />
-              <Sun className="h-4 w-4" />
-              <Moon className="h-4 w-4" />
-            </div>
-          </div>
+          <p className="text-[13px] font-semibold text-[#8f898d]">
+            ourdream.ai Trust & Safety
+          </p>
         </div>
       </div>
     </footer>
@@ -710,7 +721,7 @@ export function SafetyCenterPage({ route }: Readonly<{ route: OurdreamRoute }>) 
 
   return (
     <main className="min-h-screen bg-[#0d0d0d] font-safety-docs text-[#a6a1a4]">
-      <SafetyHeader />
+      <SafetyHeader activePath={activePath} />
       <div className="mx-auto grid w-full max-w-[1440px] grid-cols-1 px-5 pt-40 lg:grid-cols-[288px_689px] lg:gap-x-[43px] lg:px-8 lg:pt-9 xl:grid-cols-[288px_689px_220px]">
         <SafetySidebar activePath={activePath} />
         <article className="min-w-0">

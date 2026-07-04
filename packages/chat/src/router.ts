@@ -5,7 +5,10 @@
 import {
   ChatError,
   archiveSession,
+  assertMessageStreamAccess,
+  confirmImageAttachment,
   createSession,
+  editUserMessage,
   getSession,
   listSessions,
   regenerate,
@@ -103,6 +106,9 @@ async function route(req: ChatRequest): Promise<ChatResponse> {
       const b = body(req);
       return json(200, await setNoMemory({ userId, sessionId, memoryEnabled: Boolean(b.memoryEnabled) }));
     }
+    if (segs.length === 3 && segs[2] === "no-memory" && method === "POST") {
+      return json(200, await setNoMemory({ userId, sessionId, memoryEnabled: false }));
+    }
   }
 
   // /messages/:id  (delete) and /messages/:id/{regenerate,stream}
@@ -110,18 +116,28 @@ async function route(req: ChatRequest): Promise<ChatResponse> {
     await deleteMessage({ userId, messageId: segs[1] });
     return json(200, { ok: true });
   }
+  if (segs[0] === "messages" && segs.length === 2 && method === "PATCH") {
+    return json(202, await editUserMessage({ userId, messageId: segs[1], content: str(body(req).content) }));
+  }
   if (segs[0] === "messages" && segs.length === 3) {
     const messageId = segs[1];
     if (segs[2] === "regenerate" && method === "POST") {
       return json(202, await regenerate({ userId, messageId }));
     }
     if (segs[2] === "stream" && method === "GET") {
+      await assertMessageStreamAccess({ userId, messageId });
       return { kind: "sse", streamKey: streamKey(messageId), lastEventId: req.query?.lastEventId };
     }
   }
 
+  // /attachments/:id/confirm — user explicitly accepts a proposed chat image.
+  if (segs[0] === "attachments" && segs.length === 3 && segs[2] === "confirm" && method === "POST") {
+    return json(202, await confirmImageAttachment({ userId, attachmentId: segs[1] }));
+  }
+
   // /streams/:assistantMessageId  — PRD §8.2 alias for the SSE token stream.
   if (segs[0] === "streams" && segs.length === 2 && method === "GET") {
+    await assertMessageStreamAccess({ userId, messageId: segs[1] });
     return { kind: "sse", streamKey: streamKey(segs[1]), lastEventId: req.query?.lastEventId };
   }
 

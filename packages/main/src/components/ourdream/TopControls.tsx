@@ -1,54 +1,77 @@
 "use client";
 
 import Image from "next/image";
-import Link from "next/link";
-import { ChevronDown, Menu, Search } from "lucide-react";
+import { Check, ChevronDown, Search } from "lucide-react";
 import { useState } from "react";
 import { categoryFilters } from "@/lib/ourdream-data";
 import { cn } from "@/lib/utils";
 import { AuthNav } from "./AuthNav";
+import { MobileAppMenu } from "./MobileAppMenu";
 
-const mobileMenuItems = [
-  { label: "Create", href: "/create" },
-  { label: "Explore", href: "/" },
-  { label: "Chat", href: "/chat" },
-  { label: "Generate", href: "/generate" },
-  { label: "My AI", href: "/custom" },
-  { label: "Feed", href: "/feed" },
-  { label: "Community", href: "/community" },
-  { label: "Help Desk", href: "/helpdesk" },
-  { label: "Upgrade", href: "/upgrade" },
-];
+const sortOptions = [
+  { value: "for-you", label: "For You" },
+  { value: "popular", label: "Popular · Month" },
+  { value: "newest", label: "Newest" },
+  { value: "following", label: "Following" },
+] as const;
 
-function Pill({
+const genderOptions = [
+  { value: "female", label: "Female" },
+  { value: "male", label: "Male" },
+  { value: "trans", label: "Trans" },
+  { value: "any", label: "Any Gender" },
+] as const;
+
+const styleOptions = [
+  { value: "any", label: "Any Style" },
+  { value: "realistic", label: "Realistic" },
+  { value: "anime", label: "Anime" },
+  { value: "hybrid", label: "Hybrid" },
+] as const;
+
+const ageOptions = [
+  { value: "any", label: "Any Age" },
+  { value: "18-24", label: "18-24" },
+  { value: "25-34", label: "25-34" },
+  { value: "35+", label: "35+" },
+] as const;
+
+function SelectPill({
   ariaLabel,
-  children,
-  className,
-  onClick,
+  onChange,
+  options,
+  value,
 }: Readonly<{
-  ariaLabel?: string;
-  children: React.ReactNode;
-  className?: string;
-  onClick?: () => void;
+  ariaLabel: string;
+  onChange?: (value: string) => void;
+  options: readonly { label: string; value: string }[];
+  value: string;
 }>) {
   return (
-    <button
-      aria-label={ariaLabel}
-      className={cn(
-        "inline-flex h-9 shrink-0 items-center gap-2 rounded-full bg-[rgb(53,53,54)] pl-4 pr-3 text-[12px] font-medium leading-4 text-white transition-colors hover:bg-[rgb(62,62,63)]",
-        className,
-      )}
-      onClick={onClick}
-      type="button"
-    >
-      {children}
-      <ChevronDown className="h-3.5 w-3.5 text-[rgb(170,170,170)]" />
-    </button>
+    <label className="relative inline-flex min-w-0 shrink-0">
+      <select
+        aria-label={ariaLabel}
+        className="h-9 w-full min-w-0 appearance-none truncate rounded-full bg-[rgb(53,53,54)] pl-4 pr-8 text-[12px] font-medium leading-4 text-white outline-none transition-colors hover:bg-[rgb(62,62,63)] focus-visible:ring-2 focus-visible:ring-white/40 md:min-w-28 md:pr-9"
+        onChange={(event) => onChange?.(event.target.value)}
+        value={value}
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      <ChevronDown
+        aria-hidden="true"
+        className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[rgb(170,170,170)]"
+      />
+    </label>
   );
 }
 
 export function TopControls({
   activeCategory = "All",
+  categories = categoryFilters,
   query = "",
   sort = "popular",
   gender = "female",
@@ -62,6 +85,7 @@ export function TopControls({
   onAgeChange,
 }: Readonly<{
   activeCategory?: string;
+  categories?: readonly string[];
   query?: string;
   sort?: string;
   gender?: string;
@@ -74,45 +98,19 @@ export function TopControls({
   onStyleChange?: (style: string) => void;
   onAgeChange?: (age: string) => void;
 }>) {
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const sortLabel = sort === "newest" ? "Newest" : "Popular · Month";
-  const genderLabel = gender === "any" ? "Any Gender" : titleCase(gender);
-  const styleLabel = style === "any" ? "Any Style" : titleCase(style);
-  const ageLabel =
-    age === "18-24" ? "18-24" : age === "25-34" ? "25-34" : age === "35+" ? "35+" : "Any Age";
+  const [sortMenuOpen, setSortMenuOpen] = useState(false);
+  const sortLabel = sortOptions.find((option) => option.value === sort)?.label ?? "For You";
 
   return (
     <>
       <header className="sticky top-0 z-40 h-14 w-full bg-[rgba(13,13,13,0.6)] backdrop-blur-xl">
         <div className="flex h-14 items-center justify-between gap-2 px-2 md:px-4">
-          <button
-            aria-expanded={mobileMenuOpen}
-            aria-label="Open navigation menu"
-            className="inline-flex h-10 w-10 items-center justify-center rounded-full text-[rgb(170,170,170)] md:hidden"
-            onClick={() => setMobileMenuOpen((open) => !open)}
-            type="button"
-          >
-            <Menu className="h-4 w-4" />
-          </button>
+          <MobileAppMenu activeHref="/" currentPath="/" />
           <div className="hidden min-w-0 flex-1 md:block" />
           <div className="ml-auto flex items-center gap-3">
             <AuthNav />
           </div>
         </div>
-        {mobileMenuOpen ? (
-          <nav className="absolute left-2 right-2 top-14 grid grid-cols-2 gap-2 rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-3 shadow-[0_16px_40px_rgba(0,0,0,0.38)] md:hidden">
-            {mobileMenuItems.map((item) => (
-              <Link
-                className="rounded-[10px] bg-[rgb(36,36,36)] px-3 py-3 text-[13px] font-bold text-white"
-                href={item.href}
-                key={item.href}
-                onClick={() => setMobileMenuOpen(false)}
-              >
-                {item.label}
-              </Link>
-            ))}
-          </nav>
-        ) : null}
       </header>
 
       <section className="w-full px-2 pt-0 md:px-[60px] md:pt-[14px]">
@@ -123,7 +121,7 @@ export function TopControls({
             width={800}
             height={160}
             className="h-[52px] w-full object-cover"
-            priority
+            loading="eager"
           />
         </div>
 
@@ -138,17 +136,47 @@ export function TopControls({
           />
         </label>
 
-        <div className="flex items-center gap-3 overflow-x-auto pb-2 md:grid md:grid-cols-[1fr_320px_1fr] md:overflow-visible md:pb-0">
-          <div className="flex justify-start">
+        <div className="flex flex-col gap-2 pb-2 md:grid md:grid-cols-[1fr_320px_1fr] md:items-center md:gap-3 md:pb-0">
+          <div className="relative flex justify-start">
             <button
+              aria-expanded={sortMenuOpen}
               aria-label="Sort characters"
               className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full bg-[rgb(53,53,54)] pl-4 pr-3 text-[12px] font-medium leading-4 text-white transition-colors hover:bg-[rgb(62,62,63)]"
-              onClick={() => onSortChange?.(sort === "newest" ? "popular" : "newest")}
+              onClick={() => setSortMenuOpen((open) => !open)}
               type="button"
             >
               {sortLabel}
               <ChevronDown className="h-3.5 w-3.5 text-[rgb(170,170,170)]" />
             </button>
+            {sortMenuOpen ? (
+              <div
+                aria-label="Sort options"
+                className="absolute left-0 top-11 z-50 w-48 rounded-[12px] border border-white/10 bg-[rgb(18,18,18)] p-1 shadow-[0_16px_40px_rgba(0,0,0,0.38)]"
+                role="menu"
+              >
+                {sortOptions.map((option) => {
+                  const selected = option.value === sort;
+                  return (
+                    <button
+                      className={cn(
+                        "flex h-10 w-full items-center justify-between rounded-[9px] px-3 text-left text-[12px] font-bold text-[rgb(170,170,170)] transition-colors hover:bg-[rgb(36,36,36)] hover:text-white",
+                        selected && "bg-[rgb(46,46,46)] text-white",
+                      )}
+                      key={option.value}
+                      onClick={() => {
+                        onSortChange?.(option.value);
+                        setSortMenuOpen(false);
+                      }}
+                      role="menuitem"
+                      type="button"
+                    >
+                      {option.label}
+                      {selected ? <Check className="h-3.5 w-3.5" /> : null}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
           </div>
 
           <label className="hidden h-9 items-center gap-2 rounded-full bg-[rgb(53,53,54)] px-4 text-[12px] font-medium leading-4 text-[rgb(170,170,170)] md:flex">
@@ -162,30 +190,30 @@ export function TopControls({
             />
           </label>
 
-          <div className="flex justify-start gap-2 md:justify-end">
-            <Pill
+          <div className="grid grid-cols-3 gap-2 md:flex md:justify-end">
+            <SelectPill
               ariaLabel="Gender filter"
-              onClick={() => onGenderChange?.(nextValue(gender, ["female", "male", "trans", "any"]))}
-            >
-              {genderLabel}
-            </Pill>
-            <Pill
+              onChange={onGenderChange}
+              options={genderOptions}
+              value={gender}
+            />
+            <SelectPill
               ariaLabel="Style filter"
-              onClick={() => onStyleChange?.(nextValue(style, ["any", "realistic", "anime", "hybrid"]))}
-            >
-              {styleLabel}
-            </Pill>
-            <Pill
+              onChange={onStyleChange}
+              options={styleOptions}
+              value={style}
+            />
+            <SelectPill
               ariaLabel="Age filter"
-              onClick={() => onAgeChange?.(nextValue(age, ["any", "18-24", "25-34", "35+"]))}
-            >
-              {ageLabel}
-            </Pill>
+              onChange={onAgeChange}
+              options={ageOptions}
+              value={age}
+            />
           </div>
         </div>
 
         <div className="mt-2 flex gap-1 overflow-x-auto pb-3 md:mt-4 md:pb-0">
-          {categoryFilters.map((filter) => (
+          {categories.map((filter) => (
             <button
               key={filter}
               onClick={() => onCategoryChange?.(filter)}
@@ -204,13 +232,4 @@ export function TopControls({
       </section>
     </>
   );
-}
-
-function nextValue(current: string, values: string[]) {
-  const index = values.indexOf(current);
-  return values[(index + 1) % values.length] ?? values[0];
-}
-
-function titleCase(value: string) {
-  return value.charAt(0).toUpperCase() + value.slice(1);
 }

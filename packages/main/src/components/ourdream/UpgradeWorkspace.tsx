@@ -1,6 +1,7 @@
 "use client";
 
 import { Check, Crown } from "lucide-react";
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
 type Plan = {
@@ -11,6 +12,17 @@ type Plan = {
   priceCents: number;
   includedDreamcoins: number;
 };
+
+type BillingMode = {
+  provider: "mock" | "btcpay";
+  demoMode: boolean;
+  autoConfirmAvailable: boolean;
+};
+
+type CheckoutResult =
+  | { kind: "success"; message: string; plan: Plan }
+  | { kind: "redirect"; message: string; url: string }
+  | { kind: "error"; message: string };
 
 // P1-D: spell out the concrete chat entitlement per tier — never just
 // "account-wide benefits". Mirrors the server-enforced policy (design §5.5).
@@ -41,7 +53,8 @@ const FREE_CHAT_SUMMARY = "Free: 30 text messages per day · basic chat model ·
 
 export function UpgradeWorkspace() {
   const [plans, setPlans] = useState<Plan[]>([]);
-  const [status, setStatus] = useState("");
+  const [billingMode, setBillingMode] = useState<BillingMode | null>(null);
+  const [checkoutResult, setCheckoutResult] = useState<CheckoutResult | null>(null);
   const [pendingPlan, setPendingPlan] = useState("");
   // Lowercased "name billingPeriod" of the user's active plan; "" when unknown
   // (logged out / free / fetch failed) so no card gets marked as current.
@@ -56,8 +69,11 @@ export function UpgradeWorkspace() {
     try {
       const response = await fetch("/api/v1/plans");
       if (!response.ok) throw new Error(`plans request failed (${response.status})`);
-      const payload = (await response.json()) as { data?: { items?: Plan[] } };
+      const payload = (await response.json()) as {
+        data?: { items?: Plan[]; billing?: BillingMode };
+      };
       setPlans(payload.data?.items ?? []);
+      setBillingMode(payload.data?.billing ?? null);
       setPlansState("ready");
     } catch {
       setPlansState("error");
@@ -98,21 +114,48 @@ export function UpgradeWorkspace() {
 
   async function checkout(plan: Plan) {
     setPendingPlan(plan.id);
-    setStatus("");
+    setCheckoutResult(null);
     try {
       const response = await fetch("/api/v1/billing/checkout", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ planId: plan.id, autoConfirm: true }),
+        body: JSON.stringify({ planId: plan.id, autoConfirm: billingMode?.autoConfirmAvailable === true }),
       });
-      const payload = (await response.json()) as { ok: boolean; error?: { message: string } };
-      setStatus(
-        response.ok && payload.ok
-          ? `${plan.name} activated and dreamcoins granted.`
-          : payload.error?.message ?? "Checkout failed",
-      );
+      const payload = (await response.json()) as {
+        ok: boolean;
+        data?: {
+          invoice?: { checkoutUrl?: string };
+          subscription?: unknown;
+          billing?: BillingMode;
+        };
+        error?: { code?: string; message: string };
+      };
+      if (response.status === 401 || payload.error?.code === "unauthorized") {
+        window.location.assign(signupUrlForCheckout(plan));
+        return;
+      }
+      if (payload.data?.billing) setBillingMode(payload.data.billing);
+      if (response.ok && payload.ok && payload.data?.subscription) {
+        setActivePlan(`${plan.name} ${plan.billingPeriod}`.toLowerCase());
+        setCheckoutResult({
+          kind: "success",
+          message: `${plan.name} ${plan.billingPeriod} is active. ${plan.includedDreamcoins.toLocaleString()} dreamcoins were added.`,
+          plan,
+        });
+      } else if (response.ok && payload.ok && payload.data?.invoice?.checkoutUrl) {
+        setCheckoutResult({
+          kind: "redirect",
+          message: "Checkout created. Continue to the payment provider to finish activation.",
+          url: payload.data.invoice.checkoutUrl,
+        });
+      } else {
+        setCheckoutResult({ kind: "error", message: payload.error?.message ?? "Checkout failed" });
+      }
     } catch {
-      setStatus("Checkout failed. Please check your connection and try again.");
+      setCheckoutResult({
+        kind: "error",
+        message: "Checkout failed. Please check your connection and try again.",
+      });
     } finally {
       setPendingPlan("");
     }
@@ -144,6 +187,19 @@ export function UpgradeWorkspace() {
         <p className="mx-auto max-w-5xl text-[13px] font-medium text-[rgb(170,170,170)]">
           No plans available right now.
         </p>
+      )}
+      {plansState === "ready" && billingMode?.demoMode && (
+        <div
+          className="mx-auto mb-5 max-w-5xl rounded-[14px] border border-[rgb(253,95,194)] bg-[rgb(36,36,36)] p-4"
+          data-testid="upgrade-demo-checkout-notice"
+        >
+          <p className="text-[12px] font-black uppercase text-[rgb(253,95,194)]">
+            Demo checkout
+          </p>
+          <p className="mt-2 text-[13px] font-semibold leading-5 text-white">
+            Local mock billing activates plans immediately for testing. No real payment is collected.
+          </p>
+        </div>
       )}
       <div className="mx-auto grid max-w-5xl gap-4 md:grid-cols-2">
         {plans.map((plan, index) => {
@@ -190,17 +246,67 @@ export function UpgradeWorkspace() {
               onClick={() => checkout(plan)}
               type="button"
             >
-              {isActive ? "Current plan" : pendingPlan === plan.id ? "Activating..." : "Upgrade"}
+              {isActive
+                ? "Current plan"
+                : pendingPlan === plan.id
+                  ? billingMode?.autoConfirmAvailable
+                    ? "Activating..."
+                    : "Creating checkout..."
+                  : billingMode?.autoConfirmAvailable
+                    ? "Demo upgrade"
+                    : "Continue checkout"}
             </button>
           </article>
           );
         })}
       </div>
-      {status && (
-        <p className="mx-auto mt-5 max-w-5xl text-[13px] font-bold text-[rgb(170,170,170)]">
-          {status}
-        </p>
+      {checkoutResult && (
+        <div
+          aria-live="polite"
+          className={`mx-auto mt-5 max-w-5xl rounded-[14px] border p-5 ${
+            checkoutResult.kind === "success"
+              ? "border-[rgb(253,95,194)] bg-[rgb(36,36,36)]"
+              : "border-[rgb(255,140,140)] bg-[rgb(18,18,18)]"
+          }`}
+          data-testid="upgrade-checkout-result"
+          role="status"
+        >
+          <p className="text-[14px] font-black text-white">{checkoutResult.message}</p>
+          {checkoutResult.kind === "success" && (
+            <div className="mt-4 flex flex-wrap gap-2">
+              <Link
+                className="inline-flex h-10 items-center justify-center rounded-full bg-white px-5 text-[13px] font-black text-[rgb(13,13,13)]"
+                href="/profile#billing"
+              >
+                View billing
+              </Link>
+              <Link
+                className="inline-flex h-10 items-center justify-center rounded-full bg-[rgb(253,95,194)] px-5 text-[13px] font-black text-[rgb(13,13,13)]"
+                href="/generate"
+              >
+                Start generating
+              </Link>
+            </div>
+          )}
+          {checkoutResult.kind === "redirect" && (
+            <a
+              className="mt-4 inline-flex h-10 items-center justify-center rounded-full bg-white px-5 text-[13px] font-black text-[rgb(13,13,13)]"
+              href={checkoutResult.url}
+              rel="noreferrer"
+            >
+              Continue checkout
+            </a>
+          )}
+        </div>
       )}
     </section>
   );
+}
+
+function signupUrlForCheckout(plan: Plan) {
+  const intent = new URLSearchParams({
+    plan: plan.slug,
+    billing: plan.billingPeriod,
+  });
+  return `/signup?next=${encodeURIComponent(`/upgrade?${intent.toString()}`)}`;
 }

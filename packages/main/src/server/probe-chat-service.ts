@@ -1,11 +1,13 @@
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import "dotenv/config";
 import {
   BFF_HEADER,
   BFF_USER_HEADER,
   signBffContext,
 } from "@idream/shared/bff";
+import { prisma } from "./lib/db";
 
 type ProbeOptions = {
   report: string | null;
@@ -29,7 +31,11 @@ type ConversationEvidence = {
   createSession: OperationEvidence;
   sendMessage: OperationEvidence;
   stream: OperationEvidence & { sawStart?: boolean; sawDelta?: boolean; sawDone?: boolean };
-  getSession: OperationEvidence & { assistantSent?: boolean };
+  getSession: OperationEvidence & {
+    assistantMessageId?: string;
+    assistantSent?: boolean;
+    assistantStatus?: string | null;
+  };
   noMemory: OperationEvidence;
   blockedInput: OperationEvidence & { status_?: string };
   error?: string | null;
@@ -41,6 +47,8 @@ type ChatServiceProbeReport = {
   durationMs: number;
   serviceUrl: string | null;
   userId: string;
+  characterId: string | null;
+  characterSource: "argument" | "database" | "missing";
   usedSignedBff: boolean;
   health: OperationEvidence & { service?: string | null };
   signedRequest: OperationEvidence & { sessionsCount?: number };
@@ -68,24 +76,28 @@ function readOptions(): ProbeOptions {
 
 async function main() {
   const options = readOptions();
-  const report = await runProbe({
-    serviceUrl: options.serviceUrl,
-    userId: options.userId,
-    characterId: options.characterId,
-    secret: process.env.CHAT_BFF_SIGNING_SECRET ?? null,
-  });
+  try {
+    const report = await runProbe({
+      serviceUrl: options.serviceUrl,
+      userId: options.userId,
+      characterId: options.characterId,
+      secret: process.env.CHAT_BFF_SIGNING_SECRET ?? null,
+    });
 
-  if (options.report) {
-    const reportPath = resolveWorkspacePath(options.report);
-    await mkdir(path.dirname(reportPath), { recursive: true });
-    await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+    if (options.report) {
+      const reportPath = resolveWorkspacePath(options.report);
+      await mkdir(path.dirname(reportPath), { recursive: true });
+      await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+    }
+
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    if (!report.ok) process.exitCode = 1;
+  } finally {
+    await prisma.$disconnect().catch(() => {});
   }
-
-  process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-  if (!report.ok) process.exitCode = 1;
 }
 
-const SKIPPED_OP: OperationEvidence = { ok: true, error: "skipped" };
+const SKIPPED_OP: OperationEvidence = { ok: false, error: "skipped" };
 
 function skippedConversation(reason: string): ConversationEvidence {
   return {
@@ -113,6 +125,11 @@ async function runProbe(input: {
     checkedAt,
     serviceUrl: input.serviceUrl,
     userId: input.userId,
+    characterId: input.characterId,
+    characterSource: (input.characterId?.trim() ? "argument" : "missing") as
+      | "argument"
+      | "database"
+      | "missing",
     usedSignedBff: Boolean(input.secret?.trim()),
   };
 
@@ -143,12 +160,17 @@ async function runProbe(input: {
       userId: input.userId,
     });
     unsignedRequest = await probeUnsignedSessions(input.serviceUrl);
-    if (input.characterId?.trim()) {
+    const character = await resolveProbeCharacter(input.characterId);
+    if (!character.id) {
+      conversation = skippedConversation(character.error ?? "no probe character available");
+    } else {
+      baseReport.characterId = character.id;
+      baseReport.characterSource = character.source;
       conversation = await probeConversation({
         serviceUrl: input.serviceUrl,
         secret: input.secret,
         userId: input.userId,
-        characterId: input.characterId,
+        characterId: character.id,
       });
     }
   } catch (error) {
@@ -172,6 +194,10 @@ async function runProbe(input: {
     health.ok &&
     signedRequest.ok &&
     unsignedRequest.status === 401 &&
+    // A SKIPPED conversation smoke (no eligible character, or main DB unreachable) must NOT
+    // report green: launch-readiness fails on conversation.attempted !== true, so the probe's
+    // own exit code has to agree or an operator/CI trusting it gets a false PASS.
+    conversation.attempted &&
     conversation.ok &&
     Boolean(input.secret?.trim());
 
@@ -191,6 +217,44 @@ async function runProbe(input: {
           retryable: true,
         },
   };
+}
+
+async function resolveProbeCharacter(
+  characterId: string | null,
+): Promise<{
+  id: string | null;
+  source: "argument" | "database" | "missing";
+  error?: string | null;
+}> {
+  const explicit = characterId?.trim();
+  if (explicit) return { id: explicit, source: "argument" };
+  try {
+    const character = await prisma.character.findFirst({
+      where: {
+        visibility: "public",
+        status: "approved",
+        deletedAt: null,
+        age: { gte: 18 },
+      },
+      orderBy: [{ source: "asc" }, { createdAt: "desc" }],
+      select: { id: true },
+    });
+    if (character) return { id: character.id, source: "database" };
+    return {
+      id: null,
+      source: "missing",
+      error:
+        "CHAT_SERVICE_PROBE_CHARACTER_ID is not set and no public approved adult character exists in the main DB",
+    };
+  } catch (error) {
+    return {
+      id: null,
+      source: "missing",
+      error: `Could not auto-resolve probe character: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
 }
 
 /** Make a signed BFF request to the chat service (signature covers method+path+body). */
@@ -272,11 +336,25 @@ async function probeConversation(input: {
       });
     }
 
-    // 4) GET session: assistant should be present (sent or terminal)
+    // 4) GET session: the specific assistant turn from this probe should be
+    // present and finalized. createSession reuses active character sessions, so
+    // checking for "any assistant message" can be a false positive from history.
     const getRes = await signedFetch({ ...input, method: "GET", path: `/api/v1/chat/sessions/${session.id}` });
-    const got = (await getRes.json().catch(() => ({}))) as { messages?: Array<{ role: string; status?: string }> };
-    const assistantSent = (got.messages ?? []).some((m) => m.role === "assistant");
-    evidence.getSession = { ok: getRes.status === 200 && assistantSent, status: getRes.status, assistantSent };
+    const got = (await getRes.json().catch(() => ({}))) as {
+      messages?: Array<{ id?: string; role: string; status?: string; content?: string }>;
+    };
+    const assistant = (got.messages ?? []).find((m) => m.id === sent.assistantMessageId);
+    const assistantSent =
+      assistant?.role === "assistant" &&
+      assistant.status === "sent" &&
+      Boolean(assistant.content?.trim());
+    evidence.getSession = {
+      ok: getRes.status === 200 && assistantSent,
+      status: getRes.status,
+      assistantMessageId: sent.assistantMessageId,
+      assistantSent,
+      assistantStatus: assistant?.status ?? null,
+    };
 
     // 5) no-memory smoke: toggle memory off then send — must still 202.
     await signedFetch({
@@ -329,7 +407,10 @@ async function probeStream(input: {
   try {
     const res = await signedFetch({ ...input, method: "GET", path });
     if (!res.ok || !res.body) return { ok: false, status: res.status, error: `HTTP ${res.status}` };
-    const text = await readStreamWithTimeout(res, 8000);
+    const text = await readStreamWithTimeout(
+      res,
+      readPositiveIntEnv("CHAT_SERVICE_PROBE_STREAM_TIMEOUT_MS", 90_000),
+    );
     const sawStart = /event:\s*start|"type"\s*:\s*"start"/.test(text);
     const sawDelta = /event:\s*delta|"type"\s*:\s*"delta"/.test(text);
     const sawDone = /event:\s*done|"type"\s*:\s*"done"/.test(text);
@@ -337,6 +418,13 @@ async function probeStream(input: {
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+function readPositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const value = Number.parseInt(raw, 10);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
 /** Read an SSE response body until `done` is seen or the timeout elapses. */
@@ -347,12 +435,18 @@ async function readStreamWithTimeout(res: Response, timeoutMs: number): Promise<
   const deadline = Date.now() + timeoutMs;
   try {
     while (Date.now() < deadline) {
+      let timeout: ReturnType<typeof setTimeout> | null = null;
+      const timeoutPromise = new Promise<{ done: true; value: undefined }>((resolve) => {
+        timeout = setTimeout(
+          () => resolve({ done: true, value: undefined }),
+          Math.max(0, deadline - Date.now()),
+        );
+      });
       const { done, value } = await Promise.race([
         reader.read(),
-        new Promise<{ done: true; value: undefined }>((resolve) =>
-          setTimeout(() => resolve({ done: true, value: undefined }), Math.max(0, deadline - Date.now())),
-        ),
+        timeoutPromise,
       ]);
+      if (timeout) clearTimeout(timeout);
       if (done) break;
       if (value) text += decoder.decode(value, { stream: true });
       if (/event:\s*done|"type"\s*:\s*"done"/.test(text)) break;

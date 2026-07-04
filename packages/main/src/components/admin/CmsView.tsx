@@ -6,6 +6,7 @@
 import { useEffect, useState } from "react";
 import { Loader2, Plus, RefreshCcw, UploadCloud } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
+import { useAdminI18n } from "@/components/admin/i18n";
 
 type PageRow = {
   path: string;
@@ -19,6 +20,7 @@ const inputClass =
   "h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30";
 
 export function CmsView() {
+  const { t, value: valueLabel } = useAdminI18n();
   const [pages, setPages] = useState<PageRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -60,7 +62,7 @@ export function CmsView() {
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold">CMS pages ({pages.length})</h2>
+        <h2 className="text-sm font-semibold">{t("CMS pages")} ({pages.length})</h2>
         <button
           className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm disabled:opacity-50"
           disabled={loading}
@@ -68,7 +70,7 @@ export function CmsView() {
           type="button"
         >
           {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-          Refresh
+          {t("Refresh")}
         </button>
       </div>
       {error ? <p className="text-xs text-red-300">{error}</p> : null}
@@ -79,9 +81,9 @@ export function CmsView() {
         <table className="w-full text-left text-sm">
           <thead className="border-b border-white/10 text-xs text-[rgb(170,170,170)]">
             <tr>
-              <th className="px-3 py-2 font-medium">path</th>
-              <th className="px-3 py-2 font-medium">title</th>
-              <th className="px-3 py-2 font-medium">status</th>
+              <th className="px-3 py-2 font-medium">{t("path")}</th>
+              <th className="px-3 py-2 font-medium">{t("title")}</th>
+              <th className="px-3 py-2 font-medium">{t("status")}</th>
               <th className="px-3 py-2 font-medium" />
             </tr>
           </thead>
@@ -90,7 +92,7 @@ export function CmsView() {
               <tr key={page.path} className="border-b border-white/5">
                 <td className="px-3 py-2 font-mono text-xs">{page.path}</td>
                 <td className="px-3 py-2">{page.title}</td>
-                <td className="px-3 py-2 text-[rgb(170,170,170)]">{page.contentStatus}</td>
+                <td className="px-3 py-2 text-[rgb(170,170,170)]">{valueLabel(page.contentStatus)}</td>
                 <td className="px-3 py-2 text-right">
                   {page.contentStatus === "published" ? (
                     <button
@@ -98,7 +100,7 @@ export function CmsView() {
                       onClick={() => void publish(page.path, "draft")}
                       type="button"
                     >
-                      Unpublish
+                      {t("Unpublish")}
                     </button>
                   ) : (
                     <button
@@ -107,7 +109,7 @@ export function CmsView() {
                       type="button"
                     >
                       <UploadCloud className="h-3.5 w-3.5" />
-                      Publish
+                      {t("Publish")}
                     </button>
                   )}
                 </td>
@@ -116,7 +118,7 @@ export function CmsView() {
             {pages.length === 0 && !loading ? (
               <tr>
                 <td className="px-3 py-6 text-center text-xs text-[rgb(170,170,170)]" colSpan={4}>
-                  No CMS pages yet.
+                  {t("No CMS pages yet.")}
                 </td>
               </tr>
             ) : null}
@@ -128,6 +130,7 @@ export function CmsView() {
 }
 
 function CreatePageForm({ reload }: { reload: () => void }) {
+  const { t } = useAdminI18n();
   const [path, setPath] = useState("");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -174,17 +177,17 @@ function CreatePageForm({ reload }: { reload: () => void }) {
 
   return (
     <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
-      <h2 className="text-sm font-semibold">Create / overwrite page (draft)</h2>
+      <h2 className="text-sm font-semibold">{t("Create / overwrite page (draft)")}</h2>
       <p className="mt-1 text-xs text-[rgb(170,170,170)]">
         path 须以 / 开头。已发布的页会覆盖同 path 的静态页（ISR 生效），未匹配静态集合的 path 即新页。
       </p>
       <div className="mt-3 grid gap-3 md:grid-cols-2">
         <input className={inputClass} onChange={(e) => setPath(e.target.value)} placeholder="/guides/example" value={path} />
-        <input className={inputClass} onChange={(e) => setTitle(e.target.value)} placeholder="Page title" value={title} />
+        <input className={inputClass} onChange={(e) => setTitle(e.target.value)} placeholder={t("Page title")} value={title} />
         <input
           className={`${inputClass} md:col-span-2`}
           onChange={(e) => setDescription(e.target.value)}
-          placeholder="Meta description"
+          placeholder={t("Meta description")}
           value={description}
         />
         <textarea
@@ -195,7 +198,7 @@ function CreatePageForm({ reload }: { reload: () => void }) {
         <input
           className={inputClass}
           onChange={(e) => setReason(e.target.value)}
-          placeholder="Reason (≥3)"
+          placeholder={t("Reason (≥3)")}
           value={reason}
         />
         <button
@@ -205,7 +208,7 @@ function CreatePageForm({ reload }: { reload: () => void }) {
           type="button"
         >
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-          Create draft
+          {t("Create draft")}
         </button>
       </div>
       {err ? <p className="mt-2 text-xs text-red-300">{err}</p> : null}

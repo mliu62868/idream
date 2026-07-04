@@ -92,7 +92,8 @@ model ChatSession {
   updatedAt        DateTime  @default(now()) @updatedAt @map("updated_at")
   deletedAt        DateTime? @map("deleted_at")
 
-  messages Message[]
+  messages    Message[]
+  attachments MessageAttachment[]
 
   @@index([userId, lastMessageAt(sort: Desc)], map: "chat_sessions_user_last_idx")
   @@index([characterId], map: "chat_sessions_character_idx")
@@ -114,12 +115,40 @@ model Message {
   updatedAt    DateTime    @default(now()) @updatedAt @map("updated_at")
   deletedAt    DateTime?   @map("deleted_at")
 
-  session  ChatSession      @relation(fields: [sessionId], references: [id])
-  versions MessageVersion[]
+  session     ChatSession         @relation(fields: [sessionId], references: [id])
+  versions    MessageVersion[]
+  attachments MessageAttachment[]
 
   @@index([sessionId, createdAt], map: "messages_session_created_idx")
   @@index([status, updatedAt], map: "messages_status_updated_idx")
   @@map("messages")
+  @@schema("chat")
+}
+
+model MessageAttachment {
+  id              String   @id
+  sessionId       String   @map("session_id")
+  messageId       String   @map("message_id")
+  kind            String
+  status          String   @default("proposed")
+  generationJobId String?  @map("generation_job_id")
+  mediaAssetId    String?  @map("media_asset_id")
+  costDreamcoins  Int?     @map("cost_dreamcoins")
+  promptHint      String?  @map("prompt_hint")
+  width           Int?
+  height          Int?
+  errorCode       String?  @map("error_code")
+  metadata        Json     @default("{}")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at")
+
+  session ChatSession @relation(fields: [sessionId], references: [id])
+  message Message     @relation(fields: [messageId], references: [id])
+
+  @@index([messageId], map: "message_attachments_message_idx")
+  @@index([sessionId, status], map: "message_attachments_session_status_idx")
+  @@index([generationJobId], map: "message_attachments_generation_job_idx")
+  @@map("message_attachments")
   @@schema("chat")
 }
 

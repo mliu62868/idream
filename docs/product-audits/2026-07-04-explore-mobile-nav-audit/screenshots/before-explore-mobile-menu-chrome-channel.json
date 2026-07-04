@@ -1,0 +1,600 @@
+{
+  "path": "/",
+  "width": 390,
+  "links": [
+    {
+      "text": "Join Free",
+      "href": "/signup",
+      "rect": {
+        "x": 295,
+        "y": 12,
+        "w": 87,
+        "h": 32
+      }
+    },
+    {
+      "text": "Create",
+      "href": "/create",
+      "rect": {
+        "x": 21,
+        "y": 69,
+        "w": 170,
+        "h": 44
+      }
+    },
+    {
+      "text": "Explore",
+      "href": "/",
+      "rect": {
+        "x": 199,
+        "y": 69,
+        "w": 170,
+        "h": 44
+      }
+    },
+    {
+      "text": "Chat",
+      "href": "/chat",
+      "rect": {
+        "x": 21,
+        "y": 121,
+        "w": 170,
+        "h": 44
+      }
+    },
+    {
+      "text": "Generate",
+      "href": "/generate",
+      "rect": {
+        "x": 199,
+        "y": 121,
+        "w": 170,
+        "h": 44
+      }
+    },
+    {
+      "text": "My AI",
+      "href": "/custom",
+      "rect": {
+        "x": 21,
+        "y": 172,
+        "w": 170,
+        "h": 44
+      }
+    },
+    {
+      "text": "Feed",
+      "href": "/feed",
+      "rect": {
+        "x": 199,
+        "y": 172,
+        "w": 170,
+        "h": 44
+      }
+    },
+    {
+      "text": "Community",
+      "href": "/community",
+      "rect": {
+        "x": 21,
+        "y": 224,
+        "w": 170,
+        "h": 44
+      }
+    },
+    {
+      "text": "Help Desk",
+      "href": "/helpdesk",
+      "rect": {
+        "x": 199,
+        "y": 224,
+        "w": 170,
+        "h": 44
+      }
+    },
+    {
+      "text": "Upgrade",
+      "href": "/upgrade",
+      "rect": {
+        "x": 21,
+        "y": 275,
+        "w": 170,
+        "h": 44
+      }
+    },
+    {
+      "text": "Melissa Burke38She's been your best friend's mom your whole life. The woman who made you both sandwiches after school.2.2k2.2M@some1cool",
+      "href": "/characters/melissa-burke",
+      "rect": {
+        "x": 8,
+        "y": 324,
+        "w": 183,
+        "h": 305
+      }
+    },
+    {
+      "text": "Summoned to Another World22(Recently Updated) A normal day at college becomes the beginning of something far greater.8711.4M@fuze",
+      "href": "/characters/summoned-world",
+      "rect": {
+        "x": 199,
+        "y": 324,
+        "w": 183,
+        "h": 305
+      }
+    },
+    {
+      "text": "vividSarah Mercer27Sarah Mercer is your loving wife. Eight years together, high school sweethearts.8111.3M@some1cool",
+      "href": "/characters/sarah-mercer",
+      "rect": {
+        "x": 8,
+        "y": 637,
+        "w": 183,
+        "h": 305
+      }
+    },
+    {
+      "text": "vividAlexa Reeves19Three guys. One girl. A yacht. She knows what she's walking into.1.1k1.2M@archerz",
+      "href": "/characters/alexa-reeves",
+      "rect": {
+        "x": 199,
+        "y": 637,
+        "w": 183,
+        "h": 305
+      }
+    },
+    {
+      "text": "vividTamsin Jacobs - A 'Bullish' Request20Friends Sister / Cuckold (Bull User). Your friend group is the bedrock of your life.1.1k1.1M@wordshitmelikeablow",
+      "href": "/characters/tamsin-jacobs",
+      "rect": {
+        "x": 8,
+        "y": 950,
+        "w": 183,
+        "h": 305
+      }
+    },
+    {
+      "text": "Truth or Dare : Confessional18Your parents are away and your stepsister wants you to play with her.1.0k1.0M@thebigbadwolf",
+      "href": "/characters/truth-confessional",
+      "rect": {
+        "x": 199,
+        "y": 950,
+        "w": 183,
+        "h": 305
+      }
+    },
+    {
+      "text": "vividTruth or Dare: Stepmother Edition36When your stepmother invited you to join nine lively houseguests.1.1k897.8k@loudshrike",
+      "href": "/characters/truth-stepmother",
+      "rect": {
+        "x": 8,
+        "y": 1263,
+        "w": 183,
+        "h": 305
+      }
+    },
+    {
+      "text": "Stephanie, your dumbass stepsis18Your super bratty step sister was messing around and got surprised.1.1k873.3k@jlg619",
+      "href": "/characters/stephanie",
+      "rect": {
+        "x": 199,
+        "y": 1263,
+        "w": 183,
+        "h": 305
+      }
+    },
+    {
+      "text": "vividKennedy Graham21SEC Sorority Sisters - Book Two. Slow burn | Kennedy Graham.627781.1k@jmathersmind",
+      "href": "/characters/kennedy-graham",
+      "rect": {
+        "x": 8,
+        "y": 1576,
+        "w": 183,
+        "h": 305
+      }
+    },
+    {
+      "text": "vividEleanor Dawn21A blackmail story with Eleanor, who keeps control of the apartment.992743.9k@dreambig",
+      "href": "/characters/eleanor-dawn",
+      "rect": {
+        "x": 199,
+        "y": 1576,
+        "w": 183,
+        "h": 305
+      }
+    },
+    {
+      "text": "vividBailey Price: One Safe Night19You never planned for any of this. You were supposed to get home tonight.781629.8k@towle12",
+      "href": "/characters/bailey-price",
+      "rect": {
+        "x": 8,
+        "y": 1889,
+        "w": 183,
+        "h": 305
+      }
+    },
+    {
+      "text": "Sophie - The Single Mother34It's a warm sunny moving day and she needs help around the apartment.1.2k575.1k@stzy1",
+      "href": "/characters/sophie",
+      "rect": {
+        "x": 199,
+        "y": 1889,
+        "w": 183,
+        "h": 305
+      }
+    },
+    {
+      "text": "Raya Reyes19She didn't want a stepdad. She didn't want her mom to remarry.757562.0k@some1cool",
+      "href": "/characters/raya-reyes",
+      "rect": {
+        "x": 8,
+        "y": 2202,
+        "w": 183,
+        "h": 305
+      }
+    },
+    {
+      "text": "Emily : Coming Home31Five years ago, you lost everything. Your freedom. Your family.286542.7k@thebigbadwolf",
+      "href": "/characters/emily-coming-home",
+      "rect": {
+        "x": 199,
+        "y": 2202,
+        "w": 183,
+        "h": 305
+      }
+    },
+    {
+      "text": "Diana - The bet to date the weird girl !22You and your friends started a bet. John always makes the stupidest ideas.720528.0k@mau4971",
+      "href": "/characters/diana-weird-girl",
+      "rect": {
+        "x": 8,
+        "y": 2515,
+        "w": 183,
+        "h": 305
+      }
+    },
+    {
+      "text": "Lola Moonstruck20Ugh, did you have to introduce myself? Fine. I'm Lola.733504.5k@anonarona",
+      "href": "/characters/lola-moonstruck",
+      "rect": {
+        "x": 199,
+        "y": 2515,
+        "w": 183,
+        "h": 305
+      }
+    },
+    {
+      "text": "Join Now",
+      "href": "/upgrade",
+      "rect": {
+        "x": 131,
+        "y": 5269,
+        "w": 127,
+        "h": 44
+      }
+    },
+    {
+      "text": "Resources Hub",
+      "href": "/resources-hub",
+      "rect": {
+        "x": 16,
+        "y": 5529,
+        "w": 358,
+        "h": 20
+      }
+    },
+    {
+      "text": "AI Girlfriend Types",
+      "href": "/type",
+      "rect": {
+        "x": 16,
+        "y": 5561,
+        "w": 358,
+        "h": 20
+      }
+    },
+    {
+      "text": "Comparisons",
+      "href": "/comparison",
+      "rect": {
+        "x": 16,
+        "y": 5593,
+        "w": 358,
+        "h": 20
+      }
+    },
+    {
+      "text": "Videos",
+      "href": "/videos",
+      "rect": {
+        "x": 16,
+        "y": 5625,
+        "w": 358,
+        "h": 20
+      }
+    },
+    {
+      "text": "AI Instructions",
+      "href": "/ai-instructions",
+      "rect": {
+        "x": 16,
+        "y": 5657,
+        "w": 358,
+        "h": 20
+      }
+    },
+    {
+      "text": "AI Girlfriend",
+      "href": "/ai-girlfriend",
+      "rect": {
+        "x": 16,
+        "y": 5749,
+        "w": 358,
+        "h": 20
+      }
+    },
+    {
+      "text": "AI Boyfriend",
+      "href": "/ai-boyfriend",
+      "rect": {
+        "x": 16,
+        "y": 5781,
+        "w": 358,
+        "h": 20
+      }
+    },
+    {
+      "text": "AI Anime",
+      "href": "/type/anime-ai-girlfriend",
+      "rect": {
+        "x": 16,
+        "y": 5813,
+        "w": 358,
+        "h": 20
+      }
+    },
+    {
+      "text": "Games",
+      "href": "/games",
+      "rect": {
+        "x": 16,
+        "y": 5845,
+        "w": 358,
+        "h": 20
+      }
+    },
+    {
+      "text": "Romantasy",
+      "href": "/romantasy",
+      "rect": {
+        "x": 16,
+        "y": 5877,
+        "w": 358,
+        "h": 20
+      }
+    },
+    {
+      "text": "our dream ai",
+      "href": "/",
+      "rect": {
+        "x": 16,
+        "y": 5909,
+        "w": 358,
+        "h": 20
+      }
+    },
+    {
+      "text": "Help Centre",
+      "href": "https://help.ourdream.ai/",
+      "rect": {
+        "x": 16,
+        "y": 6001,
+        "w": 358,
+        "h": 20
+      }
+    },
+    {
+      "text": "Affiliates",
+      "href": "https://www.ourdreamaiaffiliate.com/",
+      "rect": {
+        "x": 16,
+        "y": 6033,
+        "w": 358,
+        "h": 20
+      }
+    },
+    {
+      "text": "Help Desk",
+      "href": "/helpdesk",
+      "rect": {
+        "x": 16,
+        "y": 6065,
+        "w": 358,
+        "h": 20
+      }
+    },
+    {
+      "text": "Safety",
+      "href": "/safety/introduction",
+      "rect": {
+        "x": 16,
+        "y": 6097,
+        "w": 358,
+        "h": 20
+      }
+    },
+    {
+      "text": "Discord",
+      "href": "https://discord.gg/P47YU7je5D",
+      "rect": {
+        "x": 16,
+        "y": 6241,
+        "w": 20,
+        "h": 20
+      }
+    },
+    {
+      "text": "Reddit",
+      "href": "https://reddit.com/r/ourdream_ai",
+      "rect": {
+        "x": 52,
+        "y": 6241,
+        "w": 20,
+        "h": 20
+      }
+    },
+    {
+      "text": "Twitter / X",
+      "href": "https://x.com/ourdreamai",
+      "rect": {
+        "x": 88,
+        "y": 6241,
+        "w": 20,
+        "h": 20
+      }
+    },
+    {
+      "text": "Explore",
+      "href": "/",
+      "rect": {
+        "x": 0,
+        "y": 749,
+        "w": 98,
+        "h": 63
+      }
+    },
+    {
+      "text": "Chat",
+      "href": "/chat",
+      "rect": {
+        "x": 98,
+        "y": 749,
+        "w": 98,
+        "h": 63
+      }
+    },
+    {
+      "text": "Create",
+      "href": "/create",
+      "rect": {
+        "x": 195,
+        "y": 749,
+        "w": 98,
+        "h": 63
+      }
+    },
+    {
+      "text": "Generate",
+      "href": "/generate",
+      "rect": {
+        "x": 293,
+        "y": 749,
+        "w": 98,
+        "h": 63
+      }
+    }
+  ],
+  "buttons": [
+    {
+      "text": "Open navigation menu",
+      "aria": "Open navigation menu",
+      "rect": {
+        "x": 8,
+        "y": 8,
+        "w": 40,
+        "h": 40
+      }
+    },
+    {
+      "text": "For You",
+      "aria": "Sort characters",
+      "rect": {
+        "x": 8,
+        "y": 172,
+        "w": 94,
+        "h": 36
+      }
+    },
+    {
+      "text": "All",
+      "aria": null,
+      "rect": {
+        "x": 8,
+        "y": 268,
+        "w": 39,
+        "h": 36
+      }
+    },
+    {
+      "text": "Slow Burn",
+      "aria": null,
+      "rect": {
+        "x": 51,
+        "y": 268,
+        "w": 82,
+        "h": 36
+      }
+    },
+    {
+      "text": "Elf",
+      "aria": null,
+      "rect": {
+        "x": 137,
+        "y": 268,
+        "w": 39,
+        "h": 36
+      }
+    }
+  ],
+  "navs": [
+    {
+      "label": null,
+      "text": "CreateExploreChatGenerateMy AIFeedCommunityHelp DeskUpgrade",
+      "rect": {
+        "x": 8,
+        "y": 56,
+        "w": 374,
+        "h": 276
+      }
+    },
+    {
+      "label": null,
+      "text": "Resources HubAI Girlfriend TypesComparisonsVideosAI Instructions",
+      "rect": {
+        "x": 16,
+        "y": 5529,
+        "w": 358,
+        "h": 148
+      }
+    },
+    {
+      "label": null,
+      "text": "AI GirlfriendAI BoyfriendAI AnimeGamesRomantasyour dream ai",
+      "rect": {
+        "x": 16,
+        "y": 5749,
+        "w": 358,
+        "h": 180
+      }
+    },
+    {
+      "label": null,
+      "text": "Help CentreAffiliatesHelp DeskSafety",
+      "rect": {
+        "x": 16,
+        "y": 6001,
+        "w": 358,
+        "h": 116
+      }
+    },
+    {
+      "label": "Primary mobile navigation",
+      "text": "ExploreChatCreateGenerate",
+      "rect": {
+        "x": 0,
+        "y": 748,
+        "w": 390,
+        "h": 64
+      }
+    }
+  ]
+}

@@ -7,6 +7,7 @@
 import { Buffer } from "node:buffer";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { ImageGeneratePayload } from "@idream/shared/contracts";
 import { S3CompatibleBlobStore, SafetyGatewayModerationProvider } from "@idream/shared";
 import { env } from "./env";
 
@@ -30,6 +31,7 @@ export interface ImageModel {
     controls?: Record<string, unknown>;
     requestId?: string;
     orientation?: string;
+    referenceImages?: NonNullable<ImageGeneratePayload["referenceImages"]>;
   }): Promise<
     ProviderResult<{
       assets: Array<{
@@ -181,12 +183,7 @@ const pipelineResponseSchema = {
         key: typeof recordItem.key === "string" ? recordItem.key : `pipeline/asset-${index + 1}`,
         width: typeof recordItem.width === "number" ? recordItem.width : 1024,
         height: typeof recordItem.height === "number" ? recordItem.height : 1024,
-        contentType:
-          typeof recordItem.contentType === "string"
-            ? recordItem.contentType
-            : typeof recordItem.mime_type === "string"
-              ? recordItem.mime_type
-              : "image/webp",
+        contentType: imageContentType(recordItem, body),
         body,
         sourceUrl,
       };
@@ -212,6 +209,7 @@ class PipelineImageModel implements ImageModel {
     const count = Math.max(1, Math.min(input.count, 4));
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), env.PIPELINE_TIMEOUT_MS);
+    const referenceImages = pipelineReferenceImages(input.referenceImages);
     try {
       const response = await fetch(endpoint, {
         method: "POST",
@@ -234,6 +232,7 @@ class PipelineImageModel implements ImageModel {
           n: count,
           response_format: "b64_json",
           seed: stableNumericSeed(input.seed),
+          ...(referenceImages.length > 0 ? { reference_images: referenceImages } : {}),
           controls: { ...(input.controls ?? {}), idreamSeed: input.seed },
         }),
         signal: controller.signal,
@@ -260,6 +259,33 @@ class PipelineImageModel implements ImageModel {
       clearTimeout(timeout);
     }
   }
+}
+
+function pipelineReferenceImages(
+  images: Parameters<ImageModel["generate"]>[0]["referenceImages"],
+) {
+  return (images ?? []).map((image) => {
+    const reference: Record<string, unknown> = {
+      role: image.role,
+      assetId: image.assetId,
+      asset_id: image.assetId,
+      weight: image.weight,
+      contentType: image.contentType,
+      content_type: image.contentType,
+      width: image.width,
+      height: image.height,
+      storageKey: image.storageKey,
+      storage_key: image.storageKey,
+      url: image.url,
+      b64_json: image.b64Json,
+    };
+    for (const key of Object.keys(reference)) {
+      if (reference[key] === undefined || reference[key] === null || reference[key] === "") {
+        delete reference[key];
+      }
+    }
+    return reference;
+  });
 }
 
 const pipelineVideoResponseSchema = {
@@ -546,6 +572,35 @@ function pipelineEndpoint(defaultPath: string) {
   const url = new URL(env.PIPELINE_API_URL);
   if (url.pathname !== "/" && url.pathname !== "") return url;
   return new URL(defaultPath, url);
+}
+
+function imageContentType(record: Record<string, unknown>, body: Uint8Array | undefined) {
+  if (typeof record.contentType === "string") return record.contentType;
+  if (typeof record.mime_type === "string") return record.mime_type;
+  if (!body) return "image/webp";
+  if (hasSignature(body, [0x89, 0x50, 0x4e, 0x47])) return "image/png";
+  if (hasSignature(body, [0xff, 0xd8, 0xff])) return "image/jpeg";
+  if (
+    body.byteLength >= 12 &&
+    asciiEquals(body, 0, "RIFF") &&
+    asciiEquals(body, 8, "WEBP")
+  ) {
+    return "image/webp";
+  }
+  return "image/png";
+}
+
+function hasSignature(body: Uint8Array, signature: number[]) {
+  if (body.byteLength < signature.length) return false;
+  return signature.every((byte, index) => body[index] === byte);
+}
+
+function asciiEquals(body: Uint8Array, offset: number, expected: string) {
+  if (body.byteLength < offset + expected.length) return false;
+  for (let index = 0; index < expected.length; index += 1) {
+    if (body[offset + index] !== expected.charCodeAt(index)) return false;
+  }
+  return true;
 }
 
 function stableNumericSeed(seed: string | undefined) {

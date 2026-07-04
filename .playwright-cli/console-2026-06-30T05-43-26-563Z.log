@@ -1,0 +1,10 @@
+[     702ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:3042/_next/static/chunks/0rrz_next_dist_0l8l5wh._.js:2431
+[     738ms] [LOG] [HMR] connected @ http://127.0.0.1:3042/_next/static/chunks/0rrz_next_dist_0l8l5wh._.js:2431
+[     860ms] [LOG] [Fast Refresh] rebuilding @ http://127.0.0.1:3042/_next/static/chunks/0rrz_next_dist_0l8l5wh._.js:2431
+[     959ms] [LOG] [Fast Refresh] done in 201ms @ http://127.0.0.1:3042/_next/static/chunks/0rrz_next_dist_0l8l5wh._.js:2431
+[   23213ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://127.0.0.1:3042/api/v1/generation/jobs?limit=20:0
+[   23227ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://127.0.0.1:3042/api/v1/media?type=image:0
+[  117286ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:3042/_next/static/chunks/0rrz_next_dist_0l8l5wh._.js:2431
+[  117297ms] [LOG] [HMR] connected @ http://127.0.0.1:3042/_next/static/chunks/0rrz_next_dist_0l8l5wh._.js:2431
+[  263630ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://127.0.0.1:3042/api/admin-auth/login:0
+[  266636ms] [WARNING] The resource http://127.0.0.1:3042/_next/static/chunks/%5Broot-of-the-server%5D__02qdavl._.css was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally. @ http://127.0.0.1:3042/generate:0

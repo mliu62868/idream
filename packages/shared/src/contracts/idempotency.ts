@@ -15,6 +15,7 @@ export const idempotencyKeys = {
     `chat-memory-extract:${assistantMessageId}:${attempt}`,
   chatSessionAppend: (assistantMessageId: string, attempt: number) =>
     `chat-session-append:${assistantMessageId}:${attempt}`,
+  chatImage: (attachmentId: string) => `chat-image:${attachmentId}`,
   generation: (jobId: string) => `generation:${jobId}`,
   generationFinalize: (jobId: string, state: "completed" | "failed" | "blocked") =>
     `generation-finalize:${jobId}:${state}`,

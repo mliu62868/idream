@@ -1,3 +1,5 @@
+import type { ImageGeneratePayload } from "@idream/shared/contracts";
+
 export interface ProviderFailure {
   code: string;
   message: string;
@@ -30,6 +32,7 @@ export interface ImageModel {
     controls?: Record<string, unknown>;
     requestId?: string;
     orientation?: string;
+    referenceImages?: NonNullable<ImageGeneratePayload["referenceImages"]>;
   }): Promise<
     ProviderResult<{
       assets: Array<{

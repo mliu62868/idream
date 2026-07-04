@@ -13,7 +13,10 @@ export function MobileBottomNav({
   activeHref = "/",
 }: Readonly<{ activeHref?: string }>) {
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-40 grid h-[64px] grid-cols-4 border-t border-[rgb(36,36,36)] bg-[rgb(13,13,13)] pb-[env(safe-area-inset-bottom)] md:hidden">
+    <nav
+      aria-label="Primary mobile navigation"
+      className="fixed inset-x-0 bottom-0 z-40 grid h-[64px] grid-cols-4 border-t border-[rgb(36,36,36)] bg-[rgb(13,13,13)] pb-[env(safe-area-inset-bottom)] md:hidden"
+    >
       {items.map((item) => {
         const Icon = item.icon;
         return (

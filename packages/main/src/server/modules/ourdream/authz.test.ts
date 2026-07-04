@@ -100,6 +100,30 @@ describe("auth lifecycle (cookie session)", () => {
     expect(anonymousByEmail.get(secondEmail)).toBeNull();
   });
 
+  it("logout clears public and admin sessions from the main app", async () => {
+    const adminId = `${P}admin-cookie`;
+    const adminToken = `${P}admin-token`;
+    await createUser({ id: adminId, role: "admin", displayName: "Admin Cookie" });
+    await prisma.session.create({
+      data: { userId: adminId, token: adminToken, expiresAt: new Date(Date.now() + 100000) },
+    });
+
+    const cookie = `idream_admin_session=${adminToken}`;
+    const before = await api("GET", "me", { cookie });
+    expectOk(before);
+    expect(before.data.user.id).toBe(adminId);
+
+    const logout = await api("POST", "auth/logout", { cookie });
+    expect(logout.status).toBe(204);
+    expect(logout.setCookies.join(";")).toContain("idream_session=;");
+    expect(logout.setCookies.join(";")).toContain("idream_admin_session=;");
+    expect(await prisma.session.count({ where: { token: adminToken } })).toBe(0);
+
+    const after = await api("GET", "me", { cookie });
+    expectOk(after);
+    expect(after.data.user).toBeNull();
+  });
+
   it("returns a null user for anonymous /me", async () => {
     const me = await api("GET", "me");
     expectOk(me);

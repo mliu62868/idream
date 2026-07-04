@@ -2,8 +2,13 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 
 export function resolveLocalBlobRoot(explicitRoot = process.env.BLOB_ROOT) {
-  if (explicitRoot?.trim()) return path.resolve(explicitRoot);
-  return path.join(findWorkspaceRoot(process.cwd()), "packages", "main", "data", "main-blob");
+  const workspaceRoot = findWorkspaceRoot(process.cwd());
+  if (explicitRoot?.trim()) {
+    return path.isAbsolute(explicitRoot)
+      ? path.resolve(explicitRoot)
+      : path.resolve(workspaceRoot, explicitRoot);
+  }
+  return path.join(workspaceRoot, "data", "blob");
 }
 
 export function resolveLocalBlobPath(key: string, explicitRoot = process.env.BLOB_ROOT) {

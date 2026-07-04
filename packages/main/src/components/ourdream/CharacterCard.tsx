@@ -7,7 +7,15 @@ import {
   SparkleBadgeIcon,
 } from "@/components/icons";
 
-export function CharacterCard({ card }: Readonly<{ card: CharacterCardData }>) {
+export function CharacterCard({
+  card,
+  imageLoading = "lazy",
+  imageUnoptimized = false,
+}: Readonly<{
+  card: CharacterCardData;
+  imageLoading?: "eager" | "lazy";
+  imageUnoptimized?: boolean;
+}>) {
   return (
     <Link
       className="group relative block aspect-[240/400] w-full cursor-pointer overflow-hidden rounded-[12px] bg-[rgb(36,36,36)] transition-transform duration-200 ease-out hover:scale-[1.012]"
@@ -26,9 +34,10 @@ export function CharacterCard({ card }: Readonly<{ card: CharacterCardData }>) {
         src={card.image}
         alt=""
         fill
+        loading={imageLoading}
         sizes="(max-width: 767px) 183px, 210px"
         className="object-cover object-top"
-        unoptimized={isPrivateMediaUrl(card.image)}
+        unoptimized={imageUnoptimized || isPrivateMediaUrl(card.image)}
       />
       <div className="absolute inset-0 bg-[linear-gradient(0deg,rgba(0,0,0,.72),rgba(0,0,0,.58)_24%,rgba(0,0,0,.22)_48%,rgba(0,0,0,0)_70%)]" />
 

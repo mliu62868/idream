@@ -33,6 +33,8 @@ model User {
   recentChats        RecentChat[]
   generationJobs     GenerationJob[]
   mediaAssets        MediaAsset[]
+  productionBatches  ContentProductionBatch[]
+  mediaPlacements    MediaAssetPlacement[]
   mediaLikes         MediaLike[]
   characterLikes     CharacterLike[]
   mediaCollections   MediaCollection[]
@@ -46,6 +48,10 @@ model User {
   referralsReceived  Referral[]             @relation("Invitee")
   reportsMade        ContentReport[]        @relation("Reporter")
   appeals            Appeal[]
+  supportRequests    SupportRequest[]       @relation("SupportRequester")
+  assignedSupport    SupportRequest[]       @relation("SupportAssignee")
+  feedbackItems      ProductFeedbackItem[]   @relation("FeedbackCreator")
+  feedbackVotes      ProductFeedbackVote[]
   followers          Follow[]               @relation("Followee")
   following          Follow[]               @relation("Follower")
 
@@ -171,6 +177,7 @@ model Character {
   submissions    CharacterSubmission[]
   recentChats    RecentChat[]
   generationJobs GenerationJob[]
+  visualProfiles CharacterVisualProfile[]
   likes          CharacterLike[]
 
   @@index([visibility, status])
@@ -216,6 +223,35 @@ model CharacterPreviewJob {
 
   @@index([draftId])
   @@map("character_preview_jobs")
+}
+
+model CharacterVisualProfile {
+  id                     String    @id @default(cuid())
+  characterId            String
+  version                Int       @default(1)
+  status                 String    @default("draft") // enum: draft | active | archived
+  style                  String    @default("realistic")
+  identityPrompt         String
+  negativeIdentityPrompt String?
+  faceTraits             Json
+  hairTraits             Json
+  bodyTraits             Json
+  signatureTraits        Json
+  styleTraits            Json
+  anchorAssetIds         Json
+  referenceAssetIds      Json
+  defaultSeed            String?
+  adapterRefs            Json
+  qualityScore           Float?
+  consistencyScore       Float?
+  createdFrom            String
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+  character              Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  @@unique([characterId, version])
+  @@index([characterId, status])
+  @@map("character_visual_profiles")
 }
 
 model Tag {
@@ -352,6 +388,11 @@ model GenerationJob {
   id                    String               @id @default(cuid())
   userId                String
   characterId           String?
+  visualProfileId       String?
+  visualProfileVersion  Int?
+  consistencyMode       String?
+  seed                  String?
+  referenceAssetIds     Json?
   derivedFromJobId      String?
   idempotencyKey        String?
   mode                  String // enum: image | video
@@ -369,6 +410,9 @@ model GenerationJob {
   status                String               @default("queued") // enum: queued | moderating_input | running | moderating_output | completed | failed | blocked | refunded
   costDreamcoins        Int                  @default(0)
   provider              String?
+  sourceType            String               @default("generator")
+  sourceId              String?
+  sourceMeta            Json?
   errorCode             String?
   createdAt             DateTime             @default(now())
   updatedAt             DateTime             @updatedAt
@@ -379,11 +423,15 @@ model GenerationJob {
   retryJobs             GenerationJob[]      @relation("GenerationRetry")
   assets                MediaAsset[]
   events                GenerationJobEvent[]
+  productionItems       ContentProductionItem[]
 
   @@unique([userId, idempotencyKey])
+  @@unique([sourceType, sourceId])
   @@index([userId, createdAt])
   @@index([derivedFromJobId])
   @@index([status])
+  @@index([sourceType])
+  @@index([visualProfileId, visualProfileVersion])
   @@index([profileId, profileVersion])
   @@index([promptTemplateId, promptTemplateVersion])
   @@map("generation_jobs")
@@ -428,6 +476,8 @@ model MediaAsset {
   sourceJob        GenerationJob?        @relation(fields: [sourceJobId], references: [id], onDelete: SetNull)
   likes            MediaLike[]
   collections      MediaCollectionItem[]
+  productionItems  ContentProductionItem[]
+  placements       MediaAssetPlacement[]
   characterImageOf Character[]           @relation("CharacterImage")
   templateCoverOf  CharacterTemplate[]   @relation("TemplateCover")
 
@@ -435,6 +485,87 @@ model MediaAsset {
   @@index([sourceJobId])
   @@index([characterId])
   @@map("media_assets")
+}
+
+model ContentProductionBatch {
+  id             String                  @id @default(cuid())
+  title          String
+  purpose        String // enum: character_cover | character_hero | character_chat | feed | homepage | seo | template_cover | campaign | model_eval
+  targetType     String                  @default("none") // enum: character | route_page | campaign | template | none
+  targetId       String?
+  profileId      String?
+  profileVersion Int?
+  recipeId       String?
+  recipeVersion  Int?
+  presetIds      Json
+  orientation    String?
+  brief          String?
+  count          Int                     @default(1)
+  totalItems     Int                     @default(0)
+  completedItems Int                     @default(0)
+  failedItems    Int                     @default(0)
+  approvedItems  Int                     @default(0)
+  estimatedCostDreamcoins Int            @default(0)
+  status         String                  @default("draft") // enum: draft | queued | reviewing | completed | archived
+  createdById    String
+  createdBy      User                    @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  items          ContentProductionItem[]
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+
+  @@index([purpose, status, createdAt])
+  @@index([targetType, targetId])
+  @@index([profileId, profileVersion])
+  @@index([recipeId, recipeVersion])
+  @@index([createdById])
+  @@map("content_production_batches")
+}
+
+model ContentProductionItem {
+  id           String                 @id @default(cuid())
+  batchId      String
+  jobId        String?                @unique
+  mediaAssetId String?                @unique
+  itemIndex    Int                    @default(0)
+  status       String                 @default("queued") // enum: queued | generated | approved | rejected | regenerate_requested | published | failed
+  reviewNote   String?
+  rating       Int?
+  tags         Json
+  reviewedById String?
+  reviewedAt   DateTime?
+  batch        ContentProductionBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  job          GenerationJob?         @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  mediaAsset   MediaAsset?            @relation(fields: [mediaAssetId], references: [id], onDelete: SetNull)
+  createdAt    DateTime               @default(now())
+  updatedAt    DateTime               @updatedAt
+
+  @@index([batchId, status])
+  @@index([mediaAssetId])
+  @@map("content_production_items")
+}
+
+model MediaAssetPlacement {
+  id           String     @id @default(cuid())
+  mediaAssetId String
+  slot         String // enum: character_avatar | character_hero | feed_card | homepage_strip | seo_article | template_cover | campaign
+  targetType   String
+  targetId     String
+  status       String     @default("draft") // enum: draft | scheduled | published | paused | archived
+  scheduledAt  DateTime?
+  publishedAt  DateTime?
+  pausedAt     DateTime?
+  archivedAt   DateTime?
+  createdById  String
+  metadata     Json
+  mediaAsset   MediaAsset @relation(fields: [mediaAssetId], references: [id], onDelete: Cascade)
+  createdBy    User       @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@index([mediaAssetId, status])
+  @@index([slot, targetType, targetId])
+  @@index([createdById])
+  @@map("media_asset_placements")
 }
 
 model MediaLike {
@@ -620,6 +751,68 @@ model Appeal {
   @@map("appeals")
 }
 
+model SupportRequest {
+  id                String    @id @default(cuid())
+  ticketId          String    @unique
+  userId            String
+  category          String
+  subject           String
+  description       String
+  diagnosticConsent Boolean   @default(true)
+  sourcePath        String?
+  status            String    @default("received") // enum: received | open | waiting_on_user | resolved | closed
+  priority          Int       @default(3)
+  assignedToId      String?
+  slaEscalatedAt    DateTime?
+  slaEscalatedById  String?
+  slaEscalationReason String?
+  resolutionNotes   String?
+  resolvedAt        DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  user              User      @relation("SupportRequester", fields: [userId], references: [id], onDelete: Cascade)
+  assignedTo        User?     @relation("SupportAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+
+  @@index([status, priority, createdAt])
+  @@index([category])
+  @@index([userId])
+  @@index([slaEscalatedAt])
+  @@index([assignedToId])
+  @@map("support_requests")
+}
+
+model ProductFeedbackItem {
+  id          String                @id @default(cuid())
+  sourceKey   String?               @unique
+  createdById String?
+  title       String
+  description String
+  category    String                @default("feature") // enum: bug | feature | improvement
+  status      String                @default("under_review") // enum: under_review | planned | shipped
+  voteCount   Int                   @default(0)
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+  createdBy   User?                 @relation("FeedbackCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  votes       ProductFeedbackVote[]
+
+  @@index([status, voteCount, createdAt])
+  @@index([createdById])
+  @@map("product_feedback_items")
+}
+
+model ProductFeedbackVote {
+  id        String              @id @default(cuid())
+  userId    String
+  itemId    String
+  createdAt DateTime            @default(now())
+  user      User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  item      ProductFeedbackItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, itemId])
+  @@index([itemId])
+  @@map("product_feedback_votes")
+}
+
 model PolicyVersion {
   id          String   @id @default(cuid())
   slug        String
@@ -663,7 +856,7 @@ model Referral {
   id             String   @id @default(cuid())
   inviterId      String
   inviteeId      String?
-  code           String   @unique
+  code           String
   status         String   @default("pending")
   subscriptionId String?
   rewardStatus   String   @default("none")
@@ -671,6 +864,8 @@ model Referral {
   inviter        User     @relation("Inviter", fields: [inviterId], references: [id], onDelete: Cascade)
   invitee        User?    @relation("Invitee", fields: [inviteeId], references: [id], onDelete: SetNull)
 
+  @@index([code])
+  @@index([inviteeId])
   @@index([inviterId])
   @@map("referrals")
 }
@@ -810,7 +1005,8 @@ model GenerationModelProfile {
   defaultHeight       Int       @default(1024)
   allowedOrientations Json
   steps               Int       @default(28)
-  sampler             String    @default("dpmpp_2m")
+  sampler             String    @default("dpm++2m")
+  scheduler           String    @default("model_default")
   cfgScale            Float     @default(7)
   negativeTemplateId  String?
   costMultiplier      Float     @default(1)

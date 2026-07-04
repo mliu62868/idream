@@ -352,6 +352,57 @@ describe("mock providers", () => {
     );
   });
 
+  it("passes reference images to the pipeline image provider", async () => {
+    vi.resetModules();
+    const fetchMock = vi.fn(async () =>
+      Response.json({
+        data: [{ b64_json: Buffer.from("image-bytes", "utf8").toString("base64") }],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    process.env = {
+      ...oldEnv,
+      IMAGE_PROVIDER: "pipeline",
+      PIPELINE_API_URL: "https://pipeline.internal.example.com",
+      PIPELINE_IMAGE_MODEL_DEFAULT: "image-model",
+    };
+
+    const { createProviderRegistry: createFreshRegistry } = await import("./index");
+    const registry = createFreshRegistry();
+    const image = await registry.image.generate({
+      prompt: "portrait",
+      count: 1,
+      referenceImages: [
+        {
+          assetId: "anchor-1",
+          role: "identity_anchor",
+          contentType: "image/webp",
+          width: 1024,
+          height: 1280,
+          weight: 1.25,
+          b64Json: Buffer.from("reference-image", "utf8").toString("base64"),
+        },
+      ],
+    });
+
+    const firstCall = fetchMock.mock.calls[0] as unknown as
+      | [Parameters<typeof fetch>[0], Parameters<typeof fetch>[1]]
+      | undefined;
+    if (!firstCall) throw new Error("fetch was not called");
+    const [, init] = firstCall;
+    const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    expect(requestBody.reference_images).toEqual([
+      expect.objectContaining({
+        assetId: "anchor-1",
+        asset_id: "anchor-1",
+        role: "identity_anchor",
+        weight: 1.25,
+        b64_json: Buffer.from("reference-image", "utf8").toString("base64"),
+      }),
+    ]);
+    expect(image.ok).toBe(true);
+  });
+
   it("can wire the pipeline voice provider", async () => {
     vi.resetModules();
     const fetchMock = vi.fn(async () =>
@@ -396,9 +447,79 @@ describe("mock providers", () => {
         body: expect.stringContaining('"voice":"mel"'),
       }),
     );
-    // Tone flows through as the OpenAI-compatible delivery instruction.
+    // Local OpenAI-compatible TTS gateways can accept `instructions` but produce
+    // degraded audio, so tone is not sent unless the deployment opts in.
+    const voiceBody = (fetchMock.mock.calls as unknown as Array<[unknown, RequestInit]>)[0]?.[1]?.body;
+    expect(voiceBody).not.toContain("instructions");
+  });
+
+  it("can opt into pipeline voice instructions for gateways that support them", async () => {
+    vi.resetModules();
+    const fetchMock = vi.fn(async () =>
+      Response.json({
+        key: "voice/result.mp3",
+        durationMs: 1234,
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    process.env = {
+      ...oldEnv,
+      VOICE_PROVIDER: "pipeline",
+      PIPELINE_API_URL: "https://pipeline.internal.example.com/v1",
+      PIPELINE_VOICE_API_URL: "https://moss-tts.internal.example.com/v1",
+      PIPELINE_API_TOKEN: "pipeline-token",
+      PIPELINE_VOICE_API_TOKEN: "voice-token",
+      PIPELINE_VOICE_MODEL_DEFAULT: "voice-model",
+      PIPELINE_VOICE_SEND_INSTRUCTIONS: "true",
+    };
+
+    const { createProviderRegistry: createFreshRegistry } = await import("./index");
+    const registry = createFreshRegistry();
+    await registry.voice.synthesize({
+      text: "hello",
+      voiceId: "mel",
+      tone: "Warm and intimate",
+    });
+
     const voiceBody = (fetchMock.mock.calls as unknown as Array<[unknown, RequestInit]>)[0]?.[1]?.body;
     expect(voiceBody).toContain('"instructions":"Warm and intimate"');
+  });
+
+  it("uses the voice-specific pipeline timeout for slow TTS", async () => {
+    vi.resetModules();
+    const fetchMock = vi.fn(
+      (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            const error = new Error("aborted");
+            error.name = "AbortError";
+            reject(error);
+          });
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    process.env = {
+      ...oldEnv,
+      VOICE_PROVIDER: "pipeline",
+      PIPELINE_API_URL: "https://pipeline.internal.example.com/v1",
+      PIPELINE_VOICE_API_URL: "https://moss-tts.internal.example.com/v1",
+      PIPELINE_API_TOKEN: "pipeline-token",
+      PIPELINE_VOICE_API_TOKEN: "voice-token",
+      PIPELINE_VOICE_MODEL_DEFAULT: "voice-model",
+      PIPELINE_TIMEOUT_MS: "60000",
+      PIPELINE_VOICE_TIMEOUT_MS: "300",
+    };
+
+    const { createProviderRegistry: createFreshRegistry } = await import("./index");
+    const registry = createFreshRegistry();
+    const started = Date.now();
+    const result = await registry.voice.synthesize({ text: "slow voice", voiceId: "mel" });
+
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "voice_timeout" },
+    });
   });
 
   it("omits the voice instructions field when no tone is provided", async () => {
@@ -431,7 +552,7 @@ describe("mock providers", () => {
   });
 
   it("stores binary pipeline voice responses with an extension matching the content type", async () => {
-    const audio = new Uint8Array([1, 2, 3, 4]);
+    const audio = wavBytes(1_000);
     const fetchMock = vi.fn(async () =>
       new Response(audio, {
         headers: {
@@ -472,6 +593,7 @@ describe("mock providers", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.data.key).toMatch(/^voice\/.+\.wav$/);
+      expect(result.data.durationMs).toBe(1_000);
     }
     expect(stored).toHaveLength(1);
     expect(stored[0]).toMatchObject({
@@ -479,6 +601,197 @@ describe("mock providers", () => {
     });
     expect(stored[0]?.key).toMatch(/^voice\/.+\.wav$/);
     expect(Array.from(stored[0]?.body ?? [])).toEqual(Array.from(audio));
+  });
+
+  it("splits long pipeline voice prompts and stores a merged WAV", async () => {
+    const audio = wavBytes(1_000);
+    const fetchMock = vi.fn(async () =>
+      new Response(audio, {
+        headers: {
+          "content-type": "audio/wav",
+        },
+      }),
+    );
+    const stored: Array<{ key: string; body: Uint8Array; contentType: string }> = [];
+    const blob: BlobStore = {
+      async putPrivate(input) {
+        stored.push({
+          key: input.key,
+          body: input.body,
+          contentType: input.contentType,
+        });
+        return { ok: true, data: { key: input.key, size: input.body.byteLength } };
+      },
+      async signGetUrl() {
+        return { ok: true, data: { url: "https://cdn.example.com/voice.wav" } };
+      },
+      async delete() {
+        return { ok: true, data: { deleted: true } };
+      },
+    };
+    const voice = new PipelineVoiceModel({
+      baseUrl: "https://moss-tts.internal.example.com/v1",
+      apiKey: "voice-token",
+      model: "voice-model",
+      maxInputCharsPerRequest: 45,
+      blob,
+      fetchImpl: fetchMock,
+    });
+
+    const result = await voice.synthesize({
+      text: "Oh, sweetie... That is clear. Second sentence is also clear and short.",
+      voiceId: "serena",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const requests = (fetchMock.mock.calls as unknown as Array<[unknown, RequestInit]>).map(
+      ([, init]) => {
+        const body = JSON.parse(String(init.body)) as { input: string; response_format: string };
+        return { input: body.input, response_format: body.response_format };
+      },
+    );
+    expect(requests).toEqual([
+      { input: "Oh, sweetie.", response_format: "wav" },
+      { input: "That is clear.", response_format: "wav" },
+      { input: "Second sentence is also clear and short.", response_format: "wav" },
+    ]);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.key).toMatch(/^voice\/.+\.wav$/);
+      expect(result.data.durationMs).toBe(3_360);
+    }
+    expect(stored).toHaveLength(1);
+    expect(stored[0]?.contentType).toBe("audio/wav");
+    expect(Buffer.from(stored[0]?.body ?? []).subarray(0, 4).toString("ascii")).toBe("RIFF");
+  });
+
+  it("trims overlong pipeline voice prompts at sentence boundaries before synthesis", async () => {
+    const audio = wavBytes(1_000);
+    const fetchMock = vi.fn(async () =>
+      new Response(audio, {
+        headers: {
+          "content-type": "audio/wav",
+        },
+      }),
+    );
+    const blob: BlobStore = {
+      async putPrivate(input) {
+        return { ok: true, data: { key: input.key, size: input.body.byteLength } };
+      },
+      async signGetUrl() {
+        return { ok: true, data: { url: "https://cdn.example.com/voice.wav" } };
+      },
+      async delete() {
+        return { ok: true, data: { deleted: true } };
+      },
+    };
+    const voice = new PipelineVoiceModel({
+      baseUrl: "https://moss-tts.internal.example.com/v1",
+      apiKey: "voice-token",
+      model: "voice-model",
+      maxInputChars: 24,
+      maxInputCharsPerRequest: 0,
+      blob,
+      fetchImpl: fetchMock,
+    });
+
+    const result = await voice.synthesize({
+      text: "First sentence fits. Second sentence should be dropped. Third sentence should also be dropped.",
+      voiceId: "serena",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const request = (fetchMock.mock.calls as unknown as Array<[unknown, RequestInit]>).map(
+      ([, init]) => JSON.parse(String(init.body)) as { input: string },
+    )[0];
+    expect(request?.input).toBe("First sentence fits.");
+    expect(result.ok).toBe(true);
+  });
+
+  it("defaults pipeline voice to max-length sentence trimming without chunking", async () => {
+    const audio = wavBytes(1_000);
+    const fetchMock = vi.fn(async () =>
+      new Response(audio, {
+        headers: {
+          "content-type": "audio/wav",
+        },
+      }),
+    );
+    const blob: BlobStore = {
+      async putPrivate(input) {
+        return { ok: true, data: { key: input.key, size: input.body.byteLength } };
+      },
+      async signGetUrl() {
+        return { ok: true, data: { url: "https://cdn.example.com/voice.wav" } };
+      },
+      async delete() {
+        return { ok: true, data: { deleted: true } };
+      },
+    };
+    const firstSentence = `${"steady ".repeat(100).trim()}.`;
+    const secondSentence = `${"tail ".repeat(100).trim()}.`;
+    const voice = new PipelineVoiceModel({
+      baseUrl: "https://moss-tts.internal.example.com/v1",
+      apiKey: "voice-token",
+      model: "voice-model",
+      blob,
+      fetchImpl: fetchMock,
+    });
+
+    const result = await voice.synthesize({
+      text: `${firstSentence} ${secondSentence}`,
+      voiceId: "serena",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const request = (fetchMock.mock.calls as unknown as Array<[unknown, RequestInit]>).map(
+      ([, init]) => JSON.parse(String(init.body)) as { input: string },
+    )[0];
+    expect(request?.input).toBe(firstSentence);
+    expect(result.ok).toBe(true);
+  });
+
+  it("trims an overlong first sentence at clause boundaries", async () => {
+    const audio = wavBytes(1_000);
+    const fetchMock = vi.fn(async () =>
+      new Response(audio, {
+        headers: {
+          "content-type": "audio/wav",
+        },
+      }),
+    );
+    const blob: BlobStore = {
+      async putPrivate(input) {
+        return { ok: true, data: { key: input.key, size: input.body.byteLength } };
+      },
+      async signGetUrl() {
+        return { ok: true, data: { url: "https://cdn.example.com/voice.wav" } };
+      },
+      async delete() {
+        return { ok: true, data: { deleted: true } };
+      },
+    };
+    const voice = new PipelineVoiceModel({
+      baseUrl: "https://moss-tts.internal.example.com/v1",
+      apiKey: "voice-token",
+      model: "voice-model",
+      maxInputChars: 43,
+      maxInputCharsPerRequest: 0,
+      blob,
+      fetchImpl: fetchMock,
+    });
+
+    const result = await voice.synthesize({
+      text: "First clause fits, second clause would exceed the configured voice limit.",
+      voiceId: "serena",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const request = (fetchMock.mock.calls as unknown as Array<[unknown, RequestInit]>).map(
+      ([, init]) => JSON.parse(String(init.body)) as { input: string },
+    )[0];
+    expect(request?.input).toBe("First clause fits,");
+    expect(result.ok).toBe(true);
   });
 
   it("can wire Go.cam age verification through the gateway provider", async () => {
@@ -555,3 +868,26 @@ describe("mock providers", () => {
     );
   });
 });
+
+function wavBytes(durationMs: number) {
+  const sampleRate = 8_000;
+  const channels = 1;
+  const bitsPerSample = 16;
+  const samples = Math.max(1, Math.floor((sampleRate * durationMs) / 1_000));
+  const dataSize = samples * channels * (bitsPerSample / 8);
+  const buffer = Buffer.alloc(44 + dataSize);
+  buffer.write("RIFF", 0, "ascii");
+  buffer.writeUInt32LE(36 + dataSize, 4);
+  buffer.write("WAVE", 8, "ascii");
+  buffer.write("fmt ", 12, "ascii");
+  buffer.writeUInt32LE(16, 16);
+  buffer.writeUInt16LE(1, 20);
+  buffer.writeUInt16LE(channels, 22);
+  buffer.writeUInt32LE(sampleRate, 24);
+  buffer.writeUInt32LE(sampleRate * channels * (bitsPerSample / 8), 28);
+  buffer.writeUInt16LE(channels * (bitsPerSample / 8), 32);
+  buffer.writeUInt16LE(bitsPerSample, 34);
+  buffer.write("data", 36, "ascii");
+  buffer.writeUInt32LE(dataSize, 40);
+  return new Uint8Array(buffer);
+}

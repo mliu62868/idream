@@ -11,6 +11,10 @@ export type PermissionKey =
   | "content.official.write"
   | "content.template.write"
   | "content.tag.write"
+  | "content.production.write"
+  | "content.asset.read"
+  | "content.asset.review"
+  | "content.placement.write"
   | "generation.job.read"
   | "generation.job.requeue"
   | "generation.config.read"
@@ -23,6 +27,8 @@ export type PermissionKey =
   | "config.pricing.write"
   | "ops.queue.read"
   | "ops.deadletter.write"
+  | "support.request.read"
+  | "support.request.write"
   | "support.plaintext.view"
   | "audit.read"
   | "analytics.export"
@@ -46,6 +52,10 @@ export const ROLE_PERMISSIONS: Record<ActorRole, readonly PermissionKey[]> = {
     "content.official.write",
     "content.template.write",
     "content.tag.write",
+    "content.production.write",
+    "content.asset.read",
+    "content.asset.review",
+    "content.placement.write",
     "generation.job.read",
     "generation.job.requeue",
     "generation.config.read",
@@ -58,6 +68,8 @@ export const ROLE_PERMISSIONS: Record<ActorRole, readonly PermissionKey[]> = {
     "config.pricing.write",
     "ops.queue.read",
     "ops.deadletter.write",
+    "support.request.read",
+    "support.request.write",
     "support.plaintext.view",
     "audit.read",
     "analytics.export",
@@ -77,6 +89,7 @@ export const ROLE_PERMISSIONS: Record<ActorRole, readonly PermissionKey[]> = {
     "content.official.write",
     "content.template.write",
     "content.tag.write",
+    "content.asset.read",
     "content.cms.write",
     "generation.job.read",
     "safety.review.read",
@@ -88,8 +101,11 @@ export const ROLE_PERMISSIONS: Record<ActorRole, readonly PermissionKey[]> = {
     "dashboard.read",
     "user.read",
     "content.read",
+    "content.asset.read",
     "generation.job.read",
     "billing.read",
+    "support.request.read",
+    "support.request.write",
     "support.plaintext.view",
     "growth.promo.read",
     "chat.ops.read",
@@ -102,6 +118,10 @@ export const ROLE_PERMISSIONS: Record<ActorRole, readonly PermissionKey[]> = {
     "generation.job.read",
     "generation.job.requeue",
     "generation.config.read",
+    "content.production.write",
+    "content.asset.read",
+    "content.asset.review",
+    "content.placement.write",
     "config.feature_flag.write",
     "ops.queue.read",
     "ops.deadletter.write",

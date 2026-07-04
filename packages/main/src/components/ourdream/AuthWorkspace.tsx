@@ -2,6 +2,8 @@
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { ArrowRight } from "lucide-react";
+import Link from "next/link";
+import { authHrefForTarget, safeInternalAuthRedirect } from "./authRedirect";
 
 type MeResponse = {
   ok: boolean;
@@ -18,6 +20,9 @@ export function AuthWorkspace({
   const [name, setName] = useState("");
   const [status, setStatus] = useState("");
   const [pending, setPending] = useState(false);
+  const [loginRecoveryHref, setLoginRecoveryHref] = useState("/login");
+  const shouldShowSignupLoginRecovery =
+    mode === "signup" && status === "Email already registered";
 
   const redirectIfAlreadyAuthenticated = useCallback(async () => {
     try {
@@ -25,7 +30,7 @@ export function AuthWorkspace({
       if (!response.ok) return false;
       const payload = (await response.json()) as MeResponse;
       if (!payload.ok || !payload.data?.user) return false;
-      window.location.replace("/");
+      window.location.replace(authRedirectTarget());
       return true;
     } catch {
       return false;
@@ -35,6 +40,10 @@ export function AuthWorkspace({
   useEffect(() => {
     void redirectIfAlreadyAuthenticated();
   }, [redirectIfAlreadyAuthenticated]);
+
+  useEffect(() => {
+    setLoginRecoveryHref(authLoginRecoveryHref());
+  }, []);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -63,7 +72,7 @@ export function AuthWorkspace({
         setStatus(payload.error?.message ?? "Authentication failed");
         return;
       }
-      window.location.replace("/");
+      window.location.replace(authRedirectTarget());
     } catch {
       // Network/parse failure: surface it and let the finally re-enable the button.
       setStatus("Network error. Please check your connection and try again.");
@@ -128,12 +137,46 @@ export function AuthWorkspace({
             <ArrowRight className="h-4 w-4" />
           </button>
           {status && (
-            <p className="mt-4 text-[13px] font-medium text-[rgb(170,170,170)]">
-              {status}
-            </p>
+            <div className="mt-4 space-y-2">
+              <p className="text-[13px] font-medium text-[rgb(170,170,170)]">
+                {status}
+              </p>
+              {mode === "login" && (
+                <p className="text-[13px] font-medium text-[rgb(170,170,170)]">
+                  Need account help?{" "}
+                  <Link
+                    className="font-black text-white underline decoration-white/30 underline-offset-4 hover:decoration-white"
+                    href="/helpdesk"
+                  >
+                    Contact Help Desk
+                  </Link>
+                </p>
+              )}
+              {shouldShowSignupLoginRecovery && (
+                <p className="text-[13px] font-medium text-[rgb(170,170,170)]">
+                  Already registered?{" "}
+                  <Link
+                    className="font-black text-white underline decoration-white/30 underline-offset-4 hover:decoration-white"
+                    href={loginRecoveryHref}
+                  >
+                    Log in instead
+                  </Link>
+                </p>
+              )}
+            </div>
           )}
         </form>
       </div>
     </section>
   );
+}
+
+function authRedirectTarget() {
+  const next = new URLSearchParams(window.location.search).get("next");
+  return safeInternalAuthRedirect(next, window.location.origin);
+}
+
+function authLoginRecoveryHref() {
+  const target = authRedirectTarget();
+  return target === "/" ? "/login" : authHrefForTarget("/login", target);
 }

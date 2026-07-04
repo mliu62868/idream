@@ -7,6 +7,8 @@ import type { CharacterCardData } from "@/types/ourdream";
 
 export function CharacterGrid({
   cards = characterCards,
+  emptyDescription = "Try another search term, clear a category, or switch the gender, style, and age filters.",
+  emptyTitle = "No characters found",
   error = null,
   hasMore = false,
   loading = true,
@@ -15,6 +17,8 @@ export function CharacterGrid({
   onRetry,
 }: Readonly<{
   cards?: CharacterCardData[];
+  emptyDescription?: string;
+  emptyTitle?: string;
   error?: string | null;
   hasMore?: boolean;
   loading?: boolean;
@@ -27,7 +31,7 @@ export function CharacterGrid({
       <div className="grid grid-cols-2 gap-2 md:grid-cols-5 md:gap-3">
         {cards.map((card, index) => (
           <div key={card.id} className="contents">
-            <CharacterCard card={card} />
+            <CharacterCard card={card} imageLoading={index < 10 ? "eager" : "lazy"} />
             {index === 5 && (
               <Link
                 aria-label="75% Pride Sale — upgrade"
@@ -72,11 +76,10 @@ export function CharacterGrid({
       {!loading && !error && cards.length === 0 && (
         <div className="flex min-h-64 flex-col items-center justify-center rounded-[16px] border border-white/10 bg-[rgb(18,18,18)] px-6 py-12 text-center">
           <h2 className="text-[18px] font-black uppercase leading-6 text-white">
-            No characters found
+            {emptyTitle}
           </h2>
           <p className="mt-3 max-w-sm text-[13px] font-medium leading-6 text-[rgb(170,170,170)]">
-            Try another search term, clear a category, or switch the gender,
-            style, and age filters.
+            {emptyDescription}
           </p>
         </div>
       )}

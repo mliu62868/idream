@@ -22,6 +22,9 @@ const serverPath = path.join(
 
 loadEnv(path.join(packageDir, ".env"));
 
+process.env.IDREAM_REPO_ROOT ??= repoRoot;
+process.env.ADMIN_MODEL_LIBRARY_DIR ??= path.join(repoRoot, "data", "model-imports");
+
 if (!existsSync(serverPath)) {
   throw new Error(`Missing standalone server output for ${packagePath}`);
 }

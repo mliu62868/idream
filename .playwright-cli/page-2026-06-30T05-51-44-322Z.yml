@@ -1,0 +1,11 @@
+- generic [active] [ref=e1]:
+  - main [ref=e2]:
+    - generic [ref=e3]:
+      - complementary [ref=e4]:
+        - generic [ref=e6]:
+          - paragraph [ref=e7]: iDream Admin
+          - paragraph [ref=e8]: loading
+      - generic [ref=e23]:
+        - heading "Admin" [level=1] [ref=e24]
+        - paragraph [ref=e25]: loading
+  - alert [ref=e28]

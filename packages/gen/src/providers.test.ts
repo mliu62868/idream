@@ -76,6 +76,53 @@ describe("PipelineImageModel", () => {
     expect(new TextDecoder().decode(result.data.assets[0].body)).toBe("image-bytes");
   });
 
+  it("sends hydrated reference images to the pipeline image endpoint", async () => {
+    process.env.GEN_IMAGE_PROVIDER = "pipeline";
+    process.env.PIPELINE_API_URL = "https://pipeline.test";
+    const fetchMock = vi.fn(async () =>
+      Response.json({
+        data: [{ b64_json: Buffer.from("image-bytes", "utf8").toString("base64") }],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await providers.image.generate({
+      prompt: "portrait",
+      count: 1,
+      model: "profile_image_default_v1",
+      referenceImages: [
+        {
+          assetId: "anchor-1",
+          role: "identity_anchor",
+          contentType: "image/webp",
+          width: 1024,
+          height: 1280,
+          weight: 1.25,
+          b64Json: Buffer.from("reference-image", "utf8").toString("base64"),
+        },
+      ],
+    });
+
+    const firstCall = fetchMock.mock.calls[0] as unknown as
+      | [Parameters<typeof fetch>[0], Parameters<typeof fetch>[1]]
+      | undefined;
+    if (!firstCall) throw new Error("fetch was not called");
+    const [, init] = firstCall;
+    const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    expect(requestBody.reference_images).toEqual([
+      expect.objectContaining({
+        assetId: "anchor-1",
+        asset_id: "anchor-1",
+        role: "identity_anchor",
+        weight: 1.25,
+        contentType: "image/webp",
+        content_type: "image/webp",
+        b64_json: Buffer.from("reference-image", "utf8").toString("base64"),
+      }),
+    ]);
+    expect(result.ok).toBe(true);
+  });
+
   it("parses pipeline asset URLs and clamps assets to the requested count", async () => {
     process.env.GEN_IMAGE_PROVIDER = "pipeline";
     process.env.PIPELINE_API_URL = "https://pipeline.test/custom-endpoint";
@@ -145,6 +192,32 @@ describe("PipelineImageModel", () => {
       profileId: "profile_image_default_v1",
       size: "512x512",
     });
+  });
+
+  it("infers PNG content type from base64 bytes when the pipeline omits metadata", async () => {
+    process.env.GEN_IMAGE_PROVIDER = "pipeline";
+    process.env.PIPELINE_API_URL = "https://pipeline.test";
+    const pngBytes = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    ]);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          data: [{ b64_json: pngBytes.toString("base64") }],
+        }),
+      ),
+    );
+
+    const result = await providers.image.generate({
+      prompt: "portrait",
+      count: 1,
+      model: "profile_image_default_v1",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.assets[0]?.contentType).toBe("image/png");
   });
 
   it("treats empty success responses as retryable internal failures", async () => {

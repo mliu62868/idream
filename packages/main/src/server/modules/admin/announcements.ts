@@ -16,6 +16,7 @@ const PROMO_READ = "growth.promo.read" as const;
 const PROMO_WRITE = "growth.promo.write" as const;
 
 const levelEnum = z.enum(["info", "promo", "warning"]);
+const safeExternalHrefRe = /^(https?:)?\/\//i;
 
 const createSchema = z.object({
   title: z.string().trim().min(1).max(160),
@@ -51,6 +52,7 @@ export async function createAnnouncement(request: Request): Promise<Response> {
   const actor = await actorWithPermission(request, PROMO_WRITE);
   const body = createSchema.parse(await jsonBody(request));
   if (body.confirmation !== "ANNOUNCE") throw Errors.badRequest("Confirmation did not match");
+  const href = normalizeAnnouncementHref(body.href);
   const items = await readAnnouncements();
   const announcement: Announcement = {
     id: randomUUID(),
@@ -60,7 +62,7 @@ export async function createAnnouncement(request: Request): Promise<Response> {
     active: body.active,
     startsAt: body.startsAt ?? null,
     endsAt: body.endsAt ?? null,
-    href: body.href ?? null,
+    href,
     createdAt: new Date().toISOString(),
   };
   await writeAnnouncements([announcement, ...items]);
@@ -92,7 +94,7 @@ export async function patchAnnouncement(request: Request, id: string): Promise<R
     active: body.active ?? before.active,
     startsAt: body.startsAt === undefined ? before.startsAt : body.startsAt,
     endsAt: body.endsAt === undefined ? before.endsAt : body.endsAt,
-    href: body.href === undefined ? before.href : body.href,
+    href: body.href === undefined ? before.href : normalizeAnnouncementHref(body.href),
   };
   const next = [...items];
   next[index] = updated;
@@ -120,4 +122,12 @@ export async function deleteAnnouncement(request: Request, id: string): Promise<
     targetId: id,
   });
   return ok({ deleted: true });
+}
+
+function normalizeAnnouncementHref(value: string | null | undefined) {
+  if (value == null) return null;
+  const href = value.trim();
+  if (!href) return null;
+  if (href.startsWith("/") || safeExternalHrefRe.test(href)) return href;
+  throw Errors.badRequest("Announcement link must be an internal path or http(s) URL");
 }

@@ -29,6 +29,27 @@ const voice = process.env.VOICE_MODEL_PROBE_VOICE_ID ?? defaultVoiceForModel(voi
 
 mkdirSync(path.join(repoRoot, ".tmp"), { recursive: true });
 
+if (voiceModel.toLowerCase().includes("kokoro")) {
+  const prepare = spawnSync(
+    process.execPath,
+    [
+      path.join(repoRoot, "scripts", "prepare-omlx-kokoro.mjs"),
+      "--model",
+      voiceModel,
+      "--fail-if-changed",
+    ],
+    {
+      cwd: repoRoot,
+      env: process.env,
+      stdio: "inherit",
+    },
+  );
+  if ((prepare.status ?? 1) !== 0) {
+    process.exitCode = prepare.status ?? 1;
+    process.exit();
+  }
+}
+
 const passthrough = process.argv.slice(2);
 const probeArgs = [
   "run",
@@ -76,5 +97,8 @@ function trimTrailingSlash(value) {
 }
 
 function defaultVoiceForModel(model) {
-  return model.toLowerCase().includes("qwen3-tts") ? "serena" : "default";
+  const normalized = model.toLowerCase();
+  if (normalized.includes("qwen3-tts")) return "serena";
+  if (normalized.includes("kokoro")) return "af_heart";
+  return "default";
 }

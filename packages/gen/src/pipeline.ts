@@ -22,8 +22,10 @@ import {
 } from "@idream/shared/contracts";
 import { mockVideoMp4Bytes } from "@idream/shared";
 import { env } from "./env";
+import { assertGeneratedImageSanity, GeneratedImageSanityError } from "./generated-image-sanity";
 import { type GenProviders, providers as defaultProviders } from "./providers";
 import type { EnqueueFn, JsonPayload } from "./queue";
+import { hydratedImageReferenceInputs } from "./reference-images";
 
 const placeholderImagePng = Uint8Array.from(
   Buffer.from(
@@ -122,6 +124,10 @@ export async function processImageGenerate(
     return;
   }
 
+  const referenceImages = await hydratedImageReferenceInputs(
+    payload.referenceImages,
+    providers.blob,
+  );
   const result = await providers.image.generate({
     prompt: payload.prompt,
     count: payload.count,
@@ -131,6 +137,7 @@ export async function processImageGenerate(
     controls: payload.controls,
     requestId: payload.requestId,
     orientation: payload.orientation,
+    ...(referenceImages.length > 0 ? { referenceImages } : {}),
   });
 
   if (!result.ok) {
@@ -154,16 +161,34 @@ export async function processImageGenerate(
     return;
   }
 
-  let assets: Array<{ key: string; width: number; height: number; contentType: string }>;
+  let assets: Array<{
+    key: string;
+    width: number;
+    height: number;
+    contentType: string;
+    providerKey: string | null;
+  }>;
   try {
     assets = await Promise.all(
       result.data.assets.map(async (asset, index) => {
-        const key = asset.key || `${payload.outputPrefix}${index}.webp`;
         const hasProviderMedia = Boolean(asset.body || asset.sourceUrl);
         const contentType = hasProviderMedia ? (asset.contentType ?? "image/webp") : "image/png";
+        const key = generatedAssetStorageKey(
+          payload.outputPrefix,
+          `image-${index + 1}`,
+          contentType,
+          ".png",
+        );
+        const body = await imageAssetBody(asset);
+        if (hasProviderMedia) {
+          assertGeneratedImageSanity(
+            Buffer.from(body),
+            `${payload.generationJobId} asset ${index + 1}`,
+          );
+        }
         const persisted = await providers.blob.putPrivate({
           key,
-          body: await imageAssetBody(asset),
+          body,
           contentType,
         });
         if (!persisted.ok) throw new Error(persisted.error.message);
@@ -172,6 +197,7 @@ export async function processImageGenerate(
           width: asset.width,
           height: asset.height,
           contentType,
+          providerKey: asset.key ?? null,
         };
       }),
     );
@@ -180,7 +206,7 @@ export async function processImageGenerate(
     await enqueueGenerationFailed(
       deps,
       payload,
-      "asset_persist_failed",
+      error instanceof GeneratedImageSanityError ? error.code : "asset_persist_failed",
       error instanceof Error ? error.message : "Generated asset persistence failed",
     );
     return;
@@ -275,8 +301,8 @@ export async function processVideoGenerate(
     return;
   }
 
-  const assetKey = result.data.asset.key || `${payload.outputPrefix}video.mp4`;
   const contentType = result.data.asset.contentType ?? "video/mp4";
+  const assetKey = generatedAssetStorageKey(payload.outputPrefix, "video", contentType, ".mp4");
   try {
     const persisted = await providers.blob.putPrivate({
       key: assetKey,
@@ -308,6 +334,7 @@ export async function processVideoGenerate(
           key: assetKey,
           seconds: result.data.asset.seconds,
           contentType,
+          providerKey: result.data.asset.key ?? null,
         },
       ],
       usage: { gpuSeconds: payload.seconds * 2, model: payload.model },
@@ -342,4 +369,25 @@ async function videoAssetBody(
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function mediaFileExtension(contentType: string | undefined) {
+  const extensions: Record<string, string> = {
+    "image/gif": ".gif",
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "video/mp4": ".mp4",
+    "video/webm": ".webm",
+  };
+  return contentType ? (extensions[contentType] ?? "") : "";
+}
+
+function generatedAssetStorageKey(
+  outputPrefix: string,
+  name: string,
+  contentType: string | undefined,
+  fallbackExtension: string,
+) {
+  return `${outputPrefix}${name}${mediaFileExtension(contentType) || fallbackExtension}`;
 }

@@ -1,6 +1,6 @@
 # Ourdream.ai Clone Product Requirements Document
 
-更新日期：2026-06-28
+更新日期：2026-07-03
 
 > **本文档是目标产品规格参考（需求 / 信息架构 / 功能地图 / 转化漏斗），不描述实现进度。**
 > 当前真实实现状态以 [`CURRENT_FUNCTIONAL_COVERAGE.md`](./CURRENT_FUNCTIONAL_COVERAGE.md) 为单一事实来源（SSoT），请勿在本文重新加入逐行实现状态列。
@@ -18,7 +18,7 @@ Ourdream.ai 是一个 18+ AI 角色扮演与 AI 伴侣平台，核心价值是�
 - 海量 AI 角色和场景可探索。
 - 用户可以通过多步向导创建自定义 AI 伴侣，定义性别、风格、外观、发型、体型、名称、tags 和高级设定。
 - 用户可以与公开或私有角色进行长上下文角色扮演聊天。
-- 用户可以围绕角色或 Freeplay 生成图片和视频，并管理 Images、Videos、Liked gallery。
+- 用户可以围绕角色或 Freeplay 生成图片；Video 进入当前发布范围时可生成视频，并管理 Images、Liked 以及条件启用的 Videos gallery。
 - Premium/Deluxe 订阅通过无限消息、每月 dreamcoin、高级模型/记忆和高级控制提升体验。**生成（图片/视频/语音）统一消耗 dreamcoin，不设独立配额**，口径见 `ECONOMY_AND_PRICING.md`。
 - 平台必须具备 18+ 年龄门槛、部分场景下的身份年龄验证、安全规则、隐私保护、内容举报、申诉和帮助支持。
 
@@ -30,7 +30,7 @@ Ourdream.ai 是一个 18+ AI 角色扮演与 AI 伴侣平台，核心价值是�
 | 角色探索用户 | 找到想互动的 AI 角色 | 搜索、排序、筛选、分类、角色卡详情、热度指标 |
 | 角色扮演用户 | 与角色进行持续对话 | 私密聊天、上下文记忆、聊天历史、场景延续、重新生成回复 |
 | 创作者 | 创建自定义角色或故事场景 | 多步草稿、外观、tags、高级详情、预览、发布或私有保存 |
-| 生成用户 | 为角色生成图片/视频 | 角色/Freeplay、模式切换、preset、背景、姿势、服装、自定义提示词、图库管理 |
+| 生成用户 | 为角色生成图片；Video 启用时生成视频 | 角色/Freeplay、模式切换、preset、背景、姿势、服装、自定义提示词、图库管理 |
 | Premium/Deluxe 用户 | 获得更高额度和高级能力 | 订阅、dreamcoin、无限消息、高级生成、语音额度、模型/记忆增强、续费与取消 |
 | 社区用户 | 浏览创作者和公共内容 | Feed、Community、Chat、Remix、Like、Share、Report、创作者榜单 |
 | SEO 访问者 | 从长尾内容页进入平台 | 指南、类型页、比较页、视频/生成器落地页、CTA |
@@ -53,7 +53,7 @@ Ourdream.ai 是一个 18+ AI 角色扮演与 AI 伴侣平台，核心价值是�
 - 桌面左侧导航：Create、Explore、Chat、Generate、My AI、Feed、Community。
 - 次级入口：Help Desk、Safety Center、Discord、More。
 - 用户入口：Login、Join Free、Profile、Upgrade。
-- Profile：余额、订阅、兑换码、推荐奖励、偏好/通知、语言、法律、账号管理。
+- Profile：余额、订阅、兑换码、推荐奖励、偏好/通知、法律、账号管理；语言切换仅在未来接入真实 i18n 后启用。
 - 移动端：顶部菜单和底部导航 Explore、Chat、Create、Generate。
 - Footer：Learn、Popular、Help、公司信息和社交链接。
 - 促销：桌面右下浮层和移动顶部 banner。
@@ -68,7 +68,7 @@ Ourdream.ai 是一个 18+ AI 角色扮演与 AI 伴侣平台，核心价值是�
 | Home / Explore | `/` | 角色发现、搜索筛选、推荐流、SEO FAQ、转注册 |
 | Marketing | `/chat`、`/ai-girlfriend`、`/ai-boyfriend`、`/affiliate`、`/login`、`/signup` | 产品解释、转化 CTA、角色展示、功能价值说明 |
 | Create | `/create` | 多步角色创建器、preview generation、final submit |
-| Generator | `/generate`、`/generate/*`、`/generator/*` | 图片/视频生成器、preset 配置、图库管理和生成器 SEO 落地页 |
+| Generator | `/generate`、`/generate/*`、`/generator/*` | 图片生成器、条件启用的视频生成、preset 配置、图库管理和生成器 SEO 落地页 |
 | Profile | `/custom`、`/profile` | 用户内容库、账号设置、余额、推荐和偏好 |
 | Feed / Community | `/feed`、`/community` | 内容流、互动、举报、社区榜单和 collections |
 | Library | `/resources-hub`、`/type`、`/videos`、`/games`、`/romantasy` | 内容索引和分类入口 |
@@ -102,7 +102,7 @@ Ourdream.ai 是一个 18+ AI 角色扮演与 AI 伴侣平台，核心价值是�
 | EX-02 | 支持排序和 feed/ranking 模式，如 For You、Popular、Newest、Following，并保留当前 period label。 | P0 |
 | EX-03 | 支持搜索角色、指南和生成器。 | P0 |
 | EX-04 | 支持性别、风格、年龄筛选。 | P0 |
-| EX-05 | 支持分类 chips，如 Group Chats、Romantic、Slow Burn、Cosplay 等。 | P0 |
+| EX-05 | 支持内容驱动的分类 chips，如 Romantic、Slow Burn、Cosplay 等；Group Chats/Packs 等当前 beta 延后域不作为空结果死 chip 展示，除非未来已有公开可浏览内容。 | P0 |
 | EX-06 | 角色卡点击进入角色详情或聊天启动页。 | P0 |
 | EX-07 | 支持无限加载、分页或虚拟列表。 | P1 |
 | EX-08 | 在推荐流中插入促销卡或活动卡。 | P1 |
@@ -140,36 +140,40 @@ Ourdream.ai 是一个 18+ AI 角色扮演与 AI 伴侣平台，核心价值是�
 | CR-08 | 用户点击 final CTA 后生成角色，保存到 My AI，并可设为公开或私有。 | P0 |
 | CR-09 | 创建流程应校验年龄、禁止内容、真实人物、现有 IP、非同意框架和规避尝试。 | P0 |
 
-### 6.5 图片与视频生成器
+### 6.5 图片生成器与条件 Video
+
+> 当前 beta 的默认可见范围是 Image 生成；Video 是目标能力，但只有在 `video_gen` 功能位、entitlement、video model/provider 与 launch gate 同时满足时才暴露。关闭态不能显示不可点击的 `Video Beta` / `Videos` 死入口。
 
 | ID | 需求 | 优先级 |
 | --- | --- | --- |
-| GN-01 | 支持 Image 和 Video 模式切换。 | P0 |
+| GN-01 | 支持 Image，并在 Video 进入当前发布范围时支持 Image / Video 模式切换。 | P0 |
 | GN-02 | 生成前必须选择 Character 或 Freeplay。 | P0 |
 | GN-03 | 支持 Mode Presets，并包含 Presets 和 Image Edit 模式。 | P1 |
 | GN-04 | 支持 Background、Pose、Outfit preset，preset 来源包含内置、My Presets、Community、Custom。 | P1 |
-| GN-05 | Image 和 Video 模式字段不同：Video 模式不显示 Pose，并可标注 new model。 | P1 |
+| GN-05 | Video 启用时，Image 和 Video 模式字段不同：Video 模式不显示 Pose，并可标注 new model。 | P1 |
 | GN-06 | Custom Prompt 和 Negative Prompt 为 Premium 或高级能力，应显示锁定/升级状态。 | P1 |
 | GN-07 | Advanced Settings 支持模型/风格、orientation、数量等配置。 | P1 |
 | GN-08 | 用户点击 Generate 后创建异步任务并展示 loading/progress。 | P0 |
-| GN-09 | 生成结果进入 Images、Videos、Liked gallery。 | P0 |
+| GN-09 | 生成结果进入 Images、Liked gallery；Video 启用时进入 Videos gallery。 | P0 |
 | GN-10 | 用户可保存、喜欢、删除、下载、筛选或批量管理生成结果。 | P1 |
 | GN-11 | 失败时展示原因、是否扣费和重试入口。 | P1 |
 | GN-12 | 生成内容必须通过安全过滤、账户额度和 dreamcoin 校验。 | P0 |
+| GN-13 | Character 模式下默认使用角色视觉身份快照，保持同一角色在不同场景、姿势、服装和 Chat 上下文中的长相一致。详见 [`CHARACTER_CONSISTENT_IMAGE_GENERATION_PRD.md`](./CHARACTER_CONSISTENT_IMAGE_GENERATION_PRD.md)。 | P0 |
+| GN-14 | 用户可将满意生成图设为角色主图，或加入角色 identity references，用于后续生成一致性。 | P1 |
 
 ### 6.6 My AI、Profile、Feed、Community
 
 | ID | 需求 | 优先级 |
 | --- | --- | --- |
-| PF-01 | My AI 展示 Recent、Characters、Group Chats、Packs、Presets、Created，并支持 search。 | P0 |
+| PF-01 | My AI 展示 Recent、Characters、Presets、Created，并支持 search；Group Chats/Packs 在当前 beta 仅作为明确空态 tab 呈现，不冒充已实现内容域。 | P0 |
 | PF-02 | 用户可继续最近会话。 | P0 |
 | PF-03 | 用户可管理自建角色：编辑、复制、删除、发布、设为私有。 | P1 |
-| PF-04 | Profile 展示余额、订阅、兑换码、推荐奖励、偏好通知、语言、法律和账号管理入口。 | P0 |
+| PF-04 | Profile 展示余额、订阅、兑换码、推荐奖励、偏好通知、法律和账号管理入口；语言切换仅在未来接入真实 i18n 后启用。 | P0 |
 | PF-05 | Feed 展示用户或平台推荐内容流，并提供 Chat、Remix、Like、Share、Report。 | P1 |
 | PF-06 | Community 展示 banner carousel、Dreamers/Characters/Collections、Featured/Top leaderboard 和 release/gender/style filters。 | P1 |
 | PF-07 | 支持点赞、收藏、关注、举报和分享。 | P1 |
 
-> **未定义产品域（V1.1 / 暂不实现）**：Group Chats、Packs、Remix、Creator public profile（`/creator/:id`）在 UI/路由中出现但产品语义未定义，**不属于 MVP**，MVP 仅以空态/占位呈现。范围草图与边界见 `ProductFeatureMap §5.9`，落地节奏见 `12-roadmap V1.1`。
+> **未定义产品域（V1.1 / 暂不实现）**：Group Chats、Packs 的产品语义尚未定义，**不属于当前 beta**，当前仅以明确空态呈现。Creator public profile（`/creators/:id`）和 Feed Remix 已落地：creator profile 展示创作者资料、公开角色与 follow 状态；Remix 会进入 Generate、记录 `feed_remix` 来源，并在 Gallery 回链原 Feed 卡。范围草图与边界见 `ProductFeatureMap §5.9`，落地节奏见 `12-roadmap V1.1`。
 
 ### 6.7 订阅、定价与 dreamcoin
 
@@ -180,7 +184,7 @@ Ourdream.ai 是一个 18+ AI 角色扮演与 AI 伴侣平台，核心价值是�
 | UP-01 | `/upgrade` 展示 Yearly 和 Monthly 计划。 | P0 |
 | UP-02 | 展示 Premium 和 Deluxe 两档价格、账单周期、权益、促销和 dreamcoin bonus。 | P0 |
 | UP-03 | 支持订阅 checkout、支付成功、失败、取消和续费。 | P0 |
-| UP-04 | 明确 Premium 权益：每月 dreamcoin、无限消息、音频消息、custom/negative prompt、视频生成、发布角色。生成额度均以 dreamcoin 折算示意，非独立配额（见 economy §0/§2）。 | P0 |
+| UP-04 | 明确 Premium 权益：每月 dreamcoin、无限消息、音频消息、custom/negative prompt、发布角色；Video 启用时展示视频生成权益。生成额度均以 dreamcoin 折算示意，非独立配额（见 economy §0/§2）。 | P0 |
 | UP-05 | 明确 Deluxe 权益：Premium 全部 + Premium chat models + 3× chat memory + 更高每月 dreamcoin（同一套费率，见 economy §2）。 | P0 |
 | UP-06 | 使用 dreamcoin 前展示余额、消耗和不足时的充值/升级入口（见 economy §5）。 | P1 |
 | UP-07 | 用户可在账号页管理订阅。 | P1 |
@@ -201,7 +205,7 @@ Ourdream.ai 是一个 18+ AI 角色扮演与 AI 伴侣平台，核心价值是�
 | ID | 需求 | 优先级 |
 | --- | --- | --- |
 | SF-01 | Safety Center 解释允许/禁止内容、举报、隐私和年龄规则。 | P0 |
-| SF-02 | Help Desk 支持账号、订阅、生成失败、聊天问题，并展示 Bugs/Features/Changelog premium gate。 | P1 |
+| SF-02 | Help Desk 支持账号、订阅、生成失败、聊天问题，并展示 Bugs/Features/Changelog premium gate；Roadmap voting 支持提交 idea、Vote/Unvote 与持久计票。 | P1 |
 | SF-03 | Terms 页面可访问，并从年龄门槛和 footer 链接。 | P0 |
 | SF-04 | 所有用户生成内容必须可举报并进入审核流程。 | P0 |
 | SF-05 | 平台必须禁止未成年人/未成年外观、真实人物、现有 IP、非同意框架、违法和规避内容。 | P0 |
@@ -216,6 +220,7 @@ Ourdream.ai 是一个 18+ AI 角色扮演与 AI 伴侣平台，核心价值是�
 | CharacterDraft | id、ownerId、wizardStep、gender、style、appearance、hair、body、name、tags、advancedDetails、previewJobId |
 | CharacterPreviewJob | id、draftId、status、resultAssetId、error |
 | Character | id、name、age、description、creatorId、visibility、style、tags、advancedDetails、safetyStatus、imageUrl、stats |
+| CharacterVisualProfile | id、characterId、version、status、identityPrompt、anchorAssetIds、referenceAssetIds、defaultSeed、adapterRefs、qualityScore、consistencyScore |
 | ChatSession | id、userId、characterId、title、memorySummary、lastMessageAt、visibility |
 | Message | id、sessionId、role、content、model、safetyFlags、createdAt |
 | GenerationPreset | id、ownerId、scope、type、category、label、controls、visibility |
@@ -344,13 +349,10 @@ MVP 应优先实现：
 
 V1.1 再实现：
 
-- 视频生成。
-- Feed 的 Chat/Remix/Like/Share/Report。
-- Community leaderboards、creator profile、collections。
-- creator profile。
-- 高级 prompt 控制。
-- 生成资产下载、收藏、筛选和批量管理。
-- Profile referral、redeem code、preferences、language、account management。
+- 视频生成进入默认可见发布范围。
+- Group Chats 与 Packs 的完整产品语义、数据模型、额度和分发。
+- 多语言 UI（真实 i18n 字典层、路由内容和 locale 切换）。
+- Feed/Community 的更复杂个性化排序和运营编排。
 - 文章正文补齐和 SEO 内容运营系统。
 
 ## 13. 验收标准

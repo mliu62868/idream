@@ -8,6 +8,15 @@ const nextConfig: NextConfig = {
   allowedDevOrigins: ["127.0.0.1"],
   output: "standalone",
   outputFileTracingRoot: workspaceRoot,
+  outputFileTracingExcludes: {
+    "/*": [
+      "test-results/**/*",
+      "playwright-report/**/*",
+      "src/e2e/**/*",
+      "src/**/*.test.*",
+      "../../.playwright-cli/**/*",
+    ],
+  },
   // @idream/shared ships TypeScript source (no build step); transpile it here.
   transpilePackages: ["@idream/shared"],
   turbopack: {

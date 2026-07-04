@@ -5,7 +5,12 @@
 import type { ChatPrismaClient } from "./db.js";
 import { chatPrisma } from "./db.js";
 import { deleteAccount } from "./privacy.js";
-import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
+import {
+  MAIN_TO_CHAT_EVENTS,
+  chatImageAcceptedPayloadSchema,
+  chatImageCompletedPayloadSchema,
+  chatImageFailedPayloadSchema,
+} from "@idream/shared/contracts";
 
 export interface InboundEvent {
   eventId: string;
@@ -76,6 +81,49 @@ async function applyEffect(event: InboundEvent, prisma: ChatPrismaClient): Promi
           data: { status: "archived" },
         });
       }
+      return;
+    }
+    case MAIN_TO_CHAT_EVENTS.chatImageAccepted: {
+      const payload = chatImageAcceptedPayloadSchema.parse(event.payload);
+      await prisma.messageAttachment.updateMany({
+        where: {
+          id: payload.attachmentId,
+          status: { in: ["requesting", "proposed", "failed", "refunded"] },
+        },
+        data: {
+          status: "queued",
+          generationJobId: payload.generationJobId,
+          costDreamcoins: payload.costDreamcoins,
+          errorCode: null,
+        },
+      });
+      return;
+    }
+    case MAIN_TO_CHAT_EVENTS.chatImageCompleted: {
+      const payload = chatImageCompletedPayloadSchema.parse(event.payload);
+      await prisma.messageAttachment.updateMany({
+        where: { id: payload.attachmentId, status: { notIn: ["completed", "canceled"] } },
+        data: {
+          status: "completed",
+          generationJobId: payload.generationJobId,
+          mediaAssetId: payload.mediaAssetId,
+          width: payload.width ?? null,
+          height: payload.height ?? null,
+          errorCode: null,
+        },
+      });
+      return;
+    }
+    case MAIN_TO_CHAT_EVENTS.chatImageFailed: {
+      const payload = chatImageFailedPayloadSchema.parse(event.payload);
+      await prisma.messageAttachment.updateMany({
+        where: { id: payload.attachmentId, status: { notIn: ["completed", "canceled"] } },
+        data: {
+          status: payload.status,
+          generationJobId: payload.generationJobId ?? undefined,
+          errorCode: payload.errorCode ?? null,
+        },
+      });
       return;
     }
     // entitlement/policy/visibility/age updates: views are authority, nothing to

@@ -288,6 +288,46 @@ describe("reports, queue, and reporter anonymity", () => {
 });
 
 describe("admin moderation queue + audit", () => {
+  it("keeps fresh reports visible when the queue has more than one page", async () => {
+    const admin = await freshUser("admin-fresh-report", "admin");
+    const targetType = `${P}report-order`;
+    const oldCreatedAt = new Date("2025-01-01T00:00:00.000Z");
+    const freshReportId = `${P}fresh-report`;
+
+    await prisma.contentReport.createMany({
+      data: Array.from({ length: 101 }, (_, index) => ({
+        id: `${P}old-report-${index}`,
+        targetType,
+        targetId: `${P}old-target-${index}`,
+        category: "other_prohibited_content",
+        status: "open",
+        priority: 3,
+        createdAt: oldCreatedAt,
+      })),
+    });
+    await prisma.contentReport.create({
+      data: {
+        id: freshReportId,
+        targetType,
+        targetId: `${P}fresh-target`,
+        category: "other_prohibited_content",
+        status: "open",
+        priority: 3,
+      },
+    });
+
+    const queue = await api("GET", "admin/moderation/queue", {
+      userId: admin,
+      role: "admin",
+      query: { targetType },
+    });
+    expectOk(queue);
+    const reportIds = (queue.data.reports as Array<{ id: string }>).map((report) => report.id);
+    expect(reportIds[0]).toBe(freshReportId);
+    expect(reportIds).toContain(freshReportId);
+    expect(reportIds).toHaveLength(100);
+  });
+
   it("requires admin and records an audited decision that actions the target", async () => {
     const reporter = await freshUser("admin-reporter");
     const admin = await freshUser("admin-1", "admin");

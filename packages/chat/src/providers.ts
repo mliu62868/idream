@@ -9,13 +9,28 @@ export interface ChatChunk {
   done: boolean;
 }
 
+export interface ModelMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+export interface ChatCompletion {
+  content: string;
+}
+
 export interface ChatModel {
   stream(input: {
     /** Real provider model resolved from the entitlement tier (policy.modelForTier). */
     model?: string;
-    messages: Array<{ role: "system" | "user" | "assistant"; content: string }>;
+    messages: ModelMessage[];
     characterName?: string;
   }): AsyncIterable<ChatChunk>;
+  complete(input: {
+    /** Real provider model resolved from the entitlement tier (policy.modelForTier). */
+    model?: string;
+    messages: ModelMessage[];
+    maxTokens?: number;
+  }): Promise<ChatCompletion>;
 }
 
 export interface ModerationResult {
@@ -37,6 +52,10 @@ class MockChatModel implements ChatModel {
     for (const piece of chunk(reply, 24)) yield { delta: piece, done: false };
     yield { delta: "", done: true };
   }
+
+  async complete(): Promise<ChatCompletion> {
+    return { content: process.env.CHAT_MOCK_TOOL_PLAN_JSON ?? "{\"tool\":null}" };
+  }
 }
 
 // SPEC: stream from any OpenAI-compatible /chat/completions endpoint (SSE).
@@ -55,49 +74,113 @@ class OpenAIChatModel implements ChatModel {
     // Per-turn model from policy (tier-resolved) wins; fall back to the deploy
     // default so an un-tiered config still streams (design P0-D).
     const model = input.model || this.model;
-    const res = await fetch(chatCompletionEndpoint(this.baseUrl), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
-      },
-      // INVARIANT: Qwen reasoning models (4B/27B via oMLX/SGLang/vLLM) stream their
-      // chain-of-thought into BOTH `reasoning_content` AND `content`. Dropping
-      // reasoning_content (below) is not enough; we must also disable thinking at the
-      // template level or "Thinking Process:" leaks into the reply. `chat_template_kwargs`
-      // is honored by self-hosted OpenAI-compatible servers (the product's only target;
-      // hosted OpenAI is not used) and is a no-op for non-reasoning models (0.8B).
-      body: JSON.stringify({
-        model,
-        messages: input.messages,
-        stream: true,
-        chat_template_kwargs: { enable_thinking: false },
-      }),
-    });
-    if (!res.ok || !res.body) {
-      throw new Error(`Chat model HTTP ${res.status}: ${await res.text().catch(() => "")}`);
-    }
+    const controller = new AbortController();
+    const timeoutMs = env.CHAT_MODEL_TIMEOUT_MS;
+    // INVARIANT: this is an IDLE timeout, not a total one. A reasoning model can stream a
+    // long reply for far more than timeoutMs of wall-clock (each delta awaits a Redis write
+    // downstream), so a single timer spanning the whole stream would abort a healthy slow
+    // reply mid-flight — leaving the assistant message stuck empty with no retry. We reset
+    // it on every received chunk below; only a connection silent for timeoutMs (truly hung) aborts.
+    let timeout = setTimeout(() => controller.abort(), timeoutMs);
 
-    const decoder = new TextDecoder();
-    let buffer = "";
-    for await (const bytes of res.body as unknown as AsyncIterable<Uint8Array>) {
-      buffer += decoder.decode(bytes, { stream: true });
-      // SSE frames are separated by a blank line; events carry `data: <json>`.
-      let nl: number;
-      while ((nl = buffer.indexOf("\n")) !== -1) {
-        const line = buffer.slice(0, nl).trim();
-        buffer = buffer.slice(nl + 1);
-        if (!line.startsWith("data:")) continue;
-        const payload = line.slice(5).trim();
-        if (payload === "[DONE]") {
-          yield { delta: "", done: true };
-          return;
-        }
-        const delta = (JSON.parse(payload).choices?.[0]?.delta?.content ?? "") as string;
-        if (delta) yield { delta, done: false };
+    try {
+      const res = await fetch(chatCompletionEndpoint(this.baseUrl), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+        },
+        signal: controller.signal,
+        // INVARIANT: Qwen reasoning models (4B/27B via oMLX/SGLang/vLLM) stream their
+        // chain-of-thought into BOTH `reasoning_content` AND `content`. Dropping
+        // reasoning_content (below) is not enough; we must also disable thinking at the
+        // template level or "Thinking Process:" leaks into the reply. `chat_template_kwargs`
+        // is honored by self-hosted OpenAI-compatible servers (the product's only target;
+        // hosted OpenAI is not used) and is a no-op for non-reasoning models (0.8B).
+        body: JSON.stringify({
+          model,
+          messages: input.messages,
+          stream: true,
+          max_tokens: env.CHAT_MODEL_MAX_TOKENS,
+          chat_template_kwargs: { enable_thinking: false },
+        }),
+      });
+      if (!res.ok || !res.body) {
+        throw new Error(`Chat model HTTP ${res.status}: ${await res.text().catch(() => "")}`);
       }
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for await (const bytes of res.body as unknown as AsyncIterable<Uint8Array>) {
+        // Reset the idle timer: progress was made, so the stream is alive.
+        clearTimeout(timeout);
+        timeout = setTimeout(() => controller.abort(), timeoutMs);
+        buffer += decoder.decode(bytes, { stream: true });
+        // SSE frames are separated by a blank line; events carry `data: <json>`.
+        let nl: number;
+        while ((nl = buffer.indexOf("\n")) !== -1) {
+          const line = buffer.slice(0, nl).trim();
+          buffer = buffer.slice(nl + 1);
+          if (!line.startsWith("data:")) continue;
+          const payload = line.slice(5).trim();
+          if (payload === "[DONE]") {
+            yield { delta: "", done: true };
+            return;
+          }
+          const delta = (JSON.parse(payload).choices?.[0]?.delta?.content ?? "") as string;
+          if (delta) yield { delta, done: false };
+        }
+      }
+      yield { delta: "", done: true };
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new Error(`Chat model request timed out after ${timeoutMs}ms`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
     }
-    yield { delta: "", done: true };
+  }
+
+  async complete(input: Parameters<ChatModel["complete"]>[0]): Promise<ChatCompletion> {
+    const model = input.model || this.model;
+    const controller = new AbortController();
+    const timeoutMs = env.CHAT_MODEL_TIMEOUT_MS;
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const res = await fetch(chatCompletionEndpoint(this.baseUrl), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+        },
+        signal: controller.signal,
+        body: JSON.stringify({
+          model,
+          messages: input.messages,
+          stream: false,
+          max_tokens: input.maxTokens ?? Math.min(env.CHAT_MODEL_MAX_TOKENS, 1_400),
+          chat_template_kwargs: { enable_thinking: false },
+        }),
+      });
+      if (!res.ok) {
+        throw new Error(`Chat model HTTP ${res.status}: ${await res.text().catch(() => "")}`);
+      }
+
+      const data = (await res.json()) as {
+        choices?: Array<{ message?: { content?: unknown } }>;
+      };
+      const content = data.choices?.[0]?.message?.content;
+      return { content: typeof content === "string" ? content : "" };
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new Error(`Chat model request timed out after ${timeoutMs}ms`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 }
 

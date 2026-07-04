@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { ArrowLeft, Flag, Heart, MessageCircle } from "lucide-react";
+import { ArrowLeft, Flag, Heart, MessageCircle, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { CharacterCardData } from "@/types/ourdream";
 import { AppSidebar } from "./AppSidebar";
@@ -65,7 +65,7 @@ export function CharacterDetailClient({ id }: Readonly<{ id: string }>) {
         body: JSON.stringify({ characterId: character.id }),
       });
       if (response.status === 401) {
-        window.location.href = "/signup";
+        window.location.assign(signupUrlForCurrentCharacter());
         return;
       }
       if (!response.ok) {
@@ -92,7 +92,7 @@ export function CharacterDetailClient({ id }: Readonly<{ id: string }>) {
         method: "POST",
       });
       if (response.status === 401) {
-        window.location.href = "/signup";
+        window.location.assign(signupUrlForCurrentCharacter());
         return;
       }
       if (!response.ok) {
@@ -120,7 +120,7 @@ export function CharacterDetailClient({ id }: Readonly<{ id: string }>) {
         }),
       });
       if (response.status === 401) {
-        window.location.href = "/signup";
+        window.location.assign(signupUrlForCurrentCharacter());
         return;
       }
       if (!response.ok) {
@@ -153,7 +153,7 @@ export function CharacterDetailClient({ id }: Readonly<{ id: string }>) {
                   alt=""
                   className="object-cover object-top"
                   fill
-                  priority
+                  loading="eager"
                   sizes="380px"
                   src={character.image}
                   unoptimized={isPrivateMediaUrl(character.image)}
@@ -189,7 +189,7 @@ export function CharacterDetailClient({ id }: Readonly<{ id: string }>) {
                     </span>
                   ))}
                 </div>
-                <div className="mt-7 flex flex-wrap gap-3">
+                <div className="mt-7 flex flex-wrap gap-3" data-testid="character-detail-actions">
                   <button
                     className="inline-flex h-12 items-center justify-center gap-2 rounded-full bg-white px-6 text-[14px] font-black text-[rgb(13,13,13)] disabled:opacity-70"
                     disabled={busy}
@@ -199,6 +199,13 @@ export function CharacterDetailClient({ id }: Readonly<{ id: string }>) {
                     <MessageCircle className="h-4 w-4" />
                     Chat
                   </button>
+                  <Link
+                    className="inline-flex h-12 items-center justify-center gap-2 rounded-full bg-[rgb(253,95,194)] px-5 text-[14px] font-black text-[rgb(13,13,13)]"
+                    href={`/generate?characterId=${encodeURIComponent(character.id)}`}
+                  >
+                    <Sparkles className="h-4 w-4" />
+                    Generate
+                  </Link>
                   <button
                     className="inline-flex h-12 items-center justify-center gap-2 rounded-full bg-[rgb(36,36,36)] px-5 text-[14px] font-bold text-white"
                     disabled={busy}
@@ -240,4 +247,9 @@ export function CharacterDetailClient({ id }: Readonly<{ id: string }>) {
 
 function isPrivateMediaUrl(url: string) {
   return url.startsWith("/api/v1/media/") || url.startsWith("/user-content/");
+}
+
+function signupUrlForCurrentCharacter() {
+  const next = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  return `/signup?next=${encodeURIComponent(next)}`;
 }

@@ -1,0 +1,12 @@
+- generic [active] [ref=e1]:
+  - alert [ref=e2]
+  - generic [ref=e4]:
+    - img "ourdream.ai" [ref=e5]
+    - heading "Adults Only" [level=2] [ref=e6]
+    - paragraph [ref=e7]:
+      - text: By entering, you agree to our
+      - link "Terms" [ref=e8] [cursor=pointer]:
+        - /url: /terms
+    - button "Entering..." [disabled] [ref=e11]
+    - link "Leave site" [ref=e10] [cursor=pointer]:
+      - /url: https://www.google.com/

@@ -1,0 +1,472 @@
+{
+  "path": "/generate",
+  "title": "NSFW AI Image Generator | ourdream.ai",
+  "width": 390,
+  "height": 812,
+  "links": [
+    {
+      "text": "Join Free",
+      "href": "/signup?next=%2Fgenerate",
+      "rect": {
+        "x": 287,
+        "y": 12,
+        "w": 87,
+        "h": 32
+      }
+    },
+    {
+      "text": "Custom prompt & negative prompt are Premium controls.Upgrade",
+      "href": "/upgrade",
+      "rect": {
+        "x": 33,
+        "y": 1270,
+        "w": 324,
+        "h": 60
+      }
+    },
+    {
+      "text": "Join free to get starter coins before generating.Join Free",
+      "href": "/signup?next=%2Fgenerate",
+      "rect": {
+        "x": 33,
+        "y": 1342,
+        "w": 324,
+        "h": 67
+      }
+    },
+    {
+      "text": "AI PornAI Porn helps adults create AI image concepts with character-aware controls, premium prompt options, and private gallery storage.",
+      "href": "/generate/ai-porn",
+      "rect": {
+        "x": 16,
+        "y": 1590,
+        "w": 358,
+        "h": 122
+      }
+    },
+    {
+      "text": "AI HentaiAI Hentai helps adults create AI image concepts with character-aware controls, premium prompt options, and private gallery storage.",
+      "href": "/generate/ai-hentai",
+      "rect": {
+        "x": 16,
+        "y": 1724,
+        "w": 358,
+        "h": 122
+      }
+    },
+    {
+      "text": "AI Blowjob GeneratorAI Blowjob Generator helps adults create AI image concepts with character-aware controls, premium prompt options, and private gallery storage.",
+      "href": "/generate/ai-blowjob-generator",
+      "rect": {
+        "x": 16,
+        "y": 1858,
+        "w": 358,
+        "h": 122
+      }
+    },
+    {
+      "text": "Gay AI Porn GeneratorGay AI Porn Generator helps adults create AI image concepts with character-aware controls, premium prompt options, and private gallery storage.",
+      "href": "/generate/gay-ai-porn-generator",
+      "rect": {
+        "x": 16,
+        "y": 1992,
+        "w": 358,
+        "h": 122
+      }
+    },
+    {
+      "text": "AI Anime Porn GeneratorAI Anime Porn Generator helps adults create AI image concepts with character-aware controls, premium prompt options, and private gallery storage.",
+      "href": "/generate/ai-anime-porn-generator",
+      "rect": {
+        "x": 16,
+        "y": 2126,
+        "w": 358,
+        "h": 122
+      }
+    },
+    {
+      "text": "AI Cum GeneratorAI Cum Generator helps adults create AI image concepts with character-aware controls, premium prompt options, and private gallery storage.",
+      "href": "/generate/ai-cum-generator",
+      "rect": {
+        "x": 16,
+        "y": 2260,
+        "w": 358,
+        "h": 122
+      }
+    },
+    {
+      "text": "Resources Hub",
+      "href": "/resources-hub",
+      "rect": {
+        "x": 16,
+        "y": 2574,
+        "w": 358,
+        "h": 20
+      }
+    },
+    {
+      "text": "AI Girlfriend Types",
+      "href": "/type",
+      "rect": {
+        "x": 16,
+        "y": 2606,
+        "w": 358,
+        "h": 20
+      }
+    },
+    {
+      "text": "Comparisons",
+      "href": "/comparison",
+      "rect": {
+        "x": 16,
+        "y": 2638,
+        "w": 358,
+        "h": 20
+      }
+    },
+    {
+      "text": "Videos",
+      "href": "/videos",
+      "rect": {
+        "x": 16,
+        "y": 2670,
+        "w": 358,
+        "h": 20
+      }
+    },
+    {
+      "text": "AI Instructions",
+      "href": "/ai-instructions",
+      "rect": {
+        "x": 16,
+        "y": 2702,
+        "w": 358,
+        "h": 20
+      }
+    },
+    {
+      "text": "AI Girlfriend",
+      "href": "/ai-girlfriend",
+      "rect": {
+        "x": 16,
+        "y": 2794,
+        "w": 358,
+        "h": 20
+      }
+    },
+    {
+      "text": "AI Boyfriend",
+      "href": "/ai-boyfriend",
+      "rect": {
+        "x": 16,
+        "y": 2826,
+        "w": 358,
+        "h": 20
+      }
+    },
+    {
+      "text": "AI Anime",
+      "href": "/type/anime-ai-girlfriend",
+      "rect": {
+        "x": 16,
+        "y": 2858,
+        "w": 358,
+        "h": 20
+      }
+    },
+    {
+      "text": "Games",
+      "href": "/games",
+      "rect": {
+        "x": 16,
+        "y": 2890,
+        "w": 358,
+        "h": 20
+      }
+    },
+    {
+      "text": "Romantasy",
+      "href": "/romantasy",
+      "rect": {
+        "x": 16,
+        "y": 2922,
+        "w": 358,
+        "h": 20
+      }
+    },
+    {
+      "text": "our dream ai",
+      "href": "/",
+      "rect": {
+        "x": 16,
+        "y": 2954,
+        "w": 358,
+        "h": 20
+      }
+    },
+    {
+      "text": "Help Centre",
+      "href": "https://help.ourdream.ai/",
+      "rect": {
+        "x": 16,
+        "y": 3046,
+        "w": 358,
+        "h": 20
+      }
+    },
+    {
+      "text": "Affiliates",
+      "href": "https://www.ourdreamaiaffiliate.com/",
+      "rect": {
+        "x": 16,
+        "y": 3078,
+        "w": 358,
+        "h": 20
+      }
+    },
+    {
+      "text": "Help Desk",
+      "href": "/helpdesk",
+      "rect": {
+        "x": 16,
+        "y": 3110,
+        "w": 358,
+        "h": 20
+      }
+    },
+    {
+      "text": "Safety",
+      "href": "/safety/introduction",
+      "rect": {
+        "x": 16,
+        "y": 3142,
+        "w": 358,
+        "h": 20
+      }
+    },
+    {
+      "text": "Discord",
+      "href": "https://discord.gg/P47YU7je5D",
+      "rect": {
+        "x": 16,
+        "y": 3286,
+        "w": 20,
+        "h": 20
+      }
+    },
+    {
+      "text": "Reddit",
+      "href": "https://reddit.com/r/ourdream_ai",
+      "rect": {
+        "x": 52,
+        "y": 3286,
+        "w": 20,
+        "h": 20
+      }
+    },
+    {
+      "text": "Twitter / X",
+      "href": "https://x.com/ourdreamai",
+      "rect": {
+        "x": 88,
+        "y": 3286,
+        "w": 20,
+        "h": 20
+      }
+    },
+    {
+      "text": "Explore",
+      "href": "/",
+      "rect": {
+        "x": 0,
+        "y": 749,
+        "w": 98,
+        "h": 63
+      }
+    },
+    {
+      "text": "Chat",
+      "href": "/chat",
+      "rect": {
+        "x": 98,
+        "y": 749,
+        "w": 98,
+        "h": 63
+      }
+    },
+    {
+      "text": "Create",
+      "href": "/create",
+      "rect": {
+        "x": 195,
+        "y": 749,
+        "w": 98,
+        "h": 63
+      }
+    },
+    {
+      "text": "Generate",
+      "href": "/generate",
+      "rect": {
+        "x": 293,
+        "y": 749,
+        "w": 98,
+        "h": 63
+      }
+    }
+  ],
+  "buttons": [
+    {
+      "text": "Search",
+      "aria": "Search",
+      "rect": {
+        "x": 32,
+        "y": 20,
+        "w": 16,
+        "h": 16
+      }
+    },
+    {
+      "text": "Create",
+      "aria": null,
+      "rect": {
+        "x": 16,
+        "y": 88,
+        "w": 114,
+        "h": 40
+      }
+    },
+    {
+      "text": "Jobs",
+      "aria": null,
+      "rect": {
+        "x": 138,
+        "y": 88,
+        "w": 114,
+        "h": 40
+      }
+    },
+    {
+      "text": "Gallery",
+      "aria": null,
+      "rect": {
+        "x": 260,
+        "y": 88,
+        "w": 114,
+        "h": 40
+      }
+    },
+    {
+      "text": "Presets",
+      "aria": null,
+      "rect": {
+        "x": 37,
+        "y": 232,
+        "w": 158,
+        "h": 40
+      }
+    },
+    {
+      "text": "Image Edit",
+      "aria": null,
+      "rect": {
+        "x": 195,
+        "y": 232,
+        "w": 158,
+        "h": 40
+      }
+    },
+    {
+      "text": "balanced",
+      "aria": null,
+      "rect": {
+        "x": 37,
+        "y": 492,
+        "w": 105,
+        "h": 36
+      }
+    },
+    {
+      "text": "strict",
+      "aria": null,
+      "rect": {
+        "x": 142,
+        "y": 492,
+        "w": 105,
+        "h": 36
+      }
+    },
+    {
+      "text": "creative",
+      "aria": null,
+      "rect": {
+        "x": 248,
+        "y": 492,
+        "w": 105,
+        "h": 36
+      }
+    },
+    {
+      "text": "Save",
+      "aria": null,
+      "rect": {
+        "x": 295,
+        "y": 941,
+        "w": 62,
+        "h": 44
+      }
+    },
+    {
+      "text": "Generate",
+      "aria": null,
+      "rect": {
+        "x": 33,
+        "y": 1425,
+        "w": 324,
+        "h": 48
+      }
+    }
+  ],
+  "navs": [
+    {
+      "label": null,
+      "text": "Resources HubAI Girlfriend TypesComparisonsVideosAI Instructions",
+      "rect": {
+        "x": 16,
+        "y": 2574,
+        "w": 358,
+        "h": 148
+      }
+    },
+    {
+      "label": null,
+      "text": "AI GirlfriendAI BoyfriendAI AnimeGamesRomantasyour dream ai",
+      "rect": {
+        "x": 16,
+        "y": 2794,
+        "w": 358,
+        "h": 180
+      }
+    },
+    {
+      "label": null,
+      "text": "Help CentreAffiliatesHelp DeskSafety",
+      "rect": {
+        "x": 16,
+        "y": 3046,
+        "w": 358,
+        "h": 116
+      }
+    },
+    {
+      "label": "Primary mobile navigation",
+      "text": "ExploreChatCreateGenerate",
+      "rect": {
+        "x": 0,
+        "y": 748,
+        "w": 390,
+        "h": 64
+      }
+    }
+  ]
+}

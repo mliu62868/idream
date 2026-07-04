@@ -92,6 +92,25 @@ describe("BullMqJobQueue", () => {
     expect(snapshot?.failedReason).toBe("transient");
   });
 
+  it("removes jobs by dedupe key prefix", async () => {
+    await queue.enqueue({
+      queue: Q,
+      payload: { name: "remove-me" },
+      dedupeKey: `${testPrefix}-remove-1`,
+    });
+    await queue.enqueue({
+      queue: Q,
+      payload: { name: "keep-me" },
+      dedupeKey: `${testPrefix}-keep-1`,
+    });
+
+    const removed = await queue.removeByDedupePrefix(`${testPrefix}-remove`, [Q]);
+
+    expect(removed).toBe(1);
+    expect(await queue.getByDedupeKey(Q, `${testPrefix}-remove-1`)).toBeNull();
+    expect(await queue.getByDedupeKey(Q, `${testPrefix}-keep-1`)).not.toBeNull();
+  });
+
   it("returns empty when no job is waiting", async () => {
     const result = await queue.processNext({
       queue: Q,

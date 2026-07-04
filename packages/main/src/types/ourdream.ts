@@ -6,8 +6,20 @@ export interface CharacterCardData {
   likes: string;
   chats: string;
   creator: string;
+  creatorId?: string | null;
+  creatorName?: string | null;
+  canEditIdentity?: boolean;
   image: string;
   vivid?: boolean;
+  visualProfile?: {
+    id: string;
+    version: number;
+    status: string;
+    style: string;
+    anchorAssetIds?: unknown;
+    referenceAssetIds?: unknown;
+    defaultSeed?: string | null;
+  } | null;
 }
 
 export interface NavItem {

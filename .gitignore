@@ -57,6 +57,7 @@ packages/chat/generated/
 
 # Local chat file store (CHAT_FS_ROOT)
 data/chat/
+data/blob/
 
 # pm2
 .pm2/
@@ -78,4 +79,6 @@ playwright-report/
 temp/
 .tmp/
 packages/chat/data/
+packages/admin/data/
 packages/main/data/
+.gstack/

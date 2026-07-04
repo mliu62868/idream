@@ -2,8 +2,9 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { Flag, HeartHandshake, Users } from "lucide-react";
+import { ChevronDown, Flag, HeartHandshake, Users } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { authHrefForTarget } from "./authRedirect";
 
 type CommunityCharacter = {
   id: string;
@@ -23,6 +24,9 @@ type Collection = {
   id: string;
   name: string;
   visibility: string;
+  ownerName?: string | null;
+  itemCount?: number;
+  previews?: string[];
 };
 
 type Dreamer = {
@@ -49,6 +53,25 @@ type CommunityPayload = {
   error?: { message?: string };
 };
 
+const releaseOptions = [
+  { value: "all", label: "All time" },
+  { value: "30d", label: "Last 30 days" },
+] as const;
+
+const genderOptions = [
+  { value: "any", label: "Any Gender" },
+  { value: "female", label: "Female" },
+  { value: "male", label: "Male" },
+  { value: "trans", label: "Trans" },
+] as const;
+
+const styleOptions = [
+  { value: "any", label: "Any Style" },
+  { value: "realistic", label: "Realistic" },
+  { value: "anime", label: "Anime" },
+  { value: "hybrid", label: "Hybrid" },
+] as const;
+
 export function CommunityWorkspace() {
   const [characters, setCharacters] = useState<CommunityCharacter[]>([]);
   const [dreamers, setDreamers] = useState<Dreamer[]>([]);
@@ -56,6 +79,7 @@ export function CommunityWorkspace() {
   const [gender, setGender] = useState("any");
   const [style, setStyle] = useState("any");
   const [release, setRelease] = useState("all");
+  const [focusedCollectionId, setFocusedCollectionId] = useState("");
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -65,6 +89,21 @@ export function CommunityWorkspace() {
     if (style !== "any") params.set("style", style);
     return params;
   }, [gender, release, style]);
+  const focusedCollection = useMemo(
+    () =>
+      focusedCollectionId
+        ? collections.find((collection) => collection.id === focusedCollectionId) ?? null
+        : null,
+    [collections, focusedCollectionId],
+  );
+  const visibleStatus = status || (focusedCollection ? `Showing collection: ${focusedCollection.name}.` : "");
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setFocusedCollectionId(new URLSearchParams(window.location.search).get("collection") ?? "");
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -100,6 +139,17 @@ export function CommunityWorkspace() {
     };
   }, [query]);
 
+  useEffect(() => {
+    if (!focusedCollectionId || loading || !focusedCollection) return;
+    const timer = window.setTimeout(() => {
+      const target = Array.from(
+        document.querySelectorAll<HTMLElement>("[data-collection-id]"),
+      ).find((element) => element.dataset.collectionId === focusedCollectionId);
+      target?.scrollIntoView({ block: "center" });
+    }, 50);
+    return () => window.clearTimeout(timer);
+  }, [focusedCollection, focusedCollectionId, loading]);
+
   async function follow(creatorId?: string | null) {
     if (!creatorId) {
       setStatus("This creator cannot be followed.");
@@ -108,6 +158,10 @@ export function CommunityWorkspace() {
     const response = await fetch(`/api/v1/users/${creatorId}/follow`, { method: "POST" });
     if (response.ok) {
       setStatus("Creator followed.");
+      return;
+    }
+    if (response.status === 401) {
+      redirectToCreatorSignup(creatorId);
       return;
     }
     setStatus(await followErrorMessage(response));
@@ -141,6 +195,10 @@ export function CommunityWorkspace() {
             : item,
         ),
       );
+      if (response.status === 401) {
+        redirectToCreatorSignup(dreamer.id);
+        return;
+      }
       setStatus(await followErrorMessage(response));
     }
   }
@@ -172,13 +230,14 @@ export function CommunityWorkspace() {
     <section className="px-4 py-8 md:px-[60px] md:py-12">
       <div className="mx-auto max-w-6xl">
         <div className="relative overflow-hidden rounded-[16px] bg-[rgb(18,18,18)]">
-          <Image
-            alt=""
-            className="absolute inset-0 h-full w-full object-cover opacity-55"
-            height={288}
-            src="/images/ourdream/pride-banner-female.webp"
-            width={1440}
-          />
+            <Image
+              alt=""
+              className="absolute inset-0 h-full w-full object-cover opacity-55"
+              height={288}
+              loading="eager"
+              src="/images/ourdream/pride-banner-female.webp"
+              width={1440}
+            />
           <div className="relative p-6 md:p-10">
             <p className="text-[12px] font-black uppercase text-[rgb(253,95,194)]">
               Community
@@ -188,17 +247,35 @@ export function CommunityWorkspace() {
             </h1>
           </div>
         </div>
-        <div className="mt-5 flex flex-wrap gap-2">
-          <FilterButton label={`Release ${release}`} onClick={() => setRelease(release === "30d" ? "all" : "30d")} />
-          <FilterButton label={`Gender ${gender}`} onClick={() => setGender(next(gender, ["any", "female", "male", "trans"]))} />
-          <FilterButton label={`Style ${style}`} onClick={() => setStyle(next(style, ["any", "realistic", "anime", "hybrid"]))} />
+        <div
+          className="mt-5 grid grid-cols-1 gap-2 sm:grid-cols-3 md:flex md:flex-wrap"
+          data-testid="community-filters"
+        >
+          <SelectPill
+            ariaLabel="Release"
+            onChange={setRelease}
+            options={releaseOptions}
+            value={release}
+          />
+          <SelectPill
+            ariaLabel="Gender"
+            onChange={setGender}
+            options={genderOptions}
+            value={gender}
+          />
+          <SelectPill
+            ariaLabel="Style"
+            onChange={setStyle}
+            options={styleOptions}
+            value={style}
+          />
         </div>
-        {status && (
+        {visibleStatus && (
           <p
             aria-live="polite"
             className="mt-5 rounded-[12px] bg-[rgb(36,36,36)] px-4 py-3 text-[13px] font-semibold text-[rgb(220,220,220)]"
           >
-            {status}
+            {visibleStatus}
           </p>
         )}
 
@@ -276,56 +353,73 @@ export function CommunityWorkspace() {
           </div>
         </section>
 
-        <div className="mt-8 grid gap-3 md:grid-cols-4">
-          {loading && <CharacterSkeletons />}
-          {characters.map((character) => (
-            <article
-              className="overflow-hidden rounded-[14px] bg-[rgb(18,18,18)]"
-              key={character.id}
-            >
-              <Link
-                aria-label={character.title}
-                className="relative block aspect-[4/5]"
-                href={`/characters/${character.id}`}
+        <section className="mt-8">
+          <div className="mb-4 flex items-center gap-2">
+            <Users className="h-5 w-5 text-[rgb(253,95,194)]" />
+            <h2 className="text-[22px] font-black uppercase">Characters</h2>
+          </div>
+          <div className="grid gap-3 md:grid-cols-4">
+            {loading ? (
+              <CharacterSkeletons />
+            ) : characters.length > 0 ? (
+              characters.map((character) => (
+                <article
+                  className="overflow-hidden rounded-[14px] bg-[rgb(18,18,18)]"
+                  data-testid="community-character-card"
+                  key={character.id}
+                >
+                  <Link
+                    aria-label={character.title}
+                    className="relative block aspect-[4/5]"
+                    href={`/characters/${character.id}`}
+                  >
+                    <Image
+                      alt=""
+                      className="object-cover object-top"
+                      fill
+                      sizes="260px"
+                      src={character.image}
+                      unoptimized={isPrivateMediaUrl(character.image)}
+                    />
+                  </Link>
+                  <div className="p-4">
+                    <h2 className="line-clamp-2 text-[16px] font-black uppercase leading-5">
+                      {character.title}
+                    </h2>
+                    <p className="mt-1 text-[12px] font-medium text-[rgb(170,170,170)]">
+                      {character.likes} likes · {character.chats} chats
+                    </p>
+                    <div className="mt-4 flex gap-2">
+                      <button
+                        className="inline-flex h-9 flex-1 items-center justify-center gap-2 rounded-full bg-white text-[12px] font-black text-[rgb(13,13,13)]"
+                        onClick={() => follow(character.creatorId)}
+                        type="button"
+                      >
+                        <HeartHandshake className="h-4 w-4" />
+                        Follow
+                      </button>
+                      <button
+                        aria-label={`Report ${character.title}`}
+                        className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[rgb(36,36,36)] text-white"
+                        onClick={() => report(character.id)}
+                        type="button"
+                      >
+                        <Flag className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+                </article>
+              ))
+            ) : (
+              <p
+                className="rounded-[12px] bg-[rgb(18,18,18)] p-5 text-[13px] font-medium text-[rgb(170,170,170)] md:col-span-4"
+                data-testid="community-characters-empty"
               >
-                <Image
-                  alt=""
-                  className="object-cover object-top"
-                  fill
-                  sizes="260px"
-                  src={character.image}
-                  unoptimized={isPrivateMediaUrl(character.image)}
-                />
-              </Link>
-              <div className="p-4">
-                <h2 className="line-clamp-2 text-[16px] font-black uppercase leading-5">
-                  {character.title}
-                </h2>
-                <p className="mt-1 text-[12px] font-medium text-[rgb(170,170,170)]">
-                  {character.likes} likes · {character.chats} chats
-                </p>
-                <div className="mt-4 flex gap-2">
-                  <button
-                    className="inline-flex h-9 flex-1 items-center justify-center gap-2 rounded-full bg-white text-[12px] font-black text-[rgb(13,13,13)]"
-                    onClick={() => follow(character.creatorId)}
-                    type="button"
-                  >
-                    <HeartHandshake className="h-4 w-4" />
-                    Follow
-                  </button>
-                  <button
-                    aria-label={`Report ${character.title}`}
-                    className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[rgb(36,36,36)] text-white"
-                    onClick={() => report(character.id)}
-                    type="button"
-                  >
-                    <Flag className="h-4 w-4" />
-                  </button>
-                </div>
-              </div>
-            </article>
-          ))}
-        </div>
+                No characters match these filters.
+              </p>
+            )}
+          </div>
+        </section>
 
         <section className="mt-10 rounded-[16px] bg-[rgb(18,18,18)] p-5">
           <div className="mb-4 flex items-center gap-2">
@@ -337,11 +431,47 @@ export function CommunityWorkspace() {
               <CollectionSkeletons />
             ) : collections.length > 0 ? (
               collections.map((collection) => (
-                <div className="rounded-[12px] bg-[rgb(36,36,36)] p-4" key={collection.id}>
-                  <p className="text-[15px] font-black uppercase">{collection.name}</p>
-                  <p className="mt-2 text-[12px] font-medium text-[rgb(170,170,170)]">
-                    {collection.visibility}
-                  </p>
+                <div
+                  className={`overflow-hidden rounded-[12px] border bg-[rgb(36,36,36)] ${
+                    collection.id === focusedCollectionId
+                      ? "border-[rgb(253,95,194)] shadow-[0_0_0_1px_rgba(253,95,194,0.55)]"
+                      : "border-transparent"
+                  }`}
+                  data-collection-id={collection.id}
+                  data-focused={collection.id === focusedCollectionId ? "true" : "false"}
+                  data-testid="community-collection-card"
+                  key={collection.id}
+                >
+                  <div className="grid h-[132px] grid-cols-2 grid-rows-2 gap-0.5 bg-black/30">
+                    {(collection.previews ?? []).slice(0, 4).map((src) => (
+                      <div className="relative min-h-0" key={src}>
+                        <Image
+                          alt=""
+                          className="object-cover object-top"
+                          fill
+                          sizes="180px"
+                          src={src}
+                          unoptimized={isPrivateMediaUrl(src)}
+                        />
+                      </div>
+                    ))}
+                    {Array.from({
+                      length: Math.max(0, 4 - (collection.previews?.length ?? 0)),
+                    }).map((_, index) => (
+                      <div
+                        className="bg-[rgb(28,28,28)]"
+                        key={`${collection.id}-empty-${index}`}
+                      />
+                    ))}
+                  </div>
+                  <div className="p-4">
+                    <p className="line-clamp-1 text-[15px] font-black uppercase">
+                      {collection.name}
+                    </p>
+                    <p className="mt-2 text-[12px] font-medium text-[rgb(170,170,170)]">
+                      {collection.itemCount ?? 0} items · by {collection.ownerName ?? "Dreamer"}
+                    </p>
+                  </div>
                 </div>
               ))
             ) : (
@@ -356,15 +486,36 @@ export function CommunityWorkspace() {
   );
 }
 
-function FilterButton({ label, onClick }: Readonly<{ label: string; onClick: () => void }>) {
+function SelectPill({
+  ariaLabel,
+  onChange,
+  options,
+  value,
+}: Readonly<{
+  ariaLabel: string;
+  onChange: (value: string) => void;
+  options: readonly { label: string; value: string }[];
+  value: string;
+}>) {
   return (
-    <button
-      className="h-10 rounded-full bg-[rgb(36,36,36)] px-4 text-[13px] font-bold text-white"
-      onClick={onClick}
-      type="button"
-    >
-      {label}
-    </button>
+    <label className="relative inline-flex min-w-0">
+      <select
+        aria-label={ariaLabel}
+        className="h-10 w-full min-w-0 appearance-none truncate rounded-full bg-[rgb(36,36,36)] pl-4 pr-9 text-[13px] font-bold text-white outline-none transition-colors hover:bg-[rgb(46,46,46)] focus-visible:ring-2 focus-visible:ring-white/40 md:min-w-32"
+        onChange={(event) => onChange(event.target.value)}
+        value={value}
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      <ChevronDown
+        aria-hidden="true"
+        className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[rgb(170,170,170)]"
+      />
+    </label>
   );
 }
 
@@ -410,13 +561,14 @@ function CollectionSkeletons() {
   );
 }
 
-function next(current: string, values: string[]) {
-  const index = values.indexOf(current);
-  return values[(index + 1) % values.length] ?? values[0];
-}
-
 function isPrivateMediaUrl(url: string) {
   return url.startsWith("/api/v1/media/") || url.startsWith("/user-content/");
+}
+
+function redirectToCreatorSignup(creatorId: string) {
+  window.location.assign(
+    authHrefForTarget("/signup", `/creators/${encodeURIComponent(creatorId)}`),
+  );
 }
 
 // SPEC: turn a failed follow response into a user-facing message.

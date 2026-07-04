@@ -7,8 +7,14 @@ const SECRET = "SUPER-SECRET-PLAINTEXT-CONTENT";
 
 async function purge() {
   await chatPrisma.chatModerationEvent.deleteMany({ where: { id: { startsWith: P } } });
+  await chatPrisma.chatUsage.deleteMany({ where: { id: { startsWith: P } } });
   await chatPrisma.message.deleteMany({ where: { id: { startsWith: P } } });
   await chatPrisma.chatSession.deleteMany({ where: { id: { startsWith: P } } });
+}
+
+function today() {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 }
 
 beforeAll(async () => {
@@ -47,6 +53,17 @@ beforeAll(async () => {
       details: { note: SECRET },
     },
   });
+  const periodStart = today();
+  await chatPrisma.chatUsage.create({
+    data: {
+      id: `${P}usage1`,
+      userId: `${P}u1`,
+      sessionId: `${P}s1`,
+      messagesUsed: 29,
+      periodStart,
+      periodEnd: new Date(periodStart.getTime() + 24 * 60 * 60 * 1000),
+    },
+  });
 });
 
 afterAll(async () => {
@@ -70,18 +87,45 @@ describe("chat internal admin api", () => {
     expect(body.moderationEvents24h).toBeGreaterThanOrEqual(1);
   });
 
+  it("provider health returns redacted chat provider metadata", async () => {
+    const res = await dispatchChatAdmin({ method: "GET", path: "/internal/admin/provider-health" });
+    expect(res.status).toBe(200);
+    const body = res.body as { items: Array<Record<string, unknown>> };
+    expect(body.items.some((item) => item.provider === "chat_model")).toBe(true);
+    expect(body.items.some((item) => item.provider === "chat_moderation")).toBe(true);
+    expect(JSON.stringify(body)).not.toContain("API_KEY");
+    expect(JSON.stringify(body)).not.toContain(SECRET);
+  });
+
   it("sessions are metadata-only (no plaintext content) and filter by user", async () => {
     const res = await dispatchChatAdmin({
       method: "GET",
       path: "/internal/admin/sessions",
-      query: { userId: `${P}u1` },
+      query: { userId: `${P}u1`, status: "active" },
     });
     expect(res.status).toBe(200);
     const body = res.body as { items: Array<Record<string, unknown>> };
-    expect(body.items).toHaveLength(2);
+    expect(body.items).toHaveLength(1);
     const s1 = body.items.find((s) => s.id === `${P}s1`);
     expect(s1?.messageCount).toBe(1);
+    expect(s1?.lastMessageStatus).toBe("sent");
     // Never leak message plaintext through the ops surface.
+    expect(JSON.stringify(body)).not.toContain(SECRET);
+  });
+
+  it("usage returns current daily quota metadata", async () => {
+    const res = await dispatchChatAdmin({
+      method: "GET",
+      path: "/internal/admin/usage",
+      query: { userId: `${P}u1`, limit: "10" },
+    });
+    expect(res.status).toBe(200);
+    const body = res.body as { items: Array<Record<string, unknown>>; freeDailyLimit: number };
+    expect(body.freeDailyLimit).toBe(30);
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0]?.messagesUsed).toBe(29);
+    expect(body.items[0]?.freeRemaining).toBe(1);
+    expect(body.items[0]?.quotaStatus).toBe("free_remaining");
     expect(JSON.stringify(body)).not.toContain(SECRET);
   });
 
@@ -89,7 +133,7 @@ describe("chat internal admin api", () => {
     const res = await dispatchChatAdmin({
       method: "GET",
       path: "/internal/admin/moderation-events",
-      query: { limit: "10" },
+      query: { limit: "10", status: "blocked", layer: "input" },
     });
     expect(res.status).toBe(200);
     const body = res.body as { items: Array<Record<string, unknown>> };

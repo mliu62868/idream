@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { Compass, MessageCircle, Plus } from "lucide-react";
 import { useEffect, useState } from "react";
+import { authHrefForTarget } from "./authRedirect";
 
 // SPEC: /chat landing — a real hub listing the user's chat sessions (most-recent
 //       first), each linking into /chat/{id}. Empty → guide to Explore; logged-out
@@ -101,7 +102,7 @@ export function ChatHubWorkspace() {
           )}
 
           {state === "signed-out" && (
-            <div className="p-10 text-center">
+            <div className="p-10 text-center" data-testid="chat-hub-auth-required">
               <MessageCircle className="mx-auto h-10 w-10 text-[rgb(114,113,112)]" />
               <h2 className="mt-4 text-[22px] font-black uppercase">Sign in to see your chats</h2>
               <p className="mx-auto mt-3 max-w-md text-[14px] leading-6 text-[rgb(170,170,170)]">
@@ -110,13 +111,13 @@ export function ChatHubWorkspace() {
               <div className="mt-6 flex flex-wrap justify-center gap-2">
                 <Link
                   className="inline-flex h-11 items-center justify-center rounded-full bg-white px-5 text-[14px] font-bold text-[rgb(13,13,13)]"
-                  href="/login"
+                  href={authHrefForTarget("/login", "/chat")}
                 >
                   Log in
                 </Link>
                 <Link
                   className="inline-flex h-11 items-center justify-center rounded-full bg-[rgb(36,36,36)] px-5 text-[14px] font-bold text-white"
-                  href="/signup"
+                  href={authHrefForTarget("/signup", "/chat")}
                 >
                   Join free
                 </Link>

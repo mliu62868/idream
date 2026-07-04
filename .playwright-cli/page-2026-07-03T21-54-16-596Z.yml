@@ -1,0 +1,154 @@
+- generic [active] [ref=f1e1]:
+  - main [ref=f1e2]:
+    - generic [ref=f1e4]:
+      - button "Open navigation menu" [ref=f1e7]:
+        - img [ref=f1e8]
+      - generic [ref=f1e11]:
+        - img "Pride Sale - Upgrade Now" [ref=f1e13]
+        - generic [ref=f1e14]:
+          - img [ref=f1e15]
+          - textbox "Search characters" [ref=f1e18]
+        - generic [ref=f1e19]:
+          - button "Sort characters" [ref=f1e21]:
+            - text: For You
+            - img [ref=f1e22]
+          - generic [ref=f1e24]:
+            - generic [ref=f1e25]:
+              - combobox "Gender filter" [ref=f1e26]:
+                - option "Female" [selected]
+                - option "Male"
+                - option "Trans"
+                - option "Any Gender"
+              - img
+            - generic [ref=f1e27]:
+              - combobox "Style filter" [ref=f1e28]:
+                - option "Any Style" [selected]
+                - option "Realistic"
+                - option "Anime"
+                - option "Hybrid"
+              - img
+            - generic [ref=f1e29]:
+              - combobox "Age filter" [ref=f1e30]:
+                - option "Any Age" [selected]
+                - option "18-24"
+                - option "25-34"
+                - option "35+"
+              - img
+        - button "All" [ref=f1e32]
+      - generic [ref=f1e35]:
+        - img [ref=f1e36]
+        - text: Loading more characters...
+      - generic [ref=f1e39]:
+        - heading "Ourdream ai, the Unlimited AI Roleplay Platform" [level=1] [ref=f1e40]
+        - generic [ref=f1e41]:
+          - generic [ref=f1e42]:
+            - paragraph [ref=f1e43]: 63M+
+            - paragraph [ref=f1e44]: characters to explore
+          - generic [ref=f1e45]:
+            - paragraph [ref=f1e46]: 10M+
+            - paragraph [ref=f1e47]: dreamers creating stories
+          - generic [ref=f1e48]:
+            - paragraph [ref=f1e49]: 24/7
+            - paragraph [ref=f1e50]: chat and image tools
+        - generic [ref=f1e51]:
+          - heading "Frequently Asked Questions" [level=2] [ref=f1e52]
+          - generic [ref=f1e53]:
+            - article [ref=f1e54]:
+              - heading "What is Our Dream AI?" [level=3] [ref=f1e55]
+              - paragraph [ref=f1e56]: Our Dream AI is an AI roleplay platform for creating personalized AI characters, chatting with them, generating images, and building a companion that remembers context over time.
+            - article [ref=f1e57]:
+              - heading "How do you create an AI girlfriend on ourdream?" [level=3] [ref=f1e58]
+              - paragraph [ref=f1e59]: Use the creator to choose appearance, style, voice, personality traits, interests, and relationship dynamics. The character starts from that profile and adapts through conversation.
+            - article [ref=f1e60]:
+              - heading "What is ourdream.ai's pricing?" [level=3] [ref=f1e61]
+              - paragraph [ref=f1e62]: Ourdream offers monthly and yearly upgrade options with unlimited messages, image generation access, and recurring dreamcoin allowances.
+            - article [ref=f1e63]:
+              - heading "Is ourdream ai legit and safe to use?" [level=3] [ref=f1e64]
+              - paragraph [ref=f1e65]: Ourdream emphasizes privacy, safety moderation, original AI characters, and rules against underage-looking content or real-person deepfakes.
+            - article [ref=f1e66]:
+              - heading "Are my AI roleplay chats private on Our Dream AI?" [level=3] [ref=f1e67]
+              - paragraph [ref=f1e68]: Private chat history is designed to stay tied to your account, with product controls and moderation paths focused on keeping roleplay conversations secure.
+            - article [ref=f1e69]:
+              - heading "What images can I generate on ourdream.ai?" [level=3] [ref=f1e70]
+              - paragraph [ref=f1e71]: The generator pages focus on realistic and anime-style AI images for created companions, with premium controls for prompts and character selection.
+            - article [ref=f1e72]:
+              - heading "Why is ourdream more expensive than others?" [level=3] [ref=f1e73]
+              - paragraph [ref=f1e74]: Ourdream pairs unlimited messaging with included dreamcoins, so plan value is based on both chat access and media-generation allowance.
+        - link "Join Now" [ref=f1e76] [cursor=pointer]:
+          - /url: /upgrade
+          - text: Join Now
+          - img [ref=f1e77]
+    - generic [ref=f1e80]:
+      - generic [ref=f1e81]:
+        - heading "Learn" [level=2] [ref=f1e82]
+        - navigation [ref=f1e83]:
+          - link "Resources Hub" [ref=f1e84] [cursor=pointer]:
+            - /url: /resources-hub
+          - link "AI Girlfriend Types" [ref=f1e85] [cursor=pointer]:
+            - /url: /type
+          - link "Comparisons" [ref=f1e86] [cursor=pointer]:
+            - /url: /comparison
+          - link "Videos" [ref=f1e87] [cursor=pointer]:
+            - /url: /videos
+          - link "AI Instructions" [ref=f1e88] [cursor=pointer]:
+            - /url: /ai-instructions
+      - generic [ref=f1e89]:
+        - heading "Popular" [level=2] [ref=f1e90]
+        - navigation [ref=f1e91]:
+          - link "AI Girlfriend" [ref=f1e92] [cursor=pointer]:
+            - /url: /ai-girlfriend
+          - link "AI Boyfriend" [ref=f1e93] [cursor=pointer]:
+            - /url: /ai-boyfriend
+          - link "AI Anime" [ref=f1e94] [cursor=pointer]:
+            - /url: /type/anime-ai-girlfriend
+          - link "Games" [ref=f1e95] [cursor=pointer]:
+            - /url: /games
+          - link "Romantasy" [ref=f1e96] [cursor=pointer]:
+            - /url: /romantasy
+          - link "our dream ai" [ref=f1e97] [cursor=pointer]:
+            - /url: /
+      - generic [ref=f1e98]:
+        - heading "Help" [level=2] [ref=f1e99]
+        - navigation [ref=f1e100]:
+          - link "Help Centre" [ref=f1e101] [cursor=pointer]:
+            - /url: https://help.ourdream.ai/
+          - link "Affiliates" [ref=f1e102] [cursor=pointer]:
+            - /url: https://www.ourdreamaiaffiliate.com/
+          - link "Help Desk" [ref=f1e103] [cursor=pointer]:
+            - /url: /helpdesk
+          - link "Safety" [ref=f1e104] [cursor=pointer]:
+            - /url: /safety/introduction
+      - generic [ref=f1e105]:
+        - generic [ref=f1e106]:
+          - paragraph [ref=f1e107]: 2026 OURDREAM.AI
+          - paragraph [ref=f1e108]: "USA: Dream Studio USA, Inc."
+          - paragraph [ref=f1e109]: "Cyprus: TEKTOPIA LTD (HE 473775)"
+        - generic [ref=f1e110]:
+          - link "Discord" [ref=f1e111] [cursor=pointer]:
+            - /url: https://discord.gg/P47YU7je5D
+            - img [ref=f1e112]
+          - link "Reddit" [ref=f1e114] [cursor=pointer]:
+            - /url: https://reddit.com/r/ourdream_ai
+            - img [ref=f1e115]
+          - link "Twitter / X" [ref=f1e120] [cursor=pointer]:
+            - /url: https://x.com/ourdreamai
+            - img [ref=f1e121]
+    - navigation "Primary mobile navigation" [ref=f1e124]:
+      - link "Explore" [ref=f1e125] [cursor=pointer]:
+        - /url: /
+        - img [ref=f1e126]
+        - text: Explore
+      - link "Chat" [ref=f1e129] [cursor=pointer]:
+        - /url: /chat
+        - img [ref=f1e130]
+        - text: Chat
+      - link "Create" [ref=f1e132] [cursor=pointer]:
+        - /url: /create
+        - img [ref=f1e133]
+        - text: Create
+      - link "Generate" [ref=f1e135] [cursor=pointer]:
+        - /url: /generate
+        - img [ref=f1e136]
+        - text: Generate
+  - button "Open Next.js Dev Tools" [ref=f1e144] [cursor=pointer]:
+    - img [ref=f1e145]

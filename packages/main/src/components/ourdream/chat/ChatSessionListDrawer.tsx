@@ -128,6 +128,9 @@ export function ChatSessionListDrawer({
       });
       if (res.ok) {
         setSessions((current) => current.filter((row) => row.id !== sessionId));
+        if (sessionId === currentSessionId) {
+          window.location.assign("/chat");
+        }
       }
     } finally {
       setBusyId(null);

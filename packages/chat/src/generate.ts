@@ -17,11 +17,18 @@ import { appendLine, chatFsPaths } from "./chat-fs.js";
 import { recordOutbox, scheduleOutboxDelivery } from "./outbox.js";
 import { createId } from "./id.js";
 import { enqueue } from "./queue.js";
+import {
+  imageToolCaption,
+  planAgentToolCall,
+  shouldPlanImageTool,
+  type GenerateImageAsyncToolCall,
+} from "./agent-tools.js";
 import { companionRole } from "@idream/shared";
 import {
   CHAT_QUEUES,
   CHAT_TO_MAIN_EVENTS,
   idempotencyKeys,
+  type ChatImageRequestedPayload,
 } from "@idream/shared/contracts";
 
 export interface GeneratePayload {
@@ -38,13 +45,24 @@ export async function processGenerate(
   const assistant = await prisma.message.findUnique({ where: { id: payload.assistantMessageId } });
   if (!assistant) return { status: "skipped" };
   // Idempotency: terminal states are final.
-  if (["sent", "blocked", "deleted"].includes(assistant.status)) return { status: "skipped" };
+  if (["sent", "blocked", "deleted", "failed"].includes(assistant.status)) return { status: "skipped" };
+  if (assistant.attempt !== payload.attempt) return { status: "skipped" };
 
   const session = await prisma.chatSession.findUnique({ where: { id: payload.sessionId } });
   if (!session) return { status: "skipped" };
+  if (session.status !== "active") {
+    await failAssistant(prisma, payload.assistantMessageId);
+    await appendStreamEvent(streamKey(payload.assistantMessageId), {
+      type: "error",
+      attempt: payload.attempt,
+      code: "session_inactive",
+      retryable: false,
+    }).catch(() => {});
+    return { status: "failed" };
+  }
 
   await prisma.message.updateMany({
-    where: { id: payload.assistantMessageId, status: { in: ["pending", "generating"] } },
+    where: { id: payload.assistantMessageId, status: { in: ["pending", "generating"] }, attempt: payload.attempt },
     data: { status: "generating" },
   });
 
@@ -55,6 +73,7 @@ export async function processGenerate(
     characterId: session.characterId,
     sessionId: session.id,
     memoryEnabled: session.memoryEnabled,
+    userMessageId: payload.userMessageId,
   });
 
   await appendStreamEvent(key, { type: "start", attempt: payload.attempt });
@@ -62,16 +81,39 @@ export async function processGenerate(
   const modelMessages = buildModelMessages(context);
   const chunks: string[] = [];
   let seq = 0;
+  let imageToolCall: GenerateImageAsyncToolCall | null = null;
+  if (shouldPlanImageTool(context)) {
+    try {
+      const toolPlan = await planAgentToolCall({
+        chat: providers.chat,
+        model: context.policy.model,
+        context,
+      });
+      imageToolCall = toolPlan.toolCall;
+    } catch {
+      imageToolCall = null;
+    }
+  }
+
   try {
-    for await (const chunk of providers.chat.stream({
-      model: context.policy.model,
-      characterName: context.persona.name,
-      messages: modelMessages,
-    })) {
-      if (!chunk.delta) continue;
-      seq += 1;
-      chunks.push(chunk.delta);
-      await appendStreamEvent(key, { type: "delta", attempt: payload.attempt, seq, delta: chunk.delta });
+    if (imageToolCall) {
+      const reply = imageToolCaption(imageToolCall, context.persona.name);
+      for (const piece of chunk(reply, 96)) {
+        seq += 1;
+        chunks.push(piece);
+        await appendStreamEvent(key, { type: "delta", attempt: payload.attempt, seq, delta: piece });
+      }
+    } else {
+      for await (const chunk of providers.chat.stream({
+        model: context.policy.model,
+        characterName: context.persona.name,
+        messages: modelMessages,
+      })) {
+        if (!chunk.delta) continue;
+        seq += 1;
+        chunks.push(chunk.delta);
+        await appendStreamEvent(key, { type: "delta", attempt: payload.attempt, seq, delta: chunk.delta });
+      }
     }
   } catch (error) {
     await appendStreamEvent(key, {
@@ -81,6 +123,7 @@ export async function processGenerate(
       retryable: seq === 0,
     });
     if (seq === 0) throw error instanceof Error ? error : new Error(String(error));
+    await failAssistant(prisma, payload.assistantMessageId);
     return { status: "failed" };
   }
 
@@ -102,8 +145,6 @@ export async function processGenerate(
   const moderation = await providers.moderation.check({ targetType: "text", content });
   const blocked = moderation.status === "blocked";
 
-  await appendStreamEvent(key, { type: "done", attempt: payload.attempt, usage });
-
   await finalize({
     prisma,
     payload,
@@ -114,7 +155,10 @@ export async function processGenerate(
     moderation,
     blocked,
     context,
+    imageToolCall,
   });
+
+  await appendStreamEvent(key, { type: "done", attempt: payload.attempt, usage });
 
   // Agent trace (separate fact). Append-only; raw content kept here, PG holds the
   // user-visible version. Idempotent-ish: one append per attempt.
@@ -131,6 +175,7 @@ export async function processGenerate(
       injectedMemories: context.longTermMemories,
       boundaries: context.boundaries,
       rawOutput: content,
+      toolCalls: imageToolCall ? [imageToolCall] : [],
       moderation,
       model,
     }));
@@ -159,19 +204,20 @@ interface FinalizeInput {
   moderation: { status: string; policyCode?: string; confidence: number };
   blocked: boolean;
   context: BuiltContext;
+  imageToolCall: GenerateImageAsyncToolCall | null;
 }
 
 async function finalize(input: FinalizeInput): Promise<void> {
-  const { prisma, payload, session, content, model, usage, moderation, blocked, context } = input;
+  const { prisma, payload, session, content, model, usage, moderation, blocked, context, imageToolCall } = input;
 
   await prisma.$transaction(async (tx) => {
     // Re-read inside the TX for idempotency under concurrency.
     const current = await tx.message.findUnique({ where: { id: payload.assistantMessageId } });
-    if (!current || ["sent", "blocked", "deleted"].includes(current.status)) return;
+    if (!current || current.status !== "generating" || current.attempt !== payload.attempt) return;
 
     const tokenCount = usage.completionTokens;
-    await tx.message.update({
-      where: { id: payload.assistantMessageId },
+    const updated = await tx.message.updateMany({
+      where: { id: payload.assistantMessageId, status: "generating", attempt: payload.attempt },
       data: {
         status: blocked ? "blocked" : "sent",
         content,
@@ -180,6 +226,7 @@ async function finalize(input: FinalizeInput): Promise<void> {
         safetyStatus: blocked ? "blocked" : moderation.status === "flagged" ? "flagged" : "passed",
       },
     });
+    if (updated.count === 0) return;
 
     if (!blocked) {
       // flip previous selected off, add the new selected version
@@ -218,7 +265,7 @@ async function finalize(input: FinalizeInput): Promise<void> {
       await tx.chatSession.update({
         where: { id: session.id },
         data: {
-          memorySummary: buildSummary(context, content),
+          ...(context.canUpdateSessionSummary ? { memorySummary: buildSummary(context, content) } : {}),
           lastMessageAt: new Date(),
         },
       });
@@ -265,7 +312,58 @@ async function finalize(input: FinalizeInput): Promise<void> {
         aggregateId: session.userId,
         payload: { sessionId: session.id, delta: 1 },
       });
+
+      if (imageToolCall) {
+        const attachmentId = createId("att");
+        await tx.messageAttachment.create({
+          data: {
+            id: attachmentId,
+            sessionId: session.id,
+            messageId: payload.assistantMessageId,
+            kind: "generated_image",
+            status: "requesting",
+            promptHint: imageToolCall.arguments.prompt,
+            metadata: {
+              trigger: "agent_tool_call",
+              toolName: imageToolCall.name,
+              sourceUserMessageId: payload.userMessageId,
+              assistantCaption: imageToolCall.arguments.caption ?? null,
+              orientation: imageToolCall.arguments.orientation,
+              outputCount: imageToolCall.arguments.outputCount,
+            } as Prisma.InputJsonValue,
+          },
+        });
+        const imagePayload: ChatImageRequestedPayload & Record<string, unknown> = {
+          version: 1,
+          kind: "chat.image.requested",
+          requestId: createId("chat_img_req"),
+          attachmentId,
+          sessionId: session.id,
+          messageId: payload.assistantMessageId,
+          userId: session.userId,
+          characterId: session.characterId,
+          promptHint: imageToolCall.arguments.prompt,
+          conversationContext: buildConversationContext(context, content),
+          controls: {
+            orientation: imageToolCall.arguments.orientation,
+            outputCount: imageToolCall.arguments.outputCount,
+          },
+        };
+        await recordOutbox(tx, {
+          eventType: CHAT_TO_MAIN_EVENTS.imageRequested,
+          aggregateType: "message_attachment",
+          aggregateId: attachmentId,
+          payload: imagePayload,
+        });
+      }
     }
+  });
+}
+
+async function failAssistant(prisma: ChatPrismaClient, assistantMessageId: string): Promise<void> {
+  await prisma.message.updateMany({
+    where: { id: assistantMessageId, status: { in: ["pending", "generating"] } },
+    data: { status: "failed" },
   });
 }
 
@@ -326,6 +424,20 @@ function estimateTokens(text: string): number {
 }
 function clamp(value: string, max: number): string {
   return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
+}
+function chunk(text: string, size: number): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < text.length; i += size) out.push(text.slice(i, i + size));
+  return out.length ? out : [""];
+}
+function buildConversationContext(context: BuiltContext, assistantContent: string): string {
+  return clamp(
+    [
+      ...context.recentMessages.map((message) => `${message.role}: ${message.content}`),
+      `assistant: ${assistantContent}`,
+    ].join("\n"),
+    2_000,
+  );
 }
 function startOfUtcDay(): Date {
   const now = new Date();

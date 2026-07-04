@@ -128,11 +128,18 @@ describe("official character CMS", () => {
       visibility: string;
       systemPrompt: string | null;
       tags: { tag: { slug: string } }[];
+      visualProfiles: { id: string; version: number; status: string; createdFrom: string }[];
     };
     expect(character.source).toBe("official");
     expect(character.status).toBe("approved");
     expect(character.visibility).toBe("public");
     expect(character.systemPrompt).toBeTruthy();
+    expect(character.visualProfiles).toHaveLength(1);
+    expect(character.visualProfiles[0]).toMatchObject({
+      version: 1,
+      status: "active",
+      createdFrom: "admin_official_create",
+    });
     // 去重 + slug：Bubbly 只连一次，"Sci Fi" → "sci-fi"。
     const slugs = character.tags.map((t) => t.tag.slug).sort();
     expect(slugs).toEqual(["bubbly", "sci-fi"]);
@@ -148,8 +155,58 @@ describe("official character CMS", () => {
         makeRequest("GET", "?search=Aria", { userId: admin, role: "admin" }),
       ),
     );
-    const items = (listResult.data?.items ?? []) as { id: string }[];
-    expect(items.some((c) => c.id === character.id)).toBe(true);
+    const items = (listResult.data?.items ?? []) as {
+      id: string;
+      visualProfile: { version: number; status: string } | null;
+    }[];
+    const listed = items.find((c) => c.id === character.id);
+    expect(listed?.visualProfile).toMatchObject({ version: 1, status: "active" });
+  });
+
+  it("versions the visual profile when official identity fields change", async () => {
+    const admin = await seedActor("admin", "visual-version");
+    const created = await call(
+      createOfficialCharacter(
+        makeRequest("POST", "", {
+          userId: admin,
+          role: "admin",
+          body: {
+            name: `${P}Versioned`,
+            age: 28,
+            gender: "female",
+            style: "realistic",
+            description: "An official companion with silver hair.",
+            reason: "seed visual profile",
+          },
+        }),
+      ),
+    );
+    const id = (created.data?.character as { id: string }).id;
+
+    const updated = await call(
+      updateOfficialCharacter(
+        makeRequest("PATCH", `/${id}`, {
+          userId: admin,
+          role: "admin",
+          body: {
+            description: "An official companion with silver hair and amber eyes.",
+            reason: "refresh visual identity",
+          },
+        }),
+        id,
+      ),
+    );
+    expect(updated.ok).toBe(true);
+
+    const profiles = await prisma.characterVisualProfile.findMany({
+      where: { characterId: id },
+      orderBy: { version: "asc" },
+    });
+    expect(profiles.map((profile) => [profile.version, profile.status])).toEqual([
+      [1, "archived"],
+      [2, "active"],
+    ]);
+    expect(profiles[1]?.identityPrompt).toContain("amber eyes");
   });
 
   it("rejects age < 18 at the zod boundary (400)", async () => {

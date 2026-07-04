@@ -1,18 +1,21 @@
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { buildCharacterSystemPrompt } from "@idream/shared";
 import { resolveLocalBlobPath, resolveLocalBlobRoot } from "@idream/shared/storage/local-blob";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import type {
+  ChatImageRequestedPayload,
   ImageGeneratePayload,
   VideoGeneratePayload,
 } from "@/server/ai/schemas";
+import { imageReferenceInputsForGenerationJob } from "@/server/ai/reference-images";
 import { dispatchAdmin } from "@/server/modules/admin/service";
 import { listActiveTemplates } from "@/server/modules/admin/characters/templates";
+import { isReusablePlatformAssetWhere } from "@/server/modules/ourdream/chat-image-reuse";
 import { proxyChatRequest } from "@/server/bff/chat-proxy";
 import { jobQueue } from "@/server/jobs/queue";
-import { MAIN_TO_CHAT_QUEUE, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
+import { MAIN_TO_CHAT_QUEUE, MAIN_TO_CHAT_EVENTS, idempotencyKeys } from "@idream/shared/contracts";
 import {
   clearSessionCookie,
   createAnonymousId,
@@ -26,21 +29,45 @@ import {
   sessionCookie,
   ageGateCookie,
   anonymousCookie,
+  clearAdminSessionCookie,
   verifyPassword,
 } from "@/server/lib/auth";
 import { prisma } from "@/server/lib/db";
 import { nameMatch } from "@/server/lib/db/search";
+import { env } from "@/server/lib/env";
 import { AppError, Errors } from "@/server/lib/errors";
 import { empty, fail, ok } from "@/server/lib/http";
 import { activeAnnouncements, readAnnouncements } from "@/server/announcements/store";
 import { logger } from "@/server/lib/logger";
 import { providers } from "@/server/providers";
+import {
+  dimensionsForImageOrientation,
+  imageOrientations,
+  normalizeImageOrientation,
+} from "./generation-dimensions";
 
 type ApiMethod = "GET" | "POST" | "PATCH" | "DELETE" | "PUT";
 type JsonRecord = Record<string, Prisma.JsonValue>;
 
 const credentialProvider = "credential";
-const defaultImage = "/images/ourdream/card-sarah-mercer.webp";
+const fallbackCharacterImages = [
+  "/images/ourdream/card-melissa-burke.webp",
+  "/images/ourdream/card-summoned-world.webp",
+  "/images/ourdream/card-sarah-mercer.webp",
+  "/images/ourdream/card-alexa-reeves.webp",
+  "/images/ourdream/card-tamsin-jacobs.webp",
+  "/images/ourdream/card-truth-confessional.webp",
+  "/images/ourdream/card-truth-stepmother.webp",
+  "/images/ourdream/card-stephanie.webp",
+  "/images/ourdream/card-kennedy-graham.webp",
+  "/images/ourdream/card-eleanor-dawn.webp",
+  "/images/ourdream/card-bailey-price.webp",
+  "/images/ourdream/card-sophie.webp",
+  "/images/ourdream/card-raya-reyes.webp",
+  "/images/ourdream/card-emily-coming-home.webp",
+  "/images/ourdream/card-diana-weird-girl.webp",
+  "/images/ourdream/card-lola-moonstruck.webp",
+] as const;
 
 const signupSchema = z.object({
   email: z.string().email().transform((value) => value.toLowerCase()),
@@ -91,10 +118,13 @@ const draftSubmitSchema = z.object({
   age: z.number().int().min(18).max(99).default(21),
 });
 
-const imageOrientations = ["1:1", "4:5", "3:4", "9:16", "16:9"] as const;
+const draftPreviewSelectSchema = z.object({
+  previewJobId: z.string().trim().min(1),
+});
 
 const generationControlsSchema = z
   .object({
+    modePresetId: z.string().trim().min(1).max(120).optional(),
     backgroundPresetId: z.string().trim().min(1).max(120).optional(),
     posePresetId: z.string().trim().min(1).max(120).optional(),
     outfitPresetId: z.string().trim().min(1).max(120).optional(),
@@ -108,6 +138,9 @@ const generationJobSchema = z
   .object({
     mode: z.enum(["image", "video"]).default("image"),
     characterId: z.string().min(1).optional(),
+    visualProfileId: z.string().min(1).optional(),
+    consistencyMode: z.enum(["balanced", "strict", "creative"]).default("balanced"),
+    seed: z.string().trim().min(1).max(120).optional(),
     freeplay: z.boolean().default(false),
     prompt: z.string().trim().max(2_000).optional(),
     negativePrompt: z.string().trim().max(1_000).optional(),
@@ -116,6 +149,7 @@ const generationJobSchema = z
     orientation: z.enum(imageOrientations).optional(),
     outputCount: z.number().int().min(1).max(4).default(1),
     model: z.string().max(80).optional(),
+    remixFeedItemId: z.string().max(180).optional(),
   })
   .superRefine((value, ctx) => {
     if (Boolean(value.characterId) === value.freeplay) {
@@ -123,6 +157,13 @@ const generationJobSchema = z
         code: "custom",
         path: ["characterId"],
         message: "Choose exactly one of characterId or freeplay",
+      });
+    }
+    if (value.freeplay && value.visualProfileId) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["visualProfileId"],
+        message: "Visual profile can only be used with a character",
       });
     }
   });
@@ -133,6 +174,23 @@ const presetCreateSchema = z.object({
   label: z.string().trim().min(1).max(80),
   controls: z.record(z.string(), z.unknown()).default({}),
   visibility: z.enum(["private", "public", "unlisted"]).default("private"),
+});
+
+const mediaCollectionVisibilitySchema = z.enum(["private", "public", "unlisted"]);
+
+const mediaCollectionCreateSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  visibility: mediaCollectionVisibilitySchema.default("private"),
+  mediaAssetId: z.string().optional(),
+});
+
+const mediaCollectionUpdateSchema = z.object({
+  name: z.string().trim().min(1).max(80).optional(),
+  visibility: mediaCollectionVisibilitySchema.optional(),
+});
+
+const mediaCollectionItemSchema = z.object({
+  mediaAssetId: z.string(),
 });
 
 const checkoutSchema = z.object({
@@ -149,6 +207,17 @@ const reportSchema = z.object({
   category: z.string().trim().min(1).max(120),
   description: z.string().trim().max(2_000).optional(),
 });
+
+const appealTargetTypeSchema = z.enum([
+  "character",
+  "media",
+  "feed_item",
+  "chat_message",
+  "user_profile",
+  "moderation_decision",
+  "safety_issue",
+  "copyright_likeness",
+]);
 
 const profilePatchSchema = z.object({
   displayName: z.string().trim().min(1).max(80).optional(),
@@ -170,6 +239,56 @@ const eventSchema = z.object({
   name: z.string().trim().min(1).max(120),
   props: z.record(z.string(), z.unknown()).default({}),
 });
+
+const supportRequestSchema = z.object({
+  category: z.enum(["account", "billing", "generation", "chat", "bug", "feature", "other"]),
+  subject: z.string().trim().min(3).max(120),
+  description: z.string().trim().min(10).max(2_000),
+  diagnosticConsent: z.boolean().default(false),
+  sourcePath: z.string().trim().max(240).optional(),
+});
+
+const feedbackItemCreateSchema = z.object({
+  category: z.enum(["bug", "feature", "improvement"]).default("feature"),
+  title: z.string().trim().min(3).max(120),
+  description: z.string().trim().min(10).max(600),
+});
+
+const defaultFeedbackItems = [
+  {
+    sourceKey: "generator-recipes",
+    title: "Saved generator recipes",
+    description: "Save a prompt, character, style, orientation, and preset stack so it can be reused later.",
+    category: "feature",
+    status: "planned",
+  },
+  {
+    sourceKey: "creator-collections",
+    title: "Creator collection boards",
+    description: "Let creators group characters and generated media into public boards followers can browse.",
+    category: "feature",
+    status: "under_review",
+  },
+  {
+    sourceKey: "chat-memory-review",
+    title: "Memory review before long chats",
+    description: "Give users a quick way to inspect and adjust remembered facts before continuing a session.",
+    category: "improvement",
+    status: "under_review",
+  },
+] as const;
+
+type ProductFeedbackItemRow = {
+  id: string;
+  sourceKey: string | null;
+  title: string;
+  description: string;
+  category: string;
+  status: string;
+  voteCount: number;
+  createdAt: Date;
+  updatedAt: Date;
+};
 
 export async function dispatchV1(request: Request, segments: string[]) {
   try {
@@ -259,6 +378,7 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
     if (id && !action && method === "PATCH") return updateDraft(request, id);
     if (id && action === "preview" && method === "POST") return previewDraft(request, id);
     if (id && action === "preview" && method === "GET") return previewStatus(request, id);
+    if (id && action === "preview-anchor" && method === "POST") return selectPreviewAnchor(request, id);
     if (id && action === "submit" && method === "POST") return submitDraft(request, id);
     if (id && action === "tags" && method === "POST") return updateDraftTags(request, id);
   }
@@ -289,9 +409,22 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
 
   if (resource === "media") {
     if (!id && method === "GET") return listMedia(request);
+    if (id === "collections" && !action && method === "GET") return listMediaCollections(request);
+    if (id === "collections" && !action && method === "POST") return createMediaCollection(request);
+    if (id === "collections" && action && !child && method === "PATCH") {
+      return updateMediaCollection(request, action);
+    }
+    if (id === "collections" && action && child === "items" && method === "POST") {
+      return addMediaToCollection(request, action);
+    }
     if (id === "bulk" && method === "POST") return bulkMedia(request);
     if (id && action === "like" && method === "POST") return likeMedia(request, id);
     if (id && action === "like" && method === "DELETE") return unlikeMedia(request, id);
+    if (id && action === "use-as-character-image" && method === "POST") {
+      return setMediaAsCharacterImage(request, id);
+    }
+    if (id && action === "add-to-identity" && method === "POST") return addMediaToIdentity(request, id);
+    if (id && action === "variation" && method === "POST") return createMediaVariation(request, id);
     if (id && action === "content" && method === "GET") return contentMedia(request, id);
     if (id && action === "download" && method === "GET") return downloadMedia(request, id);
     if (id && !action && method === "DELETE") return deleteMedia(request, id);
@@ -301,6 +434,8 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
   if (resource === "billing") {
     if (id === "checkout" && method === "POST") return checkout(request);
     if (id === "portal" && method === "POST") return billingPortal(request);
+    if (id === "cancel" && method === "POST") return cancelSubscription(request);
+    if (id === "resume" && method === "POST") return resumeSubscription(request);
     if (id === "webhooks" && action && method === "POST") return billingWebhook(request, action);
   }
   if (resource === "dreamcoins" && method === "GET") return dreamcoins(request);
@@ -343,6 +478,15 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
   }
 
   if (resource === "events" && id === "track" && method === "POST") return track(request);
+  if (resource === "feedback" && id === "items") {
+    if (!action && method === "GET") return listFeedbackItems(request);
+    if (!action && method === "POST") return createFeedbackItem(request);
+    if (action && child === "vote" && method === "POST") return voteFeedbackItem(request, action);
+    if (action && child === "vote" && method === "DELETE") return unvoteFeedbackItem(request, action);
+  }
+  if (resource === "support" && id === "requests" && !action && method === "POST") {
+    return submitSupportRequest(request);
+  }
   if (resource === "feed") return feed(request, segments);
   if (resource === "community") return community(request, segments);
   if (resource === "creators" && id && !action && method === "GET") {
@@ -392,16 +536,29 @@ async function signup(request: Request) {
       },
     });
     await appendLedger(tx, created.id, 250, "signup_bonus", "signup");
-    // Referral give/get: attribute the invite and grant both sides, once per invitee.
+    // Referral give/get: one share code can convert many invitees. Keep the
+    // parent invite row (inviteeId=null) and append one conversion row per signup
+    // so admin/progress views do not lose prior invitee attribution.
     if (body.ref) {
-      const referral = await tx.referral.findUnique({ where: { code: body.ref } });
+      const referral = await tx.referral.findFirst({
+        where: { code: body.ref, inviteeId: null },
+      });
       if (referral && referral.inviterId !== created.id) {
+        const conversion = await tx.referral.create({
+          data: {
+            inviterId: referral.inviterId,
+            inviteeId: created.id,
+            code: referral.code,
+            status: "completed",
+            rewardStatus: "granted",
+          },
+        });
         await appendLedger(
           tx,
           created.id,
           REFERRAL_INVITEE_BONUS,
           "referral_bonus",
-          referral.id,
+          conversion.id,
           `referral_invitee:${created.id}`,
         );
         await appendLedger(
@@ -412,10 +569,6 @@ async function signup(request: Request) {
           created.id,
           `referral_inviter:${created.id}`,
         );
-        await tx.referral.update({
-          where: { id: referral.id },
-          data: { inviteeId: created.id, status: "completed", rewardStatus: "granted" },
-        });
       }
     }
     return created;
@@ -486,10 +639,13 @@ async function login(request: Request) {
 
 async function logout(request: Request) {
   const cookies = parseRequestCookies(request);
-  const token = cookies.get("idream_session");
-  if (token) await prisma.session.deleteMany({ where: { token } });
+  const tokens = [cookies.get("idream_session"), cookies.get("idream_admin_session")].filter(
+    (token): token is string => Boolean(token),
+  );
+  if (tokens.length) await prisma.session.deleteMany({ where: { token: { in: tokens } } });
   const response = empty();
   response.headers.append("set-cookie", clearSessionCookie());
+  response.headers.append("set-cookie", clearAdminSessionCookie());
   return response;
 }
 
@@ -640,14 +796,24 @@ async function listCharacters(request: Request) {
   const tags = url.searchParams.getAll("tags").flatMap((value) => value.split(",")).filter(Boolean);
   const limit = clampInt(url.searchParams.get("limit"), 1, 60, 28);
   const cursor = decodeCursor(url.searchParams.get("cursor"));
-  const sort = url.searchParams.get("sort") ?? "popular";
+  const sort = exploreSort(url.searchParams.get("sort"));
+  const gender = publicCharacterEnumFilter(url.searchParams.get("gender"), [
+    "female",
+    "male",
+    "trans",
+  ]);
+  const style = publicCharacterEnumFilter(url.searchParams.get("style"), [
+    "realistic",
+    "anime",
+    "hybrid",
+  ]);
 
   const where: Prisma.CharacterWhereInput = {
     visibility: "public",
     status: "approved",
     deletedAt: null,
-    gender: url.searchParams.get("gender") ?? undefined,
-    style: url.searchParams.get("style") ?? undefined,
+    gender,
+    style,
     age: {
       gte: intParam(url.searchParams.get("age_min")),
       lte: intParam(url.searchParams.get("age_max")),
@@ -660,9 +826,20 @@ async function listCharacters(request: Request) {
                 slug: { in: tags.map(slugify) },
               },
             },
-          }
+      }
         : undefined,
   };
+
+  if (sort === "following") {
+    if (!ctx.userId) {
+      return ok({ items: [], nextCursor: null });
+    }
+    const followedCreatorIds = await communityFollowedCreatorIds(ctx.userId);
+    if (followedCreatorIds.length === 0) {
+      return ok({ items: [], nextCursor: null });
+    }
+    where.creatorId = { in: followedCreatorIds };
+  }
 
   const nameFilter = nameMatch(q);
   if (nameFilter) {
@@ -675,19 +852,40 @@ async function listCharacters(request: Request) {
   const characters = await prisma.character.findMany({
     where,
     include: characterInclude(ctx.userId),
-    orderBy:
-      sort === "newest"
-        ? [{ createdAt: "desc" }]
-        : [{ stats: { chatsCount: "desc" } }, { stats: { likesCount: "desc" } }],
+    orderBy: exploreOrderBy(sort),
     skip: cursor,
     take: limit + 1,
   });
 
   const page = characters.slice(0, limit);
   return ok({
-    items: page.map((character) => characterDTO(character)),
+    items: page.map((character) => characterDTO(character, ctx.userId)),
     nextCursor: characters.length > limit ? encodeCursor(cursor + limit) : null,
   });
+}
+
+type ExploreSort = "for-you" | "popular" | "newest" | "following";
+
+function exploreSort(value: string | null): ExploreSort {
+  if (value === "popular" || value === "newest" || value === "following") return value;
+  return "for-you";
+}
+
+function exploreOrderBy(sort: ExploreSort): Prisma.CharacterOrderByWithRelationInput[] {
+  if (sort === "newest" || sort === "following") {
+    return [{ createdAt: "desc" }, { id: "asc" }];
+  }
+  return [
+    { stats: { chatsCount: "desc" } },
+    { stats: { likesCount: "desc" } },
+    { createdAt: "desc" },
+    { id: "asc" },
+  ];
+}
+
+function publicCharacterEnumFilter<T extends string>(value: string | null, allowed: readonly T[]) {
+  if (!value || value === "any") return undefined;
+  return allowed.includes(value as T) ? (value as T) : undefined;
 }
 
 async function getCharacter(request: Request, id: string) {
@@ -720,7 +918,7 @@ async function getCharacter(request: Request, id: string) {
   });
 
   await trackEvent("character_viewed", { characterId: character.id }, ctx);
-  return ok({ character: characterDTO(character) });
+  return ok({ character: characterDTO(character, ctx.userId) });
 }
 
 async function likeCharacter(request: Request, id: string) {
@@ -761,9 +959,29 @@ async function unlikeCharacter(request: Request, id: string) {
 
 async function listTags() {
   const tags = await prisma.tag.findMany({
+    include: {
+      _count: {
+        select: {
+          characters: {
+            where: {
+              character: {
+                deletedAt: null,
+                status: "approved",
+                visibility: "public",
+              },
+            },
+          },
+        },
+      },
+    },
     orderBy: [{ category: "asc" }, { label: "asc" }],
   });
-  return ok({ items: tags });
+  return ok({
+    items: tags.map(({ _count, ...tag }) => ({
+      ...tag,
+      publicCharacterCount: _count.characters,
+    })),
+  });
 }
 
 async function suggest(request: Request) {
@@ -790,7 +1008,7 @@ async function suggest(request: Request) {
   ]);
 
   return ok({
-    characters: characters.map((character) => characterDTO(character)),
+    characters: characters.map((character) => characterDTO(character, ctx.userId)),
     tags,
   });
 }
@@ -897,6 +1115,35 @@ async function previewStatus(request: Request, id: string) {
   return ok({ previewJob: job });
 }
 
+async function selectPreviewAnchor(request: Request, id: string) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  await assertDraftOwner(id, user.id);
+  const body = draftPreviewSelectSchema.parse(await jsonBody(request));
+  const job = await prisma.characterPreviewJob.findFirst({
+    where: {
+      id: body.previewJobId,
+      draftId: id,
+      status: "completed",
+      resultAssetId: { not: null },
+    },
+  });
+  if (!job?.resultAssetId) {
+    throw Errors.badRequest("Preview anchor must be a completed preview image");
+  }
+  const asset = await prisma.mediaAsset.findFirst({
+    where: { id: job.resultAssetId, ownerId: user.id, deletedAt: null, type: "image" },
+  });
+  if (!asset) throw Errors.notFound("Preview anchor asset not found");
+  const draft = await prisma.characterDraft.update({
+    where: { id },
+    data: { previewJobId: job.id },
+  });
+  return ok({ draft, previewJob: job, asset: mediaDTO(asset) });
+}
+
 async function submitDraft(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
@@ -931,6 +1178,23 @@ async function submitDraft(request: Request, id: string) {
   if (moderation.status === "blocked") {
     throw Errors.forbidden("Character failed safety checks", moderation);
   }
+  const selectedPreview = draft.previewJobId
+    ? await prisma.characterPreviewJob.findFirst({
+        where: {
+          id: draft.previewJobId,
+          draftId: draft.id,
+          status: "completed",
+          resultAssetId: { not: null },
+        },
+      })
+    : null;
+  const latestPreview =
+    selectedPreview ??
+    (await prisma.characterPreviewJob.findFirst({
+      where: { draftId: draft.id, status: "completed", resultAssetId: { not: null } },
+      orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }],
+    }));
+  const anchorAssetId = latestPreview?.resultAssetId ?? null;
 
   const character = await prisma.$transaction(async (tx) => {
     const created = await tx.character.create({
@@ -944,11 +1208,34 @@ async function submitDraft(request: Request, id: string) {
         status: body.visibility === "public" ? "pending_review" : "approved",
         style,
         gender,
+        imageAssetId: anchorAssetId,
         appearance: toInputJson(draft.appearance ?? {}),
         advancedDetails: toInputJson(draft.advancedDetails ?? {}),
       },
     });
 
+    if (anchorAssetId) {
+      await tx.mediaAsset.updateMany({
+        where: { id: anchorAssetId, ownerId: user.id },
+        data: { characterId: created.id },
+      });
+    }
+    await tx.characterVisualProfile.create({
+      data: characterVisualProfileCreateData({
+        characterId: created.id,
+        version: 1,
+        status: "active",
+        style,
+        name: draftName,
+        age: body.age,
+        description,
+        gender,
+        appearance: draft.appearance,
+        advancedDetails: draft.advancedDetails,
+        anchorAssetIds: anchorAssetId ? [anchorAssetId] : [],
+        createdFrom: anchorAssetId ? "create_preview" : "create_submit",
+      }),
+    });
     await tx.characterStats.create({ data: { characterId: created.id } });
     await tx.characterSubmission.create({
       data: {
@@ -996,8 +1283,12 @@ async function generationConfig(request: Request) {
       orderBy: [{ mode: "asc" }, { useCase: "asc" }, { version: "desc" }],
     }),
     prisma.generationPreset.findMany({
-      where: { scope: "built_in", status: "active" },
-      orderBy: [{ type: "asc" }, { label: "asc" }],
+      where: {
+        scope: { in: ["built_in", "community"] },
+        status: "active",
+        visibility: "public",
+      },
+      orderBy: [{ scope: "asc" }, { type: "asc" }, { label: "asc" }],
     }),
     featureFlagEnabled("video_gen"),
     generationCost("image", 1),
@@ -1012,6 +1303,7 @@ async function generationConfig(request: Request) {
   const defaultImageProfile = imageProfiles[0] ?? profiles.find((profile) => profile.mode === "image");
 
   return ok({
+    viewer: { authenticated: Boolean(ctx.userId) },
     entitlements,
     dreamcoins: { balance },
     pricing: {
@@ -1043,6 +1335,7 @@ async function generationConfig(request: Request) {
     presets: presets.map((preset) => ({
       id: preset.id,
       type: preset.type,
+      scope: preset.scope,
       category: preset.category,
       label: preset.label,
       controls: preset.controls,
@@ -1051,22 +1344,35 @@ async function generationConfig(request: Request) {
   });
 }
 
-// SPEC: turn selected background/pose/outfit preset ids into a descriptive prompt fragment.
+// SPEC: turn selected mode/background/pose/outfit preset ids into a descriptive prompt fragment.
 // INTENT: presets are open to every tier (unlike custom prompt); only built-in or the user's
-// own active presets resolve, so a stranger's id can't be injected. Empty when none selected.
+// own active presets or public community presets resolve, so a stranger's private
+// id can't be injected. Empty when none selected.
 async function resolvePresetPromptFragment(
-  controls: { backgroundPresetId?: string; posePresetId?: string; outfitPresetId?: string },
+  controls: {
+    modePresetId?: string;
+    backgroundPresetId?: string;
+    posePresetId?: string;
+    outfitPresetId?: string;
+  },
   userId: string,
 ): Promise<string> {
-  const ids = [controls.backgroundPresetId, controls.posePresetId, controls.outfitPresetId].filter(
-    (id): id is string => Boolean(id),
-  );
+  const ids = [
+    controls.modePresetId,
+    controls.backgroundPresetId,
+    controls.posePresetId,
+    controls.outfitPresetId,
+  ].filter((id): id is string => Boolean(id));
   if (ids.length === 0) return "";
   const presets = await prisma.generationPreset.findMany({
     where: {
       id: { in: ids },
       status: "active",
-      OR: [{ scope: "built_in" }, { ownerId: userId }],
+      OR: [
+        { scope: "built_in" },
+        { scope: "community", visibility: "public" },
+        { ownerId: userId },
+      ],
     },
   });
   const fragments: string[] = [];
@@ -1090,18 +1396,301 @@ async function createGenerationJob(request: Request) {
   requireAgeVerified(ctx);
   const body = generationJobSchema.parse(await jsonBody(request));
   const idempotencyKey = normalizeHeader(request.headers.get("idempotency-key"));
-  if (idempotencyKey) {
-    const existing = await prisma.generationJob.findFirst({
-      where: { userId: user.id, idempotencyKey },
-      include: generationJobInclude(),
+  const source = await resolveFeedRemixGenerationSource(user.id, body, idempotencyKey);
+  const job = await createGenerationJobForUser(user.id, body, { idempotencyKey, source });
+  const queued = await prisma.generationJob.findUniqueOrThrow({
+    where: { id: job.id },
+    include: generationJobInclude(),
+  });
+  return ok(generationJobResponse(queued), { status: 202 });
+}
+
+type GenerationCreateBody = z.infer<typeof generationJobSchema>;
+
+interface GenerationSource {
+  sourceType: string;
+  sourceId: string;
+  sourceMeta?: Prisma.InputJsonValue;
+}
+
+async function resolveFeedRemixGenerationSource(
+  userId: string,
+  body: GenerationCreateBody,
+  idempotencyKey?: string | null,
+): Promise<GenerationSource | undefined> {
+  const itemId = body.remixFeedItemId?.trim();
+  if (!itemId) return undefined;
+  if (body.freeplay || !body.characterId) {
+    throw Errors.badRequest("Choose a feed character before remixing");
+  }
+  const character = await feedPublicCharacterByItemId(itemId);
+  if (!character) throw Errors.notFound("Feed item not found");
+  if (character.id !== body.characterId) {
+    throw Errors.badRequest("Remix feed item does not match the selected character");
+  }
+  return {
+    sourceType: "feed_remix",
+    sourceId: `feed:${itemId}:user:${userId}:remix:${idempotencyKey ?? cryptoRandomId("feedremix")}`,
+    sourceMeta: toInputJson({
+      feedItemId: itemId,
+      sourceCharacterId: character.id,
+      sourceCreatorId: character.creatorId,
+      sourceCharacterName: character.name,
+    }),
+  };
+}
+
+interface GenerationPromptCharacter {
+  id: string;
+  name: string;
+  age: number;
+  description: string;
+  relationship: string | null;
+  style: string | null;
+  gender: string | null;
+  appearance: Prisma.JsonValue;
+  advancedDetails: Prisma.JsonValue;
+}
+
+interface GenerationVisualProfile {
+  id: string;
+  version: number;
+  status: string;
+  style: string;
+  identityPrompt: string;
+  negativeIdentityPrompt: string | null;
+  anchorAssetIds: Prisma.JsonValue;
+  referenceAssetIds: Prisma.JsonValue;
+  defaultSeed: string | null;
+  adapterRefs: Prisma.JsonValue;
+}
+
+type CharacterVisualProfileSource = {
+  id: string;
+  name: string;
+  age: number;
+  description: string;
+  style: string | null;
+  gender: string | null;
+  appearance: Prisma.JsonValue;
+  advancedDetails: Prisma.JsonValue;
+  imageAssetId?: string | null;
+};
+
+export function characterVisualProfileCreateData(input: {
+  characterId: string;
+  version: number;
+  status: "draft" | "active" | "archived";
+  style: string;
+  name: string;
+  age: number;
+  description: string;
+  gender: string;
+  appearance: Prisma.JsonValue;
+  advancedDetails: Prisma.JsonValue;
+  anchorAssetIds: string[];
+  referenceAssetIds?: string[];
+  createdFrom: string;
+}) {
+  const identityPrompt = buildCharacterIdentityPrompt(input);
+  return {
+    characterId: input.characterId,
+    version: input.version,
+    status: input.status,
+    style: input.style,
+    identityPrompt,
+    negativeIdentityPrompt:
+      "different face, different hairstyle, different eye color, identity drift, inconsistent age presentation",
+    faceTraits: toInputJson(extractVisualTraitRecord(input.appearance, "face")),
+    hairTraits: toInputJson(extractVisualTraitRecord(input.appearance, "hair")),
+    bodyTraits: toInputJson(extractVisualTraitRecord(input.appearance, "body")),
+    signatureTraits: toInputJson(extractVisualTraitRecord(input.advancedDetails, "signature")),
+    styleTraits: toInputJson({
+      style: input.style,
+      gender: input.gender,
+      age: input.age,
+    }),
+    anchorAssetIds: toInputJson(input.anchorAssetIds),
+    referenceAssetIds: toInputJson(input.referenceAssetIds ?? []),
+    defaultSeed: `character:${input.characterId}:visual:${input.version}`,
+    adapterRefs: toInputJson({}),
+    createdFrom: input.createdFrom,
+  };
+}
+
+export async function createActiveCharacterVisualProfileVersion(
+  tx: Prisma.TransactionClient,
+  character: CharacterVisualProfileSource,
+  input: { createdFrom: string },
+) {
+  const active = await tx.characterVisualProfile.findFirst({
+    where: { characterId: character.id, status: "active" },
+    orderBy: { version: "desc" },
+  });
+  const anchorAssetIds = active
+    ? jsonStringArray(active.anchorAssetIds)
+    : character.imageAssetId
+      ? [character.imageAssetId]
+      : [];
+  const referenceAssetIds = active ? jsonStringArray(active.referenceAssetIds) : [];
+  if (active) {
+    await tx.characterVisualProfile.updateMany({
+      where: { characterId: character.id, status: "active" },
+      data: { status: "archived" },
     });
-    if (existing) return ok(generationJobResponse(existing));
+  }
+  const version = (active?.version ?? 0) + 1;
+  return tx.characterVisualProfile.create({
+    data: characterVisualProfileCreateData({
+      characterId: character.id,
+      version,
+      status: "active",
+      style: character.style ?? "realistic",
+      name: character.name,
+      age: character.age,
+      description: character.description,
+      gender: character.gender ?? "female",
+      appearance: character.appearance,
+      advancedDetails: character.advancedDetails,
+      anchorAssetIds,
+      referenceAssetIds,
+      createdFrom: input.createdFrom,
+    }),
+  });
+}
+
+function buildCharacterIdentityPrompt(input: {
+  name: string;
+  age: number;
+  description: string;
+  gender: string;
+  style: string;
+  appearance: Prisma.JsonValue;
+  advancedDetails: Prisma.JsonValue;
+}) {
+  const details = [
+    cleanPromptText(input.description, 360),
+    ...promptDetails(input.appearance, "Appearance"),
+    ...promptDetails(input.advancedDetails, "Character detail"),
+  ].filter(Boolean);
+  return clampPrompt(
+    [
+      `${cleanPromptText(input.name, 120)}, adult ${cleanPromptText(input.gender, 80)} companion`,
+      `${input.age} years old`,
+      `${cleanPromptText(input.style, 80)} visual style`,
+      details.length ? details.join("; ") : null,
+    ]
+      .filter(Boolean)
+      .join("; "),
+    900,
+  );
+}
+
+function extractVisualTraitRecord(value: Prisma.JsonValue, preferredKey: string) {
+  if (!isRecord(value)) return {};
+  const direct = value[preferredKey];
+  if (isRecord(direct)) return direct;
+  return Object.fromEntries(
+    Object.entries(value).filter(([, child]) =>
+      ["string", "number", "boolean"].includes(typeof child),
+    ),
+  );
+}
+
+// Dedup lookup for generation jobs: idempotencyKey first, then (sourceType, sourceId).
+// Shared by the cheap pre-check fast-path and the P2002 conflict fallback so both resolve
+// a duplicate request to the SAME existing job.
+async function findExistingGenerationJob(
+  userId: string,
+  options: { idempotencyKey?: string | null; source?: GenerationSource },
+) {
+  if (options.idempotencyKey) {
+    const existing = await prisma.generationJob.findFirst({
+      where: { userId, idempotencyKey: options.idempotencyKey },
+    });
+    if (existing) return existing;
+  }
+  if (options.source) {
+    const existing = await prisma.generationJob.findFirst({
+      where: { sourceType: options.source.sourceType, sourceId: options.source.sourceId },
+    });
+    if (existing) return existing;
+  }
+  return null;
+}
+
+function isUniqueConstraintError(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
+}
+
+async function resolveGenerationVisualProfile(
+  character: GenerationPromptCharacter,
+  requestedProfileId?: string,
+): Promise<GenerationVisualProfile | null> {
+  if (requestedProfileId) {
+    const profile = await prisma.characterVisualProfile.findFirst({
+      where: { id: requestedProfileId, characterId: character.id },
+      orderBy: { version: "desc" },
+    });
+    if (!profile) throw Errors.notFound("Character visual profile not found");
+    if (profile.status === "archived") {
+      throw Errors.badRequest("Character visual profile is archived", { visualProfileId: requestedProfileId });
+    }
+    return profile;
   }
 
-  const entitlements = await entitlementMap(user.id);
-  const character = body.characterId
-    ? await generationCharacter(body.characterId, user.id)
-    : null;
+  const active = await prisma.characterVisualProfile.findFirst({
+    where: { characterId: character.id, status: "active" },
+    orderBy: { version: "desc" },
+  });
+  if (active) return active;
+  return bootstrapCharacterVisualProfile(character);
+}
+
+async function bootstrapCharacterVisualProfile(
+  character: GenerationPromptCharacter,
+): Promise<GenerationVisualProfile | null> {
+  try {
+    return await prisma.characterVisualProfile.create({
+      data: characterVisualProfileCreateData({
+        characterId: character.id,
+        version: 1,
+        status: "active",
+        style: character.style ?? "realistic",
+        name: character.name,
+        age: character.age,
+        description: character.description,
+        gender: character.gender ?? "female",
+        appearance: character.appearance,
+        advancedDetails: character.advancedDetails,
+        anchorAssetIds: [],
+        createdFrom: "generation_bootstrap",
+      }),
+    });
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) throw error;
+    return prisma.characterVisualProfile.findFirst({
+      where: { characterId: character.id, status: "active" },
+      orderBy: { version: "desc" },
+    });
+  }
+}
+
+async function createGenerationJobForUser(
+  userId: string,
+  body: GenerationCreateBody,
+  options: { idempotencyKey?: string | null; source?: GenerationSource } = {},
+) {
+  const preexisting = await findExistingGenerationJob(userId, options);
+  if (preexisting) return preexisting;
+
+  const entitlements = await entitlementMap(userId);
+  const character = body.characterId ? await generationCharacter(body.characterId, userId) : null;
+  const consistencyMode = body.consistencyMode ?? "balanced";
+  const visualProfile =
+    body.mode === "image" && character
+      ? await resolveGenerationVisualProfile(character, body.visualProfileId)
+      : null;
   const selectedModel = body.model ?? body.controls.model;
   const profile = await selectGenerationProfile(body.mode, selectedModel);
 
@@ -1111,7 +1700,8 @@ async function createGenerationJob(request: Request) {
   if (body.mode === "video" && !(await featureFlagEnabled("video_gen"))) {
     throw Errors.forbidden("Video generation is disabled");
   }
-  if ((body.prompt || body.negativePrompt) && !entitlements.premium_controls) {
+  const systemPromptSource = isTrustedGenerationPromptSource(options.source?.sourceType);
+  if ((body.prompt || body.negativePrompt) && !systemPromptSource && !entitlements.premium_controls) {
     throw Errors.paymentRequired("Custom prompt controls require Premium");
   }
   if (profile.requiredEntitlement && !entitlements[profile.requiredEntitlement]) {
@@ -1125,37 +1715,73 @@ async function createGenerationJob(request: Request) {
     });
   }
 
-  const promptTemplate = await selectPromptTemplate(
-    body.mode,
-    body.characterId ? "character" : "freeplay",
-  );
+  const promptTemplate = await selectPromptTemplate(body.mode, body.characterId ? "character" : "freeplay");
   const orientation =
     body.orientation ??
     body.controls.orientation ??
     jsonStringArray(profile.allowedOrientations)[0] ??
     "4:5";
-  const controls = {
+  const dimensions =
+    body.mode === "image"
+      ? dimensionsForImageOrientation({
+          orientation,
+          defaultWidth: profile.defaultWidth,
+          defaultHeight: profile.defaultHeight,
+        })
+      : { width: profile.defaultWidth, height: profile.defaultHeight };
+  const referenceAssetIds = visualProfile ? visualProfileReferenceAssetIds(visualProfile) : [];
+  const seed = body.seed ?? visualProfile?.defaultSeed ?? null;
+  const controls = pruneUndefined({
     ...body.controls,
     orientation,
     model: profile.profileKey,
     profileId: profile.profileKey,
-    width: profile.defaultWidth,
-    height: profile.defaultHeight,
-  };
+    width: dimensions.width,
+    height: dimensions.height,
+    consistencyMode: visualProfile ? consistencyMode : undefined,
+    visualIdentity: visualProfile
+      ? {
+          visualProfileId: visualProfile.id,
+          visualProfileVersion: visualProfile.version,
+          consistencyMode,
+          referenceAssetIds,
+          anchorAssetIds: jsonStringArray(visualProfile.anchorAssetIds),
+          seed,
+        }
+      : undefined,
+  });
   const cost = await generationCost(body.mode, body.outputCount, profile.costMultiplier);
-  // Built-in/owned presets (background/pose/outfit) are open to every tier and
-  // augment the prompt with descriptive fragments so the choice actually changes output.
-  const presetFragment = await resolvePresetPromptFragment(body.controls, user.id);
-  const basePrompt =
-    body.prompt ??
-    `${body.mode === "video" ? "Video" : "Image"} generation for ${
-      character?.name ?? "an original companion"
-    }`;
-  const prompt = presetFragment ? `${basePrompt}. ${presetFragment}` : basePrompt;
+  const presetFragment = await resolvePresetPromptFragment(body.controls, userId);
+  const prompt = buildGenerationPrompt({
+    mode: body.mode,
+    character,
+    visualProfile,
+    consistencyMode,
+    userPrompt: body.prompt,
+    presetFragment,
+    sourceType: options.source?.sourceType,
+  });
+  const negativePrompt =
+    body.mode === "image"
+      ? imageNegativePrompt(
+          body.negativePrompt ?? defaultImageNegativePrompt(promptTemplate.negativeBase, options.source?.sourceType),
+          visualProfile,
+        )
+      : (body.negativePrompt ?? null);
 
-  const job = await prisma.$transaction(async (tx) => {
-    await lockUserLedger(tx, user.id);
-    const balance = await dreamcoinBalance(user.id, tx);
+  // Create in a tx; if a concurrent writer (or a redelivered chat.image.requested for the
+  // same attachment) committed the same idempotencyKey / (sourceType,sourceId) first, the
+  // unique constraint throws P2002 — resolve to that existing job rather than a 500 / a
+  // spurious chat.image.failed (handled below).
+  const runCreateTx = () => prisma.$transaction(async (tx) => {
+    if (options.source) {
+      const existing = await tx.generationJob.findFirst({
+        where: { sourceType: options.source.sourceType, sourceId: options.source.sourceId },
+      });
+      if (existing) return existing;
+    }
+    await lockUserLedger(tx, userId);
+    const balance = await dreamcoinBalance(userId, tx);
     if (balance < cost) {
       throw Errors.paymentRequired("Insufficient dreamcoins", {
         balance,
@@ -1164,7 +1790,7 @@ async function createGenerationJob(request: Request) {
       });
     }
     const active = await tx.generationJob.count({
-      where: { userId: user.id, status: { in: activeGenerationStatuses() } },
+      where: { userId, status: { in: activeGenerationStatuses() } },
     });
     const max = maxInflightJobs(entitlements);
     if (active >= max) {
@@ -1173,12 +1799,17 @@ async function createGenerationJob(request: Request) {
 
     const created = await tx.generationJob.create({
       data: {
-        userId: user.id,
+        userId,
         characterId: body.characterId,
-        idempotencyKey,
+        visualProfileId: visualProfile?.id,
+        visualProfileVersion: visualProfile?.version,
+        consistencyMode: visualProfile ? consistencyMode : null,
+        seed,
+        referenceAssetIds: visualProfile ? toInputJson(referenceAssetIds) : undefined,
+        idempotencyKey: options.idempotencyKey,
         mode: body.mode,
         prompt,
-        negativePrompt: body.negativePrompt,
+        negativePrompt,
         controls: toInputJson(controls),
         presetIds: toInputJson(body.presetIds),
         model: profile.pipelineModel,
@@ -1191,17 +1822,25 @@ async function createGenerationJob(request: Request) {
         status: "queued",
         costDreamcoins: cost,
         provider: profile.runner,
+        sourceType: options.source?.sourceType ?? "generator",
+        sourceId: options.source?.sourceId,
+        sourceMeta: options.source?.sourceMeta,
       },
     });
     await appendGenerationEvent(tx, created.id, "created", "Generation job accepted", {
       mode: created.mode,
       profileId: created.profileId,
       promptTemplateId: created.promptTemplateId,
-      idempotencyKey: idempotencyKey ?? null,
+      visualProfileId: created.visualProfileId,
+      visualProfileVersion: created.visualProfileVersion,
+      consistencyMode: created.consistencyMode,
+      idempotencyKey: options.idempotencyKey ?? null,
+      sourceType: created.sourceType,
+      sourceId: created.sourceId,
     });
     await appendLedger(
       tx,
-      user.id,
+      userId,
       -cost,
       "generation_spend",
       created.id,
@@ -1214,17 +1853,236 @@ async function createGenerationJob(request: Request) {
     return created;
   });
 
+  let job: Awaited<ReturnType<typeof runCreateTx>>;
+  try {
+    job = await runCreateTx();
+  } catch (error) {
+    if (isUniqueConstraintError(error)) {
+      const existing = await findExistingGenerationJob(userId, options);
+      if (existing) return existing;
+    }
+    throw error;
+  }
+
+  if (job.status !== "queued") return job;
+
   try {
     await enqueueGenerationJob(job);
   } catch (error) {
     await failQueuedGeneration(job, "queue_enqueue_failed", error);
     throw Errors.internal("Generation queue unavailable", { jobId: job.id });
   }
-  const queued = await prisma.generationJob.findUniqueOrThrow({
-    where: { id: job.id },
-    include: generationJobInclude(),
-  });
-  return ok(generationJobResponse(queued), { status: 202 });
+  return job;
+}
+
+function isTrustedGenerationPromptSource(sourceType: string | undefined) {
+  return sourceType === "chat_image" || sourceType === "media_variation";
+}
+
+export async function createChatImageGenerationJob(payload: ChatImageRequestedPayload) {
+  const user = await prisma.user.findUnique({ where: { id: payload.userId } });
+  if (!user || user.status !== "active" || user.deletedAt) {
+    throw Errors.forbidden("User cannot generate images");
+  }
+  const prompt = buildChatImagePrompt(payload);
+  const orientation = normalizeImageOrientation(payload.controls.orientation, "4:5");
+  return createGenerationJobForUser(
+    payload.userId,
+    {
+      mode: "image",
+      characterId: payload.characterId,
+      freeplay: false,
+      consistencyMode: "balanced",
+      prompt,
+      controls: {
+        orientation,
+      },
+      presetIds: [],
+      orientation,
+      outputCount: payload.controls.outputCount,
+    },
+    {
+      idempotencyKey: idempotencyKeys.chatImage(payload.attachmentId),
+      source: {
+        sourceType: "chat_image",
+        sourceId: payload.attachmentId,
+        sourceMeta: toInputJson({
+          sessionId: payload.sessionId,
+          messageId: payload.messageId,
+          promptHint: payload.promptHint,
+          conversationContext: payload.conversationContext,
+        }),
+      },
+    },
+  );
+}
+
+function buildChatImagePrompt(payload: ChatImageRequestedPayload) {
+  const hint = payload.promptHint?.trim();
+  return hint ? cleanPromptText(hint, 500) : "candid in-character photo";
+}
+
+function buildGenerationPrompt(input: {
+  mode: "image" | "video";
+  character: GenerationPromptCharacter | null;
+  visualProfile: GenerationVisualProfile | null;
+  consistencyMode: "balanced" | "strict" | "creative";
+  userPrompt?: string;
+  presetFragment: string;
+  sourceType?: string;
+}) {
+  const userPrompt = cleanPromptText(input.userPrompt, 900);
+  const base =
+    input.mode === "image"
+      ? buildImageGenerationPrompt({
+          character: input.character,
+          visualProfile: input.visualProfile,
+          consistencyMode: input.consistencyMode,
+          userPrompt,
+          sourceType: input.sourceType,
+        })
+      : buildVideoGenerationPrompt(input.character, userPrompt);
+  const preset = cleanPromptText(input.presetFragment, 500);
+  return clampPrompt(preset ? `${base}. Scene details: ${preset}` : base, 2_000);
+}
+
+function buildImageGenerationPrompt(input: {
+  character: GenerationPromptCharacter | null;
+  visualProfile: GenerationVisualProfile | null;
+  consistencyMode: "balanced" | "strict" | "creative";
+  userPrompt: string;
+  sourceType?: string;
+}) {
+  const request =
+    input.userPrompt ||
+    (input.sourceType === "chat_image"
+      ? "candid in-character portrait shared from the current moment"
+      : "natural in-character portrait");
+
+  if (!input.character) {
+    return clampPrompt(
+      [
+        "High quality original companion portrait",
+        `Requested scene: ${request}`,
+        "single coherent subject, expressive face, natural pose, well-lit face, properly exposed, sharp focus, detailed eyes, natural skin texture, clean composition",
+      ].join(". "),
+      2_000,
+    );
+  }
+
+  const character = input.character;
+  const visualProfile = input.visualProfile;
+  const details = [
+    cleanPromptText(character.description, 500),
+    ...promptDetails(character.appearance, "Appearance"),
+    ...promptDetails(character.advancedDetails, "Character detail"),
+  ].filter(Boolean);
+  const presentation = [
+    "adult",
+    cleanPromptText(character.gender, 80),
+    cleanPromptText(character.style, 80),
+  ].filter(Boolean);
+
+  return clampPrompt(
+    [
+      `High quality in-character portrait photo of ${cleanPromptText(character.name, 120)}`,
+      presentation.length ? `Subject: ${presentation.join(", ")}` : null,
+      visualProfile
+        ? `Locked identity: ${cleanPromptText(visualProfile.identityPrompt, 900)}`
+        : details.length
+          ? `Character: ${details.join("; ")}`
+          : null,
+      visualProfile ? consistencyPromptFragment(input.consistencyMode) : null,
+      visualProfile && details.length ? `Character notes: ${details.join("; ")}` : null,
+      `Requested scene: ${request}`,
+      "single coherent subject, face and body matching the character, expressive eyes, natural pose, well-lit visible face, properly exposed, sharp focus, detailed skin and hair, clean photographic composition",
+    ]
+      .filter(Boolean)
+      .join(". "),
+    2_000,
+  );
+}
+
+function consistencyPromptFragment(mode: "balanced" | "strict" | "creative") {
+  if (mode === "strict") {
+    return "Identity consistency: strict; preserve the same face, hairstyle, eye color, body type, and signature traits from the locked identity";
+  }
+  if (mode === "creative") {
+    return "Identity consistency: creative; allow scene and styling variation while preserving the core face, hair, and signature traits";
+  }
+  return "Identity consistency: balanced; preserve the character identity while allowing the requested scene, pose, outfit, and lighting";
+}
+
+function imageNegativePrompt(base: string | null, visualProfile: GenerationVisualProfile | null) {
+  const cleanBase = cleanPromptText(base, 900);
+  const identityNegative = cleanPromptText(visualProfile?.negativeIdentityPrompt, 400);
+  return [cleanBase, identityNegative].filter(Boolean).join(", ") || null;
+}
+
+function visualProfileReferenceAssetIds(profile: GenerationVisualProfile) {
+  return Array.from(
+    new Set([
+      ...jsonStringArray(profile.anchorAssetIds),
+      ...jsonStringArray(profile.referenceAssetIds),
+    ]),
+  );
+}
+
+function buildVideoGenerationPrompt(character: GenerationPromptCharacter | null, userPrompt: string) {
+  const subject = character?.name ? cleanPromptText(character.name, 120) : "an original companion";
+  return clampPrompt(userPrompt || `Video generation for ${subject}`, 2_000);
+}
+
+function defaultImageNegativePrompt(templateNegative: string | null, sourceType?: string) {
+  const base =
+    cleanPromptText(templateNegative, 700) ||
+    "low quality, distorted anatomy, extra fingers, watermark, text";
+  const uiBlockers =
+    "logo, user interface, app screen, phone screenshot, chat bubbles, buttons, icons, blurry, underexposed, silhouette, overly dark";
+  return sourceType === "chat_image" ? `${base}, ${uiBlockers}` : `${base}, ${uiBlockers}`;
+}
+
+function promptDetails(value: Prisma.JsonValue, label: string) {
+  if (!isRecord(value)) return [];
+  return Object.entries(value)
+    .flatMap(([key, raw]) => promptDetailValue(`${label}.${key}`, raw))
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
+function promptDetailValue(key: string, value: unknown): string[] {
+  const cleanKey = cleanPromptText(key.replace(/[_.]+/g, " "), 80);
+  if (!cleanKey || /source\s*image/i.test(cleanKey)) return [];
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    const cleanValue = cleanPromptText(String(value), 180);
+    if (!cleanValue || /^https?:\/\//i.test(cleanValue) || cleanValue.startsWith("/")) return [];
+    return [`${cleanKey}: ${cleanValue}`];
+  }
+  if (Array.isArray(value)) {
+    const values = value
+      .filter((item): item is string | number | boolean =>
+        ["string", "number", "boolean"].includes(typeof item),
+      )
+      .map((item) => cleanPromptText(String(item), 120))
+      .filter((item) => item && !/^https?:\/\//i.test(item) && !item.startsWith("/"))
+      .slice(0, 5);
+    return values.length ? [`${cleanKey}: ${values.join(", ")}`] : [];
+  }
+  if (isRecord(value)) {
+    return Object.entries(value)
+      .flatMap(([childKey, raw]) => promptDetailValue(`${key}.${childKey}`, raw))
+      .slice(0, 8);
+  }
+  return [];
+}
+
+function cleanPromptText(value: string | null | undefined, max = 2_000) {
+  const cleaned = value?.replace(/\s+/g, " ").trim() ?? "";
+  return clampPrompt(cleaned, max);
+}
+
+function clampPrompt(value: string, max: number) {
+  return value.length <= max ? value : `${value.slice(0, max - 3).trimEnd()}...`;
 }
 
 // SPEC: On-demand TTS for a single assistant chat turn ("play voice" button).
@@ -1240,6 +2098,8 @@ const voiceClipSchema = z.object({
   sessionId: z.string().min(1).optional(),
   text: z.string().trim().min(1).max(2_000),
 });
+
+const voiceClipCacheVersion = 5;
 
 async function createVoiceClip(request: Request) {
   const ctx = await getAuthCtx(request);
@@ -1268,8 +2128,13 @@ async function createVoiceClip(request: Request) {
     deletedAt: null,
     metadata: { path: ["messageId"], equals: body.messageId },
   };
-  const cached = await prisma.mediaAsset.findFirst({ where: cacheWhere });
+  const cachedAssets = await prisma.mediaAsset.findMany({
+    where: cacheWhere,
+    orderBy: { createdAt: "desc" },
+  });
+  const cached = cachedAssets.find(isCurrentVoiceClip);
   if (cached) return ok(voiceClipResponse(cached));
+  const hasStaleCachedClip = cachedAssets.length > 0;
 
   const character = await readableCharacter(body.characterId, user.id);
   if (character.age < 18) {
@@ -1281,6 +2146,7 @@ async function createVoiceClip(request: Request) {
   // Fast-fail only when the allowance is already exhausted. The authoritative
   // metering decision happens after synthesis because duration determines coverage.
   if (
+    !hasStaleCachedClip &&
     overflowCost > 0 &&
     (await voiceMinutesRemainingMs(user.id, entitlements)) <= 0 &&
     (await dreamcoinBalance(user.id)) < overflowCost
@@ -1304,11 +2170,22 @@ async function createVoiceClip(request: Request) {
   // duplicate clip nor double-charge; a create failure rolls the charge back.
   const asset = await prisma.$transaction(async (tx) => {
     await lockUserLedger(tx, user.id);
-    const raced = await tx.mediaAsset.findFirst({ where: cacheWhere });
+    const racedAssets = await tx.mediaAsset.findMany({
+      where: cacheWhere,
+      orderBy: { createdAt: "desc" },
+    });
+    const raced = racedAssets.find(isCurrentVoiceClip);
     if (raced) return raced;
+    const staleAssetIds = racedAssets.map((asset) => asset.id);
+    if (staleAssetIds.length > 0) {
+      await tx.mediaAsset.updateMany({
+        where: { id: { in: staleAssetIds } },
+        data: { deletedAt: new Date() },
+      });
+    }
     const durationMs = Math.max(0, result.data.durationMs);
     const remainingMs = await voiceMinutesRemainingMs(user.id, entitlements, tx);
-    const cost = remainingMs >= durationMs ? 0 : overflowCost;
+    const cost = staleAssetIds.length > 0 || remainingMs >= durationMs ? 0 : overflowCost;
     if (cost > 0) {
       const balance = await dreamcoinBalance(user.id, tx);
       if (balance < cost) {
@@ -1337,6 +2214,7 @@ async function createVoiceClip(request: Request) {
         visibility: "private",
         safetyStatus: "passed",
         metadata: toInputJson({
+          cacheVersion: voiceClipCacheVersion,
           messageId: body.messageId,
           sessionId: body.sessionId ?? null,
           voiceId: character.voiceId ?? null,
@@ -1344,6 +2222,7 @@ async function createVoiceClip(request: Request) {
           durationMs,
           providerKey: result.data.key,
           costDreamcoins: cost,
+          replacedAssetIds: staleAssetIds,
         }),
       },
     });
@@ -1375,6 +2254,11 @@ async function voiceMinutesRemainingMs(
 function voiceDurationMs(metadata: Prisma.JsonValue) {
   const record = jsonRecord(metadata);
   return typeof record.durationMs === "number" ? record.durationMs : 0;
+}
+
+function isCurrentVoiceClip(asset: { metadata: Prisma.JsonValue }) {
+  const record = jsonRecord(asset.metadata);
+  return record.cacheVersion === voiceClipCacheVersion;
 }
 
 function voiceContentType(key: string) {
@@ -1517,6 +2401,11 @@ async function retryGenerationJob(request: Request, id: string) {
       data: {
         userId: user.id,
         characterId: job.characterId,
+        visualProfileId: job.visualProfileId,
+        visualProfileVersion: job.visualProfileVersion,
+        consistencyMode: job.consistencyMode,
+        seed: job.seed,
+        referenceAssetIds: job.referenceAssetIds === null ? undefined : job.referenceAssetIds,
         derivedFromJobId: job.id,
         mode: job.mode,
         prompt: job.prompt,
@@ -1669,15 +2558,219 @@ async function listMedia(request: Request) {
       visibility: visibility ?? undefined,
       likes: liked ? { some: { userId: user.id } } : undefined,
     },
+    include: {
+      sourceJob: {
+        select: {
+          sourceType: true,
+          sourceId: true,
+          sourceMeta: true,
+        },
+      },
+    },
     orderBy: { createdAt: "desc" },
     skip: offset,
     take: limit + 1,
   });
   const page = assets.slice(0, limit);
+  const mediaCharacterIds = [
+    ...new Set(page.map((asset) => asset.characterId).filter((id): id is string => Boolean(id))),
+  ];
+  const editableCharacters =
+    mediaCharacterIds.length > 0
+      ? await prisma.character.findMany({
+          where: { id: { in: mediaCharacterIds }, creatorId: user.id, deletedAt: null },
+          select: { id: true },
+        })
+      : [];
+  const editableCharacterIds = new Set(editableCharacters.map((character) => character.id));
   return ok({
-    items: page.map(mediaDTO),
+    items: page.map((asset) => mediaDTO(asset, { editableCharacterIds })),
     nextCursor: assets.length > limit ? encodeCursor(offset + limit) : null,
   });
+}
+
+function mediaCollectionInclude() {
+  return {
+    items: {
+      orderBy: { sortOrder: "asc" as const },
+      take: 4,
+      include: {
+        mediaAsset: {
+          select: {
+            id: true,
+            thumbnailUrl: true,
+            url: true,
+            storageKey: true,
+            contentType: true,
+            type: true,
+            deletedAt: true,
+            safetyStatus: true,
+            visibility: true,
+          },
+        },
+      },
+    },
+    owner: { select: { id: true, displayName: true, name: true } },
+    _count: { select: { items: true } },
+  } satisfies Prisma.MediaCollectionInclude;
+}
+
+type MediaCollectionWithRelations = Prisma.MediaCollectionGetPayload<{
+  include: ReturnType<typeof mediaCollectionInclude>;
+}>;
+
+async function listMediaCollections(request: Request) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  const collections = await prisma.mediaCollection.findMany({
+    where: { ownerId: user.id },
+    include: mediaCollectionInclude(),
+    orderBy: { createdAt: "desc" },
+  });
+  return ok({ collections: collections.map(mediaCollectionDTO) });
+}
+
+async function createMediaCollection(request: Request) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  const body = mediaCollectionCreateSchema.parse(await jsonBody(request));
+  const media = body.mediaAssetId ? await assertMediaOwner(body.mediaAssetId, user.id) : null;
+
+  const collection = await prisma.$transaction(async (tx) => {
+    const created = await tx.mediaCollection.create({
+      data: {
+        ownerId: user.id,
+        name: body.name,
+        visibility: body.visibility,
+      },
+    });
+    if (media) {
+      if (body.visibility === "public") {
+        await tx.mediaAsset.update({
+          where: { id: media.id },
+          data: { visibility: "public_pack" },
+        });
+      }
+      await tx.mediaCollectionItem.create({
+        data: {
+          collectionId: created.id,
+          mediaAssetId: media.id,
+          sortOrder: 0,
+        },
+      });
+    }
+    return tx.mediaCollection.findUniqueOrThrow({
+      where: { id: created.id },
+      include: mediaCollectionInclude(),
+    });
+  });
+
+  await trackEvent("media_collection_created", {
+    collectionId: collection.id,
+    visibility: collection.visibility,
+    mediaAssetId: media?.id ?? null,
+  }, ctx);
+
+  return ok({ collection: mediaCollectionDTO(collection) }, { status: 201 });
+}
+
+async function updateMediaCollection(request: Request, collectionId: string) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  const body = mediaCollectionUpdateSchema.parse(await jsonBody(request));
+  const existing = await prisma.mediaCollection.findFirst({
+    where: { id: collectionId, ownerId: user.id },
+    select: { id: true },
+  });
+  if (!existing) throw Errors.notFound("Collection not found");
+
+  const collection = await prisma.$transaction(async (tx) => {
+    if (body.visibility === "public") {
+      await tx.mediaAsset.updateMany({
+        where: {
+          ownerId: user.id,
+          deletedAt: null,
+          collections: { some: { collectionId } },
+        },
+        data: { visibility: "public_pack" },
+      });
+    }
+    await tx.mediaCollection.update({
+      where: { id: collectionId },
+      data: {
+        name: body.name,
+        visibility: body.visibility,
+      },
+    });
+    return tx.mediaCollection.findUniqueOrThrow({
+      where: { id: collectionId },
+      include: mediaCollectionInclude(),
+    });
+  });
+
+  await trackEvent("media_collection_updated", {
+    collectionId,
+    visibility: body.visibility ?? collection.visibility,
+  }, ctx);
+
+  return ok({ collection: mediaCollectionDTO(collection) });
+}
+
+async function addMediaToCollection(request: Request, collectionId: string) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  const body = mediaCollectionItemSchema.parse(await jsonBody(request));
+  const [collection, media] = await Promise.all([
+    prisma.mediaCollection.findFirst({
+      where: { id: collectionId, ownerId: user.id },
+      select: { id: true, visibility: true },
+    }),
+    assertMediaOwner(body.mediaAssetId, user.id),
+  ]);
+  if (!collection) throw Errors.notFound("Collection not found");
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const sortOrder = await tx.mediaCollectionItem.count({ where: { collectionId } });
+    if (collection.visibility === "public") {
+      await tx.mediaAsset.update({
+        where: { id: media.id },
+        data: { visibility: "public_pack" },
+      });
+    }
+    await tx.mediaCollectionItem.upsert({
+      where: {
+        collectionId_mediaAssetId: {
+          collectionId,
+          mediaAssetId: media.id,
+        },
+      },
+      update: {},
+      create: {
+        collectionId,
+        mediaAssetId: media.id,
+        sortOrder,
+      },
+    });
+    return tx.mediaCollection.findUniqueOrThrow({
+      where: { id: collectionId },
+      include: mediaCollectionInclude(),
+    });
+  });
+
+  await trackEvent("media_collection_item_added", {
+    collectionId,
+    mediaAssetId: media.id,
+  }, ctx);
+
+  return ok({ collection: mediaCollectionDTO(updated) });
 }
 
 async function likeMedia(request: Request, id: string) {
@@ -1703,6 +2796,222 @@ async function unlikeMedia(request: Request, id: string) {
   await prisma.mediaLike.deleteMany({ where: { userId: user.id, mediaAssetId: id } });
   await prisma.mediaAsset.updateMany({ where: { id, ownerId: user.id }, data: { liked: false } });
   return ok({ liked: false });
+}
+
+async function setMediaAsCharacterImage(request: Request, id: string) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  const body = z.object({ characterId: z.string().optional() }).parse(await jsonBody(request));
+  const asset = await assertIdentityImageMedia(id, user.id);
+  const character = await assertIdentityTargetCharacter(body.characterId ?? asset.characterId, user.id);
+  const activeProfile = await ensureActiveVisualProfile(character, {
+    anchorAssetId: asset.id,
+    createdFrom: "gallery_character_image",
+  });
+  const activeAnchorIds = jsonStringArray(activeProfile.anchorAssetIds);
+  const activeReferenceIds = jsonStringArray(activeProfile.referenceAssetIds);
+  const nextAnchorIds = [asset.id, ...activeAnchorIds.filter((anchorId) => anchorId !== asset.id)];
+  const shouldVersionProfile =
+    nextAnchorIds.length !== activeAnchorIds.length ||
+    nextAnchorIds.some((anchorId, index) => anchorId !== activeAnchorIds[index]) ||
+    activeReferenceIds.includes(asset.id);
+
+  const visualProfile = await prisma.$transaction(async (tx) => {
+    let nextProfile = activeProfile;
+    if (shouldVersionProfile) {
+      await tx.characterVisualProfile.updateMany({
+        where: { characterId: character.id, status: "active" },
+        data: { status: "archived" },
+      });
+      nextProfile = await tx.characterVisualProfile.create({
+        data: {
+          characterId: character.id,
+          version: activeProfile.version + 1,
+          status: "active",
+          style: activeProfile.style,
+          identityPrompt: activeProfile.identityPrompt,
+          negativeIdentityPrompt: activeProfile.negativeIdentityPrompt,
+          faceTraits: toInputJson(activeProfile.faceTraits),
+          hairTraits: toInputJson(activeProfile.hairTraits),
+          bodyTraits: toInputJson(activeProfile.bodyTraits),
+          signatureTraits: toInputJson(activeProfile.signatureTraits),
+          styleTraits: toInputJson(activeProfile.styleTraits),
+          anchorAssetIds: toInputJson(nextAnchorIds),
+          referenceAssetIds: toInputJson(activeReferenceIds.filter((referenceId) => referenceId !== asset.id)),
+          defaultSeed: activeProfile.defaultSeed,
+          adapterRefs: toInputJson(activeProfile.adapterRefs),
+          qualityScore: activeProfile.qualityScore,
+          consistencyScore: activeProfile.consistencyScore,
+          createdFrom: "gallery_character_image",
+        },
+      });
+    }
+    await tx.character.update({
+      where: { id: character.id },
+      data: { imageAssetId: asset.id },
+    });
+    await tx.mediaAsset.update({
+      where: { id: asset.id },
+      data: {
+        characterId: character.id,
+        metadata: mediaMetadataWithQuality(asset.metadata, {
+          selectedAsCharacterImage: true,
+          visualProfileId: nextProfile.id,
+          visualProfileVersion: nextProfile.version,
+        }),
+      },
+    });
+    return nextProfile;
+  });
+
+  return ok({
+    characterId: character.id,
+    imageAssetId: asset.id,
+    visualProfile: visualProfileDTO(visualProfile),
+  });
+}
+
+async function addMediaToIdentity(request: Request, id: string) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  const body = z.object({ characterId: z.string().optional() }).parse(await jsonBody(request));
+  const asset = await assertIdentityImageMedia(id, user.id);
+  const character = await assertIdentityTargetCharacter(body.characterId ?? asset.characterId, user.id);
+  const activeProfile = await ensureActiveVisualProfile(character, {
+    anchorAssetId: null,
+    createdFrom: "gallery_reference_bootstrap",
+  });
+  const anchorIds = jsonStringArray(activeProfile.anchorAssetIds);
+  const currentReferenceIds = jsonStringArray(activeProfile.referenceAssetIds);
+  if (anchorIds.includes(asset.id) || currentReferenceIds.includes(asset.id)) {
+    const updated = await prisma.mediaAsset.update({
+      where: { id: asset.id },
+      data: {
+        characterId: character.id,
+        metadata: mediaMetadataWithQuality(asset.metadata, {
+          addedToReferences: true,
+          visualProfileId: activeProfile.id,
+          visualProfileVersion: activeProfile.version,
+        }),
+      },
+    });
+    return ok({ visualProfile: visualProfileDTO(activeProfile), media: mediaDTO({ ...updated, liked: false }) });
+  }
+
+  const nextReferenceIds = [...currentReferenceIds, asset.id];
+  const nextProfile = await prisma.$transaction(async (tx) => {
+    await tx.characterVisualProfile.update({
+      where: { id: activeProfile.id },
+      data: { status: "archived" },
+    });
+    const created = await tx.characterVisualProfile.create({
+      data: {
+        characterId: character.id,
+        version: activeProfile.version + 1,
+        status: "active",
+        style: activeProfile.style,
+        identityPrompt: activeProfile.identityPrompt,
+        negativeIdentityPrompt: activeProfile.negativeIdentityPrompt,
+        faceTraits: toInputJson(activeProfile.faceTraits),
+        hairTraits: toInputJson(activeProfile.hairTraits),
+        bodyTraits: toInputJson(activeProfile.bodyTraits),
+        signatureTraits: toInputJson(activeProfile.signatureTraits),
+        styleTraits: toInputJson(activeProfile.styleTraits),
+        anchorAssetIds: toInputJson(anchorIds),
+        referenceAssetIds: toInputJson(nextReferenceIds),
+        defaultSeed: activeProfile.defaultSeed,
+        adapterRefs: toInputJson(activeProfile.adapterRefs),
+        qualityScore: activeProfile.qualityScore,
+        consistencyScore: activeProfile.consistencyScore,
+        createdFrom: "gallery_reference",
+      },
+    });
+    await tx.mediaAsset.update({
+      where: { id: asset.id },
+      data: {
+        characterId: character.id,
+        metadata: mediaMetadataWithQuality(asset.metadata, {
+          addedToReferences: true,
+          visualProfileId: created.id,
+          visualProfileVersion: created.version,
+        }),
+      },
+    });
+    return created;
+  });
+
+  return ok({ visualProfile: visualProfileDTO(nextProfile) });
+}
+
+async function createMediaVariation(request: Request, id: string) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  const body = z
+    .object({
+      outputCount: z.number().int().min(1).max(4).default(1),
+      consistencyMode: z.enum(["balanced", "strict", "creative"]).default("balanced"),
+    })
+    .parse(await jsonBody(request));
+  const asset = await assertIdentityImageMedia(id, user.id);
+  const sourceJob = asset.sourceJobId
+    ? await prisma.generationJob.findFirst({
+        where: { id: asset.sourceJobId, userId: user.id },
+      })
+    : null;
+  const characterId = asset.characterId ?? sourceJob?.characterId ?? undefined;
+  const sourceControls = jsonRecord(sourceJob?.controls);
+  const orientation = normalizeImageOrientation(
+    sourceJob?.orientation ?? stringControl(sourceControls, "orientation", stringFromMediaDimensions(asset.width, asset.height)),
+    "4:5",
+  );
+  const controls = pruneUndefined({
+    orientation,
+    model: sourceJob?.profileId ?? sourceJob?.model ?? stringFromRecord(sourceControls, "model"),
+    backgroundPresetId: stringFromRecord(sourceControls, "backgroundPresetId"),
+    posePresetId: stringFromRecord(sourceControls, "posePresetId"),
+    outfitPresetId: stringFromRecord(sourceControls, "outfitPresetId"),
+    sourceImageAssetId: asset.id,
+  });
+  const idempotencyKey = normalizeHeader(request.headers.get("idempotency-key"));
+  const sourceId = idempotencyKey
+    ? `media:${asset.id}:variation:${idempotencyKey}`
+    : `media:${asset.id}:variation:${cryptoRandomId("variation")}`;
+  const job = await createGenerationJobForUser(
+    user.id,
+    {
+      mode: "image",
+      characterId,
+      freeplay: !characterId,
+      consistencyMode: body.consistencyMode,
+      prompt: variationScenePrompt(asset.prompt ?? sourceJob?.prompt),
+      controls,
+      presetIds: sourceJob ? jsonStringArray(sourceJob.presetIds) : [],
+      orientation,
+      outputCount: body.outputCount,
+    },
+    {
+      idempotencyKey,
+      source: {
+        sourceType: "media_variation",
+        sourceId,
+        sourceMeta: toInputJson({
+          sourceMediaId: asset.id,
+          sourceJobId: sourceJob?.id ?? null,
+        }),
+      },
+    },
+  );
+  const queued = await prisma.generationJob.findUniqueOrThrow({
+    where: { id: job.id },
+    include: generationJobInclude(),
+  });
+  return ok(generationJobResponse(queued), { status: 202 });
 }
 
 async function bulkMedia(request: Request) {
@@ -1738,7 +3047,7 @@ async function downloadMedia(request: Request, id: string) {
   const user = requireUser(ctx);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
-  const asset = await assertMediaOwner(id, user.id);
+  const asset = await assertReadableMediaAsset(id, user.id);
   const metadata = jsonRecord(asset.metadata);
   const providerKey = typeof metadata.providerKey === "string" ? metadata.providerKey : undefined;
   const key = asset.storageKey ?? providerKey ?? asset.url;
@@ -1755,10 +3064,19 @@ async function downloadMedia(request: Request, id: string) {
 
 async function contentMedia(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
-  const user = requireUser(ctx);
   requireAgeGate(ctx);
+  const publicAsset = await findPublicReadableMediaAsset(id);
+  if (publicAsset) return contentMediaAsset(request, publicAsset);
+
+  const user = requireUser(ctx);
   requireAgeVerified(ctx);
-  const asset = await assertMediaOwner(id, user.id);
+  return contentMediaAsset(request, await assertReadableMediaAsset(id, user.id));
+}
+
+async function contentMediaAsset(
+  request: Request,
+  asset: Awaited<ReturnType<typeof assertReadableMediaAsset>>,
+) {
   const metadata = jsonRecord(asset.metadata);
   const providerKey = typeof metadata.providerKey === "string" ? metadata.providerKey : undefined;
   const key = asset.storageKey ?? providerKey;
@@ -1766,15 +3084,7 @@ async function contentMedia(request: Request, id: string) {
   if (key && (process.env.BLOB_PROVIDER ?? "mock") === "mock") {
     const body = await readFile(localBlobPath(key)).catch(() => null);
     if (!body) throw Errors.notFound("Media not found");
-    const url = new URL(request.url);
-    const headers = new Headers({
-      "cache-control": "private, max-age=60",
-      "content-type": asset.contentType ?? "application/octet-stream",
-    });
-    if (url.searchParams.get("download") === "1") {
-      headers.set("content-disposition", `attachment; filename="${mediaDownloadFilename(asset)}"`);
-    }
-    return new Response(body, { headers });
+    return localMediaResponse(request, asset, body);
   }
 
   const signed = await providers.blob.signGetUrl({
@@ -1786,6 +3096,94 @@ async function contentMedia(request: Request, id: string) {
         : undefined,
   });
   return Response.redirect(signed.ok ? signed.data.url : asset.url, 302);
+}
+
+function localMediaResponse(
+  request: Request,
+  asset: {
+    id: string;
+    type: string;
+    contentType?: string | null;
+    storageKey: string | null;
+    url: string;
+  },
+  body: Buffer,
+) {
+  const headers = localMediaHeaders(request, asset);
+  headers.set("accept-ranges", "bytes");
+  const range = parseByteRange(request.headers.get("range"), body.byteLength);
+  if (range === "invalid") {
+    headers.set("content-range", `bytes */${body.byteLength}`);
+    return new Response(null, { status: 416, headers });
+  }
+
+  if (range) {
+    const chunk = body.subarray(range.start, range.end + 1);
+    headers.set("content-length", String(chunk.byteLength));
+    headers.set("content-range", `bytes ${range.start}-${range.end}/${body.byteLength}`);
+    return new Response(arrayBufferBody(chunk), { status: 206, headers });
+  }
+
+  headers.set("content-length", String(body.byteLength));
+  return new Response(arrayBufferBody(body), { headers });
+}
+
+function arrayBufferBody(bytes: Uint8Array) {
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  return buffer;
+}
+
+function localMediaHeaders(
+  request: Request,
+  asset: {
+    id: string;
+    type: string;
+    contentType?: string | null;
+    storageKey: string | null;
+    url: string;
+  },
+) {
+  const url = new URL(request.url);
+  const headers = new Headers({
+    "cache-control": "private, max-age=60",
+    "content-type": asset.contentType ?? "application/octet-stream",
+  });
+  if (url.searchParams.get("download") === "1") {
+    headers.set("content-disposition", `attachment; filename="${mediaDownloadFilename(asset)}"`);
+  }
+  return headers;
+}
+
+function parseByteRange(header: string | null, size: number) {
+  if (!header) return null;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!match || size <= 0) return "invalid";
+  const [, rawStart, rawEnd] = match;
+
+  if (!rawStart && !rawEnd) return "invalid";
+  if (!rawStart) {
+    const suffixLength = Number(rawEnd);
+    if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) return "invalid";
+    return {
+      start: Math.max(0, size - suffixLength),
+      end: size - 1,
+    };
+  }
+
+  const start = Number(rawStart);
+  const end = rawEnd ? Number(rawEnd) : size - 1;
+  if (
+    !Number.isSafeInteger(start) ||
+    !Number.isSafeInteger(end) ||
+    start < 0 ||
+    end < start ||
+    start >= size
+  ) {
+    return "invalid";
+  }
+
+  return { start, end: Math.min(end, size - 1) };
 }
 
 function localBlobPath(key: string) {
@@ -1817,6 +3215,11 @@ function mediaFileExtension(asset: {
     "image/jpeg": ".jpg",
     "image/png": ".png",
     "image/webp": ".webp",
+    "audio/flac": ".flac",
+    "audio/mpeg": ".mp3",
+    "audio/ogg": ".ogg",
+    "audio/wav": ".wav",
+    "audio/webm": ".webm",
     "video/mp4": ".mp4",
     "video/webm": ".webm",
   };
@@ -1825,7 +3228,7 @@ function mediaFileExtension(asset: {
   }
 
   const source = asset.storageKey ?? asset.url;
-  const match = /\.(gif|jpe?g|mp4|png|webm|webp)(?:[?#]|$)/i.exec(source);
+  const match = /\.(flac|gif|jpe?g|mp3|mp4|ogg|png|wav|webm|webp)(?:[?#]|$)/i.exec(source);
   return match ? `.${match[1].toLowerCase().replace("jpeg", "jpg")}` : "";
 }
 
@@ -1846,13 +3249,24 @@ async function listPlans() {
     where: { active: true },
     orderBy: [{ slug: "asc" }, { billingPeriod: "asc" }],
   });
-  return ok({ items: plans });
+  return ok({ items: plans, billing: checkoutMode() });
+}
+
+function checkoutMode() {
+  const provider = env.PAYMENT_PROVIDER;
+  return {
+    provider,
+    demoMode: provider === "mock",
+    autoConfirmAvailable: provider === "mock",
+  };
 }
 
 async function checkout(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
   const body = checkoutSchema.parse(await jsonBody(request));
+  const mode = checkoutMode();
+  const autoConfirm = body.autoConfirm && mode.autoConfirmAvailable;
   const plan = await findPlan(body);
   const invoice = await providers.payment.createInvoice({
     userId: user.id,
@@ -1868,27 +3282,112 @@ async function checkout(request: Request) {
       provider: invoice.data.provider,
       providerSessionId: invoice.data.invoiceId,
       returnPath: body.returnPath,
-      status: body.autoConfirm ? "completed" : "created",
+      status: autoConfirm ? "completed" : "created",
     },
   });
 
   let subscription = null;
-  if (body.autoConfirm) {
-    subscription = await activateSubscription(user.id, plan.id, invoice.data.invoiceId);
+  let subscriptionStarted = false;
+  if (autoConfirm) {
+    const activation = await activateSubscription(user.id, plan.id, invoice.data.invoiceId);
+    subscription = activation.subscription;
+    subscriptionStarted = activation.created;
   }
 
-  await trackEvent("checkout_started", { planId: plan.id, autoConfirm: body.autoConfirm }, ctx);
+  await trackEvent("checkout_started", { planId: plan.id, autoConfirm, provider: mode.provider }, ctx);
+  if (subscriptionStarted) {
+    await trackEvent(
+      "subscription_started",
+      { planId: plan.id, provider: invoice.data.provider, source: "checkout" },
+      ctx,
+    );
+  }
   return ok({
     checkout: checkoutSession,
     invoice: invoice.data,
     subscription,
+    billing: mode,
   });
 }
 
 async function billingPortal(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
-  return ok({ url: `/profile?user=${user.id}#billing` });
+  const subscription = await prisma.subscription.findFirst({
+    where: activeSubscriptionWhere(user.id),
+    include: { plan: true },
+    orderBy: { createdAt: "desc" },
+  });
+
+  if (!subscription) {
+    return ok({
+      mode: "subscribe",
+      url: "/upgrade",
+      subscription: null,
+      message: "No active subscription. Compare plans to upgrade.",
+    });
+  }
+
+  return ok({
+    mode: "manage",
+    url: "/profile#billing",
+    subscription,
+    message: subscription.cancelAtPeriodEnd
+      ? "Renewal is already canceled. Benefits stay active until the period ends."
+      : "Subscription management is available for the active local plan.",
+  });
+}
+
+async function cancelSubscription(request: Request) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  const subscription = await prisma.subscription.findFirst({
+    where: activeSubscriptionWhere(user.id),
+    include: { plan: true },
+    orderBy: { createdAt: "desc" },
+  });
+  if (!subscription) throw Errors.badRequest("No active subscription to cancel.");
+  if (subscription.cancelAtPeriodEnd) {
+    return ok({ subscription, message: "Renewal is already canceled." });
+  }
+
+  const updated = await prisma.subscription.update({
+    where: { id: subscription.id },
+    data: { cancelAtPeriodEnd: true },
+    include: { plan: true },
+  });
+  await trackEvent(
+    "subscription_cancel_requested",
+    { planId: updated.planId, provider: updated.provider, source: "profile" },
+    ctx,
+  );
+  return ok({
+    subscription: updated,
+    message: "Renewal canceled. Benefits stay active until the current period ends.",
+  });
+}
+
+async function resumeSubscription(request: Request) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  const subscription = await prisma.subscription.findFirst({
+    where: { ...activeSubscriptionWhere(user.id), cancelAtPeriodEnd: true },
+    include: { plan: true },
+    orderBy: { createdAt: "desc" },
+  });
+  if (!subscription) throw Errors.badRequest("No canceled renewal to resume.");
+
+  const updated = await prisma.subscription.update({
+    where: { id: subscription.id },
+    data: { cancelAtPeriodEnd: false },
+    include: { plan: true },
+  });
+  await trackEvent(
+    "subscription_resume_requested",
+    { planId: updated.planId, provider: updated.provider, source: "profile" },
+    ctx,
+  );
+  return ok({ subscription: updated, message: "Renewal resumed." });
 }
 
 async function billingWebhook(request: Request, provider: string) {
@@ -1926,36 +3425,71 @@ async function billingWebhook(request: Request, provider: string) {
     },
   });
 
-  // Atomic dedupe: flip processedAt null -> now in a single statement. Only the
-  // winner of this claim settles; concurrent replays observe count 0 and no-op.
-  // (Reading processedAt before the upsert was a TOCTOU that could double-settle.)
-  const claim = await prisma.providerEvent.updateMany({
-    where: { id: event.id, processedAt: null },
-    data: { processedAt: new Date() },
-  });
-  if (claim.count === 0) return ok({ processed: false, idempotent: true });
+  type BillingWebhookSettlement = {
+    processed: boolean;
+    idempotent?: boolean;
+    subscriptionStarted?: { userId: string; planId: string; provider: string };
+  };
 
-  if (parsed.data.type === "invoice.confirmed" && parsed.data.invoiceId) {
-    const checkoutSession = await prisma.checkoutSession.findFirst({
-      where: { providerSessionId: parsed.data.invoiceId },
-    });
-    if (checkoutSession) {
-      // planId is echoed in the webhook payload from the invoice metadata set at
-      // checkout (createInvoice metadata.planId). A CheckoutSession.planId column
-      // fallback was intentionally dropped to avoid a user DB migration in the
-      // controlled-beta scope; re-add the column + fallback when the BTCPay webhook
-      // path is reactivated for providers that don't echo metadata.
-      const planId =
-        isRecord(payload) && typeof payload.planId === "string" ? payload.planId : undefined;
-      if (planId) await activateSubscription(checkoutSession.userId, planId, parsed.data.invoiceId);
-      await prisma.checkoutSession.update({
-        where: { id: checkoutSession.id },
-        data: { status: "completed" },
+  const result: BillingWebhookSettlement = await prisma.$transaction(async (tx) => {
+    // Lock the provider event while settling. processedAt is written LAST, so a
+    // failed activation/checkout update rolls back and remains retryable.
+    await lockProviderEvent(tx, event.id);
+    const current = await tx.providerEvent.findUniqueOrThrow({ where: { id: event.id } });
+    if (current.processedAt) return { processed: false, idempotent: true };
+
+    let subscriptionStarted: BillingWebhookSettlement["subscriptionStarted"];
+    if (parsed.data.type === "invoice.confirmed" && parsed.data.invoiceId) {
+      const checkoutSession = await tx.checkoutSession.findFirst({
+        where: { providerSessionId: parsed.data.invoiceId },
       });
+      if (checkoutSession) {
+        // planId is echoed in the webhook payload from the invoice metadata set at
+        // checkout (createInvoice metadata.planId). A CheckoutSession.planId column
+        // fallback was intentionally dropped to avoid a user DB migration in the
+        // controlled-beta scope; re-add the column + fallback when the BTCPay webhook
+        // path is reactivated for providers that don't echo metadata.
+        const planId =
+          isRecord(payload) && typeof payload.planId === "string" ? payload.planId : undefined;
+        if (planId) {
+          const activation = await activateSubscriptionInTx(
+            tx,
+            checkoutSession.userId,
+            planId,
+            parsed.data.invoiceId,
+          );
+          if (activation.created) {
+            subscriptionStarted = { userId: checkoutSession.userId, planId, provider };
+          }
+        }
+        await tx.checkoutSession.update({
+          where: { id: checkoutSession.id },
+          data: { status: "completed" },
+        });
+      }
     }
+
+    await tx.providerEvent.update({
+      where: { id: event.id },
+      data: { processedAt: new Date() },
+    });
+    return { processed: true, subscriptionStarted };
+  });
+
+  const { subscriptionStarted, ...response } = result;
+  if (subscriptionStarted) {
+    await trackEvent(
+      "subscription_started",
+      {
+        planId: subscriptionStarted.planId,
+        provider: subscriptionStarted.provider,
+        source: "webhook",
+      },
+      { userId: subscriptionStarted.userId },
+    );
   }
 
-  return ok({ processed: true });
+  return ok(response);
 }
 
 async function dreamcoins(request: Request) {
@@ -2014,7 +3548,7 @@ async function library(request: Request, tab: string) {
     };
 
     for (const session of sessions) {
-      const character = characterDTO(session.character);
+      const character = characterDTO(session.character, user.id);
       addEntry(
         `chat:${session.sessionId}`,
         {
@@ -2028,10 +3562,10 @@ async function library(request: Request, tab: string) {
       );
     }
     for (const like of likedCharacters) {
-      addEntry(`character:${like.characterId}`, characterDTO(like.character), like.createdAt);
+      addEntry(`character:${like.characterId}`, characterDTO(like.character, user.id), like.createdAt);
     }
     for (const character of createdCharacters) {
-      addEntry(`character:${character.id}`, characterDTO(character), character.createdAt);
+      addEntry(`character:${character.id}`, characterDTO(character, user.id), character.createdAt);
     }
     for (const asset of media) {
       addEntry(`media:${asset.id}`, mediaDTO(asset), asset.createdAt);
@@ -2050,7 +3584,7 @@ async function library(request: Request, tab: string) {
       include: { character: { include: characterInclude(user.id) } },
       orderBy: { createdAt: "desc" },
     });
-    return ok({ items: likes.map((like) => characterDTO(like.character)) });
+    return ok({ items: likes.map((like) => characterDTO(like.character, user.id)) });
   }
 
   if (tab === "created") {
@@ -2059,7 +3593,7 @@ async function library(request: Request, tab: string) {
       include: characterInclude(user.id),
       orderBy: { createdAt: "desc" },
     });
-    return ok({ items: characters.map((character) => characterDTO(character)) });
+    return ok({ items: characters.map((character) => characterDTO(character, user.id)) });
   }
 
   if (tab === "presets") {
@@ -2085,7 +3619,7 @@ async function profile(request: Request) {
     prisma.user.findUnique({ where: { id: user.id }, include: { preferences: true } }),
     dreamcoinBalance(user.id),
     prisma.subscription.findFirst({
-      where: { userId: user.id, status: "active" },
+      where: activeSubscriptionWhere(user.id),
       include: { plan: true },
       orderBy: { createdAt: "desc" },
     }),
@@ -2193,14 +3727,19 @@ async function referrals(request: Request) {
 async function inviteReferral(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
-  const referral = await prisma.referral.upsert({
-    where: { code: referralCode(user.id) },
-    update: {},
-    create: {
-      inviterId: user.id,
-      code: referralCode(user.id),
-    },
+  const code = referralCode(user.id);
+  const existing = await prisma.referral.findFirst({
+    where: { inviterId: user.id, code, inviteeId: null },
+    orderBy: { createdAt: "asc" },
   });
+  const referral =
+    existing ??
+    (await prisma.referral.create({
+      data: {
+        inviterId: user.id,
+        code,
+      },
+    }));
   return ok({ referral, shareUrl: `/signup?ref=${referral.code}` });
 }
 
@@ -2317,13 +3856,14 @@ async function reportStatus(request: Request, id: string) {
 
 async function createAppeal(request: Request) {
   const ctx = await getAuthCtx(request);
+  requireAgeGate(ctx);
   const user = requireUser(ctx);
   const body = z
     .object({
-      targetType: z.string().min(1),
-      targetId: z.string().min(1),
+      targetType: appealTargetTypeSchema,
+      targetId: z.string().trim().min(1).max(300),
       appealText: z.string().min(1).max(4_000),
-      originalDecisionId: z.string().optional(),
+      originalDecisionId: z.string().trim().min(1).max(160).optional(),
     })
     .parse(await jsonBody(request));
   const appeal = await prisma.appeal.create({
@@ -2347,28 +3887,245 @@ async function track(request: Request) {
   return ok({ event });
 }
 
+async function submitSupportRequest(request: Request) {
+  const ctx = await getAuthCtx(request);
+  requireAgeGate(ctx);
+  const user = requireUser(ctx);
+  const body = supportRequestSchema.parse(await jsonBody(request));
+  const ticketId = supportTicketId();
+  const supportRequest = await prisma.$transaction(async (tx) => {
+    const created = await tx.supportRequest.create({
+      data: {
+        ticketId,
+        userId: user.id,
+        category: body.category,
+        subject: body.subject,
+        description: body.description,
+        diagnosticConsent: body.diagnosticConsent,
+        sourcePath: body.sourcePath ?? null,
+        status: "received",
+      },
+    });
+    await tx.analyticsEvent.create({
+      data: {
+        userId: user.id,
+        anonymousId: ctx.anonymousId,
+        name: "support_request_submitted",
+        props: toInputJson({
+          ticketId,
+          supportRequestId: created.id,
+          category: body.category,
+          subject: body.subject,
+          description: body.description,
+          diagnosticConsent: body.diagnosticConsent,
+          sourcePath: body.sourcePath ?? null,
+        }),
+      },
+    });
+    return created;
+  });
+
+  return ok(
+    {
+      request: {
+        id: supportRequest.id,
+        ticketId,
+        status: supportRequest.status,
+        category: supportRequest.category,
+        createdAt: supportRequest.createdAt.toISOString(),
+      },
+    },
+    { status: 201 },
+  );
+}
+
+async function listFeedbackItems(request: Request) {
+  const ctx = await getAuthCtx(request);
+  await ensureDefaultFeedbackItems();
+  const items = await prisma.productFeedbackItem.findMany({
+    orderBy: [{ voteCount: "desc" }, { createdAt: "desc" }],
+    take: 12,
+  });
+  const votedIds = await userFeedbackVoteIds(ctx.userId, items.map((item) => item.id));
+  return ok({ items: items.map((item) => feedbackItemDTO(item, votedIds)) });
+}
+
+async function createFeedbackItem(request: Request) {
+  const ctx = await getAuthCtx(request);
+  requireAgeGate(ctx);
+  const user = requireUser(ctx);
+  const body = feedbackItemCreateSchema.parse(await jsonBody(request));
+  const created = await prisma.$transaction(async (tx) => {
+    const item = await tx.productFeedbackItem.create({
+      data: {
+        createdById: user.id,
+        title: body.title,
+        description: body.description,
+        category: body.category,
+        status: "under_review",
+        voteCount: 1,
+      },
+    });
+    await tx.productFeedbackVote.create({
+      data: { userId: user.id, itemId: item.id },
+    });
+    await tx.analyticsEvent.create({
+      data: {
+        userId: user.id,
+        anonymousId: ctx.anonymousId,
+        name: "feedback_item_created",
+        props: toInputJson({
+          itemId: item.id,
+          category: item.category,
+          title: item.title,
+        }),
+      },
+    });
+    return item;
+  });
+  return ok({ item: feedbackItemDTO(created, new Set([created.id])) }, { status: 201 });
+}
+
+async function voteFeedbackItem(request: Request, itemId: string) {
+  const ctx = await getAuthCtx(request);
+  requireAgeGate(ctx);
+  const user = requireUser(ctx);
+  const item = await prisma.$transaction(async (tx) => {
+    const existingItem = await tx.productFeedbackItem.findUnique({ where: { id: itemId } });
+    if (!existingItem) throw Errors.notFound("Feedback item not found");
+    const existingVote = await tx.productFeedbackVote.findUnique({
+      where: { userId_itemId: { userId: user.id, itemId } },
+    });
+    if (existingVote) return existingItem;
+    await tx.productFeedbackVote.create({ data: { userId: user.id, itemId } });
+    const updated = await tx.productFeedbackItem.update({
+      where: { id: itemId },
+      data: { voteCount: { increment: 1 } },
+    });
+    await tx.analyticsEvent.create({
+      data: {
+        userId: user.id,
+        anonymousId: ctx.anonymousId,
+        name: "feedback_item_voted",
+        props: toInputJson({ itemId }),
+      },
+    });
+    return updated;
+  });
+  return ok({ item: feedbackItemDTO(item, new Set([item.id])) });
+}
+
+async function unvoteFeedbackItem(request: Request, itemId: string) {
+  const ctx = await getAuthCtx(request);
+  requireAgeGate(ctx);
+  const user = requireUser(ctx);
+  const item = await prisma.$transaction(async (tx) => {
+    const existingItem = await tx.productFeedbackItem.findUnique({ where: { id: itemId } });
+    if (!existingItem) throw Errors.notFound("Feedback item not found");
+    const existingVote = await tx.productFeedbackVote.findUnique({
+      where: { userId_itemId: { userId: user.id, itemId } },
+    });
+    if (!existingVote) return existingItem;
+    await tx.productFeedbackVote.delete({ where: { id: existingVote.id } });
+    const updated = await tx.productFeedbackItem.update({
+      where: { id: itemId },
+      data: { voteCount: { decrement: 1 } },
+    });
+    await tx.analyticsEvent.create({
+      data: {
+        userId: user.id,
+        anonymousId: ctx.anonymousId,
+        name: "feedback_item_unvoted",
+        props: toInputJson({ itemId }),
+      },
+    });
+    return updated;
+  });
+  return ok({ item: feedbackItemDTO(item, new Set()) });
+}
+
+let defaultFeedbackItemsSeeded: Promise<void> | null = null;
+async function ensureDefaultFeedbackItems() {
+  // The defaults are static, so seed them once per process instead of running an upsert
+  // $transaction on EVERY feedback read (write-on-read row-lock contention that scales with
+  // read traffic). A failed attempt is not cached, so a transient DB error retries next call.
+  if (!defaultFeedbackItemsSeeded) {
+    defaultFeedbackItemsSeeded = prisma
+      .$transaction(
+        defaultFeedbackItems.map((item) =>
+          prisma.productFeedbackItem.upsert({
+            where: { sourceKey: item.sourceKey },
+            update: {
+              title: item.title,
+              description: item.description,
+              category: item.category,
+              status: item.status,
+            },
+            create: item,
+          }),
+        ),
+      )
+      .then(() => undefined)
+      .catch((error) => {
+        defaultFeedbackItemsSeeded = null;
+        throw error;
+      });
+  }
+  return defaultFeedbackItemsSeeded;
+}
+
+async function userFeedbackVoteIds(userId: string | undefined, itemIds: string[]) {
+  if (!userId || itemIds.length === 0) return new Set<string>();
+  const votes = await prisma.productFeedbackVote.findMany({
+    where: { userId, itemId: { in: itemIds } },
+    select: { itemId: true },
+  });
+  return new Set(votes.map((vote) => vote.itemId));
+}
+
+function feedbackItemDTO(item: ProductFeedbackItemRow, votedIds: Set<string>) {
+  return {
+    id: item.id,
+    sourceKey: item.sourceKey,
+    title: item.title,
+    description: item.description,
+    category: item.category,
+    status: item.status,
+    voteCount: Math.max(0, item.voteCount),
+    userVoted: votedIds.has(item.id),
+    createdAt: item.createdAt.toISOString(),
+    updatedAt: item.updatedAt.toISOString(),
+  };
+}
+
 async function feed(request: Request, segments: string[]) {
   const ctx = await getAuthCtx(request);
   requireAgeGate(ctx);
   const [, action, itemId, subAction] = segments;
   if (request.method === "GET") {
-    // 运营策展：feed.featured（AppSetting）里仍 public+approved 的角色仅在首页置顶，其余按热度游标分页。
+    // 运营策展：feed.featured（AppSetting）里仍 public+approved 的角色仅在首页置顶；
+    // recent public collections are interleaved on the first page so Feed is not just a catalog mirror.
     const url = new URL(request.url);
     const limit = clampInt(url.searchParams.get("limit"), 1, 60, 20);
     const cursor = decodeCursor(url.searchParams.get("cursor"));
+    const requestedItemId = url.searchParams.get("item")?.trim() ?? "";
+    const focusedCharacterId = requestedItemId ? feedCharacterId(requestedItemId) : null;
+    const focusedCollectionId = requestedItemId ? feedCollectionId(requestedItemId) : null;
     const featuredSetting = await prisma.appSetting.findUnique({
       where: { key: "feed.featured" },
     });
     const featuredIds = featuredCharacterIds(featuredSetting?.value);
+    const excludedIds = [...new Set([...featuredIds, focusedCharacterId].filter((id): id is string => Boolean(id)))];
     const publicWhere = {
       visibility: "public",
       status: "approved",
       deletedAt: null,
     } satisfies Prisma.CharacterWhereInput;
-    const [popular, featured] = await Promise.all([
+    const collectionLimit = cursor === 0 ? Math.min(3, Math.floor(limit / 4)) : 0;
+    const [popular, featured, focusedCharacter, recentCollections, focusedCollection] = await Promise.all([
       // 热度游标分页：排除置顶角色，稳定排序（热度→新→id）。
       prisma.character.findMany({
-        where: { ...publicWhere, id: { notIn: featuredIds } },
+        where: { ...publicWhere, id: { notIn: excludedIds } },
         include: characterInclude(ctx.userId),
         orderBy: [{ stats: { chatsCount: "desc" } }, { createdAt: "desc" }, { id: "desc" }],
         skip: cursor,
@@ -2381,20 +4138,55 @@ async function feed(request: Request, segments: string[]) {
             include: characterInclude(ctx.userId),
           })
         : [],
+      cursor === 0 && focusedCharacterId
+        ? prisma.character.findFirst({
+            where: { ...publicWhere, id: focusedCharacterId },
+            include: characterInclude(ctx.userId),
+          })
+        : null,
+      cursor === 0 && collectionLimit > 0
+        ? prisma.mediaCollection.findMany({
+            where: feedPublicCollectionWhere(focusedCollectionId ? [focusedCollectionId] : []),
+            include: mediaCollectionInclude(),
+            orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+            take: collectionLimit,
+          })
+        : [],
+      cursor === 0 && focusedCollectionId
+        ? prisma.mediaCollection.findFirst({
+            where: feedPublicCollectionWhere([], focusedCollectionId),
+            include: mediaCollectionInclude(),
+          })
+        : null,
     ]);
     const featuredById = new Map(featured.map((character) => [character.id, character]));
     const orderedFeatured = featuredIds
       .map((id) => featuredById.get(id))
-      .filter((character): character is (typeof featured)[number] => character !== undefined);
+      .filter((character): character is (typeof featured)[number] => character !== undefined)
+      .filter((character) => character.id !== focusedCharacter?.id);
     const popularPage = popular.slice(0, limit);
-    const characters = [...orderedFeatured, ...popularPage];
+    const popularItemIds = new Set(popularPage.map((character) => `character:${character.id}`));
+    const characterItems = [...orderedFeatured, ...popularPage].map(feedCharacterItemDTO);
+    const collectionItems = recentCollections
+      .filter((collection) => collection.id !== focusedCollection?.id)
+      .map(feedCollectionItemDTO);
+    const focusedItem = focusedCharacter
+      ? feedCharacterItemDTO(focusedCharacter)
+      : focusedCollection
+        ? feedCollectionItemDTO(focusedCollection)
+        : null;
+    const items = [
+      ...(focusedItem ? [focusedItem] : []),
+      ...interleaveFeedItems(characterItems, collectionItems),
+    ].slice(0, limit);
+    const renderedPopularCount = items.filter((item) => popularItemIds.has(item.id)).length;
     return ok({
-      items: characters.map((character) => ({
-        id: `character:${character.id}`,
-        type: "character",
-        character: characterDTO(character),
-      })),
-      nextCursor: popular.length > limit ? encodeCursor(cursor + limit) : null,
+      items,
+      focusedItemId: focusedItem?.id ?? null,
+      nextCursor:
+        renderedPopularCount > 0 && popular.length > renderedPopularCount
+          ? encodeCursor(cursor + renderedPopularCount)
+          : null,
     });
   }
   if (request.method === "POST" && action === "restart") return ok({ cursor: null });
@@ -2439,26 +4231,134 @@ async function feed(request: Request, segments: string[]) {
     }
   }
   if (request.method === "POST" && action === "items" && itemId && subAction === "remix") {
-    const characterId = feedCharacterId(itemId);
+    const character = await feedPublicCharacterByItemId(itemId);
+    if (!character) throw Errors.notFound("Feed item not found");
+    const characterId = character.id;
     await trackEvent("feed_item_remixed", { itemId, characterId }, ctx);
-    return ok({
-      remixUrl: characterId ? `/generate?characterId=${encodeURIComponent(characterId)}` : "/generate",
+    const params = new URLSearchParams({
       characterId,
+      remixFeedItemId: `character:${characterId}`,
+    });
+    return ok({
+      remixUrl: `/generate?${params.toString()}`,
+      characterId,
+      remixFeedItemId: `character:${characterId}`,
     });
   }
   if (request.method === "POST" && action === "items" && itemId && subAction === "share") {
-    await trackEvent("feed_item_shared", { itemId }, ctx);
-    return ok({ shareUrl: `/feed?item=${itemId}` });
+    const canonicalItemId = await canonicalPublicFeedItemId(itemId);
+    if (!canonicalItemId) throw Errors.notFound("Feed item not found");
+    await trackEvent("feed_item_shared", { itemId: canonicalItemId }, ctx);
+    return ok({ shareUrl: `/feed?item=${encodeURIComponent(canonicalItemId)}` });
   }
   if (request.method === "POST" && action === "items" && itemId && subAction === "report") {
-    return submitReport(request, { targetType: "feed_item", targetId: itemId });
+    return submitReport(request, {
+      targetType: "feed_item",
+      targetId: (await canonicalPublicFeedItemId(itemId)) ?? itemId,
+    });
   }
   return ok({ accepted: true });
 }
 
 function feedCharacterId(itemId: string) {
-  const decoded = decodeURIComponent(itemId);
+  let decoded = itemId;
+  try {
+    decoded = decodeURIComponent(itemId);
+  } catch {
+    return null;
+  }
   return decoded.startsWith("character:") ? decoded.slice("character:".length) : null;
+}
+
+async function feedPublicCharacterByItemId(itemId: string) {
+  const characterId = feedCharacterId(itemId);
+  if (!characterId) return null;
+  return prisma.character.findFirst({
+    where: {
+      id: characterId,
+      visibility: "public",
+      status: "approved",
+      deletedAt: null,
+    },
+    select: {
+      id: true,
+      creatorId: true,
+      name: true,
+    },
+  });
+}
+
+function feedCollectionId(itemId: string) {
+  let decoded = itemId;
+  try {
+    decoded = decodeURIComponent(itemId);
+  } catch {
+    return null;
+  }
+  return decoded.startsWith("collection:") ? decoded.slice("collection:".length) : null;
+}
+
+function feedPublicCollectionWhere(excludedIds: string[] = [], id?: string) {
+  const idFilter = id ? { id } : excludedIds.length > 0 ? { id: { notIn: excludedIds } } : {};
+  return {
+    ...idFilter,
+    visibility: "public",
+    items: {
+      some: {
+        mediaAsset: {
+          deletedAt: null,
+          safetyStatus: "passed",
+          visibility: { in: ["public_pack", "unlisted"] },
+        },
+      },
+    },
+  } satisfies Prisma.MediaCollectionWhereInput;
+}
+
+async function canonicalPublicFeedItemId(itemId: string) {
+  const character = await feedPublicCharacterByItemId(itemId);
+  if (character) return `character:${character.id}`;
+
+  const collectionId = feedCollectionId(itemId);
+  if (!collectionId) return null;
+  const collection = await prisma.mediaCollection.findFirst({
+    where: feedPublicCollectionWhere([], collectionId),
+    select: { id: true },
+  });
+  return collection ? `collection:${collection.id}` : null;
+}
+
+function feedCharacterItemDTO(character: CharacterWithPublicRelations) {
+  return {
+    id: `character:${character.id}`,
+    type: "character" as const,
+    character: characterDTO(character),
+  };
+}
+
+function feedCollectionItemDTO(collection: MediaCollectionWithRelations) {
+  return {
+    id: `collection:${collection.id}`,
+    type: "collection" as const,
+    collection: mediaCollectionDTO(collection),
+  };
+}
+
+function interleaveFeedItems<T, U>(primary: T[], secondary: U[]) {
+  const items: Array<T | U> = [];
+  let secondaryIndex = 0;
+  primary.forEach((item, index) => {
+    items.push(item);
+    if ((index + 1) % 3 === 0 && secondaryIndex < secondary.length) {
+      items.push(secondary[secondaryIndex]);
+      secondaryIndex += 1;
+    }
+  });
+  while (secondaryIndex < secondary.length) {
+    items.push(secondary[secondaryIndex]);
+    secondaryIndex += 1;
+  }
+  return items;
 }
 
 // 解析 AppSetting(feed.featured).value = { characterIds: string[] }；脏数据安全降级为空。
@@ -2482,13 +4382,15 @@ async function community(request: Request, segments: string[]) {
   if (view === "collections") {
     const collections = await prisma.mediaCollection.findMany({
       where: { visibility: "public" },
+      include: mediaCollectionInclude(),
       orderBy: { createdAt: "desc" },
       take: 20,
     });
-    return ok({ collections });
+    return ok({ collections: collections.map(mediaCollectionDTO) });
   }
 
-  const [characters, dreamerRows] = await Promise.all([
+  const followedCreatorIds = ctx.userId ? await communityFollowedCreatorIds(ctx.userId) : [];
+  const [characters, topDreamerRows, followedDreamerRows] = await Promise.all([
     prisma.character.findMany({
       where: {
         ...publicCharacterWhere,
@@ -2504,20 +4406,12 @@ async function community(request: Request, segments: string[]) {
       take: 20,
     }),
     communityDreamerRows(),
+    followedCreatorIds.length
+      ? communityDreamerRows({ creatorIds: followedCreatorIds, limit: followedCreatorIds.length })
+      : Promise.resolve([]),
   ]);
-  const followingIds = ctx.userId
-    ? new Set(
-        (
-          await prisma.follow.findMany({
-            where: {
-              followerId: ctx.userId,
-              followeeId: { in: dreamerRows.map((dreamer) => dreamer.id) },
-            },
-            select: { followeeId: true },
-          })
-        ).map((row) => row.followeeId),
-      )
-    : new Set<string>();
+  const dreamerRows = mergeCommunityDreamerRows(followedDreamerRows, topDreamerRows);
+  const followingIds = new Set(followedCreatorIds);
   const dreamers = dreamerRows.map((dreamer) => ({
     id: dreamer.id,
     displayName: dreamer.displayName,
@@ -2530,7 +4424,7 @@ async function community(request: Request, segments: string[]) {
   }));
   return ok({
     leaderboards: {
-      characters: characters.map((character) => characterDTO(character)),
+      characters: characters.map((character) => characterDTO(character, ctx.userId)),
       dreamers,
       collections: [],
     },
@@ -2547,7 +4441,34 @@ type CommunityDreamerRow = {
   chats: number | bigint;
 };
 
-async function communityDreamerRows() {
+async function communityFollowedCreatorIds(userId: string) {
+  const rows = await prisma.follow.findMany({
+    where: { followerId: userId },
+    orderBy: { createdAt: "desc" },
+    select: { followeeId: true },
+  });
+  return rows.map((row) => row.followeeId);
+}
+
+function mergeCommunityDreamerRows(...groups: CommunityDreamerRow[][]) {
+  const rows: CommunityDreamerRow[] = [];
+  const seen = new Set<string>();
+  for (const group of groups) {
+    for (const row of group) {
+      if (seen.has(row.id)) continue;
+      seen.add(row.id);
+      rows.push(row);
+      if (rows.length >= 20) return rows;
+    }
+  }
+  return rows;
+}
+
+async function communityDreamerRows(options: { creatorIds?: string[]; limit?: number } = {}) {
+  const creatorFilter = options.creatorIds?.length
+    ? Prisma.sql`AND u.id IN (${Prisma.join(options.creatorIds)})`
+    : Prisma.empty;
+  const limit = Math.max(1, Math.min(options.limit ?? 20, 40));
   return prisma.$queryRaw<CommunityDreamerRow[]>`
     SELECT
       u.id,
@@ -2571,12 +4492,13 @@ async function communityDreamerRows() {
     ) f ON f."followeeId" = u.id
     WHERE u.status = 'active'
       AND u."deletedAt" IS NULL
+      ${creatorFilter}
     GROUP BY u.id, u."displayName", u.name, u.image, f.followers
     ORDER BY
       (COALESCE(SUM(cs."likesCount"), 0) + COALESCE(SUM(cs."chatsCount"), 0)) DESC,
       COUNT(c.id) DESC,
       u."createdAt" DESC
-    LIMIT 12
+    LIMIT ${limit}
   `;
 }
 
@@ -2647,7 +4569,7 @@ async function creatorProfile(request: Request, creatorId: string) {
         chats: formatCount(totalChats),
       },
     },
-    characters: characters.map((character) => characterDTO(character)),
+    characters: characters.map((character) => characterDTO(character, ctx.userId)),
   });
 }
 
@@ -2706,26 +4628,33 @@ async function updateCharacter(request: Request, id: string) {
   const nextName = body.name ?? existing.name;
   const nextDescription = body.description ?? existing.description;
   const shouldRebuildPrompt = body.name !== undefined || body.description !== undefined;
-  await prisma.character.update({
-    where: { id: existing.id },
-    data: {
-      name: body.name,
-      description: body.description,
-      systemPrompt: shouldRebuildPrompt
-        ? buildCharacterSystemPrompt({
-            name: nextName,
-            age: existing.age,
-            description: nextDescription,
-            relationship: existing.relationship,
-            style: existing.style,
-            gender: existing.gender,
-            appearance: existing.appearance,
-            advancedDetails: existing.advancedDetails,
-          })
-        : undefined,
-      visibility: body.visibility,
-      status: body.visibility === "public" ? "pending_review" : undefined,
-    },
+  await prisma.$transaction(async (tx) => {
+    const updated = await tx.character.update({
+      where: { id: existing.id },
+      data: {
+        name: body.name,
+        description: body.description,
+        systemPrompt: shouldRebuildPrompt
+          ? buildCharacterSystemPrompt({
+              name: nextName,
+              age: existing.age,
+              description: nextDescription,
+              relationship: existing.relationship,
+              style: existing.style,
+              gender: existing.gender,
+              appearance: existing.appearance,
+              advancedDetails: existing.advancedDetails,
+            })
+          : undefined,
+        visibility: body.visibility,
+        status: body.visibility === "public" ? "pending_review" : undefined,
+      },
+    });
+    if (shouldRebuildPrompt) {
+      await createActiveCharacterVisualProfileVersion(tx, updated, {
+        createdFrom: "character_update",
+      });
+    }
   });
   return getCharacter(request, id);
 }
@@ -2747,6 +4676,11 @@ function characterInclude(userId?: string) {
     imageAsset: true,
     stats: true,
     tags: { include: { tag: true } },
+    visualProfiles: {
+      where: { status: "active" },
+      orderBy: { version: "desc" },
+      take: 1,
+    },
     creator: { select: { id: true, displayName: true, name: true } },
     likes: userId ? { where: { userId }, select: { userId: true } } : false,
   } satisfies Prisma.CharacterInclude;
@@ -2756,7 +4690,9 @@ type CharacterWithPublicRelations = Prisma.CharacterGetPayload<{
   include: ReturnType<typeof characterInclude>;
 }>;
 
-function characterDTO(character: CharacterWithPublicRelations) {
+function characterDTO(character: CharacterWithPublicRelations, viewerId?: string | null) {
+  const visualProfile = character.visualProfiles[0] ?? null;
+  const fallbackImage = fallbackCharacterImage(character.id);
   return {
     id: character.id,
     name: character.name,
@@ -2771,16 +4707,26 @@ function characterDTO(character: CharacterWithPublicRelations) {
     creatorId: character.creatorId,
     creator: character.relationship ?? "@ourdream",
     creatorName: character.creator?.displayName ?? character.creator?.name ?? null,
-    image: character.imageAsset?.url ?? defaultImage,
-    thumbnailUrl: character.imageAsset?.thumbnailUrl ?? character.imageAsset?.url ?? defaultImage,
+    canEditIdentity: Boolean(viewerId && character.creatorId === viewerId),
+    image: character.imageAsset?.url ?? fallbackImage,
+    thumbnailUrl: character.imageAsset?.thumbnailUrl ?? character.imageAsset?.url ?? fallbackImage,
     likes: formatCount(character.stats?.likesCount ?? 0),
     chats: formatCount(character.stats?.chatsCount ?? 0),
     views: character.stats?.viewsCount ?? 0,
     vivid: character.vivid,
     liked: Array.isArray(character.likes) ? character.likes.length > 0 : false,
+    visualProfile: visualProfile ? visualProfileDTO(visualProfile) : null,
     tags: character.tags.map(({ tag }) => tag),
     createdAt: character.createdAt,
   };
+}
+
+function fallbackCharacterImage(characterId: string) {
+  let hash = 0;
+  for (let index = 0; index < characterId.length; index += 1) {
+    hash = (hash * 31 + characterId.charCodeAt(index)) >>> 0;
+  }
+  return fallbackCharacterImages[hash % fallbackCharacterImages.length];
 }
 
 function userDTO(user: {
@@ -2806,6 +4752,7 @@ function userDTO(user: {
 
 function mediaDTO(asset: {
   id: string;
+  characterId?: string | null;
   type: string;
   url: string;
   thumbnailUrl: string | null;
@@ -2816,12 +4763,26 @@ function mediaDTO(asset: {
   prompt: string | null;
   visibility: string;
   safetyStatus: string;
+  metadata?: Prisma.JsonValue;
   liked: boolean;
   createdAt: Date;
-}) {
+  sourceJob?: {
+    sourceType: string;
+    sourceId: string | null;
+    sourceMeta?: Prisma.JsonValue | null;
+  } | null;
+}, options: { editableCharacterIds?: ReadonlySet<string> } = {}) {
   const displayUrl = asset.storageKey ? mediaViewUrl(asset) : asset.url;
+  const metadata = jsonRecord(asset.metadata);
+  const quality = jsonRecord(metadata.quality);
+  const visualProfileVersion =
+    numberFromRecord(metadata, "visualProfileVersion") ??
+    numberFromRecord(quality, "visualProfileVersion");
+  const characterId = asset.characterId ?? null;
   return {
     id: asset.id,
+    characterId,
+    canEditIdentity: Boolean(characterId && options.editableCharacterIds?.has(characterId)),
     type: asset.type,
     url: displayUrl,
     thumbnailUrl: asset.storageKey ? displayUrl : (asset.thumbnailUrl ?? asset.url),
@@ -2832,7 +4793,88 @@ function mediaDTO(asset: {
     contentType: asset.contentType ?? null,
     width: asset.width ?? null,
     height: asset.height ?? null,
+    visualProfileId:
+      stringFromRecord(metadata, "visualProfileId") ?? stringFromRecord(quality, "visualProfileId") ?? null,
+    visualProfileVersion: visualProfileVersion ?? null,
+    identity: {
+      selectedAsCharacterImage: booleanFromRecord(quality, "selectedAsCharacterImage", false),
+      addedToReferences: booleanFromRecord(quality, "addedToReferences", false),
+    },
+    provenance: mediaProvenanceDTO(asset.sourceJob),
     createdAt: asset.createdAt,
+  };
+}
+
+function mediaProvenanceDTO(sourceJob?: {
+  sourceType: string;
+  sourceId: string | null;
+  sourceMeta?: Prisma.JsonValue | null;
+} | null) {
+  if (!sourceJob || sourceJob.sourceType === "generator") return null;
+  const meta = jsonRecord(sourceJob.sourceMeta);
+
+  if (sourceJob.sourceType === "feed_remix") {
+    const feedItemId = stringFromRecord(meta, "feedItemId");
+    const sourceCharacterId = stringFromRecord(meta, "sourceCharacterId");
+    const sourceCharacterName = stringFromRecord(meta, "sourceCharacterName");
+    return {
+      sourceType: sourceJob.sourceType,
+      sourceId: sourceJob.sourceId,
+      label: "Remixed from Feed",
+      feedItemId: feedItemId ?? null,
+      sourceCharacterId: sourceCharacterId ?? null,
+      sourceCharacterName: sourceCharacterName ?? null,
+      href: feedItemId ? `/feed?item=${encodeURIComponent(feedItemId)}` : null,
+    };
+  }
+
+  if (sourceJob.sourceType === "media_variation") {
+    return {
+      sourceType: sourceJob.sourceType,
+      sourceId: sourceJob.sourceId,
+      label: "Variation",
+      sourceMediaId: stringFromRecord(meta, "sourceMediaId") ?? null,
+      href: null,
+    };
+  }
+
+  if (sourceJob.sourceType === "chat_image") {
+    return {
+      sourceType: sourceJob.sourceType,
+      sourceId: sourceJob.sourceId,
+      label: "From chat",
+      chatSessionId: stringFromRecord(meta, "sessionId") ?? null,
+      href: null,
+    };
+  }
+
+  return {
+    sourceType: sourceJob.sourceType,
+    sourceId: sourceJob.sourceId,
+    label: "Generated source",
+    href: null,
+  };
+}
+
+function mediaCollectionDTO(collection: MediaCollectionWithRelations) {
+  return {
+    id: collection.id,
+    name: collection.name,
+    visibility: collection.visibility,
+    ownerId: collection.ownerId,
+    ownerName: collection.owner.displayName ?? collection.owner.name,
+    itemCount: collection._count.items,
+    previews: collection.items
+      .filter(({ mediaAsset }) => {
+        if (mediaAsset.deletedAt) return false;
+        if (mediaAsset.safetyStatus !== "passed") return false;
+        return mediaAsset.visibility === "public_pack" || mediaAsset.visibility === "unlisted";
+      })
+      .map(({ mediaAsset }) =>
+        mediaAsset.storageKey ? mediaViewUrl(mediaAsset) : (mediaAsset.thumbnailUrl ?? mediaAsset.url),
+      )
+      .filter((url): url is string => Boolean(url)),
+    createdAt: collection.createdAt.toISOString(),
   };
 }
 
@@ -2867,6 +4909,11 @@ function generationJobDTO(job: GenerationJobWithRelations) {
     id: job.id,
     userId: job.userId,
     characterId: job.characterId,
+    visualProfileId: job.visualProfileId,
+    visualProfileVersion: job.visualProfileVersion,
+    consistencyMode: job.consistencyMode,
+    seed: job.seed,
+    referenceAssetIds: job.referenceAssetIds,
     derivedFromJobId: job.derivedFromJobId,
     mode: job.mode,
     prompt: job.prompt,
@@ -2883,6 +4930,9 @@ function generationJobDTO(job: GenerationJobWithRelations) {
     status: job.status,
     costDreamcoins: job.costDreamcoins,
     provider: job.provider,
+    sourceType: job.sourceType,
+    sourceId: job.sourceId,
+    sourceMeta: job.sourceMeta,
     errorCode: job.errorCode,
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
@@ -2895,7 +4945,7 @@ function generationJobResponse(job: GenerationJobWithRelations) {
   const missingOutputs = Math.max(0, job.outputCount - job.assets.length);
   return {
     job: generationJobDTO(job),
-    assets: job.assets.map(mediaDTO),
+    assets: job.assets.map((asset) => mediaDTO(asset)),
     events: job.events.map((event) => ({
       id: event.id,
       type: event.type,
@@ -3077,6 +5127,133 @@ async function assertMediaOwner(id: string, userId: string) {
   return media;
 }
 
+async function findPublicReadableMediaAsset(id: string) {
+  return prisma.mediaAsset.findFirst({
+    where: {
+      id,
+      deletedAt: null,
+      visibility: "public_pack",
+      safetyStatus: { in: ["passed", "unknown"] },
+    },
+  });
+}
+
+async function assertReadableMediaAsset(id: string, userId: string) {
+  const media = await prisma.mediaAsset.findFirst({
+    where: {
+      id,
+      deletedAt: null,
+      OR: [
+        ...(isReusablePlatformAssetWhere(userId).OR ?? []),
+        {
+          visibility: "public_pack",
+          safetyStatus: { in: ["passed", "unknown"] },
+        },
+      ],
+    },
+  });
+  if (!media) throw Errors.notFound("Media not found");
+  return media;
+}
+
+async function assertIdentityImageMedia(id: string, userId: string) {
+  const asset = await assertMediaOwner(id, userId);
+  if (asset.type !== "image") throw Errors.badRequest("Only image media can update character identity");
+  return asset;
+}
+
+async function assertIdentityTargetCharacter(characterId: string | null | undefined, userId: string) {
+  if (!characterId) throw Errors.badRequest("Choose a character for this identity action");
+  const character = await prisma.character.findFirst({
+    where: { id: characterId, creatorId: userId, deletedAt: null },
+  });
+  if (!character) throw Errors.notFound("Owned character not found");
+  return character;
+}
+
+async function ensureActiveVisualProfile(
+  character: GenerationPromptCharacter,
+  input: { anchorAssetId: string | null; createdFrom: string },
+) {
+  const active = await prisma.characterVisualProfile.findFirst({
+    where: { characterId: character.id, status: "active" },
+    orderBy: { version: "desc" },
+  });
+  if (active) return active;
+  try {
+    return await prisma.characterVisualProfile.create({
+      data: characterVisualProfileCreateData({
+        characterId: character.id,
+        version: 1,
+        status: "active",
+        style: character.style ?? "realistic",
+        name: character.name,
+        age: character.age,
+        description: character.description,
+        gender: character.gender ?? "female",
+        appearance: character.appearance,
+        advancedDetails: character.advancedDetails,
+        anchorAssetIds: input.anchorAssetId ? [input.anchorAssetId] : [],
+        createdFrom: input.createdFrom,
+      }),
+    });
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) throw error;
+    return prisma.characterVisualProfile.findFirstOrThrow({
+      where: { characterId: character.id, status: "active" },
+      orderBy: { version: "desc" },
+    });
+  }
+}
+
+function mediaMetadataWithQuality(
+  metadata: Prisma.JsonValue,
+  qualityPatch: Record<string, unknown>,
+) {
+  const record = jsonRecord(metadata);
+  const quality = jsonRecord(record.quality);
+  return toInputJson({
+    ...record,
+    quality: {
+      ...quality,
+      ...qualityPatch,
+    },
+  });
+}
+
+function visualProfileDTO(profile: GenerationVisualProfile) {
+  return {
+    id: profile.id,
+    version: profile.version,
+    status: profile.status,
+    style: profile.style,
+    anchorAssetIds: profile.anchorAssetIds,
+    referenceAssetIds: profile.referenceAssetIds,
+    defaultSeed: profile.defaultSeed,
+  };
+}
+
+function stringFromMediaDimensions(width: number | null, height: number | null) {
+  if (!width || !height) return "4:5";
+  const ratio = width / height;
+  if (Math.abs(ratio - 1) < 0.08) return "1:1";
+  if (ratio > 1.4) return "16:9";
+  if (ratio < 0.62) return "9:16";
+  if (ratio < 0.82) return "4:5";
+  return "3:4";
+}
+
+function variationScenePrompt(prompt: string | null | undefined) {
+  const clean = cleanPromptText(prompt, 1_200);
+  const requested = /Requested scene:\s*([^.]*)/i.exec(clean)?.[1]?.trim();
+  const scene = requested && requested.length > 0 ? requested : clean;
+  const safeScene =
+    scene && !/Locked identity:|Character:|Subject:/i.test(scene)
+      ? scene
+      : "the selected image composition, pose, outfit, lighting, and mood";
+  return clampPrompt(`More like this image: ${safeScene}`, 900);
+}
+
 export async function moderateText(
   targetType: string,
   targetId: string,
@@ -3150,6 +5327,10 @@ async function lockUserLedger(tx: Prisma.TransactionClient, userId: string) {
   await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId} FOR UPDATE`;
 }
 
+async function lockProviderEvent(tx: Prisma.TransactionClient, providerEventId: string) {
+  await tx.$queryRaw`SELECT id FROM "provider_events" WHERE id = ${providerEventId} FOR UPDATE`;
+}
+
 async function failQueuedGeneration(
   job: { id: string; userId: string; costDreamcoins: number },
   errorCode: string,
@@ -3207,10 +5388,27 @@ async function enqueueGenerationJob(job: {
   controls: Prisma.JsonValue;
   presetIds: Prisma.JsonValue;
   model: string | null;
+  profileId: string | null;
+  profileVersion: number | null;
   orientation: string | null;
   outputCount: number;
+  seed?: string | null;
+  referenceAssetIds?: Prisma.JsonValue | null;
 }) {
-  const controls = jsonRecord(job.controls);
+  const controls = await internalGenerationControls(job);
+  const modelCapabilities = modelCapabilitiesFromControls(controls);
+  const referenceImages =
+    job.mode === "image" && (modelCapabilities.referenceImages || modelCapabilities.initImage)
+      ? filterReferenceImagesForCapabilities(
+          await imageReferenceInputsForGenerationJob({
+            userId: job.userId,
+            characterId: job.characterId,
+            controls,
+            referenceAssetIds: job.referenceAssetIds,
+          }),
+          modelCapabilities,
+        )
+      : [];
   const common = {
     version: 1 as const,
     requestId: cryptoRandomId("gen_req"),
@@ -3220,7 +5418,7 @@ async function enqueueGenerationJob(job: {
     prompt: job.prompt ?? `${job.mode === "video" ? "Video" : "Image"} generation ${job.id}`,
     negativePrompt: job.negativePrompt,
     controls,
-    seed: job.id,
+    seed: job.seed ?? job.id,
     model: job.model ?? (job.mode === "video" ? "mock-video" : "mock-image"),
     outputPrefix: `gen/${job.id}/`,
   };
@@ -3237,6 +5435,7 @@ async function enqueueGenerationJob(job: {
           presetIds: jsonStringArray(job.presetIds),
           orientation: job.orientation ?? stringControl(controls, "orientation", "4:5"),
           count: job.outputCount,
+          ...(referenceImages.length > 0 ? { referenceImages } : {}),
         };
   await jobQueue.enqueue({
     queue: job.mode === "video" ? "ai.video.generate" : "ai.image.generate",
@@ -3244,6 +5443,157 @@ async function enqueueGenerationJob(job: {
     dedupeKey: `generation:${job.id}`,
     maxAttempts: 3,
   });
+}
+
+async function internalGenerationControls(job: {
+  controls: Prisma.JsonValue;
+  profileId: string | null;
+  profileVersion: number | null;
+}) {
+  const controls = jsonRecord(job.controls);
+  if (!job.profileId || !job.profileVersion) return controls;
+  const profile = await prisma.generationModelProfile.findFirst({
+    where: {
+      version: job.profileVersion,
+      OR: [{ profileKey: job.profileId }, { id: job.profileId }],
+    },
+  });
+  if (!profile) return controls;
+  const capabilities = generationModelCapabilities(profile.runner, profile.runnerConfig);
+  if (profile.runner !== "sd_cpp") {
+    return pruneUndefined({
+      ...controls,
+      modelCapabilities: capabilities,
+    });
+  }
+  return {
+    ...controls,
+    modelCapabilities: capabilities,
+    sdcpp: sdcppProfileRuntimeConfig(profile),
+  };
+}
+
+function generationModelCapabilities(runner: string, runnerConfig: Prisma.JsonValue) {
+  const config = jsonRecord(runnerConfig);
+  const capabilities = jsonRecord(config.capabilities);
+  const initImageDefault = runner === "sd_cpp";
+  return {
+    textToImage: booleanFromRecord(capabilities, "textToImage", true),
+    stableSeed: booleanFromRecord(capabilities, "stableSeed", true),
+    referenceImages: booleanFromRecord(capabilities, "referenceImages", false),
+    initImage: booleanFromRecord(capabilities, "initImage", initImageDefault),
+    lora: booleanFromRecord(capabilities, "lora", false),
+  };
+}
+
+function modelCapabilitiesFromControls(controls: Record<string, unknown>) {
+  const capabilities = jsonRecord(controls.modelCapabilities);
+  return {
+    textToImage: booleanFromRecord(capabilities, "textToImage", true),
+    stableSeed: booleanFromRecord(capabilities, "stableSeed", true),
+    referenceImages: booleanFromRecord(capabilities, "referenceImages", false),
+    initImage: booleanFromRecord(capabilities, "initImage", false),
+    lora: booleanFromRecord(capabilities, "lora", false),
+  };
+}
+
+function filterReferenceImagesForCapabilities(
+  images: Awaited<ReturnType<typeof imageReferenceInputsForGenerationJob>>,
+  capabilities: ReturnType<typeof modelCapabilitiesFromControls>,
+) {
+  return images.filter((image) => {
+    if (image.role === "source_image") return capabilities.initImage;
+    return capabilities.referenceImages;
+  });
+}
+
+function sdcppProfileRuntimeConfig(profile: {
+  profileKey: string;
+  version: number;
+  pipelineModel: string;
+  sourceModelPath: string | null;
+  convertedModelPath: string | null;
+  modelFormat: string;
+  runnerConfig: Prisma.JsonValue;
+  steps: number;
+  sampler: string;
+  scheduler: string;
+  cfgScale: number;
+  defaultWidth: number;
+  defaultHeight: number;
+}) {
+  const config = jsonRecord(profile.runnerConfig);
+  const conversion = jsonRecord(config.conversion);
+  return pruneUndefined({
+    profileKey: profile.profileKey,
+    profileVersion: profile.version,
+    apiModelId: profile.pipelineModel,
+    modelFormat: profile.modelFormat,
+    sourceModelPath: profile.sourceModelPath,
+    convertedModelPath: profile.convertedModelPath,
+    modelPath: stringFromRecord(config, "modelPath"),
+    diffusionModelPath: stringFromRecord(config, "diffusionModelPath"),
+    llmPath: stringFromRecord(config, "llmPath"),
+    vaePath: stringFromRecord(config, "vaePath"),
+    llmVisionPath: stringFromRecord(config, "llmVisionPath"),
+    clipLPath: stringFromRecord(config, "clipLPath"),
+    clipGPath: stringFromRecord(config, "clipGPath"),
+    t5xxlPath: stringFromRecord(config, "t5xxlPath"),
+    backend: stringFromRecord(config, "backend"),
+    loraModelDir: stringFromRecord(config, "loraModelDir"),
+    loraApplyMode: stringFromRecord(config, "loraApplyMode"),
+    loras: normalizeSdcppLoras(config.loras),
+    conversion: conversion.enabled === true ? pruneUndefined({
+      enabled: true,
+      targetFormat: "gguf",
+      outputPath: stringFromRecord(conversion, "outputPath") ?? profile.convertedModelPath,
+      type: stringFromRecord(conversion, "type") ?? "q8_0",
+      sourceArg: stringFromRecord(conversion, "sourceArg") ?? "model",
+      convertName: conversion.convertName === true,
+      tensorTypeRules: stringFromRecord(conversion, "tensorTypeRules"),
+    }) : undefined,
+    steps: profile.steps,
+    sampler: profile.sampler,
+    scheduler: profile.scheduler,
+    cfgScale: profile.cfgScale,
+    defaultWidth: profile.defaultWidth,
+    defaultHeight: profile.defaultHeight,
+  });
+}
+
+function normalizeSdcppLoras(value: unknown) {
+  if (!Array.isArray(value)) return undefined;
+  const loras = value
+    .filter(isRecord)
+    .map((item) =>
+      pruneUndefined({
+        key: stringFromRecord(item, "key"),
+        path: stringFromRecord(item, "path"),
+        weight: typeof item.weight === "number" && Number.isFinite(item.weight) ? item.weight : 1,
+        enabled: item.enabled !== false,
+      }),
+    )
+    .filter((item) => typeof item.key === "string" || typeof item.path === "string");
+  return loras.length ? loras : undefined;
+}
+
+function stringFromRecord(value: Record<string, unknown>, key: string) {
+  const child = value[key];
+  return typeof child === "string" && child.trim() ? child.trim() : undefined;
+}
+
+function numberFromRecord(value: Record<string, unknown>, key: string) {
+  const child = value[key];
+  return typeof child === "number" && Number.isFinite(child) ? child : undefined;
+}
+
+function booleanFromRecord(value: Record<string, unknown>, key: string, fallback: boolean) {
+  const child = value[key];
+  return typeof child === "boolean" ? child : fallback;
+}
+
+function pruneUndefined(value: Record<string, unknown>) {
+  return Object.fromEntries(Object.entries(value).filter(([, child]) => child !== undefined));
 }
 
 function activeGenerationStatuses() {
@@ -3368,15 +5718,68 @@ function templateConfigDTO(template: {
 }
 
 async function entitlementMap(userId: string) {
-  const entitlements = await prisma.entitlement.findMany({
-    where: {
-      userId,
-      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
-    },
-  });
+  const now = new Date();
+  const [entitlements, activeSubscriptions] = await Promise.all([
+    prisma.entitlement.findMany({
+      where: {
+        userId,
+        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+      },
+    }),
+    prisma.subscription.findMany({
+      where: {
+        userId,
+        status: "active",
+        OR: [{ currentPeriodEnd: null }, { currentPeriodEnd: { gt: now } }],
+      },
+      include: { plan: true },
+      orderBy: [{ currentPeriodEnd: "desc" }, { createdAt: "desc" }],
+    }),
+  ]);
   const map: Record<string, Prisma.JsonValue> = {};
+
+  for (const subscription of activeSubscriptions) {
+    if (map.plan === undefined) {
+      map.plan = {
+        slug: subscription.plan.slug,
+        billingPeriod: subscription.plan.billingPeriod,
+      };
+    }
+    mergeDerivedEntitlement(map, "premium_controls", true);
+    for (const [key, value] of Object.entries(subscription.plan.features as JsonRecord)) {
+      mergeDerivedEntitlement(map, featureKey(key), value ?? false);
+    }
+  }
+
   for (const entitlement of entitlements) map[entitlement.key] = entitlement.value;
   return map;
+}
+
+function activeSubscriptionWhere(userId: string, now = new Date()): Prisma.SubscriptionWhereInput {
+  return {
+    userId,
+    status: "active",
+    OR: [{ currentPeriodEnd: null }, { currentPeriodEnd: { gt: now } }],
+  };
+}
+
+function mergeDerivedEntitlement(
+  map: Record<string, Prisma.JsonValue>,
+  key: string,
+  value: Prisma.JsonValue,
+) {
+  const current = map[key];
+  if (current === undefined) {
+    map[key] = value;
+    return;
+  }
+  if (typeof current === "boolean" && typeof value === "boolean") {
+    map[key] = current || value;
+    return;
+  }
+  if (typeof current === "number" && typeof value === "number") {
+    map[key] = Math.max(current, value);
+  }
 }
 
 async function findPlan(input: z.infer<typeof checkoutSchema>) {
@@ -3395,18 +5798,44 @@ async function findPlan(input: z.infer<typeof checkoutSchema>) {
 }
 
 async function activateSubscription(userId: string, planId: string, providerSubscriptionId: string) {
-  const plan = await prisma.plan.findUniqueOrThrow({ where: { id: planId } });
+  return prisma.$transaction((tx) => activateSubscriptionInTx(tx, userId, planId, providerSubscriptionId));
+}
+
+async function activateSubscriptionInTx(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  planId: string,
+  providerSubscriptionId: string,
+) {
+  const plan = await tx.plan.findUniqueOrThrow({ where: { id: planId } });
   // SPEC: one active subscription per (user, plan). Checkout auto-confirm and the
   // billing webhook can both fire for the same purchase (and the demo auto-confirm
   // is replayable), so re-activation must be a no-op rather than stacking subs or
   // re-minting included dreamcoins. The ledger grant below is also keyed on the
   // provider invoice id as a second line of defense against concurrent races.
-  const existing = await prisma.subscription.findFirst({
+  await lockUserLedger(tx, userId);
+  const existing = await tx.subscription.findFirst({
     where: { userId, planId, status: "active" },
   });
-  if (existing) return existing;
+  if (existing) {
+    await syncSubscriptionEntitlements(tx, userId, plan, existing.currentPeriodEnd);
+    return { subscription: existing, created: false };
+  }
+  // SPEC: one active subscription per USER. Re-activating the SAME plan is the no-op above;
+  // switching to a DIFFERENT plan must SUPERSEDE the prior one, not stack a second active
+  // sub. Without this, both subs keep renewing (each re-granting its includedDreamcoins) and
+  // entitlementMap max-merges both tiers, so the old tier's exclusive perks linger. Cancel
+  // any other active sub and drop its subscription-sourced entitlements; the new plan's
+  // syncSubscriptionEntitlements below re-establishes the authoritative set.
+  const supersededCount = await tx.subscription.updateMany({
+    where: { userId, status: "active", planId: { not: planId } },
+    data: { status: "canceled", cancelAtPeriodEnd: false },
+  });
+  if (supersededCount.count > 0) {
+    await tx.entitlement.deleteMany({ where: { userId, source: "subscription" } });
+  }
   const currentPeriodEnd = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30);
-  const subscription = await prisma.subscription.create({
+  const subscription = await tx.subscription.create({
     data: {
       userId,
       planId,
@@ -3416,36 +5845,47 @@ async function activateSubscription(userId: string, planId: string, providerSubs
       currentPeriodEnd,
     },
   });
-  await prisma.$transaction(async (tx) => {
-    await tx.entitlement.upsert({
-      where: { userId_key: { userId, key: "plan" } },
-      update: { value: { slug: plan.slug, billingPeriod: plan.billingPeriod }, source: "subscription", expiresAt: currentPeriodEnd },
-      create: { userId, key: "plan", value: { slug: plan.slug, billingPeriod: plan.billingPeriod }, source: "subscription", expiresAt: currentPeriodEnd },
-    });
-    const featureEntries = Object.entries(plan.features as JsonRecord);
-    for (const [key, value] of featureEntries) {
-      const entitlementValue = toInputJson(value ?? false);
-      await tx.entitlement.upsert({
-        where: { userId_key: { userId, key: featureKey(key) } },
-        update: { value: entitlementValue, source: "subscription", expiresAt: currentPeriodEnd },
-        create: { userId, key: featureKey(key), value: entitlementValue, source: "subscription", expiresAt: currentPeriodEnd },
-      });
-    }
-    await tx.entitlement.upsert({
-      where: { userId_key: { userId, key: "premium_controls" } },
-      update: { value: true, source: "subscription", expiresAt: currentPeriodEnd },
-      create: { userId, key: "premium_controls", value: true, source: "subscription", expiresAt: currentPeriodEnd },
-    });
-    await appendLedger(
-      tx,
-      userId,
-      plan.includedDreamcoins,
-      "subscription_grant",
-      subscription.id,
-      `subscription:grant:${providerSubscriptionId}`,
-    );
+  await syncSubscriptionEntitlements(tx, userId, plan, currentPeriodEnd);
+  await appendLedger(
+    tx,
+    userId,
+    plan.includedDreamcoins,
+    "subscription_grant",
+    subscription.id,
+    `subscription:grant:${providerSubscriptionId}`,
+  );
+  return { subscription, created: true };
+}
+
+async function syncSubscriptionEntitlements(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  plan: {
+    slug: string;
+    billingPeriod: string;
+    features: Prisma.JsonValue;
+  },
+  expiresAt: Date | null,
+) {
+  await tx.entitlement.upsert({
+    where: { userId_key: { userId, key: "plan" } },
+    update: { value: { slug: plan.slug, billingPeriod: plan.billingPeriod }, source: "subscription", expiresAt },
+    create: { userId, key: "plan", value: { slug: plan.slug, billingPeriod: plan.billingPeriod }, source: "subscription", expiresAt },
   });
-  return subscription;
+  const featureEntries = Object.entries(plan.features as JsonRecord);
+  for (const [key, value] of featureEntries) {
+    const entitlementValue = toInputJson(value ?? false);
+    await tx.entitlement.upsert({
+      where: { userId_key: { userId, key: featureKey(key) } },
+      update: { value: entitlementValue, source: "subscription", expiresAt },
+      create: { userId, key: featureKey(key), value: entitlementValue, source: "subscription", expiresAt },
+    });
+  }
+  await tx.entitlement.upsert({
+    where: { userId_key: { userId, key: "premium_controls" } },
+    update: { value: true, source: "subscription", expiresAt },
+    create: { userId, key: "premium_controls", value: true, source: "subscription", expiresAt },
+  });
 }
 
 function featureKey(key: string) {
@@ -3485,13 +5925,20 @@ async function applyModerationAction(
     });
   } else if (targetType === "feed_item") {
     const characterId = feedCharacterId(targetId);
-    if (!characterId) {
+    const collectionId = feedCollectionId(targetId);
+    if (characterId) {
+      await prisma.character.updateMany({
+        where: { id: characterId },
+        data: { status: "removed" },
+      });
+    } else if (collectionId) {
+      await prisma.mediaCollection.updateMany({
+        where: { id: collectionId },
+        data: { visibility: "private" },
+      });
+    } else {
       throw Errors.badRequest(`Cannot resolve feed_item moderation target: ${targetId}`);
     }
-    await prisma.character.updateMany({
-      where: { id: characterId },
-      data: { status: "removed" },
-    });
   } else {
     throw Errors.badRequest(`Unsupported moderation target type: ${targetType}`);
   }
@@ -3534,4 +5981,16 @@ function simpleHash(value: string) {
 
 function cryptoRandomId(prefix: string) {
   return `${prefix}_${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+}
+
+function supportTicketId() {
+  // 10 random base36 chars from two independent draws — collision-resistant and NOT
+  // time-derived. The previous slice(-10) kept the trailing Date.now() tail (~8 chars) plus
+  // only ~2 random chars, so same-millisecond submissions collided on the @unique ticketId
+  // (→ P2002 → 500) and the IDs were time-ordered / trivially enumerable.
+  const random = `${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`
+    .replace(/[^a-z0-9]/gi, "")
+    .slice(0, 10)
+    .toUpperCase();
+  return `SUP-${random}`;
 }

@@ -5,6 +5,7 @@
 import { useEffect, useState } from "react";
 import { Loader2, Plus, RefreshCcw, Trash2 } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
+import { useAdminI18n } from "@/components/admin/i18n";
 
 type Announcement = {
   id: string;
@@ -30,6 +31,7 @@ async function apiDelete(path: string, body: Record<string, unknown>): Promise<v
 }
 
 export function AnnouncementsView() {
+  const { t, value: valueLabel } = useAdminI18n();
   const [items, setItems] = useState<Announcement[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -84,7 +86,7 @@ export function AnnouncementsView() {
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold">Announcements ({items.length})</h2>
+        <h2 className="text-sm font-semibold">{t("Announcements")} ({items.length})</h2>
         <button
           className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm disabled:opacity-50"
           disabled={loading}
@@ -92,7 +94,7 @@ export function AnnouncementsView() {
           type="button"
         >
           {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-          Refresh
+          {t("Refresh")}
         </button>
       </div>
       {error ? <p className="text-xs text-red-300">{error}</p> : null}
@@ -103,9 +105,9 @@ export function AnnouncementsView() {
         <table className="w-full text-left text-sm">
           <thead className="border-b border-white/10 text-xs text-[rgb(170,170,170)]">
             <tr>
-              <th className="px-3 py-2 font-medium">title</th>
-              <th className="px-3 py-2 font-medium">level</th>
-              <th className="px-3 py-2 font-medium">active</th>
+              <th className="px-3 py-2 font-medium">{t("title")}</th>
+              <th className="px-3 py-2 font-medium">{t("level")}</th>
+              <th className="px-3 py-2 font-medium">{t("active")}</th>
               <th className="px-3 py-2 font-medium" />
             </tr>
           </thead>
@@ -113,8 +115,8 @@ export function AnnouncementsView() {
             {items.map((item) => (
               <tr key={item.id} className="border-b border-white/5">
                 <td className="px-3 py-2">{item.title}</td>
-                <td className="px-3 py-2 text-[rgb(170,170,170)]">{item.level}</td>
-                <td className="px-3 py-2">{item.active ? "yes" : "no"}</td>
+                <td className="px-3 py-2 text-[rgb(170,170,170)]">{valueLabel(item.level)}</td>
+                <td className="px-3 py-2">{item.active ? t("yes") : t("no")}</td>
                 <td className="px-3 py-2 text-right">
                   <div className="flex justify-end gap-2">
                     <button
@@ -122,7 +124,7 @@ export function AnnouncementsView() {
                       onClick={() => void toggleActive(item)}
                       type="button"
                     >
-                      {item.active ? "Deactivate" : "Activate"}
+                      {item.active ? t("Deactivate") : t("Activate")}
                     </button>
                     <button
                       className="inline-flex h-8 items-center gap-1 border border-red-400/30 px-2 text-xs text-red-200"
@@ -138,7 +140,7 @@ export function AnnouncementsView() {
             {items.length === 0 && !loading ? (
               <tr>
                 <td className="px-3 py-6 text-center text-xs text-[rgb(170,170,170)]" colSpan={4}>
-                  No announcements.
+                  {t("No announcements.")}
                 </td>
               </tr>
             ) : null}
@@ -150,8 +152,10 @@ export function AnnouncementsView() {
 }
 
 function CreateAnnouncementForm({ reload }: { reload: () => void }) {
+  const { t, value: valueLabel } = useAdminI18n();
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
+  const [href, setHref] = useState("");
   const [level, setLevel] = useState<"info" | "promo" | "warning">("info");
   const [active, setActive] = useState(true);
   const [reason, setReason] = useState("");
@@ -165,6 +169,7 @@ function CreateAnnouncementForm({ reload }: { reload: () => void }) {
       await apiWrite("/api/v1/admin/announcements", "POST", {
         title: title.trim(),
         body: body.trim(),
+        href: href.trim() || null,
         level,
         active,
         reason: reason.trim(),
@@ -172,6 +177,7 @@ function CreateAnnouncementForm({ reload }: { reload: () => void }) {
       });
       setTitle("");
       setBody("");
+      setHref("");
       setReason("");
       reload();
     } catch (error) {
@@ -186,28 +192,35 @@ function CreateAnnouncementForm({ reload }: { reload: () => void }) {
 
   return (
     <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
-      <h2 className="text-sm font-semibold">Create announcement</h2>
+      <h2 className="text-sm font-semibold">{t("Create announcement")}</h2>
       <p className="mt-1 text-xs text-[rgb(170,170,170)]">站内 banner（即站内广播渠道）。active 即对全站可见。</p>
       <div className="mt-3 grid gap-3 md:grid-cols-2">
-        <input className={inputClass} onChange={(e) => setTitle(e.target.value)} placeholder="Title" value={title} />
-        <input className={inputClass} onChange={(e) => setBody(e.target.value)} placeholder="Body" value={body} />
+        <input className={inputClass} onChange={(e) => setTitle(e.target.value)} placeholder={t("Title")} value={title} />
+        <input className={inputClass} onChange={(e) => setBody(e.target.value)} placeholder={t("Body")} value={body} />
+        <input
+          aria-label={t("Link URL (optional)")}
+          className={inputClass}
+          onChange={(e) => setHref(e.target.value)}
+          placeholder={t("Link URL (optional)")}
+          value={href}
+        />
         <select
           className={`${inputClass} appearance-none`}
           onChange={(e) => setLevel(e.target.value as "info" | "promo" | "warning")}
           value={level}
         >
-          <option value="info">info</option>
-          <option value="promo">promo</option>
-          <option value="warning">warning</option>
+          <option value="info">{valueLabel("info")}</option>
+          <option value="promo">{valueLabel("promo")}</option>
+          <option value="warning">{valueLabel("warning")}</option>
         </select>
         <label className="flex items-center gap-2 text-sm text-[rgb(170,170,170)]">
           <input checked={active} onChange={(e) => setActive(e.target.checked)} type="checkbox" />
-          Active immediately
+          {t("Active immediately")}
         </label>
         <input
           className={inputClass}
           onChange={(e) => setReason(e.target.value)}
-          placeholder="Reason (≥3)"
+          placeholder={t("Reason (≥3)")}
           value={reason}
         />
         <button
@@ -217,7 +230,7 @@ function CreateAnnouncementForm({ reload }: { reload: () => void }) {
           type="button"
         >
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-          Create
+          {t("Create")}
         </button>
       </div>
       {err ? <p className="mt-2 text-xs text-red-300">{err}</p> : null}

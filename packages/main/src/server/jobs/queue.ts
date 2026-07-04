@@ -204,9 +204,15 @@ export class BullMqJobQueue implements JobQueue {
           true,
         );
         for (const job of jobs) {
-          if (!job.data.dedupeKey?.startsWith(prefix)) continue;
-          await job.remove();
-          removed += 1;
+          if (!job?.data?.dedupeKey?.startsWith(prefix)) continue;
+          try {
+            await job.remove();
+            removed += 1;
+          } catch (error) {
+            const state = await job.getState().catch(() => "unknown");
+            if (state === "active") continue;
+            throw error;
+          }
         }
       } finally {
         await queue.close();

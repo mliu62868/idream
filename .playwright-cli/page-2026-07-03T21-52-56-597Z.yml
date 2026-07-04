@@ -1,0 +1,225 @@
+- generic [active] [ref=e1]:
+  - button "Open Next.js Dev Tools" [ref=e8] [cursor=pointer]:
+    - img [ref=e9]
+  - alert [ref=e12]
+  - main [ref=e21]:
+    - generic [ref=e23]:
+      - generic [ref=e25]:
+        - button "Open navigation menu" [ref=e26]:
+          - img [ref=e27]
+        - link "Join Free" [ref=e29] [cursor=pointer]:
+          - /url: /signup
+      - generic [ref=e30]:
+        - img "Pride Sale - Upgrade Now" [ref=e32]
+        - generic [ref=e33]:
+          - img [ref=e34]
+          - textbox "Search characters" [ref=e37]
+        - generic [ref=e38]:
+          - button "Sort characters" [ref=e40]:
+            - text: For You
+            - img [ref=e41]
+          - generic [ref=e43]:
+            - generic [ref=e44]:
+              - combobox "Gender filter" [ref=e45]:
+                - option "Female"
+                - option "Male"
+                - option "Trans"
+                - option "Any Gender" [selected]
+              - img
+            - generic [ref=e46]:
+              - combobox "Style filter" [ref=e47]:
+                - option "Any Style" [selected]
+                - option "Realistic"
+                - option "Anime"
+                - option "Hybrid"
+              - img
+            - generic [ref=e48]:
+              - combobox "Age filter" [ref=e49]:
+                - option "Any Age" [selected]
+                - option "18-24"
+                - option "25-34"
+                - option "35+"
+              - img
+        - generic [ref=e50]:
+          - button "All" [ref=e51]
+          - button "Slow Burn" [ref=e52]
+          - button "Elf" [ref=e53]
+      - generic [ref=e55]:
+        - generic [ref=e56]:
+          - link "Melissa Burke38 She's been your best friend's mom your whole life. The woman who made you both sandwiches after school. 2.2k 2.2M @some1cool" [ref=e58] [cursor=pointer]:
+            - /url: /characters/melissa-burke
+            - generic [ref=e60]:
+              - generic [ref=e61]:
+                - heading "Melissa Burke38" [level=2] [ref=e62]
+                - paragraph [ref=e63]: She's been your best friend's mom your whole life. The woman who made you both sandwiches after school.
+              - generic [ref=e64]:
+                - generic [ref=e65]:
+                  - img [ref=e66]
+                  - text: 2.2k
+                - generic [ref=e68]:
+                  - img [ref=e69]
+                  - text: 2.2M
+                - generic [ref=e71]: "@some1cool"
+          - link "Summoned to Another World22 (Recently Updated) A normal day at college becomes the beginning of something far greater. 871 1.4M @fuze" [ref=e73] [cursor=pointer]:
+            - /url: /characters/summoned-world
+            - generic [ref=e75]:
+              - generic [ref=e76]:
+                - heading "Summoned to Another World22" [level=2] [ref=e77]
+                - paragraph [ref=e78]: (Recently Updated) A normal day at college becomes the beginning of something far greater.
+              - generic [ref=e79]:
+                - generic [ref=e80]:
+                  - img [ref=e81]
+                  - text: "871"
+                - generic [ref=e83]:
+                  - img [ref=e84]
+                  - text: 1.4M
+                - generic [ref=e86]: "@fuze"
+          - link "vivid Sarah Mercer27 Sarah Mercer is your loving wife. Eight years together, high school sweethearts. 811 1.3M @some1cool" [ref=e88] [cursor=pointer]:
+            - /url: /characters/sarah-mercer
+            - generic:
+              - generic:
+                - img
+                - generic: vivid
+            - generic [ref=e90]:
+              - generic [ref=e91]:
+                - heading "Sarah Mercer27" [level=2] [ref=e92]
+                - paragraph [ref=e93]: Sarah Mercer is your loving wife. Eight years together, high school sweethearts.
+              - generic [ref=e94]:
+                - generic [ref=e95]:
+                  - img [ref=e96]
+                  - text: "811"
+                - generic [ref=e98]:
+                  - img [ref=e99]
+                  - text: 1.3M
+                - generic [ref=e101]: "@some1cool"
+          - link "vivid Alexa Reeves19 Three guys. One girl. A yacht. She knows what she's walking into. 1.1k 1.2M @archerz" [ref=e103] [cursor=pointer]:
+            - /url: /characters/alexa-reeves
+            - generic:
+              - generic:
+                - img
+                - generic: vivid
+            - generic [ref=e105]:
+              - generic [ref=e106]:
+                - heading "Alexa Reeves19" [level=2] [ref=e107]
+                - paragraph [ref=e108]: Three guys. One girl. A yacht. She knows what she's walking into.
+              - generic [ref=e109]:
+                - generic [ref=e110]:
+                  - img [ref=e111]
+                  - text: 1.1k
+                - generic [ref=e113]:
+                  - img [ref=e114]
+                  - text: 1.2M
+                - generic [ref=e116]: "@archerz"
+        - button "Load more" [ref=e118]
+      - generic [ref=e120]:
+        - heading "Ourdream ai, the Unlimited AI Roleplay Platform" [level=1] [ref=e121]
+        - generic [ref=e122]:
+          - generic [ref=e123]:
+            - paragraph [ref=e124]: 63M+
+            - paragraph [ref=e125]: characters to explore
+          - generic [ref=e126]:
+            - paragraph [ref=e127]: 10M+
+            - paragraph [ref=e128]: dreamers creating stories
+          - generic [ref=e129]:
+            - paragraph [ref=e130]: 24/7
+            - paragraph [ref=e131]: chat and image tools
+        - generic [ref=e132]:
+          - heading "Frequently Asked Questions" [level=2] [ref=e133]
+          - generic [ref=e134]:
+            - article [ref=e135]:
+              - heading "What is Our Dream AI?" [level=3] [ref=e136]
+              - paragraph [ref=e137]: Our Dream AI is an AI roleplay platform for creating personalized AI characters, chatting with them, generating images, and building a companion that remembers context over time.
+            - article [ref=e138]:
+              - heading "How do you create an AI girlfriend on ourdream?" [level=3] [ref=e139]
+              - paragraph [ref=e140]: Use the creator to choose appearance, style, voice, personality traits, interests, and relationship dynamics. The character starts from that profile and adapts through conversation.
+            - article [ref=e141]:
+              - heading "What is ourdream.ai's pricing?" [level=3] [ref=e142]
+              - paragraph [ref=e143]: Ourdream offers monthly and yearly upgrade options with unlimited messages, image generation access, and recurring dreamcoin allowances.
+            - article [ref=e144]:
+              - heading "Is ourdream ai legit and safe to use?" [level=3] [ref=e145]
+              - paragraph [ref=e146]: Ourdream emphasizes privacy, safety moderation, original AI characters, and rules against underage-looking content or real-person deepfakes.
+            - article [ref=e147]:
+              - heading "Are my AI roleplay chats private on Our Dream AI?" [level=3] [ref=e148]
+              - paragraph [ref=e149]: Private chat history is designed to stay tied to your account, with product controls and moderation paths focused on keeping roleplay conversations secure.
+            - article [ref=e150]:
+              - heading "What images can I generate on ourdream.ai?" [level=3] [ref=e151]
+              - paragraph [ref=e152]: The generator pages focus on realistic and anime-style AI images for created companions, with premium controls for prompts and character selection.
+            - article [ref=e153]:
+              - heading "Why is ourdream more expensive than others?" [level=3] [ref=e154]
+              - paragraph [ref=e155]: Ourdream pairs unlimited messaging with included dreamcoins, so plan value is based on both chat access and media-generation allowance.
+        - link "Join Now" [ref=e157] [cursor=pointer]:
+          - /url: /upgrade
+          - text: Join Now
+          - img [ref=e158]
+    - generic [ref=e161]:
+      - generic [ref=e162]:
+        - heading "Learn" [level=2] [ref=e163]
+        - navigation [ref=e164]:
+          - link "Resources Hub" [ref=e165] [cursor=pointer]:
+            - /url: /resources-hub
+          - link "AI Girlfriend Types" [ref=e166] [cursor=pointer]:
+            - /url: /type
+          - link "Comparisons" [ref=e167] [cursor=pointer]:
+            - /url: /comparison
+          - link "Videos" [ref=e168] [cursor=pointer]:
+            - /url: /videos
+          - link "AI Instructions" [ref=e169] [cursor=pointer]:
+            - /url: /ai-instructions
+      - generic [ref=e170]:
+        - heading "Popular" [level=2] [ref=e171]
+        - navigation [ref=e172]:
+          - link "AI Girlfriend" [ref=e173] [cursor=pointer]:
+            - /url: /ai-girlfriend
+          - link "AI Boyfriend" [ref=e174] [cursor=pointer]:
+            - /url: /ai-boyfriend
+          - link "AI Anime" [ref=e175] [cursor=pointer]:
+            - /url: /type/anime-ai-girlfriend
+          - link "Games" [ref=e176] [cursor=pointer]:
+            - /url: /games
+          - link "Romantasy" [ref=e177] [cursor=pointer]:
+            - /url: /romantasy
+          - link "our dream ai" [ref=e178] [cursor=pointer]:
+            - /url: /
+      - generic [ref=e179]:
+        - heading "Help" [level=2] [ref=e180]
+        - navigation [ref=e181]:
+          - link "Help Centre" [ref=e182] [cursor=pointer]:
+            - /url: https://help.ourdream.ai/
+          - link "Affiliates" [ref=e183] [cursor=pointer]:
+            - /url: https://www.ourdreamaiaffiliate.com/
+          - link "Help Desk" [ref=e184] [cursor=pointer]:
+            - /url: /helpdesk
+          - link "Safety" [ref=e185] [cursor=pointer]:
+            - /url: /safety/introduction
+      - generic [ref=e186]:
+        - generic [ref=e187]:
+          - paragraph [ref=e188]: 2026 OURDREAM.AI
+          - paragraph [ref=e189]: "USA: Dream Studio USA, Inc."
+          - paragraph [ref=e190]: "Cyprus: TEKTOPIA LTD (HE 473775)"
+        - generic [ref=e191]:
+          - link "Discord" [ref=e192] [cursor=pointer]:
+            - /url: https://discord.gg/P47YU7je5D
+            - img [ref=e193]
+          - link "Reddit" [ref=e195] [cursor=pointer]:
+            - /url: https://reddit.com/r/ourdream_ai
+            - img [ref=e196]
+          - link "Twitter / X" [ref=e201] [cursor=pointer]:
+            - /url: https://x.com/ourdreamai
+            - img [ref=e202]
+    - navigation "Primary mobile navigation" [ref=e205]:
+      - link "Explore" [ref=e206] [cursor=pointer]:
+        - /url: /
+        - img [ref=e207]
+        - text: Explore
+      - link "Chat" [ref=e210] [cursor=pointer]:
+        - /url: /chat
+        - img [ref=e211]
+        - text: Chat
+      - link "Create" [ref=e213] [cursor=pointer]:
+        - /url: /create
+        - img [ref=e214]
+        - text: Create
+      - link "Generate" [ref=e216] [cursor=pointer]:
+        - /url: /generate
+        - img [ref=e217]
+        - text: Generate

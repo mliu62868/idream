@@ -43,7 +43,17 @@ export const env = {
     return process.env.CHAT_MODEL_BASE_URL ?? process.env.PIPELINE_API_URL ?? "http://127.0.0.1:8061/v1";
   },
   get CHAT_MODEL_NAME() {
-    return process.env.CHAT_MODEL_NAME ?? process.env.PIPELINE_CHAT_MODEL_DEFAULT ?? "Qwen3.5-0.8B-8bit";
+    return process.env.CHAT_MODEL_NAME ?? process.env.PIPELINE_CHAT_MODEL_DEFAULT ?? "Qwen3.6-35B-A3B-uncensored-heretic-Native-MTP-Preserved-mlx-8Bit";
+  },
+  get CHAT_MODEL_MAX_TOKENS() {
+    const raw = process.env.CHAT_MODEL_MAX_TOKENS ?? "8000";
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 8_000;
+  },
+  get CHAT_MODEL_TIMEOUT_MS() {
+    const raw = process.env.CHAT_MODEL_TIMEOUT_MS ?? "45000";
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 45_000;
   },
   // Tier → real model aliases (design P0-D). The policy resolver maps an
   // entitlement tier to ONE of these; the provider streams with the resolved

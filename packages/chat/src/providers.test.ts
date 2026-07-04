@@ -52,6 +52,76 @@ describe("chat providers", () => {
     const init = (fetchMock.mock.calls[0] as unknown[])[1] as { body: string };
     const body = JSON.parse(init.body);
     expect(body.model).toBe("Qwen3.5-14B-MLX-4bit");
+    expect(body.max_tokens).toBe(8000);
+  });
+
+  it("uses OpenAI-compatible non-stream completions for agent tool planning", async () => {
+    const fetchMock = vi.fn(async () =>
+      Response.json({
+        choices: [
+          {
+            message: {
+              content: "{\"tool\":null}",
+            },
+          },
+        ],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    process.env = {
+      ...oldEnv,
+      CHAT_MODEL_PROVIDER: "pipeline",
+      CHAT_MODEL_BASE_URL: "https://pipeline.internal.example.com/v1",
+      CHAT_MODEL_API_KEY: "pipeline-api-key",
+      MODERATION_PROVIDER: "mock",
+    };
+
+    const { createProviders } = await import("./providers.js");
+    const providers = createProviders();
+    const completion = await providers.chat.complete({
+      model: "Qwen3.5-14B-MLX-4bit",
+      messages: [{ role: "user", content: "plan tools" }],
+      maxTokens: 512,
+    });
+
+    expect(completion).toEqual({ content: "{\"tool\":null}" });
+    const init = (fetchMock.mock.calls[0] as unknown[])[1] as { body: string };
+    const body = JSON.parse(init.body);
+    expect(body).toMatchObject({
+      model: "Qwen3.5-14B-MLX-4bit",
+      stream: false,
+      max_tokens: 512,
+    });
+  });
+
+  it("times out a hung OpenAI-compatible chat provider", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(
+      async (_url: URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("aborted", "AbortError"));
+          });
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    process.env = {
+      ...oldEnv,
+      CHAT_MODEL_PROVIDER: "openai",
+      CHAT_MODEL_BASE_URL: "https://pipeline.internal.example.com/v1",
+      CHAT_MODEL_TIMEOUT_MS: "25",
+      MODERATION_PROVIDER: "mock",
+    };
+
+    const { createProviders } = await import("./providers.js");
+    const providers = createProviders();
+    const next = providers.chat.stream({
+      messages: [{ role: "user", content: "hello" }],
+    })[Symbol.asyncIterator]().next();
+    const assertion = expect(next).rejects.toThrow("Chat model request timed out after 25ms");
+
+    await vi.advanceTimersByTimeAsync(25);
+    await assertion;
   });
 
   it("wires the safety gateway moderation provider", async () => {

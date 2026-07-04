@@ -4,11 +4,35 @@
 
 @custom-variant dark (&:is(.dark *));
 
+@layer components {
+  .admin-input {
+    min-height: 2.25rem;
+    width: 100%;
+    min-width: 0;
+    border: 1px solid rgb(255 255 255 / 0.1);
+    background: rgb(0 0 0 / 0.2);
+    padding: 0.375rem 0.75rem;
+    color: rgb(255 255 255);
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+    outline: none;
+  }
+
+  .admin-input::placeholder {
+    color: rgb(114 113 112);
+  }
+
+  .admin-input option {
+    background: rgb(18 18 18);
+    color: rgb(255 255 255);
+  }
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: "Geist", "Geist Fallback", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "Geist Mono", "Geist Mono Fallback", ui-monospace, monospace;
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
   --font-safety-docs: var(--font-safety), -apple-system, "system-ui", "Segoe UI",
     system-ui, sans-serif;
   --font-heading: var(--font-sans);
@@ -51,6 +75,11 @@
 }
 
 :root {
+  --font-geist-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    sans-serif;
+  --font-geist-mono: ui-monospace, "SFMono-Regular", "SF Mono", Consolas,
+    "Liberation Mono", monospace;
+  --font-safety: -apple-system, "system-ui", "Segoe UI", system-ui, sans-serif;
   --background: rgb(13 13 13);
   --foreground: rgb(250 250 250);
   --card: rgb(18 18 18);

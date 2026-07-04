@@ -1,4 +1,5 @@
 import Image from "next/image";
+import Form from "next/form";
 import Link from "next/link";
 import {
   ArrowRight,
@@ -13,6 +14,7 @@ import {
   getRoutesByPrefix,
   ourdreamRoutePaths,
 } from "@/lib/ourdream-data";
+import { toSafetyHref } from "@/lib/ourdream-safety-data";
 import type { OurdreamRoute } from "@/types/ourdream";
 import { AppSidebar } from "./AppSidebar";
 import { MobileBottomNav } from "./MobileBottomNav";
@@ -25,23 +27,48 @@ import { CommunityWorkspace } from "./CommunityWorkspace";
 import { CreateWorkspace } from "./CreateWorkspace";
 import { FeedWorkspace } from "./FeedWorkspace";
 import { GeneratorWorkspace } from "./GeneratorWorkspace";
+import { HelpDeskWorkspace } from "./HelpDeskWorkspace";
 import { ProfileWorkspace } from "./ProfileWorkspace";
 import { UpgradeWorkspace } from "./UpgradeWorkspace";
+import { MobileAppMenu } from "./MobileAppMenu";
 
 function activeHrefForPath(path: string) {
+  if (path === "/login" || path === "/signup") return "";
   if (path.startsWith("/create")) return "/create";
   if (path.startsWith("/chat")) return "/chat";
   if (path.startsWith("/generate") || path.startsWith("/generator")) {
     return "/generate";
   }
-  if (path.startsWith("/custom") || path === "/profile") return "/custom";
+  if (path.startsWith("/custom") || path.startsWith("/profile")) return "/custom";
+  if (path.startsWith("/feed")) return "/feed";
+  if (path.startsWith("/community")) return "/community";
+  if (path.startsWith("/helpdesk")) return "/helpdesk";
+  if (path.startsWith("/safety")) return "/safety/introduction";
+  if (
+    path.startsWith("/resources-hub") ||
+    path.startsWith("/type") ||
+    path.startsWith("/comparison") ||
+    path.startsWith("/videos") ||
+    path.startsWith("/ai-instructions") ||
+    path.startsWith("/ai-girlfriend") ||
+    path.startsWith("/ai-boyfriend") ||
+    path.startsWith("/games") ||
+    path.startsWith("/romantasy")
+  ) {
+    return "/resources-hub";
+  }
+  if (path.startsWith("/upgrade")) return "/upgrade";
   return "/";
 }
 
-function AppTopbar() {
+function AppTopbar({
+  activeHref,
+  currentPath,
+}: Readonly<{ activeHref: string; currentPath: string }>) {
   return (
     <header className="sticky top-0 z-40 h-14 w-full bg-[rgba(13,13,13,0.62)] backdrop-blur-xl">
       <div className="flex h-14 items-center justify-between gap-3 px-4 md:px-[60px]">
+        <MobileAppMenu activeHref={activeHref} currentPath={currentPath} />
         <Link className="hidden md:block" href="/">
           <Image
             alt="ourdream.ai"
@@ -51,10 +78,26 @@ function AppTopbar() {
             width={130}
           />
         </Link>
-        <div className="flex min-w-0 flex-1 items-center gap-2 rounded-full bg-[rgb(36,36,36)] px-4 py-2 text-[12px] font-medium leading-4 text-[rgb(170,170,170)] md:max-w-[340px]">
-          <Search className="h-4 w-4 shrink-0" />
-          <span className="truncate">Search characters, guides, and generators</span>
-        </div>
+        <Form
+          action="/"
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-full bg-[rgb(36,36,36)] px-4 py-2 text-[12px] font-medium leading-4 text-[rgb(170,170,170)] md:max-w-[340px]"
+        >
+          <button
+            aria-label="Search"
+            className="grid h-4 w-4 shrink-0 place-items-center text-[rgb(170,170,170)] transition hover:text-white"
+            type="submit"
+          >
+            <Search aria-hidden="true" className="h-4 w-4" />
+          </button>
+          <input
+            aria-label="Search characters, guides, and generators"
+            autoComplete="off"
+            className="min-w-0 flex-1 truncate bg-transparent text-white outline-none placeholder:text-[rgb(170,170,170)]"
+            name="q"
+            placeholder="Search characters, guides, and generators"
+            type="search"
+          />
+        </Form>
         <div className="flex items-center gap-3">
           <AuthNav />
         </div>
@@ -63,7 +106,7 @@ function AppTopbar() {
   );
 }
 
-function RouteShell({
+export function RouteShell({
   children,
   route,
 }: Readonly<{ children: React.ReactNode; route: OurdreamRoute }>) {
@@ -74,7 +117,7 @@ function RouteShell({
       <div className="flex min-h-screen w-full">
         <AppSidebar activeHref={activeHref} />
         <div className="min-w-0 flex-1 pb-16 md:pb-14">
-          <AppTopbar />
+          <AppTopbar activeHref={activeHref} currentPath={route.path} />
           {children}
         </div>
       </div>
@@ -158,7 +201,7 @@ function FeatureGrid() {
   const features = [
     ["Create", "Shape appearance, personality, voice, and style."],
     ["Chat", "Start long-memory roleplay with public or private characters."],
-    ["Generate", "Use image and video controls with saved gallery results."],
+    ["Generate", "Use image controls with saved gallery results."],
     ["Upgrade", "Mirror the premium plan and dreamcoin subscription surface."],
   ];
 
@@ -429,7 +472,7 @@ function ComparisonPage({ route }: Readonly<{ route: OurdreamRoute }>) {
                 {item.title}
               </h2>
               <ul className="mt-5 space-y-3 text-[13px] font-medium leading-5 text-[rgb(170,170,170)]">
-                {["Unlimited messaging", "Creator controls", "Image and video tools"].map(
+                {["Unlimited messaging", "Creator controls", "Image generation tools"].map(
                   (feature) => (
                     <li className="flex gap-2" key={feature}>
                       <Check className="mt-0.5 h-4 w-4 shrink-0 text-[rgb(253,95,194)]" />
@@ -455,15 +498,96 @@ function UpgradePage({ route }: Readonly<{ route: OurdreamRoute }>) {
   );
 }
 
+function HelpDeskPage({ route }: Readonly<{ route: OurdreamRoute }>) {
+  return (
+    <RouteShell route={route}>
+      <HelpDeskWorkspace />
+    </RouteShell>
+  );
+}
+
+const termsPolicyLinks = [
+  {
+    title: "What we won't do",
+    copy: "The platform commitments and product boundaries users should know first.",
+    href: toSafetyHref("/policies/what-we-wont-do"),
+  },
+  {
+    title: "Acceptable use",
+    copy: "Allowed uses, creator responsibilities, and account expectations.",
+    href: toSafetyHref("/policies/acceptable-use"),
+  },
+  {
+    title: "Prohibited content",
+    copy: "Content categories that cannot be hosted, published, or generated.",
+    href: toSafetyHref("/policies/prohibited-content"),
+  },
+  {
+    title: "Age verification",
+    copy: "How age checks work in the product and when extra verification applies.",
+    href: toSafetyHref("/policies/age-verification"),
+  },
+  {
+    title: "Intellectual property",
+    copy: "Rules for creator uploads, generated assets, likeness, and ownership claims.",
+    href: toSafetyHref("/policies/intellectual-property"),
+  },
+  {
+    title: "How moderation works",
+    copy: "How reports, automated checks, and human review move through the system.",
+    href: toSafetyHref("/moderation/how-it-works"),
+  },
+  {
+    title: "Why was my character rejected?",
+    copy: "Common rejection categories and the product path to fix a submission.",
+    href: toSafetyHref("/moderation/why-rejected"),
+  },
+  {
+    title: "Appeals",
+    copy: "How to request a fresh review when a moderation decision looks wrong.",
+    href: toSafetyHref("/moderation/appeals"),
+  },
+  {
+    title: "Report a problem",
+    copy: "Where to report character, media, message, profile, and account issues.",
+    href: toSafetyHref("/reporting/how-to-report"),
+  },
+  {
+    title: "Your safety tools",
+    copy: "Account controls for hiding, muting, reporting, and managing your experience.",
+    href: toSafetyHref("/your-account/safety-tools"),
+  },
+  {
+    title: "Privacy at a glance",
+    copy: "A product-level summary of private chats, account data, and visibility.",
+    href: toSafetyHref("/your-account/privacy-summary"),
+  },
+  {
+    title: "Wellbeing resources",
+    copy: "External resources and support routes linked from the account center.",
+    href: toSafetyHref("/your-account/wellbeing-resources"),
+  },
+] as const;
+
+const termsActionLinks = [
+  { title: "Help Desk", copy: "Submit a beta support request.", href: "/helpdesk" },
+  { title: "Profile", copy: "Manage account, preferences, billing, and deletion.", href: "/profile" },
+  { title: "Upgrade", copy: "Review plan terms and dreamcoin allowances.", href: "/upgrade" },
+  { title: "Trust contact", copy: "Reach the team for trust, legal, or security routing.", href: "/safety/contact" },
+] as const;
+
 function TermsPage({ route }: Readonly<{ route: OurdreamRoute }>) {
   return (
     <RouteShell route={route}>
       <article className="px-4 py-12 md:px-[60px]">
-        <div className="mx-auto max-w-4xl">
-          <h1 className="text-[44px] font-black uppercase leading-none text-white">
+        <div className="mx-auto max-w-6xl">
+          <p className="text-[12px] font-black uppercase leading-4 text-[rgb(253,95,194)]">
+            Terms
+          </p>
+          <h1 className="mt-3 max-w-4xl text-[44px] font-black uppercase leading-none text-white md:text-[68px]">
             Terms & Policies
           </h1>
-          <div className="mt-8 space-y-5 rounded-[18px] border border-white/10 bg-[rgb(18,18,18)] p-6 text-[15px] leading-8 text-[rgb(170,170,170)]">
+          <div className="mt-8 max-w-4xl space-y-5 rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-6 text-[15px] leading-8 text-[rgb(170,170,170)]">
             <p>
               Ourdream is intended for adults. By using the service, you agree
               to follow the platform rules, respect creator and user safety, and
@@ -476,6 +600,67 @@ function TermsPage({ route }: Readonly<{ route: OurdreamRoute }>) {
               support routes linked throughout the app.
             </p>
           </div>
+
+          <section className="mt-10">
+            <div className="mb-5 flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+              <div>
+                <p className="text-[12px] font-black uppercase leading-4 text-[rgb(253,95,194)]">
+                  Policy index
+                </p>
+                <h2 className="mt-2 text-[28px] font-black uppercase leading-8 text-white">
+                  12 policy routes
+                </h2>
+              </div>
+              <p className="max-w-lg text-[13px] font-medium leading-6 text-[rgb(170,170,170)]">
+                These links route into the local Safety Center mirror so users can
+                move from Terms into the exact policy, report, privacy, or appeal path.
+              </p>
+            </div>
+            <div
+              className="grid gap-3 md:grid-cols-2 xl:grid-cols-3"
+              data-testid="terms-policy-links"
+            >
+              {termsPolicyLinks.map((item) => (
+                <Link
+                  className="group rounded-[12px] border border-white/10 bg-[rgb(18,18,18)] p-5 transition-colors hover:bg-[rgb(36,36,36)]"
+                  href={item.href}
+                  key={item.href}
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <h3 className="text-[18px] font-black uppercase leading-6 text-white">
+                      {item.title}
+                    </h3>
+                    <ArrowRight className="mt-0.5 h-4 w-4 shrink-0 text-[rgb(253,95,194)] transition-transform group-hover:translate-x-1" />
+                  </div>
+                  <p className="mt-3 text-[13px] font-medium leading-6 text-[rgb(170,170,170)]">
+                    {item.copy}
+                  </p>
+                </Link>
+              ))}
+            </div>
+          </section>
+
+          <section className="mt-10">
+            <h2 className="text-[28px] font-black uppercase leading-8 text-white">
+              Account and support actions
+            </h2>
+            <div className="mt-4 grid gap-3 md:grid-cols-4" data-testid="terms-action-links">
+              {termsActionLinks.map((item) => (
+                <Link
+                  className="rounded-[12px] border border-white/10 bg-[rgb(18,18,18)] p-5 transition-colors hover:bg-[rgb(36,36,36)]"
+                  href={item.href}
+                  key={item.href}
+                >
+                  <h3 className="text-[16px] font-black uppercase leading-5 text-white">
+                    {item.title}
+                  </h3>
+                  <p className="mt-3 text-[13px] font-medium leading-5 text-[rgb(170,170,170)]">
+                    {item.copy}
+                  </p>
+                </Link>
+              ))}
+            </div>
+          </section>
         </div>
       </article>
     </RouteShell>
@@ -522,6 +707,7 @@ export function OurdreamRoutePage({ route }: Readonly<{ route: OurdreamRoute }>)
   // /chat is a real chat hub (sessions list), not the marketing template the
   // route metadata otherwise resolves to.
   if (route.path === "/chat") return <ChatHubPage route={route} />;
+  if (route.path === "/helpdesk") return <HelpDeskPage route={route} />;
 
   switch (route.template) {
     case "article":

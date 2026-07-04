@@ -1,0 +1,4 @@
+[      61ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://127.0.0.1:3000/_next/static/chunks/0k1~vzed9~hdg.js:0
+[   70286ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://127.0.0.1:3000/_next/static/chunks/0k1~vzed9~hdg.js:0
+[   70326ms] ChunkLoadError: Failed to load chunk /_next/static/chunks/0k1~vzed9~hdg.js from module 86439
+    at http://127.0.0.1:3000/_next/static/chunks/turbopack-0g2uglk47y1v~.js:1:6024

@@ -29,6 +29,7 @@ export class PipelineImageModel implements ImageModel {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs);
     const size = imageSize(input.controls, input.orientation);
+    const referenceImages = pipelineReferenceImages(input.referenceImages);
 
     try {
       const response = await fetch(this.endpoint, {
@@ -49,6 +50,7 @@ export class PipelineImageModel implements ImageModel {
           n: count,
           response_format: "b64_json",
           seed: stableNumericSeed(input.seed),
+          ...(referenceImages.length > 0 ? { reference_images: referenceImages } : {}),
           controls: { ...(input.controls ?? {}), idreamSeed: input.seed },
         }),
         signal: controller.signal,
@@ -74,6 +76,33 @@ export class PipelineImageModel implements ImageModel {
       clearTimeout(timeout);
     }
   }
+}
+
+function pipelineReferenceImages(
+  images: Parameters<ImageModel["generate"]>[0]["referenceImages"],
+) {
+  return (images ?? []).map((image) => {
+    const reference: Record<string, unknown> = {
+      role: image.role,
+      assetId: image.assetId,
+      asset_id: image.assetId,
+      weight: image.weight,
+      contentType: image.contentType,
+      content_type: image.contentType,
+      width: image.width,
+      height: image.height,
+      storageKey: image.storageKey,
+      storage_key: image.storageKey,
+      url: image.url,
+      b64_json: image.b64Json,
+    };
+    for (const key of Object.keys(reference)) {
+      if (reference[key] === undefined || reference[key] === null || reference[key] === "") {
+        delete reference[key];
+      }
+    }
+    return reference;
+  });
 }
 
 function pipelineEndpoint(baseUrl: string) {

@@ -1,7 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
+import { createWriteStream, existsSync } from "node:fs";
+import { mkdir, open, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import type { ImageGeneratePayload, VideoGeneratePayload } from "@/server/ai/schemas";
+import { imageReferenceInputsForGenerationJob } from "@/server/ai/reference-images";
+import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
 import { jobQueue } from "@/server/jobs/queue";
 import {
   applyOverrides,
@@ -15,6 +23,7 @@ import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
+import { dimensionsForImageOrientation } from "@/server/modules/ourdream/generation-dimensions";
 import {
   listOfficialCharacters,
   createOfficialCharacter,
@@ -30,6 +39,21 @@ import {
 import { listAdminTags, patchTag, mergeTags } from "./characters/tags";
 import { listReviewQueue, reviewSubmission } from "./characters/review";
 import { generateCharacterDraft } from "./characters/assist";
+import {
+  approveProductionItem,
+  bulkPatchContentAssets,
+  createPlacement,
+  createProductionBatch,
+  getContentAsset,
+  getProductionBatch,
+  listContentAssets,
+  listPlacements,
+  listProductionBatches,
+  patchContentAsset,
+  patchPlacement,
+  regenerateProductionItem,
+  rejectProductionItem,
+} from "./content-ops";
 import { listCmsPages, getCmsPage, createCmsPage, patchCmsPage, publishCmsPage } from "./cms";
 import {
   exportUserData,
@@ -57,6 +81,13 @@ const adminDecisionSchema = z.object({
   decision: z.enum(["actioned", "no_violation", "duplicate", "escalated", "closed"]),
   policyCode: z.string().max(120).optional(),
   notes: z.string().max(2_000).optional(),
+  reason: z.string().trim().min(3).max(2_000),
+  confirmation: z.string().trim().min(1).max(160),
+});
+
+const appealDecisionSchema = z.object({
+  outcome: z.enum(["upheld", "overturned", "modified", "open"]),
+  notes: z.string().trim().max(2_000).optional(),
   reason: z.string().trim().min(3).max(2_000),
   confirmation: z.string().trim().min(1).max(160),
 });
@@ -128,15 +159,16 @@ const modelProfileSchema = z.object({
   defaultHeight: z.number().int().min(128).max(4096).default(1024),
   allowedOrientations: z.array(z.string().trim().min(1).max(20)).min(1).max(12),
   steps: z.number().int().min(1).max(150).default(28),
-  sampler: z.string().trim().min(1).max(80).default("dpmpp_2m"),
-  cfgScale: z.number().min(1).max(30).default(7),
+  sampler: z.string().trim().min(1).max(80).default("euler"),
+  scheduler: z.string().trim().min(1).max(80).default("model_default"),
+  cfgScale: z.number().min(1).max(30).default(1),
   negativeTemplateId: z.string().trim().max(160).optional(),
   costMultiplier: z.number().min(0.1).max(20).default(1),
   requiredEntitlement: z.string().trim().max(120).nullable().optional(),
   maxCount: z.number().int().min(1).max(8).default(4),
   concurrencyLimit: z.number().int().min(1).max(100).default(1),
-  enabled: z.boolean().default(true),
-  rolloutPercent: z.number().int().min(0).max(100).default(100),
+  enabled: z.boolean().default(false),
+  rolloutPercent: z.number().int().min(0).max(100).default(0),
   dryRunSummary: z.record(z.string(), z.unknown()).optional(),
 });
 
@@ -155,6 +187,7 @@ const modelProfilePatchSchema = z.object({
   allowedOrientations: z.array(z.string().trim().min(1).max(20)).min(1).max(12).optional(),
   steps: z.number().int().min(1).max(150).optional(),
   sampler: z.string().trim().min(1).max(80).optional(),
+  scheduler: z.string().trim().min(1).max(80).optional(),
   cfgScale: z.number().min(1).max(30).optional(),
   negativeTemplateId: z.string().trim().max(160).optional(),
   costMultiplier: z.number().min(0.1).max(20).optional(),
@@ -167,6 +200,95 @@ const modelProfilePatchSchema = z.object({
   reason: z.string().trim().min(3).max(2_000).optional(),
   confirmation: z.string().trim().min(1).max(160).optional(),
 });
+
+const modelProfileTestJobSchema = z.object({
+  prompt: z.string().trim().max(2_000).optional(),
+  negativePrompt: z.string().trim().max(1_000).nullable().optional(),
+  orientation: z.string().trim().min(1).max(20).optional(),
+  outputCount: z.number().int().min(1).max(4).default(1),
+  reason: z.string().trim().min(3).max(2_000),
+  confirmation: z.string().trim().min(1).max(160),
+});
+
+const modelImportKindSchema = z.enum(["model", "lora", "llm", "vae"]);
+
+const modelImportRegisterSchema = z.object({
+  kind: modelImportKindSchema.default("model"),
+  path: z.string().trim().min(1).max(1_000),
+  copyToLibrary: z.boolean().default(false),
+  reason: z.string().trim().min(3).max(2_000).optional(),
+});
+
+const optionalTrimmedText = (max: number) =>
+  z.preprocess(
+    (value) => {
+      if (value === null) return undefined;
+      if (typeof value === "string" && value.trim() === "") return undefined;
+      return value;
+    },
+    z.string().trim().min(1).max(max).optional(),
+  );
+
+const sdcppLoraSchema = z
+  .object({
+    key: optionalTrimmedText(160),
+    path: optionalTrimmedText(500),
+    weight: z.number().min(-4).max(4).default(1),
+    enabled: z.boolean().default(true),
+  })
+  .passthrough()
+  .superRefine((value, ctx) => {
+    if (!value.key && !value.path) {
+      ctx.addIssue({
+        code: "custom",
+        message: "LoRA entry requires key or path",
+        path: ["key"],
+      });
+    }
+  });
+
+const sdcppConversionSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    targetFormat: z.enum(["gguf"]).default("gguf"),
+    outputPath: z.string().trim().max(500).optional(),
+    type: z.string().trim().min(1).max(40).default("q8_0"),
+    sourceArg: z.enum(["model", "diffusion-model"]).default("model"),
+    convertName: z.boolean().default(false),
+    tensorTypeRules: z.string().trim().max(1_000).optional(),
+  })
+  .passthrough();
+
+const modelCapabilitiesSchema = z
+  .object({
+    textToImage: z.boolean().optional(),
+    stableSeed: z.boolean().optional(),
+    referenceImages: z.boolean().optional(),
+    initImage: z.boolean().optional(),
+    lora: z.boolean().optional(),
+  })
+  .passthrough();
+
+const sdcppRunnerConfigSchema = z
+  .object({
+    apiModelId: z.string().trim().min(1).max(160).optional(),
+    cliPath: optionalTrimmedText(500),
+    modelPath: optionalTrimmedText(500),
+    diffusionModelPath: optionalTrimmedText(500),
+    llmPath: optionalTrimmedText(500),
+    vaePath: optionalTrimmedText(500),
+    llmVisionPath: optionalTrimmedText(500),
+    clipLPath: optionalTrimmedText(500),
+    clipGPath: optionalTrimmedText(500),
+    t5xxlPath: optionalTrimmedText(500),
+    backend: optionalTrimmedText(120),
+    loraModelDir: optionalTrimmedText(500),
+    loraApplyMode: z.enum(["auto", "immediately", "at_runtime"]).optional(),
+    loras: z.array(sdcppLoraSchema).max(24).optional(),
+    conversion: sdcppConversionSchema.optional(),
+    capabilities: modelCapabilitiesSchema.optional(),
+  })
+  .passthrough();
 
 const promptTemplateSchema = z.object({
   templateKey: z.string().trim().min(1).max(120),
@@ -188,6 +310,9 @@ const publishSchema = z.object({
   confirmation: z.literal("PUBLISH"),
   dryRunSummary: z.record(z.string(), z.unknown()).optional(),
 });
+
+const imageProfilePublishMinSamples = 20;
+const modelProfilePublishMinRate = 0.8;
 
 const rollbackSchema = z.object({
   reason: z.string().trim().min(3).max(2_000),
@@ -278,6 +403,20 @@ const promoDisableSchema = z.object({
   confirmation: z.string().trim().min(1).max(160),
 });
 
+const supportRequestPatchSchema = z.object({
+  status: z.enum(["received", "open", "waiting_on_user", "resolved", "closed"]).optional(),
+  assignedToId: z.string().trim().min(1).max(160).nullable().optional(),
+  priority: z.number().int().min(1).max(5).optional(),
+  resolutionNotes: z.string().trim().max(2_000).nullable().optional(),
+  reason: z.string().trim().min(3).max(2_000),
+  confirmation: z.string().trim().min(1).max(160),
+});
+
+const supportRequestEscalateSchema = z.object({
+  reason: z.string().trim().min(3).max(2_000),
+  confirmation: z.string().trim().min(1).max(160),
+});
+
 // requestedById≠approvedById、approver 须持 permissionKey、状态单向（ADMIN_CONSOLE_PLAN §11 Phase4）。
 const approvalCreateSchema = z.object({
   permissionKey: z.string().trim().min(1).max(80),
@@ -296,7 +435,7 @@ const approvalDecisionSchema = z.object({
 
 export async function dispatchAdmin(request: Request, segments: string[]) {
   const method = request.method as ApiMethod;
-  const [resource, id, action, child] = segments;
+  const [resource, id, action, child, grandchild] = segments;
 
   if (resource === "dashboard" && !id && method === "GET") return adminDashboard(request);
 
@@ -330,6 +469,12 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
       if (action && child === "rollback" && method === "POST") {
         return rollbackModelProfile(request, action);
       }
+    }
+    if (id === "model-imports") {
+      if (!modelDiagnosticsEnabled()) throw Errors.notFound("Admin API route not found");
+      if (!action && method === "GET") return listModelImports(request);
+      if (action === "register" && method === "POST") return registerModelImport(request);
+      if (action === "upload" && method === "POST") return uploadModelImport(request);
     }
     if (id === "prompt-templates") {
       if (!action && method === "GET") return listPromptTemplates(request);
@@ -371,6 +516,9 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
     if (id && action === "decision" && method === "POST") {
       return moderationDecision(request, id);
     }
+    if (id === "appeals" && action && !child && method === "PATCH") {
+      return appealDecision(request, action);
+    }
   }
 
   if (resource === "billing") {
@@ -403,6 +551,14 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
 
   if (resource === "audit-log" && !id && method === "GET") return auditLog(request);
 
+  if (resource === "support" && id === "requests") {
+    if (!action && method === "GET") return listSupportRequests(request);
+    if (action && !child && method === "PATCH") return patchSupportRequest(request, action);
+    if (action && child === "escalate" && !grandchild && method === "POST") {
+      return escalateSupportRequest(request, action);
+    }
+  }
+
   if (resource === "support" && id === "plaintext" && action === "view" && method === "POST") {
     return viewPlaintext(request);
   }
@@ -426,6 +582,33 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
   if (resource === "content" && id === "featured") {
     if (!action && method === "GET") return getFeaturedCharacters(request);
     if (!action && method === "PUT") return putFeaturedCharacters(request);
+  }
+  if (resource === "content" && id === "production") {
+    if (action === "batches" && !child && method === "GET") return listProductionBatches(request);
+    if (action === "batches" && !child && method === "POST") return createProductionBatch(request);
+    if (action === "batches" && child && !grandchild && method === "GET") {
+      return getProductionBatch(request, child);
+    }
+    if (action === "items" && child && grandchild === "approve" && method === "POST") {
+      return approveProductionItem(request, child);
+    }
+    if (action === "items" && child && grandchild === "reject" && method === "POST") {
+      return rejectProductionItem(request, child);
+    }
+    if (action === "items" && child && grandchild === "regenerate" && method === "POST") {
+      return regenerateProductionItem(request, child);
+    }
+  }
+  if (resource === "content" && id === "assets") {
+    if (!action && method === "GET") return listContentAssets(request);
+    if (action === "bulk" && !child && method === "POST") return bulkPatchContentAssets(request);
+    if (action && !child && method === "GET") return getContentAsset(request, action);
+    if (action && !child && method === "PATCH") return patchContentAsset(request, action);
+  }
+  if (resource === "content" && id === "placements") {
+    if (!action && method === "GET") return listPlacements(request);
+    if (!action && method === "POST") return createPlacement(request);
+    if (action && !child && method === "PATCH") return patchPlacement(request, action);
   }
   // A — 官方角色 CMS
   if (resource === "content" && id === "official") {
@@ -475,7 +658,9 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
 
   if (resource === "chat") {
     if (id === "overview" && !action && method === "GET") return chatOpsOverview(request);
+    if (id === "provider-health" && !action && method === "GET") return chatOpsProviderHealth(request);
     if (id === "sessions" && !action && method === "GET") return chatOpsSessions(request);
+    if (id === "usage" && !action && method === "GET") return chatOpsUsage(request);
     if (id === "moderation-events" && !action && method === "GET") {
       return chatOpsModerationEvents(request);
     }
@@ -511,6 +696,7 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
   if (resource === "generation" && id === "model-profiles" && action) {
     if (child === "health" && method === "GET") return profileHealth(request, action);
     if (child === "dry-run" && method === "POST") return profileDryRun(request, action);
+    if (child === "test-job" && method === "POST") return createProfileTestJob(request, action);
   }
 
   // T4 analytics 导出 + 留存
@@ -531,6 +717,10 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
   if (resource === "experiments" && !id && method === "GET") return listExperiments(request);
 
   throw Errors.notFound("Admin API route not found", { path: `/admin/${segments.join("/")}` });
+}
+
+function modelDiagnosticsEnabled() {
+  return process.env.ADMIN_MODEL_DIAGNOSTICS_ENABLED === "true";
 }
 
 async function adminDashboard(request: Request) {
@@ -1069,9 +1259,525 @@ async function listModelProfiles(request: Request) {
   return ok({ items: profiles });
 }
 
+type ModelImportKind = z.infer<typeof modelImportKindSchema>;
+
+type ModelImportAsset = {
+  kind: ModelImportKind;
+  name: string;
+  path: string;
+  format: "safetensors" | "gguf";
+  sizeBytes: number;
+  modifiedAt: string;
+  draftPatch: Record<string, unknown>;
+};
+
+type ModelImportRegistryEntry = {
+  kind: ModelImportKind;
+  path: string;
+  registeredAt: string;
+};
+
+type ModelImportRegistry = {
+  version: 1;
+  assets: ModelImportRegistryEntry[];
+};
+
+const modelImportRegistrySchema = z.object({
+  version: z.number().optional(),
+  assets: z
+    .array(
+      z.object({
+        kind: modelImportKindSchema,
+        path: z.string().trim().min(1).max(1_000),
+        registeredAt: z.string().trim().optional(),
+      }),
+    )
+    .default([]),
+});
+
+const IMPORT_EXTENSIONS: Record<ModelImportKind, string[]> = {
+  model: [".safetensors", ".gguf"],
+  lora: [".safetensors"],
+  llm: [".gguf", ".safetensors"],
+  vae: [".safetensors", ".gguf"],
+};
+
+async function listModelImports(request: Request) {
+  await actorWithPermission(request, "generation.config.read");
+  const dirs = modelImportDirs();
+  const scannedItems = (
+    await Promise.all((["model", "lora", "llm", "vae"] as const).map((kind) => scanImportDir(kind, dirs[kind])))
+  ).flat();
+  const registeredItems = await registeredModelImportAssets();
+  const items = dedupeModelImportAssets([...scannedItems, ...registeredItems]);
+  return ok({
+    roots: dirs,
+    maxUploadBytes: modelUploadMaxBytes(),
+    items: items.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt)),
+  });
+}
+
+async function registerModelImport(request: Request) {
+  const actor = await actorWithPermission(request, "generation.config.write");
+  const body = modelImportRegisterSchema.parse(await jsonBody(request));
+  const { assets, sourceType, resolvedPath } = await modelImportAssetsFromPath(body.kind, body.path);
+  await upsertModelImportRegistryEntries(assets);
+  await writeAudit(request, actor, {
+    action: sourceType === "directory" ? "generation.model_import.register_directory" : "generation.model_import.register",
+    targetType: sourceType === "directory" ? `generation_${body.kind}_asset_directory` : `generation_${body.kind}_asset`,
+    targetId: resolvedPath,
+    reason: body.reason,
+    after: {
+      kind: body.kind,
+      sourceType,
+      count: assets.length,
+      assets: assets.slice(0, 50).map((asset) => ({
+        path: asset.path,
+        format: asset.format,
+        sizeBytes: asset.sizeBytes,
+      })),
+    },
+  });
+  return ok({ asset: assets[0], assets, roots: modelImportDirs() });
+}
+
+async function registeredModelImportAssets() {
+  const registry = await readModelImportRegistry();
+  const assets = await Promise.all(
+    registry.assets.map(async (entry) => {
+      try {
+        return await modelImportAssetFromPath(entry.kind, entry.path);
+      } catch {
+        return null;
+      }
+    }),
+  );
+  return assets.filter((asset): asset is ModelImportAsset => asset !== null);
+}
+
+async function upsertModelImportRegistryEntries(assets: ModelImportAsset[]) {
+  const registry = await readModelImportRegistry();
+  const incomingKeys = new Set(assets.map((asset) => registryEntryKey(asset.kind, asset.path)));
+  const existing = registry.assets.filter(
+    (entry) => !incomingKeys.has(registryEntryKey(entry.kind, entry.path)),
+  );
+  await writeModelImportRegistry({
+    version: 1,
+    assets: [
+      ...existing,
+      ...assets.map((asset) => ({
+        kind: asset.kind,
+        path: asset.path,
+        registeredAt: new Date().toISOString(),
+      })),
+    ],
+  });
+}
+
+async function readModelImportRegistry(): Promise<ModelImportRegistry> {
+  const registryPath = modelImportRegistryPath();
+  const text = await readFile(registryPath, "utf8").catch((error: unknown) => {
+    if (isMissingFileError(error)) return null;
+    throw error;
+  });
+  if (!text) return { version: 1, assets: [] };
+
+  try {
+    const parsed = modelImportRegistrySchema.safeParse(JSON.parse(text) as unknown);
+    if (!parsed.success) return { version: 1, assets: [] };
+    return {
+      version: 1,
+      assets: parsed.data.assets.map((entry) => ({
+        kind: entry.kind,
+        path: path.resolve(/*turbopackIgnore: true*/ expandHome(entry.path)),
+        registeredAt: entry.registeredAt ?? new Date(0).toISOString(),
+      })),
+    };
+  } catch {
+    return { version: 1, assets: [] };
+  }
+}
+
+async function writeModelImportRegistry(registry: ModelImportRegistry) {
+  const registryPath = modelImportRegistryPath();
+  await mkdir(path.dirname(registryPath), { recursive: true });
+  await writeFile(
+    registryPath,
+    `${JSON.stringify({ version: 1, assets: dedupeRegistryEntries(registry.assets) }, null, 2)}\n`,
+    "utf8",
+  );
+}
+
+function modelImportRegistryPath() {
+  return path.join(modelImportDirs().root, "registry.json");
+}
+
+function dedupeModelImportAssets(items: ModelImportAsset[]) {
+  const byKey = new Map<string, ModelImportAsset>();
+  for (const item of items) {
+    byKey.set(`${item.kind}:${item.path}`, item);
+  }
+  return Array.from(byKey.values());
+}
+
+function dedupeRegistryEntries(entries: ModelImportRegistryEntry[]) {
+  const byKey = new Map<string, ModelImportRegistryEntry>();
+  for (const entry of entries) {
+    const resolvedPath = path.resolve(/*turbopackIgnore: true*/ expandHome(entry.path));
+    byKey.set(registryEntryKey(entry.kind, resolvedPath), { ...entry, path: resolvedPath });
+  }
+  return Array.from(byKey.values());
+}
+
+function registryEntryKey(kind: ModelImportKind, filePath: string) {
+  return `${kind}:${path.resolve(/*turbopackIgnore: true*/ expandHome(filePath))}`;
+}
+
+function isMissingFileError(error: unknown) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+}
+
+async function uploadModelImport(request: Request) {
+  const actor = await actorWithPermission(request, "generation.config.write");
+  const form = await request.formData();
+  const kind = modelImportKindSchema.parse(String(form.get("kind") ?? "model"));
+  const file = form.get("file");
+  if (!(file instanceof File)) throw Errors.badRequest("Upload requires a file field");
+  if (file.size <= 0) throw Errors.badRequest("Uploaded file is empty");
+  const maxBytes = modelUploadMaxBytes();
+  if (file.size > maxBytes) {
+    throw Errors.badRequest(`Uploaded file exceeds limit (${maxBytes} bytes)`);
+  }
+
+  const safeName = safeImportFileName(file.name);
+  assertImportExtension(kind, safeName);
+  const targetDir = modelImportDirs()[kind];
+  await mkdir(targetDir, { recursive: true });
+  const destination = await uniqueImportPath(targetDir, safeName);
+  const webStream = file.stream() as unknown as Parameters<typeof Readable.fromWeb>[0];
+  await pipeline(Readable.fromWeb(webStream), createWriteStream(destination));
+  const asset = await modelImportAssetFromPath(kind, destination);
+
+  await writeAudit(request, actor, {
+    action: "generation.model_import.upload",
+    targetType: `generation_${kind}_asset`,
+    targetId: asset.path,
+    after: {
+      kind: asset.kind,
+      format: asset.format,
+      name: asset.name,
+      sizeBytes: asset.sizeBytes,
+    },
+  });
+  return ok({ asset, roots: modelImportDirs() });
+}
+
+function modelImportRoot() {
+  const configuredRoot = process.env.ADMIN_MODEL_LIBRARY_DIR?.trim();
+  const defaultBase = process.env.IDREAM_REPO_ROOT?.trim() || process.cwd();
+  const baseRoot = path.resolve(/*turbopackIgnore: true*/ expandHome(defaultBase));
+  if (!configuredRoot) return path.join(baseRoot, "data", "model-imports");
+
+  const expandedRoot = expandHome(configuredRoot);
+  const resolvedRoot = path.isAbsolute(expandedRoot)
+    ? expandedRoot
+    : path.join(/*turbopackIgnore: true*/ baseRoot, expandedRoot);
+  return path.resolve(/*turbopackIgnore: true*/ resolvedRoot);
+}
+
+function modelUploadMaxBytes() {
+  const raw = Number.parseInt(process.env.ADMIN_MODEL_UPLOAD_MAX_BYTES ?? "", 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 20 * 1024 * 1024 * 1024;
+}
+
+function modelImportDirs() {
+  const root = modelImportRoot();
+  return {
+    root,
+    model: path.join(root, "checkpoints"),
+    lora: path.join(root, "loras"),
+    llm: path.join(root, "encoders"),
+    vae: path.join(root, "vae"),
+    converted: path.join(root, "gguf"),
+  };
+}
+
+function expandHome(value: string) {
+  if (value === "~") return os.homedir();
+  if (value.startsWith("~/")) return path.join(os.homedir(), value.slice(2));
+  return value;
+}
+
+async function scanImportDir(kind: ModelImportKind, dir: string, depth = 0): Promise<ModelImportAsset[]> {
+  const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+  const assets: ModelImportAsset[] = [];
+  for (const entry of entries) {
+    if (entry.name.startsWith(".")) continue;
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory() && depth < 2) {
+      assets.push(...(await scanImportDir(kind, fullPath, depth + 1)));
+      continue;
+    }
+    if (!entry.isFile() || !isAllowedImportFile(kind, entry.name)) continue;
+    const info = await stat(fullPath).catch(() => null);
+    if (!info?.isFile()) continue;
+    assets.push(await modelImportAsset(kind, fullPath, info.size, info.mtime));
+    if (assets.length >= 300) break;
+  }
+  return assets;
+}
+
+async function modelImportAssetFromPath(kind: ModelImportKind, rawPath: string) {
+  const filePath = path.resolve(/*turbopackIgnore: true*/ expandHome(rawPath));
+  assertImportExtension(kind, filePath);
+  const info = await stat(filePath).catch(() => null);
+  if (!info?.isFile()) throw Errors.badRequest("Model import path must point to a readable file");
+  return modelImportAsset(kind, filePath, info.size, info.mtime);
+}
+
+async function modelImportAssetsFromPath(kind: ModelImportKind, rawPath: string) {
+  const resolvedPath = path.resolve(/*turbopackIgnore: true*/ expandHome(rawPath));
+  const info = await stat(resolvedPath).catch(() => null);
+  if (!info) throw Errors.badRequest("Model import path must point to a readable file or directory");
+  if (info.isFile()) {
+    return {
+      sourceType: "file" as const,
+      resolvedPath,
+      assets: [await modelImportAssetFromPath(kind, resolvedPath)],
+    };
+  }
+  if (!info.isDirectory()) {
+    throw Errors.badRequest("Model import path must point to a readable file or directory");
+  }
+  const assets = await scanImportDir(kind, resolvedPath);
+  if (assets.length === 0) {
+    throw Errors.badRequest(`${kind} directory import found no supported files`);
+  }
+  return {
+    sourceType: "directory" as const,
+    resolvedPath,
+    assets,
+  };
+}
+
+async function modelImportAsset(
+  kind: ModelImportKind,
+  filePath: string,
+  sizeBytes: number,
+  modifiedAt: Date,
+): Promise<ModelImportAsset> {
+  const format = modelFormatFromPath(filePath);
+  const metadataText =
+    format === "safetensors" ? await readSafetensorsMetadataText(filePath) : "";
+  return {
+    kind,
+    name: path.basename(filePath),
+    path: filePath,
+    format,
+    sizeBytes,
+    modifiedAt: modifiedAt.toISOString(),
+    draftPatch: modelImportDraftPatch(kind, filePath, format, metadataText),
+  };
+}
+
+function modelImportDraftPatch(
+  kind: ModelImportKind,
+  filePath: string,
+  format: "safetensors" | "gguf",
+  metadataText = "",
+): Record<string, unknown> {
+  const slug = slugFromFilePath(filePath);
+  if (kind === "lora") {
+    return {
+      loraModelDir: path.dirname(filePath),
+      lora: {
+        key: slug,
+        path: filePath,
+        fileName: path.basename(filePath),
+        weight: 1,
+        enabled: true,
+      },
+    };
+  }
+  if (kind === "llm") return { llmPath: filePath };
+  if (kind === "vae") return { vaePath: filePath };
+
+  const isKrea2Import = isKrea2ModelImport(slug, filePath);
+  const isComfyuiFp8Krea2Import = isComfyuiFp8Krea2ModelImport(slug, filePath, metadataText);
+  if (isComfyuiFp8Krea2Import) {
+    return {
+      profileTemplate: "reference_identity_comfyui",
+      profileKey: `comfyui_${slug}`,
+      label: `${titleFromSlug(slug)} ComfyUI candidate`,
+      runner: "comfyui",
+      pipelineModel: slug,
+      sourceModelPath: filePath,
+      diffusionModelPath: filePath,
+      convertedModelPath: "",
+      modelFormat: format,
+      conversionEnabled: false,
+      steps: "10",
+      sampler: "er_sde",
+      scheduler: "simple",
+      cfgScale: "1",
+      runnerConfig: {
+        apiModelId: slug,
+        profileTemplate: "reference_identity_comfyui",
+        templateIntent: "comfyui_reference_identity",
+        verificationStatus: "requires_comfyui_fp8_krea2_runtime",
+        componentStatus: {
+          workflow: "metadata_embedded_not_imported",
+          textEncoder: "requires_comfyui_qwen3vl_text_encoder",
+          vae: "requires_comfyui_krea2_vae",
+        },
+        assetFormat: "fp8_scaled_comfyui_checkpoint",
+        note: "This Krea2 asset is a ComfyUI fp8-scaled checkpoint. Keep it as a ComfyUI draft until an imported workflow and local runtime probe pass.",
+        capabilities: {
+          textToImage: true,
+          stableSeed: true,
+          referenceImages: true,
+          initImage: true,
+          lora: false,
+        },
+      },
+    };
+  }
+  const convertedPath =
+    format === "safetensors" && !isKrea2Import
+      ? path.join(modelImportDirs().converted, `${slug}-q8_0.gguf`)
+      : filePath;
+  const krea2Patch = isKrea2Import
+    ? {
+        llmPath: path.join(os.homedir(), ".localai/models/krea2/text_encoders/Qwen3VL-4B-Instruct-Q4_K_M.gguf"),
+        vaePath: path.join(os.homedir(), ".localai/models/krea2/vae/wan_2.1_vae.safetensors"),
+        backend: "vae=cpu",
+        steps: "10",
+        sampler: "er_sde",
+        scheduler: "simple",
+        cfgScale: "1",
+      }
+    : {};
+  return {
+    profileKey: `sdcpp_${slug}`,
+    label: titleFromSlug(slug),
+    runner: "sd_cpp",
+    pipelineModel: slug,
+    sourceModelPath: filePath,
+    diffusionModelPath: format === "safetensors" ? filePath : "",
+    convertedModelPath: format === "safetensors" && isKrea2Import ? "" : convertedPath,
+    modelFormat: format,
+    conversionEnabled: format === "safetensors" && !isKrea2Import,
+    conversionType: "q8_0",
+    conversionSourceArg: "model",
+    ...krea2Patch,
+  };
+}
+
+function isKrea2ModelImport(slug: string, filePath: string) {
+  return /krea[-_ ]?2/i.test(`${slug} ${filePath}`);
+}
+
+function isComfyuiFp8Krea2ModelImport(slug: string, filePath: string, metadataText: string) {
+  const haystack = `${slug} ${filePath} ${metadataText}`.toLowerCase();
+  return (
+    /krea[-_ ]?2/i.test(haystack) &&
+    (haystack.includes("comfyui") || haystack.includes("checkpointloadersimple")) &&
+    (haystack.includes("fp8") || haystack.includes("fp8_scaled") || haystack.includes("comfy_quant"))
+  );
+}
+
+async function readSafetensorsMetadataText(filePath: string) {
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
+  try {
+    handle = await open(filePath, "r");
+    const sizeBuffer = Buffer.alloc(8);
+    await handle.read(sizeBuffer, 0, 8, 0);
+    const headerLength = Number(sizeBuffer.readBigUInt64LE(0));
+    if (!Number.isFinite(headerLength) || headerLength <= 0 || headerLength > 8 * 1024 * 1024) {
+      return "";
+    }
+    const headerBuffer = Buffer.alloc(headerLength);
+    await handle.read(headerBuffer, 0, headerLength, 8);
+    const header = JSON.parse(headerBuffer.toString("utf8")) as unknown;
+    if (!isRecord(header)) return "";
+    const metadata = isRecord(header.__metadata__) ? header.__metadata__ : {};
+    const metadataText = Object.entries(metadata)
+      .map(([key, value]) => `${key}:${typeof value === "string" ? value : JSON.stringify(value)}`)
+      .join("\n");
+    return metadataText.slice(0, 80_000);
+  } catch {
+    return "";
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
+function safeImportFileName(name: string) {
+  const baseName = path.basename(name).replace(/[^a-zA-Z0-9._-]+/g, "_");
+  if (!baseName || baseName === "." || baseName === "..") {
+    throw Errors.badRequest("Uploaded file name is invalid");
+  }
+  return baseName;
+}
+
+async function uniqueImportPath(dir: string, name: string) {
+  const ext = path.extname(name);
+  const base = name.slice(0, name.length - ext.length);
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const candidate =
+      attempt === 0
+        ? path.join(dir, name)
+        : path.join(dir, `${base}-${randomUUID().slice(0, 8)}${ext}`);
+    const exists = await stat(candidate).then(
+      () => true,
+      () => false,
+    );
+    if (!exists) return candidate;
+  }
+  throw Errors.badRequest("Could not allocate a unique upload file name");
+}
+
+function assertImportExtension(kind: ModelImportKind, filePath: string) {
+  if (!isAllowedImportFile(kind, filePath)) {
+    throw Errors.badRequest(`${kind} import supports ${IMPORT_EXTENSIONS[kind].join(", ")} files`);
+  }
+}
+
+function isAllowedImportFile(kind: ModelImportKind, filePath: string) {
+  const lower = filePath.toLowerCase();
+  return IMPORT_EXTENSIONS[kind].some((ext) => lower.endsWith(ext));
+}
+
+function modelFormatFromPath(filePath: string): "safetensors" | "gguf" {
+  return filePath.toLowerCase().endsWith(".gguf") ? "gguf" : "safetensors";
+}
+
+function slugFromFilePath(filePath: string) {
+  return (
+    path
+      .basename(filePath)
+      .replace(/\.[^.]+$/, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 90) || "model"
+  );
+}
+
+function titleFromSlug(slug: string) {
+  return slug
+    .split("_")
+    .filter(Boolean)
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(" ");
+}
+
 async function createModelProfile(request: Request) {
+  if (!modelDiagnosticsEnabled()) throw Errors.notFound("Admin API route not found");
   const actor = await actorWithPermission(request, "generation.config.write");
   const body = modelProfileSchema.parse(await jsonBody(request));
+  validateModelProfileConfig(body);
+  const runnerConfig = normalizedModelProfileRunnerConfig(body);
   const latest = await prisma.generationModelProfile.findFirst({
     where: { profileKey: body.profileKey },
     orderBy: { version: "desc" },
@@ -1083,7 +1789,7 @@ async function createModelProfile(request: Request) {
       sourceModelPath: body.sourceModelPath ?? null,
       convertedModelPath: body.convertedModelPath ?? null,
       allowedOrientations: toInputJson(body.allowedOrientations),
-      runnerConfig: body.runnerConfig ? toInputJson(body.runnerConfig) : undefined,
+      runnerConfig: runnerConfig ? toInputJson(runnerConfig) : undefined,
       dryRunSummary: body.dryRunSummary ? toInputJson(body.dryRunSummary) : undefined,
       version: (latest?.version ?? 0) + 1,
       status: "draft",
@@ -1099,8 +1805,11 @@ async function createModelProfile(request: Request) {
 }
 
 async function patchModelProfile(request: Request, id: string) {
-  const actor = await actorWithPermission(request, "generation.config.write");
   const body = modelProfilePatchSchema.parse(await jsonBody(request));
+  if (!modelDiagnosticsEnabled() && !isOperationalModelProfileDisablePatch(body)) {
+    throw Errors.notFound("Admin API route not found");
+  }
+  const actor = await actorWithPermission(request, "generation.config.write");
   const before = await prisma.generationModelProfile.findUnique({ where: { id } });
   if (!before) throw Errors.notFound("Model profile not found");
   if (before.status !== "draft") {
@@ -1110,11 +1819,36 @@ async function patchModelProfile(request: Request, id: string) {
     if (body.enabled !== false || forbiddenKeys.length > 0) {
       throw Errors.badRequest("Only draft profiles can be edited; active profiles may only be disabled");
     }
+  } else if (body.enabled === true) {
+    throw Errors.badRequest("Draft profiles cannot be enabled directly; publish the profile after verification");
   }
   if (body.enabled === false && before.enabled) {
     if (!body.reason || body.confirmation !== "DISABLE") {
       throw Errors.badRequest("Disabling a profile requires reason and DISABLE confirmation");
     }
+  }
+  const shouldPersistRunnerConfig =
+    body.runnerConfig !== undefined || body.pipelineModel !== undefined || body.runner !== undefined;
+  // Only re-validate/normalize the runner config when the patch actually changes it. A
+  // disable-only PATCH (the emergency kill-switch) must NOT run the strict sd_cpp schema over
+  // a profile's existing, possibly-legacy runnerConfig — a known-field violation there would
+  // throw 400 and block disabling a misbehaving profile.
+  let runnerConfig: ReturnType<typeof normalizedModelProfileRunnerConfig> | undefined;
+  if (shouldPersistRunnerConfig) {
+    const nextConfigInput: ModelProfileConfigInput = {
+      profileKey: body.profileKey ?? before.profileKey,
+      label: body.label ?? before.label,
+      mode: body.mode ?? (before.mode as "image" | "video"),
+      runner: body.runner ?? (before.runner as "pipeline" | "sd_cpp" | "mlx" | "comfyui" | "external"),
+      pipelineModel: body.pipelineModel ?? before.pipelineModel,
+      sourceModelPath: body.sourceModelPath === undefined ? before.sourceModelPath : body.sourceModelPath,
+      convertedModelPath:
+        body.convertedModelPath === undefined ? before.convertedModelPath : body.convertedModelPath,
+      modelFormat: body.modelFormat ?? (before.modelFormat as "safetensors" | "gguf" | "diffusers" | "external"),
+      runnerConfig: body.runnerConfig ?? jsonRecord(before.runnerConfig),
+    };
+    validateModelProfileConfig(nextConfigInput);
+    runnerConfig = normalizedModelProfileRunnerConfig(nextConfigInput);
   }
 
   const updated = await prisma.generationModelProfile.update({
@@ -1129,7 +1863,7 @@ async function patchModelProfile(request: Request, id: string) {
       convertedModelPath:
         body.convertedModelPath === undefined ? undefined : body.convertedModelPath,
       modelFormat: body.modelFormat,
-      runnerConfig: body.runnerConfig ? toInputJson(body.runnerConfig) : undefined,
+      runnerConfig: shouldPersistRunnerConfig && runnerConfig ? toInputJson(runnerConfig) : undefined,
       defaultWidth: body.defaultWidth,
       defaultHeight: body.defaultHeight,
       allowedOrientations: body.allowedOrientations
@@ -1137,6 +1871,7 @@ async function patchModelProfile(request: Request, id: string) {
         : undefined,
       steps: body.steps,
       sampler: body.sampler,
+      scheduler: body.scheduler,
       cfgScale: body.cfgScale,
       negativeTemplateId: body.negativeTemplateId,
       costMultiplier: body.costMultiplier,
@@ -1160,6 +1895,11 @@ async function patchModelProfile(request: Request, id: string) {
   return ok({ profile: updated });
 }
 
+function isOperationalModelProfileDisablePatch(body: z.infer<typeof modelProfilePatchSchema>) {
+  if (body.enabled !== false) return false;
+  return definedPatchKeys(body).every((key) => ["enabled", "reason", "confirmation"].includes(key));
+}
+
 async function publishModelProfile(request: Request, id: string) {
   const actor = await actorWithPermission(request, "generation.config.write");
   const body = publishSchema.parse(await jsonBody(request));
@@ -1171,9 +1911,13 @@ async function publishModelProfile(request: Request, id: string) {
   }
 
   const dryRunSummary = body.dryRunSummary
-    ? toInputJson(body.dryRunSummary)
+    ? toInputJson({
+        ...jsonRecord(profile.dryRunSummary),
+        ...body.dryRunSummary,
+      })
     : profile.dryRunSummary;
   if (!dryRunSummary) throw Errors.badRequest("Publish requires dry-run summary");
+  assertModelProfilePublishable(profile, dryRunSummary);
 
   const previous = await prisma.generationModelProfile.findFirst({
     where: { profileKey: profile.profileKey, status: "active" },
@@ -1185,7 +1929,14 @@ async function publishModelProfile(request: Request, id: string) {
     });
     return tx.generationModelProfile.update({
       where: { id },
-      data: { status: "active", dryRunSummary, publishedAt: new Date(), archivedAt: null },
+      data: {
+        status: "active",
+        enabled: true,
+        rolloutPercent: profile.rolloutPercent > 0 ? profile.rolloutPercent : 100,
+        dryRunSummary,
+        publishedAt: new Date(),
+        archivedAt: null,
+      },
     });
   });
   await writeAudit(request, actor, {
@@ -1197,6 +1948,123 @@ async function publishModelProfile(request: Request, id: string) {
     after: profileAuditSnapshot(published),
   });
   return ok({ profile: published, previousActiveId: previous?.id ?? null });
+}
+
+function assertModelProfilePublishable(
+  profile: {
+    mode: string;
+    sourceModelPath: string | null;
+    convertedModelPath: string | null;
+    runnerConfig: Prisma.JsonValue;
+  },
+  dryRunSummary: Prisma.JsonValue | Prisma.InputJsonValue,
+) {
+  const summary = jsonRecord(dryRunSummary);
+  const runnerConfig = jsonRecord(profile.runnerConfig);
+  const verificationStatus = stringFromRecord(runnerConfig, "verificationStatus");
+  if (!verificationStatus && requiresModelVerification(profile, runnerConfig)) {
+    throw Errors.badRequest("Publish requires a passed model verification status", {
+      verificationStatus: null,
+    });
+  }
+  if (verificationStatus && !["passed", "verified", "manual_passed"].includes(verificationStatus)) {
+    throw Errors.badRequest("Publish requires a passed model verification status", {
+      verificationStatus,
+    });
+  }
+  const badComponentStatuses = modelProfileBadComponentStatuses(runnerConfig.componentStatus);
+  if (badComponentStatuses.length > 0) {
+    throw Errors.badRequest("Publish requires all model components to be available", {
+      componentStatus: badComponentStatuses,
+    });
+  }
+
+  const failureMode = stringFromRecord(summary, "failureMode");
+  if (failureMode) {
+    throw Errors.badRequest("Publish requires a dry run without failureMode", {
+      failureMode,
+    });
+  }
+
+  const sampleCount = numberFromRecord(summary, "sampleCount");
+  const minSamples = profile.mode === "image" ? imageProfilePublishMinSamples : 1;
+  if (sampleCount === undefined || sampleCount < minSamples) {
+    throw Errors.badRequest(`Publish requires at least ${minSamples} dry-run samples`, {
+      sampleCount,
+      minSamples,
+    });
+  }
+
+  const successRate = numberFromRecord(summary, "successRate");
+  if (successRate !== undefined && successRate < modelProfilePublishMinRate) {
+    throw Errors.badRequest("Publish requires dry-run successRate >= 0.8", {
+      successRate,
+    });
+  }
+
+  if (profile.mode === "image") {
+    const consistencyRate = firstNumberFromRecord(summary, [
+      "consistencyRate",
+      "consistencyPassRate",
+      "identityConsistencyRate",
+      "manualConsistencyRate",
+    ]);
+    if (consistencyRate === undefined || consistencyRate < modelProfilePublishMinRate) {
+      throw Errors.badRequest("Publish requires image consistencyRate >= 0.8", {
+        consistencyRate,
+      });
+    }
+  }
+}
+
+function modelProfileBadComponentStatuses(value: unknown) {
+  const componentStatus = jsonRecord(value);
+  return Object.entries(componentStatus).flatMap(([key, rawValue]) => {
+    const status = modelComponentStatusValue(rawValue);
+    return status && isBadModelComponentStatus(status) ? [{ key, status }] : [];
+  });
+}
+
+function modelComponentStatusValue(value: unknown) {
+  const rawStatus = typeof value === "string" ? value : isRecord(value) ? stringFromRecord(value, "status") ?? "" : "";
+  const status = rawStatus.trim();
+  const normalized = status.toLowerCase();
+  if (normalized.startsWith("available:")) return "available";
+  if (normalized.startsWith("missing:")) return "missing";
+  if (normalized.startsWith("failed:")) return "failed";
+  if (normalized.startsWith("unsupported:")) return "unsupported";
+  return status;
+}
+
+function isBadModelComponentStatus(status: string) {
+  const normalized = status.toLowerCase();
+  return [
+    "missing",
+    "failed",
+    "unsupported",
+    "not_imported",
+    "required",
+    "requires_",
+    "unavailable",
+  ].some((marker) => normalized.includes(marker));
+}
+
+function requiresModelVerification(
+  profile: {
+    mode: string;
+    sourceModelPath: string | null;
+    convertedModelPath: string | null;
+  },
+  runnerConfig: Record<string, unknown>,
+) {
+  if (profile.mode !== "image") return false;
+  return Boolean(
+    profile.sourceModelPath ||
+      profile.convertedModelPath ||
+      stringFromRecord(runnerConfig, "diffusionModelPath") ||
+      stringFromRecord(runnerConfig, "modelPath") ||
+      stringFromRecord(runnerConfig, "workflowPath"),
+  );
 }
 
 async function rollbackModelProfile(request: Request, id: string) {
@@ -1232,6 +2100,350 @@ async function rollbackModelProfile(request: Request, id: string) {
     after: profileAuditSnapshot(restored),
   });
   return ok({ profile: restored, fromVersion: current.version, toVersion: restored.version });
+}
+
+async function createProfileTestJob(request: Request, id: string) {
+  const actor = await actorWithPermission(request, "generation.config.write");
+  const body = modelProfileTestJobSchema.parse(await jsonBody(request));
+  if (body.confirmation !== "TEST" && body.confirmation !== id) {
+    throw Errors.badRequest("Test job requires TEST confirmation");
+  }
+  const profile = await prisma.generationModelProfile.findUnique({ where: { id } });
+  if (!profile) throw Errors.notFound("Model profile not found");
+  if (profile.status === "archived") {
+    throw Errors.badRequest("Archived profiles cannot create test jobs");
+  }
+  if (profile.mode !== "image") {
+    throw Errors.badRequest("Admin test image currently supports image profiles only");
+  }
+  const allowedOrientations = jsonStringArray(profile.allowedOrientations);
+  const orientation = body.orientation ?? allowedOrientations[0] ?? "1:1";
+  if (allowedOrientations.length > 0 && !allowedOrientations.includes(orientation)) {
+    throw Errors.badRequest("Orientation is not allowed for this profile", {
+      orientation,
+      allowedOrientations,
+    });
+  }
+  const outputCount = Math.min(body.outputCount, profile.maxCount, 4);
+  const controls = profileTestControls(profile, orientation);
+  const prompt = body.prompt?.trim() || `Admin test image for ${profile.label}`;
+  const negativePrompt = body.negativePrompt?.trim() || null;
+  const job = await prisma.$transaction(async (tx) => {
+    const created = await tx.generationJob.create({
+      data: {
+        userId: actor.id,
+        mode: "image",
+        prompt,
+        negativePrompt,
+        controls: toInputJson(controls),
+        presetIds: [],
+        model: profile.pipelineModel,
+        profileId: profile.profileKey,
+        profileVersion: profile.version,
+        orientation,
+        outputCount,
+        status: "queued",
+        costDreamcoins: 0,
+        provider: profile.runner,
+      },
+    });
+    await appendAdminGenerationEvent(tx, created.id, "created", "Admin profile test job accepted", {
+      profileId: profile.profileKey,
+      profileVersion: profile.version,
+      source: "admin_generation_config",
+    });
+    await appendAdminGenerationEvent(tx, created.id, "queued", "Admin profile test job queued", {});
+    return created;
+  });
+
+  try {
+    await enqueueExistingGenerationJob(job);
+  } catch (error) {
+    await prisma.$transaction(async (tx) => {
+      await tx.generationJob.update({
+        where: { id: job.id },
+        data: { status: "failed", errorCode: "queue_enqueue_failed", completedAt: new Date() },
+      });
+      await appendAdminGenerationEvent(tx, job.id, "failed", "Admin test job enqueue failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    throw Errors.internal("Generation queue unavailable", { jobId: job.id });
+  }
+
+  await writeAudit(request, actor, {
+    action: "generation.profile.test_job",
+    targetType: "generation_model_profile",
+    targetId: profile.id,
+    reason: body.reason,
+    after: {
+      jobId: job.id,
+      profileKey: profile.profileKey,
+      profileVersion: profile.version,
+      orientation,
+      outputCount,
+    },
+  });
+  return ok({ job: redactJob(job) }, { status: 202 });
+}
+
+type ModelProfileConfigInput = {
+  profileKey: string;
+  label: string;
+  mode: "image" | "video";
+  runner: "pipeline" | "sd_cpp" | "mlx" | "comfyui" | "external";
+  pipelineModel: string;
+  sourceModelPath?: string | null;
+  convertedModelPath?: string | null;
+  modelFormat: "safetensors" | "gguf" | "diffusers" | "external";
+  runnerConfig?: Record<string, unknown>;
+};
+
+function validateModelProfileConfig(input: ModelProfileConfigInput) {
+  if (input.runner !== "sd_cpp") return;
+  const config = input.runnerConfig ? sdcppRunnerConfigSchema.parse(input.runnerConfig) : {};
+  const apiModelId = stringFromRecord(config, "apiModelId");
+  if (apiModelId && apiModelId !== input.pipelineModel) {
+    throw Errors.badRequest("sd_cpp runnerConfig.apiModelId must match pipelineModel");
+  }
+  if (isKrea2ModelProfile(input)) {
+    const llmPath = stringFromRecord(config, "llmPath");
+    const vaePath = stringFromRecord(config, "vaePath");
+    if (llmPath && isKnownKrea2IncompatibleTextEncoder(llmPath)) {
+      throw Errors.badRequest("Krea2 sd_cpp profiles require a Qwen3-VL 4B text encoder");
+    }
+    if (vaePath && isKnownKrea2IncompatibleVae(vaePath)) {
+      throw Errors.badRequest("Krea2 sd_cpp profiles require wan_2.1_vae.safetensors");
+    }
+  }
+  const conversion = config.conversion;
+  const sourcePath = firstText([
+    input.sourceModelPath,
+    config.diffusionModelPath,
+    config.modelPath,
+  ]);
+  const convertedPath = firstText([input.convertedModelPath, conversion?.outputPath]);
+
+  if (input.modelFormat === "safetensors" && sourcePath && !hasKnownModelExtension(sourcePath)) {
+    throw Errors.badRequest("sd_cpp safetensors profile sourceModelPath must point to a model file");
+  }
+  if (input.modelFormat === "gguf") {
+    const ggufPath = firstText([convertedPath, sourcePath]);
+    if (ggufPath && !ggufPath.endsWith(".gguf")) {
+      throw Errors.badRequest("sd_cpp gguf profile must use a .gguf source or converted model path");
+    }
+  }
+  if (conversion?.enabled) {
+    if (!sourcePath) throw Errors.badRequest("sd_cpp conversion requires a source model path");
+    if (!sourcePath.endsWith(".safetensors")) {
+      throw Errors.badRequest("sd_cpp conversion currently expects a .safetensors source model");
+    }
+    if (!convertedPath) throw Errors.badRequest("sd_cpp conversion requires convertedModelPath or conversion.outputPath");
+    if (!convertedPath.endsWith(".gguf")) {
+      throw Errors.badRequest("sd_cpp conversion output must be a .gguf path");
+    }
+  }
+}
+
+function normalizedModelProfileRunnerConfig(input: ModelProfileConfigInput) {
+  if (input.runner !== "sd_cpp") return input.runnerConfig;
+  const config = input.runnerConfig ? sdcppRunnerConfigSchema.parse(input.runnerConfig) : {};
+  const apiModelId = stringFromRecord(config, "apiModelId");
+  if (apiModelId && apiModelId !== input.pipelineModel) {
+    throw Errors.badRequest("sd_cpp runnerConfig.apiModelId must match pipelineModel");
+  }
+  return pruneUndefined({
+    ...config,
+    apiModelId: input.pipelineModel,
+    capabilities: normalizedModelCapabilities(config.capabilities, true),
+  });
+}
+
+function normalizedModelCapabilities(value: unknown, sdCppDefault: boolean) {
+  const capabilities = jsonRecord(value);
+  return {
+    textToImage: booleanFromRecord(capabilities, "textToImage", true),
+    stableSeed: booleanFromRecord(capabilities, "stableSeed", true),
+    referenceImages: booleanFromRecord(capabilities, "referenceImages", false),
+    initImage: booleanFromRecord(capabilities, "initImage", sdCppDefault),
+    lora: booleanFromRecord(capabilities, "lora", false),
+  };
+}
+
+function firstText(values: Array<string | null | undefined>) {
+  return values.find((value): value is string => Boolean(value?.trim()))?.trim();
+}
+
+function hasKnownModelExtension(value: string) {
+  return [".safetensors", ".gguf", ".ckpt", ".pt", ".pth"].some((suffix) =>
+    value.toLowerCase().endsWith(suffix),
+  );
+}
+
+function isKrea2ModelProfile(input: {
+  pipelineModel: string;
+  sourceModelPath?: string | null;
+  convertedModelPath?: string | null;
+  runnerConfig?: Record<string, unknown>;
+}) {
+  const config = input.runnerConfig ?? {};
+  return [
+    input.pipelineModel,
+    input.sourceModelPath,
+    input.convertedModelPath,
+    stringFromRecord(config, "diffusionModelPath"),
+    stringFromRecord(config, "modelPath"),
+  ].some((value) => (value ? /krea[-_ ]?2/i.test(value) : false));
+}
+
+function isKnownKrea2IncompatibleTextEncoder(value: string) {
+  const lowered = value.toLowerCase();
+  return lowered.includes("qwen3-4b-instruct") || lowered.includes("z-image");
+}
+
+function isKnownKrea2IncompatibleVae(value: string) {
+  const lowered = value.toLowerCase();
+  return (
+    lowered.endsWith("/ae.safetensors") ||
+    lowered.includes("flux.1-ae") ||
+    lowered.includes("qwen_image_vae") ||
+    lowered.includes("z-image")
+  );
+}
+
+function profileTestControls(
+  profile: {
+    profileKey: string;
+    version: number;
+    runner: string;
+    pipelineModel: string;
+    sourceModelPath: string | null;
+    convertedModelPath: string | null;
+    modelFormat: string;
+    runnerConfig: Prisma.JsonValue | null;
+    steps: number;
+    sampler: string;
+    scheduler: string;
+    cfgScale: number;
+    defaultWidth: number;
+    defaultHeight: number;
+  },
+  orientation: string,
+) {
+  const dimensions = dimensionsForImageOrientation({
+    orientation,
+    defaultWidth: profile.defaultWidth,
+    defaultHeight: profile.defaultHeight,
+  });
+  return pruneUndefined({
+    orientation,
+    model: profile.profileKey,
+    profileId: profile.profileKey,
+    width: dimensions.width,
+    height: dimensions.height,
+    adminTest: true,
+    sdcpp: profile.runner === "sd_cpp" ? sdcppProfileRuntimeConfig(profile) : undefined,
+  });
+}
+
+function sdcppProfileRuntimeConfig(profile: {
+  profileKey: string;
+  version: number;
+  pipelineModel: string;
+  sourceModelPath: string | null;
+  convertedModelPath: string | null;
+  modelFormat: string;
+  runnerConfig: Prisma.JsonValue | null;
+  steps: number;
+  sampler: string;
+  scheduler: string;
+  cfgScale: number;
+  defaultWidth: number;
+  defaultHeight: number;
+}) {
+  const config = jsonRecord(profile.runnerConfig);
+  const conversion = jsonRecord(config.conversion);
+  return pruneUndefined({
+    profileKey: profile.profileKey,
+    profileVersion: profile.version,
+    apiModelId: profile.pipelineModel,
+    modelFormat: profile.modelFormat,
+    sourceModelPath: profile.sourceModelPath,
+    convertedModelPath: profile.convertedModelPath,
+    modelPath: stringFromRecord(config, "modelPath"),
+    diffusionModelPath: stringFromRecord(config, "diffusionModelPath"),
+    llmPath: stringFromRecord(config, "llmPath"),
+    vaePath: stringFromRecord(config, "vaePath"),
+    llmVisionPath: stringFromRecord(config, "llmVisionPath"),
+    clipLPath: stringFromRecord(config, "clipLPath"),
+    clipGPath: stringFromRecord(config, "clipGPath"),
+    t5xxlPath: stringFromRecord(config, "t5xxlPath"),
+    backend: stringFromRecord(config, "backend"),
+    loraModelDir: stringFromRecord(config, "loraModelDir"),
+    loraApplyMode: stringFromRecord(config, "loraApplyMode"),
+    loras: normalizeSdcppLoras(config.loras),
+    conversion:
+      conversion.enabled === true
+        ? pruneUndefined({
+            enabled: true,
+            targetFormat: "gguf",
+            outputPath: stringFromRecord(conversion, "outputPath") ?? profile.convertedModelPath,
+            type: stringFromRecord(conversion, "type") ?? "q8_0",
+            sourceArg: stringFromRecord(conversion, "sourceArg") ?? "model",
+            convertName: conversion.convertName === true,
+            tensorTypeRules: stringFromRecord(conversion, "tensorTypeRules"),
+          })
+        : undefined,
+    steps: profile.steps,
+    sampler: profile.sampler,
+    scheduler: profile.scheduler,
+    cfgScale: profile.cfgScale,
+    defaultWidth: profile.defaultWidth,
+    defaultHeight: profile.defaultHeight,
+  });
+}
+
+function normalizeSdcppLoras(value: unknown) {
+  if (!Array.isArray(value)) return undefined;
+  const loras = value
+    .filter(isRecord)
+    .map((item) =>
+      pruneUndefined({
+        key: stringFromRecord(item, "key"),
+        path: stringFromRecord(item, "path"),
+        weight: typeof item.weight === "number" && Number.isFinite(item.weight) ? item.weight : 1,
+        enabled: item.enabled !== false,
+      }),
+    )
+    .filter((item) => typeof item.key === "string" || typeof item.path === "string");
+  return loras.length ? loras : undefined;
+}
+
+function stringFromRecord(value: Record<string, unknown>, key: string) {
+  const child = value[key];
+  return typeof child === "string" && child.trim() ? child.trim() : undefined;
+}
+
+function booleanFromRecord(value: Record<string, unknown>, key: string, fallback: boolean) {
+  const child = value[key];
+  return typeof child === "boolean" ? child : fallback;
+}
+
+function numberFromRecord(value: Record<string, unknown>, key: string) {
+  const child = value[key];
+  return typeof child === "number" && Number.isFinite(child) ? child : undefined;
+}
+
+function firstNumberFromRecord(value: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const child = numberFromRecord(value, key);
+    if (child !== undefined) return child;
+  }
+  return undefined;
+}
+
+function pruneUndefined(value: Record<string, unknown>) {
+  return Object.fromEntries(Object.entries(value).filter(([, child]) => child !== undefined));
 }
 
 async function listPromptTemplates(request: Request) {
@@ -1597,7 +2809,7 @@ async function moderationQueue(request: Request) {
   const reports = await prisma.contentReport.findMany({
     where: reportWhere,
     include: { reporter: true, reviews: true },
-    orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
+    orderBy: [{ priority: "asc" }, { createdAt: "desc" }],
     take: clampInt(url.searchParams.get("limit"), 1, 200, 100),
   });
   const blockedMedia = await prisma.mediaAsset.findMany({
@@ -1668,6 +2880,68 @@ async function moderationDecision(request: Request, reportId: string) {
     after: { reportId, status: updated.status, policyCode: body.policyCode },
   });
   return ok({ review, report: updated });
+}
+
+async function appealDecision(request: Request, appealId: string) {
+  const actor = await actorWithPermission(request, "safety.review.write");
+  const body = appealDecisionSchema.parse(await jsonBody(request));
+  const expectedConfirmation = appealOutcomeConfirmation(body.outcome);
+  if (body.confirmation !== expectedConfirmation && body.confirmation !== appealId) {
+    throw Errors.badRequest(`Appeal decision requires confirmation ${expectedConfirmation}`);
+  }
+  const before = await prisma.appeal.findUnique({ where: { id: appealId } });
+  if (!before) throw Errors.notFound("Appeal not found");
+  if (body.outcome !== "open" && before.status !== "open") {
+    throw Errors.conflict("Appeal already has a terminal decision");
+  }
+
+  const { appeal, restored } = await prisma.$transaction(async (tx) => {
+    const current = await tx.appeal.findUnique({ where: { id: appealId } });
+    if (!current) throw Errors.notFound("Appeal not found");
+    if (body.outcome !== "open" && current.status !== "open") {
+      throw Errors.conflict("Appeal already has a terminal decision");
+    }
+    const restoreResult =
+      body.outcome === "overturned"
+        ? await restoreAppealTarget(current.targetType, current.targetId, tx)
+        : { targetRestored: false };
+    const updated = await tx.appeal.update({
+      where: { id: appealId },
+      data:
+        body.outcome === "open"
+          ? { status: "open", reviewerId: null, resolvedAt: null }
+          : { status: body.outcome, reviewerId: actor.id, resolvedAt: new Date() },
+    });
+    return { appeal: updated, restored: restoreResult };
+  });
+
+  await writeAudit(request, actor, {
+    action: "safety.appeal.decision",
+    targetType: "appeal",
+    targetId: appeal.id,
+    reason: body.reason,
+    before: {
+      status: before.status,
+      targetType: before.targetType,
+      targetId: before.targetId,
+    },
+    after: {
+      status: appeal.status,
+      targetType: appeal.targetType,
+      targetId: appeal.targetId,
+      notes: body.notes,
+      ...restored,
+    },
+  });
+
+  return ok({ appeal, target: restored });
+}
+
+function appealOutcomeConfirmation(outcome: z.infer<typeof appealDecisionSchema>["outcome"]) {
+  if (outcome === "upheld") return "UPHOLD";
+  if (outcome === "overturned") return "OVERTURN";
+  if (outcome === "modified") return "MODIFY";
+  return "REOPEN";
 }
 
 async function billingLedger(request: Request) {
@@ -2096,6 +3370,221 @@ async function auditLog(request: Request) {
     take: clampInt(url.searchParams.get("limit"), 1, 200, 80),
   });
   return ok({ items: logs });
+}
+
+async function listSupportRequests(request: Request) {
+  await actorWithPermission(request, "support.request.read");
+  const url = new URL(request.url);
+  const ticketId = url.searchParams.get("ticketId")?.trim() || undefined;
+  const userId = url.searchParams.get("userId")?.trim() || undefined;
+  const assignedToId = url.searchParams.get("assignedToId")?.trim() || undefined;
+  const category = url.searchParams.get("category")?.trim() || undefined;
+  const sla = supportSlaStateFromUnknown(url.searchParams.get("sla"));
+  const requestedStatuses = url.searchParams
+    .get("status")
+    ?.split(",")
+    .map((status) => status.trim())
+    .filter(Boolean);
+  const statusFilter = requestedStatuses?.length && !requestedStatuses.includes("all")
+    ? requestedStatuses.includes("active")
+      ? { notIn: ["resolved", "closed"] }
+      : { in: requestedStatuses }
+    : undefined;
+  const where: Prisma.SupportRequestWhereInput = {
+    ticketId,
+    userId,
+    assignedToId,
+    category,
+    status: statusFilter,
+  };
+  const items = await prisma.supportRequest.findMany({
+    where,
+    include: {
+      assignedTo: { select: { id: true, email: true, displayName: true, role: true } },
+      user: { select: { id: true, email: true, displayName: true, role: true } },
+    },
+    orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
+    take: clampInt(url.searchParams.get("limit"), 1, 200, 100),
+  });
+  const dtos = items.map((item) => supportRequestDTO(item));
+  return ok({ items: sla === "all" ? dtos : dtos.filter((item) => item.slaState === sla) });
+}
+
+async function patchSupportRequest(request: Request, ticketId: string) {
+  const actor = await actorWithPermission(request, "support.request.write");
+  const body = supportRequestPatchSchema.parse(await jsonBody(request));
+  if (body.confirmation !== ticketId && body.confirmation !== "UPDATE") {
+    throw Errors.badRequest("Support request updates require ticket confirmation");
+  }
+  const before = await prisma.supportRequest.findUnique({ where: { ticketId } });
+  if (!before) throw Errors.notFound("Support request not found");
+  const terminal = body.status === "resolved" || body.status === "closed";
+  const updated = await prisma.supportRequest.update({
+    where: { ticketId },
+    data: {
+      assignedToId: body.assignedToId === undefined ? undefined : body.assignedToId,
+      priority: body.priority,
+      resolutionNotes: body.resolutionNotes === undefined ? undefined : body.resolutionNotes,
+      resolvedAt: body.status === undefined ? undefined : terminal ? new Date() : null,
+      status: body.status,
+    },
+    include: {
+      assignedTo: { select: { id: true, email: true, displayName: true, role: true } },
+      user: { select: { id: true, email: true, displayName: true, role: true } },
+    },
+  });
+
+  await writeAudit(request, actor, {
+    action: "support.request.update",
+    targetType: "support_request",
+    targetId: ticketId,
+    reason: body.reason,
+    before: {
+      assignedToId: before.assignedToId,
+      priority: before.priority,
+      resolutionNotes: before.resolutionNotes,
+      status: before.status,
+    },
+    after: {
+      assignedToId: updated.assignedToId,
+      priority: updated.priority,
+      resolutionNotes: updated.resolutionNotes,
+      status: updated.status,
+    },
+  });
+
+  return ok({ request: supportRequestDTO(updated) });
+}
+
+async function escalateSupportRequest(request: Request, ticketId: string) {
+  const actor = await actorWithPermission(request, "support.request.write");
+  const body = supportRequestEscalateSchema.parse(await jsonBody(request));
+  if (body.confirmation !== ticketId && body.confirmation !== "ESCALATE") {
+    throw Errors.badRequest("Support escalation requires ticket confirmation");
+  }
+  const before = await prisma.supportRequest.findUnique({
+    where: { ticketId },
+    include: {
+      assignedTo: { select: { id: true, email: true, displayName: true, role: true } },
+      user: { select: { id: true, email: true, displayName: true, role: true } },
+    },
+  });
+  if (!before) throw Errors.notFound("Support request not found");
+  if (before.status === "resolved" || before.status === "closed") {
+    throw Errors.badRequest("Resolved or closed support requests cannot be escalated");
+  }
+  const beforeSla = supportRequestSla(before);
+  if (beforeSla.state !== "overdue" && beforeSla.state !== "due_soon") {
+    throw Errors.badRequest("Only due-soon or overdue support requests can be escalated");
+  }
+  const escalatedAt = new Date();
+  const updated = await prisma.supportRequest.update({
+    where: { ticketId },
+    data: {
+      assignedToId: before.assignedToId ?? actor.id,
+      priority: 1,
+      slaEscalatedAt: escalatedAt,
+      slaEscalatedById: actor.id,
+      slaEscalationReason: body.reason,
+      status: before.status === "received" ? "open" : before.status,
+    },
+    include: {
+      assignedTo: { select: { id: true, email: true, displayName: true, role: true } },
+      user: { select: { id: true, email: true, displayName: true, role: true } },
+    },
+  });
+
+  await writeAudit(request, actor, {
+    action: "support.request.escalate",
+    targetType: "support_request",
+    targetId: ticketId,
+    reason: body.reason,
+    before: {
+      assignedToId: before.assignedToId,
+      priority: before.priority,
+      slaEscalatedAt: before.slaEscalatedAt,
+      slaState: beforeSla.state,
+      status: before.status,
+    },
+    after: {
+      assignedToId: updated.assignedToId,
+      priority: updated.priority,
+      slaEscalatedAt: updated.slaEscalatedAt,
+      slaState: supportRequestSla(updated).state,
+      status: updated.status,
+    },
+  });
+
+  return ok({ request: supportRequestDTO(updated) });
+}
+
+type SupportRequestRow = Prisma.SupportRequestGetPayload<{
+  include: {
+    assignedTo: { select: { id: true; email: true; displayName: true; role: true } };
+    user: { select: { id: true; email: true; displayName: true; role: true } };
+  };
+}>;
+
+function supportRequestDTO(request: SupportRequestRow) {
+  const sla = supportRequestSla(request);
+  return {
+    id: request.id,
+    ticketId: request.ticketId,
+    userId: request.userId,
+    userEmail: request.user.email,
+    userName: request.user.displayName ?? request.user.email,
+    category: request.category,
+    subject: request.subject,
+    description: request.description,
+    diagnosticConsent: request.diagnosticConsent,
+    sourcePath: request.sourcePath,
+    status: request.status,
+    priority: request.priority,
+    assignedToId: request.assignedToId,
+    assignedToEmail: request.assignedTo?.email ?? null,
+    assignedToName: request.assignedTo?.displayName ?? request.assignedTo?.email ?? null,
+    slaEscalatedAt: request.slaEscalatedAt?.toISOString() ?? null,
+    slaEscalatedById: request.slaEscalatedById,
+    slaEscalationReason: request.slaEscalationReason,
+    resolutionNotes: request.resolutionNotes,
+    resolvedAt: request.resolvedAt?.toISOString() ?? null,
+    slaDueAt: sla.dueAt?.toISOString() ?? null,
+    slaHoursRemaining: sla.hoursRemaining,
+    slaState: sla.state,
+    createdAt: request.createdAt.toISOString(),
+    updatedAt: request.updatedAt.toISOString(),
+  };
+}
+
+const supportSlaHoursByPriority = new Map([
+  [1, 4],
+  [2, 12],
+  [3, 24],
+  [4, 48],
+  [5, 72],
+]);
+
+type SupportSlaState = "all" | "overdue" | "due_soon" | "on_track" | "paused" | "closed";
+
+function supportSlaStateFromUnknown(value: string | null): SupportSlaState {
+  if (value === "overdue" || value === "due_soon" || value === "on_track" || value === "paused" || value === "closed") {
+    return value;
+  }
+  return "all";
+}
+
+function supportRequestSla(request: SupportRequestRow) {
+  if (request.status === "resolved" || request.status === "closed") {
+    return { dueAt: null, hoursRemaining: null, state: "closed" as const };
+  }
+  if (request.status === "waiting_on_user") {
+    return { dueAt: null, hoursRemaining: null, state: "paused" as const };
+  }
+  const hours = supportSlaHoursByPriority.get(request.priority) ?? 24;
+  const dueAt = new Date(request.createdAt.getTime() + hours * 60 * 60 * 1000);
+  const hoursRemaining = Math.ceil((dueAt.getTime() - Date.now()) / (60 * 60 * 1000));
+  const state = hoursRemaining < 0 ? "overdue" : hoursRemaining <= 4 ? "due_soon" : "on_track";
+  return { dueAt, hoursRemaining, state };
 }
 
 async function viewPlaintext(request: Request) {
@@ -2550,24 +4039,80 @@ async function rejectApproval(request: Request, id: string) {
 
 // ── F6 Chat 运营面（代理到 chat 服务内部 admin 只读 API；尊重 DB 边界，默认不回明文） ──
 // INTENT: chat 服务不可达/未配置时降级返回 configured:false（与既有 chat BFF 降级一致），不抛 500。
-async function proxyChatAdmin(path: string): Promise<unknown | null> {
-  if (!env.CHAT_SERVICE_URL) return null;
+type ChatAdminProxyResult = {
+  configured: boolean;
+  data: unknown | null;
+  diagnostics: {
+    reason?: "missing_url" | "unreachable" | "unauthorized" | "upstream_error" | "bad_json";
+    status?: number;
+    serviceUrlConfigured: boolean;
+  };
+};
+
+async function proxyChatAdmin(path: string): Promise<ChatAdminProxyResult> {
+  if (!env.CHAT_SERVICE_URL) {
+    return {
+      configured: false,
+      data: null,
+      diagnostics: { reason: "missing_url", serviceUrlConfigured: false },
+    };
+  }
   try {
     const res = await fetch(`${env.CHAT_SERVICE_URL}${path}`, {
       headers: { "x-internal-token": env.INTERNAL_TOKEN },
     });
-    if (!res.ok) return null;
-    return (await res.json()) as unknown;
+    if (!res.ok) {
+      return {
+        configured: false,
+        data: null,
+        diagnostics: {
+          reason: res.status === 401 ? "unauthorized" : "upstream_error",
+          status: res.status,
+          serviceUrlConfigured: true,
+        },
+      };
+    }
+    try {
+      return {
+        configured: true,
+        data: (await res.json()) as unknown,
+        diagnostics: { serviceUrlConfigured: true },
+      };
+    } catch {
+      return {
+        configured: false,
+        data: null,
+        diagnostics: { reason: "bad_json", serviceUrlConfigured: true },
+      };
+    }
   } catch {
     // 故意降级：chat 服务暂不可达不应让 admin 控制台整体 500。
-    return null;
+    return {
+      configured: false,
+      data: null,
+      diagnostics: { reason: "unreachable", serviceUrlConfigured: true },
+    };
   }
 }
 
 async function chatOpsOverview(request: Request) {
   await actorWithPermission(request, "chat.ops.read");
-  const data = await proxyChatAdmin("/internal/admin/overview");
-  return ok({ configured: data !== null, overview: data });
+  const result = await proxyChatAdmin("/internal/admin/overview");
+  return ok({
+    configured: result.configured,
+    diagnostics: result.diagnostics,
+    overview: isRecord(result.data) ? result.data : null,
+  });
+}
+
+async function chatOpsProviderHealth(request: Request) {
+  await actorWithPermission(request, "chat.ops.read");
+  const result = await proxyChatAdmin("/internal/admin/provider-health");
+  return ok({
+    configured: result.configured,
+    diagnostics: result.diagnostics,
+    ...(isRecord(result.data) ? result.data : { items: [] }),
+  });
 }
 
 async function chatOpsSessions(request: Request) {
@@ -2575,18 +4120,56 @@ async function chatOpsSessions(request: Request) {
   const url = new URL(request.url);
   const params = new URLSearchParams();
   const userId = url.searchParams.get("userId");
+  const characterId = url.searchParams.get("characterId");
+  const status = url.searchParams.get("status");
+  if (userId) params.set("userId", userId);
+  if (characterId) params.set("characterId", characterId);
+  if (status) params.set("status", status);
+  params.set("limit", String(clampInt(url.searchParams.get("limit"), 1, 100, 50)));
+  const result = await proxyChatAdmin(`/internal/admin/sessions?${params.toString()}`);
+  return ok({
+    configured: result.configured,
+    diagnostics: result.diagnostics,
+    ...(isRecord(result.data) ? result.data : { items: [] }),
+  });
+}
+
+async function chatOpsUsage(request: Request) {
+  await actorWithPermission(request, "chat.ops.read");
+  const url = new URL(request.url);
+  const params = new URLSearchParams();
+  const userId = url.searchParams.get("userId");
   if (userId) params.set("userId", userId);
   params.set("limit", String(clampInt(url.searchParams.get("limit"), 1, 100, 50)));
-  const data = await proxyChatAdmin(`/internal/admin/sessions?${params.toString()}`);
-  return ok({ configured: data !== null, ...(isRecord(data) ? data : { items: [] }) });
+  const result = await proxyChatAdmin(`/internal/admin/usage?${params.toString()}`);
+  return ok({
+    configured: result.configured,
+    diagnostics: result.diagnostics,
+    ...(isRecord(result.data) ? result.data : { items: [] }),
+  });
 }
 
 async function chatOpsModerationEvents(request: Request) {
   await actorWithPermission(request, "chat.ops.read");
   const url = new URL(request.url);
-  const limit = clampInt(url.searchParams.get("limit"), 1, 100, 50);
-  const data = await proxyChatAdmin(`/internal/admin/moderation-events?limit=${limit}`);
-  return ok({ configured: data !== null, ...(isRecord(data) ? data : { items: [] }) });
+  const params = new URLSearchParams();
+  const status = url.searchParams.get("status");
+  const layer = url.searchParams.get("layer");
+  const policyCode = url.searchParams.get("policyCode");
+  const targetType = url.searchParams.get("targetType");
+  const targetId = url.searchParams.get("targetId");
+  if (status) params.set("status", status);
+  if (layer) params.set("layer", layer);
+  if (policyCode) params.set("policyCode", policyCode);
+  if (targetType) params.set("targetType", targetType);
+  if (targetId) params.set("targetId", targetId);
+  params.set("limit", String(clampInt(url.searchParams.get("limit"), 1, 100, 50)));
+  const result = await proxyChatAdmin(`/internal/admin/moderation-events?${params.toString()}`);
+  return ok({
+    configured: result.configured,
+    diagnostics: result.diagnostics,
+    ...(isRecord(result.data) ? result.data : { items: [] }),
+  });
 }
 
 export async function actorWithPermission(request: Request, permission: PermissionKey): Promise<AdminActor> {
@@ -2628,6 +4211,23 @@ export async function writeAudit(
   });
 }
 
+async function appendAdminGenerationEvent(
+  tx: Prisma.TransactionClient,
+  jobId: string,
+  type: string,
+  message: string,
+  metadata: Record<string, unknown>,
+) {
+  return tx.generationJobEvent.create({
+    data: {
+      jobId,
+      type,
+      message,
+      metadata: toInputJson(metadata),
+    },
+  });
+}
+
 function redactJob(job: {
   id: string;
   userId: string;
@@ -2650,6 +4250,15 @@ function redactJob(job: {
   createdAt: Date;
   updatedAt?: Date;
   completedAt: Date | null;
+  assets?: Array<{
+    id: string;
+    type: string;
+    url: string;
+    thumbnailUrl: string | null;
+    storageKey?: string | null;
+    safetyStatus: string;
+    createdAt: Date;
+  }>;
 }) {
   return {
     id: job.id,
@@ -2673,7 +4282,33 @@ function redactJob(job: {
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
     completedAt: job.completedAt,
+    assets: job.assets?.filter(isReadableMediaAsset).map(redactMediaAsset) ?? [],
   };
+}
+
+function redactMediaAsset(asset: {
+  id: string;
+  type: string;
+  url: string;
+  thumbnailUrl: string | null;
+  storageKey?: string | null;
+  safetyStatus: string;
+  createdAt: Date;
+}) {
+  return {
+    id: asset.id,
+    type: asset.type,
+    url: asset.url,
+    thumbnailUrl: asset.thumbnailUrl ?? asset.url,
+    safetyStatus: asset.safetyStatus,
+    createdAt: asset.createdAt,
+  };
+}
+
+function isReadableMediaAsset(asset: { storageKey?: string | null }) {
+  if ((process.env.BLOB_PROVIDER ?? "mock") !== "mock") return true;
+  if (!asset.storageKey) return true;
+  return existsSync(resolveLocalBlobPath(asset.storageKey));
 }
 
 function publicUser(user: {
@@ -2703,6 +4338,10 @@ function profileAuditSnapshot(profile: {
   sourceModelPath: string | null;
   convertedModelPath: string | null;
   modelFormat: string;
+  steps: number;
+  sampler: string;
+  scheduler: string;
+  cfgScale: number;
   costMultiplier: number;
   requiredEntitlement: string | null;
   enabled: boolean;
@@ -2718,6 +4357,10 @@ function profileAuditSnapshot(profile: {
     sourceModelPath: profile.sourceModelPath,
     convertedModelPath: profile.convertedModelPath,
     modelFormat: profile.modelFormat,
+    steps: profile.steps,
+    sampler: profile.sampler,
+    scheduler: profile.scheduler,
+    cfgScale: profile.cfgScale,
     costMultiplier: profile.costMultiplier,
     requiredEntitlement: profile.requiredEntitlement,
     enabled: profile.enabled,
@@ -2837,6 +4480,46 @@ async function applyModerationAction(
   throw Errors.badRequest(`Unsupported moderation target type: ${targetType}`);
 }
 
+async function restoreAppealTarget(
+  targetType: string,
+  targetId: string,
+  db: Prisma.TransactionClient | typeof prisma = prisma,
+) {
+  if (targetType === "character") {
+    const result = await db.character.updateMany({
+      where: { id: targetId },
+      data: { status: "approved" },
+    });
+    return { targetRestored: result.count > 0, restoredTargetType: targetType };
+  }
+  if (targetType === "feed_item") {
+    const characterId = feedItemCharacterId(targetId);
+    if (!characterId) {
+      return { targetRestored: false, restoredTargetType: targetType, restoreReason: "unresolvable_feed_item" };
+    }
+    const result = await db.character.updateMany({
+      where: { id: characterId },
+      data: { status: "approved" },
+    });
+    return { targetRestored: result.count > 0, restoredTargetType: targetType, restoredTargetId: characterId };
+  }
+  if (targetType === "media") {
+    const result = await db.mediaAsset.updateMany({
+      where: { id: targetId },
+      data: { safetyStatus: "passed" },
+    });
+    return { targetRestored: result.count > 0, restoredTargetType: targetType };
+  }
+  if (targetType === "user_profile") {
+    const result = await db.user.updateMany({
+      where: { id: targetId, status: { not: "deleted" } },
+      data: { status: "active" },
+    });
+    return { targetRestored: result.count > 0, restoredTargetType: targetType };
+  }
+  return { targetRestored: false, restoredTargetType: targetType, restoreReason: "manual_followup_required" };
+}
+
 // Feed item ids are encoded as `character:<id>` (see ourdream feed handlers).
 function feedItemCharacterId(itemId: string) {
   const decoded = decodeURIComponent(itemId);
@@ -2885,7 +4568,7 @@ async function enforceApproval(
   }
 }
 
-async function enqueueExistingGenerationJob(job: {
+export async function enqueueExistingGenerationJob(job: {
   id: string;
   userId: string;
   characterId: string | null;
@@ -2895,10 +4578,27 @@ async function enqueueExistingGenerationJob(job: {
   controls: Prisma.JsonValue;
   presetIds: Prisma.JsonValue;
   model: string | null;
+  profileId?: string | null;
+  profileVersion?: number | null;
   orientation: string | null;
   outputCount: number;
+  seed?: string | null;
+  referenceAssetIds?: Prisma.JsonValue | null;
 }) {
-  const controls = jsonRecord(job.controls);
+  const controls = await internalExistingGenerationControls(job);
+  const modelCapabilities = modelCapabilitiesFromControls(controls);
+  const referenceImages =
+    job.mode === "image" && (modelCapabilities.referenceImages || modelCapabilities.initImage)
+      ? filterReferenceImagesForCapabilities(
+          await imageReferenceInputsForGenerationJob({
+            userId: job.userId,
+            characterId: job.characterId,
+            controls,
+            referenceAssetIds: job.referenceAssetIds,
+          }),
+          modelCapabilities,
+        )
+      : [];
   const common = {
     version: 1 as const,
     requestId: `admin_requeue_${randomUUID()}`,
@@ -2908,7 +4608,7 @@ async function enqueueExistingGenerationJob(job: {
     prompt: job.prompt ?? `${job.mode === "video" ? "Video" : "Image"} generation ${job.id}`,
     negativePrompt: job.negativePrompt,
     controls,
-    seed: job.id,
+    seed: job.seed ?? job.id,
     model: job.model ?? (job.mode === "video" ? "mock-video" : "mock-image"),
     outputPrefix: `gen/${job.id}/`,
   };
@@ -2925,12 +4625,60 @@ async function enqueueExistingGenerationJob(job: {
           presetIds: jsonStringArray(job.presetIds),
           orientation: job.orientation ?? stringControl(controls, "orientation", "portrait"),
           count: job.outputCount,
+          ...(referenceImages.length > 0 ? { referenceImages } : {}),
         };
   await jobQueue.enqueue({
     queue: job.mode === "video" ? "ai.video.generate" : "ai.image.generate",
     payload: toInputJson(payload),
     dedupeKey: `generation:${job.id}`,
     maxAttempts: 3,
+  });
+}
+
+async function internalExistingGenerationControls(job: {
+  controls: Prisma.JsonValue;
+  profileId?: string | null;
+  profileVersion?: number | null;
+}) {
+  const controls = jsonRecord(job.controls);
+  if (!job.profileId || !job.profileVersion) return controls;
+  const profile = await prisma.generationModelProfile.findFirst({
+    where: {
+      version: job.profileVersion,
+      OR: [{ profileKey: job.profileId }, { id: job.profileId }],
+    },
+  });
+  if (!profile) return controls;
+  return pruneUndefined({
+    ...controls,
+    modelCapabilities: generationModelCapabilities(profile.runner, profile.runnerConfig),
+    sdcpp: profile.runner === "sd_cpp" ? sdcppProfileRuntimeConfig(profile) : undefined,
+  });
+}
+
+function generationModelCapabilities(runner: string, runnerConfig: Prisma.JsonValue | null) {
+  const config = jsonRecord(runnerConfig);
+  return normalizedModelCapabilities(config.capabilities, runner === "sd_cpp");
+}
+
+function modelCapabilitiesFromControls(controls: Record<string, unknown>) {
+  const capabilities = jsonRecord(controls.modelCapabilities);
+  return {
+    textToImage: booleanFromRecord(capabilities, "textToImage", true),
+    stableSeed: booleanFromRecord(capabilities, "stableSeed", true),
+    referenceImages: booleanFromRecord(capabilities, "referenceImages", false),
+    initImage: booleanFromRecord(capabilities, "initImage", false),
+    lora: booleanFromRecord(capabilities, "lora", false),
+  };
+}
+
+function filterReferenceImagesForCapabilities(
+  images: Awaited<ReturnType<typeof imageReferenceInputsForGenerationJob>>,
+  capabilities: ReturnType<typeof modelCapabilitiesFromControls>,
+) {
+  return images.filter((image) => {
+    if (image.role === "source_image") return capabilities.initImage;
+    return capabilities.referenceImages;
   });
 }
 

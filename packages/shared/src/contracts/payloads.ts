@@ -118,6 +118,78 @@ export const imageGeneratePayloadSchema = z
     seed: z.string(),
     model: z.string(),
     outputPrefix: z.string(),
+    referenceImages: z
+      .array(
+        z
+          .object({
+            assetId: z.string(),
+            role: z.enum(["identity_anchor", "identity_reference", "source_image"]),
+            storageKey: z.string().optional(),
+            url: z.string().optional(),
+            contentType: z.string().optional(),
+            width: z.number().int().positive().optional(),
+            height: z.number().int().positive().optional(),
+            weight: z.number().min(0).max(2).optional(),
+            b64Json: z.string().optional(),
+          })
+          .passthrough(),
+      )
+      .optional(),
+  })
+  .passthrough();
+
+export const chatImageRequestedPayloadSchema = z
+  .object({
+    version: z.literal(1),
+    kind: z.literal("chat.image.requested"),
+    requestId: z.string(),
+    attachmentId: z.string(),
+    sessionId: z.string(),
+    messageId: z.string(),
+    userId: z.string(),
+    characterId: z.string(),
+    promptHint: z.string().nullable(),
+    conversationContext: z.string().nullable(),
+    controls: z
+      .object({
+        orientation: z.string().default("4:5"),
+        outputCount: z.number().int().min(1).max(4).default(1),
+      })
+      .passthrough()
+      .default({ orientation: "4:5", outputCount: 1 }),
+  })
+  .passthrough();
+
+export const chatImageAcceptedPayloadSchema = z
+  .object({
+    version: z.literal(1),
+    kind: z.literal("chat.image.accepted"),
+    attachmentId: z.string(),
+    generationJobId: z.string(),
+    costDreamcoins: z.number().int().min(0),
+  })
+  .passthrough();
+
+export const chatImageCompletedPayloadSchema = z
+  .object({
+    version: z.literal(1),
+    kind: z.literal("chat.image.completed"),
+    attachmentId: z.string(),
+    generationJobId: z.string().nullable().optional(),
+    mediaAssetId: z.string(),
+    width: z.number().int().min(1).nullable().optional(),
+    height: z.number().int().min(1).nullable().optional(),
+  })
+  .passthrough();
+
+export const chatImageFailedPayloadSchema = z
+  .object({
+    version: z.literal(1),
+    kind: z.literal("chat.image.failed"),
+    attachmentId: z.string(),
+    generationJobId: z.string().nullable().optional(),
+    status: z.enum(["failed", "blocked", "refunded", "rejected"]),
+    errorCode: z.string().nullable().optional(),
   })
   .passthrough();
 
@@ -361,6 +433,10 @@ export type ChatStreamEvent = z.infer<typeof chatStreamEventSchema>;
 export type ChatGeneratePayload = z.infer<typeof chatGeneratePayloadSchema>;
 export type ImageGeneratePayload = z.infer<typeof imageGeneratePayloadSchema>;
 export type VideoGeneratePayload = z.infer<typeof videoGeneratePayloadSchema>;
+export type ChatImageRequestedPayload = z.infer<typeof chatImageRequestedPayloadSchema>;
+export type ChatImageAcceptedPayload = z.infer<typeof chatImageAcceptedPayloadSchema>;
+export type ChatImageCompletedPayload = z.infer<typeof chatImageCompletedPayloadSchema>;
+export type ChatImageFailedPayload = z.infer<typeof chatImageFailedPayloadSchema>;
 export type MemorySyncPayload = z.infer<typeof memorySyncPayloadSchema>;
 export type MemoryForgetPayload = z.infer<typeof memoryForgetPayloadSchema>;
 export type MemoryRebuildPayload = z.infer<typeof memoryRebuildPayloadSchema>;

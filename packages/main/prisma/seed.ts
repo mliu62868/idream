@@ -21,14 +21,49 @@ const SUPPORT_USER_ID = "seed-support-user";
 const OPS_USER_ID = "seed-ops-user";
 const ANALYST_USER_ID = "seed-analyst-user";
 const Z_IMAGE_SOURCE_MODEL_PATH =
-  "/Users/kk/Downloads/pornmasterZImage_turboV35Bf16.safetensors";
+  "/Users/kk/Downloads/models/pornmasterZImage_turboV35Bf16.safetensors";
 const Z_IMAGE_LLM_PATH =
   "/Users/kk/.localai/models/z-image-components/Qwen3-4B-Instruct-2507-Q4_K_M.gguf";
 const Z_IMAGE_VAE_PATH =
   "/Users/kk/.localai/models/z-image-components/split_files/vae/ae.safetensors";
-const SDCPP_CLI_PATH = "/Users/kk/code/sdcpp/sd-cli";
+const SDCPP_CLI_PATH = "/Users/kk/bin/sd-cli";
+const KREA2_TEXT_ENCODER_PATH =
+  "/Users/kk/.localai/models/krea2/text_encoders/Qwen3VL-4B-Instruct-Q4_K_M.gguf";
+const KREA2_VAE_PATH = "/Users/kk/.localai/models/krea2/vae/wan_2.1_vae.safetensors";
+const REDCRAFT_KREA2_MODEL_PATH =
+  "/Users/kk/Downloads/models/redcraftKREA2RedMix_krea2Edition.safetensors";
+const REDCRAFT_COMFYUI_RUNTIME_PATH = "/Users/kk/ComfyUI-Installs/idream (1)/ComfyUI";
+const REDCRAFT_COMFYUI_WORKFLOW_PATH =
+  "/Users/kk/code/idream/packages/gen/workflows/redcraft-krea2-comfyui-text.json";
+const REDCRAFT_COMFYUI_TEXT_ENCODER_PATH =
+  "/Users/kk/ComfyUI-Shared/models/text_encoders/qwen3vl_4b_fp8_scaled.safetensors";
+const REDCRAFT_COMFYUI_VAE_PATH = "/Users/kk/ComfyUI-Shared/models/vae/qwen_image_vae.safetensors";
+const DARKBEAST_BFS_FLUX2_MODEL_PATH =
+  "/Users/kk/Downloads/models/darkBeastKrea2_dbkleinv2BFS.safetensors";
+const FLUX2_VAE_PATH = "/Users/kk/.localai/models/flux2-vae.safetensors";
 
 const sensitiveTags = new Set(["teen", "bdsm", "virgin"]);
+
+const communityCollections = [
+  {
+    id: "seed-collection-slow-burn-favorites",
+    ownerHandle: "@some1cool",
+    name: "Slow Burn Favorites",
+    characterIds: ["melissa-burke", "sarah-mercer", "raya-reyes", "emily-coming-home"],
+  },
+  {
+    id: "seed-collection-high-drama",
+    ownerHandle: "@thebigbadwolf",
+    name: "High Drama Roleplay",
+    characterIds: ["truth-confessional", "truth-stepmother", "eleanor-dawn", "bailey-price"],
+  },
+  {
+    id: "seed-collection-fantasy-escapes",
+    ownerHandle: "@fuze",
+    name: "Fantasy Escapes",
+    characterIds: ["summoned-world", "lola-moonstruck", "diana-weird-girl", "kennedy-graham"],
+  },
+] as const;
 
 function slugify(value: string) {
   return value
@@ -36,6 +71,18 @@ function slugify(value: string) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "");
+}
+
+function creatorSlug(handle: string) {
+  return slugify(handle.replace(/^@/, ""));
+}
+
+function creatorIdForHandle(handle: string) {
+  return `seed-creator-${creatorSlug(handle)}`;
+}
+
+function creatorEmailForHandle(handle: string) {
+  return `${creatorSlug(handle)}@creators.idream.local`;
 }
 
 function parseCount(value: string) {
@@ -172,6 +219,28 @@ async function seedUsers() {
       sourceId: "seed",
     },
   });
+
+  const handles = [...new Set(characterCards.map((card) => card.creator))];
+  for (const handle of handles) {
+    await prisma.user.upsert({
+      where: { id: creatorIdForHandle(handle) },
+      update: {
+        email: creatorEmailForHandle(handle),
+        emailVerified: true,
+        displayName: handle,
+        role: "user",
+        status: "active",
+        deletedAt: null,
+      },
+      create: {
+        id: creatorIdForHandle(handle),
+        email: creatorEmailForHandle(handle),
+        emailVerified: true,
+        displayName: handle,
+        role: "user",
+      },
+    });
+  }
 }
 
 async function seedTags() {
@@ -200,6 +269,7 @@ async function seedTags() {
 async function seedCharacters() {
   for (const card of characterCards) {
     const mediaAssetId = `seed-image-${card.id}`;
+    const creatorId = creatorIdForHandle(card.creator);
     const age = parseAge(card.age);
     const tags = inferredTagSlugs(card);
     const systemPrompt = buildCharacterSystemPrompt({
@@ -216,6 +286,7 @@ async function seedCharacters() {
     await prisma.mediaAsset.upsert({
       where: { id: mediaAssetId },
       update: {
+        ownerId: creatorId,
         url: card.image,
         thumbnailUrl: card.image,
         prompt: card.description,
@@ -224,7 +295,7 @@ async function seedCharacters() {
       },
       create: {
         id: mediaAssetId,
-        ownerId: SYSTEM_USER_ID,
+        ownerId: creatorId,
         type: "image",
         url: card.image,
         thumbnailUrl: card.image,
@@ -241,6 +312,7 @@ async function seedCharacters() {
     await prisma.character.upsert({
       where: { id: card.id },
       update: {
+        creatorId,
         name: card.title,
         age,
         description: card.description,
@@ -252,7 +324,7 @@ async function seedCharacters() {
       },
       create: {
         id: card.id,
-        creatorId: SYSTEM_USER_ID,
+        creatorId,
         name: card.title,
         age,
         description: card.description,
@@ -302,6 +374,39 @@ async function seedCharacters() {
         },
       });
     }
+  }
+}
+
+async function seedCommunityCollections() {
+  for (const collection of communityCollections) {
+    const ownerId = creatorIdForHandle(collection.ownerHandle);
+    await prisma.mediaCollection.upsert({
+      where: { id: collection.id },
+      update: {
+        ownerId,
+        name: collection.name,
+        visibility: "public",
+      },
+      create: {
+        id: collection.id,
+        ownerId,
+        name: collection.name,
+        visibility: "public",
+      },
+    });
+
+    await prisma.mediaCollectionItem.deleteMany({
+      where: { collectionId: collection.id },
+    });
+
+    await prisma.mediaCollectionItem.createMany({
+      data: collection.characterIds.map((characterId, index) => ({
+        collectionId: collection.id,
+        mediaAssetId: `seed-image-${characterId}`,
+        sortOrder: index,
+      })),
+      skipDuplicates: true,
+    });
   }
 }
 
@@ -382,7 +487,14 @@ async function seedPlans() {
 }
 
 async function seedPresets() {
-  const presets = [
+  const presets: Array<{
+    id: string;
+    scope?: "built_in" | "community";
+    type: "background" | "pose" | "outfit" | "mode";
+    label: string;
+    category?: string | null;
+    controls: Record<string, string>;
+  }> = [
     {
       id: "seed-preset-background-bedroom",
       type: "background",
@@ -396,6 +508,14 @@ async function seedPresets() {
       controls: { background: "studio", lighting: "cinematic" },
     },
     {
+      id: "seed-preset-background-neon-rooftop",
+      scope: "community",
+      type: "background",
+      label: "Neon Rooftop",
+      category: "community",
+      controls: { background: "neon rooftop", lighting: "pink skyline" },
+    },
+    {
       id: "seed-preset-pose-portrait",
       type: "pose",
       label: "Portrait",
@@ -406,6 +526,14 @@ async function seedPresets() {
       type: "outfit",
       label: "Casual",
       controls: { outfit: "casual" },
+    },
+    {
+      id: "seed-preset-outfit-evening-glam",
+      scope: "community",
+      type: "outfit",
+      label: "Evening Glam",
+      category: "community",
+      controls: { outfit: "evening glam", accessories: "silver jewelry" },
     },
     {
       id: "seed-preset-mode-realistic",
@@ -425,18 +553,20 @@ async function seedPresets() {
     await prisma.generationPreset.upsert({
       where: { id: preset.id },
       update: {
-        scope: "built_in",
+        scope: preset.scope ?? "built_in",
         type: preset.type,
         label: preset.label,
+        category: preset.category ?? null,
         controls: preset.controls,
         visibility: "public",
         status: "active",
       },
       create: {
         id: preset.id,
-        scope: "built_in",
+        scope: preset.scope ?? "built_in",
         type: preset.type,
         label: preset.label,
+        category: preset.category ?? null,
         controls: preset.controls,
         visibility: "public",
         status: "active",
@@ -636,13 +766,21 @@ async function seedAdminControlPlane() {
         llmPath: Z_IMAGE_LLM_PATH,
         vaePath: Z_IMAGE_VAE_PATH,
         apiModelId: "pornmaster-zimage-turbo",
+        capabilities: {
+          textToImage: true,
+          stableSeed: true,
+          referenceImages: false,
+          initImage: true,
+          lora: false,
+        },
       },
-      defaultWidth: 768,
-      defaultHeight: 1024,
+      defaultWidth: 512,
+      defaultHeight: 512,
       allowedOrientations: ["1:1", "4:5", "3:4", "9:16", "16:9"],
-      steps: 28,
-      sampler: "dpmpp_2m",
-      cfgScale: 7,
+      steps: 8,
+      sampler: "euler",
+      scheduler: "model_default",
+      cfgScale: 1,
       negativeTemplateId: "template_image_character_default",
       costMultiplier: 1,
       requiredEntitlement: null,
@@ -652,7 +790,7 @@ async function seedAdminControlPlane() {
       rolloutPercent: 100,
       version: 1,
       status: "active",
-      dryRunSummary: { sampleCount: 6, successRate: 1, p95LatencyMs: 900 },
+      dryRunSummary: { sampleCount: 6, successRate: 1, p95LatencyMs: 45_000 },
       publishedAt: new Date("2026-06-24T00:00:00.000Z"),
     },
     create: {
@@ -670,13 +808,21 @@ async function seedAdminControlPlane() {
         llmPath: Z_IMAGE_LLM_PATH,
         vaePath: Z_IMAGE_VAE_PATH,
         apiModelId: "pornmaster-zimage-turbo",
+        capabilities: {
+          textToImage: true,
+          stableSeed: true,
+          referenceImages: false,
+          initImage: true,
+          lora: false,
+        },
       },
-      defaultWidth: 768,
-      defaultHeight: 1024,
+      defaultWidth: 512,
+      defaultHeight: 512,
       allowedOrientations: ["1:1", "4:5", "3:4", "9:16", "16:9"],
-      steps: 28,
-      sampler: "dpmpp_2m",
-      cfgScale: 7,
+      steps: 8,
+      sampler: "euler",
+      scheduler: "model_default",
+      cfgScale: 1,
       negativeTemplateId: "template_image_character_default",
       costMultiplier: 1,
       requiredEntitlement: null,
@@ -686,7 +832,7 @@ async function seedAdminControlPlane() {
       rolloutPercent: 100,
       version: 1,
       status: "active",
-      dryRunSummary: { sampleCount: 6, successRate: 1, p95LatencyMs: 900 },
+      dryRunSummary: { sampleCount: 6, successRate: 1, p95LatencyMs: 45_000 },
       publishedAt: new Date("2026-06-24T00:00:00.000Z"),
     },
   });
@@ -707,13 +853,21 @@ async function seedAdminControlPlane() {
         llmPath: Z_IMAGE_LLM_PATH,
         vaePath: Z_IMAGE_VAE_PATH,
         apiModelId: "pornmaster-zimage-turbo",
+        capabilities: {
+          textToImage: true,
+          stableSeed: true,
+          referenceImages: false,
+          initImage: true,
+          lora: false,
+        },
       },
-      defaultWidth: 1024,
-      defaultHeight: 1365,
+      defaultWidth: 640,
+      defaultHeight: 640,
       allowedOrientations: ["1:1", "4:5", "3:4", "9:16", "16:9"],
-      steps: 36,
-      sampler: "dpmpp_2m",
-      cfgScale: 6.5,
+      steps: 12,
+      sampler: "euler",
+      scheduler: "model_default",
+      cfgScale: 1,
       negativeTemplateId: "template_image_character_default",
       costMultiplier: 1.5,
       requiredEntitlement: "premium_models",
@@ -723,7 +877,7 @@ async function seedAdminControlPlane() {
       rolloutPercent: 100,
       version: 1,
       status: "active",
-      dryRunSummary: { sampleCount: 6, successRate: 1, p95LatencyMs: 1200 },
+      dryRunSummary: { sampleCount: 6, successRate: 1, p95LatencyMs: 120_000 },
       publishedAt: new Date("2026-06-24T00:00:00.000Z"),
     },
     create: {
@@ -741,13 +895,21 @@ async function seedAdminControlPlane() {
         llmPath: Z_IMAGE_LLM_PATH,
         vaePath: Z_IMAGE_VAE_PATH,
         apiModelId: "pornmaster-zimage-turbo",
+        capabilities: {
+          textToImage: true,
+          stableSeed: true,
+          referenceImages: false,
+          initImage: true,
+          lora: false,
+        },
       },
-      defaultWidth: 1024,
-      defaultHeight: 1365,
+      defaultWidth: 640,
+      defaultHeight: 640,
       allowedOrientations: ["1:1", "4:5", "3:4", "9:16", "16:9"],
-      steps: 36,
-      sampler: "dpmpp_2m",
-      cfgScale: 6.5,
+      steps: 12,
+      sampler: "euler",
+      scheduler: "model_default",
+      cfgScale: 1,
       negativeTemplateId: "template_image_character_default",
       costMultiplier: 1.5,
       requiredEntitlement: "premium_models",
@@ -757,8 +919,406 @@ async function seedAdminControlPlane() {
       rolloutPercent: 100,
       version: 1,
       status: "active",
-      dryRunSummary: { sampleCount: 6, successRate: 1, p95LatencyMs: 1200 },
+      dryRunSummary: { sampleCount: 6, successRate: 1, p95LatencyMs: 120_000 },
       publishedAt: new Date("2026-06-24T00:00:00.000Z"),
+    },
+  });
+
+  await prisma.generationModelProfile.upsert({
+    where: { id: "seed-profile-sdcpp-redcraft-krea2-text-v1" },
+    update: {
+      profileKey: "profile_comfyui_redcraft_krea2_checkpoint_v1",
+      label: "Redcraft Krea2 ComfyUI checkpoint candidate",
+      mode: "image",
+      runner: "comfyui",
+      pipelineModel: "redcraft-krea2-comfyui",
+      sourceModelPath: REDCRAFT_KREA2_MODEL_PATH,
+      convertedModelPath: null,
+      modelFormat: "safetensors",
+      runnerConfig: {
+        modelPath: REDCRAFT_KREA2_MODEL_PATH,
+        apiModelId: "redcraft-krea2-comfyui",
+        profileTemplate: "reference_identity_comfyui",
+        templateIntent: "comfyui_krea2_text_checkpoint",
+        assetFormat: "fp8_scaled_comfyui_checkpoint",
+        workflowPath: REDCRAFT_COMFYUI_WORKFLOW_PATH,
+        verificationStatus: "manual_passed",
+        productionRunnerPolicy: {
+          gateway: "openai_compatible_comfyui_image_gateway",
+          readinessEndpoint: "/readyz",
+          generationEndpoint: "/images/generations",
+          trafficExposure: "draft_disabled_zero_rollout_until_managed_gateway",
+          localProbe:
+            "bun run launch:probe:redcraft-consistency:local -- --output .tmp/redcraft-consistency-review --seed redcraft-serena-cvp-v1",
+          note:
+            "Redcraft is a built-in ComfyUI profile, not an admin-managed model. Publishing traffic requires a managed gateway process with health checks; local CPU smoke is sufficient for candidate readiness, not automatic rollout.",
+        },
+        componentStatus: {
+          comfyuiRuntime: {
+            status: "verified_cpu",
+            path: REDCRAFT_COMFYUI_RUNTIME_PATH,
+          },
+          krea2ComfyuiTextEncoder: { status: "present", path: REDCRAFT_COMFYUI_TEXT_ENCODER_PATH },
+          krea2ComfyuiVae: { status: "present", path: REDCRAFT_COMFYUI_VAE_PATH },
+          krea2Workflow: { status: "present", path: REDCRAFT_COMFYUI_WORKFLOW_PATH },
+          krea2SdcppTextEncoder: { status: "present", path: KREA2_TEXT_ENCODER_PATH },
+          krea2SdcppVae: { status: "present", path: KREA2_VAE_PATH },
+        },
+        probeFindings: {
+          sdcppMetal: "pure_white_output",
+          sdcppCpu: "timed_out_without_256x384_output",
+          sdcppOfficialWanVaeMetal: "aborted_on_metal_vae_decode_im2col_3d",
+          sdcppOfficialWanVaeCpu: "exit_zero_but_sanity_rejected_pure_white",
+          sdcppQwenVaeCpu: "exit_zero_but_sanity_rejected_pure_white",
+          sdcppGuidanceZero: "exit_zero_but_sanity_rejected_pure_white",
+          sdcppGuidanceMatrix: "guidance_0_1_3_5_all_exit_zero_but_pure_white",
+          sdcppSchedulerMatrix: "model_default_simple_logit_normal_mu_1_15_all_pure_white",
+          sdcppVaeFormatMatrix: "auto_flux_sd3_flux2_all_pure_white",
+          sdcppGgufDiffusion: "exit_zero_but_sanity_rejected_pure_white",
+          sdcppFp8TextEncoder: "metadata_shape_validation_failed",
+          civitaiAssetFormat: "fp8_scaled_comfyui_checkpoint",
+          sdcppModelFlag: "exit_zero_but_sanity_rejected_pure_white",
+          sdcppCpuBackend: "exit_zero_but_sanity_rejected_pure_white",
+          comfyuiMps: "unsupported_float8_e4m3fn_dtype",
+          comfyuiGgufClip: "clip_loader_torch_load_unpickling_error_for_gguf",
+          comfyuiFp8CpuClip: "ksampler_mps_float8_e4m3fn_unsupported",
+          comfyuiCpu: "smoke_passed_256x384_2_steps_nonblank",
+          comfyuiOpenAiGateway: "pipeline_probe_completed_blob_written",
+          comfyuiConsistencySamples: "20_locked_seed_samples_manual_passed_17_of_20",
+        },
+        capabilities: {
+          textToImage: true,
+          stableSeed: true,
+          referenceImages: false,
+          initImage: false,
+          lora: false,
+        },
+      },
+      defaultWidth: 960,
+      defaultHeight: 1440,
+      allowedOrientations: ["3:4", "4:5", "1:1"],
+      steps: 10,
+      sampler: "er_sde",
+      scheduler: "simple",
+      cfgScale: 1,
+      negativeTemplateId: "template_image_character_default",
+      costMultiplier: 1.1,
+      requiredEntitlement: null,
+      maxCount: 1,
+      concurrencyLimit: 1,
+      enabled: false,
+      rolloutPercent: 0,
+      version: 1,
+      status: "draft",
+      dryRunSummary: {
+        sampleCount: 20,
+        successRate: 1,
+        p95LatencyMs: 20_000,
+        testedAt: "2026-06-30",
+        smokeOutputPath: "/tmp/idream-redcraft-comfyui-cpu-smoke.png",
+        pipelineSmokeReportPath: "/tmp/idream-redcraft-pipeline-image-local.json",
+        consistencyManifestPath: "/Users/kk/code/idream/.tmp/redcraft-consistency-review/manifest.json",
+        consistencyReviewPath: "/Users/kk/code/idream/.tmp/redcraft-consistency-review/review.html",
+        consistencyManualReviewPath: "/Users/kk/code/idream/.tmp/redcraft-consistency-review/manual-review.json",
+        consistencyContactSheetPath: "/Users/kk/code/idream/.tmp/redcraft-consistency-review/contact-sheet.jpg",
+        consistencySampleCount: 20,
+        consistencyPassCount: 17,
+        consistencyRate: 0.85,
+        seedMode: "locked",
+        notes:
+          "Local sd.cpp tests with Redcraft safetensors and gguf produced all-white PNGs. Header inspection shows a diffusion-only fp8-scaled ComfyUI checkpoint with CheckpointLoaderSimple workflow metadata, so this asset is no longer modeled as a sd.cpp template. A 2026-06-30 sd.cpp matrix covered scheduler model_default/simple/logit_normal mu=1.15, guidance 0/1/3.5, VAE format auto/flux/sd3/flux2, qwen_image VAE, no diffusion-fa, no offload, --model loading, GGUF diffusion, and CPU backend; all successful exits were rejected by image sanity as pure white. Apple Silicon MPS ComfyUI still fails on Float8_e4m3fn. The split-node ComfyUI CPU workflow in packages/gen/workflows/redcraft-krea2-comfyui-text.json produced a 256x384 PNG that passed image sanity. The local OpenAI-compatible gateway also completed launch:probe:redcraft-image:local and wrote a PNG through gen probe:image/blob storage. launch:probe:redcraft-consistency:local now runs with seedMode=locked, matching CharacterVisualProfile.defaultSeed behavior; 20 pipeline samples were manually reviewed at 17/20 same-character, consistencyRate=0.85. Redcraft remains disabled at zero rollout until a managed ComfyUI gateway is deployed.",
+      },
+      publishedAt: null,
+    },
+    create: {
+      id: "seed-profile-sdcpp-redcraft-krea2-text-v1",
+      profileKey: "profile_comfyui_redcraft_krea2_checkpoint_v1",
+      label: "Redcraft Krea2 ComfyUI checkpoint candidate",
+      mode: "image",
+      runner: "comfyui",
+      pipelineModel: "redcraft-krea2-comfyui",
+      sourceModelPath: REDCRAFT_KREA2_MODEL_PATH,
+      convertedModelPath: null,
+      modelFormat: "safetensors",
+      runnerConfig: {
+        modelPath: REDCRAFT_KREA2_MODEL_PATH,
+        apiModelId: "redcraft-krea2-comfyui",
+        profileTemplate: "reference_identity_comfyui",
+        templateIntent: "comfyui_krea2_text_checkpoint",
+        assetFormat: "fp8_scaled_comfyui_checkpoint",
+        workflowPath: REDCRAFT_COMFYUI_WORKFLOW_PATH,
+        verificationStatus: "manual_passed",
+        productionRunnerPolicy: {
+          gateway: "openai_compatible_comfyui_image_gateway",
+          readinessEndpoint: "/readyz",
+          generationEndpoint: "/images/generations",
+          trafficExposure: "draft_disabled_zero_rollout_until_managed_gateway",
+          localProbe:
+            "bun run launch:probe:redcraft-consistency:local -- --output .tmp/redcraft-consistency-review --seed redcraft-serena-cvp-v1",
+          note:
+            "Redcraft is a built-in ComfyUI profile, not an admin-managed model. Publishing traffic requires a managed gateway process with health checks; local CPU smoke is sufficient for candidate readiness, not automatic rollout.",
+        },
+        componentStatus: {
+          comfyuiRuntime: {
+            status: "verified_cpu",
+            path: REDCRAFT_COMFYUI_RUNTIME_PATH,
+          },
+          krea2ComfyuiTextEncoder: { status: "present", path: REDCRAFT_COMFYUI_TEXT_ENCODER_PATH },
+          krea2ComfyuiVae: { status: "present", path: REDCRAFT_COMFYUI_VAE_PATH },
+          krea2Workflow: { status: "present", path: REDCRAFT_COMFYUI_WORKFLOW_PATH },
+          krea2SdcppTextEncoder: { status: "present", path: KREA2_TEXT_ENCODER_PATH },
+          krea2SdcppVae: { status: "present", path: KREA2_VAE_PATH },
+        },
+        probeFindings: {
+          sdcppMetal: "pure_white_output",
+          sdcppCpu: "timed_out_without_256x384_output",
+          sdcppOfficialWanVaeMetal: "aborted_on_metal_vae_decode_im2col_3d",
+          sdcppOfficialWanVaeCpu: "exit_zero_but_sanity_rejected_pure_white",
+          sdcppQwenVaeCpu: "exit_zero_but_sanity_rejected_pure_white",
+          sdcppGuidanceZero: "exit_zero_but_sanity_rejected_pure_white",
+          sdcppGuidanceMatrix: "guidance_0_1_3_5_all_exit_zero_but_pure_white",
+          sdcppSchedulerMatrix: "model_default_simple_logit_normal_mu_1_15_all_pure_white",
+          sdcppVaeFormatMatrix: "auto_flux_sd3_flux2_all_pure_white",
+          sdcppGgufDiffusion: "exit_zero_but_sanity_rejected_pure_white",
+          sdcppFp8TextEncoder: "metadata_shape_validation_failed",
+          civitaiAssetFormat: "fp8_scaled_comfyui_checkpoint",
+          sdcppModelFlag: "exit_zero_but_sanity_rejected_pure_white",
+          sdcppCpuBackend: "exit_zero_but_sanity_rejected_pure_white",
+          comfyuiMps: "unsupported_float8_e4m3fn_dtype",
+          comfyuiGgufClip: "clip_loader_torch_load_unpickling_error_for_gguf",
+          comfyuiFp8CpuClip: "ksampler_mps_float8_e4m3fn_unsupported",
+          comfyuiCpu: "smoke_passed_256x384_2_steps_nonblank",
+          comfyuiOpenAiGateway: "pipeline_probe_completed_blob_written",
+          comfyuiConsistencySamples: "20_locked_seed_samples_manual_passed_17_of_20",
+        },
+        capabilities: {
+          textToImage: true,
+          stableSeed: true,
+          referenceImages: false,
+          initImage: false,
+          lora: false,
+        },
+      },
+      defaultWidth: 960,
+      defaultHeight: 1440,
+      allowedOrientations: ["3:4", "4:5", "1:1"],
+      steps: 10,
+      sampler: "er_sde",
+      scheduler: "simple",
+      cfgScale: 1,
+      negativeTemplateId: "template_image_character_default",
+      costMultiplier: 1.1,
+      requiredEntitlement: null,
+      maxCount: 1,
+      concurrencyLimit: 1,
+      enabled: false,
+      rolloutPercent: 0,
+      version: 1,
+      status: "draft",
+      dryRunSummary: {
+        sampleCount: 20,
+        successRate: 1,
+        p95LatencyMs: 20_000,
+        testedAt: "2026-06-30",
+        smokeOutputPath: "/tmp/idream-redcraft-comfyui-cpu-smoke.png",
+        pipelineSmokeReportPath: "/tmp/idream-redcraft-pipeline-image-local.json",
+        consistencyManifestPath: "/Users/kk/code/idream/.tmp/redcraft-consistency-review/manifest.json",
+        consistencyReviewPath: "/Users/kk/code/idream/.tmp/redcraft-consistency-review/review.html",
+        consistencyManualReviewPath: "/Users/kk/code/idream/.tmp/redcraft-consistency-review/manual-review.json",
+        consistencyContactSheetPath: "/Users/kk/code/idream/.tmp/redcraft-consistency-review/contact-sheet.jpg",
+        consistencySampleCount: 20,
+        consistencyPassCount: 17,
+        consistencyRate: 0.85,
+        seedMode: "locked",
+        notes:
+          "Local sd.cpp tests with Redcraft safetensors and gguf produced all-white PNGs. Header inspection shows a diffusion-only fp8-scaled ComfyUI checkpoint with CheckpointLoaderSimple workflow metadata, so this asset is no longer modeled as a sd.cpp template. A 2026-06-30 sd.cpp matrix covered scheduler model_default/simple/logit_normal mu=1.15, guidance 0/1/3.5, VAE format auto/flux/sd3/flux2, qwen_image VAE, no diffusion-fa, no offload, --model loading, GGUF diffusion, and CPU backend; all successful exits were rejected by image sanity as pure white. Apple Silicon MPS ComfyUI still fails on Float8_e4m3fn. The split-node ComfyUI CPU workflow in packages/gen/workflows/redcraft-krea2-comfyui-text.json produced a 256x384 PNG that passed image sanity. The local OpenAI-compatible gateway also completed launch:probe:redcraft-image:local and wrote a PNG through gen probe:image/blob storage. launch:probe:redcraft-consistency:local now runs with seedMode=locked, matching CharacterVisualProfile.defaultSeed behavior; 20 pipeline samples were manually reviewed at 17/20 same-character, consistencyRate=0.85. Redcraft remains disabled at zero rollout until a managed ComfyUI gateway is deployed.",
+      },
+      publishedAt: null,
+    },
+  });
+
+  await prisma.generationModelProfile.updateMany({
+    where: {
+      mode: "image",
+      status: "draft",
+      pipelineModel: {
+        in: ["redcraftkrea2redmix_krea2edition", "redcraft-krea2-text", "redcraft-krea2-comfyui"],
+      },
+    },
+    data: {
+      enabled: false,
+      rolloutPercent: 0,
+    },
+  });
+
+  await prisma.generationModelProfile.updateMany({
+    where: { status: "draft" },
+    data: {
+      enabled: false,
+      rolloutPercent: 0,
+    },
+  });
+
+  await prisma.generationModelProfile.upsert({
+    where: { id: "seed-profile-sdcpp-darkbeast-krea2-img2img-v1" },
+    update: {
+      profileKey: "profile_sdcpp_darkbeast_krea2_img2img_v1",
+      label: "DarkBeast reference candidate",
+      mode: "image",
+      runner: "comfyui",
+      pipelineModel: "darkbeast-reference-candidate",
+      sourceModelPath: DARKBEAST_BFS_FLUX2_MODEL_PATH,
+      convertedModelPath: null,
+      modelFormat: "safetensors",
+      runnerConfig: {
+        diffusionModelPath: DARKBEAST_BFS_FLUX2_MODEL_PATH,
+        apiModelId: "darkbeast-reference-candidate",
+        templateIntent: "image_to_image_identity_reference",
+        baseModel: "Flux.2 Klein 9B",
+        civitaiModelId: 2242173,
+        civitaiVersionId: 2740209,
+        civitaiVersionName: "DBKleinV2 BFS",
+        civitaiAutoV2: "B20B6F2744",
+        note:
+          "The Dark Beast collection also has a Krea 2 version 3078453, but this local dbkleinv2BFS file is version 2740209 and baseModel Flux.2 Klein 9B.",
+        verificationStatus: "missing_flux2_klein_reference_runtime_components",
+        workflow: {
+          kind: "bfs_head_swap_flux2_klein",
+          source:
+            "https://huggingface.co/Alissonerdx/BFS-Best-Face-Swap/resolve/main/workflows/Head%20Swap%20V1%20Flux%202%20Klein%204b_9b%20(base_distill).json",
+          bodyReferenceRole: "source_image",
+          faceReferenceRole: "identity_reference",
+          sampler: "lcm",
+          cfgScale: 1,
+          notes:
+            "BFS workflow uses a body/base image plus a face/identity image through Flux2 conditioning and a head-swap LoRA; this is not a single-checkpoint sd.cpp img2img template.",
+        },
+        componentStatus: {
+          flux2Vae: `missing:${FLUX2_VAE_PATH}`,
+          flux2BaseModel: "missing",
+          qwenTextEncoder: "missing",
+          bfsHeadSwapLora: "missing",
+          comfyWorkflow: "inspected_not_imported",
+        },
+        requiredComponents: [
+          "flux-2-klein-base-4b-fp8.safetensors",
+          "qwen_3_4b.safetensors",
+          "head_swap_flux-klein_9b_000003750.safetensors",
+          "Flux2 conditioning reference workflow",
+        ],
+        capabilities: {
+          textToImage: false,
+          stableSeed: true,
+          referenceImages: true,
+          initImage: true,
+          lora: false,
+        },
+      },
+      defaultWidth: 512,
+      defaultHeight: 640,
+      allowedOrientations: ["4:5", "1:1", "3:4"],
+      steps: 8,
+      sampler: "euler",
+      scheduler: "model_default",
+      cfgScale: 1,
+      negativeTemplateId: "template_image_character_default",
+      costMultiplier: 1.2,
+      requiredEntitlement: null,
+      maxCount: 1,
+      concurrencyLimit: 1,
+      enabled: false,
+      rolloutPercent: 0,
+      version: 1,
+      status: "draft",
+      dryRunSummary: {
+        sampleCount: 0,
+        successRate: 0,
+        failureMode: "missing_runtime_components",
+        testedAt: "2026-06-30",
+        notes:
+          "The local DarkBeast dbkleinv2BFS file is Civitai version 2740209, baseModel Flux.2 Klein 9B. The same collection has a separate Krea 2 version, but that file is not present locally. The inspected BFS workflow needs a Flux.2 Klein base model, Qwen text encoder, Flux2 VAE, head-swap LoRA, and a two-image reference workflow. Current local state is missing flux2-vae, Flux.2 Klein base, Qwen encoder, BFS LoRA, and an imported workflow.",
+      },
+      publishedAt: null,
+    },
+    create: {
+      id: "seed-profile-sdcpp-darkbeast-krea2-img2img-v1",
+      profileKey: "profile_sdcpp_darkbeast_krea2_img2img_v1",
+      label: "DarkBeast reference candidate",
+      mode: "image",
+      runner: "comfyui",
+      pipelineModel: "darkbeast-reference-candidate",
+      sourceModelPath: DARKBEAST_BFS_FLUX2_MODEL_PATH,
+      convertedModelPath: null,
+      modelFormat: "safetensors",
+      runnerConfig: {
+        diffusionModelPath: DARKBEAST_BFS_FLUX2_MODEL_PATH,
+        apiModelId: "darkbeast-reference-candidate",
+        templateIntent: "image_to_image_identity_reference",
+        baseModel: "Flux.2 Klein 9B",
+        civitaiModelId: 2242173,
+        civitaiVersionId: 2740209,
+        civitaiVersionName: "DBKleinV2 BFS",
+        civitaiAutoV2: "B20B6F2744",
+        note:
+          "The Dark Beast collection also has a Krea 2 version 3078453, but this local dbkleinv2BFS file is version 2740209 and baseModel Flux.2 Klein 9B.",
+        verificationStatus: "missing_flux2_klein_reference_runtime_components",
+        workflow: {
+          kind: "bfs_head_swap_flux2_klein",
+          source:
+            "https://huggingface.co/Alissonerdx/BFS-Best-Face-Swap/resolve/main/workflows/Head%20Swap%20V1%20Flux%202%20Klein%204b_9b%20(base_distill).json",
+          bodyReferenceRole: "source_image",
+          faceReferenceRole: "identity_reference",
+          sampler: "lcm",
+          cfgScale: 1,
+          notes:
+            "BFS workflow uses a body/base image plus a face/identity image through Flux2 conditioning and a head-swap LoRA; this is not a single-checkpoint sd.cpp img2img template.",
+        },
+        componentStatus: {
+          flux2Vae: `missing:${FLUX2_VAE_PATH}`,
+          flux2BaseModel: "missing",
+          qwenTextEncoder: "missing",
+          bfsHeadSwapLora: "missing",
+          comfyWorkflow: "inspected_not_imported",
+        },
+        requiredComponents: [
+          "flux-2-klein-base-4b-fp8.safetensors",
+          "qwen_3_4b.safetensors",
+          "head_swap_flux-klein_9b_000003750.safetensors",
+          "Flux2 conditioning reference workflow",
+        ],
+        capabilities: {
+          textToImage: false,
+          stableSeed: true,
+          referenceImages: true,
+          initImage: true,
+          lora: false,
+        },
+      },
+      defaultWidth: 512,
+      defaultHeight: 640,
+      allowedOrientations: ["4:5", "1:1", "3:4"],
+      steps: 8,
+      sampler: "euler",
+      scheduler: "model_default",
+      cfgScale: 1,
+      negativeTemplateId: "template_image_character_default",
+      costMultiplier: 1.2,
+      requiredEntitlement: null,
+      maxCount: 1,
+      concurrencyLimit: 1,
+      enabled: false,
+      rolloutPercent: 0,
+      version: 1,
+      status: "draft",
+      dryRunSummary: {
+        sampleCount: 0,
+        successRate: 0,
+        failureMode: "missing_runtime_components",
+        testedAt: "2026-06-30",
+        notes:
+          "The local DarkBeast dbkleinv2BFS file is Civitai version 2740209, baseModel Flux.2 Klein 9B. The same collection has a separate Krea 2 version, but that file is not present locally. The inspected BFS workflow needs a Flux.2 Klein base model, Qwen text encoder, Flux2 VAE, head-swap LoRA, and a two-image reference workflow. Current local state is missing flux2-vae, Flux.2 Klein base, Qwen encoder, BFS LoRA, and an imported workflow.",
+      },
+      publishedAt: null,
     },
   });
 
@@ -779,6 +1339,7 @@ async function seedAdminControlPlane() {
       allowedOrientations: ["9:16", "16:9"],
       steps: 24,
       sampler: "video_default",
+      scheduler: "model_default",
       cfgScale: 5,
       negativeTemplateId: "template_video_character_default",
       costMultiplier: 1,
@@ -808,6 +1369,7 @@ async function seedAdminControlPlane() {
       allowedOrientations: ["9:16", "16:9"],
       steps: 24,
       sampler: "video_default",
+      scheduler: "model_default",
       cfgScale: 5,
       negativeTemplateId: "template_video_character_default",
       costMultiplier: 1,
@@ -938,6 +1500,7 @@ async function main() {
   await seedUsers();
   await seedTags();
   await seedCharacters();
+  await seedCommunityCollections();
   await seedPlans();
   await seedPresets();
   await seedAdminControlPlane();

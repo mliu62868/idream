@@ -1,0 +1,144 @@
+- generic [active] [ref=e1]:
+  - button "Open Next.js Dev Tools" [ref=e488] [cursor=pointer]:
+    - img [ref=e489]
+  - alert [ref=e492]
+  - main [ref=e493]:
+    - generic [ref=e494]:
+      - complementary [ref=e495]:
+        - generic [ref=e496]:
+          - img "ourdream.ai" [ref=e498]
+          - navigation [ref=e500]:
+            - link "Create" [ref=e501] [cursor=pointer]:
+              - /url: /create
+              - img [ref=e502]
+              - generic [ref=e504]: Create
+            - link "Explore" [ref=e505] [cursor=pointer]:
+              - /url: /
+              - img [ref=e506]
+              - generic [ref=e509]: Explore
+            - link "Chat" [ref=e510] [cursor=pointer]:
+              - /url: /chat
+              - img [ref=e511]
+              - generic [ref=e513]: Chat
+            - link "Generate" [ref=e514] [cursor=pointer]:
+              - /url: /generate
+              - img [ref=e515]
+              - generic [ref=e518]: Generate
+            - link "My AI" [ref=e519] [cursor=pointer]:
+              - /url: /custom
+              - img [ref=e520]
+              - generic [ref=e523]: My AI
+            - link "Feed" [ref=e524] [cursor=pointer]:
+              - /url: /feed
+              - img [ref=e525]
+              - generic [ref=e528]: Feed
+            - link "Community" [ref=e529] [cursor=pointer]:
+              - /url: /community
+              - img [ref=e530]
+              - generic [ref=e534]: Community
+          - navigation [ref=e536]:
+            - link "Help Desk" [ref=e537] [cursor=pointer]:
+              - /url: /helpdesk
+              - img [ref=e538]
+              - generic [ref=e541]: Help Desk
+            - link "Safety Center" [ref=e542] [cursor=pointer]:
+              - /url: /safety/introduction
+              - img [ref=e543]
+              - generic [ref=e546]: Safety Center
+            - link "Discord" [ref=e547] [cursor=pointer]:
+              - /url: https://discord.gg/P47YU7je5D
+              - img [ref=e548]
+              - generic [ref=e553]: Discord
+            - link "More" [ref=e554] [cursor=pointer]:
+              - /url: /resources-hub
+              - img [ref=e555]
+              - generic [ref=e559]: More
+          - generic [ref=e560]:
+            - link "Profile" [ref=e562] [cursor=pointer]:
+              - /url: /profile
+              - img [ref=e563]
+              - text: Profile
+            - link "Upgrade" [ref=e566] [cursor=pointer]:
+              - /url: /upgrade
+              - img [ref=e567]
+              - text: Upgrade
+            - generic [ref=e569]:
+              - paragraph [ref=e570]: 2026 OURDREAM.AI
+              - paragraph [ref=e571]: "USA: Dream Studio USA, Inc."
+              - paragraph [ref=e572]: "Cyprus: TEKTOPIA LTD (HE 473775)"
+      - generic [ref=e573]:
+        - link "Explore" [ref=e574] [cursor=pointer]:
+          - /url: /
+          - img [ref=e575]
+          - text: Explore
+        - generic [ref=e580]:
+          - paragraph [ref=e581]: realistic companion
+          - generic [ref=e582]:
+            - heading "Melissa Burke" [level=1] [ref=e583]
+            - generic "38 years old" [ref=e584]: "38"
+          - paragraph [ref=e585]: She's been your best friend's mom your whole life. The woman who made you both sandwiches after school.
+          - generic [ref=e586]:
+            - button "Chat" [ref=e587]:
+              - img [ref=e588]
+              - text: Chat
+            - button "Like" [ref=e590]:
+              - img [ref=e591]
+              - text: Like
+            - button "Report" [ref=e593]:
+              - img [ref=e594]
+              - text: Report
+    - generic [ref=e597]:
+      - generic [ref=e598]:
+        - heading "Learn" [level=2] [ref=e599]
+        - navigation [ref=e600]:
+          - link "Resources Hub" [ref=e601] [cursor=pointer]:
+            - /url: /resources-hub
+          - link "AI Girlfriend Types" [ref=e602] [cursor=pointer]:
+            - /url: /type
+          - link "Comparisons" [ref=e603] [cursor=pointer]:
+            - /url: /comparison
+          - link "Videos" [ref=e604] [cursor=pointer]:
+            - /url: /videos
+          - link "AI Instructions" [ref=e605] [cursor=pointer]:
+            - /url: /ai-instructions
+      - generic [ref=e606]:
+        - heading "Popular" [level=2] [ref=e607]
+        - navigation [ref=e608]:
+          - link "AI Girlfriend" [ref=e609] [cursor=pointer]:
+            - /url: /ai-girlfriend
+          - link "AI Boyfriend" [ref=e610] [cursor=pointer]:
+            - /url: /ai-boyfriend
+          - link "AI Anime" [ref=e611] [cursor=pointer]:
+            - /url: /type/anime-ai-girlfriend
+          - link "Games" [ref=e612] [cursor=pointer]:
+            - /url: /games
+          - link "Romantasy" [ref=e613] [cursor=pointer]:
+            - /url: /romantasy
+          - link "our dream ai" [ref=e614] [cursor=pointer]:
+            - /url: /
+      - generic [ref=e615]:
+        - heading "Help" [level=2] [ref=e616]
+        - navigation [ref=e617]:
+          - link "Help Centre" [ref=e618] [cursor=pointer]:
+            - /url: https://help.ourdream.ai/
+          - link "Affiliates" [ref=e619] [cursor=pointer]:
+            - /url: https://www.ourdreamaiaffiliate.com/
+          - link "Help Desk" [ref=e620] [cursor=pointer]:
+            - /url: /helpdesk
+          - link "Safety" [ref=e621] [cursor=pointer]:
+            - /url: /safety/introduction
+      - generic [ref=e622]:
+        - generic [ref=e623]:
+          - paragraph [ref=e624]: 2026 OURDREAM.AI
+          - paragraph [ref=e625]: "USA: Dream Studio USA, Inc."
+          - paragraph [ref=e626]: "Cyprus: TEKTOPIA LTD (HE 473775)"
+        - generic [ref=e627]:
+          - link "Discord" [ref=e628] [cursor=pointer]:
+            - /url: https://discord.gg/P47YU7je5D
+            - img [ref=e629]
+          - link "Reddit" [ref=e631] [cursor=pointer]:
+            - /url: https://reddit.com/r/ourdream_ai
+            - img [ref=e632]
+          - link "Twitter / X" [ref=e637] [cursor=pointer]:
+            - /url: https://x.com/ourdreamai
+            - img [ref=e638]

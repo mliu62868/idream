@@ -14,6 +14,9 @@ describe("idempotency keys", () => {
     expect(idempotencyKeys.generationFinalize("j1", "failed")).toBe("generation-finalize:j1:failed");
     expect(idempotencyKeys.generationFinalize("j1", "blocked")).toBe("generation-finalize:j1:blocked");
   });
+  it("chat image requests key on attachment id", () => {
+    expect(idempotencyKeys.chatImage("att1")).toBe("chat-image:att1");
+  });
 });
 
 describe("queue names", () => {

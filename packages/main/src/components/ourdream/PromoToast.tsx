@@ -43,6 +43,7 @@ export function PromoToast() {
           src="/images/ourdream/promo-card-female.webp"
           alt="75% Pride Sale"
           fill
+          loading="eager"
           sizes="276px"
           className="object-cover"
         />

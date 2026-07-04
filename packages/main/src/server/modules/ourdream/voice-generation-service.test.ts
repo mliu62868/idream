@@ -2,9 +2,12 @@ import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
 import { prisma } from "@/server/lib/db";
+import { dispatchV1 } from "@/server/modules/ourdream/service";
 import {
+  AGE_GATE_COOKIE_HEADER,
   api,
   createCharacter,
+  createPlan,
   createUser,
   dreamcoinBalance,
   expectError,
@@ -65,6 +68,23 @@ describe("voice generation service contract", () => {
     expect(bytes.byteLength).toBeGreaterThan(44);
     expect(bytes.subarray(0, 4).toString("ascii")).toBe("RIFF");
 
+    const rangeResponse = await dispatchV1(
+      new Request(`http://localhost/api/v1/media/${first.data.assetId}/content`, {
+        headers: {
+          "x-idream-user-id": userId,
+          cookie: AGE_GATE_COOKIE_HEADER,
+          range: "bytes=0-3",
+        },
+      }),
+      ["media", first.data.assetId as string, "content"],
+    );
+    expect(rangeResponse.status).toBe(206);
+    expect(rangeResponse.headers.get("accept-ranges")).toBe("bytes");
+    expect(rangeResponse.headers.get("content-length")).toBe("4");
+    expect(rangeResponse.headers.get("content-range")).toBe(`bytes 0-3/${bytes.byteLength}`);
+    expect(rangeResponse.headers.get("content-type")).toBe("audio/wav");
+    expect(Buffer.from(await rangeResponse.arrayBuffer()).toString("ascii")).toBe("RIFF");
+
     // Replay of the same message reuses the cached clip — no second charge.
     const second = await api("POST", "generation/voice", {
       userId,
@@ -75,6 +95,44 @@ describe("voice generation service contract", () => {
     expect(second.data.assetId).toBe(first.data.assetId);
     expect(await dreamcoinBalance(userId)).toBe(98);
     expect(await prisma.mediaAsset.count({ where: { ownerId: userId, type: "voice" } })).toBe(1);
+  });
+
+  it("regenerates stale cached voice clips without charging again", async () => {
+    const userId = `${P}stale-cache-user`;
+    const messageId = `${P}msg-stale-cache`;
+    const staleId = `${P}stale-voice`;
+    await createUser({ id: userId });
+    await grantVoice(userId);
+    await prisma.mediaAsset.create({
+      data: {
+        id: staleId,
+        ownerId: userId,
+        characterId: CHAR,
+        type: "voice",
+        url: `/api/v1/media/${staleId}/content`,
+        visibility: "private",
+        safetyStatus: "passed",
+        metadata: { messageId, durationMs: 1_234, costDreamcoins: 2 },
+      },
+    });
+
+    const res = await api("POST", "generation/voice", {
+      userId,
+      ageGate: true,
+      body: { characterId: CHAR, messageId, text: "Replace the bad cached clip" },
+    });
+
+    expectOk(res, 201);
+    expect(res.data.assetId).not.toBe(staleId);
+    expect(await dreamcoinBalance(userId)).toBe(0);
+    const stale = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: staleId } });
+    expect(stale.deletedAt).toBeInstanceOf(Date);
+    const replacement = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: res.data.assetId } });
+    expect((replacement.metadata as { cacheVersion?: number }).cacheVersion).toBe(5);
+    expect((replacement.metadata as { costDreamcoins?: number }).costDreamcoins).toBe(0);
+    expect((replacement.metadata as { replacedAssetIds?: string[] }).replacedAssetIds).toEqual([
+      staleId,
+    ]);
   });
 
   it("spends the plan voice-minute allowance before charging coins", async () => {
@@ -90,6 +148,52 @@ describe("voice generation service contract", () => {
     });
     expectOk(res, 201);
     // Covered by the minute allowance → no Dreamcoins spent.
+    expect(await dreamcoinBalance(userId)).toBe(100);
+    const asset = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: res.data.assetId } });
+    expect((asset.metadata as { costDreamcoins?: number }).costDreamcoins).toBe(0);
+  });
+
+  it("honors active plan voice features when derived entitlement rows are missing", async () => {
+    const userId = `${P}stale-sub-user`;
+    const planId = `${P}stale-plan`;
+    await createUser({ id: userId });
+    await grantCoins(userId, 100, "seed");
+    await createPlan({
+      id: planId,
+      slug: `${P}stale-premium`,
+      billingPeriod: "monthly",
+      includedDreamcoins: 1_000,
+      features: {
+        unlimitedMessages: true,
+        voiceEnabled: true,
+        voiceMinutes: 30,
+      },
+    });
+    await prisma.subscription.create({
+      data: {
+        id: `${P}stale-sub`,
+        userId,
+        planId,
+        provider: "mock",
+        providerSubscriptionId: `${P}stale-invoice`,
+        status: "active",
+        currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      },
+    });
+
+    const me = await api("GET", "me", { userId });
+    expectOk(me);
+    expect(me.data.entitlements).toMatchObject({
+      voice_enabled: true,
+      voice_minutes: 30,
+    });
+
+    const res = await api("POST", "generation/voice", {
+      userId,
+      ageGate: true,
+      body: { characterId: CHAR, messageId: `${P}msg-stale-sub`, text: "Covered by plan" },
+    });
+    expectOk(res, 201);
     expect(await dreamcoinBalance(userId)).toBe(100);
     const asset = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: res.data.assetId } });
     expect((asset.metadata as { costDreamcoins?: number }).costDreamcoins).toBe(0);

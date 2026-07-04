@@ -14,6 +14,7 @@ import { devAdminLogin, devAdminLogout, devLoginEnabled } from "./dev-login";
 //   - 错误密码 → 401
 //   - admin cookie 优先于普通 idream_session
 //   - logout 清除 cookie 且删除 session 行
+//   - dev 切换账号时可显式同时清除普通用户 session
 
 const issuedTokens: string[] = [];
 
@@ -140,5 +141,70 @@ describe("dev admin login", () => {
 
     const remaining = await prisma.session.findUnique({ where: { token } });
     expect(remaining).toBeNull();
+  });
+
+  it("logout keeps the regular user session unless explicitly asked to clear it", async () => {
+    const adminLogin = await devAdminLogin(
+      loginRequest({ username: "admin", password: "admin123" }),
+    );
+    const adminToken = cookieValue(getSetCookie(adminLogin), ADMIN_SESSION_COOKIE)!;
+
+    const userToken = createSessionToken();
+    issuedTokens.push(userToken);
+    await prisma.session.create({
+      data: {
+        userId: "seed-dev-user",
+        token: userToken,
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+
+    const logout = await devAdminLogout(
+      new Request("http://localhost:3001/api/admin-auth/logout", {
+        method: "POST",
+        headers: {
+          cookie: `${SESSION_COOKIE}=${userToken}; ${ADMIN_SESSION_COOKIE}=${adminToken}`,
+        },
+      }),
+    );
+
+    expect(getSetCookie(logout).join(";")).toContain(`${ADMIN_SESSION_COOKIE}=;`);
+    expect(getSetCookie(logout).join(";")).not.toContain(`${SESSION_COOKIE}=;`);
+    expect(await prisma.session.findUnique({ where: { token: adminToken } })).toBeNull();
+    expect(await prisma.session.findUnique({ where: { token: userToken } })).not.toBeNull();
+  });
+
+  it("logout can clear both admin and foreground user sessions for dev account switching", async () => {
+    const adminLogin = await devAdminLogin(
+      loginRequest({ username: "admin", password: "admin123" }),
+    );
+    const adminToken = cookieValue(getSetCookie(adminLogin), ADMIN_SESSION_COOKIE)!;
+
+    const userToken = createSessionToken();
+    issuedTokens.push(userToken);
+    await prisma.session.create({
+      data: {
+        userId: "seed-dev-user",
+        token: userToken,
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+
+    const logout = await devAdminLogout(
+      new Request("http://localhost:3001/api/admin-auth/logout", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          cookie: `${SESSION_COOKIE}=${userToken}; ${ADMIN_SESSION_COOKIE}=${adminToken}`,
+        },
+        body: JSON.stringify({ includeUserSession: true }),
+      }),
+    );
+
+    const cleared = getSetCookie(logout).join(";");
+    expect(cleared).toContain(`${ADMIN_SESSION_COOKIE}=;`);
+    expect(cleared).toContain(`${SESSION_COOKIE}=;`);
+    expect(await prisma.session.findUnique({ where: { token: adminToken } })).toBeNull();
+    expect(await prisma.session.findUnique({ where: { token: userToken } })).toBeNull();
   });
 });

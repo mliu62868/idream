@@ -55,15 +55,22 @@ bun run --silent launch:secrets
 ```bash
 SDCPP_IMAGE_PORT=8091 \
 SDCPP_IMAGE_MODEL_ID=pornmaster-zimage-turbo \
-SDCPP_CLI=/Users/kk/code/sdcpp/sd-cli \
-SDCPP_DIFFUSION_MODEL=/Users/kk/Downloads/pornmasterZImage_turboV35Bf16.safetensors \
+SDCPP_CLI=/Users/kk/bin/sd-cli \
+SDCPP_DIFFUSION_MODEL=/Users/kk/Downloads/models/pornmasterZImage_turboV35Bf16.safetensors \
 SDCPP_LLM=/Users/kk/.localai/models/z-image-components/Qwen3-4B-Instruct-2507-Q4_K_M.gguf \
 SDCPP_VAE=/Users/kk/.localai/models/z-image-components/split_files/vae/ae.safetensors \
 SDCPP_STEPS=1 \
 SDCPP_MAX_COUNT=1 \
+SDCPP_REFERENCE_MODE=auto \
+SDCPP_REFERENCE_STRENGTH=0.62 \
+SDCPP_MAX_REFERENCE_IMAGES=4 \
 SDCPP_TIMEOUT_MS=300000 \
 bun run --filter @idream/gen serve:sdcpp-image
 ```
+
+新版 sd.cpp macOS binary 依赖 `libstable-diffusion.dylib`。本地把
+`sd-cli`、`sd-server` 和 `libstable-diffusion.dylib` 放在同一个目录
+（当前默认 `/Users/kk/bin`），否则 `sd-cli` 会在启动时因 dyld 找不到动态库退出。
 
 另开一个 shell 先跑内部 Pipeline beta 探针：
 
@@ -81,7 +88,7 @@ Pipeline `/audio/speech` gateway，或显式要求：
 bun run launch:probe:pipeline -- --include-voice
 ```
 
-### MOSS-TTS voice runner
+### Local voice runner
 
 Voice 使用独立的 OpenAI-compatible endpoint，不复用 `sdcpp-image`：
 
@@ -90,6 +97,27 @@ PIPELINE_VOICE_API_URL=http://127.0.0.1:8000/v1 \
 PIPELINE_VOICE_MODEL_DEFAULT=OpenMOSS/MOSS-TTS-Local-Transformer-v1.5 \
 bun run launch:probe:voice:local
 ```
+
+本地默认 smoke path 使用 oMLX 上的 `Kokoro-82M-bf16`。该模型需要 oMLX
+识别为 `audio_tts`，并且权重文件名需要有 OpenAI-compatible gateway 预期的
+`model.safetensors`：
+
+```bash
+set -a; source packages/main/.env; set +a
+bun run launch:prepare:voice:kokoro
+bun run launch:probe:voice:local
+```
+
+`launch:prepare:voice:kokoro` 会在 `~/.omlx/models` 下定位
+`Kokoro-82M-bf16`，补齐 `config.json` 的 `model_type: "kokoro"`，并在缺失时创建
+`model.safetensors -> kokoro*.safetensors`。如果命令报告做了修改，先重启一次
+oMLX server 再跑 probe；`launch:probe:voice:local` 会在模型名包含 `kokoro` 时自动
+执行同一个预检，避免继续打到未刷新模型缓存的服务。
+
+Kokoro 的本地配置保持 `PIPELINE_VOICE_CHUNK_CHARS=0`，不要再按固定 400 字符切段。
+用 `PIPELINE_VOICE_MAX_INPUT_CHARS` 控制送入 TTS 的总长度；超限时优先保留完整句子并
+丢弃尾部句子，只有第一句本身超过上限时才退到逗号/分号/词边界，避免一句话被拆进不同
+chunk 造成发音不连贯。
 
 Apple Silicon 上已经验证过一个更小的 oMLX 路径：
 
@@ -122,6 +150,7 @@ Runner 选择：
 ```bash
 bun run launch:probe:pipeline
 bun run launch:probe:image:local
+bun run launch:probe:generation-model-candidates -- --report .tmp/launch-generation-model-candidates.json
 bun run launch:probe:web-surface -- --report .tmp/launch-web-surface-probe.json
 bun run launch:probe:product-config -- --report .tmp/launch-product-config-probe.json
 bun run launch:probe:chat-service -- --report .tmp/launch-chat-service-probe.json
@@ -133,6 +162,12 @@ bun run launch:probe:age -- --report .tmp/launch-age-probe.json
 bun run launch:probe:safety -- --report .tmp/launch-safety-probe.json
 bun run check:launch:direct -- --launch-env-file .tmp/production-launch.env
 ```
+
+`launch:probe:chat-service` must prove more than BFF reachability: it runs a signed
+conversation smoke (session create, message send, SSE stream, reload, no-memory
+send, and blocked-input handling). If `CHAT_SERVICE_PROBE_CHARACTER_ID` is unset,
+the probe auto-selects a public approved adult character from the main DB; use
+`--character-id=...` when a fixed production probe character is required.
 
 等价的显式命令如下，适合临时改 gateway、模型或输出路径时使用：
 
@@ -224,9 +259,12 @@ probe 报告，证明当前 `BLOB_PROVIDER` 能对真实 bucket 完成 PUT、sig
 probe 报告，证明 `MODERATION_SERVICE_URL` 能鉴权、返回可解析 decision，并且良性文本不会被误拦。
 `CHAT_MODEL_PROBE_REPORT` 则证明 `CHAT_MODEL_BASE_URL`/`PIPELINE_API_URL` 指向的
 OpenAI-compatible chat gateway 能鉴权、返回 assistant 文本并正常结束流式响应。
-`PAYMENT_PROVIDER_PROBE_REPORT` 对 BTCPay 使用无副作用的 Greenfield
-`GET /api/v1/stores/{storeId}`，证明 `BTCPAY_API_KEY` 具备读取目标 store 的权限；
-probe 不创建 invoice，不改变支付状态。
+`PAYMENT_PROVIDER_PROBE_REPORT` 对 BTCPay 先使用 Greenfield
+`GET /api/v1/stores/{storeId}` 证明 `BTCPAY_API_KEY` 具备读取目标 store 的权限，
+再使用 `POST /api/v1/stores/{storeId}/invoices` 创建一张带
+`metadata.launchProbe=true` 的小额测试 invoice，证明同一个 key 具备
+`btcpay.store.cancreateinvoice` 权限并返回可跳转的 HTTPS `checkoutLink`。该
+probe 会在 BTCPay 侧留下测试 invoice，但不会自动确认订阅或改变本地支付状态。
 `AGE_VERIFICATION_PROBE_REPORT` 会通过内部 age gateway 创建一个 probe
 verification session，证明 Go.cam gateway 能鉴权、返回 pending session id 和公开 HTTPS
 验证链接；该 probe 不提交证件或完成年龄认证，但会在 provider/gateway 侧留下一个待处理测试 session。
@@ -259,9 +297,211 @@ model id；它是 Z-Image diffusion model，需要匹配的 Qwen3 4B text encode
 OpenAI-compatible `/images/generations` / `/v1/images/generations` 接口，
 产品层仍只配置 `PIPELINE_API_URL` 与稳定 alias（例如
 `pornmaster-zimage-turbo`）。
+后台 `GenerationModelProfile.runnerConfig` 是 sdcpp 运行态配置入口：
+管理员可登记 `.safetensors` source、`.gguf` converted target、LLM/VAE 组件、
+`conversion.enabled` 和 LoRA 栈。main 创建 job 时不会把这些本地路径写入用户可见
+`generation_jobs.controls`；只在内部队列 payload 中注入 `controls.sdcpp`，由
+`serve:sdcpp-image` 读取。gateway 在 `SDCPP_ALLOW_REQUEST_CONFIG=true`（默认）时按
+请求 profile 覆盖 env 单模型配置；没有该块时继续使用 env fallback。
+同一个 `runnerConfig` 也声明角色一致性能力，队列入口会用它过滤 reference payload：
+
+```json
+{
+  "capabilities": {
+    "textToImage": true,
+    "stableSeed": true,
+    "referenceImages": false,
+    "initImage": true,
+    "lora": false
+  }
+}
+```
+
+`referenceImages=false` 时，CVP anchor/reference 不会传给模型；`initImage=false`
+时，Gallery `More like this` source image 不会传给模型。sd.cpp profile 默认支持
+`initImage`，但不默认支持 identity `referenceImages`；需要 identity reference 的 runner
+必须显式声明并通过 smoke。所有 runner 都保留 text+seed 路径。`lora` 当前只是未来
+adapter 消费开关。
+角色一致性 reference 图从 `ImageGeneratePayload.referenceImages` 进入 pipeline：
+gateway 在 `SDCPP_REFERENCE_MODE=auto` 下把 Gallery `More like this` 的 source image
+映射为 `--init-img` + `--strength`；只有明确支持 reference 的 profile 才会收到
+identity anchor/reference，并映射为 `sd-cli --ref-image`。可用
+`SDCPP_REFERENCE_MODE=disabled|ref_image|init_img` 收紧或关闭该行为；
+`SDCPP_REFERENCE_STRENGTH` 控制 init image 的 noising strength。当前
+`pornmaster-zimage-turbo` 的真实 smoke 证明 `source_image -> --init-img` 可用，
+但 `identity_anchor -> --ref-image` 会触发 sd-cli 早退，因此该内置 profile 保持
+`referenceImages=false`、`initImage=true`。
+
+角色一致性 smoke 有两条路径，和产品策略一致：
+
+```bash
+# Text-to-image: only stable identity text + seed, no reference image.
+bun run launch:probe:character-consistency -- \
+  --provider mock \
+  --identity-prompt "Serena Vale, adult woman, oval face, hazel eyes, long auburn waves, small beauty mark under left eye" \
+  --samples 20 \
+  --mode balanced \
+  --seed serena-cvp-v1 \
+  --output .tmp/consistency-serena-text
+
+# Image-to-image / reference: same identity text plus one or more anchor/reference images.
+bun run launch:probe:character-consistency -- \
+  --provider mock \
+  --identity-prompt "Serena Vale, adult woman, oval face, hazel eyes, long auburn waves, small beauty mark under left eye" \
+  --reference /absolute/path/to/serena-anchor.webp \
+  --samples 20 \
+  --mode strict \
+  --seed serena-cvp-v1 \
+  --output .tmp/consistency-serena-reference
+```
+
+每次运行会输出图片样本、`manifest.json` 和 `review.html`。`--provider mock` 只验证
+流程产物和 reference transport；真实质量复核要改用 `--provider pipeline`，并按需传
+`--pipeline-url http://127.0.0.1:8091`、`--model ...`。通过标准仍是人工确认至少 80%
+样本“像同一角色”；mock provider 不能作为质量证据。
+Admin 的 `Generation Config` 页面不再作为模型资产管理入口。产品面只展示内置
+profile、draft readiness、test job、publish/rollback 和 prompt recipe；模型文件路径、
+runner 组件、ComfyUI workflow 与 LoRA/adapter 仍由工程侧 seed/config 管理。
+`/api/v1/admin/generation/model-imports` 默认关闭，仅在
+`ADMIN_MODEL_DIAGNOSTICS_ENABLED=true` 时作为隐藏的工程诊断/迁移能力保留，不应出现在
+普通运营路径或发布流程里。
+手动 `model-profiles` 创建和底层配置编辑同样默认关闭；普通 admin 只运营工程侧注入的
+built-in profiles，可执行读取、dry-run、test image、publish/rollback 和 disable。
 本地容量较弱时可用 `PIPELINE_IMAGE_SIZE_DEFAULT=512x512` 做接口/队列/Blob
 smoke；线上质量尺寸由后台 `GenerationModelProfile.defaultWidth/defaultHeight`
 或 Pipeline Service profile 控制，不能靠产品层静默降级。
+sd.cpp 的采样参数由 `steps`、`sampler`、`scheduler`、`cfgScale` 共同控制；
+`scheduler=model_default` 表示不向底层 CLI 传 `--scheduler`，使用模型/runner 默认值。
+Krea2/Flux 类模型不要只按文件名套模板。运维必须先看模型元数据和官方 runner 文档：
+Krea 官方 Turbo 推荐 8 steps、CFG disabled、`mu=1.15`，而 stable-diffusion.cpp
+Krea2 示例要求 Krea diffusion transformer、Qwen3-VL 4B text encoder、Wan 2.1 VAE、
+`--diffusion-fa` 和 `--offload-to-cpu`。这些是 runner 模板内部参数，不应暴露给内容运营。
+Krea2 文件进入内置候选前，工程侧必须先固定 runner 模板与组件：
+`Qwen3VL-4B-Instruct-Q4_K_M.gguf` + `wan_2.1_vae.safetensors` 是 sd.cpp Krea2
+方向的默认候选；`qwen_image_vae` 已在本地探针中被证明会产出纯白图，不应作为
+Krea2 sd.cpp 默认组件。
+
+2026-06-30 本地 sd.cpp 模板验证结果：
+
+- `pornmaster-zimage-turbo` 是当前已跑通的 active/default sd.cpp 图片链路；主站普通生图
+  和 admin test-job 已验证 512x640 PNG，`cfgScale=1` 保持为该链路默认值。
+- Redcraft Krea2 候选：当前是 ComfyUI/Krea2 fp8 checkpoint candidate，不是 sd.cpp
+  text template。历史 sd.cpp 探针按 Krea 官方近似参数、按 ComfyUI 元数据参数、直接跑
+  safetensors、跑本地 gguf，均生成纯白 PNG；官方 sd.cpp Krea2 组件
+  `Qwen3VL GGUF + Wan2.1 VAE` 需要
+  `backend=vae=cpu` 才能避开 Apple Silicon Metal VAE decode 的 `IM2COL_3D` abort，
+  但退出码为 0 的样本仍被 sanity guard 判为纯白；qwen_image VAE 与 `guidance=0`
+  变体也同样纯白。2026-06-30 追加的 25 样本矩阵覆盖
+  model-default/simple/logit_normal `mu=1.15` scheduler、guidance 0/1/3.5、
+  VAE format auto/flux/sd3/flux2、GGUF diffusion、`--model` 加载、关闭
+  diffusion-fa、关闭 offload、CPU backend；所有成功退出的样本仍是纯白。fp8 text
+  encoder safetensors 在 sd.cpp 触发 metadata shape validation failed。ComfyUI GGUF
+  text encoder 会在普通 `CLIPLoader` 触发 torch
+  unpickling error，fp8 text encoder 进入 MPS KSampler 后仍触发 unsupported
+  `Float8_e4m3fn`。Civitai 文件本身标为 fp8 SafeTensor，文件名为
+  `Krea2RedMix-10Steps-fp8-scaled-ComfyUI.safetensors`；因此当前更应视为
+  ComfyUI FP8 checkpoint，而不是可直接发布的 sd.cpp 内置模板。2026-06-30 已用
+  `packages/gen/workflows/redcraft-krea2-comfyui-text.json` 的拆分节点 workflow
+  在本机 ComfyUI `--cpu` 路径跑通 256x384、2 steps smoke，输出 PNG 通过
+  sanity guard；随后通过 `serve:comfyui-image` OpenAI-compatible gateway 和
+  `launch:probe:redcraft-image:local` 走完 gen `probe:image`/blob 写入链路。
+  `launch:probe:redcraft-consistency:local` 现在默认锁定角色 seed，已生成 20 张样本并
+  人工评审为 17/20 同一角色，`consistencyRate=0.85`。seed 中仍保留 draft profile，
+  `enabled=false`、`rolloutPercent=0`；这表示内置候选已通过发布门槛，但在部署托管
+  ComfyUI gateway 前不自动导流。
+- DarkBeast reference 候选：本地 `darkBeastKrea2_dbkleinv2BFS.safetensors`
+  是 Civitai `modelVersionId=2740209`，AutoV2 `B20B6F2744`，baseModel 为
+  `Flux.2 Klein 9B`；同一 Dark Beast 集合另有 Krea 2 version `3078453`，但该文件
+  不在本地模型目录。因此当前 BFS 文件不是 Krea2 sd.cpp 图生图模板。已解析 BFS
+  Head Swap workflow：body/base image 映射为 `source_image/initImage`，face/identity
+  image 映射为 `identity_reference/referenceImages`，并经 Flux2 conditioning 与
+  `head_swap_flux-klein_9b_000003750.safetensors` LoRA 运行。当前本机缺
+  `/Users/kk/.localai/models/flux2-vae.safetensors`、Flux.2 Klein base、
+  Qwen text encoder、BFS LoRA 与可导入 workflow。seed 中登记为 `comfyui`
+  draft candidate，不作为 sd.cpp active profile。
+
+结论：可以保留“内置模板”产品策略，但只能发布已通过真实图像 smoke 的模板；sd.cpp
+内置模板和未来 ComfyUI/external 模板都通过 `GenerationModelProfile.runner` 与
+`runnerConfig.capabilities` 暴露能力。
+`serve:sdcpp-image` 在 `sd-cli` 退出码为 0 后还会解析 PNG 像素，拒绝纯白、纯黑或
+近乎纯色的退化输出；gen worker 在写入 blob 前也会对 provider 返回的 PNG bytes
+执行同样检查。这类任务应视作模型/profile 失败，而不是成功出图。
+
+内置模型状态用独立 probe 固化，避免依赖人工会话记忆：
+
+```bash
+# 日常门禁：确认 Pornmaster active/default 可用，Redcraft 可发布但默认不导流。
+# redcraft_krea2_text 是历史兼容 candidate key，当前期望 runner 是 comfyui。
+bun run launch:probe:generation-model-candidates -- \
+  --candidate pornmaster_zimage_default,redcraft_krea2_text \
+  --report .tmp/launch-generation-model-candidates.json
+
+# 验收当前默认内置模板：Pornmaster 必须 active、路径存在且 dry-run 通过。
+bun run launch:probe:generation-model-candidates -- \
+  --candidate pornmaster_zimage_default \
+  --require-ready \
+  --report .tmp/launch-pornmaster-zimage-ready.json
+
+# 验收 Redcraft ComfyUI/Krea2 checkpoint candidate 能否发布：必须 ready，否则返回非 0。
+# 当前不是 sd.cpp text template；发布门槛包括非退化图、20 张一致性评审与 runner policy。
+bun run launch:probe:generation-model-candidates -- \
+  --candidate redcraft_krea2_text \
+  --require-ready \
+  --report .tmp/launch-redcraft-krea2-ready.json
+
+# 只验证 Redcraft 当前 ComfyUI CPU workflow 能否出非退化图：
+# 需要先启动 ComfyUI，并加载 packages/gen/workflows/comfy-extra-models-idream.yaml 指向 ComfyUI-Shared。
+cd "/Users/kk/ComfyUI-Installs/idream (1)/ComfyUI"
+".venv/bin/python" main.py \
+  --listen 127.0.0.1 \
+  --port 8191 \
+  --extra-model-paths-config /Users/kk/code/idream/packages/gen/workflows/comfy-extra-models-idream.yaml \
+  --cpu \
+  --force-fp32 \
+  --fp32-vae \
+  --fp32-text-enc \
+  --preview-method none \
+  --disable-auto-launch
+
+cd /Users/kk/code/idream
+bun run launch:probe:redcraft-comfyui -- \
+  --report .tmp/launch-redcraft-comfyui-cpu-smoke.json \
+  --output .tmp/redcraft-comfyui-cpu-smoke.png
+
+# 验证 Redcraft 能否通过统一 gen image pipeline 写入 blob：
+# 保持上面的 ComfyUI 8191 运行，另起本地 OpenAI-compatible image gateway。
+COMFYUI_API_URL=http://127.0.0.1:8191 \
+COMFYUI_IMAGE_PORT=8092 \
+bun run --filter @idream/gen serve:comfyui-image
+
+# 再运行：
+bun run launch:probe:redcraft-image:local -- \
+  --report .tmp/launch-redcraft-image-probe.json \
+  --count 1
+
+# 生成 Redcraft 的 20 张角色一致性 review 包；默认 seedMode=locked，当前已生成在 .tmp/redcraft-consistency-review。
+bun run launch:probe:redcraft-consistency:local -- \
+  --output .tmp/redcraft-consistency-review \
+  --samples 20
+
+```
+
+当前输出应显示 Pornmaster `readyForPublish=true`，Redcraft `runner=comfyui`、
+`readyForPublish=true`、`verificationStatus=manual_passed`、`consistencyRate=0.85`；
+同时 Redcraft 仍保持 `status=draft`、`enabled=false`、`rolloutPercent=0`，表示候选
+已验证但未导流。
+`launch:probe:redcraft-image:local` 应完成一个 `provider=pipeline` 的 generation job，
+并在 `.tmp/probe-blob/` 下写入 PNG；这只证明候选 runner 接入了统一生图链路，不替代
+20 张一致性样本门禁。`launch:probe:redcraft-consistency:local` 会走同一个 Redcraft
+gateway 生成 `manifest.json`、20 张样本和 `review.html`；当前样本包在
+`.tmp/redcraft-consistency-review`，并已补 `manual-review.json` 与 `contact-sheet.jpg`。
+本次人工 review 写回 `sampleCount=20`、`consistencyPassCount=17`、`consistencyRate=0.85`、
+`seedMode=locked`。
+probe 还会只读 safetensors header 并输出 `assetInspection`。Pornmaster 当前应显示
+`suggestedRuntime=sd_cpp_external_components`；Redcraft 当前应显示
+`hasComfyUiWorkflow=true`、`hasCheckpointLoaderSimple=true`、`hasFp8ScaleTensors=true`、
+`suggestedRuntime=comfyui_fp8_krea2_checkpoint`。这条证据是 Redcraft 不能被当成
+已跑通 sd.cpp 内置模板的门禁依据之一。
 
 `prisma.config.ts`（Prisma 7，**每个包一份**，路径相对各包根目录）：
 
@@ -305,7 +545,8 @@ export default defineConfig({
 | `main-web` | `packages/main` | `3000` | 公开产品页、角色、订阅、用户 API 和 BFF |
 | `admin-web` | `packages/admin` | `3001` | 内部管理后台和 `/api/v1/admin/*` 控制面 API |
 | `chat` | `packages/chat` | `CHAT_PORT` | chat API/SSE + worker，单实例本地文件写入 |
-| `gen-image` / `gen-video` | `packages/gen` | n/a | 异步生成 worker |
+| `gen-image` | `packages/gen` | n/a | 异步图片生成 worker（当前 2 实例） |
+| `gen-video` | `packages/gen` | n/a | V1.1 延后；`video_gen=false` 时不在 PM2 拓扑中启动 |
 | `gen-finalizer` / `main-event-consumer` | `packages/main` | n/a | 主站侧权威写回和事件消费 |
 
 运行命令：
@@ -315,6 +556,8 @@ bun run build
 bun run pm2:start
 bun run pm2:status
 ```
+
+当 `ecosystem.config.js` 增删进程后，确认 `pm2 list` 与目标拓扑一致，然后执行 `pm2 save`。否则 `pm2 resurrect` 或机器重启可能恢复旧 dump（例如已延后的 `gen-video` 或重复的 `main-web`）。
 
 Next.js 服务使用 `output: "standalone"`，构建后会把 `.next/static` 和 `public` 复制进 standalone 目录。PM2 通过 `scripts/start-next-standalone.cjs` 先加载对应 package 的 `.env`，再运行 standalone `server.js`，不使用 `next start`。
 

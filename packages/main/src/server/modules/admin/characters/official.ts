@@ -23,7 +23,11 @@ import {
   toInputJson,
   writeAudit,
 } from "@/server/modules/admin/service";
-import { moderateText } from "@/server/modules/ourdream/service";
+import {
+  characterVisualProfileCreateData,
+  createActiveCharacterVisualProfileVersion,
+  moderateText,
+} from "@/server/modules/ourdream/service";
 
 const OFFICIAL_PERMISSION = "content.official.write" as const;
 
@@ -93,6 +97,11 @@ async function syncTags(tx: Prisma.TransactionClient, characterId: string, tags:
 const officialInclude = {
   stats: true,
   tags: { include: { tag: true } },
+  visualProfiles: {
+    where: { status: "active" },
+    orderBy: { version: "desc" },
+    take: 1,
+  },
 } satisfies Prisma.CharacterInclude;
 
 function tagLabels(character: { tags: { tag: { label: string } }[] }): string[] {
@@ -115,15 +124,41 @@ export async function listOfficialCharacters(request: Request): Promise<Response
     select: {
       id: true,
       name: true,
+      age: true,
+      description: true,
       gender: true,
       style: true,
       status: true,
       visibility: true,
       createdAt: true,
+      tags: { include: { tag: true } },
       stats: { select: { chatsCount: true, likesCount: true, viewsCount: true } },
+      visualProfiles: {
+        where: { status: "active" },
+        orderBy: { version: "desc" },
+        take: 1,
+        select: {
+          id: true,
+          version: true,
+          status: true,
+          style: true,
+          anchorAssetIds: true,
+          referenceAssetIds: true,
+        },
+      },
     },
   });
-  return ok({ items });
+  return ok({
+    items: items.map((item) => {
+      const [visualProfile] = item.visualProfiles;
+      return {
+        ...item,
+        tags: item.tags.map((link) => link.tag.label),
+        visualProfiles: undefined,
+        visualProfile: visualProfile ?? null,
+      };
+    }),
+  });
 }
 
 export async function createOfficialCharacter(request: Request): Promise<Response> {
@@ -169,6 +204,22 @@ export async function createOfficialCharacter(request: Request): Promise<Respons
         advancedDetails: toInputJson(body.advancedDetails),
       },
     });
+    await tx.characterVisualProfile.create({
+      data: characterVisualProfileCreateData({
+        characterId: created.id,
+        version: 1,
+        status: "active",
+        style: body.style,
+        name: body.name,
+        age: body.age,
+        description: body.description,
+        gender: body.gender,
+        appearance: body.appearance as Prisma.JsonValue,
+        advancedDetails: body.advancedDetails as Prisma.JsonValue,
+        anchorAssetIds: [],
+        createdFrom: "admin_official_create",
+      }),
+    });
     await tx.characterStats.create({ data: { characterId: created.id } });
     await syncTags(tx, created.id, body.tags);
     return tx.character.findUniqueOrThrow({ where: { id: created.id }, include: officialInclude });
@@ -207,6 +258,14 @@ export async function updateOfficialCharacter(request: Request, id: string): Pro
 
   const textChanged =
     body.name !== undefined || body.description !== undefined || body.advancedDetails !== undefined;
+  const visualIdentityChanged =
+    body.name !== undefined ||
+    body.age !== undefined ||
+    body.gender !== undefined ||
+    body.style !== undefined ||
+    body.description !== undefined ||
+    body.appearance !== undefined ||
+    body.advancedDetails !== undefined;
 
   const data: Prisma.CharacterUpdateInput = {
     name: next.name,
@@ -244,6 +303,21 @@ export async function updateOfficialCharacter(request: Request, id: string): Pro
     await tx.character.update({ where: { id }, data });
     if (body.tags !== undefined) {
       await syncTags(tx, id, body.tags);
+    }
+    if (visualIdentityChanged) {
+      await createActiveCharacterVisualProfileVersion(tx, {
+        id,
+        name: next.name,
+        age: next.age,
+        description: next.description,
+        style: next.style,
+        gender: next.gender,
+        appearance: next.appearance as Prisma.JsonValue,
+        advancedDetails: next.advancedDetails as Prisma.JsonValue,
+        imageAssetId: existing.imageAssetId,
+      }, {
+        createdFrom: "admin_official_update",
+      });
     }
     return tx.character.findUniqueOrThrow({ where: { id }, include: officialInclude });
   });

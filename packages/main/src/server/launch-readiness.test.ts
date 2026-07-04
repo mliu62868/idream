@@ -22,6 +22,9 @@ import {
 } from "./launch-readiness";
 
 const now = new Date("2026-06-25T00:00:00.000Z");
+const externalModerationServiceUrl = "https://moderation.ourdream.internal";
+const externalModerationApiKey = "production-moderation-token-0123456789";
+const externalModerationProbeReport = ".tmp/launch-safety-probe.json";
 
 const productionEnv = {
   APP_ENV: "production",
@@ -35,6 +38,7 @@ const productionEnv = {
   REDIS_URL: "redis://redis.ourdream.internal:6379/0",
   BULLMQ_PREFIX: "idream:prod",
   CHAT_PROVIDER: "pipeline",
+  IMAGE_PROVIDER: "pipeline",
   CHAT_DATABASE_URL: "postgresql://chat_service:secret@db.ourdream.internal:5432/idream",
   CHAT_FS_ROOT: "/var/lib/idream/chat",
   CHAT_MODEL_PROVIDER: "pipeline",
@@ -42,9 +46,9 @@ const productionEnv = {
   CHAT_MODEL_NAME: "chat-default",
   CHAT_MODEL_API_KEY: "production-pipeline-token-0123456789",
   CHAT_MODEL_PROBE_REPORT: ".tmp/launch-chat-probe.json",
-  CHAT_MODERATION_PROVIDER: "safety-gateway",
+  CHAT_MODERATION_PROVIDER: "mock",
   VOICE_PROVIDER: "pipeline",
-  MODERATION_PROVIDER: "safety-gateway",
+  MODERATION_PROVIDER: "mock",
   PAYMENT_PROVIDER: "btcpay",
   BLOB_PROVIDER: "r2",
   AGE_VERIFICATION_PROVIDER: "gocam",
@@ -65,9 +69,6 @@ const productionEnv = {
   PIPELINE_IMAGE_PROBE_REPORT: ".tmp/launch-image-probe.json",
   VOICE_MODEL_PROBE_REPORT: ".tmp/launch-voice-probe.json",
   BLOB_STORAGE_PROBE_REPORT: ".tmp/launch-blob-probe.json",
-  MODERATION_SERVICE_URL: "https://moderation.ourdream.internal",
-  MODERATION_API_KEY: "production-moderation-token-0123456789",
-  SAFETY_GATEWAY_PROBE_REPORT: ".tmp/launch-safety-probe.json",
   BTCPAY_BASE_URL: "https://btcpay.ourdream.ai",
   BTCPAY_STORE_ID: "store-1",
   BTCPAY_API_KEY: "btcpay-api-key",
@@ -84,6 +85,17 @@ const productionEnv = {
   BLOB_ACCESS_KEY_ID: "blob-access-key",
   BLOB_SECRET_ACCESS_KEY: "blob-secret-key",
   SENTRY_DSN: "https://public@o123456.ingest.sentry.io/987654",
+} satisfies Record<string, string>;
+
+const externalModerationEnv = {
+  ...productionEnv,
+  CHAT_MODERATION_PROVIDER: "safety-gateway",
+  MODERATION_PROVIDER: "safety-gateway",
+  CHAT_MODERATION_SERVICE_URL: externalModerationServiceUrl,
+  CHAT_MODERATION_API_KEY: externalModerationApiKey,
+  MODERATION_SERVICE_URL: externalModerationServiceUrl,
+  MODERATION_API_KEY: externalModerationApiKey,
+  SAFETY_GATEWAY_PROBE_REPORT: externalModerationProbeReport,
 } satisfies Record<string, string>;
 
 function passingImageProbe(
@@ -150,7 +162,7 @@ function passingSafetyProbe(
     checkedAt: "2026-06-24T23:57:00.000Z",
     durationMs: 456,
     provider: productionEnv.MODERATION_PROVIDER,
-    serviceUrl: productionEnv.MODERATION_SERVICE_URL,
+    serviceUrl: externalModerationServiceUrl,
     targetType: "text",
     status: "passed",
     policyCode: null,
@@ -185,6 +197,36 @@ function passingChatServiceProbe(
     unsignedRequest: {
       ok: true,
       status: 401,
+      error: null,
+    },
+    conversation: {
+      ok: true,
+      attempted: true,
+      createSession: { ok: true, status: 201, error: null },
+      sendMessage: { ok: true, status: 202, error: null },
+      stream: {
+        ok: true,
+        status: 200,
+        sawStart: true,
+        sawDelta: true,
+        sawDone: true,
+        error: null,
+      },
+      getSession: {
+        ok: true,
+        status: 200,
+        assistantMessageId: "msg_probe_assistant",
+        assistantSent: true,
+        assistantStatus: "sent",
+        error: null,
+      },
+      noMemory: { ok: true, status: 202, error: null },
+      blockedInput: {
+        ok: true,
+        status: 202,
+        status_: "blocked",
+        error: null,
+      },
       error: null,
     },
     error: null,
@@ -294,6 +336,7 @@ function passingWebSurfaceProbe(
       bytes: 8_000,
       contentType: "text/html; charset=utf-8",
       protected: true,
+      protectedReason: "access_denied",
       nextErrorShell: false,
       error: null,
     },
@@ -320,6 +363,11 @@ function passingPaymentProbe(
     storeId: productionEnv.BTCPAY_STORE_ID,
     canViewStore: true,
     returnedStoreId: productionEnv.BTCPAY_STORE_ID,
+    canCreateInvoice: true,
+    invoiceId: "btcpay-probe-invoice-1",
+    checkoutUrl: "https://btcpay.ourdream.ai/i/btcpay-probe-invoice-1",
+    invoiceAmountCents: 1,
+    invoiceCurrency: "USD",
     error: null,
     ...override,
   };
@@ -347,6 +395,10 @@ function failedIds(report: LaunchReadinessReport) {
   return report.checks
     .filter((check) => check.status === "fail")
     .map((check) => check.id);
+}
+
+function checkById(report: LaunchReadinessReport, id: string) {
+  return report.checks.find((check) => check.id === id);
 }
 
 function envTemplateValues(relativePath: string) {
@@ -391,7 +443,6 @@ describe("launch readiness", () => {
         "age-verification-live-probe",
         "blob-storage-live-probe",
         "payment-provider-live-probe",
-        "safety-gateway-live-probe",
         "sentry-dsn",
       ]),
     );
@@ -425,6 +476,31 @@ describe("launch readiness", () => {
     expect(failedIds(report)).not.toContain("payment-provider-implementation");
     expect(failedIds(report)).not.toContain("moderation-provider-implementation");
     expect(failedIds(report)).not.toContain("blob-provider-implementation");
+    expect(failedIds(report)).not.toContain("gen-image-provider");
+  });
+
+  it("requires main-web image provider separately from the generation worker provider", () => {
+    const report = assessLaunchReadiness({
+      env: {
+        ...productionEnv,
+        IMAGE_PROVIDER: "mock",
+        GEN_IMAGE_PROVIDER: "pipeline",
+      },
+      imagePipelineProbe: passingImageProbe(),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      now,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(failedIds(report)).toContain("image-provider-non-mock");
     expect(failedIds(report)).not.toContain("gen-image-provider");
   });
 
@@ -569,12 +645,12 @@ describe("launch readiness", () => {
     );
   });
 
-  it("requires packages/chat to use a real model and moderation provider", () => {
+  it("requires packages/chat to use a real model and supported moderation provider", () => {
     const report = assessLaunchReadiness({
       env: {
         ...productionEnv,
         CHAT_MODEL_PROVIDER: "mock",
-        CHAT_MODERATION_PROVIDER: "mock",
+        CHAT_MODERATION_PROVIDER: "unsupported",
       },
       imagePipelineProbe: passingImageProbe(),
       ageVerificationProbe: passingAgeProbe(),
@@ -885,9 +961,9 @@ describe("launch readiness", () => {
     expect(failedIds(report)).toContain("blob-storage-live-probe");
   });
 
-  it("fails when production env is configured but the live safety gateway probe is missing", () => {
+  it("fails when production env opts into the live safety gateway but the probe is missing", () => {
     const report = assessLaunchReadiness({
-      env: productionEnv,
+      env: externalModerationEnv,
       imagePipelineProbe: passingImageProbe(),
       ageVerificationProbe: passingAgeProbe(),
       blobStorageProbe: passingBlobProbe(),
@@ -903,9 +979,9 @@ describe("launch readiness", () => {
     expect(failedIds(report)).toContain("safety-gateway-live-probe");
   });
 
-  it("fails when the live safety gateway probe blocks benign text", () => {
+  it("fails when the opted-in live safety gateway probe blocks benign text", () => {
     const report = assessLaunchReadiness({
-      env: productionEnv,
+      env: externalModerationEnv,
       imagePipelineProbe: passingImageProbe(),
       ageVerificationProbe: passingAgeProbe(),
       blobStorageProbe: passingBlobProbe(),
@@ -914,6 +990,8 @@ describe("launch readiness", () => {
       chatServiceProbe: passingChatServiceProbe(),
       paymentProviderProbe: passingPaymentProbe(),
       safetyGatewayProbe: passingSafetyProbe({
+        provider: externalModerationEnv.MODERATION_PROVIDER,
+        serviceUrl: externalModerationEnv.MODERATION_SERVICE_URL,
         ok: false,
         status: "blocked",
         policyCode: "false_positive",
@@ -926,9 +1004,9 @@ describe("launch readiness", () => {
     expect(failedIds(report)).toContain("safety-gateway-live-probe");
   });
 
-  it("fails when the live safety gateway probe is stale", () => {
+  it("fails when the opted-in live safety gateway probe is stale", () => {
     const report = assessLaunchReadiness({
-      env: productionEnv,
+      env: externalModerationEnv,
       imagePipelineProbe: passingImageProbe(),
       ageVerificationProbe: passingAgeProbe(),
       blobStorageProbe: passingBlobProbe(),
@@ -937,6 +1015,8 @@ describe("launch readiness", () => {
       chatServiceProbe: passingChatServiceProbe(),
       paymentProviderProbe: passingPaymentProbe(),
       safetyGatewayProbe: passingSafetyProbe({
+        provider: externalModerationEnv.MODERATION_PROVIDER,
+        serviceUrl: externalModerationEnv.MODERATION_SERVICE_URL,
         checkedAt: "2026-06-20T00:00:00.000Z",
       }),
       now,
@@ -1022,6 +1102,42 @@ describe("launch readiness", () => {
 
     expect(report.ok).toBe(false);
     expect(failedIds(report)).toContain("chat-service-live-probe");
+  });
+
+  it("fails when the live chat service probe skips the conversation smoke", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      imagePipelineProbe: passingImageProbe(),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe({
+        ok: false,
+        conversation: {
+          ok: false,
+          attempted: false,
+          createSession: { ok: false, error: "skipped" },
+          sendMessage: { ok: false, error: "skipped" },
+          stream: { ok: false, error: "skipped" },
+          getSession: { ok: false, error: "skipped" },
+          noMemory: { ok: false, error: "skipped" },
+          blockedInput: { ok: false, error: "skipped" },
+          error: "CHAT_SERVICE_PROBE_CHARACTER_ID not set",
+        },
+      }),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      now,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(failedIds(report)).toContain("chat-service-live-probe");
+    expect(
+      report.checks.find((check) => check.id === "chat-service-live-probe")?.message,
+    ).toContain("conversation smoke did not complete");
   });
 
   it("fails when the live chat service probe is stale", () => {
@@ -1253,6 +1369,76 @@ describe("launch readiness", () => {
     expect(failedIds(report)).toContain("payment-provider-live-probe");
   });
 
+  it("fails when the live payment provider probe has only legacy store-read evidence", () => {
+    const {
+      canCreateInvoice: _canCreateInvoice,
+      invoiceId: _invoiceId,
+      checkoutUrl: _checkoutUrl,
+      invoiceAmountCents: _invoiceAmountCents,
+      invoiceCurrency: _invoiceCurrency,
+      ...legacyProbe
+    } = passingPaymentProbe();
+
+    void _canCreateInvoice;
+    void _invoiceId;
+    void _checkoutUrl;
+    void _invoiceAmountCents;
+    void _invoiceCurrency;
+
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      imagePipelineProbe: passingImageProbe(),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: legacyProbe,
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      now,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(failedIds(report)).toContain("payment-provider-live-probe");
+    expect(checkById(report, "payment-provider-live-probe")?.message).toContain(
+      "probe could not create a BTCPay invoice",
+    );
+  });
+
+  it("fails when the live payment provider probe cannot create an invoice", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      imagePipelineProbe: passingImageProbe(),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: passingPaymentProbe({
+        ok: false,
+        canCreateInvoice: false,
+        invoiceId: null,
+        checkoutUrl: null,
+        error: {
+          code: "btcpay_invoice_create_failed",
+          message: "forbidden",
+        },
+      }),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      now,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(failedIds(report)).toContain("payment-provider-live-probe");
+    expect(checkById(report, "payment-provider-live-probe")?.message).toContain(
+      "probe could not create a BTCPay invoice",
+    );
+  });
+
   it("fails when the live payment provider probe is stale", () => {
     const report = assessLaunchReadiness({
       env: productionEnv,
@@ -1442,6 +1628,7 @@ describe("launch readiness", () => {
           bytes: 8_000,
           contentType: "text/html; charset=utf-8",
           protected: false,
+          protectedReason: null,
           nextErrorShell: false,
           error: "admin content was public",
         },
@@ -1698,8 +1885,6 @@ describe("launch readiness", () => {
       "CHAT_MODEL_NAME",
       "CHAT_MODEL_API_KEY",
       "CHAT_MODERATION_PROVIDER",
-      "CHAT_MODERATION_SERVICE_URL",
-      "CHAT_MODERATION_API_KEY",
       "CHAT_MODERATION_TIMEOUT_MS",
     ]].filter((key) => !chatKeys.has(key))).toEqual([]);
     expect([...[
@@ -1711,13 +1896,19 @@ describe("launch readiness", () => {
       "PIPELINE_API_TOKEN",
       "PIPELINE_IMAGE_MODEL_DEFAULT",
       "PIPELINE_VIDEO_MODEL_DEFAULT",
-      "MODERATION_SERVICE_URL",
-      "MODERATION_API_KEY",
       "GEN_BLOB_PROVIDER",
       "BLOB_ENDPOINT",
       "BLOB_BUCKET",
       "BLOB_ACCESS_KEY_ID",
       "BLOB_SECRET_ACCESS_KEY",
     ]].filter((key) => !genKeys.has(key))).toEqual([]);
+  });
+
+  it("keeps deferred video disabled in production templates", () => {
+    const mainValues = envTemplateValues("../../.env.production.example");
+    const genValues = envTemplateValues("../../../gen/.env.production.example");
+
+    expect(mainValues.GEN_VIDEO_PROVIDER).toBe("mock");
+    expect(genValues.GEN_VIDEO_PROVIDER).toBe("mock");
   });
 });

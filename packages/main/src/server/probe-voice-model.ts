@@ -197,9 +197,23 @@ function createVoiceModel(input: {
     baseUrl: requireValue("PIPELINE_VOICE_API_URL or PIPELINE_API_URL", input.baseUrl),
     apiKey: process.env.PIPELINE_VOICE_API_TOKEN ?? process.env.PIPELINE_API_TOKEN,
     model: requireValue("PIPELINE_VOICE_MODEL_DEFAULT", input.model),
-    timeoutMs: Number.parseInt(process.env.PIPELINE_TIMEOUT_MS ?? "60000", 10),
+    sendInstructions: process.env.PIPELINE_VOICE_SEND_INSTRUCTIONS === "true",
+    maxInputCharsPerRequest: readIntEnv("PIPELINE_VOICE_CHUNK_CHARS", 0),
+    maxInputChars: readIntEnv("PIPELINE_VOICE_MAX_INPUT_CHARS", 900),
+    timeoutMs: readIntEnv(
+      "PIPELINE_VOICE_TIMEOUT_MS",
+      readIntEnv("PIPELINE_TIMEOUT_MS", 120_000, 250),
+      250,
+    ),
     blob: input.blob,
   });
+}
+
+function readIntEnv(name: string, fallback: number, min = 0) {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= min ? parsed : fallback;
 }
 
 function requireValue(name: string, value: string | null | undefined) {
@@ -212,7 +226,10 @@ function hasText(value: string | null | undefined) {
 }
 
 function defaultVoiceForModel(model: string | null) {
-  return model?.toLowerCase().includes("qwen3-tts") ? "serena" : "default";
+  const normalized = model?.toLowerCase() ?? "";
+  if (normalized.includes("qwen3-tts")) return "serena";
+  if (normalized.includes("kokoro")) return "af_heart";
+  return "default";
 }
 
 function resolveWorkspacePath(filePath: string) {

@@ -189,6 +189,70 @@ test("flow 2: signup through the UI creates an authenticated session", async ({ 
   expect(body.data.dreamcoins.balance).toBe(250);
 });
 
+test("auth UI handles invalid login, duplicate signup recovery, logout, returning login, and authed redirect", async ({
+  page,
+}) => {
+  const email = uniqueEmail("auth-returning");
+  const generateTarget = "/generate?characterId=melissa-burke";
+  await page.request.post("/api/v1/age-gate/accept", { data: { sourcePath: "/" } });
+
+  await page.goto("/login");
+  await page.getByLabel("Email").fill(email);
+  await page.getByLabel("Password").fill("wrong-password");
+  await page.getByRole("button", { name: "Login" }).click();
+  await expect(page.getByText("Invalid email or password")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Contact Help Desk" })).toHaveAttribute(
+    "href",
+    "/helpdesk",
+  );
+  await expect(page).toHaveURL(/\/login$/);
+
+  await page.goto("/signup");
+  await page.getByLabel("Display name").fill("E2E Returning User");
+  await page.getByLabel("Email").fill(email);
+  await page.getByLabel("Password").fill("password123");
+  await page.getByRole("button", { name: "Join Free" }).click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
+
+  let me = await page.request.get("/api/v1/me");
+  let body = await me.json();
+  expect(body.data.user?.email).toBe(email);
+
+  await page.getByRole("button", { name: "Log out" }).click();
+  await expect(page.getByRole("link", { name: "Login" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Join Free" })).toBeVisible();
+  me = await page.request.get("/api/v1/me");
+  body = await me.json();
+  expect(body.data.user).toBeNull();
+
+  await page.goto(`/signup?next=${encodeURIComponent(generateTarget)}`);
+  await page.getByLabel("Display name").fill("E2E Returning User");
+  await page.getByLabel("Email").fill(email);
+  await page.getByLabel("Password").fill("password123");
+  await page.getByRole("button", { name: "Join Free" }).click();
+  await expect(page.getByText("Email already registered")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Log in instead" })).toHaveAttribute(
+    "href",
+    `/login?next=${encodeURIComponent(generateTarget)}`,
+  );
+
+  await page.getByRole("link", { name: "Log in instead" }).click();
+  await page.getByLabel("Email").fill(email);
+  await page.getByLabel("Password").fill("password123");
+  await page.getByRole("button", { name: "Login" }).click();
+  await expect(page).toHaveURL(/\/generate\?characterId=melissa-burke$/);
+  await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
+
+  me = await page.request.get("/api/v1/me");
+  body = await me.json();
+  expect(body.data.user?.email).toBe(email);
+
+  await page.goto("/login?already=1");
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByRole("heading", { name: "Log in to Ourdream" })).toHaveCount(0);
+});
+
 test("flow 3: chat session persists through the real server", async ({ page }) => {
   const ctx = page.request;
   const email = uniqueEmail("chat");

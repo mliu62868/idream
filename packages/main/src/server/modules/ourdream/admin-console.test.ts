@@ -1,4 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
 import {
   api,
@@ -32,6 +36,13 @@ async function setupActor(
   return id;
 }
 
+async function writeSafetensorsMetadata(filePath: string, metadata: Record<string, string>) {
+  const header = Buffer.from(JSON.stringify({ __metadata__: metadata }), "utf8");
+  const length = Buffer.alloc(8);
+  length.writeBigUInt64LE(BigInt(header.length), 0);
+  await writeFile(filePath, Buffer.concat([length, header]));
+}
+
 describe("admin permission keys", () => {
   it("authorizes by permission key instead of coarse admin checks", async () => {
     const admin = await setupActor("admin", "matrix");
@@ -53,7 +64,286 @@ describe("admin permission keys", () => {
   });
 });
 
+describe("admin support request inbox", () => {
+  it("lets support staff triage durable help desk requests", async () => {
+    const requester = `${P}support-inbox-user`;
+    const support = await setupActor("support", "inbox");
+    const analyst = await setupActor("analyst", "inbox");
+    await createUser({ id: requester });
+
+    const submitted = await api("POST", "support/requests", {
+      userId: requester,
+      ageGate: true,
+      body: {
+        category: "generation",
+        subject: "Generation queue stuck",
+        description: "The generation stayed queued after a browser refresh.",
+        diagnosticConsent: true,
+        sourcePath: "/helpdesk",
+      },
+    });
+    expectOk(submitted, 201);
+
+    const list = await api("GET", "admin/support/requests", {
+      userId: support,
+      role: "support",
+      query: { status: "received" },
+    });
+    expectOk(list);
+    expect(list.data.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ticketId: submitted.data.request.ticketId,
+          userId: requester,
+          userEmail: `${requester}@test.local`,
+          category: "generation",
+          status: "received",
+        }),
+      ]),
+    );
+
+    const patched = await api("PATCH", `admin/support/requests/${submitted.data.request.ticketId}`, {
+      userId: support,
+      role: "support",
+      body: {
+        assignedToId: support,
+        priority: 2,
+        status: "resolved",
+        resolutionNotes: "Confirmed queue recovered and replied to the user.",
+        reason: "Resolved support smoke request",
+        confirmation: submitted.data.request.ticketId,
+      },
+    });
+    expectOk(patched);
+    expect(patched.data.request).toMatchObject({
+      assignedToId: support,
+      priority: 2,
+      resolutionNotes: "Confirmed queue recovered and replied to the user.",
+      status: "resolved",
+      ticketId: submitted.data.request.ticketId,
+    });
+    expect(patched.data.request.resolvedAt).toEqual(expect.any(String));
+
+    const defaultList = await api("GET", "admin/support/requests", {
+      userId: support,
+      role: "support",
+    });
+    expectOk(defaultList);
+    expect(defaultList.data.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ticketId: submitted.data.request.ticketId,
+          status: "resolved",
+        }),
+      ]),
+    );
+
+    const overdueTicketId = `${P}SUP-OVERDUE`;
+    await prisma.supportRequest.create({
+      data: {
+        ticketId: overdueTicketId,
+        userId: requester,
+        category: "generation",
+        subject: "Old generation ticket",
+        description: "This ticket should breach the support SLA.",
+        priority: 2,
+        status: "open",
+        createdAt: new Date(Date.now() - 36 * 60 * 60 * 1000),
+      },
+    });
+    const freshTicketId = `${P}SUP-FRESH`;
+    await prisma.supportRequest.create({
+      data: {
+        ticketId: freshTicketId,
+        userId: requester,
+        category: "generation",
+        subject: "Fresh generation ticket",
+        description: "This ticket should remain inside the support SLA.",
+        priority: 3,
+        status: "open",
+      },
+    });
+    const overdueList = await api("GET", "admin/support/requests", {
+      userId: support,
+      role: "support",
+      query: { status: "active", sla: "overdue" },
+    });
+    expectOk(overdueList);
+    expect(overdueList.data.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          slaState: "overdue",
+          ticketId: overdueTicketId,
+        }),
+      ]),
+    );
+    expect((overdueList.data.items as Array<{ ticketId: string }>).map((item) => item.ticketId)).not.toContain(
+      freshTicketId,
+    );
+
+    const escalated = await api("POST", `admin/support/requests/${overdueTicketId}/escalate`, {
+      userId: support,
+      role: "support",
+      body: {
+        reason: "SLA breach needs support lead attention",
+        confirmation: overdueTicketId,
+      },
+    });
+    expectOk(escalated);
+    expect(escalated.data.request).toMatchObject({
+      assignedToId: support,
+      priority: 1,
+      slaEscalatedAt: expect.any(String),
+      slaEscalatedById: support,
+      slaEscalationReason: "SLA breach needs support lead attention",
+      ticketId: overdueTicketId,
+    });
+    expectError(
+      await api("POST", `admin/support/requests/${freshTicketId}/escalate`, {
+        userId: support,
+        role: "support",
+        body: {
+          reason: "Fresh ticket should not escalate",
+          confirmation: freshTicketId,
+        },
+      }),
+      400,
+      "bad_request",
+    );
+
+    const audit = await prisma.adminAuditLog.findFirst({
+      where: {
+        actorId: support,
+        action: "support.request.update",
+        targetId: submitted.data.request.ticketId,
+      },
+    });
+    expect(audit).not.toBeNull();
+    const escalationAudit = await prisma.adminAuditLog.findFirst({
+      where: {
+        actorId: support,
+        action: "support.request.escalate",
+        targetId: overdueTicketId,
+      },
+    });
+    expect(escalationAudit).not.toBeNull();
+
+    expectError(
+      await api("GET", "admin/support/requests", { userId: analyst, role: "analyst" }),
+      403,
+    );
+  });
+});
+
+describe("admin appeal queue", () => {
+  it("lets reviewers resolve appeals and restores supported overturned targets", async () => {
+    const userId = `${P}appeal-user`;
+    const charId = `${P}appeal-char`;
+    const admin = await setupActor("admin", "appeal");
+    const support = await setupActor("support", "appeal");
+    await createUser({ id: userId });
+    await createCharacter({ id: charId, creatorId: userId, visibility: "public", status: "removed" });
+    const appeal = await prisma.appeal.create({
+      data: {
+        userId,
+        targetType: "character",
+        targetId: charId,
+        appealText: "Please review the character decision again.",
+      },
+    });
+
+    const queue = await api("GET", "admin/moderation/queue", {
+      userId: admin,
+      role: "admin",
+    });
+    expectOk(queue);
+    expect(queue.data.appeals).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: appeal.id, status: "open", targetId: charId }),
+      ]),
+    );
+
+    expectError(
+      await api("PATCH", `admin/moderation/appeals/${appeal.id}`, {
+        userId: support,
+        role: "support",
+        body: {
+          outcome: "overturned",
+          reason: "Support cannot resolve appeals",
+          confirmation: "OVERTURN",
+        },
+      }),
+      403,
+    );
+
+    const resolved = await api("PATCH", `admin/moderation/appeals/${appeal.id}`, {
+      userId: admin,
+      role: "admin",
+      body: {
+        outcome: "overturned",
+        notes: "The original decision is overturned.",
+        reason: "Appeal accepted after reviewer check",
+        confirmation: "OVERTURN",
+      },
+    });
+    expectOk(resolved);
+    expect(resolved.data.appeal).toMatchObject({
+      id: appeal.id,
+      status: "overturned",
+      reviewerId: admin,
+      targetId: charId,
+    });
+    expect(resolved.data.appeal.resolvedAt).toEqual(expect.any(String));
+    expect(resolved.data.target).toMatchObject({ targetRestored: true });
+
+    const character = await prisma.character.findUniqueOrThrow({ where: { id: charId } });
+    expect(character.status).toBe("approved");
+
+    const afterQueue = await api("GET", "admin/moderation/queue", {
+      userId: admin,
+      role: "admin",
+    });
+    expectOk(afterQueue);
+    expect((afterQueue.data.appeals as Array<{ id: string }>).map((item) => item.id)).not.toContain(
+      appeal.id,
+    );
+
+    const audit = await prisma.adminAuditLog.findFirst({
+      where: { actorId: admin, action: "safety.appeal.decision", targetId: appeal.id },
+    });
+    expect(audit).not.toBeNull();
+    expect(audit?.after).toMatchObject({
+      status: "overturned",
+      targetRestored: true,
+    });
+
+    expectError(
+      await api("PATCH", `admin/moderation/appeals/${appeal.id}`, {
+        userId: admin,
+        role: "admin",
+        body: {
+          outcome: "upheld",
+          reason: "Duplicate terminal appeal decision",
+          confirmation: "UPHOLD",
+        },
+      }),
+      409,
+    );
+  });
+});
+
 describe("generation config control plane", () => {
+  const previousModelDiagnostics = process.env.ADMIN_MODEL_DIAGNOSTICS_ENABLED;
+
+  beforeAll(() => {
+    process.env.ADMIN_MODEL_DIAGNOSTICS_ENABLED = "true";
+  });
+
+  afterAll(() => {
+    if (previousModelDiagnostics === undefined) delete process.env.ADMIN_MODEL_DIAGNOSTICS_ENABLED;
+    else process.env.ADMIN_MODEL_DIAGNOSTICS_ENABLED = previousModelDiagnostics;
+  });
+
   it("returns active generation config and stamps profile/template versions onto jobs", async () => {
     const userId = `${P}gen-user`;
     const characterId = `${P}gen-char`;
@@ -140,10 +430,11 @@ describe("generation config control plane", () => {
         runner: "sd_cpp",
         pipelineModel: "mock-image-v2",
         allowedOrientations: ["1:1", "4:5"],
-        dryRunSummary: { sampleCount: 2, successRate: 1 },
+        dryRunSummary: { sampleCount: 20, successRate: 1, consistencyRate: 0.9 },
       },
     });
     expectOk(draft);
+    expect(draft.data.profile).toMatchObject({ enabled: false, rolloutPercent: 0, status: "draft" });
 
     const publish = await api("POST", `admin/generation/model-profiles/${draft.data.profile.id}/publish`, {
       userId: admin,
@@ -154,7 +445,7 @@ describe("generation config control plane", () => {
       },
     });
     expectOk(publish);
-    expect(publish.data.profile).toMatchObject({ status: "active", version: 2 });
+    expect(publish.data.profile).toMatchObject({ status: "active", enabled: true, rolloutPercent: 100, version: 2 });
     expect(await prisma.generationModelProfile.findUnique({ where: { id: `${P}profile-v1` } })).toMatchObject({
       status: "archived",
     });
@@ -178,6 +469,262 @@ describe("generation config control plane", () => {
         "generation.profile.rollback",
       ]),
     );
+  });
+
+  it("rejects model profile publish when visual verification failed", async () => {
+    const admin = await setupActor("admin", "profile-publish-gate");
+    const draft = await prisma.generationModelProfile.create({
+      data: {
+        id: `${P}profile-bad-visual`,
+        profileKey: `${P}profile-bad-visual`,
+        label: "Bad visual candidate",
+        mode: "image",
+        runner: "sd_cpp",
+        pipelineModel: "bad-visual-candidate",
+        allowedOrientations: ["1:1"],
+        version: 1,
+        status: "draft",
+        runnerConfig: {
+          apiModelId: "bad-visual-candidate",
+          verificationStatus: "failed_local_probe_pure_white_output",
+        },
+        dryRunSummary: {
+          sampleCount: 4,
+          successRate: 0,
+          failureMode: "pure_white_output",
+        },
+      },
+    });
+
+    const publish = await api("POST", `admin/generation/model-profiles/${draft.id}/publish`, {
+      userId: admin,
+      role: "admin",
+      body: {
+        reason: "publish bad candidate",
+        confirmation: "PUBLISH",
+      },
+    });
+
+    expectError(publish, 400, "bad_request");
+    expect(publish.error?.message).toMatch(/verification status|failureMode/);
+    await expect(prisma.generationModelProfile.findUnique({ where: { id: draft.id } })).resolves.toMatchObject({
+      status: "draft",
+    });
+  });
+
+  it("rejects image model profile publish without 20-sample consistency review", async () => {
+    const admin = await setupActor("admin", "profile-publish-consistency-gate");
+    const draft = await prisma.generationModelProfile.create({
+      data: {
+        id: `${P}profile-small-sample`,
+        profileKey: `${P}profile-small-sample`,
+        label: "Small sample candidate",
+        mode: "image",
+        runner: "sd_cpp",
+        pipelineModel: "small-sample-candidate",
+        allowedOrientations: ["1:1"],
+        version: 1,
+        status: "draft",
+        runnerConfig: {
+          apiModelId: "small-sample-candidate",
+          verificationStatus: "manual_passed",
+        },
+        dryRunSummary: {
+          sampleCount: 6,
+          successRate: 1,
+          consistencyRate: 1,
+        },
+      },
+    });
+
+    const smallSample = await api("POST", `admin/generation/model-profiles/${draft.id}/publish`, {
+      userId: admin,
+      role: "admin",
+      body: {
+        reason: "publish too early",
+        confirmation: "PUBLISH",
+      },
+    });
+    expectError(smallSample, 400, "bad_request");
+    expect(smallSample.error?.message).toContain("20 dry-run samples");
+
+    await prisma.generationModelProfile.update({
+      where: { id: draft.id },
+      data: {
+        dryRunSummary: {
+          sampleCount: 20,
+          successRate: 1,
+        },
+      },
+    });
+    const missingConsistency = await api("POST", `admin/generation/model-profiles/${draft.id}/publish`, {
+      userId: admin,
+      role: "admin",
+      body: {
+        reason: "publish without consistency",
+        confirmation: "PUBLISH",
+      },
+    });
+    expectError(missingConsistency, 400, "bad_request");
+    expect(missingConsistency.error?.message).toContain("consistencyRate");
+  });
+
+  it("rejects managed image model publish without an explicit passed verification status", async () => {
+    const admin = await setupActor("admin", "profile-publish-missing-verification");
+    const draft = await prisma.generationModelProfile.create({
+      data: {
+        id: `${P}profile-managed-no-verification`,
+        profileKey: `${P}profile-managed-no-verification`,
+        label: "Managed model without verification",
+        mode: "image",
+        runner: "sd_cpp",
+        pipelineModel: "redcraftkrea2redmix_krea2edition",
+        sourceModelPath: "/models/checkpoints/redcraftKREA2RedMix_krea2Edition.safetensors",
+        allowedOrientations: ["1:1"],
+        version: 1,
+        status: "draft",
+        runnerConfig: {
+          apiModelId: "redcraftkrea2redmix_krea2edition",
+          diffusionModelPath: "/models/checkpoints/redcraftKREA2RedMix_krea2Edition.safetensors",
+        },
+        dryRunSummary: {
+          sampleCount: 20,
+          successRate: 1,
+          consistencyRate: 0.9,
+        },
+      },
+    });
+
+    const publish = await api("POST", `admin/generation/model-profiles/${draft.id}/publish`, {
+      userId: admin,
+      role: "admin",
+      body: {
+        reason: "try to publish without model verification",
+        confirmation: "PUBLISH",
+      },
+    });
+
+    expectError(publish, 400, "bad_request");
+    expect(publish.error?.message).toContain("verification status");
+  });
+
+  it("rejects image model publish when runtime components are still missing", async () => {
+    const admin = await setupActor("admin", "profile-publish-component-gate");
+    const draft = await prisma.generationModelProfile.create({
+      data: {
+        id: `${P}profile-missing-components`,
+        profileKey: `${P}profile-missing-components`,
+        label: "Missing runtime components",
+        mode: "image",
+        runner: "comfyui",
+        pipelineModel: "redcraft-krea2-comfyui",
+        sourceModelPath: "/models/checkpoints/redcraftKREA2RedMix_krea2Edition.safetensors",
+        allowedOrientations: ["1:1"],
+        version: 1,
+        status: "draft",
+        runnerConfig: {
+          apiModelId: "redcraft-krea2-comfyui",
+          modelPath: "/models/checkpoints/redcraftKREA2RedMix_krea2Edition.safetensors",
+          verificationStatus: "manual_passed",
+          componentStatus: {
+            comfyuiRuntime: "missing_comfyui_runtime",
+            krea2Workflow: "not_imported",
+          },
+        },
+        dryRunSummary: {
+          sampleCount: 20,
+          successRate: 1,
+          consistencyRate: 0.9,
+        },
+      },
+    });
+
+    const publish = await api("POST", `admin/generation/model-profiles/${draft.id}/publish`, {
+      userId: admin,
+      role: "admin",
+      body: {
+        reason: "try to publish missing components",
+        confirmation: "PUBLISH",
+      },
+    });
+
+    expectError(publish, 400, "bad_request");
+    expect(publish.error?.message).toContain("components");
+    await expect(prisma.generationModelProfile.findUnique({ where: { id: draft.id } })).resolves.toMatchObject({
+      status: "draft",
+    });
+  });
+
+  it("does not allow draft model profiles to be enabled without publish", async () => {
+    const admin = await setupActor("admin", "profile-enable-draft");
+    const draft = await api("POST", "admin/generation/model-profiles", {
+      userId: admin,
+      role: "admin",
+      body: {
+        profileKey: `${P}draft-enable-guard`,
+        label: "Draft enable guard",
+        mode: "image",
+        runner: "sd_cpp",
+        pipelineModel: "draft-enable-guard",
+        allowedOrientations: ["1:1"],
+        dryRunSummary: { sampleCount: 20, successRate: 1, consistencyRate: 0.9 },
+      },
+    });
+    expectOk(draft);
+    expect(draft.data.profile).toMatchObject({ enabled: false, rolloutPercent: 0, status: "draft" });
+
+    const patch = await api("PATCH", `admin/generation/model-profiles/${draft.data.profile.id}`, {
+      userId: admin,
+      role: "admin",
+      body: { enabled: true, reason: "try enable", confirmation: "ENABLE" },
+    });
+    expectError(patch, 400, "bad_request");
+  });
+
+  it("does not let manual consistency review override failed dry-run evidence", async () => {
+    const admin = await setupActor("admin", "profile-publish-merge-gate");
+    const draft = await prisma.generationModelProfile.create({
+      data: {
+        id: `${P}profile-failed-dry-run`,
+        profileKey: `${P}profile-failed-dry-run`,
+        label: "Failed dry-run candidate",
+        mode: "image",
+        runner: "sd_cpp",
+        pipelineModel: "failed-dry-run-candidate",
+        allowedOrientations: ["1:1"],
+        version: 1,
+        status: "draft",
+        runnerConfig: {
+          apiModelId: "failed-dry-run-candidate",
+          verificationStatus: "manual_passed",
+        },
+        dryRunSummary: {
+          sampleCount: 4,
+          successRate: 0,
+          failureMode: "pure_white_output",
+        },
+      },
+    });
+
+    const publish = await api("POST", `admin/generation/model-profiles/${draft.id}/publish`, {
+      userId: admin,
+      role: "admin",
+      body: {
+        reason: "try to override failed evidence",
+        confirmation: "PUBLISH",
+        dryRunSummary: {
+          sampleCount: 20,
+          successRate: 1,
+          consistencyRate: 1,
+        },
+      },
+    });
+
+    expectError(publish, 400, "bad_request");
+    expect(publish.error?.message).toContain("failureMode");
+    await expect(prisma.generationModelProfile.findUnique({ where: { id: draft.id } })).resolves.toMatchObject({
+      status: "draft",
+    });
   });
 
   it("only allows active model profiles to be disabled without editing config fields", async () => {
@@ -222,6 +769,863 @@ describe("generation config control plane", () => {
       enabled: false,
       pipelineModel: "mock-image",
     });
+  });
+
+  it("keeps manual model profile creation and config edits behind diagnostics", async () => {
+    const admin = await setupActor("admin", "profile-diagnostics-guard");
+    const previousDiagnostics = process.env.ADMIN_MODEL_DIAGNOSTICS_ENABLED;
+
+    try {
+      delete process.env.ADMIN_MODEL_DIAGNOSTICS_ENABLED;
+
+      const create = await api("POST", "admin/generation/model-profiles", {
+        userId: admin,
+        role: "admin",
+        body: {
+          profileKey: `${P}manual-create-hidden`,
+          label: "Manual create hidden",
+          mode: "image",
+          runner: "sd_cpp",
+          pipelineModel: "manual-create-hidden",
+          allowedOrientations: ["1:1"],
+          dryRunSummary: { sampleCount: 20, successRate: 1, consistencyRate: 0.9 },
+        },
+      });
+      expectError(create, 404, "not_found");
+
+      const profileId = `${P}profile-diagnostics-guard`;
+      await prisma.generationModelProfile.create({
+        data: {
+          id: profileId,
+          profileKey: `${P}profile-diagnostics-guard`,
+          label: "Diagnostics guard profile",
+          mode: "image",
+          runner: "sd_cpp",
+          pipelineModel: "mock-image",
+          modelFormat: "safetensors",
+          defaultWidth: 512,
+          defaultHeight: 640,
+          allowedOrientations: ["4:5"],
+          steps: 20,
+          sampler: "euler",
+          scheduler: "model_default",
+          cfgScale: 1,
+          costMultiplier: 1,
+          maxCount: 1,
+          concurrencyLimit: 1,
+          status: "active",
+          enabled: true,
+          rolloutPercent: 100,
+          version: 1,
+          dryRunSummary: { sampleCount: 20, successRate: 1, consistencyRate: 0.9 },
+          publishedAt: new Date(),
+        },
+      });
+
+      const configPatch = await api("PATCH", `admin/generation/model-profiles/${profileId}`, {
+        userId: admin,
+        role: "admin",
+        body: {
+          pipelineModel: "unexpected-model",
+          reason: "try config edit without diagnostics",
+          confirmation: "PATCH",
+        },
+      });
+      expectError(configPatch, 404, "not_found");
+
+      const disabled = await api("PATCH", `admin/generation/model-profiles/${profileId}`, {
+        userId: admin,
+        role: "admin",
+        body: {
+          enabled: false,
+          reason: "pause built-in profile",
+          confirmation: "DISABLE",
+        },
+      });
+      expectOk(disabled);
+      expect(await prisma.generationModelProfile.findUnique({ where: { id: profileId } })).toMatchObject({
+        enabled: false,
+        pipelineModel: "mock-image",
+      });
+    } finally {
+      if (previousDiagnostics === undefined) delete process.env.ADMIN_MODEL_DIAGNOSTICS_ENABLED;
+      else process.env.ADMIN_MODEL_DIAGNOSTICS_ENABLED = previousDiagnostics;
+    }
+  });
+
+  it("accepts managed sd_cpp safetensors conversion and LoRA stack metadata", async () => {
+    const admin = await setupActor("admin", "sdcpp-profile");
+    const draft = await api("POST", "admin/generation/model-profiles", {
+      userId: admin,
+      role: "admin",
+      body: {
+        profileKey: `${P}sdcpp-managed`,
+        label: "Managed sdcpp import",
+        mode: "image",
+        runner: "sd_cpp",
+        pipelineModel: "managed-sdcpp",
+        sourceModelPath: "/models/checkpoints/managed.safetensors",
+        convertedModelPath: "/models/gguf/managed-q8_0.gguf",
+        modelFormat: "safetensors",
+        allowedOrientations: ["1:1"],
+        scheduler: "karras",
+        runnerConfig: {
+          apiModelId: "managed-sdcpp",
+          diffusionModelPath: "/models/checkpoints/managed.safetensors",
+          llmPath: "/models/text/qwen.gguf",
+          vaePath: "/models/vae/ae.safetensors",
+          llmVisionPath: "/models/text/qwen-vision.gguf",
+          backend: "vae=cpu",
+          conversion: {
+            enabled: true,
+            targetFormat: "gguf",
+            outputPath: "/models/gguf/managed-q8_0.gguf",
+            type: "q8_0",
+            sourceArg: "diffusion-model",
+          },
+          loraModelDir: "/models/loras",
+          loras: [{ key: "cinematic", path: "/models/loras/cinematic.safetensors", weight: 0.65 }],
+          capabilities: {
+            textToImage: true,
+            stableSeed: true,
+            referenceImages: false,
+            initImage: true,
+            lora: true,
+          },
+        },
+        dryRunSummary: { sampleCount: 1 },
+      },
+    });
+    expectOk(draft);
+    expect(draft.data.profile).toMatchObject({ scheduler: "karras" });
+    expect(draft.data.profile.runnerConfig).toMatchObject({
+      conversion: { enabled: true, outputPath: "/models/gguf/managed-q8_0.gguf" },
+      llmVisionPath: "/models/text/qwen-vision.gguf",
+      backend: "vae=cpu",
+      loras: [expect.objectContaining({ key: "cinematic", weight: 0.65 })],
+      capabilities: {
+        textToImage: true,
+        stableSeed: true,
+        referenceImages: false,
+        initImage: true,
+        lora: true,
+      },
+    });
+
+    const dryRun = await api("POST", `admin/generation/model-profiles/${draft.data.profile.id}/dry-run`, {
+      userId: admin,
+      role: "admin",
+      body: { reason: "verify managed import metadata", confirmation: "DRYRUN" },
+    });
+    expectOk(dryRun);
+    expect(dryRun.data.dryRun).toMatchObject({ status: "pass", total: 2 });
+
+    const invalid = await api("POST", "admin/generation/model-profiles", {
+      userId: admin,
+      role: "admin",
+      body: {
+        profileKey: `${P}sdcpp-invalid`,
+        label: "Invalid conversion",
+        mode: "image",
+        runner: "sd_cpp",
+        pipelineModel: "invalid-sdcpp",
+        sourceModelPath: "/models/checkpoints/invalid.ckpt",
+        convertedModelPath: "/models/gguf/invalid-q8_0.gguf",
+        modelFormat: "safetensors",
+        allowedOrientations: ["1:1"],
+        runnerConfig: {
+          conversion: {
+            enabled: true,
+            targetFormat: "gguf",
+            outputPath: "/models/gguf/invalid-q8_0.gguf",
+          },
+        },
+      },
+    });
+    expectError(invalid, 400, "bad_request");
+
+    const mismatchedApiModel = await api("POST", "admin/generation/model-profiles", {
+      userId: admin,
+      role: "admin",
+      body: {
+        profileKey: `${P}sdcpp-api-mismatch`,
+        label: "Invalid API model",
+        mode: "image",
+        runner: "sd_cpp",
+        pipelineModel: "redcraft-model",
+        sourceModelPath: "/models/checkpoints/redcraft.safetensors",
+        convertedModelPath: "/models/gguf/redcraft-q8_0.gguf",
+        modelFormat: "safetensors",
+        allowedOrientations: ["1:1"],
+        runnerConfig: {
+          apiModelId: "stale-default-model",
+          diffusionModelPath: "/models/checkpoints/redcraft.safetensors",
+        },
+      },
+    });
+    expectError(mismatchedApiModel, 400, "bad_request");
+
+    const invalidKrea2Components = await api("POST", "admin/generation/model-profiles", {
+      userId: admin,
+      role: "admin",
+      body: {
+        profileKey: `${P}sdcpp-krea2-wrong-components`,
+        label: "Invalid Krea2 components",
+        mode: "image",
+        runner: "sd_cpp",
+        pipelineModel: "redcraftkrea2redmix-krea2edition",
+        sourceModelPath: "/models/checkpoints/redcraftKREA2RedMix_krea2Edition.safetensors",
+        modelFormat: "safetensors",
+        allowedOrientations: ["1:1"],
+        runnerConfig: {
+          apiModelId: "redcraftkrea2redmix-krea2edition",
+          diffusionModelPath: "/models/checkpoints/redcraftKREA2RedMix_krea2Edition.safetensors",
+          llmPath: "/models/z-image-components/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+          vaePath: "/models/z-image-components/split_files/vae/ae.safetensors",
+        },
+      },
+    });
+    expectError(invalidKrea2Components, 400, "bad_request");
+
+    const invalidKrea2QwenImageVae = await api("POST", "admin/generation/model-profiles", {
+      userId: admin,
+      role: "admin",
+      body: {
+        profileKey: `${P}sdcpp-krea2-qwen-image-vae`,
+        label: "Invalid Krea2 qwen image VAE",
+        mode: "image",
+        runner: "sd_cpp",
+        pipelineModel: "redcraftkrea2redmix-krea2edition",
+        sourceModelPath: "/models/checkpoints/redcraftKREA2RedMix_krea2Edition.safetensors",
+        modelFormat: "safetensors",
+        allowedOrientations: ["1:1"],
+        runnerConfig: {
+          apiModelId: "redcraftkrea2redmix-krea2edition",
+          diffusionModelPath: "/models/checkpoints/redcraftKREA2RedMix_krea2Edition.safetensors",
+          llmPath: "/models/krea2/text_encoders/Qwen3VL-4B-Instruct-Q4_K_M.gguf",
+          vaePath: "/models/krea2/vae/qwen_image_vae.safetensors",
+        },
+      },
+    });
+    expectError(invalidKrea2QwenImageVae, 400, "bad_request");
+    expect(invalidKrea2QwenImageVae.error?.message).toContain("wan_2.1_vae");
+  });
+
+  it("fails dry-run for non-sdcpp candidates with missing runtime components", async () => {
+    const admin = await setupActor("admin", "comfyui-component-dry-run");
+    const draft = await api("POST", "admin/generation/model-profiles", {
+      userId: admin,
+      role: "admin",
+      body: {
+        profileKey: `${P}comfyui-missing-components`,
+        label: "ComfyUI missing components",
+        mode: "image",
+        runner: "comfyui",
+        pipelineModel: "comfyui-missing-components",
+        sourceModelPath: "/models/diffusion/darkbeast.safetensors",
+        modelFormat: "safetensors",
+        allowedOrientations: ["4:5"],
+        runnerConfig: {
+          apiModelId: "comfyui-missing-components",
+          verificationStatus: "missing_flux2_klein_reference_runtime_components",
+          componentStatus: {
+            flux2Vae: "available",
+            flux2BaseModel: "missing",
+            qwenTextEncoder: "missing",
+          },
+        },
+      },
+    });
+    expectOk(draft);
+
+    const dryRun = await api("POST", `admin/generation/model-profiles/${draft.data.profile.id}/dry-run`, {
+      userId: admin,
+      role: "admin",
+      body: { reason: "verify missing components", confirmation: "DRYRUN" },
+    });
+    expectOk(dryRun);
+    expect(dryRun.data.dryRun).toMatchObject({
+      status: "fail",
+      passed: 0,
+      total: 2,
+      sampleCount: 2,
+      successRate: 0,
+      failureMode: "missing_runtime_components",
+    });
+    expect(JSON.stringify(dryRun.data.dryRun.samples)).toContain("verificationStatus");
+    expect(JSON.stringify(dryRun.data.dryRun.samples)).toContain("flux2BaseModel");
+    await expect(
+      prisma.generationModelProfile.findUnique({ where: { id: draft.data.profile.id } }),
+    ).resolves.toMatchObject({
+      dryRunSummary: expect.objectContaining({
+        status: "fail",
+        failureMode: "missing_runtime_components",
+      }),
+    });
+  });
+
+  it("creates zero-cost admin test image jobs for draft model profiles", async () => {
+    const admin = await setupActor("admin", "profile-test-job");
+    const beforeBalance = await dreamcoinBalance(admin);
+    const draft = await api("POST", "admin/generation/model-profiles", {
+      userId: admin,
+      role: "admin",
+      body: {
+        profileKey: `${P}sdcpp-test-job`,
+        label: "sdcpp test job draft",
+        mode: "image",
+        runner: "sd_cpp",
+        pipelineModel: "managed-sdcpp-test",
+        sourceModelPath: "/models/checkpoints/test.safetensors",
+        convertedModelPath: "/models/gguf/test-q8_0.gguf",
+        modelFormat: "safetensors",
+        allowedOrientations: ["1:1", "4:5"],
+        runnerConfig: {
+          apiModelId: "managed-sdcpp-test",
+          diffusionModelPath: "/models/checkpoints/test.safetensors",
+          llmPath: "/models/text/qwen.gguf",
+          vaePath: "/models/vae/ae.safetensors",
+          llmVisionPath: "/models/text/qwen-vision.gguf",
+          backend: "vae=cpu",
+          conversion: {
+            enabled: true,
+            outputPath: "/models/gguf/test-q8_0.gguf",
+            sourceArg: "diffusion-model",
+          },
+          loras: [{ key: "portrait", path: "/models/loras/portrait.safetensors", weight: 0.5 }],
+        },
+      },
+    });
+    expectOk(draft);
+
+    const queued = await api("POST", `admin/generation/model-profiles/${draft.data.profile.id}/test-job`, {
+      userId: admin,
+      role: "admin",
+      body: {
+        prompt: "studio portrait, soft lighting",
+        orientation: "4:5",
+        outputCount: 1,
+        reason: "verify generated image effect",
+        confirmation: "TEST",
+      },
+    });
+    expectOk(queued, 202);
+    expect(queued.data.job).toMatchObject({
+      status: "queued",
+      costDreamcoins: 0,
+      profileId: `${P}sdcpp-test-job`,
+      profileVersion: draft.data.profile.version,
+    });
+
+    const stored = await prisma.generationJob.findUniqueOrThrow({
+      where: { id: queued.data.job.id },
+    });
+    expect(stored).toMatchObject({
+      userId: admin,
+      costDreamcoins: 0,
+      provider: "sd_cpp",
+      orientation: "4:5",
+    });
+    expect(stored.controls).toMatchObject({
+      adminTest: true,
+      width: 768,
+      height: 960,
+      sdcpp: expect.objectContaining({
+        apiModelId: "managed-sdcpp-test",
+        diffusionModelPath: "/models/checkpoints/test.safetensors",
+        vaePath: "/models/vae/ae.safetensors",
+        llmVisionPath: "/models/text/qwen-vision.gguf",
+        backend: "vae=cpu",
+        loras: [expect.objectContaining({ key: "portrait", weight: 0.5 })],
+      }),
+    });
+
+    await runQueuedGenerationJobs(8);
+    const completed = await prisma.generationJob.findUniqueOrThrow({
+      where: { id: queued.data.job.id },
+      include: { assets: true },
+    });
+    expect(completed.status).toBe("completed");
+    expect(completed.assets).toHaveLength(1);
+    expect(completed.assets[0]?.url).toContain("/user-content/");
+    expect(await dreamcoinBalance(admin)).toBe(beforeBalance);
+
+    const list = await api("GET", "admin/generation/jobs", {
+      userId: admin,
+      role: "admin",
+      query: { mode: "image", limit: 5 },
+    });
+    expectOk(list);
+    expect(list.data.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: queued.data.job.id,
+          assets: [expect.objectContaining({ id: completed.assets[0]?.id })],
+        }),
+      ]),
+    );
+  });
+
+  it("normalizes legacy sd_cpp apiModelId when queueing admin test jobs", async () => {
+    const admin = await setupActor("admin", "legacy-sdcpp-test-job");
+    const profile = await prisma.generationModelProfile.create({
+      data: {
+        profileKey: `${P}sdcpp-legacy-test-job`,
+        label: "Legacy sdcpp test job draft",
+        mode: "image",
+        runner: "sd_cpp",
+        pipelineModel: "legacy-redcraft-model",
+        sourceModelPath: "/models/checkpoints/legacy-redcraft.safetensors",
+        convertedModelPath: "/models/gguf/legacy-redcraft-q8_0.gguf",
+        modelFormat: "safetensors",
+        allowedOrientations: ["1:1"],
+        status: "draft",
+        runnerConfig: {
+          apiModelId: "stale-default-model",
+          diffusionModelPath: "/models/checkpoints/legacy-redcraft.safetensors",
+          llmPath: "/models/text/qwen.gguf",
+          vaePath: "/models/vae/ae.safetensors",
+        },
+      },
+    });
+
+    const queued = await api("POST", `admin/generation/model-profiles/${profile.id}/test-job`, {
+      userId: admin,
+      role: "admin",
+      body: {
+        prompt: "legacy profile smoke",
+        outputCount: 1,
+        reason: "verify legacy config normalization",
+        confirmation: "TEST",
+      },
+    });
+    expectOk(queued, 202);
+    const jobId = queued.data.job.id as string;
+    try {
+      const stored = await prisma.generationJob.findUniqueOrThrow({ where: { id: jobId } });
+      expect(stored.model).toBe("legacy-redcraft-model");
+      expect(stored.controls).toMatchObject({
+        sdcpp: expect.objectContaining({
+          apiModelId: "legacy-redcraft-model",
+          diffusionModelPath: "/models/checkpoints/legacy-redcraft.safetensors",
+        }),
+      });
+      const queueJob = await jobQueue.getByDedupeKey("ai.image.generate", `generation:${jobId}`);
+      expect(queueJob?.payload).toMatchObject({
+        model: "legacy-redcraft-model",
+        controls: {
+          sdcpp: expect.objectContaining({ apiModelId: "legacy-redcraft-model" }),
+        },
+      });
+    } finally {
+      await jobQueue.removeByDedupePrefix(`generation:${jobId}`, ["ai.image.generate"]);
+    }
+  });
+
+  it("runs content production batches through asset review and placement history", async () => {
+    const admin = await setupActor("admin", "content-production");
+    const support = await setupActor("support", "content-production");
+    const character = await createCharacter({
+      id: `${P}production-character`,
+      creatorId: admin,
+      name: "Production Character",
+      visibility: "public",
+      status: "approved",
+    });
+    await prisma.generationModelProfile.create({
+      data: {
+        id: `${P}production-profile-v1`,
+        profileKey: `${P}production-profile`,
+        label: "Production profile",
+        mode: "image",
+        runner: "pipeline",
+        pipelineModel: "mock-image",
+        allowedOrientations: ["1:1", "4:5"],
+        defaultWidth: 768,
+        defaultHeight: 1024,
+        version: 1,
+        status: "active",
+        dryRunSummary: { sampleCount: 1 },
+        publishedAt: new Date(),
+      },
+    });
+    await prisma.generationPromptTemplate.create({
+      data: {
+        id: `${P}production-recipe-v1`,
+        templateKey: `${P}production-recipe`,
+        label: "Production recipe",
+        mode: "image",
+        useCase: "character",
+        body: "Production character cover recipe.",
+        negativeBase: "low quality, watermark",
+        presetOrder: [],
+        safetyHints: {},
+        sampleMatrix: [],
+        version: 1,
+        status: "active",
+        dryRunSummary: { sampleCount: 1 },
+        publishedAt: new Date(),
+      },
+    });
+
+    const forbidden = await api("POST", "admin/content/production/batches", {
+      userId: support,
+      role: "support",
+      body: {
+        purpose: "character_chat",
+        targetType: "character",
+        targetId: character.id,
+        profileId: `${P}production-profile`,
+        recipeId: `${P}production-recipe`,
+        count: 1,
+      },
+    });
+    expectError(forbidden, 403);
+
+    const created = await api("POST", "admin/content/production/batches", {
+      userId: admin,
+      role: "admin",
+      body: {
+        title: `${P}production-batch`,
+        purpose: "character_chat",
+        targetType: "character",
+        targetId: character.id,
+        profileId: `${P}production-profile`,
+        recipeId: `${P}production-recipe`,
+        orientation: "4:5",
+        count: 2,
+        brief: "Two cover candidates",
+        reason: "seed production batch",
+      },
+    });
+    expectOk(created, 202);
+    expect(created.data.batch).toMatchObject({
+      title: `${P}production-batch`,
+      totalItems: 2,
+      estimatedCostDreamcoins: 0,
+      status: "queued",
+    });
+    const itemIds = created.data.batch.items.map((item: { id: string }) => item.id);
+    expect(itemIds).toHaveLength(2);
+
+    const jobs = await prisma.generationJob.findMany({
+      where: { sourceType: "content_production_item", sourceId: { in: itemIds } },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(jobs).toHaveLength(2);
+    expect(jobs[0]).toMatchObject({
+      userId: admin,
+      costDreamcoins: 0,
+      profileId: `${P}production-profile`,
+      promptTemplateId: `${P}production-recipe`,
+    });
+    expect(jobs[0]?.sourceMeta).toMatchObject({
+      batchId: created.data.batch.id,
+      purpose: "character_chat",
+      targetType: "character",
+      targetId: character.id,
+    });
+
+    await runQueuedGenerationJobs(12);
+
+    const detail = await api("GET", `admin/content/production/batches/${created.data.batch.id}`, {
+      userId: admin,
+      role: "admin",
+    });
+    expectOk(detail);
+    expect(detail.data.batch).toMatchObject({ completedItems: 2, status: "reviewing" });
+    const generatedItems = detail.data.batch.items as Array<{
+      id: string;
+      asset: { id: string } | null;
+      status: string;
+    }>;
+    expect(generatedItems.every((item) => item.status === "generated" && item.asset?.id)).toBe(true);
+
+    const approve = await api("POST", `admin/content/production/items/${generatedItems[0]?.id}/approve`, {
+      userId: admin,
+      role: "admin",
+      body: {
+        tags: ["cover", "winner"],
+        description: "Reusable sunset selfie for chat retrieval",
+        rating: 5,
+        reason: "best cover candidate",
+        confirmation: "APPROVE",
+      },
+    });
+    expectOk(approve);
+    const reject = await api("POST", `admin/content/production/items/${generatedItems[1]?.id}/reject`, {
+      userId: admin,
+      role: "admin",
+      body: {
+        tags: ["discard"],
+        reason: "weaker composition",
+        confirmation: "REJECT",
+      },
+    });
+    expectOk(reject);
+
+    const assetId = approve.data.item.asset.id as string;
+    const assets = await api("GET", "admin/content/assets", {
+      userId: admin,
+      role: "admin",
+      query: { status: "approved", purpose: "character_chat" },
+    });
+    expectOk(assets);
+    expect(assets.data.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: assetId,
+          platformStatus: "approved",
+          purpose: "character_chat",
+          tags: ["cover", "winner"],
+          description: "Reusable sunset selfie for chat retrieval",
+          sourceJob: expect.objectContaining({ sourceType: "content_production_item" }),
+        }),
+      ]),
+    );
+
+    const placement = await api("POST", "admin/content/placements", {
+      userId: admin,
+      role: "admin",
+      body: {
+        mediaAssetId: assetId,
+        slot: "character_avatar",
+        targetType: "character",
+        targetId: character.id,
+        status: "published",
+        reason: "publish approved cover",
+      },
+    });
+    expectOk(placement);
+    expect(placement.data.placement).toMatchObject({
+      mediaAssetId: assetId,
+      slot: "character_avatar",
+      targetId: character.id,
+      status: "published",
+    });
+    await expect(prisma.character.findUnique({ where: { id: character.id } })).resolves.toMatchObject({
+      imageAssetId: assetId,
+    });
+
+    const audits = await prisma.adminAuditLog.findMany({
+      where: {
+        actorId: admin,
+        action: {
+          in: [
+            "content.production.batch.create",
+            "content.production.item.approve",
+            "content.production.item.reject",
+            "content.placement.publish",
+          ],
+        },
+      },
+    });
+    expect(audits.map((audit) => audit.action)).toEqual(
+      expect.arrayContaining([
+        "content.production.batch.create",
+        "content.production.item.approve",
+        "content.production.item.reject",
+        "content.placement.publish",
+      ]),
+    );
+  });
+
+  it("keeps model import diagnostics disabled by default", async () => {
+    const admin = await setupActor("admin", "model-import-disabled");
+    const previousDiagnostics = process.env.ADMIN_MODEL_DIAGNOSTICS_ENABLED;
+    try {
+      delete process.env.ADMIN_MODEL_DIAGNOSTICS_ENABLED;
+      const list = await api("GET", "admin/generation/model-imports", {
+        userId: admin,
+        role: "admin",
+      });
+      expectError(list, 404, "not_found");
+    } finally {
+      if (previousDiagnostics === undefined) delete process.env.ADMIN_MODEL_DIAGNOSTICS_ENABLED;
+      else process.env.ADMIN_MODEL_DIAGNOSTICS_ENABLED = previousDiagnostics;
+    }
+  });
+
+  it("registers local sdcpp model and LoRA assets for engineering diagnostics", async () => {
+    const admin = await setupActor("admin", "model-import");
+    const previousRoot = process.env.ADMIN_MODEL_LIBRARY_DIR;
+    const previousDiagnostics = process.env.ADMIN_MODEL_DIAGNOSTICS_ENABLED;
+    const root = await mkdtemp(path.join(os.tmpdir(), "idream-model-import-"));
+    const externalRoot = await mkdtemp(path.join(os.tmpdir(), "idream-model-external-"));
+    try {
+      process.env.ADMIN_MODEL_DIAGNOSTICS_ENABLED = "true";
+      process.env.ADMIN_MODEL_LIBRARY_DIR = root;
+      const modelPath = path.join(externalRoot, "Chrome Style.safetensors");
+      const krea2ModelPath = path.join(externalRoot, "genericKrea2Model.safetensors");
+      const redcraftComfyuiPath = path.join(externalRoot, "redcraftKREA2RedMix_krea2Edition.safetensors");
+      const loraPath = path.join(externalRoot, "cinematic.safetensors");
+      const modelDir = path.join(externalRoot, "model-batch");
+      const nestedModelDir = path.join(modelDir, "nested");
+      const directoryModelPath = path.join(modelDir, "batch-main.gguf");
+      const nestedDirectoryModelPath = path.join(nestedModelDir, "nested-main.safetensors");
+      await mkdir(nestedModelDir, { recursive: true });
+      await writeFile(modelPath, "model");
+      await writeFile(krea2ModelPath, "model");
+      await writeSafetensorsMetadata(redcraftComfyuiPath, {
+        workflow: "CheckpointLoaderSimple Krea2RedMix-10Steps-fp8-scaled-ComfyUI.safetensors",
+        prompt: "ComfyUI fp8 Krea2 smoke metadata",
+      });
+      await writeFile(loraPath, "lora");
+      await writeFile(directoryModelPath, "model");
+      await writeFile(nestedDirectoryModelPath, "model");
+      await writeFile(path.join(modelDir, "notes.txt"), "ignore");
+
+      const model = await api("POST", "admin/generation/model-imports/register", {
+        userId: admin,
+        role: "admin",
+        body: { kind: "model", path: modelPath, reason: "register local model" },
+      });
+      expectOk(model);
+      expect(model.data.asset).toMatchObject({
+        kind: "model",
+        format: "safetensors",
+        draftPatch: expect.objectContaining({
+          sourceModelPath: modelPath,
+          diffusionModelPath: modelPath,
+          convertedModelPath: path.join(root, "gguf", "chrome_style-q8_0.gguf"),
+          conversionEnabled: true,
+        }),
+      });
+
+      const krea2Model = await api("POST", "admin/generation/model-imports/register", {
+        userId: admin,
+        role: "admin",
+        body: { kind: "model", path: krea2ModelPath, reason: "register local krea2 model" },
+      });
+      expectOk(krea2Model);
+      expect(krea2Model.data.asset).toMatchObject({
+        kind: "model",
+        format: "safetensors",
+        draftPatch: expect.objectContaining({
+          runner: "sd_cpp",
+          sourceModelPath: krea2ModelPath,
+          diffusionModelPath: krea2ModelPath,
+          convertedModelPath: "",
+          conversionEnabled: false,
+          llmPath: expect.stringContaining("Qwen3VL-4B-Instruct-Q4_K_M.gguf"),
+          vaePath: expect.stringContaining("wan_2.1_vae.safetensors"),
+          backend: "vae=cpu",
+          steps: "10",
+          sampler: "er_sde",
+          scheduler: "simple",
+          cfgScale: "1",
+        }),
+      });
+
+      const redcraftComfyuiModel = await api("POST", "admin/generation/model-imports/register", {
+        userId: admin,
+        role: "admin",
+        body: { kind: "model", path: redcraftComfyuiPath, reason: "register local redcraft comfyui model" },
+      });
+      expectOk(redcraftComfyuiModel);
+      expect(redcraftComfyuiModel.data.asset).toMatchObject({
+        kind: "model",
+        format: "safetensors",
+        draftPatch: expect.objectContaining({
+          profileTemplate: "reference_identity_comfyui",
+          runner: "comfyui",
+          sourceModelPath: redcraftComfyuiPath,
+          diffusionModelPath: redcraftComfyuiPath,
+          convertedModelPath: "",
+          conversionEnabled: false,
+          steps: "10",
+          sampler: "er_sde",
+          scheduler: "simple",
+          cfgScale: "1",
+          runnerConfig: expect.objectContaining({
+            verificationStatus: "requires_comfyui_fp8_krea2_runtime",
+            assetFormat: "fp8_scaled_comfyui_checkpoint",
+          }),
+        }),
+      });
+
+      const lora = await api("POST", "admin/generation/model-imports/register", {
+        userId: admin,
+        role: "admin",
+        body: { kind: "lora", path: loraPath, reason: "register local lora" },
+      });
+      expectOk(lora);
+      expect(lora.data.asset.draftPatch).toMatchObject({
+        loraModelDir: externalRoot,
+        lora: expect.objectContaining({ key: "cinematic", path: loraPath, weight: 1 }),
+      });
+
+      const directoryImport = await api("POST", "admin/generation/model-imports/register", {
+        userId: admin,
+        role: "admin",
+        body: { kind: "model", path: modelDir, reason: "register model directory" },
+      });
+      expectOk(directoryImport);
+      expect(directoryImport.data.assets).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: directoryModelPath, kind: "model", format: "gguf" }),
+          expect.objectContaining({ path: nestedDirectoryModelPath, kind: "model", format: "safetensors" }),
+        ]),
+      );
+
+      const list = await api("GET", "admin/generation/model-imports", {
+        userId: admin,
+        role: "admin",
+      });
+      expectOk(list);
+      expect(list.data.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: modelPath, kind: "model" }),
+          expect.objectContaining({ path: krea2ModelPath, kind: "model" }),
+          expect.objectContaining({ path: loraPath, kind: "lora" }),
+          expect.objectContaining({ path: directoryModelPath, kind: "model" }),
+          expect.objectContaining({ path: nestedDirectoryModelPath, kind: "model" }),
+        ]),
+      );
+    } finally {
+      if (previousDiagnostics === undefined) delete process.env.ADMIN_MODEL_DIAGNOSTICS_ENABLED;
+      else process.env.ADMIN_MODEL_DIAGNOSTICS_ENABLED = previousDiagnostics;
+      if (previousRoot === undefined) delete process.env.ADMIN_MODEL_LIBRARY_DIR;
+      else process.env.ADMIN_MODEL_LIBRARY_DIR = previousRoot;
+      await rm(root, { recursive: true, force: true });
+      await rm(externalRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves relative admin model library paths from the repo root", async () => {
+    const admin = await setupActor("admin", "model-import-relative");
+    const previousRoot = process.env.ADMIN_MODEL_LIBRARY_DIR;
+    const previousRepoRoot = process.env.IDREAM_REPO_ROOT;
+    const previousDiagnostics = process.env.ADMIN_MODEL_DIAGNOSTICS_ENABLED;
+    const repoRoot = await mkdtemp(path.join(os.tmpdir(), "idream-model-import-repo-"));
+    try {
+      process.env.ADMIN_MODEL_DIAGNOSTICS_ENABLED = "true";
+      process.env.IDREAM_REPO_ROOT = repoRoot;
+      process.env.ADMIN_MODEL_LIBRARY_DIR = "relative-models";
+
+      const expectedRoot = path.join(repoRoot, "relative-models");
+      const modelPath = path.join(expectedRoot, "checkpoints", "relative.safetensors");
+      await mkdir(path.dirname(modelPath), { recursive: true });
+      await writeFile(modelPath, "model");
+
+      const list = await api("GET", "admin/generation/model-imports", {
+        userId: admin,
+        role: "admin",
+      });
+      expectOk(list);
+      expect(list.data.roots.root).toBe(expectedRoot);
+      expect(list.data.items).toEqual(
+        expect.arrayContaining([expect.objectContaining({ path: modelPath, kind: "model" })]),
+      );
+    } finally {
+      if (previousDiagnostics === undefined) delete process.env.ADMIN_MODEL_DIAGNOSTICS_ENABLED;
+      else process.env.ADMIN_MODEL_DIAGNOSTICS_ENABLED = previousDiagnostics;
+      if (previousRoot === undefined) delete process.env.ADMIN_MODEL_LIBRARY_DIR;
+      else process.env.ADMIN_MODEL_LIBRARY_DIR = previousRoot;
+      if (previousRepoRoot === undefined) delete process.env.IDREAM_REPO_ROOT;
+      else process.env.IDREAM_REPO_ROOT = previousRepoRoot;
+      await rm(repoRoot, { recursive: true, force: true });
+    }
   });
 
   it("publishes prompt templates with dry-run evidence and archives the previous active version", async () => {
@@ -1200,12 +2604,17 @@ describe("admin featured curation (F3)", () => {
     expect(put.data.characterIds).toEqual([cold]);
     expect(put.data.skipped).toContain(priv);
 
-    // Public feed: the featured cold char appears before the hotter one.
+    // Public feed: the featured public+approved character appears first; private picks are absent.
     const feed = await api("GET", "feed", { userId: user, role: "user", ageGate: true });
     expectOk(feed);
-    const ids: string[] = feed.data.items.map((i: { character: { id: string } }) => i.character.id);
+    const ids: string[] = (
+      feed.data.items as Array<{ type: string; character?: { id: string } }>
+    )
+      .filter((item) => item.type === "character")
+      .map((item) => item.character?.id)
+      .filter((id): id is string => Boolean(id));
     expect(ids[0]).toBe(cold);
-    expect(ids).toContain(hot);
+    expect(ids).not.toContain(priv);
   });
 });
 
@@ -1365,6 +2774,10 @@ describe("admin chat ops proxy (F6)", () => {
     const sessions = await api("GET", "admin/chat/sessions", { userId: admin, role: "admin" });
     expectOk(sessions);
     expect(Array.isArray(sessions.data.items)).toBe(true);
+
+    const usage = await api("GET", "admin/chat/usage", { userId: admin, role: "admin" });
+    expectOk(usage);
+    expect(Array.isArray(usage.data.items)).toBe(true);
   });
 });
 
@@ -1541,6 +2954,44 @@ describe("admin generation health + dry-run (T4)", () => {
     const refreshed = await prisma.generationModelProfile.findUnique({ where: { id: profile.id } });
     expect(refreshed?.dryRunSummary).not.toBeNull();
   });
+
+  it("preserves existing failureMode when writing a new dry-run summary", async () => {
+    const admin = await setupActor("admin", "genh-preserve-failure");
+    const profile = await prisma.generationModelProfile.create({
+      data: {
+        profileKey: `${P}genh-failure-profile`,
+        label: "Failure preserving profile",
+        pipelineModel: "test-model",
+        allowedOrientations: ["1:1"],
+        status: "draft",
+        dryRunSummary: {
+          source: "real_image_probe",
+          sampleCount: 1,
+          successRate: 0,
+          failureMode: "pure_white_output",
+        },
+      },
+    });
+
+    const dryRun = await api("POST", `admin/generation/model-profiles/${profile.id}/dry-run`, {
+      userId: admin,
+      role: "admin",
+      body: { reason: "pre-publish check", confirmation: "DRYRUN" },
+    });
+    expectOk(dryRun);
+    expect(dryRun.data.dryRun).toMatchObject({
+      status: "pass",
+      failureMode: "pure_white_output",
+    });
+    await expect(
+      prisma.generationModelProfile.findUnique({ where: { id: profile.id } }),
+    ).resolves.toMatchObject({
+      dryRunSummary: expect.objectContaining({
+        status: "pass",
+        failureMode: "pure_white_output",
+      }),
+    });
+  });
 });
 
 describe("admin dual-approval hard enforcement (T4)", () => {
@@ -1669,6 +3120,20 @@ describe("admin announcements (Phase 4)", () => {
       }),
       403,
     );
+    expectError(
+      await api("POST", "admin/announcements", {
+        userId: admin,
+        role: "admin",
+        body: {
+          title: "Unsafe link",
+          body: "bad protocol",
+          href: "javascript:alert(1)",
+          reason: "reject unsafe link",
+          confirmation: "ANNOUNCE",
+        },
+      }),
+      400,
+    );
 
     const created = await api("POST", "admin/announcements", {
       userId: admin,
@@ -1676,6 +3141,7 @@ describe("admin announcements (Phase 4)", () => {
       body: {
         title: "Launch sale",
         body: "50% off this week",
+        href: "https://help.ourdream.ai/",
         level: "promo",
         active: true,
         reason: "promo launch",
@@ -1691,7 +3157,10 @@ describe("admin announcements (Phase 4)", () => {
     // public read (no auth) includes the active one
     const pub = await api("GET", "announcements", {});
     expectOk(pub);
-    expect(pub.data.items.some((a: { id: string }) => a.id === id)).toBe(true);
+    const publicItem = pub.data.items.find((a: { id: string }) => a.id === id) as
+      | { href?: string }
+      | undefined;
+    expect(publicItem?.href).toBe("https://help.ourdream.ai/");
 
     // deactivate → public excludes
     expectOk(

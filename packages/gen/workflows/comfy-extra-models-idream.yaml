@@ -1,0 +1,10 @@
+idream_shared:
+  is_default: true
+  base_path: /Users/kk/ComfyUI-Shared
+  checkpoints: models/checkpoints
+  diffusion_models: models/diffusion_models
+  text_encoders: models/text_encoders
+  vae: models/vae
+  loras: models/loras
+  clip: models/clip
+  clip_vision: models/clip_vision

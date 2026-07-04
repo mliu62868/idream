@@ -23,7 +23,7 @@ export function startWorker(): { close: () => Promise<void> } {
 
     runWorker(CHAT_QUEUES.memoryExtract, async (job) => {
       await processMemoryExtract(job.payload as MemoryExtractPayload);
-    }),
+    }, { concurrency: 1 }),
 
     runWorker(CHAT_QUEUES.outboxDeliver, async () => {
       await deliverPendingOutbox();

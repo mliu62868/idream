@@ -102,17 +102,27 @@ export async function profileDryRun(request: Request, id: string): Promise<Respo
       if (profile.maxCount < 1) issues.push("maxCount < 1");
       if (profile.steps < 1) issues.push("steps < 1");
       if (!orientations.length) issues.push("no allowedOrientations");
+      issues.push(...runnerConfigIssues(profile.runnerConfig));
+      issues.push(...sdcppProfileIssues(profile));
       samples.push({ useCase, orientation, ok: issues.length === 0, issues });
     }
   }
   const passed = samples.filter((s) => s.ok).length;
+  const status = passed === samples.length ? "pass" : "fail";
+  const previousSummary = jsonRecord(profile.dryRunSummary);
+  const previousFailureMode = stringField(previousSummary, "failureMode");
+  const failureMode = previousFailureMode ?? (status === "fail" ? failureModeForSamples(samples) : undefined);
   const summary = {
+    ...previousSummary,
     source: "admin_console_dry_run",
     ranBy: actor.id,
     samples,
     passed,
     total: samples.length,
-    status: passed === samples.length ? "pass" : "fail",
+    sampleCount: samples.length,
+    successRate: samples.length > 0 ? passed / samples.length : 0,
+    status,
+    ...(failureMode ? { failureMode } : {}),
   };
   await prisma.generationModelProfile.update({
     where: { id },
@@ -126,4 +136,103 @@ export async function profileDryRun(request: Request, id: string): Promise<Respo
     after: { status: summary.status, passed, total: samples.length },
   });
   return ok({ dryRun: summary });
+}
+
+function failureModeForSamples(samples: Array<{ issues: string[] }>) {
+  const issues = samples.flatMap((sample) => sample.issues).join(" ").toLowerCase();
+  if (issues.includes("missing") || issues.includes("not_imported")) return "missing_runtime_components";
+  if (issues.includes("unsupported")) return "unsupported_runtime_components";
+  if (issues.includes("failed")) return "failed_runtime_components";
+  return "configuration_failed";
+}
+
+function runnerConfigIssues(runnerConfig: unknown) {
+  const config = isRecord(runnerConfig) ? runnerConfig : {};
+  const issues: string[] = [];
+  const verificationStatus = stringField(config, "verificationStatus");
+  if (verificationStatus && !["passed", "verified", "manual_passed"].includes(verificationStatus)) {
+    issues.push(`verificationStatus is ${verificationStatus}`);
+  }
+  const componentStatus = isRecord(config.componentStatus) ? config.componentStatus : {};
+  Object.entries(componentStatus).forEach(([key, value]) => {
+    const status = typeof value === "string" ? value : isRecord(value) ? stringField(value, "status") : undefined;
+    if (!status) return;
+    const normalized = status.toLowerCase();
+    if (
+      normalized.includes("missing") ||
+      normalized.includes("failed") ||
+      normalized.includes("unsupported") ||
+      normalized.includes("not_imported")
+    ) {
+      issues.push(`component ${key} is ${status}`);
+    }
+  });
+  return issues;
+}
+
+function sdcppProfileIssues(profile: {
+  runner: string;
+  modelFormat: string;
+  sourceModelPath: string | null;
+  convertedModelPath: string | null;
+  runnerConfig: unknown;
+}) {
+  if (profile.runner !== "sd_cpp") return [];
+  const issues: string[] = [];
+  const config = isRecord(profile.runnerConfig) ? profile.runnerConfig : {};
+  const conversion = isRecord(config.conversion) ? config.conversion : {};
+  const conversionEnabled = conversion.enabled === true;
+  const sourcePath = firstText([
+    profile.sourceModelPath,
+    stringField(config, "diffusionModelPath"),
+    stringField(config, "modelPath"),
+  ]);
+  const convertedPath = firstText([
+    profile.convertedModelPath,
+    stringField(conversion, "outputPath"),
+  ]);
+  const effectiveModelPath = conversionEnabled ? convertedPath : firstText([convertedPath, sourcePath]);
+  const hasManagedConfig =
+    Boolean(sourcePath || convertedPath || conversionEnabled) ||
+    Boolean(config.llmPath || config.vaePath || config.loraModelDir) ||
+    Array.isArray(config.loras);
+  if (!hasManagedConfig) return issues;
+
+  if (!effectiveModelPath) issues.push("sd_cpp model path is empty");
+  if (profile.modelFormat === "gguf" && effectiveModelPath && !effectiveModelPath.endsWith(".gguf")) {
+    issues.push("gguf profile does not resolve to a .gguf model");
+  }
+  if (conversionEnabled) {
+    if (!sourcePath?.endsWith(".safetensors")) issues.push("conversion source must be .safetensors");
+    if (!convertedPath?.endsWith(".gguf")) issues.push("conversion output must be .gguf");
+  }
+  if (Array.isArray(config.loras)) {
+    config.loras.forEach((item, index) => {
+      if (!isRecord(item)) {
+        issues.push(`lora ${index + 1} must be an object`);
+        return;
+      }
+      const key = stringField(item, "key");
+      const path = stringField(item, "path");
+      if (!key && !path) issues.push(`lora ${index + 1} missing key/path`);
+    });
+  }
+  return issues;
+}
+
+function firstText(values: Array<string | null | undefined>) {
+  return values.find((value): value is string => Boolean(value?.trim()))?.trim();
+}
+
+function jsonRecord(value: unknown) {
+  return isRecord(value) ? value : {};
+}
+
+function stringField(value: Record<string, unknown>, key: string) {
+  const child = value[key];
+  return typeof child === "string" && child.trim() ? child.trim() : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

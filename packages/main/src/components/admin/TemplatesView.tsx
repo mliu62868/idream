@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Ban, CheckCircle2, Loader2, Pencil, Plus, RefreshCcw, Sparkles, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { apiGet, apiWrite } from "@/components/admin/api";
+import { useAdminI18n } from "@/components/admin/i18n";
 
 // SPEC: 角色创建模板库（特性 B）admin 视图——列出 / 新建 / 编辑 / 上下线模板。
 // INTENT: 自取数、无 props；样式严格沿用 PromoView 的暗色表单/表格语汇。
@@ -48,6 +49,7 @@ const EMPTY_FORM = {
 };
 
 export function TemplatesView() {
+  const { t, value: valueLabel } = useAdminI18n();
   const [templates, setTemplates] = useState<Template[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -174,7 +176,7 @@ export function TemplatesView() {
       <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold">
-            {editingId ? `Edit template ${editingId}` : "Create character template"}
+            {editingId ? `${t("Edit template")} ${editingId}` : t("Create character template")}
           </h2>
           {editingId ? (
             <button
@@ -182,7 +184,7 @@ export function TemplatesView() {
               onClick={resetForm}
               type="button"
             >
-              <X className="h-3.5 w-3.5" /> Cancel
+              <X className="h-3.5 w-3.5" /> {t("Cancel")}
             </button>
           ) : null}
         </div>
@@ -193,7 +195,7 @@ export function TemplatesView() {
           <input
             className="h-10 w-full flex-1 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
             onChange={(event) => setSeed(event.target.value)}
-            placeholder="AI seed: 一句话灵感 → 填充 Summary + Tags"
+            placeholder={t("AI seed: 一句话灵感 → 填充 Summary + Tags")}
             value={seed}
           />
           <button
@@ -203,7 +205,7 @@ export function TemplatesView() {
             type="button"
           >
             {assisting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-            Generate with AI
+            {t("Generate with AI")}
           </button>
           {assistError ? <p className="text-xs text-red-300">{assistError}</p> : null}
         </div>
@@ -211,13 +213,13 @@ export function TemplatesView() {
           <input
             className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
             onChange={(event) => setForm((f) => ({ ...f, name: event.target.value }))}
-            placeholder="Name (≥1)"
+            placeholder={t("Name (≥1)")}
             value={form.name}
           />
           <input
             className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
             onChange={(event) => setForm((f) => ({ ...f, summary: event.target.value }))}
-            placeholder="Summary (≤200)"
+            placeholder={t("Summary (≤200)")}
             value={form.summary}
           />
           <select
@@ -225,37 +227,37 @@ export function TemplatesView() {
             onChange={(event) => setForm((f) => ({ ...f, scope: event.target.value }))}
             value={form.scope}
           >
-            <option value="built_in">built_in</option>
-            <option value="community">community</option>
+          <option value="built_in">{valueLabel("built_in")}</option>
+          <option value="community">{valueLabel("community")}</option>
           </select>
           <input
             className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
             onChange={(event) => setForm((f) => ({ ...f, gender: event.target.value }))}
-            placeholder="Gender"
+            placeholder={t("Gender")}
             value={form.gender}
           />
           <input
             className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
             onChange={(event) => setForm((f) => ({ ...f, style: event.target.value }))}
-            placeholder="Style"
+            placeholder={t("Style")}
             value={form.style}
           />
           <input
             className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
             onChange={(event) => setForm((f) => ({ ...f, tags: event.target.value }))}
-            placeholder="Tags (comma-separated, ≤12)"
+            placeholder={t("Tags (comma-separated, ≤12)")}
             value={form.tags}
           />
           <input
             className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
             onChange={(event) => setForm((f) => ({ ...f, sortOrder: event.target.value }))}
-            placeholder="Sort order"
+            placeholder={t("Sort order")}
             value={form.sortOrder}
           />
           <input
             className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
             onChange={(event) => setForm((f) => ({ ...f, reason: event.target.value }))}
-            placeholder="Reason (≥3)"
+            placeholder={t("Reason (≥3)")}
             value={form.reason}
           />
           <button
@@ -271,7 +273,7 @@ export function TemplatesView() {
             ) : (
               <Plus className="h-4 w-4" />
             )}
-            {editingId ? "Save" : "Create"}
+            {editingId ? t("Save") : t("Create")}
           </button>
         </div>
         {err ? <p className="mt-2 text-xs text-red-300">{err}</p> : null}
@@ -279,39 +281,39 @@ export function TemplatesView() {
 
       <section className="border border-white/10 bg-[rgb(18,18,18)]">
         <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
-          <h2 className="text-sm font-semibold">Templates</h2>
+          <h2 className="text-sm font-semibold">{t("Templates")}</h2>
           <button
             className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs text-[rgb(170,170,170)] hover:border-white/30"
             onClick={() => void reload()}
             type="button"
           >
-            <RefreshCcw className={cn("h-3.5 w-3.5", loading && "animate-spin")} /> Reload
+            <RefreshCcw className={cn("h-3.5 w-3.5", loading && "animate-spin")} /> {t("Reload")}
           </button>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
             <thead className="text-xs text-[rgb(170,170,170)]">
               <tr className="border-b border-white/10">
-                <th className="px-4 py-2 font-medium">name</th>
-                <th className="px-4 py-2 font-medium">scope</th>
-                <th className="px-4 py-2 font-medium">active</th>
-                <th className="px-4 py-2 font-medium">sortOrder</th>
-                <th className="px-4 py-2 font-medium">tags</th>
-                <th className="px-4 py-2 font-medium">actions</th>
+                <th className="px-4 py-2 font-medium">{t("name")}</th>
+                <th className="px-4 py-2 font-medium">{t("scope")}</th>
+                <th className="px-4 py-2 font-medium">{t("active")}</th>
+                <th className="px-4 py-2 font-medium">{t("sortOrder")}</th>
+                <th className="px-4 py-2 font-medium">{t("tags")}</th>
+                <th className="px-4 py-2 font-medium">{t("actions")}</th>
               </tr>
             </thead>
             <tbody>
               {templates.length === 0 ? (
                 <tr>
                   <td className="px-4 py-6 text-xs text-[rgb(170,170,170)]" colSpan={6}>
-                    {loading ? "Loading…" : "No templates yet."}
+                    {loading ? t("Loading…") : t("No templates yet.")}
                   </td>
                 </tr>
               ) : (
                 templates.map((template) => (
                   <tr className="border-b border-white/5" key={template.id}>
                     <td className="px-4 py-2">{template.name}</td>
-                    <td className="px-4 py-2 text-[rgb(170,170,170)]">{template.scope}</td>
+                    <td className="px-4 py-2 text-[rgb(170,170,170)]">{valueLabel(template.scope)}</td>
                     <td className="px-4 py-2">
                       <span
                         className={cn(
@@ -324,7 +326,7 @@ export function TemplatesView() {
                         ) : (
                           <Ban className="h-3.5 w-3.5" />
                         )}
-                        {template.isActive ? "active" : "offline"}
+                        {template.isActive ? valueLabel("active") : valueLabel("offline")}
                       </span>
                     </td>
                     <td className="px-4 py-2 text-[rgb(170,170,170)]">{template.sortOrder}</td>
@@ -339,7 +341,7 @@ export function TemplatesView() {
                           onClick={() => startEdit(template)}
                           type="button"
                         >
-                          <Pencil className="h-3.5 w-3.5" /> Edit
+                          <Pencil className="h-3.5 w-3.5" /> {t("Edit")}
                         </button>
                         <button
                           className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs hover:border-white/30 disabled:opacity-50"
@@ -349,11 +351,11 @@ export function TemplatesView() {
                         >
                           {template.isActive ? (
                             <>
-                              <Ban className="h-3.5 w-3.5" /> Offline
+                              <Ban className="h-3.5 w-3.5" /> {t("Offline")}
                             </>
                           ) : (
                             <>
-                              <CheckCircle2 className="h-3.5 w-3.5" /> Publish
+                              <CheckCircle2 className="h-3.5 w-3.5" /> {t("Publish")}
                             </>
                           )}
                         </button>

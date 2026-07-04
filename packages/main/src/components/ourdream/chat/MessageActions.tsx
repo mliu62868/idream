@@ -1,14 +1,16 @@
 "use client";
 
-import { Flag, Loader2, RefreshCw, Square, Trash2, Volume2 } from "lucide-react";
+import { Flag, Loader2, Pencil, RefreshCw, Square, Trash2, Volume2 } from "lucide-react";
 
 // SPEC: Per-message action cluster. Assistant turns get Play + Regenerate; both
-//       roles get Delete + Report. Pinned top-right of the bubble.
+//       roles get Delete + Report; the latest user turn may expose Edit. Pinned
+//       top-right of the bubble.
 // INTENT: keep the existing Flag/Report behavior; add management without clutter.
 export function MessageActions({
   isUser,
   pending,
   voiceState,
+  onEdit,
   onReport,
   onDelete,
   onRegenerate,
@@ -17,22 +19,30 @@ export function MessageActions({
   isUser: boolean;
   pending: boolean;
   voiceState?: "loading" | "playing";
+  onEdit?: () => void;
   onReport: () => void;
   onDelete: () => void;
   onRegenerate?: () => void;
   onPlay?: () => void;
 }>) {
   const tone = isUser ? "bg-black/10 text-[rgb(13,13,13)]" : "bg-black/30 text-white";
+  const voiceActive = voiceState === "playing";
+  const voiceLabel = voiceActive ? "Stop voice" : "Play voice";
+  const voiceTone = voiceActive
+    ? "bg-[var(--ds-brand-pink)] text-white opacity-100 shadow-[0_0_0_1px_rgba(255,255,255,0.28),0_0_18px_rgba(253,95,194,0.45)]"
+    : tone;
   return (
     <div className="absolute right-2 top-2 flex items-center gap-1 opacity-70 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
       {onPlay ? (
         <button
-          aria-label={voiceState === "playing" ? "Stop voice" : "Play voice"}
-          className={`grid h-7 w-7 place-items-center rounded-full ${tone} disabled:opacity-50`}
+          aria-label={voiceLabel}
+          aria-pressed={voiceActive}
+          className={`grid h-7 w-7 place-items-center rounded-full transition ${voiceTone} disabled:opacity-50`}
+          data-state={voiceState ?? "idle"}
           data-testid="chat-play-voice"
           disabled={pending || voiceState === "loading"}
           onClick={onPlay}
-          title={voiceState === "playing" ? "Stop voice" : "Play voice"}
+          title={voiceLabel}
           type="button"
         >
           {voiceState === "loading" ? (
@@ -55,6 +65,19 @@ export function MessageActions({
           type="button"
         >
           <RefreshCw className="h-3.5 w-3.5" />
+        </button>
+      ) : null}
+      {onEdit ? (
+        <button
+          aria-label="Edit message"
+          className={`grid h-7 w-7 place-items-center rounded-full ${tone} disabled:opacity-50`}
+          data-testid="chat-edit-message"
+          disabled={pending}
+          onClick={onEdit}
+          title="Edit message"
+          type="button"
+        >
+          <Pencil className="h-3.5 w-3.5" />
         </button>
       ) : null}
       <button

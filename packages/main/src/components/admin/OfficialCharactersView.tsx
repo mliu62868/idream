@@ -5,8 +5,9 @@
 // INTENT: className/表格/按钮/输入风格严格对齐 AdminConsoleClient 的 PromoView，保持后台一致观感。
 // INVARIANTS: 所有写操作经 /api/v1/admin/content/official*，由 content.official.write 门控；错误本地展示。
 import { useCallback, useEffect, useState } from "react";
-import { Archive, Loader2, Plus, Sparkles, Upload } from "lucide-react";
+import { Archive, ImageIcon, Loader2, Pencil, Plus, Save, Sparkles, Upload, X } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
+import { useAdminI18n } from "@/components/admin/i18n";
 import { cn } from "@/lib/utils";
 
 type OfficialStats = {
@@ -18,12 +19,23 @@ type OfficialStats = {
 type OfficialRow = {
   id: string;
   name: string;
+  age: number;
+  description: string;
   gender: string;
   style: string;
   status: string;
   visibility: string;
   createdAt: string;
+  tags: string[];
   stats: OfficialStats;
+  visualProfile: {
+    id: string;
+    version: number;
+    status: string;
+    style: string;
+    anchorAssetIds?: unknown;
+    referenceAssetIds?: unknown;
+  } | null;
 };
 
 const GENDERS = ["female", "male", "trans"] as const;
@@ -34,7 +46,18 @@ function intFromText(value: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function visualReferenceCount(row: OfficialRow): number {
+  const anchorCount = Array.isArray(row.visualProfile?.anchorAssetIds)
+    ? row.visualProfile.anchorAssetIds.length
+    : 0;
+  const referenceCount = Array.isArray(row.visualProfile?.referenceAssetIds)
+    ? row.visualProfile.referenceAssetIds.length
+    : 0;
+  return anchorCount + referenceCount;
+}
+
 export function OfficialCharactersView() {
+  const { t, value: valueLabel } = useAdminI18n();
   const [rows, setRows] = useState<OfficialRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
@@ -48,6 +71,17 @@ export function OfficialCharactersView() {
   const [reason, setReason] = useState("");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editAge, setEditAge] = useState("24");
+  const [editGender, setEditGender] = useState<(typeof GENDERS)[number]>("female");
+  const [editStyle, setEditStyle] = useState<(typeof STYLES)[number]>("realistic");
+  const [editDescription, setEditDescription] = useState("");
+  const [editTags, setEditTags] = useState("");
+  const [editReason, setEditReason] = useState("");
+  const [updating, setUpdating] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
 
   // AI 辅助：一句话 seed → 填充 description + 把性格特质并入 tags。
   const [seed, setSeed] = useState("");
@@ -135,6 +169,44 @@ export function OfficialCharactersView() {
     }
   }
 
+  function startEdit(row: OfficialRow) {
+    setEditingId(row.id);
+    setEditName(row.name);
+    setEditAge(String(row.age));
+    setEditGender(row.gender as (typeof GENDERS)[number]);
+    setEditStyle(row.style as (typeof STYLES)[number]);
+    setEditDescription(row.description);
+    setEditTags(row.tags.join(", "));
+    setEditReason("");
+    setEditError(null);
+  }
+
+  async function updateCharacter() {
+    if (!editingId) return;
+    setUpdating(true);
+    setEditError(null);
+    try {
+      await apiWrite(`/api/v1/admin/content/official/${editingId}`, "PATCH", {
+        name: editName.trim(),
+        age: intFromText(editAge, 18),
+        gender: editGender,
+        style: editStyle,
+        description: editDescription.trim(),
+        tags: editTags
+          .split(",")
+          .map((tag) => tag.trim())
+          .filter(Boolean),
+        reason: editReason.trim(),
+      });
+      setEditingId(null);
+      await reload();
+    } catch (error) {
+      setEditError(error instanceof Error ? error.message : "Update failed");
+    } finally {
+      setUpdating(false);
+    }
+  }
+
   async function setState(id: string, status: "approved" | "archived") {
     const actionReason = (rowReason[id] ?? "").trim();
     setRowBusy(id);
@@ -159,11 +231,18 @@ export function OfficialCharactersView() {
     description.trim().length < 1 ||
     reason.trim().length < 3 ||
     intFromText(age, 0) < 18;
+  const editDisabled =
+    updating ||
+    !editingId ||
+    editName.trim().length < 1 ||
+    editDescription.trim().length < 1 ||
+    editReason.trim().length < 3 ||
+    intFromText(editAge, 0) < 18;
 
   return (
     <div className="space-y-5">
       <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
-        <h2 className="text-sm font-semibold">Create official character</h2>
+        <h2 className="text-sm font-semibold">{t("Create official character")}</h2>
         <p className="mt-1 text-xs text-[rgb(170,170,170)]">
           官方角色直接 approved + public，跳过用户审核但仍过 moderation。age 必须 ≥18。
         </p>
@@ -171,7 +250,7 @@ export function OfficialCharactersView() {
           <input
             className="h-10 w-full flex-1 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
             onChange={(event) => setSeed(event.target.value)}
-            placeholder="AI seed: 一句话灵感，如 “爱雨夜的害羞画家”"
+            placeholder={t("AI seed: 一句话灵感，如 “爱雨夜的害羞画家”")}
             value={seed}
           />
           <button
@@ -181,7 +260,7 @@ export function OfficialCharactersView() {
             type="button"
           >
             {assisting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-            Generate with AI
+            {t("Generate with AI")}
           </button>
           {assistError ? <p className="text-xs text-red-300">{assistError}</p> : null}
         </div>
@@ -189,13 +268,13 @@ export function OfficialCharactersView() {
           <input
             className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
             onChange={(event) => setName(event.target.value)}
-            placeholder="Name (1-80)"
+            placeholder={t("Name (1-80)")}
             value={name}
           />
           <input
             className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
             onChange={(event) => setAge(event.target.value)}
-            placeholder="Age (≥18)"
+            placeholder={t("Age (≥18)")}
             value={age}
           />
           <select
@@ -205,7 +284,7 @@ export function OfficialCharactersView() {
           >
             {GENDERS.map((value) => (
               <option key={value} value={value}>
-                {value}
+                {valueLabel(value)}
               </option>
             ))}
           </select>
@@ -216,14 +295,14 @@ export function OfficialCharactersView() {
           >
             {STYLES.map((value) => (
               <option key={value} value={value}>
-                {value}
+                {valueLabel(value)}
               </option>
             ))}
           </select>
           <input
             className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
             onChange={(event) => setTags(event.target.value)}
-            placeholder="Tags (comma-sep)"
+            placeholder={t("Tags (comma-sep)")}
             value={tags}
           />
         </div>
@@ -231,13 +310,13 @@ export function OfficialCharactersView() {
           <textarea
             className="min-h-20 w-full border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-white/30"
             onChange={(event) => setDescription(event.target.value)}
-            placeholder="Description (1-1500)"
+            placeholder={t("Description (1-1500)")}
             value={description}
           />
           <textarea
             className="min-h-20 w-full border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-white/30"
             onChange={(event) => setReason(event.target.value)}
-            placeholder="Reason (≥3, for audit)"
+            placeholder={t("Reason (≥3, for audit)")}
             value={reason}
           />
         </div>
@@ -249,42 +328,130 @@ export function OfficialCharactersView() {
             type="button"
           >
             {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-            Create
+            {t("Create")}
           </button>
           {createError ? <p className="text-xs text-red-300">{createError}</p> : null}
         </div>
       </section>
 
+      {editingId ? (
+        <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold">{t("Edit official character")}</h2>
+              <p className="mt-1 font-mono text-xs text-[rgb(140,140,140)]">{editingId}</p>
+            </div>
+            <button
+              className="inline-flex h-9 items-center gap-1 border border-white/10 px-2 text-xs font-medium text-[rgb(220,220,220)] hover:border-white/30"
+              onClick={() => setEditingId(null)}
+              type="button"
+            >
+              <X className="h-3.5 w-3.5" />
+              {t("Cancel")}
+            </button>
+          </div>
+          <div className="mt-3 grid gap-3 md:grid-cols-5">
+            <input
+              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+              onChange={(event) => setEditName(event.target.value)}
+              placeholder={t("Name (1-80)")}
+              value={editName}
+            />
+            <input
+              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+              onChange={(event) => setEditAge(event.target.value)}
+              placeholder={t("Age (≥18)")}
+              value={editAge}
+            />
+            <select
+              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+              onChange={(event) => setEditGender(event.target.value as (typeof GENDERS)[number])}
+              value={editGender}
+            >
+              {GENDERS.map((value) => (
+                <option key={value} value={value}>
+                  {valueLabel(value)}
+                </option>
+              ))}
+            </select>
+            <select
+              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+              onChange={(event) => setEditStyle(event.target.value as (typeof STYLES)[number])}
+              value={editStyle}
+            >
+              {STYLES.map((value) => (
+                <option key={value} value={value}>
+                  {valueLabel(value)}
+                </option>
+              ))}
+            </select>
+            <input
+              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+              onChange={(event) => setEditTags(event.target.value)}
+              placeholder={t("Tags (comma-sep)")}
+              value={editTags}
+            />
+          </div>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <textarea
+              className="min-h-20 w-full border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-white/30"
+              onChange={(event) => setEditDescription(event.target.value)}
+              placeholder={t("Description (1-1500)")}
+              value={editDescription}
+            />
+            <textarea
+              className="min-h-20 w-full border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-white/30"
+              onChange={(event) => setEditReason(event.target.value)}
+              placeholder={t("Reason (≥3, for audit)")}
+              value={editReason}
+            />
+          </div>
+          <div className="mt-3 flex items-center gap-3">
+            <button
+              className="inline-flex h-10 items-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+              disabled={editDisabled}
+              onClick={() => void updateCharacter()}
+              type="button"
+            >
+              {updating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+              {t("Save changes")}
+            </button>
+            {editError ? <p className="text-xs text-red-300">{editError}</p> : null}
+          </div>
+        </section>
+      ) : null}
+
       <section className="border border-white/10 bg-[rgb(18,18,18)]">
         <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
-          <h2 className="text-sm font-semibold">Official characters</h2>
-          <span className="text-xs text-[rgb(170,170,170)]">{rows.length} total</span>
+          <h2 className="text-sm font-semibold">{t("Official characters")}</h2>
+          <span className="text-xs text-[rgb(170,170,170)]">{t("{count} total", { count: rows.length })}</span>
         </div>
         {rowError ? <p className="px-4 pt-2 text-xs text-red-300">{rowError}</p> : null}
         {listError ? <p className="px-4 py-3 text-xs text-red-300">{listError}</p> : null}
         {loading ? (
           <div className="flex items-center gap-2 px-4 py-6 text-sm text-[rgb(170,170,170)]">
-            <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+            <Loader2 className="h-4 w-4 animate-spin" /> {t("Loading…")}
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead className="text-xs uppercase tracking-wide text-[rgb(140,140,140)]">
                 <tr className="border-b border-white/10">
-                  <th className="px-4 py-2 font-medium">Name</th>
-                  <th className="px-4 py-2 font-medium">Gender</th>
-                  <th className="px-4 py-2 font-medium">Style</th>
-                  <th className="px-4 py-2 font-medium">Status</th>
-                  <th className="px-4 py-2 font-medium">Chats</th>
-                  <th className="px-4 py-2 font-medium">Reason</th>
-                  <th className="px-4 py-2 font-medium">Actions</th>
+                  <th className="px-4 py-2 font-medium">{t("Name")}</th>
+                  <th className="px-4 py-2 font-medium">{t("Gender")}</th>
+                  <th className="px-4 py-2 font-medium">{t("Style")}</th>
+                  <th className="px-4 py-2 font-medium">{t("Identity")}</th>
+                  <th className="px-4 py-2 font-medium">{t("Status")}</th>
+                  <th className="px-4 py-2 font-medium">{t("Chats")}</th>
+                  <th className="px-4 py-2 font-medium">{t("Reason")}</th>
+                  <th className="px-4 py-2 font-medium">{t("Actions")}</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.length === 0 ? (
                   <tr>
-                    <td className="px-4 py-6 text-[rgb(170,170,170)]" colSpan={7}>
-                      No official characters yet.
+                    <td className="px-4 py-6 text-[rgb(170,170,170)]" colSpan={8}>
+                      {t("No official characters yet.")}
                     </td>
                   </tr>
                 ) : (
@@ -297,8 +464,20 @@ export function OfficialCharactersView() {
                           <div className="font-medium">{row.name}</div>
                           <div className="font-mono text-xs text-[rgb(140,140,140)]">{row.id}</div>
                         </td>
-                        <td className="px-4 py-2">{row.gender}</td>
-                        <td className="px-4 py-2">{row.style}</td>
+                        <td className="px-4 py-2">{valueLabel(row.gender)}</td>
+                        <td className="px-4 py-2">{valueLabel(row.style)}</td>
+                        <td className="px-4 py-2">
+                          {row.visualProfile ? (
+                            <span className="inline-flex items-center gap-1 bg-white/10 px-2 py-0.5 text-xs text-[rgb(220,220,220)]">
+                              <ImageIcon className="h-3.5 w-3.5 text-[rgb(255,64,180)]" />
+                              v{row.visualProfile.version} · {visualReferenceCount(row)}
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center bg-red-500/15 px-2 py-0.5 text-xs text-red-200">
+                              Missing
+                            </span>
+                          )}
+                        </td>
                         <td className="px-4 py-2">
                           <span
                             className={cn(
@@ -308,7 +487,7 @@ export function OfficialCharactersView() {
                                 : "bg-white/10 text-[rgb(180,180,180)]",
                             )}
                           >
-                            {row.status}
+                            {valueLabel(row.status)}
                           </span>
                         </td>
                         <td className="px-4 py-2">{row.stats?.chatsCount ?? 0}</td>
@@ -318,11 +497,20 @@ export function OfficialCharactersView() {
                             onChange={(event) =>
                               setRowReason((prev) => ({ ...prev, [row.id]: event.target.value }))
                             }
-                            placeholder="Reason (≥3)"
+                            placeholder={t("Reason (≥3)")}
                             value={rowReason[row.id] ?? ""}
                           />
                         </td>
                         <td className="px-4 py-2">
+                          <button
+                            className="mr-2 inline-flex h-9 items-center gap-1 border border-white/10 px-2 text-xs font-medium text-[rgb(220,220,220)] hover:border-white/30 disabled:opacity-40"
+                            disabled={busy}
+                            onClick={() => startEdit(row)}
+                            type="button"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                            {t("Edit")}
+                          </button>
                           {row.status === "approved" ? (
                             <button
                               className="inline-flex h-9 items-center gap-1 border border-white/10 px-2 text-xs font-medium text-[rgb(220,220,220)] hover:border-white/30 disabled:opacity-40"
@@ -335,7 +523,7 @@ export function OfficialCharactersView() {
                               ) : (
                                 <Archive className="h-3.5 w-3.5" />
                               )}
-                              Archive
+                              {t("Archive")}
                             </button>
                           ) : (
                             <button
@@ -349,7 +537,7 @@ export function OfficialCharactersView() {
                               ) : (
                                 <Upload className="h-3.5 w-3.5" />
                               )}
-                              Publish
+                              {t("Publish")}
                             </button>
                           )}
                         </td>

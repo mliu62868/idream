@@ -243,7 +243,7 @@ export const homeFaqs = [
   {
     question: "What is Our Dream AI?",
     answer:
-      "Our Dream AI is an AI roleplay platform for creating personalized AI characters, chatting with them, generating images and videos, and building a companion that remembers context over time.",
+      "Our Dream AI is an AI roleplay platform for creating personalized AI characters, chatting with them, generating images, and building a companion that remembers context over time.",
   },
   {
     question: "How do you create an AI girlfriend on ourdream?",
@@ -253,7 +253,7 @@ export const homeFaqs = [
   {
     question: "What is ourdream.ai's pricing?",
     answer:
-      "Ourdream offers monthly and yearly upgrade options with unlimited messages, image and video generation access, and recurring dreamcoin allowances.",
+      "Ourdream offers monthly and yearly upgrade options with unlimited messages, image generation access, and recurring dreamcoin allowances.",
   },
   {
     question: "Is ourdream ai legit and safe to use?",
@@ -268,7 +268,7 @@ export const homeFaqs = [
   {
     question: "What images can I generate on ourdream.ai?",
     answer:
-      "The generator pages focus on realistic and anime-style AI images and videos for created companions, with premium controls for prompts and character selection.",
+      "The generator pages focus on realistic and anime-style AI images for created companions, with premium controls for prompts and character selection.",
   },
   {
     question: "Why is ourdream more expensive than others?",
@@ -460,7 +460,11 @@ const linkedNonSitemapPaths = [
   "/helpdesk",
   "/feed",
   "/community",
+  "/type",
   "/profile",
+  "/profile/redeem-code",
+  "/profile/notifications",
+  "/profile/account-management",
   "/login",
   "/signup",
 ] as const;
@@ -495,10 +499,34 @@ const routeOverrides: Record<
       "Personal AI library shell for recent characters, group chats, packs, presets, and created companions.",
     template: "profile",
   },
-  "/generate": {
-    title: "NSFW AI Image and Video Generator",
+  "/profile": {
+    title: "Profile",
     description:
-      "Image and video generation workspace with mode tabs, required character selection, optional prompts, and gallery states.",
+      "Account settings, billing state, referral invites, redeem codes, preferences, and personal media management.",
+    template: "profile",
+  },
+  "/profile/redeem-code": {
+    title: "Redeem Dreamcoin Code",
+    description:
+      "Redeem a promo or support code into dreamcoins from the account workspace.",
+    template: "profile",
+  },
+  "/profile/notifications": {
+    title: "Profile Notifications",
+    description:
+      "Manage product update preferences from the account workspace.",
+    template: "profile",
+  },
+  "/profile/account-management": {
+    title: "Account Management",
+    description:
+      "Manage account-level session and deletion actions from the account workspace.",
+    template: "profile",
+  },
+  "/generate": {
+    title: "NSFW AI Image Generator",
+    description:
+      "Image generation workspace with required character selection, optional prompts, premium controls, and gallery states.",
     template: "generator",
   },
   "/upgrade": {
@@ -520,7 +548,7 @@ const routeOverrides: Record<
   "/resources-hub": {
     title: "Resources Hub",
     description:
-      "A dark resource index linking guides, comparisons, video generators, AI girlfriend types, and creator pages.",
+      "A dark resource index linking guides, comparisons, generator pages, AI girlfriend types, video guides, and creator pages.",
     template: "library",
   },
   "/type": {
@@ -530,9 +558,9 @@ const routeOverrides: Record<
     template: "library",
   },
   "/videos": {
-    title: "AI Video Generators",
+    title: "AI Video Guides",
     description:
-      "Video category index for generated media ideas, cinematic roleplay routes, and related adult AI video pages.",
+      "Video category index for generated media ideas, cinematic roleplay routes, and related adult AI video guide pages.",
     template: "library",
   },
   "/comparison": {
@@ -558,6 +586,12 @@ const routeOverrides: Record<
     description:
       "Clear platform policies for account access, adult content boundaries, creator responsibilities, and safe use.",
     template: "terms",
+  },
+  "/helpdesk": {
+    title: "Help Desk",
+    description:
+      "Support requests, FAQ, Discord, account and billing help, and beta feedback paths for bugs, features, and changelog updates.",
+    template: "marketing",
   },
 };
 
@@ -592,7 +626,12 @@ function inferTemplate(path: string): OurdreamRouteTemplate {
   if (path === "/affiliate" || path.startsWith("/authors/") || path.startsWith("/site/")) {
     return "marketing";
   }
-  if (path === "/feed" || path === "/community" || path === "/profile") {
+  if (
+    path === "/feed" ||
+    path === "/community" ||
+    path === "/profile" ||
+    path.startsWith("/profile/")
+  ) {
     return "profile";
   }
   if (path === "/login" || path === "/signup" || path === "/helpdesk") {
@@ -636,7 +675,7 @@ function defaultDescriptionForRoute({
     case "comparison":
       return `${title} compares companion platforms by roleplay depth, creator tools, media features, pricing, and trust signals.`;
     case "generator":
-      return `${title} gives adults direct access to image and video generation workflows with character selection and gallery management.`;
+      return `${title} gives adults direct access to image generation workflows with character selection and gallery management.`;
     case "library":
       return `${title} gathers related Ourdream guides, generators, companion types, and discovery pages in one place.`;
     case "marketing":

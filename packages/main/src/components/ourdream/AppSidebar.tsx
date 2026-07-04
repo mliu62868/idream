@@ -7,6 +7,7 @@ import {
   Crown,
   Disc3,
   Ellipsis,
+  ExternalLink,
   MessageCircle,
   Newspaper,
   PlusSquare,
@@ -43,7 +44,7 @@ export function AppSidebar({
             width={121}
             height={14}
             className="h-3.5 w-auto object-contain"
-            priority
+            loading="eager"
           />
           <span className="h-4 w-4 rounded-[4px] border border-[rgb(114,113,112)]" />
         </div>
@@ -72,14 +73,48 @@ export function AppSidebar({
         <nav className="flex flex-col gap-1 px-3">
           {secondaryNavItems.map((item, index) => {
             const Icon = secondaryIcons[index];
+            const external = item.href.startsWith("http");
+            const className = cn(
+              "flex h-10 items-center gap-3 rounded-[10px] px-3 text-[12px] font-semibold leading-4 text-[rgb(170,170,170)] transition-colors hover:bg-[rgb(46,46,46)] hover:text-white",
+              !external && item.href === activeHref && "bg-[rgb(46,46,46)] text-white",
+            );
+            const content = (
+              <>
+                <Icon className="h-4 w-4" strokeWidth={2.2} />
+                <span>{item.label}</span>
+                {external && (
+                  <ExternalLink
+                    aria-hidden="true"
+                    className="ml-auto h-3.5 w-3.5"
+                    strokeWidth={2.2}
+                  />
+                )}
+              </>
+            );
+
+            if (external) {
+              return (
+                <a
+                  className={className}
+                  data-link-kind="external"
+                  href={item.href}
+                  key={item.label}
+                  rel="noopener noreferrer"
+                  target="_blank"
+                >
+                  {content}
+                </a>
+              );
+            }
+
             return (
               <Link
                 key={item.label}
-                className="flex h-10 items-center gap-3 rounded-[10px] px-3 text-[12px] font-semibold leading-4 text-[rgb(170,170,170)] transition-colors hover:bg-[rgb(46,46,46)] hover:text-white"
+                className={className}
+                data-link-kind="internal"
                 href={item.href}
               >
-                <Icon className="h-4 w-4" strokeWidth={2.2} />
-                <span>{item.label}</span>
+                {content}
               </Link>
             );
           })}

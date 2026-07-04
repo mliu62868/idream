@@ -7,6 +7,7 @@
 //   - body 仅接 string→unknown 记录（CmsRenderer 读 heading/sections/cta）。
 //   - 审计不含敏感明文（CMS 内容是公开页，无明文风险，但仍走统一脱敏）。
 import { z } from "zod";
+import { revalidatePath, revalidateTag } from "next/cache";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
@@ -62,6 +63,17 @@ const publishSchema = z.object({
 
 function assertConfirmation(value: string, ...accepted: string[]) {
   if (!accepted.includes(value)) throw Errors.badRequest("Confirmation did not match");
+}
+
+function revalidateCmsPage(path: string) {
+  try {
+    revalidateTag("cms-pages", { expire: 0 });
+    const pathTag = `cms-page:${path}`;
+    if (pathTag.length <= 256) revalidateTag(pathTag, { expire: 0 });
+    revalidatePath(path);
+  } catch {
+    // Direct service tests do not run inside a Next route revalidation context.
+  }
 }
 
 export async function listCmsPages(request: Request): Promise<Response> {
@@ -123,6 +135,7 @@ export async function createCmsPage(request: Request): Promise<Response> {
     reason: body.reason,
     after: { title: page.title, contentStatus: page.contentStatus, template: page.template },
   });
+  revalidateCmsPage(page.path);
   return ok({ page });
 }
 
@@ -151,6 +164,7 @@ export async function patchCmsPage(request: Request): Promise<Response> {
     before: { title: before.title, contentStatus: before.contentStatus },
     after: { title: page.title, contentStatus: page.contentStatus },
   });
+  revalidateCmsPage(page.path);
   return ok({ page });
 }
 
@@ -172,5 +186,6 @@ export async function publishCmsPage(request: Request): Promise<Response> {
     before: { contentStatus: before.contentStatus },
     after: { contentStatus: page.contentStatus },
   });
+  revalidateCmsPage(page.path);
   return ok({ page });
 }

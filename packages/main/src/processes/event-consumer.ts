@@ -4,10 +4,21 @@
 // INVARIANTS: idempotent per eventId (effects are upserts/bounded increments).
 import { Worker } from "bullmq";
 import type { RedisOptions } from "ioredis";
-import { MAIN_QUEUES, CHAT_TO_MAIN_EVENTS } from "@idream/shared/contracts";
+import type { Prisma } from "@prisma/client";
+import {
+  MAIN_QUEUES,
+  MAIN_TO_CHAT_EVENTS,
+  MAIN_TO_CHAT_QUEUE,
+  CHAT_TO_MAIN_EVENTS,
+  chatImageRequestedPayloadSchema,
+  idempotencyKeys,
+} from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { logger } from "@/server/lib/logger";
+import { jobQueue } from "@/server/jobs/queue";
+import { createChatImageGenerationJob } from "@/server/modules/ourdream/service";
+import { findReusableChatImage } from "@/server/modules/ourdream/chat-image-reuse";
 
 function redisOptions(): RedisOptions {
   const url = new URL(env.REDIS_URL);
@@ -88,6 +99,68 @@ export async function applyChatEvent(event: InboundEvent): Promise<void> {
       });
       return;
     }
+    case CHAT_TO_MAIN_EVENTS.imageRequested: {
+      // Parse INSIDE the try so a schema-mismatched event (e.g. a rolling deploy where an
+      // older chat omits a newly-required field) still emits a chat.image.failed callback
+      // instead of throwing → dead-lettering with no notification → attachment stuck
+      // forever in 'requesting'. Recover the attachmentId best-effort for that callback.
+      const attachmentId = String(
+        (event.payload as { attachmentId?: unknown }).attachmentId ?? event.aggregateId ?? "",
+      );
+      try {
+        const payload = chatImageRequestedPayloadSchema.parse(event.payload);
+        const reusable = await findReusableChatImage(payload);
+        if (reusable) {
+          await enqueueChatCallback({
+            eventId: `chat_image_completed_${payload.attachmentId}_reused_${reusable.asset.id}`,
+            eventType: MAIN_TO_CHAT_EVENTS.chatImageCompleted,
+            payload: {
+              version: 1,
+              kind: "chat.image.completed",
+              attachmentId: payload.attachmentId,
+              generationJobId: null,
+              mediaAssetId: reusable.asset.id,
+              width: reusable.asset.width,
+              height: reusable.asset.height,
+              reused: true,
+              reuseScore: reusable.score,
+              matchedFields: reusable.matchedFields,
+            },
+          });
+          return;
+        }
+        const job = await createChatImageGenerationJob(payload);
+        await enqueueChatCallback({
+          eventId: `chat_image_accepted_${payload.attachmentId}_${job.id}`,
+          eventType: MAIN_TO_CHAT_EVENTS.chatImageAccepted,
+          payload: {
+            version: 1,
+            kind: "chat.image.accepted",
+            attachmentId: payload.attachmentId,
+            generationJobId: job.id,
+            costDreamcoins: job.costDreamcoins,
+          },
+        });
+      } catch (error) {
+        // INVARIANT: only genuinely PERMANENT errors are 'rejected' (which the chat confirm
+        // endpoint refuses to re-confirm). Transient ones — insufficient coins, rate limit,
+        // a Redis/DB blip — are 'failed' so the user can retry once the condition clears;
+        // marking them 'rejected' would wedge the attachment permanently.
+        await enqueueChatCallback({
+          eventId: `chat_image_failed_${attachmentId}`,
+          eventType: MAIN_TO_CHAT_EVENTS.chatImageFailed,
+          payload: {
+            version: 1,
+            kind: "chat.image.failed",
+            attachmentId,
+            generationJobId: null,
+            status: chatImageFailureStatus(error),
+            errorCode: errorCode(error),
+          },
+        });
+      }
+      return;
+    }
     case CHAT_TO_MAIN_EVENTS.accountErasureCompleted:
       logger.info({ userId: event.aggregateId }, "chat account erasure completed");
       return;
@@ -97,6 +170,46 @@ export async function applyChatEvent(event: InboundEvent): Promise<void> {
       logger.debug({ eventType: event.eventType }, "chat event observed");
       return;
   }
+}
+
+async function enqueueChatCallback(input: {
+  eventId: string;
+  eventType: string;
+  payload: Record<string, unknown>;
+}) {
+  await jobQueue.enqueue({
+    queue: MAIN_TO_CHAT_QUEUE,
+    payload: {
+      eventId: input.eventId,
+      eventType: input.eventType,
+      payload: input.payload,
+    } as Prisma.InputJsonValue,
+    dedupeKey: idempotencyKeys.chatInbox(input.eventId),
+  });
+}
+
+function errorCode(error: unknown) {
+  if (error && typeof error === "object" && "code" in error && typeof error.code === "string") {
+    return error.code;
+  }
+  return "chat_image_rejected";
+}
+
+// Permanent AppError codes → 'rejected' (not retryable); everything else (payment_required,
+// rate_limited, internal, conflict, parse/unknown) → 'failed' so the user can retry.
+const PERMANENT_IMAGE_ERROR_CODES = new Set([
+  "bad_request",
+  "forbidden",
+  "not_found",
+  "unauthorized",
+]);
+
+function chatImageFailureStatus(error: unknown): "failed" | "rejected" {
+  const code =
+    error && typeof error === "object" && "code" in error && typeof error.code === "string"
+      ? error.code
+      : "";
+  return PERMANENT_IMAGE_ERROR_CODES.has(code) ? "rejected" : "failed";
 }
 
 export function startEventConsumer(): Worker {

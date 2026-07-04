@@ -8,6 +8,7 @@
 import { useEffect, useState } from "react";
 import { GitMerge, Loader2, Pencil, RefreshCcw, Save, X } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
+import { useAdminI18n } from "@/components/admin/i18n";
 import { cn } from "@/lib/utils";
 
 type TagRow = {
@@ -32,6 +33,7 @@ const inputClass =
   "h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30";
 
 export function TagsView() {
+  const { t } = useAdminI18n();
   const [tags, setTags] = useState<TagRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -59,7 +61,7 @@ export function TagsView() {
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold">Tag taxonomy ({tags.length})</h2>
+        <h2 className="text-sm font-semibold">{t("Tag taxonomy")} ({tags.length})</h2>
         <button
           className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm disabled:opacity-50"
           disabled={loading}
@@ -67,7 +69,7 @@ export function TagsView() {
           type="button"
         >
           {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-          Refresh
+          {t("Refresh")}
         </button>
       </div>
       {error ? <p className="text-xs text-red-300">{error}</p> : null}
@@ -78,12 +80,12 @@ export function TagsView() {
         <table className="w-full text-left text-sm">
           <thead className="border-b border-white/10 text-xs text-[rgb(170,170,170)]">
             <tr>
-              <th className="px-3 py-2 font-medium">slug</th>
-              <th className="px-3 py-2 font-medium">label</th>
-              <th className="px-3 py-2 font-medium">category</th>
-              <th className="px-3 py-2 font-medium">characters</th>
-              <th className="px-3 py-2 font-medium">sensitive</th>
-              <th className="px-3 py-2 font-medium">muted</th>
+              <th className="px-3 py-2 font-medium">{t("slug")}</th>
+              <th className="px-3 py-2 font-medium">{t("label")}</th>
+              <th className="px-3 py-2 font-medium">{t("category")}</th>
+              <th className="px-3 py-2 font-medium">{t("characters")}</th>
+              <th className="px-3 py-2 font-medium">{t("sensitive")}</th>
+              <th className="px-3 py-2 font-medium">{t("muted")}</th>
               <th className="px-3 py-2 font-medium" />
             </tr>
           </thead>
@@ -94,7 +96,7 @@ export function TagsView() {
             {tags.length === 0 && !loading ? (
               <tr>
                 <td className="px-3 py-6 text-center text-xs text-[rgb(170,170,170)]" colSpan={7}>
-                  No tags.
+                  {t("No tags.")}
                 </td>
               </tr>
             ) : null}
@@ -106,6 +108,7 @@ export function TagsView() {
 }
 
 function TagRowItem({ tag, reload }: { tag: TagRow; reload: () => void }) {
+  const { t } = useAdminI18n();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<EditDraft>(() => toDraft(tag));
   const [busy, setBusy] = useState(false);
@@ -144,8 +147,8 @@ function TagRowItem({ tag, reload }: { tag: TagRow; reload: () => void }) {
         <td className="px-3 py-2">{tag.label}</td>
         <td className="px-3 py-2 text-[rgb(170,170,170)]">{tag.category ?? "—"}</td>
         <td className="px-3 py-2">{tag.characterCount}</td>
-        <td className="px-3 py-2">{tag.isSensitive ? "yes" : "no"}</td>
-        <td className="px-3 py-2">{tag.isMutedByDefault ? "yes" : "no"}</td>
+        <td className="px-3 py-2">{tag.isSensitive ? t("yes") : t("no")}</td>
+        <td className="px-3 py-2">{tag.isMutedByDefault ? t("yes") : t("no")}</td>
         <td className="px-3 py-2 text-right">
           <button
             className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs"
@@ -153,7 +156,7 @@ function TagRowItem({ tag, reload }: { tag: TagRow; reload: () => void }) {
             type="button"
           >
             <Pencil className="h-3.5 w-3.5" />
-            Edit
+            {t("Edit")}
           </button>
         </td>
       </tr>
@@ -167,7 +170,7 @@ function TagRowItem({ tag, reload }: { tag: TagRow; reload: () => void }) {
         <input
           className={inputClass}
           onChange={(event) => setDraft({ ...draft, label: event.target.value })}
-          placeholder="Label"
+          placeholder={t("Label")}
           value={draft.label}
         />
       </td>
@@ -175,7 +178,7 @@ function TagRowItem({ tag, reload }: { tag: TagRow; reload: () => void }) {
         <input
           className={inputClass}
           onChange={(event) => setDraft({ ...draft, category: event.target.value })}
-          placeholder="Category (blank=none)"
+          placeholder={t("Category (blank=none)")}
           value={draft.category}
         />
       </td>
@@ -197,7 +200,7 @@ function TagRowItem({ tag, reload }: { tag: TagRow; reload: () => void }) {
           <input
             className={inputClass}
             onChange={(event) => setDraft({ ...draft, reason: event.target.value })}
-            placeholder="Reason (≥3)"
+            placeholder={t("Reason (≥3)")}
             value={draft.reason}
           />
           <div className="flex justify-end gap-2">
@@ -208,7 +211,7 @@ function TagRowItem({ tag, reload }: { tag: TagRow; reload: () => void }) {
               type="button"
             >
               {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-              Save
+              {t("Save")}
             </button>
             <button
               className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs"
@@ -217,7 +220,7 @@ function TagRowItem({ tag, reload }: { tag: TagRow; reload: () => void }) {
               type="button"
             >
               <X className="h-3.5 w-3.5" />
-              Cancel
+              {t("Cancel")}
             </button>
           </div>
           {err ? <p className="text-xs text-red-300">{err}</p> : null}
@@ -228,6 +231,7 @@ function TagRowItem({ tag, reload }: { tag: TagRow; reload: () => void }) {
 }
 
 function MergeSection({ tags, reload }: { tags: TagRow[]; reload: () => void }) {
+  const { t } = useAdminI18n();
   const [sourceId, setSourceId] = useState("");
   const [targetId, setTargetId] = useState("");
   const [reason, setReason] = useState("");
@@ -274,7 +278,7 @@ function MergeSection({ tags, reload }: { tags: TagRow[]; reload: () => void }) 
 
   return (
     <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
-      <h2 className="text-sm font-semibold">Merge tags</h2>
+      <h2 className="text-sm font-semibold">{t("Merge tags")}</h2>
       <p className="mt-1 text-xs text-[rgb(170,170,170)]">
         把 source 标签的角色全部迁到 target，并删除 source。输入 confirmation 为 MERGE 以确认。
       </p>
@@ -284,7 +288,7 @@ function MergeSection({ tags, reload }: { tags: TagRow[]; reload: () => void }) 
           onChange={(event) => setSourceId(event.target.value)}
           value={sourceId}
         >
-          <option value="">Source tag…</option>
+          <option value="">{t("Source tag…")}</option>
           {tags.map((tag) => (
             <option key={tag.id} value={tag.id}>
               {tag.slug} ({tag.characterCount})
@@ -296,7 +300,7 @@ function MergeSection({ tags, reload }: { tags: TagRow[]; reload: () => void }) 
           onChange={(event) => setTargetId(event.target.value)}
           value={targetId}
         >
-          <option value="">Target tag…</option>
+          <option value="">{t("Target tag…")}</option>
           {tags.map((tag) => (
             <option key={tag.id} value={tag.id}>
               {tag.slug} ({tag.characterCount})
@@ -306,13 +310,13 @@ function MergeSection({ tags, reload }: { tags: TagRow[]; reload: () => void }) 
         <input
           className={inputClass}
           onChange={(event) => setReason(event.target.value)}
-          placeholder="Reason (≥3)"
+          placeholder={t("Reason (≥3)")}
           value={reason}
         />
         <input
           className={cn(inputClass, "font-mono")}
           onChange={(event) => setConfirmation(event.target.value)}
-          placeholder="Type MERGE"
+          placeholder={t("Type MERGE")}
           value={confirmation}
         />
         <button
@@ -322,11 +326,11 @@ function MergeSection({ tags, reload }: { tags: TagRow[]; reload: () => void }) 
           type="button"
         >
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <GitMerge className="h-4 w-4" />}
-          Merge
+          {t("Merge")}
         </button>
       </div>
       {sourceId && sourceId === targetId ? (
-        <p className="mt-2 text-xs text-red-300">Source and target must differ.</p>
+        <p className="mt-2 text-xs text-red-300">{t("Source and target must differ.")}</p>
       ) : null}
       {err ? <p className="mt-2 text-xs text-red-300">{err}</p> : null}
       {result ? <p className="mt-2 text-xs text-emerald-300">{result}</p> : null}
@@ -335,6 +339,8 @@ function MergeSection({ tags, reload }: { tags: TagRow[]; reload: () => void }) 
 }
 
 function ToggleButton({ active, onClick }: { active: boolean; onClick: () => void }) {
+  const { t } = useAdminI18n();
+
   return (
     <button
       className={cn(
@@ -344,7 +350,7 @@ function ToggleButton({ active, onClick }: { active: boolean; onClick: () => voi
       onClick={onClick}
       type="button"
     >
-      {active ? "yes" : "no"}
+      {active ? t("yes") : t("no")}
     </button>
   );
 }

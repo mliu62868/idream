@@ -2,6 +2,7 @@
 // stubbed, so no Redis and no disk are touched. Asserts the generation.completed
 // finalize payload is enqueued to app.ai.finalize with the right dedupeKey,
 // mode, and assets — and that the failure path enqueues generation.failed.
+import { deflateSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   idempotencyKeys,
@@ -117,9 +118,76 @@ describe("processImageGenerate", () => {
     expect(payload.mode).toBe("image");
     expect(payload.generationJobId).toBe("job_img_1");
     expect(payload.assets).toEqual([
-      { key: "mock/images/seed_1-1.png", width: 1024, height: 1024, contentType: "image/png" },
-      { key: "mock/images/seed_1-2.png", width: 1024, height: 1024, contentType: "image/png" },
+      {
+        key: "gen/job_img_1/image-1.png",
+        width: 1024,
+        height: 1024,
+        contentType: "image/png",
+        providerKey: "mock/images/seed_1-1.png",
+      },
+      {
+        key: "gen/job_img_1/image-2.png",
+        width: 1024,
+        height: 1024,
+        contentType: "image/png",
+        providerKey: "mock/images/seed_1-2.png",
+      },
     ]);
+  });
+
+  it("hydrates reference image storage keys before calling the image provider", async () => {
+    const enqueue = vi.fn(async (_: EnqueueInput) => {});
+    const imageGenerate = vi.fn(async () => ({
+      ok: true as const,
+      data: {
+        assets: [{ key: "mock/images/seed_1-1.png", width: 1024, height: 1024 }],
+      },
+    }));
+    const providers = makeProviders({
+      image: { generate: imageGenerate },
+      blob: {
+        putPrivate: vi.fn(async (input) => ({
+          ok: true as const,
+          data: { key: input.key, size: input.body.byteLength },
+        })),
+        signGetUrl: vi.fn(async (input) => ({
+          ok: true as const,
+          data: { url: `https://blob.test/${encodeURIComponent(input.key)}` },
+        })),
+      },
+    });
+
+    await processImageGenerate(
+      imagePayload({
+        count: 1,
+        referenceImages: [
+          {
+            assetId: "anchor-1",
+            role: "identity_anchor",
+            storageKey: "identity/anchor-1.webp",
+            contentType: "image/webp",
+            width: 1024,
+            height: 1280,
+            weight: 1.25,
+          },
+        ],
+      }),
+      { enqueue, providers },
+    );
+
+    expect(imageGenerate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        referenceImages: [
+          expect.objectContaining({
+            assetId: "anchor-1",
+            role: "identity_anchor",
+            url: "https://blob.test/identity%2Fanchor-1.webp",
+            storageKey: "identity/anchor-1.webp",
+            weight: 1.25,
+          }),
+        ],
+      }),
+    );
   });
 
   it("downloads provider asset URLs before writing blobs", async () => {
@@ -154,7 +222,7 @@ describe("processImageGenerate", () => {
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(providers.blob.putPrivate).toHaveBeenCalledWith({
-      key: "pipeline/job_img_1.webp",
+      key: "gen/job_img_1/image-1.webp",
       body: new TextEncoder().encode("downloaded-image"),
       contentType: "image/webp",
     });
@@ -182,6 +250,39 @@ describe("processImageGenerate", () => {
     expect((input.payload as Record<string, unknown>).kind).toBe("generation.failed");
     expect(((input.payload as Record<string, unknown>).error as Record<string, unknown>).code).toBe(
       "empty_provider_result",
+    );
+  });
+
+  it("enqueues generation.failed when an image provider returns a degenerate PNG", async () => {
+    const enqueue = vi.fn(async (_: EnqueueInput) => {});
+    const providers = makeProviders({
+      image: {
+        generate: vi.fn(async () => ({
+          ok: true as const,
+          data: {
+            assets: [
+              {
+                key: "pipeline/blank.png",
+                width: 4,
+                height: 4,
+                contentType: "image/png",
+                body: whitePng(4, 4),
+              },
+            ],
+          },
+        })),
+      },
+    });
+
+    await processImageGenerate(imagePayload({ count: 1 }), { enqueue, providers });
+
+    expect(providers.blob.putPrivate).not.toHaveBeenCalled();
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    const [input] = enqueue.mock.calls[0];
+    expect(input.dedupeKey).toBe(idempotencyKeys.generationFinalize("job_img_1", "failed"));
+    expect((input.payload as Record<string, unknown>).kind).toBe("generation.failed");
+    expect(((input.payload as Record<string, unknown>).error as Record<string, unknown>).code).toBe(
+      "asset_quality_failed",
     );
   });
 
@@ -316,6 +417,34 @@ describe("processImageGenerate", () => {
   });
 });
 
+function whitePng(width: number, height: number) {
+  const rows = Array.from({ length: height }, () => {
+    const row = Buffer.alloc(1 + width * 3, 255);
+    row[0] = 0;
+    return row;
+  });
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
+  return new Uint8Array(Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", deflateSync(Buffer.concat(rows))),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]));
+}
+
+function pngChunk(type: string, data: Buffer) {
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length, 0);
+  return Buffer.concat([length, Buffer.from(type, "ascii"), data, Buffer.alloc(4)]);
+}
+
 describe("processVideoGenerate", () => {
   it("writes a single blob and enqueues generation.completed with seconds asset", async () => {
     const enqueue = vi.fn(async (_: EnqueueInput) => {});
@@ -325,7 +454,7 @@ describe("processVideoGenerate", () => {
 
     expect(providers.blob.putPrivate).toHaveBeenCalledTimes(1);
     expect(providers.blob.putPrivate).toHaveBeenCalledWith({
-      key: "mock/videos/seed_v1.mp4",
+      key: "gen/job_vid_1/video.mp4",
       body: mockVideoMp4Bytes(),
       contentType: "video/mp4",
     });
@@ -339,7 +468,12 @@ describe("processVideoGenerate", () => {
     expect(payload.kind).toBe("generation.completed");
     expect(payload.mode).toBe("video");
     expect(payload.assets).toEqual([
-      { key: "mock/videos/seed_v1.mp4", seconds: 6, contentType: "video/mp4" },
+      {
+        key: "gen/job_vid_1/video.mp4",
+        seconds: 6,
+        contentType: "video/mp4",
+        providerKey: "mock/videos/seed_v1.mp4",
+      },
     ]);
   });
 
@@ -372,7 +506,7 @@ describe("processVideoGenerate", () => {
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(providers.blob.putPrivate).toHaveBeenCalledWith({
-      key: "pipeline/videos/job_vid_1.mp4",
+      key: "gen/job_vid_1/video.mp4",
       body: new TextEncoder().encode("downloaded-video"),
       contentType: "video/mp4",
     });

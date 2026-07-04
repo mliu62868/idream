@@ -1,0 +1,281 @@
+- generic [active] [ref=e1]:
+  - button "Open Next.js Dev Tools" [ref=e8] [cursor=pointer]:
+    - img [ref=e9]
+  - alert [ref=e12]
+  - main [ref=e21]:
+    - generic [ref=e22]:
+      - complementary [ref=e23]:
+        - generic [ref=e24]:
+          - img "ourdream.ai" [ref=e26]
+          - navigation [ref=e28]:
+            - link "Create" [ref=e29] [cursor=pointer]:
+              - /url: /create
+              - img [ref=e30]
+              - generic [ref=e32]: Create
+            - link "Explore" [ref=e33] [cursor=pointer]:
+              - /url: /
+              - img [ref=e34]
+              - generic [ref=e37]: Explore
+            - link "Chat" [ref=e38] [cursor=pointer]:
+              - /url: /chat
+              - img [ref=e39]
+              - generic [ref=e41]: Chat
+            - link "Generate" [ref=e42] [cursor=pointer]:
+              - /url: /generate
+              - img [ref=e43]
+              - generic [ref=e46]: Generate
+            - link "My AI" [ref=e47] [cursor=pointer]:
+              - /url: /custom
+              - img [ref=e48]
+              - generic [ref=e51]: My AI
+            - link "Feed" [ref=e52] [cursor=pointer]:
+              - /url: /feed
+              - img [ref=e53]
+              - generic [ref=e56]: Feed
+            - link "Community" [ref=e57] [cursor=pointer]:
+              - /url: /community
+              - img [ref=e58]
+              - generic [ref=e62]: Community
+          - navigation [ref=e64]:
+            - link "Help Desk" [ref=e65] [cursor=pointer]:
+              - /url: /helpdesk
+              - img [ref=e66]
+              - generic [ref=e69]: Help Desk
+            - link "Safety Center" [ref=e70] [cursor=pointer]:
+              - /url: /safety/introduction
+              - img [ref=e71]
+              - generic [ref=e74]: Safety Center
+            - link "Discord" [ref=e75] [cursor=pointer]:
+              - /url: https://discord.gg/P47YU7je5D
+              - img [ref=e76]
+              - generic [ref=e81]: Discord
+            - link "More" [ref=e82] [cursor=pointer]:
+              - /url: /resources-hub
+              - img [ref=e83]
+              - generic [ref=e87]: More
+          - generic [ref=e88]:
+            - link "Profile" [ref=e90] [cursor=pointer]:
+              - /url: /profile
+              - img [ref=e91]
+              - text: Profile
+            - link "Upgrade" [ref=e94] [cursor=pointer]:
+              - /url: /upgrade
+              - img [ref=e95]
+              - text: Upgrade
+            - generic [ref=e97]:
+              - paragraph [ref=e98]: 2026 OURDREAM.AI
+              - paragraph [ref=e99]: "USA: Dream Studio USA, Inc."
+              - paragraph [ref=e100]: "Cyprus: TEKTOPIA LTD (HE 473775)"
+      - generic [ref=e101]:
+        - generic [ref=e103]:
+          - link "ourdream.ai" [ref=e104] [cursor=pointer]:
+            - /url: /
+            - img "ourdream.ai" [ref=e105]
+          - generic [ref=e106]:
+            - button "Search" [ref=e107]:
+              - img [ref=e108]
+            - searchbox "Search characters, guides, and generators" [ref=e111]
+          - generic [ref=e112]:
+            - link "Login" [ref=e113] [cursor=pointer]:
+              - /url: /login
+            - link "Join Free" [ref=e114] [cursor=pointer]:
+              - /url: /signup
+        - generic [ref=e117]:
+          - generic [ref=e118]:
+            - generic [ref=e119]:
+              - generic [ref=e120]:
+                - paragraph [ref=e121]: Balance
+                - paragraph [ref=e122]: 0 coins
+              - generic [ref=e123]: 5 coins
+            - generic [ref=e124]:
+              - text: Character
+              - combobox "Character" [ref=e125]:
+                - option "Melissa Burke" [selected]
+                - option "Summoned to Another World"
+                - option "Sarah Mercer"
+                - option "Alexa Reeves"
+                - option "Tamsin Jacobs - A 'Bullish' Request"
+                - 'option "Truth or Dare : Confessional"'
+                - 'option "Truth or Dare: Stepmother Edition"'
+                - option "Stephanie, your dumbass stepsis"
+                - option "Kennedy Graham"
+                - option "Eleanor Dawn"
+                - 'option "Bailey Price: One Safe Night"'
+                - option "Sophie - The Single Mother"
+            - generic [ref=e126]:
+              - checkbox "Freeplay" [ref=e127]
+              - text: Freeplay
+            - generic [ref=e128]:
+              - paragraph [ref=e129]: Consistency
+              - generic [ref=e130]:
+                - generic [ref=e131]:
+                  - img [ref=e132]
+                  - generic [ref=e136]: Identity ready
+                - generic [ref=e137]: v1
+              - generic [ref=e138]:
+                - button "balanced" [ref=e139]
+                - button "strict" [ref=e140]
+                - button "creative" [ref=e141]
+            - generic [ref=e142]:
+              - generic [ref=e143]:
+                - text: Orientation
+                - combobox "Orientation" [ref=e144]:
+                  - option "1:1"
+                  - option "4:5" [selected]
+                  - option "3:4"
+                  - option "9:16"
+                  - option "16:9"
+              - generic [ref=e145]:
+                - text: Count
+                - spinbutton "Count" [ref=e146]: "1"
+            - generic [ref=e147]:
+              - text: Model
+              - combobox "Model" [ref=e148]:
+                - option "Default image" [selected]
+            - generic [ref=e149]:
+              - paragraph [ref=e150]: Presets
+              - generic [ref=e151]:
+                - generic [ref=e152]:
+                  - text: Background
+                  - combobox "Background" [ref=e153]:
+                    - option "None" [selected]
+                    - option "Bedroom"
+                    - option "Studio"
+                - generic [ref=e154]:
+                  - text: Pose
+                  - combobox "Pose" [ref=e155]:
+                    - option "None" [selected]
+                    - option "Portrait"
+                - generic [ref=e156]:
+                  - text: Outfit
+                  - combobox "Outfit" [ref=e157]:
+                    - option "None" [selected]
+                    - option "Casual"
+            - generic [ref=e158]:
+              - paragraph [ref=e159]: My Presets
+              - generic [ref=e160]:
+                - textbox "Name this preset" [ref=e161]
+                - button "Save" [disabled] [ref=e162]
+              - paragraph [ref=e163]: Save your current background, pose, outfit, or prompt to reuse later.
+            - generic [ref=e164]:
+              - text: Scene Prompt
+              - textbox "Scene Prompt" [disabled] [ref=e165]:
+                - /placeholder: Premium control
+            - generic [ref=e166]:
+              - text: Negative Prompt
+              - textbox "Negative Prompt" [disabled] [ref=e167]:
+                - /placeholder: Premium control
+            - link "Custom prompt & negative prompt are Premium controls. Upgrade" [ref=e168] [cursor=pointer]:
+              - /url: /upgrade
+              - generic [ref=e169]: Custom prompt & negative prompt are Premium controls.
+              - generic [ref=e170]: Upgrade
+            - link "Need 5 coins · you have 0. Get coins" [ref=e171] [cursor=pointer]:
+              - /url: /upgrade
+              - generic [ref=e172]: Need 5 coins · you have 0.
+              - generic [ref=e173]: Get coins
+            - button "Generate" [disabled] [ref=e174]:
+              - img [ref=e175]
+              - text: Generate
+          - generic [ref=e178]:
+            - generic [ref=e179]:
+              - generic [ref=e180]:
+                - heading "Active Jobs" [level=2] [ref=e181]
+                - button "Refresh jobs" [ref=e182]:
+                  - img [ref=e183]
+              - generic [ref=e189]: No jobs yet.
+            - generic [ref=e190]:
+              - generic [ref=e191]:
+                - heading "Gallery" [level=2] [ref=e192]
+                - generic [ref=e193]:
+                  - button "Images" [ref=e194]
+                  - button "Liked" [ref=e195]
+                  - button "Manage" [disabled] [ref=e196]:
+                    - img [ref=e197]
+                    - text: Manage
+              - generic [ref=e202]:
+                - img [ref=e203]
+                - text: No media yet.
+        - generic [ref=e207]:
+          - generic [ref=e208]:
+            - heading "Related pages" [level=2] [ref=e209]
+            - img [ref=e210]
+          - generic [ref=e213]:
+            - link "AI Porn AI Porn helps adults create AI image concepts with character-aware controls, premium prompt options, and private gallery storage." [ref=e214] [cursor=pointer]:
+              - /url: /generate/ai-porn
+              - paragraph [ref=e215]: AI Porn
+              - paragraph [ref=e216]: AI Porn helps adults create AI image concepts with character-aware controls, premium prompt options, and private gallery storage.
+            - link "AI Hentai AI Hentai helps adults create AI image concepts with character-aware controls, premium prompt options, and private gallery storage." [ref=e217] [cursor=pointer]:
+              - /url: /generate/ai-hentai
+              - paragraph [ref=e218]: AI Hentai
+              - paragraph [ref=e219]: AI Hentai helps adults create AI image concepts with character-aware controls, premium prompt options, and private gallery storage.
+            - link "AI Blowjob Generator AI Blowjob Generator helps adults create AI image concepts with character-aware controls, premium prompt options, and private gallery storage." [ref=e220] [cursor=pointer]:
+              - /url: /generate/ai-blowjob-generator
+              - paragraph [ref=e221]: AI Blowjob Generator
+              - paragraph [ref=e222]: AI Blowjob Generator helps adults create AI image concepts with character-aware controls, premium prompt options, and private gallery storage.
+            - link "Gay AI Porn Generator Gay AI Porn Generator helps adults create AI image concepts with character-aware controls, premium prompt options, and private gallery storage." [ref=e223] [cursor=pointer]:
+              - /url: /generate/gay-ai-porn-generator
+              - paragraph [ref=e224]: Gay AI Porn Generator
+              - paragraph [ref=e225]: Gay AI Porn Generator helps adults create AI image concepts with character-aware controls, premium prompt options, and private gallery storage.
+            - link "AI Anime Porn Generator AI Anime Porn Generator helps adults create AI image concepts with character-aware controls, premium prompt options, and private gallery storage." [ref=e226] [cursor=pointer]:
+              - /url: /generate/ai-anime-porn-generator
+              - paragraph [ref=e227]: AI Anime Porn Generator
+              - paragraph [ref=e228]: AI Anime Porn Generator helps adults create AI image concepts with character-aware controls, premium prompt options, and private gallery storage.
+            - link "AI Cum Generator AI Cum Generator helps adults create AI image concepts with character-aware controls, premium prompt options, and private gallery storage." [ref=e229] [cursor=pointer]:
+              - /url: /generate/ai-cum-generator
+              - paragraph [ref=e230]: AI Cum Generator
+              - paragraph [ref=e231]: AI Cum Generator helps adults create AI image concepts with character-aware controls, premium prompt options, and private gallery storage.
+    - generic [ref=e233]:
+      - generic [ref=e234]:
+        - heading "Learn" [level=2] [ref=e235]
+        - navigation [ref=e236]:
+          - link "Resources Hub" [ref=e237] [cursor=pointer]:
+            - /url: /resources-hub
+          - link "AI Girlfriend Types" [ref=e238] [cursor=pointer]:
+            - /url: /type
+          - link "Comparisons" [ref=e239] [cursor=pointer]:
+            - /url: /comparison
+          - link "Videos" [ref=e240] [cursor=pointer]:
+            - /url: /videos
+          - link "AI Instructions" [ref=e241] [cursor=pointer]:
+            - /url: /ai-instructions
+      - generic [ref=e242]:
+        - heading "Popular" [level=2] [ref=e243]
+        - navigation [ref=e244]:
+          - link "AI Girlfriend" [ref=e245] [cursor=pointer]:
+            - /url: /ai-girlfriend
+          - link "AI Boyfriend" [ref=e246] [cursor=pointer]:
+            - /url: /ai-boyfriend
+          - link "AI Anime" [ref=e247] [cursor=pointer]:
+            - /url: /type/anime-ai-girlfriend
+          - link "Games" [ref=e248] [cursor=pointer]:
+            - /url: /games
+          - link "Romantasy" [ref=e249] [cursor=pointer]:
+            - /url: /romantasy
+          - link "our dream ai" [ref=e250] [cursor=pointer]:
+            - /url: /
+      - generic [ref=e251]:
+        - heading "Help" [level=2] [ref=e252]
+        - navigation [ref=e253]:
+          - link "Help Centre" [ref=e254] [cursor=pointer]:
+            - /url: https://help.ourdream.ai/
+          - link "Affiliates" [ref=e255] [cursor=pointer]:
+            - /url: https://www.ourdreamaiaffiliate.com/
+          - link "Help Desk" [ref=e256] [cursor=pointer]:
+            - /url: /helpdesk
+          - link "Safety" [ref=e257] [cursor=pointer]:
+            - /url: /safety/introduction
+      - generic [ref=e258]:
+        - generic [ref=e259]:
+          - paragraph [ref=e260]: 2026 OURDREAM.AI
+          - paragraph [ref=e261]: "USA: Dream Studio USA, Inc."
+          - paragraph [ref=e262]: "Cyprus: TEKTOPIA LTD (HE 473775)"
+        - generic [ref=e263]:
+          - link "Discord" [ref=e264] [cursor=pointer]:
+            - /url: https://discord.gg/P47YU7je5D
+            - img [ref=e265]
+          - link "Reddit" [ref=e267] [cursor=pointer]:
+            - /url: https://reddit.com/r/ourdream_ai
+            - img [ref=e268]
+          - link "Twitter / X" [ref=e273] [cursor=pointer]:
+            - /url: https://x.com/ourdreamai
+            - img [ref=e274]

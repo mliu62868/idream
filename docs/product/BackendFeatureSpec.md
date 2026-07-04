@@ -31,7 +31,7 @@
 | Media Gallery | Images/Videos/Liked、filter、manage、download、delete、like | 是，基础 |
 | Subscription & Entitlements | 计划、checkout、webhook、Premium/Deluxe 权益、dreamcoin | 是 |
 | Trust & Safety | 输入/输出审核、举报、审核队列、申诉、政策原因 | 是 |
-| User Library | My AI tabs、最近角色、Created、Group Chats、Packs、Presets | 是，基础 |
+| User Library | My AI tabs、最近角色、Created、Presets，以及 Group Chats/Packs 明确空态 | 是，基础 |
 | Profile & Account | 余额、订阅入口、兑换码、推荐奖励、偏好、语言、账号管理 | P0/P1 |
 | Feed & Community | Feed actions、leaderboard、creator profile、collections | P1 |
 | SEO Content | sitemap 内容、文章、比较页、metadata | P1 |
@@ -66,6 +66,7 @@ Notes:
 | `characters` | `id`, `creator_id`, `name`, `age`, `description`, `system_prompt`, `visibility`, `status`, `style`, `gender`, `relationship`, `voice_id`, `image_asset_id`, `created_at`, `updated_at` |
 | `character_drafts` | `id`, `owner_id`, `step`, `gender`, `style`, `appearance_json`, `hair_json`, `body_json`, `name`, `advanced_details`, `preview_job_id`, `created_at`, `updated_at` |
 | `character_preview_jobs` | `id`, `draft_id`, `status`, `provider`, `result_asset_id`, `error_code`, `created_at`, `completed_at` |
+| `character_visual_profiles` | `id`, `character_id`, `version`, `status`, `identity_prompt`, `negative_identity_prompt`, `face_traits_json`, `hair_traits_json`, `body_traits_json`, `signature_traits_json`, `anchor_asset_ids_json`, `reference_asset_ids_json`, `default_seed`, `adapter_refs_json`, `quality_score`, `consistency_score`, `created_from`, `created_at`, `updated_at` |
 | `character_tags` | `character_id`, `tag_id` |
 | `tags` | `id`, `slug`, `label`, `category`, `is_sensitive`, `is_muted_by_default` |
 | `character_stats` | `character_id`, `likes_count`, `chats_count`, `views_count`, `last_activity_at` |
@@ -106,7 +107,7 @@ Enums:
 | 实体 | 关键字段 |
 | --- | --- |
 | `generation_presets` | `id`, `owner_id`, `scope`, `type`, `category`, `label`, `controls_json`, `visibility`, `status`, `created_at`, `updated_at` |
-| `generation_jobs` | `id`, `user_id`, `character_id`, `mode`, `prompt`, `controls_json`, `preset_ids_json`, `model`, `orientation`, `output_count`, `status`, `cost_dreamcoins`, `provider`, `error_code`, `created_at`, `completed_at` |
+| `generation_jobs` | `id`, `user_id`, `character_id`, `visual_profile_id`, `visual_profile_version`, `consistency_mode`, `mode`, `prompt`, `controls_json`, `preset_ids_json`, `model`, `orientation`, `output_count`, `status`, `cost_dreamcoins`, `provider`, `seed`, `reference_asset_ids_json`, `error_code`, `created_at`, `completed_at` |
 | `media_assets` | `id`, `owner_id`, `source_job_id`, `character_id`, `type`, `url`, `thumbnail_url`, `visibility`, `safety_status`, `metadata_json`, `created_at` |
 | `media_likes` | `user_id`, `media_asset_id`, `created_at` |
 | `media_collections` | `id`, `owner_id`, `name`, `visibility`, `created_at` |
@@ -303,7 +304,7 @@ Use `/api/v1` for product APIs and keep public SEO pages server-rendered separat
 | `POST` | `/api/v1/characters/:id/like` | User | Like character |
 | `DELETE` | `/api/v1/characters/:id/like` | User | Unlike character |
 | `POST` | `/api/v1/characters/:id/report` | User/Public optional | Report character |
-| `GET` | `/api/v1/tags` | Public | Explore facets and category chips |
+| `GET` | `/api/v1/tags` | Public | Explore facets, category chips, and public character counts |
 | `GET` | `/api/v1/search/suggest` | Public after age gate | Search suggestions |
 
 Character list query:
@@ -401,8 +402,8 @@ Generation request（扁平形状为准；权威定义见本节，对齐代码 `
 | --- | --- | --- | --- |
 | `GET` | `/api/v1/library/recent` | User | Recent characters and sessions |
 | `GET` | `/api/v1/library/characters` | User | Saved/private characters |
-| `GET` | `/api/v1/library/group-chats` | User | Group chats |
-| `GET` | `/api/v1/library/packs` | User | Packs |
+| `GET` | `/api/v1/library/group-chats` | User | Deferred Group Chats empty state |
+| `GET` | `/api/v1/library/packs` | User | Deferred Packs empty state |
 | `GET` | `/api/v1/library/presets` | User | Presets |
 | `GET` | `/api/v1/library/created` | User | Created characters |
 
@@ -458,8 +459,8 @@ Generation request（扁平形状为准；权威定义见本节，对齐代码 `
 | `POST` | `/api/v1/admin/generation/jobs/:id/requeue` | Admin/Ops | Requeue eligible dead-letter/failed job with audit |
 | `POST` | `/api/v1/admin/generation/jobs/:id/discard` | Admin/Ops | Discard dead-letter job with reason (no refund replay) (P1) |
 | `GET` | `/api/v1/admin/generation/model-profiles` | Admin/Ops | List model profiles |
-| `POST` | `/api/v1/admin/generation/model-profiles` | Admin/Ops | Create draft model profile |
-| `PATCH` | `/api/v1/admin/generation/model-profiles/:id` | Admin/Ops | Edit draft model profile |
+| `POST` | `/api/v1/admin/generation/model-profiles` | Admin/Ops | Engineering diagnostics only: create draft model profile; not exposed in default Admin product flow |
+| `PATCH` | `/api/v1/admin/generation/model-profiles/:id` | Admin/Ops | Edit draft/disable profile; default Admin flow only operates seeded profiles |
 | `POST` | `/api/v1/admin/generation/model-profiles/:id/publish` | Admin | Publish active profile version |
 | `POST` | `/api/v1/admin/generation/model-profiles/:id/rollback` | Admin | Roll back to prior active version |
 | `GET` | `/api/v1/admin/generation/prompt-templates` | Admin/Ops | List prompt template versions |

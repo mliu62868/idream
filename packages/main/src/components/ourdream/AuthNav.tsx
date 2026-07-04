@@ -1,7 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { usePathname, useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
+import { authHrefForTarget, authNextTargetFromPath } from "./authRedirect";
 
 // SPEC: top-bar auth state. Reads /api/v1/me on mount; shows the signed-in user
 // (avatar + name + log out) when a session cookie is present, otherwise the
@@ -19,8 +21,22 @@ type MeResponse = {
 };
 
 export function AuthNav() {
+  return (
+    <Suspense fallback={<AuthNavLoading />}>
+      <AuthNavContent />
+    </Suspense>
+  );
+}
+
+function AuthNavContent() {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [hash, setHash] = useState("");
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const authTarget = authNextTargetFromPath(pathname, searchParams?.toString() ?? "", hash);
+  const loginHref = authHrefForTarget("/login", authTarget);
+  const signupHref = authHrefForTarget("/signup", authTarget);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -32,13 +48,23 @@ export function AuthNav() {
     return () => controller.abort();
   }, []);
 
+  useEffect(() => {
+    function syncHash() {
+      setHash(window.location.hash);
+    }
+
+    syncHash();
+    window.addEventListener("hashchange", syncHash);
+    return () => window.removeEventListener("hashchange", syncHash);
+  }, []);
+
   async function logout() {
     await fetch("/api/v1/auth/logout", { method: "POST" }).catch(() => undefined);
     window.location.href = "/";
   }
 
   // Reserve space while resolving to avoid a Login→name layout flash.
-  if (!loaded) return <div aria-hidden className="h-8 w-28" />;
+  if (!loaded) return <AuthNavLoading />;
 
   if (user) {
     const name = user.displayName ?? user.email.split("@")[0];
@@ -70,16 +96,20 @@ export function AuthNav() {
     <>
       <Link
         className="hidden text-[12px] font-bold leading-4 text-white md:block"
-        href="/login"
+        href={loginHref}
       >
         Login
       </Link>
       <Link
         className="rounded-full bg-[linear-gradient(0deg,#ff1cac,#fd5fc2_50%,#ff79d1)] px-4 py-2 text-[12px] font-bold leading-4 text-white"
-        href="/signup"
+        href={signupHref}
       >
         Join Free
       </Link>
     </>
   );
+}
+
+function AuthNavLoading() {
+  return <div aria-hidden className="h-8 w-28" />;
 }

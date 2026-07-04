@@ -16,11 +16,24 @@ type CharacterResponse = {
   };
 };
 
+type TagResponse = {
+  ok: boolean;
+  data?: {
+    items: Array<{
+      isMutedByDefault?: boolean;
+      label: string;
+      publicCharacterCount?: number;
+      slug: string;
+    }>;
+  };
+};
+
 export function ExploreWorkspace() {
   const [cards, setCards] = useState<CharacterCardData[]>([]);
   const [activeCategory, setActiveCategory] = useState("All");
+  const [availableCategories, setAvailableCategories] = useState<readonly string[]>(["All"]);
   const [query, setQuery] = useState("");
-  const [sort, setSort] = useState("popular");
+  const [sort, setSort] = useState("for-you");
   const [gender, setGender] = useState("female");
   const [style, setStyle] = useState("any");
   const [age, setAge] = useState("any");
@@ -116,10 +129,39 @@ export function ExploreWorkspace() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+
+    async function loadTags() {
+      try {
+        const response = await fetch("/api/v1/tags");
+        if (!response.ok) throw new Error("Tags unavailable");
+        const payload = (await response.json()) as TagResponse;
+        if (cancelled) return;
+        const visibleSlugs = new Set(
+          (payload.data?.items ?? [])
+            .filter((tag) => !tag.isMutedByDefault && (tag.publicCharacterCount ?? 0) > 0)
+            .map((tag) => tag.slug),
+        );
+        const nextCategories = categoryFilters.filter(
+          (category) => category === "All" || visibleSlugs.has(categoryParam(category)),
+        );
+        setAvailableCategories(nextCategories.length > 1 ? nextCategories : ["All"]);
+      } catch {
+        if (!cancelled) setAvailableCategories(["All"]);
+      }
+    }
+
+    void loadTags();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!initialized) return;
     const urlParams = new URLSearchParams();
     if (debouncedQuery.trim()) urlParams.set("q", debouncedQuery.trim());
-    if (sort !== "popular") urlParams.set("sort", sort);
+    if (sort !== "for-you") urlParams.set("sort", sort);
     if (gender !== "female") urlParams.set("gender", gender);
     if (style !== "any") urlParams.set("style", style);
     if (activeCategory !== "All") urlParams.set("tags", categoryParam(activeCategory));
@@ -141,11 +183,27 @@ export function ExploreWorkspace() {
     }
   }, [activeCategory, age, debouncedQuery, gender, initialized, limit, sort, style]);
 
+  const emptyState =
+    sort === "following"
+      ? {
+          description:
+            "Follow creators from Community to see their public characters here.",
+          title: "No followed characters yet",
+        }
+      : {
+          description:
+            "Try another search term, clear a category, or switch the gender, style, and age filters.",
+          title: "No characters found",
+        };
+
   return (
     <>
       <TopControls
         activeCategory={activeCategory}
         age={age}
+        categories={availableCategories.includes(activeCategory)
+          ? availableCategories
+          : [...availableCategories, activeCategory]}
         gender={gender}
         onCategoryChange={setActiveCategory}
         onAgeChange={setAge}
@@ -160,6 +218,8 @@ export function ExploreWorkspace() {
       <div className="pt-2 md:pt-6">
         <CharacterGrid
           cards={cards}
+          emptyDescription={emptyState.description}
+          emptyTitle={emptyState.title}
           error={error}
           hasMore={Boolean(nextCursor)}
           loading={!initialized || loading}
@@ -182,7 +242,7 @@ function parseExploreSearchParams(search: string) {
     gender: enumParam(params.get("gender"), ["female", "male", "trans", "any"], "female"),
     limit: clampLimit(params.get("limit")),
     query: params.get("q") ?? "",
-    sort: enumParam(params.get("sort"), ["popular", "newest"], "popular"),
+    sort: enumParam(params.get("sort"), ["for-you", "popular", "newest", "following"], "for-you"),
     style: enumParam(params.get("style"), ["any", "realistic", "anime", "hybrid"], "any"),
   };
 }

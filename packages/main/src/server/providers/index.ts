@@ -130,7 +130,10 @@ function createVoiceProvider(blob: BlobStore) {
     apiKey: env.PIPELINE_VOICE_API_TOKEN ?? env.PIPELINE_API_TOKEN,
     model: env.PIPELINE_VOICE_MODEL_DEFAULT,
     defaultVoiceId: env.PIPELINE_VOICE_DEFAULT_VOICE_ID,
-    timeoutMs: env.PIPELINE_TIMEOUT_MS,
+    sendInstructions: env.PIPELINE_VOICE_SEND_INSTRUCTIONS,
+    maxInputCharsPerRequest: env.PIPELINE_VOICE_CHUNK_CHARS,
+    maxInputChars: env.PIPELINE_VOICE_MAX_INPUT_CHARS,
+    timeoutMs: env.PIPELINE_VOICE_TIMEOUT_MS,
     blob,
   });
 }

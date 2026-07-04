@@ -18,18 +18,38 @@ import {
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import type { CharacterCardData } from "@/types/ourdream";
+import { authHrefForTarget } from "./authRedirect";
 
 type MediaItem = {
   id: string;
+  characterId?: string | null;
   type: "image" | "video";
   url: string;
   thumbnailUrl: string;
   contentType?: string | null;
   prompt: string | null;
   liked: boolean;
+  canEditIdentity?: boolean;
+  visualProfileId?: string | null;
+  visualProfileVersion?: number | null;
+  identity?: {
+    selectedAsCharacterImage?: boolean;
+    addedToReferences?: boolean;
+  };
+  provenance?: {
+    sourceType: string;
+    sourceId?: string | null;
+    label: string;
+    feedItemId?: string | null;
+    sourceCharacterId?: string | null;
+    sourceCharacterName?: string | null;
+    href?: string | null;
+  } | null;
 };
 
 type GenerationMode = "image" | "video";
+type ImageWorkflow = "presets" | "image-edit";
+type ConsistencyMode = "balanced" | "strict" | "creative";
 type WorkspaceView = "create" | "jobs" | "gallery";
 type GalleryTab = "image" | "video" | "liked";
 
@@ -45,6 +65,7 @@ type ModelConfig = {
 type PresetConfig = {
   id: string;
   type: "background" | "pose" | "outfit" | "mode";
+  scope?: "built_in" | "community";
   category: string | null;
   label: string;
 };
@@ -66,6 +87,9 @@ type BulkAction = "delete" | "visibility";
 type BulkVisibility = "private" | "public_pack" | "unlisted";
 
 type GenerationConfig = {
+  viewer?: {
+    authenticated: boolean;
+  };
   entitlements: Record<string, unknown>;
   dreamcoins: { balance: number };
   pricing: {
@@ -100,22 +124,38 @@ type ApiPayload<T> = {
   error?: { message: string; details?: unknown };
 };
 
+type PresetDraft = {
+  label: string;
+  modePresetId: string;
+  backgroundPresetId: string;
+  posePresetId: string;
+  outfitPresetId: string;
+  prompt: string;
+  savedAt: number;
+};
+
+const generatorPresetDraftStorageKey = "idream.generatePresetDraft.v1";
+
 export function GeneratorWorkspace() {
   const [config, setConfig] = useState<GenerationConfig | null>(null);
   const [characters, setCharacters] = useState<CharacterCardData[]>([]);
   const [characterId, setCharacterId] = useState("");
   const [freeplay, setFreeplay] = useState(false);
   const [mode, setMode] = useState<GenerationMode>("image");
+  const [imageWorkflow, setImageWorkflow] = useState<ImageWorkflow>("presets");
   const [prompt, setPrompt] = useState("");
   const [negativePrompt, setNegativePrompt] = useState("");
   const [orientation, setOrientation] = useState("4:5");
   const [count, setCount] = useState(1);
   const [model, setModel] = useState("");
+  const [consistencyMode, setConsistencyMode] = useState<ConsistencyMode>("balanced");
+  const [modePresetId, setModePresetId] = useState("");
   const [backgroundPresetId, setBackgroundPresetId] = useState("");
   const [posePresetId, setPosePresetId] = useState("");
   const [outfitPresetId, setOutfitPresetId] = useState("");
   const [jobs, setJobs] = useState<GenerationJob[]>([]);
   const [media, setMedia] = useState<MediaItem[]>([]);
+  const [identityMedia, setIdentityMedia] = useState<MediaItem[]>([]);
   const [galleryTab, setGalleryTab] = useState<GalleryTab>("image");
   const [view, setView] = useState<WorkspaceView>("create");
   const [status, setStatus] = useState("");
@@ -126,10 +166,14 @@ export function GeneratorWorkspace() {
   const [presetName, setPresetName] = useState("");
   const [manageMode, setManageMode] = useState(false);
   const [selectedMediaIds, setSelectedMediaIds] = useState<Set<string>>(() => new Set());
+  const [editSourceMediaId, setEditSourceMediaId] = useState("");
+  const [remixFeedItemId, setRemixFeedItemId] = useState("");
+  const [authReturnTarget, setAuthReturnTarget] = useState("/generate");
 
+  const videoModeEnabled = Boolean(config?.video.enabled && (config.video.models.length ?? 0) > 0);
   const availableModels = useMemo(
-    () => (mode === "video" ? (config?.video.models ?? []) : (config?.image.models ?? [])),
-    [config, mode],
+    () => (mode === "video" && videoModeEnabled ? (config?.video.models ?? []) : (config?.image.models ?? [])),
+    [config, mode, videoModeEnabled],
   );
   const selectedModel = useMemo(
     () => availableModels.find((item) => item.id === model) ?? availableModels[0],
@@ -146,20 +190,100 @@ export function GeneratorWorkspace() {
   const modeAvailable =
     mode === "image"
       ? (config?.image.models.length ?? 0) > 0
-      : Boolean(config?.video.enabled);
+      : videoModeEnabled;
+  const galleryTabs = useMemo<GalleryTab[]>(
+    () => (videoModeEnabled ? ["image", "video", "liked"] : ["image", "liked"]),
+    [videoModeEnabled],
+  );
   const canUsePrompt = Boolean(config?.entitlements.premium_controls);
   const insufficientBalance =
     Boolean(config) && estimatedCost > (config?.dreamcoins.balance ?? 0);
+  const imageEditMode = mode === "image" && imageWorkflow === "image-edit";
+  const anonymousViewer = config?.viewer?.authenticated === false;
+  const insufficientBalanceHref = anonymousViewer
+    ? authHrefForTarget("/signup", authReturnTarget)
+    : "/upgrade";
+  const selectedCharacter = useMemo(
+    () => characters.find((character) => character.id === characterId) ?? null,
+    [characterId, characters],
+  );
+  const imageEditCandidates = useMemo(
+    () =>
+      media
+        .filter((item) => item.type === "image")
+        .filter((item) => !isBuiltInMediaPlaceholderUrl(item.thumbnailUrl ?? item.url))
+        .slice(0, 6),
+    [media],
+  );
+  const selectedEditSource = useMemo(
+    () => imageEditCandidates.find((item) => item.id === editSourceMediaId) ?? null,
+    [editSourceMediaId, imageEditCandidates],
+  );
+  const identityReferenceCount = useMemo(() => {
+    const profile = selectedCharacter?.visualProfile;
+    const anchorCount = Array.isArray(profile?.anchorAssetIds) ? profile.anchorAssetIds.length : 0;
+    const referenceCount = Array.isArray(profile?.referenceAssetIds) ? profile.referenceAssetIds.length : 0;
+    return anchorCount + referenceCount;
+  }, [selectedCharacter]);
+  const identityTimeline = useMemo(
+    () =>
+      identityMedia
+        .filter((item) => item.type === "image" && item.characterId === selectedCharacter?.id)
+        .filter((item) =>
+          Boolean(
+            item.identity?.selectedAsCharacterImage ||
+              item.identity?.addedToReferences ||
+              item.visualProfileVersion,
+          ),
+        )
+        .slice(0, 4),
+    [identityMedia, selectedCharacter],
+  );
+  const editableIdentityCharacterIds = useMemo(
+    () =>
+      new Set(
+        characters
+          .filter((character) => character.canEditIdentity)
+          .map((character) => character.id),
+      ),
+    [characters],
+  );
   const presetsOf = useCallback(
     (type: PresetConfig["type"]) => (config?.presets ?? []).filter((preset) => preset.type === type),
     [config],
   );
   const canSubmit =
     !pending &&
-    (freeplay || Boolean(characterId)) &&
+    (imageEditMode || freeplay || Boolean(characterId)) &&
     Boolean(config) &&
     modeAvailable &&
+    (!imageEditMode || Boolean(selectedEditSource)) &&
     !insufficientBalance;
+
+  useEffect(() => {
+    const draft = readPresetDraft();
+    if (!draft) return;
+    const timer = window.setTimeout(() => {
+      setPresetName(draft.label);
+      setModePresetId(draft.modePresetId);
+      setBackgroundPresetId(draft.backgroundPresetId);
+      setPosePresetId(draft.posePresetId);
+      setOutfitPresetId(draft.outfitPresetId);
+      setPrompt(draft.prompt);
+      setMode("image");
+      setImageWorkflow("presets");
+      setStatus("Preset draft restored. Save it to add it to My Presets.");
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const target = `${window.location.pathname}${window.location.search}`;
+      setAuthReturnTarget(target || "/generate");
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   const refreshConfig = useCallback(async () => {
     try {
@@ -177,6 +301,11 @@ export function GeneratorWorkspace() {
       }
       setConfig(data);
       setConfigError("");
+      const nextVideoModeEnabled = data.video.enabled && data.video.models.length > 0;
+      if (!nextVideoModeEnabled) {
+        setMode((current) => (current === "video" ? "image" : current));
+        setGalleryTab((current) => (current === "video" ? "image" : current));
+      }
       const firstModel = data.image.models[0]?.id ?? "";
       setModel((current) => current || firstModel);
       setOrientation((current) => current || data.image.orientations[0] || "4:5");
@@ -211,6 +340,47 @@ export function GeneratorWorkspace() {
     setUserPresets(payload.data?.items ?? []);
   }, []);
 
+  const refreshIdentityMedia = useCallback(async () => {
+    const response = await fetch("/api/v1/media?type=image&limit=60");
+    if (!response.ok) return;
+    const payload = (await response.json()) as ApiPayload<{ items: MediaItem[] }>;
+    setIdentityMedia(payload.data?.items ?? []);
+  }, []);
+
+  const refreshCharacters = useCallback(async () => {
+    try {
+      const response = await fetch("/api/v1/characters?limit=12");
+      const payload = (await response.json()) as ApiPayload<{ items: CharacterCardData[] }>;
+      const searchParams = new URLSearchParams(window.location.search);
+      const desired = searchParams.get("characterId");
+      const nextRemixFeedItemId = searchParams.get("remixFeedItemId") ?? "";
+      const listedItems = payload.data?.items ?? [];
+      const desiredCharacter =
+        desired && !listedItems.some((character) => character.id === desired)
+          ? await fetchCharacterById(desired)
+          : null;
+      const items = desiredCharacter ? [desiredCharacter, ...listedItems] : listedItems;
+      setCharacters(items);
+      if (items.length === 0) {
+        setCharacterId("");
+        setFreeplay(true);
+        return;
+      }
+      if (nextRemixFeedItemId) {
+        setRemixFeedItemId(nextRemixFeedItemId);
+        setStatus((current) => current || "Remix ready from Feed. Adjust details and generate.");
+      }
+      const preset = desired && items.some((c) => c.id === desired) ? desired : "";
+      if (preset) setFreeplay(false);
+      setCharacterId((current) => current || preset || items[0]?.id || "");
+    } catch {
+      setCharacters([]);
+      setCharacterId("");
+      setFreeplay(true);
+      setStatus((current) => current || "Character catalog unavailable. Freeplay selected.");
+    }
+  }, []);
+
   const pollGeneration = useCallback(async (jobId: string) => {
     const response = await fetch(`/api/v1/generation/jobs/${jobId}`);
     if (!response.ok) return;
@@ -239,32 +409,11 @@ export function GeneratorWorkspace() {
       void refreshJobs();
       void refreshMedia("image");
       void refreshPresets();
-      fetch("/api/v1/characters?limit=12")
-        .then((response) => response.json())
-        .then((payload: ApiPayload<{ items: CharacterCardData[] }>) => {
-          const items = payload.data?.items ?? [];
-          setCharacters(items);
-          if (items.length === 0) {
-            setCharacterId("");
-            setFreeplay(true);
-            return;
-          }
-          // Chat → Generate deep link (P1-E): preselect the character passed as
-          // ?characterId=. Falls back to the first card when absent/unknown.
-          const desired = new URLSearchParams(window.location.search).get("characterId");
-          const preset = desired && items.some((c) => c.id === desired) ? desired : "";
-          if (preset) setFreeplay(false);
-          setCharacterId((current) => current || preset || items[0]?.id || "");
-        })
-        .catch(() => {
-          setCharacters([]);
-          setCharacterId("");
-          setFreeplay(true);
-          setStatus((current) => current || "Character catalog unavailable. Freeplay selected.");
-        });
+      void refreshIdentityMedia();
+      void refreshCharacters();
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [refreshConfig, refreshJobs, refreshMedia, refreshPresets]);
+  }, [refreshCharacters, refreshConfig, refreshIdentityMedia, refreshJobs, refreshMedia, refreshPresets]);
 
   useEffect(() => {
     const pendingJobs = jobs.filter((job) => !isTerminal(job.status));
@@ -280,10 +429,19 @@ export function GeneratorWorkspace() {
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!canSubmit) return;
+    if (!canSubmit) {
+      if (imageEditMode && !selectedEditSource) {
+        setStatus("Choose a source image to edit.");
+      }
+      return;
+    }
     setPending(true);
     setStatus("");
     try {
+      if (imageEditMode && selectedEditSource) {
+        await createMediaVariation(selectedEditSource, { outputCount });
+        return;
+      }
       const response = await fetch("/api/v1/generation/jobs", {
         method: "POST",
         headers: {
@@ -294,13 +452,16 @@ export function GeneratorWorkspace() {
           mode,
           characterId: freeplay ? undefined : characterId,
           freeplay,
+          consistencyMode,
           outputCount,
           prompt: canUsePrompt && prompt ? prompt : undefined,
           negativePrompt: canUsePrompt && negativePrompt ? negativePrompt : undefined,
+          remixFeedItemId: remixFeedItemId || undefined,
           controls: {
             orientation,
             model: selectedModel?.id,
             seconds: mode === "video" ? 4 : undefined,
+            modePresetId: mode === "image" && modePresetId ? modePresetId : undefined,
             backgroundPresetId: mode === "image" && backgroundPresetId ? backgroundPresetId : undefined,
             posePresetId: mode === "image" && posePresetId ? posePresetId : undefined,
             outfitPresetId: mode === "image" && outfitPresetId ? outfitPresetId : undefined,
@@ -367,17 +528,26 @@ export function GeneratorWorkspace() {
   }
 
   async function downloadMedia(id: string) {
+    setStatus("");
     const downloadWindow = openDownloadWindow();
-    const response = await fetch(`/api/v1/media/${id}/download`);
-    if (!response.ok) {
+    try {
+      const response = await fetch(`/api/v1/media/${id}/download`);
+      if (!response.ok) {
+        downloadWindow?.close();
+        setStatus("Download failed.");
+        return;
+      }
+      const payload = (await response.json()) as ApiPayload<{ url: string }>;
+      if (payload.data?.url) {
+        navigateDownloadWindow(downloadWindow, payload.data.url);
+        setStatus("Download started.");
+      } else {
+        downloadWindow?.close();
+        setStatus("Download failed.");
+      }
+    } catch {
       downloadWindow?.close();
-      return;
-    }
-    const payload = (await response.json()) as ApiPayload<{ url: string }>;
-    if (payload.data?.url) {
-      navigateDownloadWindow(downloadWindow, payload.data.url);
-    } else {
-      downloadWindow?.close();
+      setStatus("Download failed.");
     }
   }
 
@@ -395,6 +565,71 @@ export function GeneratorWorkspace() {
     setStatus(response.ok ? "Report submitted." : "Report failed.");
   }
 
+  async function runIdentityMediaAction(
+    item: MediaItem,
+    action: "use-as-character-image" | "add-to-identity",
+  ) {
+    if (item.type !== "image") return;
+    const targetCharacterId = item.characterId ?? (!freeplay ? characterId : "");
+    if (!targetCharacterId) {
+      setStatus("Choose a character before updating identity.");
+      return;
+    }
+    const response = await fetch(`/api/v1/media/${item.id}/${action}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ characterId: targetCharacterId }),
+    });
+    const payload = (await response.json().catch(() => null)) as ApiPayload<unknown> | null;
+    if (!response.ok || !payload?.ok) {
+      setStatus(payload?.error?.message ?? "Identity update failed.");
+      return;
+    }
+    setStatus(
+      action === "use-as-character-image"
+        ? "Character image updated."
+        : "Added to identity references.",
+    );
+    void refreshCharacters();
+    void refreshIdentityMedia();
+    void refreshMedia(galleryTab);
+  }
+
+  function canEditIdentityForMedia(item: MediaItem) {
+    if (item.characterId) return Boolean(item.canEditIdentity);
+    const targetCharacterId = !freeplay ? characterId : "";
+    return Boolean(targetCharacterId && editableIdentityCharacterIds.has(targetCharacterId));
+  }
+
+  async function createMediaVariation(item: MediaItem, options?: { outputCount?: number }) {
+    if (item.type !== "image") return;
+    try {
+      const response = await fetch(`/api/v1/media/${item.id}/variation`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": crypto.randomUUID(),
+        },
+        body: JSON.stringify({ outputCount: options?.outputCount ?? 1, consistencyMode }),
+      });
+      const payload = (await response.json().catch(() => null)) as
+        | ApiPayload<{ job: GenerationJob; assets: MediaItem[] }>
+        | null;
+      if (!response.ok || !payload?.ok || !payload.data?.job) {
+        setStatus(payload?.error?.message ?? "Variation failed.");
+        return;
+      }
+      const job = payload.data.job;
+      setJobs((current) => [job, ...current.filter((itemJob) => itemJob.id !== job.id)]);
+      setStatus(imageEditMode ? "Image edit queued." : "Variation queued.");
+      setView("jobs");
+      void refreshConfig();
+      void pollGeneration(job.id);
+    } catch {
+      setStatus("Variation failed. Check your connection and try again.");
+    }
+  }
+
   function switchGallery(tab: GalleryTab) {
     setGalleryTab(tab);
     setView("gallery");
@@ -409,13 +644,16 @@ export function GeneratorWorkspace() {
       setStatus("Name your preset before saving.");
       return;
     }
-    const controls: Record<string, string> = {};
-    if (backgroundPresetId) controls.backgroundPresetId = backgroundPresetId;
-    if (posePresetId) controls.posePresetId = posePresetId;
-    if (outfitPresetId) controls.outfitPresetId = outfitPresetId;
-    if (canUsePrompt && prompt.trim()) controls.prompt = prompt.trim();
+    const controls = currentPresetControls({
+      backgroundPresetId,
+      canUsePrompt,
+      modePresetId,
+      outfitPresetId,
+      posePresetId,
+      prompt,
+    });
     if (Object.keys(controls).length === 0) {
-      setStatus("Pick a background, pose, outfit, or prompt before saving a preset.");
+      setStatus("Pick a mode, background, pose, outfit, or prompt before saving a preset.");
       return;
     }
     try {
@@ -426,10 +664,24 @@ export function GeneratorWorkspace() {
       });
       const payload = (await response.json()) as ApiPayload<{ preset: UserPreset }>;
       if (!response.ok || !payload.ok) {
+        if (response.status === 401) {
+          savePresetDraft({
+            backgroundPresetId,
+            label,
+            modePresetId,
+            outfitPresetId,
+            posePresetId,
+            prompt: canUsePrompt ? prompt.trim() : "",
+            savedAt: Date.now(),
+          });
+          window.location.assign(authHrefForTarget("/signup", "/generate"));
+          return;
+        }
         setStatus(payload.error?.message ?? "Couldn't save preset.");
         return;
       }
       setPresetName("");
+      clearPresetDraft();
       setStatus(`Saved preset "${label}".`);
       void refreshPresets();
     } catch {
@@ -439,6 +691,7 @@ export function GeneratorWorkspace() {
 
   function applyPreset(preset: UserPreset) {
     const controls = isRecord(preset.controls) ? preset.controls : {};
+    setModePresetId(presetControlString(controls, "modePresetId"));
     setBackgroundPresetId(presetControlString(controls, "backgroundPresetId"));
     setPosePresetId(presetControlString(controls, "posePresetId"));
     setOutfitPresetId(presetControlString(controls, "outfitPresetId"));
@@ -455,7 +708,10 @@ export function GeneratorWorkspace() {
       if (!response.ok) {
         setStatus("Couldn't delete preset.");
         void refreshPresets();
+        return;
       }
+      setStatus("Preset deleted.");
+      await refreshPresets();
     } catch {
       setStatus("Couldn't delete preset. Check your connection and try again.");
       void refreshPresets();
@@ -561,83 +817,272 @@ export function GeneratorWorkspace() {
               </div>
             </div>
 
-            <div className="mt-4 grid grid-cols-2 rounded-full bg-[rgb(36,36,36)] p-1">
-              <button
-                className={`h-10 rounded-full text-[13px] font-bold ${
-                  mode === "image" ? "bg-white text-[rgb(13,13,13)]" : "text-[rgb(170,170,170)]"
-                }`}
-                onClick={() => {
-                  setMode("image");
-                  setModel(config?.image.models[0]?.id ?? "");
-                  setOrientation(config?.image.orientations[0] ?? "4:5");
-                }}
-                type="button"
-              >
-                Image
-              </button>
-              <button
-                className={`h-10 rounded-full text-[13px] font-bold ${
-                  mode === "video" ? "bg-white text-[rgb(13,13,13)]" : "text-[rgb(170,170,170)]"
-                }`}
-                disabled={!config?.video.enabled}
-                onClick={() => {
-                  const firstVideoModel = config?.video.models[0];
-                  setMode("video");
-                  setModel(firstVideoModel?.id ?? "");
-                  setOrientation(firstVideoModel?.orientations?.[0] ?? "9:16");
-                  setCount(1);
-                }}
-                type="button"
-              >
-                Video Beta
-              </button>
-            </div>
-
-            <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
-              Character
-              <select
-                className="mt-2 h-12 w-full rounded-[10px] bg-[rgb(36,36,36)] px-4 text-[13px] font-semibold text-white outline-none"
-                disabled={freeplay}
-                onChange={(event) => setCharacterId(event.target.value)}
-                value={characterId}
-              >
-                {characters.map((character) => (
-                  <option key={character.id} value={character.id}>
-                    {character.title}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="mt-3 flex items-center gap-2 text-[13px] font-semibold text-white">
-              <input
-                checked={freeplay}
-                className="h-4 w-4 accent-[rgb(255,64,180)]"
-                onChange={(event) => setFreeplay(event.target.checked)}
-                type="checkbox"
-              />
-              Freeplay
-            </label>
-
-            <div className="mt-4 grid grid-cols-2 gap-3">
-              <label className="block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
-                Orientation
-                <select
-                  className="mt-2 h-11 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] font-semibold text-white outline-none"
-                  onChange={(event) => setOrientation(event.target.value)}
-                  value={orientation}
+            {videoModeEnabled && (
+              <div className="mt-4 grid grid-cols-2 rounded-full bg-[rgb(36,36,36)] p-1">
+                <button
+                  className={`h-10 rounded-full text-[13px] font-bold ${
+                    mode === "image" ? "bg-white text-[rgb(13,13,13)]" : "text-[rgb(170,170,170)]"
+                  }`}
+                  onClick={() => {
+                    setMode("image");
+                    setModel(config?.image.models[0]?.id ?? "");
+                    setOrientation(config?.image.orientations[0] ?? "4:5");
+                  }}
+                  type="button"
                 >
-                  {(selectedModel?.orientations?.length
-                    ? selectedModel.orientations
-                    : config?.image.orientations ?? ["1:1", "4:5", "3:4", "9:16", "16:9"]
-                  ).map((item) => (
-                    <option key={item} value={item}>
+                  Image
+                </button>
+                <button
+                  className={`h-10 rounded-full text-[13px] font-bold ${
+                    mode === "video" ? "bg-white text-[rgb(13,13,13)]" : "text-[rgb(170,170,170)]"
+                  }`}
+                  onClick={() => {
+                    const firstVideoModel = config?.video.models[0];
+                    setMode("video");
+                    setModel(firstVideoModel?.id ?? "");
+                    setOrientation(firstVideoModel?.orientations?.[0] ?? "9:16");
+                    setCount(1);
+                  }}
+                  type="button"
+                >
+                  Video
+                </button>
+              </div>
+            )}
+
+            {mode === "image" && (
+              <div className="mt-4 grid grid-cols-2 rounded-full bg-[rgb(36,36,36)] p-1">
+                {(["presets", "image-edit"] as const).map((item) => (
+                  <button
+                    aria-pressed={imageWorkflow === item}
+                    className={`h-10 rounded-full text-[13px] font-bold ${
+                      imageWorkflow === item
+                        ? "bg-white text-[rgb(13,13,13)]"
+                        : "text-[rgb(170,170,170)]"
+                    }`}
+                    key={item}
+                    onClick={() => {
+                      setImageWorkflow(item);
+                      setStatus("");
+                      if (item === "image-edit") setGalleryTab("image");
+                    }}
+                    type="button"
+                  >
+                    {item === "presets" ? "Presets" : "Image Edit"}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {imageEditMode && (
+              <div
+                className="mt-4 rounded-[10px] border border-white/10 bg-black/25 p-3"
+                data-testid="image-edit-panel"
+              >
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+                      Source image
+                    </p>
+                    <p className="mt-1 text-[12px] font-medium text-[rgb(170,170,170)]">
+                      Pick a Gallery image to create a more-like-this edit.
+                    </p>
+                  </div>
+                  <button
+                    className="h-8 rounded-full bg-[rgb(36,36,36)] px-3 text-[11px] font-black text-white"
+                    onClick={() => {
+                      setView("gallery");
+                      void refreshMedia("image");
+                    }}
+                    type="button"
+                  >
+                    Open Gallery
+                  </button>
+                </div>
+                {imageEditCandidates.length === 0 ? (
+                  <p className="rounded-[8px] bg-[rgb(36,36,36)] p-3 text-[12px] font-semibold text-[rgb(170,170,170)]">
+                    No editable images yet. Generate an image first, then return to Image Edit.
+                  </p>
+                ) : (
+                  <div className="grid grid-cols-3 gap-2">
+                    {imageEditCandidates.map((item, index) => {
+                      const source = item.thumbnailUrl ?? item.url;
+                      const selected = item.id === selectedEditSource?.id;
+                      return (
+                        <button
+                          aria-label={`Select image edit source ${index + 1}`}
+                          aria-pressed={selected}
+                          className={`relative aspect-square overflow-hidden rounded-[8px] bg-[rgb(36,36,36)] ${
+                            selected ? "ring-2 ring-[rgb(255,48,170)]" : ""
+                          }`}
+                          data-media-id={item.id}
+                          data-testid="image-edit-source-card"
+                          key={item.id}
+                          onClick={() => setEditSourceMediaId(item.id)}
+                          type="button"
+                        >
+                          <Image
+                            alt=""
+                            className="object-cover object-top"
+                            fill
+                            loading={index < 3 ? "eager" : "lazy"}
+                            sizes="96px"
+                            src={source}
+                            unoptimized={isPrivateMediaUrl(source)}
+                          />
+                          {selected && (
+                            <span className="absolute right-1 top-1 grid h-5 w-5 place-items-center rounded-full bg-[rgb(255,48,170)] text-white">
+                              <CheckSquare className="h-3.5 w-3.5" />
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {!imageEditMode && (
+              <>
+                <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+                  Character
+                  <select
+                    aria-label="Character"
+                    className="mt-2 h-12 w-full rounded-[10px] bg-[rgb(36,36,36)] px-4 text-[13px] font-semibold text-white outline-none"
+                    disabled={freeplay}
+                    onChange={(event) => setCharacterId(event.target.value)}
+                    value={characterId}
+                  >
+                    {characters.map((character) => (
+                      <option key={character.id} value={character.id}>
+                        {character.title}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="mt-3 flex items-center gap-2 text-[13px] font-semibold text-white">
+                  <input
+                    checked={freeplay}
+                    className="h-4 w-4 accent-[rgb(255,64,180)]"
+                    onChange={(event) => setFreeplay(event.target.checked)}
+                    type="checkbox"
+                  />
+                  Freeplay
+                </label>
+              </>
+            )}
+
+            {mode === "image" && !freeplay && !imageEditMode && (
+              <div className="mt-4">
+                <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+                  Consistency
+                </p>
+                <div className="mt-2 flex min-h-10 items-center justify-between gap-3 rounded-[10px] bg-black/25 px-3 py-2 text-xs">
+                  <span className="inline-flex min-w-0 items-center gap-2 font-bold text-white">
+                    <ImageIcon className="h-4 w-4 shrink-0 text-[rgb(255,64,180)]" />
+                    <span className="truncate">
+                      {selectedCharacter?.visualProfile
+                        ? `Identity locked · v${selectedCharacter.visualProfile.version}`
+                        : "Set up identity image"}
+                    </span>
+                  </span>
+                  <span className="shrink-0 text-[rgb(170,170,170)]">
+                    {selectedCharacter?.visualProfile ? `${identityReferenceCount} refs` : "No anchor"}
+                  </span>
+                </div>
+                {!selectedCharacter?.visualProfile && (
+                  <div className="mt-2 rounded-[10px] border border-[rgb(255,184,112)]/30 bg-[rgb(36,28,18)] p-3 text-[12px] font-semibold leading-5 text-[rgb(255,184,112)]">
+                    Generate a first image, then choose Use as character image in Gallery to lock this character&apos;s visual identity.
+                  </div>
+                )}
+                {identityTimeline.length > 0 && (
+                  <div className="mt-2 rounded-[10px] bg-black/25 p-3" data-testid="identity-timeline">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+                        Identity timeline
+                      </p>
+                      <span className="text-[11px] font-semibold text-[rgb(170,170,170)]">
+                        v{selectedCharacter?.visualProfile?.version ?? identityTimeline[0]?.visualProfileVersion ?? 1}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-4 gap-2">
+                      {identityTimeline.map((item) => (
+                        <div
+                          className="relative aspect-square overflow-hidden rounded-[8px] bg-[rgb(36,36,36)]"
+                          key={item.id}
+                        >
+                          <Image
+                            alt="Identity reference"
+                            className="object-cover object-top"
+                            fill
+                            sizes="64px"
+                            src={item.thumbnailUrl ?? item.url}
+                          />
+                          <span className="absolute bottom-1 left-1 rounded-full bg-black/70 px-1.5 py-0.5 text-[9px] font-black text-white">
+                            {item.identity?.selectedAsCharacterImage ? "Main" : `v${item.visualProfileVersion ?? "?"}`}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div className="mt-2 grid grid-cols-3 rounded-full bg-[rgb(36,36,36)] p-1">
+                  {(["balanced", "strict", "creative"] as const).map((item) => (
+                    <button
+                      className={`h-9 rounded-full text-[12px] font-bold capitalize ${
+                        consistencyMode === item
+                          ? "bg-white text-[rgb(13,13,13)]"
+                          : "text-[rgb(170,170,170)]"
+                      }`}
+                      key={item}
+                      onClick={() => setConsistencyMode(item)}
+                      type="button"
+                    >
                       {item}
-                    </option>
+                    </button>
                   ))}
-                </select>
-              </label>
-              <label className="block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+                </div>
+              </div>
+            )}
+
+            {!imageEditMode ? (
+              <div className="mt-4 grid grid-cols-2 gap-3">
+                <label className="block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+                  Orientation
+                  <select
+                    className="mt-2 h-11 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] font-semibold text-white outline-none"
+                    onChange={(event) => setOrientation(event.target.value)}
+                    value={orientation}
+                  >
+                    {(selectedModel?.orientations?.length
+                      ? selectedModel.orientations
+                      : config?.image.orientations ?? ["1:1", "4:5", "3:4", "9:16", "16:9"]
+                    ).map((item) => (
+                      <option key={item} value={item}>
+                        {item}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+                  Count
+                  <input
+                    className="mt-2 h-11 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] font-semibold text-white outline-none"
+                    max={maxCount}
+                    min={1}
+                    onChange={(event) =>
+                      setCount(Math.max(1, Math.min(maxCount, Number(event.target.value))))
+                    }
+                    disabled={mode === "video"}
+                    type="number"
+                    value={outputCount}
+                  />
+                </label>
+              </div>
+            ) : (
+              <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
                 Count
                 <input
                   className="mt-2 h-11 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] font-semibold text-white outline-none"
@@ -646,43 +1091,50 @@ export function GeneratorWorkspace() {
                   onChange={(event) =>
                     setCount(Math.max(1, Math.min(maxCount, Number(event.target.value))))
                   }
-                  disabled={mode === "video"}
                   type="number"
                   value={outputCount}
                 />
               </label>
-            </div>
+            )}
 
-            <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
-              Model
-              <select
-                className="mt-2 h-11 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] font-semibold text-white outline-none"
-                onChange={(event) => {
-                  const nextId = event.target.value;
-                  const nextModel = availableModels.find((item) => item.id === nextId);
-                  setModel(nextId);
-                  if (nextModel?.orientations?.[0]) {
-                    setOrientation((current) =>
-                      nextModel.orientations?.includes(current)
-                        ? current
-                        : (nextModel.orientations?.[0] ?? current),
-                    );
-                  }
-                }}
-                value={model}
-              >
-                {availableModels.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+            {!imageEditMode && (
+              <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+                Model
+                <select
+                  className="mt-2 h-11 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] font-semibold text-white outline-none"
+                  onChange={(event) => {
+                    const nextId = event.target.value;
+                    const nextModel = availableModels.find((item) => item.id === nextId);
+                    setModel(nextId);
+                    if (nextModel?.orientations?.[0]) {
+                      setOrientation((current) =>
+                        nextModel.orientations?.includes(current)
+                          ? current
+                          : (nextModel.orientations?.[0] ?? current),
+                      );
+                    }
+                  }}
+                  value={model}
+                >
+                  {availableModels.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
 
-            {mode === "image" && (config?.presets?.length ?? 0) > 0 && (
+            {mode === "image" && !imageEditMode && (config?.presets?.length ?? 0) > 0 && (
               <div className="mt-4 grid gap-3">
                 <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">Presets</p>
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-2 gap-2">
+                  <PresetSelect
+                    label="Mode preset"
+                    onChange={setModePresetId}
+                    options={presetsOf("mode")}
+                    value={modePresetId}
+                  />
                   <PresetSelect
                     label="Background"
                     onChange={setBackgroundPresetId}
@@ -705,13 +1157,14 @@ export function GeneratorWorkspace() {
               </div>
             )}
 
-            {mode === "image" && (
+            {mode === "image" && !imageEditMode && (
               <div className="mt-4 grid gap-3" data-testid="my-presets">
                 <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
                   My Presets
                 </p>
                 <div className="flex gap-2">
                   <input
+                    aria-label="Preset name"
                     className="h-11 flex-1 rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] font-semibold text-white outline-none"
                     onChange={(event) => setPresetName(event.target.value)}
                     placeholder="Name this preset"
@@ -766,29 +1219,34 @@ export function GeneratorWorkspace() {
               </div>
             )}
 
-            <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
-              Prompt
-              <textarea
-                className="mt-2 min-h-24 w-full rounded-[10px] bg-[rgb(36,36,36)] p-4 text-[13px] font-semibold text-white outline-none disabled:text-[rgb(114,113,112)]"
-                disabled={!canUsePrompt}
-                onChange={(event) => setPrompt(event.target.value)}
-                placeholder={canUsePrompt ? "Scene, pose, mood" : "Premium control"}
-                value={prompt}
-              />
-            </label>
+            {!imageEditMode && (
+              <>
+                <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+                  Scene Prompt
+                  <textarea
+                    aria-label="Prompt"
+                    className="mt-2 min-h-24 w-full rounded-[10px] bg-[rgb(36,36,36)] p-4 text-[13px] font-semibold text-white outline-none disabled:text-[rgb(114,113,112)]"
+                    disabled={!canUsePrompt}
+                    onChange={(event) => setPrompt(event.target.value)}
+                    placeholder={canUsePrompt ? "Scene, pose, mood" : "Premium control"}
+                    value={prompt}
+                  />
+                </label>
 
-            <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
-              Negative Prompt
-              <input
-                className="mt-2 h-11 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] font-semibold text-white outline-none disabled:text-[rgb(114,113,112)]"
-                disabled={!canUsePrompt}
-                onChange={(event) => setNegativePrompt(event.target.value)}
-                placeholder={canUsePrompt ? "Artifacts to avoid" : "Premium control"}
-                value={negativePrompt}
-              />
-            </label>
+                <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+                  Negative Prompt
+                  <input
+                    className="mt-2 h-11 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] font-semibold text-white outline-none disabled:text-[rgb(114,113,112)]"
+                    disabled={!canUsePrompt}
+                    onChange={(event) => setNegativePrompt(event.target.value)}
+                    placeholder={canUsePrompt ? "Artifacts to avoid" : "Premium control"}
+                    value={negativePrompt}
+                  />
+                </label>
+              </>
+            )}
 
-            {!canUsePrompt && (
+            {!imageEditMode && !canUsePrompt && (
               <Link
                 className="mt-2 flex items-center justify-between gap-2 rounded-[10px] bg-[rgb(36,36,36)] px-4 py-3 text-[12px] font-semibold text-[rgb(190,190,190)]"
                 href="/upgrade"
@@ -804,13 +1262,17 @@ export function GeneratorWorkspace() {
               <Link
                 className="mt-3 flex items-center justify-between gap-2 rounded-[10px] border border-[rgb(255,184,112)]/40 bg-[rgb(36,28,18)] px-4 py-3 text-[12px] font-semibold text-[rgb(255,184,112)]"
                 data-testid="generator-insufficient-balance"
-                href="/upgrade"
+                href={insufficientBalanceHref}
               >
                 <span>
-                  Need {estimatedCost} coins · you have {config?.dreamcoins.balance ?? 0}.
+                  {anonymousViewer
+                    ? remixFeedItemId
+                      ? "Join free to get starter coins for this remix."
+                      : "Join free to get starter coins before generating."
+                    : `Need ${estimatedCost} coins · you have ${config?.dreamcoins.balance ?? 0}.`}
                 </span>
                 <span className="rounded-full bg-[rgb(255,48,170)] px-3 py-1 text-[11px] font-black text-white">
-                  Get coins
+                  {anonymousViewer ? "Join Free" : "Get coins"}
                 </span>
               </Link>
             )}
@@ -821,7 +1283,7 @@ export function GeneratorWorkspace() {
               type="submit"
             >
               <WandSparkles className="h-4 w-4" />
-              {pending ? "Queuing..." : "Generate"}
+              {pending ? (imageEditMode ? "Queuing edit..." : "Queuing...") : imageEditMode ? "Create edit" : "Generate"}
             </button>
             {configError && (
               <p className="mt-4 text-[13px] font-medium text-[rgb(255,184,112)]">
@@ -856,7 +1318,12 @@ export function GeneratorWorkspace() {
                   </div>
                 )}
                 {jobs.map((job) => (
-                  <div className="rounded-[10px] bg-[rgb(36,36,36)] p-4" key={job.id}>
+                  <div
+                    className="rounded-[10px] bg-[rgb(36,36,36)] p-4"
+                    data-generation-job-id={job.id}
+                    data-testid="generator-job-card"
+                    key={job.id}
+                  >
                     <div className="flex items-center justify-between gap-3">
                       <div>
                         <p className="text-[13px] font-black text-white">
@@ -880,8 +1347,8 @@ export function GeneratorWorkspace() {
                           Retry
                         </button>
                         <p className="text-[12px] font-medium text-[rgb(170,170,170)]">
-                          Provider hiccup — your coins were refunded. Retry is free of new charges
-                          until it succeeds.
+                          Provider hiccup — your coins were refunded. Retry will reserve the normal
+                          cost again.
                         </p>
                       </div>
                     )}
@@ -909,7 +1376,7 @@ export function GeneratorWorkspace() {
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                 <h2 className="text-[16px] font-black text-white">Gallery</h2>
                 <div className="flex flex-wrap gap-2">
-                  {(["image", "video", "liked"] as const).map((tab) => (
+                  {galleryTabs.map((tab) => (
                     <button
                       className={`h-9 rounded-full px-4 text-[12px] font-bold ${
                         galleryTab === tab
@@ -981,7 +1448,7 @@ export function GeneratorWorkspace() {
                 </div>
               )}
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {media.map((item) => {
+                {media.map((item, index) => {
                   const source = item.thumbnailUrl ?? item.url;
                   const isUnavailable =
                     failedMediaIds.has(item.id) || isBuiltInMediaPlaceholderUrl(source);
@@ -1008,6 +1475,7 @@ export function GeneratorWorkspace() {
                       ) : (
                         <MediaPreview
                           item={item}
+                          loading={index < 3 ? "eager" : "lazy"}
                           onError={() =>
                             setFailedMediaIds((current) => {
                               if (current.has(item.id)) return current;
@@ -1037,27 +1505,68 @@ export function GeneratorWorkspace() {
                           </span>
                         </button>
                       ) : (
-                        <div className="absolute inset-x-2 bottom-2 flex justify-end gap-2 opacity-100 md:opacity-0 md:transition-opacity md:group-hover:opacity-100">
-                          <IconButton
-                            label={item.liked ? "Unlike" : "Like"}
-                            onClick={() => toggleLike(item)}
-                          >
-                            <Heart
-                              className={`h-4 w-4 ${
-                                item.liked ? "fill-current text-[rgb(255,48,170)]" : ""
-                              }`}
-                            />
-                          </IconButton>
-                          <IconButton label="Download" onClick={() => downloadMedia(item.id)}>
-                            <Download className="h-4 w-4" />
-                          </IconButton>
-                          <IconButton label="Report" onClick={() => reportMedia(item.id)}>
-                            <Flag className="h-4 w-4" />
-                          </IconButton>
-                          <IconButton label="Delete" onClick={() => deleteMedia(item.id)}>
-                            <Trash2 className="h-4 w-4" />
-                          </IconButton>
-                        </div>
+                        <>
+                          {item.type === "image" && (
+                            <div className="absolute left-2 top-2 flex gap-2 opacity-100 md:opacity-0 md:transition-opacity md:group-hover:opacity-100">
+                              {canEditIdentityForMedia(item) && (
+                                <>
+                                  <IconButton
+                                    label="Use as character image"
+                                    onClick={() =>
+                                      void runIdentityMediaAction(item, "use-as-character-image")
+                                    }
+                                  >
+                                    <ImageIcon className="h-4 w-4" />
+                                  </IconButton>
+                                  <IconButton
+                                    label="Add to identity"
+                                    onClick={() =>
+                                      void runIdentityMediaAction(item, "add-to-identity")
+                                    }
+                                  >
+                                    <ListChecks className="h-4 w-4" />
+                                  </IconButton>
+                                </>
+                              )}
+                              <IconButton
+                                label="Create variation"
+                                onClick={() => void createMediaVariation(item)}
+                              >
+                                <WandSparkles className="h-4 w-4" />
+                              </IconButton>
+                            </div>
+                          )}
+                          {item.type === "image" &&
+                            (item.identity?.selectedAsCharacterImage || item.identity?.addedToReferences) && (
+                              <div className="absolute left-2 top-12 rounded-full bg-black/70 px-2 py-1 text-[10px] font-black uppercase text-white">
+                                {item.identity.selectedAsCharacterImage ? "Character image" : "Identity ref"}
+                              </div>
+                            )}
+                          {item.provenance && (
+                            <GalleryProvenanceBadge provenance={item.provenance} />
+                          )}
+                          <div className="absolute inset-x-2 bottom-2 flex justify-end gap-2 opacity-100 md:opacity-0 md:transition-opacity md:group-hover:opacity-100">
+                            <IconButton
+                              label={item.liked ? "Unlike" : "Like"}
+                              onClick={() => toggleLike(item)}
+                            >
+                              <Heart
+                                className={`h-4 w-4 ${
+                                  item.liked ? "fill-current text-[rgb(255,48,170)]" : ""
+                                }`}
+                              />
+                            </IconButton>
+                            <IconButton label="Download" onClick={() => downloadMedia(item.id)}>
+                              <Download className="h-4 w-4" />
+                            </IconButton>
+                            <IconButton label="Report" onClick={() => reportMedia(item.id)}>
+                              <Flag className="h-4 w-4" />
+                            </IconButton>
+                            <IconButton label="Delete" onClick={() => deleteMedia(item.id)}>
+                              <Trash2 className="h-4 w-4" />
+                            </IconButton>
+                          </div>
+                        </>
                       )}
                     </div>
                   );
@@ -1079,6 +1588,43 @@ export function GeneratorWorkspace() {
   );
 }
 
+function GalleryProvenanceBadge({
+  provenance,
+}: {
+  provenance: NonNullable<MediaItem["provenance"]>;
+}) {
+  const label = provenance.sourceCharacterName
+    ? `${provenance.label}: ${provenance.sourceCharacterName}`
+    : provenance.label;
+  const className =
+    "absolute bottom-12 left-2 z-10 inline-flex max-w-[calc(100%-1rem)] items-center gap-1 rounded-full bg-black/75 px-2 py-1 text-[10px] font-bold text-white shadow-sm backdrop-blur";
+  const content = (
+    <>
+      <WandSparkles className="h-3 w-3 shrink-0 text-[rgb(255,48,170)]" />
+      <span className="truncate">{label}</span>
+    </>
+  );
+
+  if (provenance.href) {
+    return (
+      <Link
+        className={className}
+        data-testid="gallery-provenance-link"
+        href={provenance.href}
+        prefetch={false}
+      >
+        {content}
+      </Link>
+    );
+  }
+
+  return (
+    <div className={className} data-testid="gallery-provenance-badge">
+      {content}
+    </div>
+  );
+}
+
 function galleryTabLabel(tab: GalleryTab) {
   if (tab === "image") return "Images";
   if (tab === "video") return "Videos";
@@ -1096,11 +1642,13 @@ function PresetSelect({
   value: string;
   onChange: (value: string) => void;
 }) {
+  const testId = `preset-select-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
   return (
     <label className="block text-[11px] font-bold uppercase text-[rgb(114,113,112)]">
       {label}
       <select
         className="mt-2 h-11 w-full rounded-[10px] bg-[rgb(36,36,36)] px-2 text-[12px] font-semibold text-white outline-none disabled:text-[rgb(114,113,112)]"
+        data-testid={testId}
         disabled={options.length === 0}
         onChange={(event) => onChange(event.target.value)}
         value={value}
@@ -1108,7 +1656,7 @@ function PresetSelect({
         <option value="">None</option>
         {options.map((preset) => (
           <option key={preset.id} value={preset.id}>
-            {preset.label}
+            {preset.scope === "community" ? `Community · ${preset.label}` : preset.label}
           </option>
         ))}
       </select>
@@ -1118,10 +1666,12 @@ function PresetSelect({
 
 function MediaPreview({
   item,
+  loading,
   onError,
   source,
 }: {
   item: MediaItem;
+  loading: "eager" | "lazy";
   onError: () => void;
   source: string;
 }) {
@@ -1147,6 +1697,7 @@ function MediaPreview({
       className="object-cover object-top"
       data-testid="gallery-media-image"
       fill
+      loading={loading}
       onError={onError}
       sizes="(min-width: 1024px) 240px, 45vw"
       src={source}
@@ -1177,6 +1728,13 @@ function IconButton({
   );
 }
 
+async function fetchCharacterById(id: string) {
+  const response = await fetch(`/api/v1/characters/${encodeURIComponent(id)}`);
+  if (!response.ok) return null;
+  const payload = (await response.json()) as ApiPayload<{ character: CharacterCardData }>;
+  return payload.data?.character ?? null;
+}
+
 function isTerminal(status: string) {
   return ["completed", "failed", "blocked", "refunded"].includes(status);
 }
@@ -1188,6 +1746,70 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function presetControlString(controls: Record<string, unknown>, key: string): string {
   const value = controls[key];
   return typeof value === "string" ? value : "";
+}
+
+function currentPresetControls({
+  backgroundPresetId,
+  canUsePrompt,
+  modePresetId,
+  outfitPresetId,
+  posePresetId,
+  prompt,
+}: {
+  backgroundPresetId: string;
+  canUsePrompt: boolean;
+  modePresetId: string;
+  outfitPresetId: string;
+  posePresetId: string;
+  prompt: string;
+}) {
+  const controls: Record<string, string> = {};
+  if (modePresetId) controls.modePresetId = modePresetId;
+  if (backgroundPresetId) controls.backgroundPresetId = backgroundPresetId;
+  if (posePresetId) controls.posePresetId = posePresetId;
+  if (outfitPresetId) controls.outfitPresetId = outfitPresetId;
+  if (canUsePrompt && prompt.trim()) controls.prompt = prompt.trim();
+  return controls;
+}
+
+function savePresetDraft(draft: PresetDraft) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(generatorPresetDraftStorageKey, JSON.stringify(draft));
+}
+
+function clearPresetDraft() {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(generatorPresetDraftStorageKey);
+}
+
+function readPresetDraft(): PresetDraft | null {
+  try {
+    if (typeof window === "undefined") return null;
+    const raw = window.localStorage.getItem(generatorPresetDraftStorageKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as unknown;
+    if (!isRecord(parsed)) {
+      clearPresetDraft();
+      return null;
+    }
+    const draft: PresetDraft = {
+      backgroundPresetId: presetControlString(parsed, "backgroundPresetId"),
+      label: presetControlString(parsed, "label"),
+      modePresetId: presetControlString(parsed, "modePresetId"),
+      outfitPresetId: presetControlString(parsed, "outfitPresetId"),
+      posePresetId: presetControlString(parsed, "posePresetId"),
+      prompt: presetControlString(parsed, "prompt"),
+      savedAt: typeof parsed.savedAt === "number" ? parsed.savedAt : 0,
+    };
+    if (!draft.label) {
+      clearPresetDraft();
+      return null;
+    }
+    return draft;
+  } catch {
+    clearPresetDraft();
+    return null;
+  }
 }
 
 function openDownloadWindow() {

@@ -98,7 +98,7 @@ Admin
   ├─ Characters & Content              [P0]  审核入口、上下架（与 Trust & Safety 共用队列）
   ├─ Generation
   │   ├─ Jobs                          [P0]  job detail / events / provider error / refund
-  │   ├─ Model Profiles                [P0]  发布/禁用/回滚
+  │   ├─ Model Profiles                [P0]  built-in profile 运维、发布/禁用/回滚
   │   ├─ Prompt Templates              [P0]  发布/回滚
   │   ├─ Presets                       [P0]  built-in preset（community preset 治理 = P1）
   │   ├─ Video (beta)                  [P0]  只读、标 disabled（见 §6.4）
@@ -124,7 +124,7 @@ P0 最小必建集合（与 §5 收敛一致）：**Moderation Queue、User Look
 | Users | 按 email/id 查用户，查看状态、role、plan、entitlements、age gate、ledger 摘要 | 不直接覆盖余额 |
 | Characters | 审核、上下架、标签、可见性、创建者、举报入口 | 公开内容必须有审核状态 |
 | Generation Jobs | job detail、events、profile、prompt template version、provider error、ledger/refund、assets | 默认隐藏明文 prompt |
-| Model Profiles | 管理生成档位、runner、模型名、尺寸、steps、sampler、cost、entitlement、enabled | 版本化发布，支持回滚 |
+| Model Profiles | 运营工程侧 seed/config 注入的 built-in profiles：查看 readiness、dry run、test image、发布/禁用/回滚、监控 | 模型资产导入与 runner 组件路径是隐藏工程诊断，不作为默认运营入口 |
 | Prompt Templates | 管理 character/freeplay 模板、negative base、preset 拼接顺序、style block | 版本化，旧 job 保留版本 |
 | Presets | built-in background/pose/outfit、prompt fragment、分类、Premium gate、安全标签 | user/community preset P1 进入审核 |
 | Trust & Safety | 举报队列、审核决定、blocked media、申诉、policy code | 硬政策不可关闭 |
@@ -137,12 +137,12 @@ P0 实施时先收敛到六个必需模块：
 
 1. Dashboard：生成、队列、审核、支付的健康概览。
 2. Generation Jobs：排查失败、退款、blocked、partial success 和用户投诉。
-3. Generation Config：发布/禁用/回滚 model profile、prompt template、built-in preset。
+3. Generation Config：发布/禁用/回滚 seeded model profile、prompt template、built-in preset。
 4. Moderation Queue：处理举报、blocked media、角色下架和申诉入口。
 5. Users/Billing：查询用户、plan、entitlement、ledger 和订阅状态。
 6. Audit Log：审计后台写操作。
 
-SEO/CMS、Feed/Community 管理、Analyst 高级导出、双人审批和 saved views 可以放到 Public Launch 或 V1.1，除非上线前合规流程强制要求。
+SEO/CMS、Feed/Community 管理、Analyst 高级导出、双人审批和其他低频 saved views 可以放到 Public Launch 或 V1.1；Review Queue 与 Support Requests saved views 已先落地，供运营保存常用搜索/举报/支持工单筛选。
 
 ## 6. 图片生成配置控制面
 
@@ -159,9 +159,12 @@ SEO/CMS、Feed/Community 管理、Analyst 高级导出、双人审批和 saved v
 | `mode` | `image` / `video` |
 | `runner` | `pipeline` / `sd_cpp` / `mlx` / `comfyui` / `external` |
 | `pipelineModel` | Pipeline 内部模型名或别名 |
+| `sourceModelPath` / `convertedModelPath` | 工程侧 seed/config 或隐藏诊断写入的本地模型源文件与转换产物路径；普通运营不手动维护 |
+| `modelFormat` | `safetensors` / `gguf` / `diffusers` / `external` |
+| `runnerConfig` | runner 专属配置；`sd_cpp` 下包含 diffusion/LLM/VAE 组件路径、转换策略、LoRA 栈 |
 | `defaultWidth` / `defaultHeight` | 默认尺寸 |
 | `allowedOrientations` | 前台可选比例 |
-| `steps` / `sampler` / `cfgScale` | 推理参数 |
+| `steps` / `sampler` / `scheduler` / `cfgScale` | 推理参数 |
 | `negativeTemplateId` | 默认 negative prompt 模板 |
 | `costMultiplier` | 价格乘数 |
 | `requiredEntitlement` | 例如 `premium_models` |
@@ -173,6 +176,14 @@ SEO/CMS、Feed/Community 管理、Analyst 高级导出、双人审批和 saved v
 | `status` | `draft` / `active` / `archived` |
 
 P0 生产默认 runner 建议是 `sd_cpp`，但这个值只存在于 Pipeline Service 内部或 admin profile 中。主站和 `packages/gen` 只看到 `profileId`，仍通过 Pipeline HTTP API 调用。
+
+`sd_cpp.runnerConfig` 约定：
+
+- `model-imports` 默认关闭，只在 `ADMIN_MODEL_DIAGNOSTICS_ENABLED=true` 时作为隐藏工程诊断/迁移接口保留，不出现在普通 `Generation Config` 产品路径。P0 运营只消费已 seed 的 built-in profiles；模型文件路径、组件路径、转换产物和 workflow 由工程配置维护。
+- `diffusionModelPath` / `llmPath` / `vaePath`：Z-Image/Flux 类拆分模型的组件路径。
+- `conversion.enabled=true`：允许 gateway 在首次使用时把 `.safetensors` source 转为 `.gguf` target；`convertedModelPath` 或 `conversion.outputPath` 必须是 `.gguf`。
+- `loras=[{ key, path, weight, enabled }]`：发布 model + LoRA 组合。gateway 会设置 `--lora-model-dir` 并把启用项注入 `<lora:key:weight>` prompt token。
+- 这些字段只进入内部队列 payload，不写入前台可见 job controls。
 
 ### 6.2 Prompt Template
 
@@ -282,8 +293,8 @@ P1 再开放 user/community preset，但必须经过审核、举报、下架和�
 | `POST` | `/api/v1/admin/generation/jobs/:id/requeue` | `generation.job.requeue` | dead-letter/retry 管理，需 reason（批量见 §12） |
 | `POST` | `/api/v1/admin/generation/jobs/:id/discard` | `ops.deadletter.write` | 弃单（P1），可触发幂等退款，写审计 |
 | `GET` | `/api/v1/admin/generation/model-profiles` | `generation.config.read` | 模型 profile 列表 |
-| `POST` | `/api/v1/admin/generation/model-profiles` | `generation.config.write` | 创建 draft |
-| `PATCH` | `/api/v1/admin/generation/model-profiles/:id` | `generation.config.write` | 编辑 draft / 禁用（`enabled=false`，见 §10） |
+| `POST` | `/api/v1/admin/generation/model-profiles` | `generation.config.write` | 隐藏工程诊断：创建 draft；普通运营路径不暴露 |
+| `PATCH` | `/api/v1/admin/generation/model-profiles/:id` | `generation.config.write` | 编辑 draft / 禁用（`enabled=false`，见 §10）；普通运营只做禁用/回滚/发布 |
 | `POST` | `/api/v1/admin/generation/model-profiles/:id/publish` | `generation.config.write` | 发布新 active 版本 |
 | `POST` | `/api/v1/admin/generation/model-profiles/:id/rollback` | `generation.config.write` | 回滚 |
 | `GET` | `/api/v1/admin/generation/prompt-templates` | `generation.config.read` | 模板列表 |
@@ -309,6 +320,8 @@ P0 页面：
 - `/admin/generation/jobs`：生成任务列表 + detail drawer。
 - `/admin/generation/config`：model profiles、prompt templates、presets。
 - `/admin/moderation`：审核队列。
+- `/admin/content/review-queue`：角色待审队列，支持搜索/有举报/无举报筛选与个人 saved views。
+- `/admin/support`：支持请求 inbox，支持工单筛选、个人 saved views 和状态流转。
 - `/admin/users`：用户搜索和详情。
 - `/admin/billing`：订阅、ledger、webhook。
 - `/admin/audit-log`：审计记录。
@@ -366,7 +379,7 @@ P0 页面：
 - Feature flags、pricing rules、entitlement gates 后台化。
 - Billing/ledger adjustment 审计化。
 - Preset library 完整管理（含 community preset 治理）。
-- Queue/dead-letter 操作台（§12）。
+- Queue/dead-letter 操作台（§12，已落地；后续只扩展更细过滤和详情可视化）。
 
 ### Phase 4：安全与团队流程
 
@@ -377,7 +390,7 @@ P0 页面：
 
 ## 12. Dead-letter requeue 操作台（P1）
 
-后台 requeue API 已存在（`POST /api/v1/admin/generation/jobs/:id/requeue`），但缺前端运营流。本节定义 ops UI（归 `Generation → Queue / Provider Health` 下，权限 `ops.deadletter.write`）。因涉及真实流量调度与退款，整体标 **P1**；P0 期间运维仍可直接调 API 应急。
+后台 requeue/discard API 与 `Generation → Dead-letter` 前端运营流均已落地：列表展示失败/blocked job 的账本状态，支持单条/批量 requeue 与 discard，写 `AdminAuditLog`，并通过 admin-web E2E 与 Chrome `admin-dead-letter-discard.png` 验证 discard/refund/audit 闭环。因涉及真实流量调度与退款，整体仍按 **P1 运维能力** 管理；后续增强集中在更细过滤、详情抽屉和事故汇总，而不是基础可用性。
 
 **列表视图**：展示进入 dead-letter（重试耗尽 / 不可恢复）的 job。
 
@@ -393,7 +406,7 @@ P0 页面：
 
 **操作**：
 
-- **Requeue（单）**：`confirm`，重新入队同一 profile/template version。幂等——若 ledger 已 refund 则**先冲正补扣**或拒绝（不可凭空多产出）。
+- **Requeue（单）**：`confirm`，重新入队同一 profile/template version。当前实现对已 refund job 拒绝/跳过，避免凭空多产出。
 - **Requeue（批量）**：选中多条或按 `providerErrorCode` 过滤批量重入队，`reason+typed`，写一条审计含 `targetIds` 数组与命中条件。
 - **Discard（弃单）**：`reason+typed`。标记永久放弃；若仍 `reserved` 则触发 `refund`（reason=`refund`，幂等 `sourceId=jobId`，对齐 `ECONOMY_AND_PRICING §1.3`），写审计。
 

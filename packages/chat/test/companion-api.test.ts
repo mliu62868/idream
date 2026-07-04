@@ -25,7 +25,7 @@ function jbody<T>(res: ChatResponse): T {
 }
 
 /** create session → send a memory-seeding message → generate → extract memory. */
-async function seedMemory(content: string): Promise<{ sessionId: string; userMessageId: string }> {
+async function seedMemory(content: string): Promise<{ sessionId: string; userMessageId: string; assistantMessageId: string }> {
   const created = await dispatchChat({ method: "POST", path: "/api/v1/chat/sessions", userId: USER, body: { characterId: CHAR } });
   const sessionId = jbody<{ id: string }>(created).id;
   const sent = await dispatchChat({
@@ -39,7 +39,7 @@ async function seedMemory(content: string): Promise<{ sessionId: string; userMes
     await processGenerate(job.payload as GeneratePayload, prisma);
   });
   await processMemoryExtract({ sessionId, assistantMessageId, attempt: 1 }, prisma);
-  return { sessionId, userMessageId };
+  return { sessionId, userMessageId, assistantMessageId };
 }
 
 beforeAll(async () => {
@@ -125,13 +125,16 @@ describe("delete message forgets derived memory (privacy §12)", () => {
 
 describe("SSE stream aliases (PRD §8.2)", () => {
   it("serves both /messages/:id/stream and /streams/:id", async () => {
-    const viaMessages = await dispatchChat({ method: "GET", path: "/api/v1/chat/messages/msg_x/stream", userId: USER });
-    const viaStreams = await dispatchChat({ method: "GET", path: "/api/v1/chat/streams/msg_x", userId: USER });
+    const { assistantMessageId } = await seedMemory("please call me Streamer");
+    const viaMessages = await dispatchChat({ method: "GET", path: `/api/v1/chat/messages/${assistantMessageId}/stream`, userId: USER });
+    const viaStreams = await dispatchChat({ method: "GET", path: `/api/v1/chat/streams/${assistantMessageId}`, userId: USER });
     expect(viaMessages.kind).toBe("sse");
     expect(viaStreams.kind).toBe("sse");
     expect(viaMessages.kind === "sse" && viaMessages.streamKey).toBe(
       viaStreams.kind === "sse" ? viaStreams.streamKey : "",
     );
+    const foreign = await dispatchChat({ method: "GET", path: `/api/v1/chat/streams/${assistantMessageId}`, userId: "u_capi_foreign" });
+    expect(foreign.kind === "json" && foreign.status).toBe(404);
   });
 });
 

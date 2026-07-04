@@ -3,7 +3,8 @@
 // SPEC: 站内公告 banner（ADMIN_PHASE4_DESIGN §3）。读公开 /api/v1/announcements，
 //       显示最靠前一条；可关闭（localStorage 记 dismissed id）；无公告 → null。
 import { useEffect, useState } from "react";
-import { X } from "lucide-react";
+import Link from "next/link";
+import { ArrowRight, ExternalLink, X } from "lucide-react";
 
 type PublicAnnouncement = {
   id: string;
@@ -14,6 +15,7 @@ type PublicAnnouncement = {
 };
 
 const DISMISS_KEY = "od-dismissed-announcements";
+const SAFE_EXTERNAL_PROTOCOL_RE = /^(https?:)?\/\//i;
 
 function readDismissed(): string[] {
   try {
@@ -70,17 +72,13 @@ export function AnnouncementBanner() {
         : "bg-neutral-800";
 
   return (
-    <div className={`${tone} text-white`}>
+    <div className={`${tone} text-white`} data-testid="announcement-banner">
       <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-2 text-sm">
         <span className="flex-1">
           <span className="font-semibold">{next.title}</span>
           {next.body ? <span className="ml-2 text-white/80">{next.body}</span> : null}
         </span>
-        {next.href ? (
-          <a className="shrink-0 underline" href={next.href}>
-            Learn more
-          </a>
-        ) : null}
+        {next.href ? <AnnouncementLink href={next.href} /> : null}
         <button
           aria-label="Dismiss announcement"
           className="shrink-0 rounded p-1 hover:bg-white/10"
@@ -92,4 +90,41 @@ export function AnnouncementBanner() {
       </div>
     </div>
   );
+}
+
+function AnnouncementLink({ href }: { href: string }) {
+  if (!isSafeAnnouncementHref(href)) return null;
+
+  const className = "inline-flex shrink-0 items-center gap-1.5 underline";
+
+  if (isExternalHref(href)) {
+    return (
+      <a
+        className={className}
+        data-testid="announcement-link"
+        data-link-kind="external"
+        href={href}
+        rel="noopener noreferrer"
+        target="_blank"
+      >
+        Learn more
+        <ExternalLink aria-hidden="true" className="h-3.5 w-3.5" />
+      </a>
+    );
+  }
+
+  return (
+    <Link className={className} data-testid="announcement-link" data-link-kind="internal" href={href}>
+      Learn more
+      <ArrowRight aria-hidden="true" className="h-3.5 w-3.5" />
+    </Link>
+  );
+}
+
+function isSafeAnnouncementHref(href: string) {
+  return href.startsWith("/") || SAFE_EXTERNAL_PROTOCOL_RE.test(href);
+}
+
+function isExternalHref(href: string) {
+  return SAFE_EXTERNAL_PROTOCOL_RE.test(href);
 }

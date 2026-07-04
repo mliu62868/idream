@@ -1,6 +1,6 @@
 # Ourdream.ai User Stories
 
-更新日期：2026-06-13
+更新日期：2026-07-03
 
 ## 1. 主要用户旅程
 
@@ -25,23 +25,23 @@
 7. 系统完成安全校验。
 8. 创建成功后角色进入 My AI，并可开始聊天、生成图片或发布到社区。
 
-### Journey C：围绕角色生成图片或视频
+### Journey C：围绕角色生成图片；Video 按功能位启用
 
 1. 用户进入 Generate。
-2. 用户选择 Image 或 Video。
+2. 用户默认使用 Image；当 Video 进入当前发布范围时，可选择 Image 或 Video。
 3. 用户选择角色或 Freeplay。
 4. 用户选择 Mode Presets、背景、姿势、服装和可用 prompt。
 5. 用户按需打开 Advanced Settings 配置模型/风格、比例和数量。
 6. 系统检查额度、订阅和内容安全。
 7. 系统创建生成任务。
-8. 用户在 Images、Videos、Liked 中查看结果。
+8. 用户在 Images、Liked 中查看结果；Video 启用时可查看 Videos。
 9. 用户可筛选、批量管理、收藏、下载、删除或再次生成。
 
 ### Journey D：订阅升级
 
 1. 用户在首页、促销卡、生成器高级字段或 footer 点击 Upgrade。
 2. 系统展示 Yearly 和 Monthly 方案，以及 Premium 和 Deluxe 两档。
-3. 用户查看权益、价格、账单周期、dreamcoin、图片/视频/语音额度、模型和记忆权益。
+3. 用户查看权益、价格、账单周期、dreamcoin、图片/语音额度、条件启用的视频额度、模型和记忆权益。
 4. 用户进入 checkout。
 5. 支付成功后系统激活 Premium 权益并返回原任务。
 
@@ -73,7 +73,7 @@
 | US-EX-02 | 作为探索用户，我希望按 For You、Popular、Newest、Following 等模式排序，以便找到不同推荐集合。 | P0 | 排序控件可打开；选择后列表更新；URL 或状态可反映当前排序和 period label |
 | US-EX-03 | 作为探索用户，我希望搜索角色和场景关键词，以便直接找到目标内容。 | P0 | 搜索框可输入；提交后返回匹配结果；无结果时展示空态 |
 | US-EX-04 | 作为探索用户，我希望按性别、风格、年龄过滤，以便减少浏览成本。 | P0 | 每个筛选条件可选择、清除和组合；结果数量随条件变化 |
-| US-EX-05 | 作为探索用户，我希望点击分类 chips，以便浏览 Group Chats、Romantic、Slow Burn 等主题。 | P0 | chip 有 active 状态；点击后结果和 URL/state 更新；再次点击或 All 可重置 |
+| US-EX-05 | 作为探索用户，我希望点击有实际公开内容的分类 chips，以便浏览 Romantic、Slow Burn 等主题。 | P0 | chip 有 active 状态；点击后结果和 URL/state 更新；再次点击或 All 可重置；Group Chats 等当前 beta 延后域不以空结果 chip 出现 |
 | US-EX-06 | 作为探索用户，我希望列表可以继续加载，以便浏览更多角色。 | P1 | 到达底部时加载下一批；加载中有 spinner；失败可重试 |
 | US-EX-07 | 作为用户，我希望看到活动促销卡，以便了解订阅优惠。 | P1 | 促销卡展示活动标题、说明、CTA；点击进入 Upgrade；可关闭浮层 |
 
@@ -100,18 +100,18 @@
 | US-CR-06 | 作为创作者，我希望管理角色 tags，以便提升发现和分发。 | P1 | tag manager 可添加、移除和保存；tag 命中敏感规则时触发审核 |
 | US-CR-07 | 作为平台运营者，我希望创建流程禁止未成年、真实人物、现有 IP、非同意框架和违法内容。 | P0 | prompt、图片、tags 和配置均触发安全校验；失败时阻止创建并说明规则 |
 
-### 2.5 图片与视频生成
+### 2.5 图片生成与条件 Video
 
 | ID | 用户故事 | 优先级 | 验收条件 |
 | --- | --- | --- | --- |
-| US-GN-01 | 作为生成用户，我希望选择 Image 或 Video 模式，以便匹配输出类型。 | P0 | 模式切换状态明确；字段和消耗额度随模式变化 |
+| US-GN-01 | 作为生成用户，我希望使用 Image 生成，并在 Video 进入当前发布范围时选择 Image 或 Video 模式，以便匹配输出类型。 | P0 | Image 模式可用；Video 关闭时不显示不可用入口；Video 启用时模式切换状态明确，字段和消耗额度随模式变化 |
 | US-GN-02 | 作为生成用户，我希望选择角色或 Freeplay，以便控制是否绑定角色一致性。 | P0 | 未选角色/Freeplay 时 Generate 不可提交或提示错误；选择后展示摘要 |
 | US-GN-03 | 作为生成用户，我希望选择 Mode Presets 或 Image Edit，以便快速进入常用生成模式。 | P1 | Presets/Image Edit 可选；不同模式展示对应字段 |
 | US-GN-04 | 作为生成用户，我希望选择背景、姿势和服装 preset，以便控制结果方向。 | P1 | 每个控件有内置、My Presets、Community、Custom、Create a Preset；组合值进入任务 payload |
 | US-GN-05 | 作为 Premium 用户，我希望使用 custom prompt 和 negative prompt，以便获得更细粒度控制。 | P1 | 免费用户看到锁定和升级入口；Premium 用户可输入并提交 |
 | US-GN-06 | 作为生成用户，我希望配置模型/风格、比例和数量，以便控制输出质量和成本。 | P1 | Advanced Settings 可保存到任务 payload；premium/experimental 选项受 entitlement 控制 |
 | US-GN-07 | 作为生成用户，我希望看到生成进度，以便知道任务是否仍在运行。 | P0 | 点击 Generate 后出现任务状态；完成后进入图库；失败时可重试 |
-| US-GN-08 | 作为生成用户，我希望查看 Images、Videos、Liked，以便管理历史结果。 | P0 | tab 可切换；按类型展示资产；liked 只展示收藏内容 |
+| US-GN-08 | 作为生成用户，我希望查看 Images 和 Liked，并在 Video 启用时查看 Videos，以便管理历史结果。 | P0 | 可用 tab 可切换；按类型展示资产；liked 只展示收藏内容；Video 关闭时不显示空的 Videos 死入口 |
 | US-GN-09 | 作为生成用户，我希望筛选、批量选择、下载、收藏或删除生成结果，以便管理资产。 | P1 | Filter/Manage/Select All/Like/Download/Delete 操作成功后 UI 状态更新 |
 | US-GN-10 | 作为平台运营者，我希望生成请求校验额度、dreamcoin、entitlement 和内容安全。 | P0 | 额度不足时阻止并引导升级/充值；禁止内容不创建任务 |
 
@@ -122,7 +122,7 @@
 | US-PF-01 | 作为登录用户，我希望在 My AI 搜索和查看最近角色，以便继续互动。 | P0 | Recent/Characters 显示最近聊天或创建角色；空态引导 Create；搜索可过滤 |
 | US-PF-02 | 作为登录用户，我希望查看 Group Chats、Packs、Presets、Created。 | P1 | 每个 tab 有内容列表、空态和加载态 |
 | US-PF-03 | 作为创作者，我希望编辑或删除自己创建的角色。 | P1 | Created 列表支持 edit、duplicate、delete；危险操作二次确认 |
-| US-PF-04 | 作为登录用户，我希望在 Profile 管理余额、订阅、兑换码、推荐、偏好、语言和账号，以便控制账户状态。 | P0 | Profile 显示对应入口；敏感操作二次确认或重新认证 |
+| US-PF-04 | 作为登录用户，我希望在 Profile 管理余额、订阅、兑换码、推荐、偏好和账号，以便控制账户状态。 | P0 | Profile 显示对应入口；敏感操作二次确认或重新认证；语言切换器仅在未来接入真实 i18n 字典层后启用 |
 | US-PF-05 | 作为社区用户，我希望浏览 feed，以便发现其他用户发布的角色或内容。 | P1 | Feed 有卡片流、Chat、Remix、Like、Share、Report |
 | US-PF-06 | 作为社区用户，我希望浏览 Dreamers/Characters/Collections 榜单。 | P1 | Community tabs 可切换；release/gender/style filters 更新榜单 |
 | US-PF-07 | 作为社区用户，我希望点赞、收藏和关注创作者。 | P2 | 操作需要登录；状态持久化；列表数据更新 |
@@ -163,7 +163,7 @@
 - 年龄或司法辖区需要更强验证时，应触发身份年龄验证，不应只依赖 age gate acceptance。
 - 角色或生成 prompt 含禁止内容时，应阻止提交而不是静默失败。
 - 免费用户点击 Premium-only 字段，应看到升级说明，不应丢失当前输入。
-- Video 模式不应提交只在 Image 模式支持的 pose 字段。
+- Video 启用时，Video 模式不应提交只在 Image 模式支持的 pose 字段。
 - preset 来源需要区分 built-in、My Presets 和 Community，用户不能编辑不属于自己的 preset。
 - 生成任务失败时，应展示失败原因、是否扣费、重试入口。
 - 删除角色时，如果有关联聊天、媒体或公开内容，需要说明影响范围。
@@ -186,9 +186,8 @@ MVP 必须包含：
 
 MVP 之后实现：
 
-- 公开视频生成。
-- Community/Feed 的完整社交互动。
-- creator profile 和关注系统。
-- 高级 prompt presets。
-- Profile referral、redeem code、preferences、language、account management。
+- 公开视频生成进入默认可见发布范围。
+- Group Chats 与 Packs 的完整产品语义、数据模型、额度和分发。
+- 多语言 UI（真实 i18n 字典层、路由内容和 locale 切换）。
+- Community/Feed 的更复杂个性化排序和运营编排。
 - 大规模 SEO 正文运营和 A/B 测试。

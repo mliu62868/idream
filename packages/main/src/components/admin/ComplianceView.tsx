@@ -6,6 +6,7 @@
 import { useEffect, useState } from "react";
 import { Download, Loader2, RefreshCcw, ShieldAlert, Trash2 } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
+import { useAdminI18n } from "@/components/admin/i18n";
 
 const inputClass =
   "h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30";
@@ -30,6 +31,7 @@ export function ComplianceView() {
 }
 
 function DsarSection() {
+  const { t } = useAdminI18n();
   const [userId, setUserId] = useState("");
   const [exported, setExported] = useState<unknown>(null);
   const [busy, setBusy] = useState<"export" | "erase" | null>(null);
@@ -64,7 +66,7 @@ function DsarSection() {
         "POST",
         { reason: reason.trim(), confirmation: "ERASE" },
       );
-      setNote(data.idempotent ? "Already erased (idempotent)." : "Erasure requested.");
+      setNote(data.idempotent ? t("Already erased (idempotent).") : t("Erasure requested."));
     } catch (error) {
       setErr(error instanceof Error ? error.message : "Erase failed");
     } finally {
@@ -74,7 +76,7 @@ function DsarSection() {
 
   return (
     <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
-      <h2 className="text-sm font-semibold">DSAR — export / erase</h2>
+      <h2 className="text-sm font-semibold">{t("DSAR — export / erase")}</h2>
       <p className="mt-1 text-xs text-[rgb(170,170,170)]">
         导出为脱敏结构化数据（不含明文 prompt/chat）。擦除走 P0-F 跨服务流，需确认。
       </p>
@@ -82,7 +84,7 @@ function DsarSection() {
         <input
           className={inputClass}
           onChange={(e) => setUserId(e.target.value)}
-          placeholder="User ID"
+          placeholder={t("User ID")}
           value={userId}
         />
         <button
@@ -92,7 +94,7 @@ function DsarSection() {
           type="button"
         >
           {busy === "export" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-          Export
+          {t("Export")}
         </button>
         <button
           className="inline-flex h-10 items-center gap-2 border border-red-400/30 px-3 text-sm text-red-200 disabled:opacity-50"
@@ -101,7 +103,7 @@ function DsarSection() {
           type="button"
         >
           {busy === "erase" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-          Erase
+          {t("Erase")}
         </button>
       </div>
       {err ? <p className="mt-2 text-xs text-red-300">{err}</p> : null}
@@ -116,6 +118,7 @@ function DsarSection() {
 }
 
 function AgeVerificationSection() {
+  const { t, value: valueLabel } = useAdminI18n();
   const [rows, setRows] = useState<AgeRow[]>([]);
   const [status, setStatus] = useState("pending");
   const [loading, setLoading] = useState(true);
@@ -160,7 +163,7 @@ function AgeVerificationSection() {
   return (
     <section className="border border-white/10 bg-[rgb(18,18,18)]">
       <div className="flex items-center justify-between border-b border-white/10 p-3">
-        <h2 className="text-sm font-semibold">Age verification queue</h2>
+        <h2 className="text-sm font-semibold">{t("Age verification queue")}</h2>
         <div className="flex items-center gap-2">
           <select
             className="h-9 border border-white/10 bg-black/30 px-2 text-sm outline-none"
@@ -169,7 +172,7 @@ function AgeVerificationSection() {
           >
             {["pending", "required", "failed", "verified", "expired"].map((s) => (
               <option key={s} value={s}>
-                {s}
+                {valueLabel(s)}
               </option>
             ))}
           </select>
@@ -180,7 +183,7 @@ function AgeVerificationSection() {
             type="button"
           >
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-            Refresh
+            {t("Refresh")}
           </button>
         </div>
       </div>
@@ -188,10 +191,10 @@ function AgeVerificationSection() {
       <table className="w-full text-left text-sm">
         <thead className="border-b border-white/10 text-xs text-[rgb(170,170,170)]">
           <tr>
-            <th className="px-3 py-2 font-medium">user</th>
-            <th className="px-3 py-2 font-medium">provider</th>
-            <th className="px-3 py-2 font-medium">status</th>
-            <th className="px-3 py-2 font-medium">jurisdiction</th>
+            <th className="px-3 py-2 font-medium">{t("user")}</th>
+            <th className="px-3 py-2 font-medium">{t("provider")}</th>
+            <th className="px-3 py-2 font-medium">{t("status")}</th>
+            <th className="px-3 py-2 font-medium">{t("jurisdiction")}</th>
             <th className="px-3 py-2 font-medium" />
           </tr>
         </thead>
@@ -200,7 +203,7 @@ function AgeVerificationSection() {
             <tr key={row.id} className="border-b border-white/5">
               <td className="px-3 py-2 font-mono text-xs">{row.userId}</td>
               <td className="px-3 py-2">{row.provider}</td>
-              <td className="px-3 py-2 text-[rgb(170,170,170)]">{row.status}</td>
+              <td className="px-3 py-2 text-[rgb(170,170,170)]">{valueLabel(row.status)}</td>
               <td className="px-3 py-2">{row.jurisdiction ?? "—"}</td>
               <td className="px-3 py-2 text-right">
                 <div className="flex justify-end gap-2">
@@ -210,14 +213,14 @@ function AgeVerificationSection() {
                     type="button"
                   >
                     <ShieldAlert className="h-3.5 w-3.5" />
-                    Verify
+                    {t("Verify")}
                   </button>
                   <button
                     className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs"
                     onClick={() => void override(row.id, "failed")}
                     type="button"
                   >
-                    Fail
+                    {t("Fail")}
                   </button>
                 </div>
               </td>
@@ -226,7 +229,7 @@ function AgeVerificationSection() {
           {rows.length === 0 && !loading ? (
             <tr>
               <td className="px-3 py-6 text-center text-xs text-[rgb(170,170,170)]" colSpan={5}>
-                No records.
+                {t("No records.")}
               </td>
             </tr>
           ) : null}

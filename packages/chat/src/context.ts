@@ -20,6 +20,8 @@ export interface BuiltContext {
   longTermMemories: string[];
   /** Qualitative companion bond for tone/continuity (P1-B). Null when none/incognito. */
   relationship: { stage: string; summary: string } | null;
+  /** False for no-memory sessions and old-turn regenerations. */
+  canUpdateSessionSummary: boolean;
 }
 
 export interface BuildContextInput {
@@ -28,22 +30,47 @@ export interface BuildContextInput {
   characterId: string;
   sessionId: string;
   memoryEnabled: boolean;
+  /** Anchor the model context to the user turn being answered/regenerated. */
+  userMessageId?: string;
 }
 
 export async function buildContext(input: BuildContextInput): Promise<BuiltContext> {
-  const { prisma, userId, characterId, sessionId, memoryEnabled } = input;
+  const { prisma, userId, characterId, sessionId, memoryEnabled, userMessageId } = input;
 
-  const [persona, entitlementRow, session] = await Promise.all([
+  const [persona, entitlementRow, session, anchorUserMessage, latestUserMessage] = await Promise.all([
     prisma.chatCharacterView.findUnique({ where: { characterId } }),
     prisma.chatEntitlementView.findUnique({ where: { userId } }),
     prisma.chatSession.findUnique({ where: { id: sessionId } }),
+    userMessageId
+      ? prisma.message.findUnique({
+          where: { id: userMessageId },
+          select: { id: true, sessionId: true, role: true, status: true, createdAt: true },
+        })
+      : Promise.resolve(null),
+    prisma.message.findFirst({
+      where: { sessionId, role: "user", status: "sent", deletedAt: null },
+      orderBy: { createdAt: "desc" },
+      select: { id: true },
+    }),
   ]);
   if (!persona) throw new Error(`character ${characterId} not visible to chat`);
+  const anchor =
+    anchorUserMessage?.sessionId === sessionId &&
+    anchorUserMessage.role === "user" &&
+    anchorUserMessage.status === "sent"
+      ? anchorUserMessage
+      : null;
 
   const policy = resolvePolicy(snapshotFromView(entitlementRow), { memoryEnabled });
 
   const recent = await prisma.message.findMany({
-    where: { sessionId, status: "sent", role: { in: ["user", "assistant"] }, deletedAt: null },
+    where: {
+      sessionId,
+      status: "sent",
+      role: { in: ["user", "assistant"] },
+      deletedAt: null,
+      ...(anchor ? { createdAt: { lte: anchor.createdAt } } : {}),
+    },
     orderBy: { createdAt: "desc" },
     take: policy.maxContextMessages,
   });
@@ -82,14 +109,22 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
     relationship = await withTimeout(relRead, MEMORY_READ_TIMEOUT_MS, null);
   }
 
+  const anchoredToLatestTurn = !anchor || anchor.id === latestUserMessage?.id;
+
   return {
     persona,
     policy,
-    sessionSummary: session?.memorySummary ?? null,
+    // No-memory means no derived context. When regenerating an older turn, skip the
+    // rolling summary too: it may contain future turns after the anchor message.
+    sessionSummary:
+      memoryEnabled && anchoredToLatestTurn
+        ? session?.memorySummary ?? null
+        : null,
     recentMessages,
     boundaries,
     longTermMemories,
     relationship,
+    canUpdateSessionSummary: memoryEnabled && anchoredToLatestTurn,
   };
 }
 

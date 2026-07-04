@@ -1,6 +1,6 @@
 # Ourdream.ai Product Feature Map
 
-更新日期：2026-06-28
+更新日期：2026-07-03
 
 > **本文档是目标产品功能地图（页面模板 / 导航图 / 功能模块矩阵），不描述实现进度。**
 > 当前真实实现状态以 [`CURRENT_FUNCTIONAL_COVERAGE.md`](./CURRENT_FUNCTIONAL_COVERAGE.md) 为单一事实来源（SSoT），请勿在本文重新加入逐行实现状态列。
@@ -33,10 +33,10 @@
 | Explore Home | `/` | 真实搜索、排序、筛选、角色详情、聊天启动、无限加载 |
 | Marketing | `/chat`、`/ai-girlfriend`、`/ai-boyfriend`、`/ai-girl`、`/affiliate`、`/authors/*`、`/site/*`、`/login`、`/signup`、`/helpdesk` | 产品说明、转注册、营销实验、登录/注册真实表单、帮助内容 |
 | Create | `/create` | 性别/风格、外观、发型、体型、名称、高级详情、tag、预览生成、最终创建、审核 |
-| Generator | `/generate`、`/generate/*`、`/generator/*` | 图片/视频任务、角色选择、preset 库、Premium prompt、模型/比例/数量设置、图库管理 |
+| Generator | `/generate`、`/generate/*`、`/generator/*` | 图片任务、条件启用的视频任务、角色选择、preset 库、Premium prompt、模型/比例/数量设置、图库管理 |
 | Profile | `/custom`、`/profile` | My AI、最近角色、群聊、packs、presets、created、余额、订阅、兑换码、推荐、偏好 |
 | Feed | `/feed` | 推荐 feed、cursor、Chat、Remix、Like、Share、Report |
-| Community | `/community` | banner carousel、Dreamers/Characters/Collections、leaderboards、Release/Gender/Style filters |
+| Community | `/community`、`/creators/:id` | banner carousel、Dreamers/Characters/Collections、creator public profiles、leaderboards、Release/Gender/Style filters |
 | Library | `/resources-hub`、`/type`、`/videos`、`/games`、`/romantasy` | 资源聚合、分类页、内容运营入口 |
 | Article | `/guides/*`、`/sex-chat/*`、`/ai-girlfriend/*`、`/videos/*`、`/type/*`、`/ai-instructions` | 真实长文、FAQ、结构化 SEO、CTA |
 | Comparison | `/comparison`、`/comparison/*`、`/*-alternatives` | 竞品差异、价格/功能对比、转化 |
@@ -50,11 +50,11 @@
 | Create | `/create` | 创建自定义角色 | 保存到 My AI、开始聊天、生成媒体 |
 | Explore | `/` | 浏览角色 | 筛选、搜索、打开角色、注册 |
 | Chat | `/chat` | 理解聊天能力或进入聊天 | 登录、选择角色、恢复会话 |
-| Generate | `/generate` | 生成图片/视频 | 选择角色、配置参数、查看图库 |
+| Generate | `/generate` | 生成图片；Video 启用时生成视频 | 选择角色、配置参数、查看图库 |
 | My AI | `/custom` | 管理个人角色和历史 | 继续聊天、编辑角色、查看 created |
 | Feed | `/feed` | 浏览动态 | Chat、Remix、Like、Share、Report |
-| Community | `/community` | 发现创作者和公开角色 | 关注、互动、分享 |
-| Help Desk | `/helpdesk` | 获取支持 | FAQ、提交工单 |
+| Community | `/community` | 发现创作者和公开角色 | 打开 creator profile、关注、互动、分享 |
+| Help Desk | `/helpdesk` | 获取支持 | FAQ、提交 beta 支持请求（`SUP-...` 参考号）、外部/账号支持入口 |
 | Safety Center | 外链 | 了解规则 | 年龄验证、审核、举报、申诉、隐私 |
 | More | `/resources-hub` | 找资源内容 | 进入 guides、comparison、type、videos |
 | Upgrade | `/upgrade` | 订阅 | checkout、权益激活 |
@@ -68,7 +68,7 @@
 | 推荐角色流 | `/` | `characterCards` |
 | 角色卡 metadata | `/`、marketing strip、generator gallery | Character |
 | 热度指标 | `/` | likes、chats |
-| 分类 chips | `/` | categoryFilters |
+| 分类 chips | `/` | `/api/v1/tags` + public approved character counts（只展示有内容的非 muted tag） |
 | 搜索 | `/`、route topbar | search index |
 | 排序 | `/` | ranking mode（For You/Popular/Newest/Following，带 period label） |
 | 筛选 | `/` | gender/style/age facets |
@@ -89,6 +89,7 @@
 | Tag manager | `/create` | Character.tags（final submit 前可管理） |
 | Appearance/Personality tabs | `/create` | draft profile sections |
 | Preview generation | `/create` | CharacterPreviewJob |
+| Visual identity anchor | `/create` | CharacterVisualProfile（preview 候选图中选择基准图，生成 active identity profile） |
 | Bring to life action | `/create` | Character create API |
 | Save to My AI | `/custom` | user library |
 
@@ -108,16 +109,17 @@
 | 功能 | 页面 | 数据 |
 | --- | --- | --- |
 | Image mode | `/generate` | GenerationJob.mode |
-| Video mode | `/generate` | GenerationJob.mode |
+| Video mode | `/generate` | GenerationJob.mode（仅在 `video_gen`、entitlement、video model/provider 同时满足时曝光） |
 | Mode presets | `/generate` | generationModePreset（Presets、Image Edit） |
 | Select character | `/generate` | characterId（dialog with search, filters, Freeplay, characters） |
+| Character consistency | `/generate`、Chat image | CharacterVisualProfile（active identity version、anchor/reference assets、consistency mode；详见 `CHARACTER_CONSISTENT_IMAGE_GENERATION_PRD.md`） |
 | Background | `/generate` | controls.backgroundPresetId（All/My Presets/Community/categories/Custom/Create a Preset） |
 | Pose | `/generate` | controls.posePresetId（Image mode only；preset categories） |
 | Outfit | `/generate` | controls.outfitPresetId（All/My Presets/Community/categories/Custom/Create a Preset） |
 | Premium custom prompt | `/generate` | prompt、plan（non-entitled user 触发 upgrade modal） |
 | Advanced settings | `/generate` | model/style、negativePrompt、orientation、count（Dreamy/Vivid、premium negative prompt、ratio、2-256 images） |
 | Generate action | `/generate` | async job |
-| Images/Videos/Liked | `/generate` | MediaAsset（gallery tabs） |
+| Images/Liked/Videos | `/generate` | MediaAsset（Images/Liked 默认可见；Videos 仅 Video 启用时可见） |
 | Gallery filter/manage | `/generate` | MediaAsset query、bulk selection（Filter、Manage、Select All、Like） |
 | Long-tail generator pages | `/generate/*`、`/generator/*` | SEO route content |
 
@@ -144,7 +146,7 @@
 | My AI tabs | `/custom` | recent、characters、groupChats、packs、presets、created |
 | Profile settings | `/profile` | User、Preferences |
 | Dreamcoin balance | `/profile`、app-wide | DreamcoinLedger |
-| Subscription link | `/profile/subscription` | Subscription |
+| Billing management | `/profile#billing`、`/upgrade` | Subscription |
 | Redeem code | `/profile/redeem-code` | RedeemCode |
 | Referral program | `/profile`、`/signup?ref=` | 已接线：邀请码生成/分享 + signup 读 `?ref` 归因 + give/get dreamcoins（被邀请人 +150、邀请人 +150，按 ledger idempotencyKey 每被邀请人一次）。前端 AuthWorkspace 捕获 `?ref` 随 signup 提交 |
 | Preferences/notifications | `/profile/notifications` | UserPreferences |
@@ -155,6 +157,7 @@
 | Community carousel | `/community` | CampaignBanner |
 | Community tabs | `/community` | dreamers、characters、collections |
 | Dreamers leaderboard | `/community` | CreatorRank（Featured、Top、followers/interactions） |
+| Creator public profile | `/creators/:id` | Creator profile、public character grid、follow state |
 | Community filters | `/community` | releaseWindow、gender、style（Last 30 Days/All Time、Any/Female/Male/Trans、Any/Realistic/Anime） |
 
 ### 5.7 SEO Content
@@ -173,8 +176,8 @@
 
 | 功能 | 页面 | 数据 |
 | --- | --- | --- |
-| Help support tab | `/helpdesk` | support links（Discord、FAQ、Contact Support） |
-| Bugs/Features/Changelog | `/helpdesk` | feedback/voting/changelog（Premium-gated） |
+| Help support tab | `/helpdesk` | support links（Account/Billing、Trust contact、Discord）、FAQ、登录+年龄门后提交支持请求（analytics 事件 + `SUP-...` 参考号） |
+| Bugs/Features/Changelog | `/helpdesk` | beta feedback/changelog 区块 + Premium CTA；Roadmap voting 已支持提交 feature/bug/improvement idea、Vote/Unvote 与持久计票 |
 | Terms index | `/terms` | policy routes（12 policy links） |
 | Age verification docs | `safety.ourdream.ai/policies/age-verification` | AgeVerification（Go.cam、jurisdiction、stored verification info） |
 | Moderation docs | `safety.ourdream.ai/moderation/*` | moderation layers、appeals（input/output/metadata/human/community layers） |
@@ -183,14 +186,12 @@
 
 ### 5.9 未定义产品域（V1.1 / 暂不实现）
 
-以下功能在 UI/路由/tab 中出现，但**产品语义尚未定义，不属于 MVP**，仅以空态或占位呈现。显式标注以免误读为已规划交付（对齐 12-roadmap V1.1 与 M8 「group-chats/packs 返回空态」）。
+以下功能在 UI/tab 中出现，但**产品语义尚未定义，不属于当前 beta**，仅以明确空态呈现。显式标注以免误读为已规划交付（对齐 12-roadmap V1.1 与 M8 「group-chats/packs 返回空态」）。Creator public profile 与 Feed Remix 已从本节移出：`/creators/:id`、follow 状态、Remix -> Generate、`feed_remix` provenance 与 Gallery 回链均已落地并纳入当前实现覆盖。
 
 | 域 | 出现位置 | 状态 | 一句话范围草图 |
 | --- | --- | --- | --- |
-| Group Chats | My AI tab（§5.6）、Explore 分类 chip | V1.1 / 暂不实现 | 一个会话内多角色参与的群聊；MVP 仅保留 tab 空态，不实现多角色编排与额度。 |
+| Group Chats | My AI tab（§5.6） | V1.1 / 暂不实现 | 一个会话内多角色参与的群聊；MVP 仅保留 tab 空态，不实现多角色编排与额度；Explore 不展示空结果 chip，未来只有在有公开可浏览内容时才作为内容 tag 出现。 |
 | Packs | My AI tab（§5.6） | V1.1 / 暂不实现 | 角色/preset 的打包合集（可能可分享或购买）；MVP 仅空态，不实现打包模型与分发。 |
-| Remix | Feed 动作（§5.6）、`/feed` | V1.1 / 暂不实现 | 基于他人公开角色/媒体派生再创作；MVP 不实现派生血缘、版权归属与计费。 |
-| Creator public profile（`/creator/:id`） | Community leaderboard、角色卡 creator 字段 | V1.1 / 暂不实现 | 创作者公开主页（作品集/关注/统计）；MVP 不实现公开 profile 页与关注关系。 |
 
 ## 6. 页面族摘要（用户任务）
 
@@ -216,10 +217,10 @@
 
 用户任务：
 
-- 选择 Image 或 Video。
+- 默认选择 Image；Video 进入当前发布范围时可切换 Image / Video。
 - 选择角色或 Freeplay。
 - 配置 mode presets、背景、姿势、服装、custom prompt 和 advanced settings。
-- 使用 Images/Videos/Liked、Filter 和 Manage 管理结果。
+- 使用 Images、Liked、Filter 和 Manage 管理结果；Video 启用时可用 Videos。
 
 ### My AI/Profile `/custom`、`/profile`
 
@@ -228,7 +229,7 @@
 - 查看最近角色和已创建角色。
 - 管理群聊、packs、presets。
 - 从空态进入创建。
-- 在 Profile 查看余额、订阅、兑换码、推荐奖励、偏好、语言、支持、法律和账号管理。
+- 在 Profile 查看余额、订阅、兑换码、推荐奖励、偏好、支持、法律和账号管理。
 
 ### Feed/Community `/feed`、`/community`
 
@@ -236,6 +237,7 @@
 
 - 浏览平台或用户内容。
 - 发现创作者。
+- 进入 creator public profile 并关注/取消关注。
 - Chat、Remix、Like、Share、Report。
 - 按 Dreamers、Characters、Collections 和 Release/Gender/Style 维度浏览社区榜单。
 
@@ -245,7 +247,7 @@
 
 - 比较 monthly/yearly。
 - 比较 Premium/Deluxe。
-- 查看 dreamcoin、图片、视频、语音、消息、模型/记忆等权益。
+- 查看 dreamcoin、图片、条件启用的视频、语音、消息、模型/记忆等权益。
 - 购买对应计划。
 
 ### Library/Article/Comparison

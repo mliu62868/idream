@@ -2,11 +2,10 @@
 // The pg driver adapter takes the connection string; no schema-side url (Prisma 7).
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../generated/client/client.js";
+import { env } from "./env.js";
 
 function connectionString(): string {
-  const url = process.env.CHAT_DATABASE_URL ?? process.env.DATABASE_URL;
-  if (!url) throw new Error("CHAT_DATABASE_URL (or DATABASE_URL) is required for chat service");
-  return url;
+  return env.DATABASE_URL;
 }
 
 const globalForChatPrisma = globalThis as unknown as { chatPrisma?: PrismaClient };
@@ -48,6 +47,7 @@ export type {
   ChatSession,
   Message,
   MessageVersion,
+  MessageAttachment,
   ChatUsage,
   ChatOutboxEvent,
   ChatInboxEvent,

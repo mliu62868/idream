@@ -40,6 +40,7 @@ type AdminEvidence = {
   bytes?: number;
   contentType?: string | null;
   protected?: boolean;
+  protectedReason?: "access_denied" | "dev_login_wall" | null;
   nextErrorShell?: boolean;
   error?: string | null;
 };
@@ -214,7 +215,16 @@ async function probeAdmin(baseUrl: string | null): Promise<AdminEvidence> {
       redirect: "follow",
     });
     const text = await response.text();
-    const protectedSurface = text.includes("Admin access denied");
+    const accessDenied = text.includes("Admin access denied");
+    const devLoginWall =
+      text.includes("DEV ONLY") &&
+      (text.includes("后台登录") || text.includes("Admin login"));
+    const protectedSurface = accessDenied || devLoginWall;
+    const protectedReason = accessDenied
+      ? "access_denied"
+      : devLoginWall
+        ? "dev_login_wall"
+        : null;
     const nextErrorShell = text.includes('id="__next_error__"');
     const bytes = Buffer.byteLength(text);
     return {
@@ -223,6 +233,7 @@ async function probeAdmin(baseUrl: string | null): Promise<AdminEvidence> {
       bytes,
       contentType: response.headers.get("content-type"),
       protected: protectedSurface,
+      protectedReason,
       nextErrorShell,
       error:
         response.status === 200 && protectedSurface && !nextErrorShell

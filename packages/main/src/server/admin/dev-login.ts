@@ -5,8 +5,10 @@
 import { z } from "zod";
 import {
   ADMIN_SESSION_COOKIE,
+  SESSION_COOKIE,
   adminSessionCookie,
   clearAdminSessionCookie,
+  clearSessionCookie,
   createSessionToken,
   parseCookieHeader,
 } from "@/server/lib/auth";
@@ -22,6 +24,11 @@ const loginSchema = z.object({
   username: z.string().trim().min(1),
   password: z.string().min(1),
 });
+const logoutSchema = z
+  .object({
+    includeUserSession: z.boolean().optional(),
+  })
+  .optional();
 
 export function devLoginEnabled() {
   return env.APP_ENV !== "production";
@@ -62,11 +69,27 @@ export async function devAdminLogin(request: Request) {
 }
 
 export async function devAdminLogout(request: Request) {
+  if (!devLoginEnabled()) throw Errors.forbidden("Dev admin login is disabled");
+
+  const options = await readLogoutOptions(request);
   const cookies = parseCookieHeader(request.headers.get("cookie"));
-  const token = cookies.get(ADMIN_SESSION_COOKIE);
-  if (token) await prisma.session.deleteMany({ where: { token } });
+  const tokens = [
+    cookies.get(ADMIN_SESSION_COOKIE),
+    options?.includeUserSession ? cookies.get(SESSION_COOKIE) : null,
+  ].filter((token): token is string => Boolean(token));
+  if (tokens.length) await prisma.session.deleteMany({ where: { token: { in: tokens } } });
 
   const response = empty();
   response.headers.append("set-cookie", clearAdminSessionCookie());
+  if (options?.includeUserSession) {
+    response.headers.append("set-cookie", clearSessionCookie());
+  }
   return response;
+}
+
+async function readLogoutOptions(request: Request): Promise<z.infer<typeof logoutSchema>> {
+  if (!request.headers.get("content-type")?.includes("application/json")) return undefined;
+  const text = await request.text();
+  if (!text.trim()) return undefined;
+  return logoutSchema.parse(JSON.parse(text));
 }

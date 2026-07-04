@@ -14,7 +14,7 @@ export function HomeSeoSections() {
           {[
             ["63M+", "characters to explore"],
             ["10M+", "dreamers creating stories"],
-            ["24/7", "chat, image, and video tools"],
+            ["24/7", "chat and image tools"],
           ].map(([value, label]) => (
             <div
               className="rounded-[12px] border border-white/10 bg-[rgb(18,18,18)] p-5 text-center"

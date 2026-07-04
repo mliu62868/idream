@@ -3,9 +3,10 @@
 // SPEC: 角色审核队列面板 —— 自取数列出待审（pending）角色提交，逐行 Approve/Reject。
 // INTENT: 决策弹窗收集 reviewReason(可选) + reason(必填) + confirmation("REVIEW")，复用 safety.review.* 权限。
 // INVARIANTS: 仅展示后端返回的 pending 项；决策成功后刷新队列；confirmation 必须等于 REVIEW 才允许提交。
-import { useCallback, useEffect, useState } from "react";
-import { Check, Loader2, X } from "lucide-react";
-import { apiGet, apiWrite } from "@/components/admin/api";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Bookmark, Check, Filter, Loader2, Trash2, X } from "lucide-react";
+import { apiDelete, apiGet, apiWrite } from "@/components/admin/api";
+import { useAdminI18n } from "@/components/admin/i18n";
 import { cn } from "@/lib/utils";
 
 type ReviewCharacter = {
@@ -33,13 +34,43 @@ type PendingDecision = {
   decision: Decision;
 };
 
+type ReportFilter = "all" | "reported" | "clean";
+
+type SavedReviewQueueFilters = {
+  query: string;
+  reportFilter: ReportFilter;
+};
+
+type SavedView = {
+  id: string;
+  scope: string;
+  label: string;
+  filters: unknown;
+  createdAt: string;
+  updatedAt: string;
+};
+
 const CONFIRM_TOKEN = "REVIEW";
+const REVIEW_QUEUE_SAVED_VIEW_SCOPE = "moderation.review_queue";
+const DEFAULT_FILTERS: SavedReviewQueueFilters = { query: "", reportFilter: "all" };
+const REPORT_FILTER_OPTIONS: Array<{ value: ReportFilter; label: string }> = [
+  { value: "all", label: "All" },
+  { value: "reported", label: "Reported" },
+  { value: "clean", label: "Clean" },
+];
 
 export function ReviewQueueView() {
+  const { t, value: valueLabel } = useAdminI18n();
   const [items, setItems] = useState<ReviewItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingDecision | null>(null);
+  const [filters, setFilters] = useState<SavedReviewQueueFilters>(DEFAULT_FILTERS);
+  const [savedViews, setSavedViews] = useState<SavedView[]>([]);
+  const [savedViewsLoading, setSavedViewsLoading] = useState(true);
+  const [savedViewLabel, setSavedViewLabel] = useState("");
+  const [savingView, setSavingView] = useState(false);
+  const [savedViewError, setSavedViewError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -54,12 +85,71 @@ export function ReviewQueueView() {
     }
   }, []);
 
+  const loadSavedViews = useCallback(async () => {
+    setSavedViewsLoading(true);
+    setSavedViewError(null);
+    try {
+      const data = await apiGet<{ items: SavedView[] }>(
+        `/api/v1/admin/saved-views?scope=${encodeURIComponent(REVIEW_QUEUE_SAVED_VIEW_SCOPE)}`,
+      );
+      setSavedViews(data.items);
+    } catch (err) {
+      setSavedViewError(err instanceof Error ? err.message : "Saved views failed");
+    } finally {
+      setSavedViewsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void load();
+      void loadSavedViews();
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [load]);
+  }, [load, loadSavedViews]);
+
+  const visibleItems = useMemo(
+    () => items.filter((item) => matchesReviewFilters(item, filters)),
+    [filters, items],
+  );
+  const activeFilterCount =
+    (filters.query.trim() ? 1 : 0) + (filters.reportFilter === "all" ? 0 : 1);
+  const queueCount = activeFilterCount > 0 ? `${visibleItems.length}/${items.length}` : String(items.length);
+
+  async function saveCurrentView() {
+    const label = savedViewLabel.trim();
+    if (!label || savingView) return;
+    setSavingView(true);
+    setSavedViewError(null);
+    try {
+      await apiWrite<{ view: SavedView }>("/api/v1/admin/saved-views", "POST", {
+        scope: REVIEW_QUEUE_SAVED_VIEW_SCOPE,
+        label,
+        filters: normalizeFilters(filters),
+      });
+      setSavedViewLabel("");
+      await loadSavedViews();
+    } catch (err) {
+      setSavedViewError(err instanceof Error ? err.message : "Save failed");
+    } finally {
+      setSavingView(false);
+    }
+  }
+
+  async function deleteSavedView(view: SavedView) {
+    setSavedViewError(null);
+    try {
+      await apiDelete<{ deleted: true }>(`/api/v1/admin/saved-views/${view.id}`);
+      setSavedViews((current) => current.filter((item) => item.id !== view.id));
+    } catch (err) {
+      setSavedViewError(err instanceof Error ? err.message : "Delete failed");
+    }
+  }
+
+  function applySavedView(view: SavedView) {
+    setSavedViewError(null);
+    setFilters(savedFiltersFromUnknown(view.filters));
+  }
 
   return (
     <div className="space-y-4">
@@ -69,10 +159,116 @@ export function ReviewQueueView() {
 
       {error ? <p className="text-xs text-red-300">{error}</p> : null}
 
+      <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+        <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
+          <label className="flex min-w-0 flex-1 flex-col gap-1">
+            <span className="text-xs font-semibold text-[rgb(170,170,170)]">{t("Search")}</span>
+            <input
+              aria-label={t("Search review queue")}
+              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm text-[rgb(230,230,230)] outline-none focus:border-white/30"
+              onChange={(event) => setFilters((current) => ({ ...current, query: event.target.value }))}
+              placeholder={t("Name, description, or ID")}
+              value={filters.query}
+            />
+          </label>
+          <div className="flex flex-col gap-1">
+            <span className="text-xs font-semibold text-[rgb(170,170,170)]">{t("Report filter")}</span>
+            <div
+              aria-label={t("Report filter")}
+              className="inline-flex h-10 border border-white/10"
+              role="group"
+            >
+              {REPORT_FILTER_OPTIONS.map((option) => (
+                <button
+                  className={cn(
+                    "min-w-20 border-r border-white/10 px-3 text-xs text-[rgb(170,170,170)] last:border-r-0 hover:text-white",
+                    filters.reportFilter === option.value && "bg-white text-black hover:text-black",
+                  )}
+                  key={option.value}
+                  onClick={() => setFilters((current) => ({ ...current, reportFilter: option.value }))}
+                  type="button"
+                >
+                  {t(option.label)}
+                </button>
+              ))}
+            </div>
+          </div>
+          <form
+            className="flex min-w-0 flex-col gap-1 sm:min-w-[300px]"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void saveCurrentView();
+            }}
+          >
+            <span className="text-xs font-semibold text-[rgb(170,170,170)]">{t("Saved view")}</span>
+            <div className="flex gap-2">
+              <input
+                aria-label={t("Saved view label")}
+                className="h-10 min-w-0 flex-1 border border-white/10 bg-black/30 px-3 text-sm text-[rgb(230,230,230)] outline-none focus:border-white/30"
+                onChange={(event) => setSavedViewLabel(event.target.value)}
+                placeholder={t("Saved view label")}
+                value={savedViewLabel}
+              />
+              <button
+                className="inline-flex h-10 shrink-0 items-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+                disabled={!savedViewLabel.trim() || savingView}
+                type="submit"
+              >
+                {savingView ? <Loader2 className="h-4 w-4 animate-spin" /> : <Bookmark className="h-4 w-4" />}
+                {t("Save view")}
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center gap-2 text-xs font-semibold text-[rgb(170,170,170)]">
+            <Filter className="h-4 w-4" />
+            {t("Saved views")}
+          </span>
+          {savedViews.map((view) => (
+            <span className="inline-flex h-8 items-center border border-white/10" key={view.id}>
+              <button
+                className="h-full px-3 text-xs text-[rgb(230,230,230)] hover:bg-white/10"
+                onClick={() => applySavedView(view)}
+                type="button"
+              >
+                {view.label}
+              </button>
+              <button
+                aria-label={t("Delete saved view {label}", { label: view.label })}
+                className="flex h-full w-8 items-center justify-center border-l border-white/10 text-[rgb(170,170,170)] hover:text-white"
+                onClick={() => void deleteSavedView(view)}
+                title={t("Delete saved view {label}", { label: view.label })}
+                type="button"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </span>
+          ))}
+          {savedViewsLoading ? (
+            <span className="text-xs text-[rgb(170,170,170)]">{t("Loading…")}</span>
+          ) : null}
+          {!savedViewsLoading && savedViews.length === 0 ? (
+            <span className="text-xs text-[rgb(110,110,110)]">{t("No saved views.")}</span>
+          ) : null}
+          {activeFilterCount > 0 ? (
+            <button
+              className="h-8 border border-white/10 px-3 text-xs text-[rgb(230,230,230)] hover:border-white/30"
+              onClick={() => setFilters(DEFAULT_FILTERS)}
+              type="button"
+            >
+              {t("Reset filters")}
+            </button>
+          ) : null}
+        </div>
+        {savedViewError ? <p className="mt-2 text-xs text-red-300">{savedViewError}</p> : null}
+      </section>
+
       <section className="overflow-hidden border border-white/10 bg-[rgb(18,18,18)]">
         <div className="flex h-11 items-center justify-between border-b border-white/10 px-4">
-          <h2 className="text-sm font-semibold">Pending submissions</h2>
-          <span className="text-xs text-[rgb(170,170,170)]">{items.length}</span>
+          <h2 className="text-sm font-semibold">{t("Pending submissions")}</h2>
+          <span className="text-xs text-[rgb(170,170,170)]">{queueCount}</span>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[860px] border-collapse text-left text-sm">
@@ -80,18 +276,18 @@ export function ReviewQueueView() {
               <tr>
                 {["name", "gender", "style", "description", "reports", "submittedAt"].map((column) => (
                   <th key={column} className="border-b border-white/10 px-3 py-2 font-semibold">
-                    {column}
+                    {t(column)}
                   </th>
                 ))}
-                <th className="border-b border-white/10 px-3 py-2 font-semibold">Actions</th>
+                <th className="border-b border-white/10 px-3 py-2 font-semibold">{t("Actions")}</th>
               </tr>
             </thead>
             <tbody>
-              {items.map((item) => (
+              {visibleItems.map((item) => (
                 <tr key={item.submissionId} className="border-b border-white/5 last:border-0">
                   <td className="px-3 py-2 align-top text-[rgb(230,230,230)]">{item.character.name}</td>
-                  <td className="px-3 py-2 align-top text-[rgb(230,230,230)]">{item.character.gender}</td>
-                  <td className="px-3 py-2 align-top text-[rgb(230,230,230)]">{item.character.style}</td>
+                  <td className="px-3 py-2 align-top text-[rgb(230,230,230)]">{valueLabel(item.character.gender)}</td>
+                  <td className="px-3 py-2 align-top text-[rgb(230,230,230)]">{valueLabel(item.character.style)}</td>
                   <td className="max-w-[260px] px-3 py-2 align-top text-[rgb(230,230,230)]">
                     {truncate(item.character.description, 120)}
                   </td>
@@ -101,24 +297,36 @@ export function ReviewQueueView() {
                   <td className="px-3 py-2 align-top text-[rgb(170,170,170)]">{formatDate(item.submittedAt)}</td>
                   <td className="px-3 py-2 align-top">
                     <div className="flex gap-1">
-                      <IconAction
-                        icon={<Check className="h-4 w-4" />}
-                        label="Approve"
+                      <button
+                        className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs text-[rgb(230,230,230)] hover:border-white/30"
                         onClick={() => setPending({ item, decision: "approve" })}
-                      />
-                      <IconAction
-                        icon={<X className="h-4 w-4" />}
-                        label="Reject"
+                        title={t("Approve")}
+                        type="button"
+                      >
+                        <Check className="h-4 w-4" />
+                        {t("Approve")}
+                      </button>
+                      <button
+                        className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs text-[rgb(230,230,230)] hover:border-white/30"
                         onClick={() => setPending({ item, decision: "reject" })}
-                      />
+                        title={t("Reject")}
+                        type="button"
+                      >
+                        <X className="h-4 w-4" />
+                        {t("Reject")}
+                      </button>
                     </div>
                   </td>
                 </tr>
               ))}
-              {items.length === 0 ? (
+              {visibleItems.length === 0 ? (
                 <tr>
                   <td className="px-3 py-8 text-center text-sm text-[rgb(170,170,170)]" colSpan={7}>
-                    {loading ? "Loading…" : "Empty"}
+                    {loading
+                      ? t("Loading…")
+                      : activeFilterCount > 0
+                        ? t("No submissions match filters")
+                        : t("Empty")}
                   </td>
                 </tr>
               ) : null}
@@ -150,6 +358,7 @@ function DecisionDialog({
   onClose: () => void;
   onDone: () => Promise<void>;
 }) {
+  const { t, value: valueLabel } = useAdminI18n();
   const { item, decision } = pending;
   const [reviewReason, setReviewReason] = useState("");
   const [reason, setReason] = useState("");
@@ -188,28 +397,28 @@ function DecisionDialog({
         onClick={(event) => event.stopPropagation()}
       >
         <h3 className="text-sm font-semibold">
-          {decision === "approve" ? "Approve" : "Reject"} {item.character.name}
+          {decision === "approve" ? t("Approve") : t("Reject")} {item.character.name}
         </h3>
         <p className="mt-1 text-xs text-[rgb(170,170,170)]">
-          确认提交后角色将被置为 {decision === "approve" ? "approved" : "rejected"}。
+          确认提交后角色将被置为 {decision === "approve" ? valueLabel("approved") : valueLabel("rejected")}。
         </p>
         <div className="mt-4 space-y-3">
           <textarea
             className="min-h-16 w-full border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-white/30"
             onChange={(event) => setReviewReason(event.target.value)}
-            placeholder="Review note (optional, shown to creator)"
+            placeholder={t("Review note (optional, shown to creator)")}
             value={reviewReason}
           />
           <input
             className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
             onChange={(event) => setReason(event.target.value)}
-            placeholder="Audit reason (≥3)"
+            placeholder={t("Audit reason (≥3)")}
             value={reason}
           />
           <input
             className="h-10 w-full border border-white/10 bg-black/30 px-3 font-mono text-sm outline-none focus:border-white/30"
             onChange={(event) => setConfirmation(event.target.value)}
-            placeholder={`Type ${CONFIRM_TOKEN} to confirm`}
+            placeholder={t("Type {token} to confirm", { token: CONFIRM_TOKEN })}
             value={confirmation}
           />
           {error ? <p className="text-xs text-red-300">{error}</p> : null}
@@ -220,7 +429,7 @@ function DecisionDialog({
             onClick={onClose}
             type="button"
           >
-            Cancel
+            {t("Cancel")}
           </button>
           <button
             className="inline-flex h-10 items-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
@@ -229,33 +438,11 @@ function DecisionDialog({
             type="button"
           >
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-            Confirm
+            {t("Confirm")}
           </button>
         </div>
       </div>
     </div>
-  );
-}
-
-function IconAction({
-  icon,
-  label,
-  onClick,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs text-[rgb(230,230,230)] hover:border-white/30"
-      onClick={onClick}
-      title={label}
-      type="button"
-    >
-      {icon}
-      {label}
-    </button>
   );
 }
 
@@ -267,4 +454,44 @@ function truncate(value: string, max: number) {
 function formatDate(value: string) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function normalizeFilters(filters: SavedReviewQueueFilters): SavedReviewQueueFilters {
+  return {
+    query: filters.query.trim(),
+    reportFilter: filters.reportFilter,
+  };
+}
+
+function savedFiltersFromUnknown(value: unknown): SavedReviewQueueFilters {
+  if (typeof value !== "object" || value === null) return DEFAULT_FILTERS;
+  const record = value as Record<string, unknown>;
+  const query = typeof record.query === "string" ? record.query : "";
+  const reportFilter = isReportFilter(record.reportFilter) ? record.reportFilter : "all";
+  return { query, reportFilter };
+}
+
+function isReportFilter(value: unknown): value is ReportFilter {
+  return value === "all" || value === "reported" || value === "clean";
+}
+
+function matchesReviewFilters(item: ReviewItem, filters: SavedReviewQueueFilters) {
+  if (filters.reportFilter === "reported" && item.reportCount === 0) return false;
+  if (filters.reportFilter === "clean" && item.reportCount > 0) return false;
+
+  const query = filters.query.trim().toLowerCase();
+  if (!query) return true;
+  const haystack = [
+    item.submissionId,
+    item.character.id,
+    item.character.name,
+    item.character.description,
+    item.character.gender,
+    item.character.style,
+    item.character.visibility,
+    item.character.status,
+  ]
+    .join(" ")
+    .toLowerCase();
+  return haystack.includes(query);
 }

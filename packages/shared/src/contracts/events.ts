@@ -8,6 +8,7 @@ export const CHAT_TO_MAIN_EVENTS = {
   sessionCreated: "chat.session.created",
   messageCompleted: "chat.message.completed",
   messageBlocked: "chat.message.blocked",
+  imageRequested: "chat.image.requested",
   sessionDeleted: "chat.session.deleted",
   memoryUpdated: "chat.memory.updated",
   relationshipUpdated: "chat.relationship.updated",
@@ -26,6 +27,9 @@ export const MAIN_TO_CHAT_EVENTS = {
   entitlementUpdated: "entitlement.updated",
   ageEligibilityUpdated: "age_eligibility.updated",
   policyUpdated: "policy.updated",
+  chatImageAccepted: "chat.image.accepted",
+  chatImageCompleted: "chat.image.completed",
+  chatImageFailed: "chat.image.failed",
 } as const;
 
 export const chatToMainEventType = z.enum(
