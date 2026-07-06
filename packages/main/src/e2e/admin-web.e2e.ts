@@ -3,6 +3,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
 import { prisma } from "@/server/lib/db";
+import { redeemCodeHash } from "@/server/lib/redeem-codes";
 
 function uniqueEmail(tag: string) {
   return `e2e-admin-${tag}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@test.local`;
@@ -76,6 +77,14 @@ function collectConsoleFailures(page: Page) {
     failures.push(error.message);
   });
   return failures;
+}
+
+function platformStatusFromMetadata(metadata: unknown) {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+  const platformAsset = (metadata as { platformAsset?: unknown }).platformAsset;
+  if (!platformAsset || typeof platformAsset !== "object" || Array.isArray(platformAsset)) return null;
+  const status = (platformAsset as { status?: unknown }).status;
+  return typeof status === "string" ? status : null;
 }
 
 test("admin web serves generated media through user-content route", async ({ page }) => {
@@ -191,6 +200,274 @@ test("admin web loads all control-plane sections and filters users", async ({ pa
   expect(consoleFailures).toEqual([]);
 });
 
+test("admin content ops requires confirmation for public placement and archive writes", async ({
+  page,
+}) => {
+  const consoleFailures = collectConsoleFailures(page);
+  const admin = await startAdminSession(page);
+  const adminURL = adminBaseURL();
+  const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  const characterId = `e2e-content-confirm-character-${suffix}`;
+  const archiveAssetId = `e2e-content-confirm-archive-${suffix}`;
+  const placementAssetId = `e2e-content-confirm-placement-${suffix}`;
+  const archiveBatchId = `e2e-content-confirm-archive-batch-${suffix}`;
+  const placementBatchId = `e2e-content-confirm-placement-batch-${suffix}`;
+  const archiveBatchTitle = `Archive Confirmation ${suffix}`;
+  const placementBatchTitle = `Placement Confirmation ${suffix}`;
+  const archiveStorageKey = `e2e/admin/content-ops/${archiveAssetId}.png`;
+  const placementStorageKey = `e2e/admin/content-ops/${placementAssetId}.png`;
+  const archiveAssetPath = resolveLocalBlobPath(archiveStorageKey);
+  const placementAssetPath = resolveLocalBlobPath(placementStorageKey);
+  const archiveAssetUrl = `/user-content/${Buffer.from(archiveAssetId, "utf8").toString("base64url")}/content.png`;
+  const placementAssetUrl = `/user-content/${Buffer.from(placementAssetId, "utf8").toString("base64url")}/content.png`;
+  const tinyPng = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/ak9zP8AAAAASUVORK5CYII=",
+    "base64",
+  );
+
+  try {
+    await Promise.all([
+      mkdir(path.dirname(archiveAssetPath), { recursive: true }),
+      mkdir(path.dirname(placementAssetPath), { recursive: true }),
+    ]);
+    await Promise.all([writeFile(archiveAssetPath, tinyPng), writeFile(placementAssetPath, tinyPng)]);
+
+    await prisma.character.create({
+      data: {
+        id: characterId,
+        creatorId: admin.id,
+        name: `Content Ops Confirmation ${suffix}`,
+        age: 24,
+        description: "Content Ops confirmation target",
+        visibility: "public",
+        status: "approved",
+        style: "realistic",
+        gender: "female",
+        appearance: {},
+        advancedDetails: {},
+      },
+    });
+    await prisma.contentProductionBatch.createMany({
+      data: [
+        {
+          id: archiveBatchId,
+          title: archiveBatchTitle,
+          purpose: "character_chat",
+          targetType: "character",
+          targetId: characterId,
+          presetIds: [],
+          count: 1,
+          totalItems: 1,
+          completedItems: 1,
+          approvedItems: 1,
+          status: "completed",
+          createdById: admin.id,
+        },
+        {
+          id: placementBatchId,
+          title: placementBatchTitle,
+          purpose: "character_chat",
+          targetType: "character",
+          targetId: characterId,
+          presetIds: [],
+          count: 1,
+          totalItems: 1,
+          completedItems: 1,
+          approvedItems: 1,
+          status: "completed",
+          createdById: admin.id,
+        },
+      ],
+    });
+    await prisma.mediaAsset.createMany({
+      data: [
+        {
+          id: archiveAssetId,
+          ownerId: admin.id,
+          type: "image",
+          url: archiveAssetUrl,
+          thumbnailUrl: archiveAssetUrl,
+          storageKey: archiveStorageKey,
+          contentType: "image/png",
+          width: 800,
+          height: 1000,
+          prompt: "archive confirmation fixture",
+          visibility: "private",
+          safetyStatus: "passed",
+          metadata: {
+            platformAsset: {
+              status: "approved",
+              purpose: "character_chat",
+              tags: ["e2e", "archive"],
+              description: "Archive confirmation fixture",
+            },
+          },
+        },
+        {
+          id: placementAssetId,
+          ownerId: admin.id,
+          type: "image",
+          url: placementAssetUrl,
+          thumbnailUrl: placementAssetUrl,
+          storageKey: placementStorageKey,
+          contentType: "image/png",
+          width: 800,
+          height: 1000,
+          prompt: "placement confirmation fixture",
+          visibility: "private",
+          safetyStatus: "passed",
+          metadata: {
+            platformAsset: {
+              status: "approved",
+              purpose: "character_chat",
+              tags: ["e2e", "placement"],
+              description: "Placement confirmation fixture",
+            },
+          },
+        },
+      ],
+    });
+    await prisma.contentProductionItem.createMany({
+      data: [
+        {
+          batchId: archiveBatchId,
+          mediaAssetId: archiveAssetId,
+          itemIndex: 0,
+          status: "approved",
+          tags: ["e2e", "archive"],
+          reviewedById: admin.id,
+          reviewedAt: new Date(),
+        },
+        {
+          batchId: placementBatchId,
+          mediaAssetId: placementAssetId,
+          itemIndex: 0,
+          status: "approved",
+          tags: ["e2e", "placement"],
+          reviewedById: admin.id,
+          reviewedAt: new Date(),
+        },
+      ],
+    });
+
+    await page.goto(`${adminURL}/admin/content/assets`);
+    await expectAdminShellReady(page, "Asset Library");
+    const archiveCard = page.locator("article").filter({ hasText: archiveBatchTitle });
+    await expect(archiveCard).toBeVisible({ timeout: 10_000 });
+    await archiveCard.getByRole("button", { name: "Archive" }).click();
+    await expect(page.getByText("Press Confirm archive asset to archive this asset.")).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(
+      prisma.mediaAsset.findUniqueOrThrow({
+        where: { id: archiveAssetId },
+        select: { metadata: true },
+      }).then((asset) => platformStatusFromMetadata(asset.metadata)),
+    ).resolves.toBe("approved");
+
+    await archiveCard.getByRole("button", { name: "Confirm archive" }).click();
+    await expect(archiveCard.getByText("archived", { exact: true })).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(
+      prisma.mediaAsset.findUniqueOrThrow({
+        where: { id: archiveAssetId },
+        select: { metadata: true },
+      }).then((asset) => platformStatusFromMetadata(asset.metadata)),
+    ).resolves.toBe("archived");
+
+    const archivedPlacementAttempt = await page.request.post(`${adminURL}/api/v1/admin/content/placements`, {
+      data: {
+        mediaAssetId: archiveAssetId,
+        slot: "character_avatar",
+        targetType: "character",
+        targetId: characterId,
+        status: "published",
+        reason: "should reject archived asset",
+      },
+    });
+    expect(archivedPlacementAttempt.status()).toBe(400);
+
+    await page.goto(`${adminURL}/admin/content/placements`);
+    await expectAdminShellReady(page, "Placements");
+    await expect(page.getByLabel("Asset").locator(`option[value="${archiveAssetId}"]`)).toHaveCount(0);
+    await page.getByLabel("Asset").selectOption(placementAssetId);
+    await page.getByLabel("Target ID").fill(characterId);
+    await page.getByRole("button", { name: "Create placement" }).click();
+    await expect(page.getByText("Press Confirm create placement to publish this placement.")).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(
+      prisma.mediaAssetPlacement.count({
+        where: { mediaAssetId: placementAssetId, targetId: characterId },
+      }),
+    ).resolves.toBe(0);
+
+    await page.getByRole("button", { name: "Confirm create placement" }).click();
+    const placementRow = page.locator("article").filter({ hasText: placementAssetId });
+    await expect(placementRow).toBeVisible({ timeout: 10_000 });
+    await expect
+      .poll(
+        async () => {
+          const placement = await prisma.mediaAssetPlacement.findFirst({
+            where: { mediaAssetId: placementAssetId, targetId: characterId },
+            select: { status: true },
+          });
+          return placement?.status ?? null;
+        },
+        { timeout: 10_000 },
+      )
+      .toBe("published");
+    const createdPlacement = await prisma.mediaAssetPlacement.findFirstOrThrow({
+      where: { mediaAssetId: placementAssetId, targetId: characterId },
+      select: { id: true, status: true },
+    });
+    expect(createdPlacement.status).toBe("published");
+    await expect(
+      prisma.character.findUniqueOrThrow({
+        where: { id: characterId },
+        select: { imageAssetId: true },
+      }),
+    ).resolves.toEqual({ imageAssetId: placementAssetId });
+
+    await placementRow.getByRole("button", { name: "Pause" }).click();
+    await expect(page.getByText("Press Confirm pause placement to update this placement.")).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(
+      prisma.mediaAssetPlacement.findUniqueOrThrow({
+        where: { id: createdPlacement.id },
+        select: { status: true },
+      }),
+    ).resolves.toEqual({ status: "published" });
+
+    await placementRow.getByRole("button", { name: "Confirm pause" }).click();
+    await expect(placementRow.getByText("paused", { exact: true })).toBeVisible({ timeout: 10_000 });
+    await expect(
+      prisma.mediaAssetPlacement.findUniqueOrThrow({
+        where: { id: createdPlacement.id },
+        select: { status: true },
+      }),
+    ).resolves.toEqual({ status: "paused" });
+
+    expect(consoleFailures).toEqual([]);
+  } finally {
+    await prisma.mediaAssetPlacement.deleteMany({
+      where: { mediaAssetId: { in: [archiveAssetId, placementAssetId] } },
+    });
+    await prisma.contentProductionItem.deleteMany({
+      where: { batchId: { in: [archiveBatchId, placementBatchId] } },
+    });
+    await prisma.contentProductionBatch.deleteMany({
+      where: { id: { in: [archiveBatchId, placementBatchId] } },
+    });
+    await prisma.character.deleteMany({ where: { id: characterId } });
+    await prisma.mediaAsset.deleteMany({ where: { id: { in: [archiveAssetId, placementAssetId] } } });
+    await Promise.all([rm(archiveAssetPath, { force: true }), rm(placementAssetPath, { force: true })]);
+    await prisma.user.deleteMany({ where: { id: admin.id } });
+  }
+});
+
 test("admin users and billing actions write audit trail and clear adjustment form", async ({
   page,
 }) => {
@@ -217,10 +494,31 @@ test("admin users and billing actions write audit trail and clear adjustment for
     await expect(targetRow).toHaveCount(1, { timeout: 10_000 });
     await expect(targetRow.getByText("active", { exact: true })).toBeVisible();
 
+    await page.getByRole("textbox", { name: "Permission user ID" }).fill(targetId);
+    await page.getByRole("combobox", { name: "Permission key" }).selectOption("billing.ledger.adjust");
+    await page.getByRole("combobox", { name: "Permission effect" }).selectOption("grant");
+    await page.getByRole("button", { name: "Apply" }).click();
+    await expect(page.getByRole("heading", { name: "grant billing.ledger.adjust" })).toBeVisible();
+    await page.getByRole("textbox", { name: "Reason", exact: true }).fill("E2E permission grant");
+    await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill("PERMISSION");
+    await expect(page.getByRole("button", { name: "Confirm" })).toBeDisabled();
+    await page
+      .getByRole("textbox", { name: "Confirmation", exact: true })
+      .fill(`${targetId}:billing.ledger.adjust:grant`);
+    await page.getByRole("button", { name: "Confirm" }).click();
+    await expect(page.getByTestId("admin-action-status")).toContainText(
+      "grant billing.ledger.adjust completed.",
+      { timeout: 10_000 },
+    );
+    await expect(page.getByTestId("admin-action-status")).toHaveAttribute("role", "status");
+    await expect(page.getByTestId("admin-action-status")).toHaveAttribute("aria-live", "polite");
+
     await targetRow.getByRole("button", { name: "Suspend" }).click();
     await expect(page.getByRole("heading", { name: `Suspend ${targetId}` })).toBeVisible();
-    await page.getByLabel("Reason").fill("E2E admin suspend smoke");
-    await page.getByLabel("Confirmation").fill("SUSPENDED");
+    await page.getByRole("textbox", { name: "Reason", exact: true }).fill("E2E admin suspend smoke");
+    await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill("SUSPENDED");
+    await expect(page.getByRole("button", { name: "Confirm" })).toBeDisabled();
+    await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill(`${targetId}:suspended`);
     await page.getByRole("button", { name: "Confirm" }).click();
     await expect(page.getByTestId("admin-action-status")).toContainText(
       `Suspend ${targetId} completed.`,
@@ -230,8 +528,10 @@ test("admin users and billing actions write audit trail and clear adjustment for
 
     await targetRow.getByRole("button", { name: "Restore" }).click();
     await expect(page.getByRole("heading", { name: `Restore ${targetId}` })).toBeVisible();
-    await page.getByLabel("Reason").fill("E2E admin restore smoke");
-    await page.getByLabel("Confirmation").fill("ACTIVE");
+    await page.getByRole("textbox", { name: "Reason", exact: true }).fill("E2E admin restore smoke");
+    await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill("ACTIVE");
+    await expect(page.getByRole("button", { name: "Confirm" })).toBeDisabled();
+    await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill(`${targetId}:active`);
     await page.getByRole("button", { name: "Confirm" }).click();
     await expect(page.getByTestId("admin-action-status")).toContainText(
       `Restore ${targetId} completed.`,
@@ -245,8 +545,10 @@ test("admin users and billing actions write audit trail and clear adjustment for
     await page.getByLabel("Adjustment delta").fill("37");
     await page.getByRole("button", { name: "Adjust" }).click();
     await expect(page.getByRole("heading", { name: `Adjust ledger ${targetId}` })).toBeVisible();
-    await page.getByLabel("Reason").fill("E2E admin billing adjustment");
-    await page.getByLabel("Confirmation").fill("ADJUST");
+    await page.getByRole("textbox", { name: "Reason", exact: true }).fill("E2E admin billing adjustment");
+    await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill("ADJUST");
+    await expect(page.getByRole("button", { name: "Confirm" })).toBeDisabled();
+    await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill(`${targetId}:37`);
     await page.getByRole("button", { name: "Confirm" }).click();
     await expect(page.getByTestId("admin-action-status")).toContainText(
       `Adjust ledger ${targetId} completed.`,
@@ -268,6 +570,9 @@ test("admin users and billing actions write audit trail and clear adjustment for
     await expect(
       page.getByRole("row").filter({ hasText: targetId }).filter({ hasText: "user.status.write" }),
     ).toHaveCount(2);
+    await expect(
+      page.getByRole("row").filter({ hasText: targetId }).filter({ hasText: "admin.permission.grant" }),
+    ).toHaveCount(1);
 
     const [target, ledger, audits] = await Promise.all([
       prisma.user.findUniqueOrThrow({ where: { id: targetId }, select: { status: true } }),
@@ -278,6 +583,7 @@ test("admin users and billing actions write audit trail and clear adjustment for
     expect(ledger).toHaveLength(1);
     expect(ledger[0]).toMatchObject({ delta: 37, balanceAfter: 37, reason: "admin_adjust" });
     expect(audits.map((audit) => audit.action).sort()).toEqual([
+      "admin.permission.grant",
       "billing.ledger.adjust",
       "user.status.write",
       "user.status.write",
@@ -285,8 +591,60 @@ test("admin users and billing actions write audit trail and clear adjustment for
     expect(consoleFailures).toEqual([]);
   } finally {
     await prisma.adminAuditLog.deleteMany({ where: { targetId } });
+    await prisma.adminUserPermission.deleteMany({ where: { userId: targetId } });
     await prisma.dreamcoinLedger.deleteMany({ where: { userId: targetId } });
     await prisma.user.deleteMany({ where: { id: { in: [admin.id, targetId] } } });
+  }
+});
+
+test("admin feature flag toggle requires target-state confirmation", async ({ page }) => {
+  const consoleFailures = collectConsoleFailures(page);
+  const admin = await startAdminSession(page);
+  const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  const flagKey = `e2e_flag_confirmation_${suffix}`;
+
+  try {
+    await prisma.featureFlag.create({
+      data: {
+        key: flagKey,
+        label: "E2E flag confirmation",
+        description: "Feature flag confirmation target",
+        enabled: false,
+        rolloutPercent: 0,
+        targetRoles: [],
+        targetPlans: [],
+      },
+    });
+
+    const adminURL = adminBaseURL();
+    await page.goto(`${adminURL}/admin/generation/config?tab=settings`);
+    await expectAdminShellReady(page, "Profiles & Rollout");
+    await page.getByRole("textbox", { name: "Filter" }).fill(flagKey);
+    const flagRow = page.getByRole("row").filter({ hasText: flagKey });
+    await expect(flagRow).toHaveCount(1, { timeout: 10_000 });
+    await flagRow.getByRole("button", { name: "Enable" }).click();
+
+    await expect(page.getByRole("heading", { name: `Enable ${flagKey}` })).toBeVisible();
+    await page.getByRole("textbox", { name: "Reason", exact: true }).fill("E2E feature flag enable");
+    await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill("FLAG");
+    await expect(page.getByRole("button", { name: "Confirm" })).toBeDisabled();
+    await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill(`${flagKey}:enabled`);
+    await page.getByRole("button", { name: "Confirm" }).click();
+    await expect(page.getByTestId("admin-action-status")).toContainText(
+      `Enable ${flagKey} completed.`,
+      { timeout: 10_000 },
+    );
+
+    const flag = await prisma.featureFlag.findUniqueOrThrow({ where: { key: flagKey } });
+    expect(flag.enabled).toBe(true);
+    await prisma.adminAuditLog.findFirstOrThrow({
+      where: { actorId: admin.id, action: "config.feature_flag.write", targetId: flagKey },
+    });
+    expect(consoleFailures).toEqual([]);
+  } finally {
+    await prisma.adminAuditLog.deleteMany({ where: { targetId: flagKey } });
+    await prisma.featureFlag.deleteMany({ where: { key: flagKey } });
+    await prisma.user.deleteMany({ where: { id: admin.id } });
   }
 });
 
@@ -336,8 +694,8 @@ test("admin moderation resolves appeals from the web queue", async ({ page }) =>
     await appealRow.getByRole("button", { name: "Overturn" }).click();
 
     await expect(page.getByRole("heading", { name: `Overturn appeal ${appeal.id}` })).toBeVisible();
-    await page.getByLabel("Reason").fill("Appeal accepted from admin web E2E");
-    await page.getByLabel("Confirmation").fill("OVERTURN");
+    await page.getByRole("textbox", { name: "Reason", exact: true }).fill("Appeal accepted from admin web E2E");
+    await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill("OVERTURN");
     await page.getByRole("button", { name: "Confirm" }).click();
 
     await expect(appealRow).toHaveCount(0, { timeout: 10_000 });
@@ -403,8 +761,10 @@ test("admin dead-letter queue discards failed jobs with refund audit", async ({ 
     await page.getByRole("button", { name: "Discard selected" }).click();
 
     await expect(page.getByRole("heading", { name: "Discard 1 jobs" })).toBeVisible();
-    await page.getByLabel("Reason").fill(reason);
-    await page.getByLabel("Confirmation").fill("DISCARD");
+    await page.getByRole("textbox", { name: "Reason", exact: true }).fill(reason);
+    await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill("DISCARD");
+    await expect(page.getByRole("button", { name: "Confirm" })).toBeDisabled();
+    await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill(jobId);
     await page.getByRole("button", { name: "Confirm" }).click();
 
     await expect(page.getByRole("row").filter({ hasText: jobId })).toHaveCount(0, {
@@ -497,8 +857,10 @@ test("admin support inbox resolves a help desk request", async ({ page }) => {
     await expect(page.getByRole("row").filter({ hasText: freshTicketId })).toHaveCount(0);
     await expect(ticketRow.getByText("overdue", { exact: true })).toBeVisible();
     await ticketRow.getByRole("button", { name: "Escalate" }).click();
-    await page.getByLabel("Reason").fill("Escalated from admin support inbox");
-    await page.getByLabel("Confirmation").fill(ticketId);
+    await page
+      .getByRole("textbox", { name: "Reason", exact: true })
+      .fill("Escalated from admin support inbox");
+    await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill(ticketId);
     await page.getByRole("button", { name: "Confirm" }).click();
     await expect(ticketRow.getByText("Escalated from admin support inbox")).toBeVisible({
       timeout: 10_000,
@@ -520,8 +882,10 @@ test("admin support inbox resolves a help desk request", async ({ page }) => {
     await page.getByRole("textbox", { name: "Support search" }).fill(ticketId);
 
     await ticketRow.getByRole("button", { name: "Resolve" }).click();
-    await page.getByLabel("Reason").fill("Resolved from admin support inbox");
-    await page.getByLabel("Confirmation").fill(ticketId);
+    await page
+      .getByRole("textbox", { name: "Reason", exact: true })
+      .fill("Resolved from admin support inbox");
+    await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill(ticketId);
     await page.getByRole("button", { name: "Confirm" }).click();
 
     await expect(ticketRow.getByText("resolved", { exact: true })).toBeVisible({
@@ -551,6 +915,153 @@ test("admin support inbox resolves a help desk request", async ({ page }) => {
     });
     await prisma.supportRequest.deleteMany({ where: { ticketId: { in: [ticketId, freshTicketId] } } });
     await prisma.user.deleteMany({ where: { id: requester.id } });
+  }
+});
+
+test("admin support plaintext panel views consent-scoped generation prompt", async ({ page }) => {
+  const consoleFailures = collectConsoleFailures(page);
+
+  const support = await startRoleSession(page, "support");
+  const owner = await prisma.user.create({
+    data: {
+      email: uniqueEmail("plaintext-owner"),
+      emailVerified: true,
+      displayName: "Plaintext Owner",
+    },
+    select: { id: true },
+  });
+  const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  const jobId = `e2e-plaintext-job-${suffix}`;
+  const ticketId = `SUP-PT${Date.now().toString().slice(-8)}`;
+  const prompt = `E2E consent scoped prompt ${suffix}`;
+  const negativePrompt = `E2E redacted negative ${suffix}`;
+  const reason = "Consent scoped plaintext support review";
+
+  try {
+    await prisma.generationJob.create({
+      data: {
+        id: jobId,
+        userId: owner.id,
+        mode: "image",
+        prompt,
+        negativePrompt,
+        controls: {},
+        presetIds: [],
+        status: "failed",
+        costDreamcoins: 0,
+      },
+    });
+    await prisma.supportConsentGrant.create({
+      data: {
+        userId: owner.id,
+        ticketId,
+        targetType: "generation_job",
+        targetId: jobId,
+        scope: { fields: ["prompt"] },
+        expiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000),
+        createdById: support.id,
+      },
+    });
+
+    const adminURL = adminBaseURL();
+    await page.goto(`${adminURL}/admin/support`);
+    await expectAdminShellReady(page, "Support Requests");
+    await expect(page.getByRole("heading", { name: "Plaintext access" })).toBeVisible();
+
+    await page.getByRole("combobox", { name: "Target type" }).selectOption("generation_job");
+    await page.getByRole("textbox", { name: "Plaintext target ID" }).fill(jobId);
+    await page.getByRole("textbox", { name: "Consent ticket ID" }).fill(ticketId);
+    await page.getByRole("textbox", { name: "Plaintext reason" }).fill(reason);
+    await page.getByRole("textbox", { name: "Plaintext confirmation" }).fill("VIEW");
+    await expect(page.getByRole("button", { name: "View plaintext" })).toBeDisabled();
+    await page.getByRole("textbox", { name: "Plaintext confirmation" }).fill(jobId);
+    await page.getByRole("button", { name: "View plaintext" }).click();
+
+    await expect(page.getByTestId("admin-plaintext-status")).toContainText("Plaintext access logged.", {
+      timeout: 10_000,
+    });
+    const result = page.getByTestId("admin-plaintext-result");
+    await expect(result).toContainText(prompt);
+    await expect(result).toContainText(ticketId);
+    await expect(result).not.toContainText(negativePrompt);
+
+    const audit = await prisma.adminAuditLog.findFirstOrThrow({
+      where: { actorId: support.id, action: "support.plaintext.view", targetId: jobId },
+      orderBy: { createdAt: "desc" },
+    });
+    const auditPayload = JSON.stringify({ before: audit.before, after: audit.after });
+    expect(auditPayload).toContain("prompt");
+    expect(auditPayload).toContain(ticketId);
+    expect(auditPayload).not.toContain(prompt);
+    expect(auditPayload).not.toContain(negativePrompt);
+    expect(consoleFailures).toEqual([]);
+  } finally {
+    await prisma.adminAuditLog.deleteMany({ where: { targetId: jobId } });
+    await prisma.supportConsentGrant.deleteMany({ where: { targetType: "generation_job", targetId: jobId } });
+    await prisma.generationJob.deleteMany({ where: { id: jobId } });
+    await prisma.user.deleteMany({ where: { id: { in: [support.id, owner.id] } } });
+  }
+});
+
+test("admin approval decisions require request-id confirmation", async ({ page }) => {
+  const consoleFailures = collectConsoleFailures(page);
+  const admin = await startAdminSession(page);
+  const adminURL = adminBaseURL();
+  const requester = await prisma.user.create({
+    data: {
+      email: uniqueEmail("approval-requester"),
+      emailVerified: true,
+      displayName: "Approval Requester",
+      role: "admin",
+    },
+    select: { id: true },
+  });
+  const approval = await prisma.adminActionRequest.create({
+    data: {
+      requestedById: requester.id,
+      permissionKey: "billing.ledger.adjust",
+      action: "billing.ledger.adjust",
+      targetType: "user",
+      targetId: requester.id,
+      payload: { delta: 250 },
+      status: "pending",
+      reason: "E2E pending approval",
+    },
+  });
+
+  try {
+    await page.goto(`${adminURL}/admin/approvals`);
+    await expectAdminShellReady(page, "Approvals");
+    const row = page.getByRole("row").filter({ hasText: approval.id });
+    await expect(row).toHaveCount(1, { timeout: 10_000 });
+    await row.getByRole("button", { name: "Approve" }).click();
+
+    await expect(page.getByRole("heading", { name: `Approve ${approval.id}` })).toBeVisible({
+      timeout: 10_000,
+    });
+    await page.getByRole("textbox", { name: "Reason", exact: true }).fill("E2E approval decision");
+    await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill("APPROVE");
+    await expect(page.getByRole("button", { name: "Confirm" })).toBeDisabled();
+    await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill(approval.id);
+    await expect(page.getByRole("button", { name: "Confirm" })).toBeEnabled();
+    await page.getByRole("button", { name: "Confirm" }).click();
+
+    await expect(page.getByTestId("admin-action-status")).toContainText(
+      `Approve ${approval.id} completed.`,
+      { timeout: 10_000 },
+    );
+    await expect(
+      prisma.adminActionRequest.findUniqueOrThrow({
+        where: { id: approval.id },
+        select: { status: true, approvedById: true },
+      }),
+    ).resolves.toEqual({ status: "approved", approvedById: admin.id });
+    expect(consoleFailures).toEqual([]);
+  } finally {
+    await prisma.adminAuditLog.deleteMany({ where: { targetId: requester.id } });
+    await prisma.adminActionRequest.deleteMany({ where: { id: approval.id } });
+    await prisma.session.deleteMany({ where: { userId: { in: [admin.id, requester.id] } } });
+    await prisma.user.deleteMany({ where: { id: { in: [admin.id, requester.id] } } });
   }
 });
 
@@ -713,7 +1224,7 @@ test("admin review queue approves a pending character submission", async ({ page
         advancedDetails: {},
       },
     });
-    await prisma.characterSubmission.create({
+    const seededSubmission = await prisma.characterSubmission.create({
       data: { characterId, submitterId: submitter.id, status: "pending" },
     });
 
@@ -730,7 +1241,9 @@ test("admin review queue approves a pending character submission", async ({ page
     });
     await page.getByPlaceholder("Review note (optional, shown to creator)").fill("Approved by E2E review queue.");
     await page.getByPlaceholder("Audit reason (≥3)").fill("e2e approval");
-    await page.getByPlaceholder("Type REVIEW to confirm").fill("REVIEW");
+    await page.getByPlaceholder(`Type ${seededSubmission.id} to confirm`).fill("REVIEW");
+    await expect(page.getByRole("button", { name: "Confirm", exact: true })).toBeDisabled();
+    await page.getByPlaceholder(`Type ${seededSubmission.id} to confirm`).fill(seededSubmission.id);
     await page.getByRole("button", { name: "Confirm", exact: true }).click();
 
     await expect(row).toHaveCount(0, { timeout: 10_000 });
@@ -762,7 +1275,15 @@ test("admin API allows an authorized write (admin creates a pricing draft)", asy
   const ruleKey = `e2e_rule_${Date.now()}`;
   try {
     const create = await page.request.post(`${adminURL}/api/v1/admin/pricing/rules`, {
-      data: { ruleKey, label: "E2E rule", mode: "image", baseCost: 5, multiplier: 1 },
+      data: {
+        ruleKey,
+        label: "E2E rule",
+        mode: "image",
+        baseCost: 5,
+        multiplier: 1,
+        reason: "E2E pricing draft",
+        confirmation: ruleKey,
+      },
     });
     expect(create.status(), await create.text()).toBe(200);
   } finally {
@@ -805,6 +1326,420 @@ test("admin API creates an official character and runs AI assist", async ({ page
   }
 });
 
+test("admin official characters and templates require inline confirmation for public writes", async ({
+  page,
+}) => {
+  const consoleFailures = collectConsoleFailures(page);
+  const admin = await startAdminSession(page);
+  const adminURL = adminBaseURL();
+  const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  const officialName = `E2E Official Confirm ${suffix}`;
+  const templateName = `E2E Template Confirm ${suffix}`;
+  let officialId: string | undefined;
+  let templateId: string | undefined;
+
+  try {
+    await page.goto(`${adminURL}/admin/content/official`);
+    await expectAdminShellReady(page, "Official Characters");
+    await page.getByPlaceholder("Name (1-80)").fill(officialName);
+    await page.getByPlaceholder("Age (≥18)").fill("28");
+    await page.getByPlaceholder("Description (1-1500)").fill("A cinematic official companion for confirmation testing.");
+    await page.getByPlaceholder("Reason (≥3, for audit)").fill("E2E official confirmation create");
+
+    await page.getByRole("button", { name: "Create" }).click();
+    await expect(page.getByText("Press Confirm create official character to publish this official character.")).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(prisma.character.count({ where: { name: officialName } })).resolves.toBe(0);
+
+    await page.getByRole("button", { name: "Confirm create official character" }).click();
+    const officialRow = page.getByRole("row").filter({ hasText: officialName });
+    await expect(officialRow).toBeVisible({ timeout: 10_000 });
+    const official = await prisma.character.findFirstOrThrow({
+      where: { name: officialName, source: "official" },
+      select: { id: true, status: true, visibility: true },
+    });
+    officialId = official.id;
+    expect(official).toMatchObject({ status: "approved", visibility: "public" });
+
+    await officialRow.getByPlaceholder("Reason (≥3)").fill("E2E archive official");
+    await officialRow.getByRole("button", { name: "Archive" }).click();
+    await expect(page.getByText("Press Confirm archive official character to update this official character.")).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(
+      prisma.character.findUniqueOrThrow({ where: { id: officialId }, select: { status: true } }),
+    ).resolves.toEqual({ status: "approved" });
+
+    await officialRow.getByRole("button", { name: "Confirm archive" }).click();
+    await expect(officialRow.getByText("archived", { exact: true })).toBeVisible({ timeout: 10_000 });
+    await expect(
+      prisma.character.findUniqueOrThrow({ where: { id: officialId }, select: { status: true } }),
+    ).resolves.toEqual({ status: "archived" });
+
+    await officialRow.getByPlaceholder("Reason (≥3)").fill("E2E publish official");
+    await officialRow.getByRole("button", { name: "Publish" }).click();
+    await expect(page.getByText("Press Confirm publish official character to update this official character.")).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(
+      prisma.character.findUniqueOrThrow({ where: { id: officialId }, select: { status: true } }),
+    ).resolves.toEqual({ status: "archived" });
+
+    await officialRow.getByRole("button", { name: "Confirm publish" }).click();
+    await expect(officialRow.getByText("approved", { exact: true })).toBeVisible({ timeout: 10_000 });
+    await expect(
+      prisma.character.findUniqueOrThrow({ where: { id: officialId }, select: { status: true } }),
+    ).resolves.toEqual({ status: "approved" });
+
+    await page.goto(`${adminURL}/admin/content/templates`);
+    await expectAdminShellReady(page, "Templates");
+    await page.getByPlaceholder("Name (≥1)").fill(templateName);
+    await page.getByPlaceholder("Summary (≤200)").fill("Template confirmation test");
+    await page.getByPlaceholder("Reason (≥3)").fill("E2E template confirmation create");
+
+    await page.getByRole("button", { name: "Create" }).click();
+    await expect(page.getByText("Press Confirm create template to publish this character template.")).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(prisma.characterTemplate.count({ where: { name: templateName } })).resolves.toBe(0);
+
+    await page.getByRole("button", { name: "Confirm create template" }).click();
+    const templateRow = page.getByRole("row").filter({ hasText: templateName });
+    await expect(templateRow).toBeVisible({ timeout: 10_000 });
+    const template = await prisma.characterTemplate.findFirstOrThrow({
+      where: { name: templateName },
+      select: { id: true, isActive: true },
+    });
+    templateId = template.id;
+    expect(template.isActive).toBe(true);
+
+    await templateRow.getByRole("button", { name: "Offline" }).click();
+    await expect(page.getByRole("heading", { name: "Confirm offline template" })).toBeVisible();
+    await expect(
+      prisma.characterTemplate.findUniqueOrThrow({ where: { id: templateId }, select: { isActive: true } }),
+    ).resolves.toEqual({ isActive: true });
+    const confirmOffline = page.getByRole("button", { name: "Confirm offline" });
+    await expect(confirmOffline).toBeDisabled();
+    await page.getByRole("textbox", { name: "Template action reason" }).fill("E2E template offline");
+    await expect(confirmOffline).toBeDisabled();
+    await page.getByRole("textbox", { name: "Template action confirmation" }).fill("OFFLINE");
+    await expect(confirmOffline).toBeDisabled();
+    await page.getByRole("textbox", { name: "Template action confirmation" }).fill(templateId);
+    await expect(confirmOffline).toBeEnabled();
+    await confirmOffline.click();
+    await expect(templateRow.getByText("offline", { exact: true })).toBeVisible({ timeout: 10_000 });
+    await expect(
+      prisma.characterTemplate.findUniqueOrThrow({ where: { id: templateId }, select: { isActive: true } }),
+    ).resolves.toEqual({ isActive: false });
+
+    await templateRow.getByRole("button", { name: "Publish" }).click();
+    await expect(page.getByRole("heading", { name: "Confirm publish template" })).toBeVisible();
+    const confirmPublish = page.getByRole("button", { name: "Confirm publish" });
+    await expect(confirmPublish).toBeDisabled();
+    await page.getByRole("textbox", { name: "Template action reason" }).fill("E2E template publish");
+    await page.getByRole("textbox", { name: "Template action confirmation" }).fill("PUBLISH");
+    await expect(confirmPublish).toBeDisabled();
+    await page.getByRole("textbox", { name: "Template action confirmation" }).fill(templateId);
+    await expect(confirmPublish).toBeEnabled();
+    await confirmPublish.click();
+    await expect(templateRow.getByText("active", { exact: true })).toBeVisible({ timeout: 10_000 });
+    await expect(
+      prisma.characterTemplate.findUniqueOrThrow({ where: { id: templateId }, select: { isActive: true } }),
+    ).resolves.toEqual({ isActive: true });
+
+    expect(consoleFailures).toEqual([]);
+  } finally {
+    if (officialId) {
+      await prisma.adminAuditLog.deleteMany({ where: { targetId: officialId } });
+      await prisma.characterVisualProfile.deleteMany({ where: { characterId: officialId } });
+      await prisma.characterStats.deleteMany({ where: { characterId: officialId } });
+      await prisma.characterTag.deleteMany({ where: { characterId: officialId } });
+      await prisma.character.deleteMany({ where: { id: officialId } });
+    }
+    if (templateId) {
+      await prisma.adminAuditLog.deleteMany({ where: { targetId: templateId } });
+      await prisma.characterTemplate.deleteMany({ where: { id: templateId } });
+    }
+    await prisma.session.deleteMany({ where: { userId: admin.id } });
+    await prisma.user.deleteMany({ where: { id: admin.id } });
+  }
+});
+
+test("admin tag taxonomy metadata edits require typed confirmation", async ({ page }) => {
+  const consoleFailures = collectConsoleFailures(page);
+  const admin = await startAdminSession(page);
+  const adminURL = adminBaseURL();
+  const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  const slug = `aaa-e2e-tag-confirm-${suffix}`;
+  const initialLabel = `E2E Tag Confirm ${suffix}`;
+  const updatedLabel = `E2E Tag Confirm Updated ${suffix}`;
+  const tag = await prisma.tag.create({
+    data: {
+      slug,
+      label: initialLabel,
+      category: "aaa-e2e",
+      isSensitive: false,
+      isMutedByDefault: false,
+    },
+  });
+  const sourceTag = await prisma.tag.create({
+    data: {
+      slug: `aaa-e2e-merge-source-${suffix}`,
+      label: `E2E Merge Source ${suffix}`,
+      category: "aaa-e2e",
+      isSensitive: false,
+      isMutedByDefault: false,
+    },
+  });
+  const targetTag = await prisma.tag.create({
+    data: {
+      slug: `aaa-e2e-merge-target-${suffix}`,
+      label: `E2E Merge Target ${suffix}`,
+      category: "aaa-e2e",
+      isSensitive: false,
+      isMutedByDefault: false,
+    },
+  });
+
+  try {
+    await page.goto(`${adminURL}/admin/content/tags`);
+    await expectAdminShellReady(page, "Tags");
+    const row = page.getByRole("row").filter({ hasText: slug });
+    await expect(row).toBeVisible({ timeout: 10_000 });
+
+    await row.getByRole("button", { name: "Edit" }).click();
+    await row.getByPlaceholder("Label").fill(updatedLabel);
+    await row.getByPlaceholder("Reason (≥3)").fill("E2E tag metadata confirmation");
+    const save = row.getByRole("button", { name: "Confirm save" });
+    await expect(save).toBeDisabled();
+    await row.getByRole("textbox", { name: "Tag edit confirmation" }).fill("wrong-slug");
+    await expect(save).toBeDisabled();
+    await expect(
+      prisma.tag.findUniqueOrThrow({
+        where: { id: tag.id },
+        select: { label: true, isSensitive: true },
+      }),
+    ).resolves.toEqual({ label: initialLabel, isSensitive: false });
+
+    await row.getByRole("textbox", { name: "Tag edit confirmation" }).fill(slug);
+    await expect(save).toBeEnabled();
+    await save.click();
+
+    await expect(row.getByText(updatedLabel, { exact: true })).toBeVisible({ timeout: 10_000 });
+    await expect(
+      prisma.tag.findUniqueOrThrow({
+        where: { id: tag.id },
+        select: { label: true, isSensitive: true },
+      }),
+    ).resolves.toEqual({ label: updatedLabel, isSensitive: false });
+
+    const audit = await prisma.adminAuditLog.findFirst({
+      where: { action: "content.tag.update", targetId: tag.id },
+      orderBy: { createdAt: "desc" },
+      select: { reason: true },
+    });
+    expect(audit?.reason).toBe("E2E tag metadata confirmation");
+
+    await page.getByLabel("Source tag").selectOption(sourceTag.id);
+    await page.getByLabel("Target tag").selectOption(targetTag.id);
+    await page.getByPlaceholder("Reason (≥3)").fill("E2E tag merge confirmation");
+    const merge = page.getByRole("button", { name: "Merge", exact: true });
+    await expect(merge).toBeDisabled();
+    await page.getByPlaceholder("Type source:target IDs").fill("MERGE");
+    await expect(merge).toBeDisabled();
+    await page.getByPlaceholder("Type source:target IDs").fill(`${sourceTag.id}:${targetTag.id}`);
+    await expect(merge).toBeEnabled();
+    await merge.click();
+    await expect(page.getByText("Merged", { exact: false })).toBeVisible({ timeout: 10_000 });
+    await expect(prisma.tag.findUnique({ where: { id: sourceTag.id } })).resolves.toBeNull();
+    expect(consoleFailures).toEqual([]);
+  } finally {
+    await prisma.adminAuditLog.deleteMany({ where: { targetId: { in: [tag.id, sourceTag.id, targetTag.id] } } });
+    await prisma.characterTag.deleteMany({ where: { tagId: { in: [tag.id, sourceTag.id, targetTag.id] } } });
+    await prisma.tag.deleteMany({ where: { id: { in: [tag.id, sourceTag.id, targetTag.id] } } });
+    await prisma.session.deleteMany({ where: { userId: admin.id } });
+    await prisma.user.deleteMany({ where: { id: admin.id } });
+  }
+});
+
+test("admin pricing and promo creation require typed confirmation", async ({ page }) => {
+  const consoleFailures = collectConsoleFailures(page);
+  const admin = await startAdminSession(page);
+  const adminURL = adminBaseURL();
+  const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  const ruleKey = `e2e_pricing_confirm_${suffix}`;
+  const code = `E2E-PROMO-${suffix}`;
+  const codeHash = redeemCodeHash(code);
+  let pricingRuleId: string | undefined;
+  let redeemCodeId: string | undefined;
+
+  try {
+    await page.goto(`${adminURL}/admin/pricing`);
+    await expectAdminShellReady(page, "Pricing");
+    await page.getByRole("textbox", { name: "Rule Key", exact: true }).fill(ruleKey);
+    await page.getByRole("textbox", { name: "Label", exact: true }).fill("E2E pricing confirmation");
+    await page.getByRole("textbox", { name: "Base Cost (coins)", exact: true }).fill("7");
+    await page.getByRole("textbox", { name: "Multiplier", exact: true }).fill("1");
+    await page.getByRole("textbox", { name: "Reason (≥3)", exact: true }).fill("E2E pricing create confirmation");
+    const createDraft = page.getByRole("button", { name: "Create Draft" });
+    await expect(createDraft).toBeDisabled();
+    await page.getByRole("textbox", { name: "Confirm rule key", exact: true }).fill("wrong-key");
+    await expect(createDraft).toBeDisabled();
+    await expect(prisma.pricingRule.count({ where: { ruleKey } })).resolves.toBe(0);
+
+    await page.getByRole("textbox", { name: "Confirm rule key", exact: true }).fill(ruleKey);
+    await expect(createDraft).toBeEnabled();
+    await createDraft.click();
+    await expect.poll(() => prisma.pricingRule.count({ where: { ruleKey } })).toBe(1);
+    const pricingRule = await prisma.pricingRule.findFirstOrThrow({
+      where: { ruleKey },
+      select: { id: true, status: true, baseCost: true },
+    });
+    pricingRuleId = pricingRule.id;
+    expect(pricingRule).toMatchObject({ status: "draft", baseCost: 7 });
+    await expect(page.getByRole("row").filter({ hasText: ruleKey })).toBeVisible({ timeout: 10_000 });
+    const pricingAudit = await prisma.adminAuditLog.findFirst({
+      where: { action: "config.pricing.create", targetId: pricingRuleId },
+      orderBy: { createdAt: "desc" },
+      select: { reason: true },
+    });
+    expect(pricingAudit?.reason).toBe("E2E pricing create confirmation");
+
+    await page.goto(`${adminURL}/admin/promo`);
+    await expectAdminShellReady(page, "Promo");
+    await page.getByPlaceholder("Code (≥4)").fill(code);
+    await page.getByPlaceholder("Dreamcoins").fill("42");
+    await page.getByPlaceholder("Max uses (blank=∞)").fill("3");
+    await page.getByPlaceholder("Reason (≥3)").fill("E2E promo create confirmation");
+    const createCode = page.getByRole("button", { name: "Create", exact: true });
+    await expect(createCode).toBeDisabled();
+    await page.getByRole("textbox", { name: "Redeem code confirmation" }).fill("CREATE");
+    await expect(createCode).toBeDisabled();
+    await expect(prisma.redeemCode.count({ where: { codeHash } })).resolves.toBe(0);
+
+    await page.getByRole("textbox", { name: "Redeem code confirmation" }).fill(code);
+    await expect(createCode).toBeEnabled();
+    await createCode.click();
+    await expect.poll(() => prisma.redeemCode.count({ where: { codeHash } })).toBe(1);
+    const redeemCode = await prisma.redeemCode.findUniqueOrThrow({
+      where: { codeHash },
+      select: { id: true, status: true, reward: true, maxRedemptions: true },
+    });
+    redeemCodeId = redeemCode.id;
+    expect(redeemCode.status).toBe("active");
+    expect(redeemCode.maxRedemptions).toBe(3);
+    await expect(page.getByRole("row").filter({ hasText: redeemCodeId })).toBeVisible({ timeout: 10_000 });
+    const promoAudit = await prisma.adminAuditLog.findFirst({
+      where: { action: "promo.redeem_code.create", targetId: redeemCodeId },
+      orderBy: { createdAt: "desc" },
+      select: { reason: true },
+    });
+    expect(promoAudit?.reason).toBe("E2E promo create confirmation");
+    expect(consoleFailures).toEqual([]);
+  } finally {
+    if (pricingRuleId) await prisma.adminAuditLog.deleteMany({ where: { targetId: pricingRuleId } });
+    if (redeemCodeId) {
+      await prisma.adminAuditLog.deleteMany({ where: { targetId: redeemCodeId } });
+      await prisma.redeemCodeRedemption.deleteMany({ where: { redeemCodeId } });
+      await prisma.redeemCode.deleteMany({ where: { id: redeemCodeId } });
+    } else {
+      await prisma.redeemCode.deleteMany({ where: { codeHash } });
+    }
+    await prisma.pricingRule.deleteMany({ where: { ruleKey } });
+    await prisma.session.deleteMany({ where: { userId: admin.id } });
+    await prisma.user.deleteMany({ where: { id: admin.id } });
+  }
+});
+
+test("admin featured curation requires typed target confirmation", async ({ page }) => {
+  const consoleFailures = collectConsoleFailures(page);
+  const admin = await startAdminSession(page);
+  const adminURL = adminBaseURL();
+  const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  const featuredId = `e2e-featured-confirm-${suffix}`;
+  const secondId = `e2e-featured-second-${suffix}`;
+  let previousFeatured: unknown = null;
+
+  try {
+    previousFeatured = (await prisma.appSetting.findUnique({ where: { key: "feed.featured" } }))?.value ?? null;
+    await prisma.appSetting.deleteMany({ where: { key: "feed.featured" } });
+    await prisma.character.createMany({
+      data: [
+        {
+          id: featuredId,
+          creatorId: admin.id,
+          name: `Featured Confirm ${suffix}`,
+          age: 25,
+          description: "Featured confirmation target",
+          visibility: "public",
+          status: "approved",
+          style: "realistic",
+          gender: "female",
+          appearance: {},
+          advancedDetails: {},
+        },
+        {
+          id: secondId,
+          creatorId: admin.id,
+          name: `Featured Second ${suffix}`,
+          age: 26,
+          description: "Featured confirmation second target",
+          visibility: "public",
+          status: "approved",
+          style: "realistic",
+          gender: "female",
+          appearance: {},
+          advancedDetails: {},
+        },
+      ],
+    });
+
+    await page.goto(`${adminURL}/admin/content`);
+    await expectAdminShellReady(page, "Content");
+    await page.getByPlaceholder("char_a, char_b").fill(`${featuredId}, ${secondId}`);
+    await page.getByPlaceholder("Reason (≥3 chars)").fill("E2E featured curation confirmation");
+    const saveFeatured = page.getByRole("button", { name: "Save featured" });
+    await expect(saveFeatured).toBeDisabled();
+    await page.getByRole("textbox", { name: "Featured confirmation" }).fill("FEATURED");
+    await expect(saveFeatured).toBeDisabled();
+    await expect(prisma.appSetting.findUnique({ where: { key: "feed.featured" } })).resolves.toBeNull();
+
+    await page.getByRole("textbox", { name: "Featured confirmation" }).fill(`${featuredId},${secondId}`);
+    await expect(saveFeatured).toBeEnabled();
+    await saveFeatured.click();
+    await expect.poll(async () => {
+      const setting = await prisma.appSetting.findUnique({ where: { key: "feed.featured" } });
+      return (setting?.value as { characterIds?: string[] } | null)?.characterIds ?? [];
+    }).toEqual([featuredId, secondId]);
+    await expect(page.getByRole("row").filter({ hasText: featuredId }).first()).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole("row").filter({ hasText: secondId }).first()).toBeVisible({ timeout: 10_000 });
+
+    const audit = await prisma.adminAuditLog.findFirst({
+      where: { action: "content.featured.write", targetId: "feed.featured" },
+      orderBy: { createdAt: "desc" },
+      select: { reason: true, after: true },
+    });
+    expect(audit?.reason).toBe("E2E featured curation confirmation");
+    expect((audit?.after as { characterIds?: string[] })?.characterIds).toEqual([featuredId, secondId]);
+    expect(consoleFailures).toEqual([]);
+  } finally {
+    await prisma.adminAuditLog.deleteMany({ where: { action: "content.featured.write", targetId: "feed.featured" } });
+    await prisma.character.deleteMany({ where: { id: { in: [featuredId, secondId] } } });
+    if (previousFeatured) {
+      await prisma.appSetting.upsert({
+        where: { key: "feed.featured" },
+        update: { value: previousFeatured as never },
+        create: { key: "feed.featured", value: previousFeatured as never },
+      });
+    } else {
+      await prisma.appSetting.deleteMany({ where: { key: "feed.featured" } });
+    }
+    await prisma.session.deleteMany({ where: { userId: admin.id } });
+    await prisma.user.deleteMany({ where: { id: admin.id } });
+  }
+});
+
 test("admin API forbids under-privileged roles (403 on writes they lack)", async ({ page }) => {
   const adminURL = adminBaseURL();
   // support holds content.read but NOT content.takedown.write / config.pricing.write.
@@ -817,7 +1752,7 @@ test("admin API forbids under-privileged roles (403 on writes they lack)", async
 
   const takedown = await page.request.post(
     `${adminURL}/api/v1/admin/content/characters/none/visibility`,
-    { data: { visibility: "private", reason: "test reason", confirmation: "VISIBILITY" } },
+    { data: { visibility: "private", reason: "test reason", confirmation: "none:visibility:private" } },
   );
   expect(takedown.status()).toBe(403);
 
@@ -865,7 +1800,7 @@ test("admin API Phase 3: CMS write (admin) + compliance/analytics gating", async
         },
         contentStatus: "draft",
         reason: "e2e cms create",
-        confirmation: "CMS",
+        confirmation: path,
       },
     });
     expect(create.status(), await create.text()).toBe(200);
@@ -875,7 +1810,7 @@ test("admin API Phase 3: CMS write (admin) + compliance/analytics gating", async
         path,
         contentStatus: "published",
         reason: "e2e cms publish",
-        confirmation: "PUBLISH",
+        confirmation: path,
       },
     });
     expect(publish.status(), await publish.text()).toBe(200);
@@ -896,7 +1831,7 @@ test("admin API Phase 3: CMS write (admin) + compliance/analytics gating", async
   await startRoleSession(page, "support");
   const erase = await page.request.post(
     `${adminURL}/api/v1/admin/compliance/users/none/erase`,
-    { data: { reason: "test erase", confirmation: "ERASE" } },
+    { data: { reason: "test erase", confirmation: "none" } },
   );
   expect(erase.status()).toBe(403);
 
@@ -906,6 +1841,329 @@ test("admin API Phase 3: CMS write (admin) + compliance/analytics gating", async
   expect(retention.status()).toBe(200);
   const ageList = await page.request.get(`${adminURL}/api/v1/admin/compliance/age-verifications`);
   expect(ageList.status()).toBe(403);
+});
+
+test("admin CMS UI requires typed confirmation for publish changes", async ({ page }) => {
+  const consoleFailures = collectConsoleFailures(page);
+  const dialogs: string[] = [];
+  page.on("dialog", async (dialog) => {
+    dialogs.push(dialog.message());
+    await dialog.dismiss();
+  });
+
+  const admin = await startRoleSession(page, "admin");
+  const adminURL = adminBaseURL();
+  const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  const routePath = `/e2e-cms-confirm-${suffix}`;
+
+  try {
+    const create = await page.request.post(`${adminURL}/api/v1/admin/cms/pages`, {
+      data: {
+        path: routePath,
+        title: "E2E CMS confirmation page",
+        description: "e2e confirmation",
+        body: { heading: "Confirmation page" },
+        contentStatus: "draft",
+        reason: "E2E CMS confirmation create",
+        confirmation: routePath,
+      },
+    });
+    expect(create.status(), await create.text()).toBe(200);
+
+    await page.goto(`${adminURL}/admin/cms`);
+    await expectAdminShellReady(page, "CMS / SEO");
+
+    const row = page.getByRole("row").filter({ hasText: routePath });
+    await expect(row).toBeVisible({ timeout: 10_000 });
+    await row.getByRole("button", { name: "Publish" }).click();
+
+    const confirmPublish = page.getByRole("button", { name: "Confirm publish change" });
+    await expect(confirmPublish).toBeDisabled();
+    await page.getByRole("textbox", { name: "CMS publish reason" }).fill("E2E publish CMS page");
+    await expect(confirmPublish).toBeDisabled();
+    await page.getByRole("textbox", { name: "CMS publish confirmation" }).fill("WRONG");
+    await expect(confirmPublish).toBeDisabled();
+    await page.getByRole("textbox", { name: "CMS publish confirmation" }).fill("PUBLISH");
+    await expect(confirmPublish).toBeDisabled();
+    await page.getByRole("textbox", { name: "CMS publish confirmation" }).fill(routePath);
+    await expect(confirmPublish).toBeEnabled();
+    await confirmPublish.click();
+    await expect(row).toContainText("published", { timeout: 10_000 });
+
+    await row.getByRole("button", { name: "Unpublish" }).click();
+    await expect(confirmPublish).toBeDisabled();
+    await page.getByRole("textbox", { name: "CMS publish reason" }).fill("E2E unpublish CMS page");
+    await page.getByRole("textbox", { name: "CMS publish confirmation" }).fill(routePath);
+    await expect(confirmPublish).toBeEnabled();
+    await confirmPublish.click();
+    await expect(row).toContainText("draft", { timeout: 10_000 });
+
+    expect(dialogs).toEqual([]);
+    expect(consoleFailures).toEqual([]);
+  } finally {
+    await prisma.adminAuditLog.deleteMany({ where: { targetId: routePath } });
+    await prisma.routePage.deleteMany({ where: { path: routePath } });
+    await prisma.session.deleteMany({ where: { userId: admin.id } });
+    await prisma.user.deleteMany({ where: { id: admin.id } });
+  }
+});
+
+test("admin insights dry-run UI requires typed confirmation", async ({ page }) => {
+  const consoleFailures = collectConsoleFailures(page);
+  const dialogs: string[] = [];
+  page.on("dialog", async (dialog) => {
+    dialogs.push(dialog.message());
+    await dialog.dismiss();
+  });
+
+  const admin = await startRoleSession(page, "admin");
+  const adminURL = adminBaseURL();
+  const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  const profile = await prisma.generationModelProfile.create({
+    data: {
+      profileKey: `e2e-insights-dryrun-${suffix}`,
+      label: "E2E Insights Dry-run",
+      pipelineModel: "test-model",
+      allowedOrientations: ["1:1"],
+      status: "draft",
+    },
+    select: { id: true },
+  });
+
+  try {
+    await page.goto(`${adminURL}/admin/insights`);
+    await expectAdminShellReady(page, "Insights");
+
+    await page.getByRole("textbox", { name: "Model profile id" }).fill(profile.id);
+    await page.getByRole("button", { name: "Dry-run" }).click();
+
+    const confirmDryRun = page.getByRole("button", { name: "Confirm dry-run" });
+    await expect(confirmDryRun).toBeDisabled();
+    await page.getByRole("textbox", { name: "Dry-run reason" }).fill("E2E profile dry-run check");
+    await expect(confirmDryRun).toBeDisabled();
+    await page.getByRole("textbox", { name: "Dry-run confirmation" }).fill("WRONG");
+    await expect(confirmDryRun).toBeDisabled();
+    await page.getByRole("textbox", { name: "Dry-run confirmation" }).fill("DRYRUN");
+    await expect(confirmDryRun).toBeDisabled();
+    await page.getByRole("textbox", { name: "Dry-run confirmation" }).fill(profile.id);
+    await expect(confirmDryRun).toBeEnabled();
+    await confirmDryRun.click();
+    await expect(page.getByText("Dry-run pass: 2/2 samples passed.")).toBeVisible({
+      timeout: 10_000,
+    });
+
+    const audit = await prisma.adminAuditLog.findFirstOrThrow({
+      where: {
+        actorId: admin.id,
+        action: "generation.profile.dry_run",
+        targetId: profile.id,
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(audit.reason).toBe("E2E profile dry-run check");
+    await expect
+      .poll(async () => {
+        const refreshed = await prisma.generationModelProfile.findUnique({
+          where: { id: profile.id },
+          select: { dryRunSummary: true },
+        });
+        return JSON.stringify(refreshed?.dryRunSummary ?? {});
+      })
+      .toContain("\"status\":\"pass\"");
+    expect(dialogs).toEqual([]);
+    expect(consoleFailures).toEqual([]);
+  } finally {
+    await prisma.adminAuditLog.deleteMany({ where: { targetId: profile.id } });
+    await prisma.generationModelProfile.deleteMany({ where: { id: profile.id } });
+    await prisma.session.deleteMany({ where: { userId: admin.id } });
+    await prisma.user.deleteMany({ where: { id: admin.id } });
+  }
+});
+
+test("admin compliance UI requires typed confirmations for destructive actions", async ({
+  page,
+}) => {
+  const consoleFailures = collectConsoleFailures(page);
+  const admin = await startRoleSession(page, "admin");
+  const adminURL = adminBaseURL();
+  const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  const targetId = `e2e-compliance-target-${suffix}`;
+  const ageUserId = `e2e-compliance-age-${suffix}`;
+
+  await prisma.user.createMany({
+    data: [
+      {
+        id: targetId,
+        email: uniqueEmail("compliance-target"),
+        emailVerified: true,
+        displayName: "Compliance Target",
+      },
+      {
+        id: ageUserId,
+        email: uniqueEmail("compliance-age"),
+        emailVerified: true,
+        displayName: "Compliance Age",
+      },
+    ],
+  });
+  const ageVerification = await prisma.ageVerification.create({
+    data: {
+      userId: ageUserId,
+      provider: "mock",
+      status: "pending",
+      jurisdiction: "US-CA",
+      metadata: {},
+    },
+  });
+
+  try {
+    await page.goto(`${adminURL}/admin/compliance`);
+    await expectAdminShellReady(page, "Compliance");
+
+    await page.getByRole("textbox", { name: "User ID" }).fill(targetId);
+    await page.getByRole("button", { name: "Export" }).click();
+    await expect(page.locator("pre")).toContainText(targetId);
+
+    await page.getByRole("button", { name: "Erase", exact: true }).click();
+    const confirmErase = page.getByRole("button", { name: "Confirm erase" });
+    await expect(confirmErase).toBeDisabled();
+    await page.getByRole("textbox", { name: "Erase reason" }).fill("E2E compliance erasure");
+    await expect(confirmErase).toBeDisabled();
+    await page.getByRole("textbox", { name: "Erase confirmation" }).fill("WRONG");
+    await expect(confirmErase).toBeDisabled();
+    await page.getByRole("textbox", { name: "Erase confirmation" }).fill("ERASE");
+    await expect(confirmErase).toBeDisabled();
+    await page.getByRole("textbox", { name: "Erase confirmation" }).fill(targetId);
+    await expect(confirmErase).toBeEnabled();
+    await confirmErase.click();
+    await expect(page.getByText("Erasure requested.")).toBeVisible();
+    await expect(prisma.user.findUnique({ where: { id: targetId } })).resolves.toMatchObject({
+      status: "deleted",
+    });
+
+    const ageRow = page.getByRole("row").filter({ hasText: ageUserId });
+    await expect(ageRow).toBeVisible({ timeout: 10_000 });
+    await ageRow.getByRole("button", { name: "Verify" }).click();
+    await expect(page.getByText(ageVerification.id)).toBeVisible();
+    const confirmOverride = page.getByRole("button", { name: "Confirm override" });
+    await expect(confirmOverride).toBeDisabled();
+    await page.getByRole("textbox", { name: "Override reason" }).fill("E2E age verification review");
+    await expect(confirmOverride).toBeDisabled();
+    await page.getByRole("textbox", { name: "Override confirmation" }).fill("OVERRIDE");
+    await expect(confirmOverride).toBeDisabled();
+    await page.getByRole("textbox", { name: "Override confirmation" }).fill(ageVerification.id);
+    await expect(confirmOverride).toBeEnabled();
+    const overrideResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.url().includes(`/api/v1/admin/compliance/age-verifications/${ageVerification.id}/override`),
+    );
+    await confirmOverride.click();
+    await expect.poll(async () => (await overrideResponse).status()).toBe(200);
+    await expect(page.getByText("Age verification updated.")).toBeVisible();
+    await expect(page.getByText("Unauthorized")).toHaveCount(0);
+    await expect
+      .poll(async () => {
+        const row = await prisma.ageVerification.findUnique({ where: { id: ageVerification.id } });
+        return row?.status;
+      })
+      .toBe("verified");
+    expect(consoleFailures).toEqual([]);
+  } finally {
+    await prisma.adminAuditLog.deleteMany({
+      where: { targetId: { in: [targetId, ageVerification.id] } },
+    });
+    await prisma.ageVerification.deleteMany({ where: { id: ageVerification.id } });
+    await prisma.session.deleteMany({ where: { userId: { in: [admin.id, targetId, ageUserId] } } });
+    await prisma.user.deleteMany({ where: { id: { in: [admin.id, targetId, ageUserId] } } });
+  }
+});
+
+test("admin announcements UI requires typed confirmation for create, update, and delete", async ({
+  page,
+}) => {
+  const consoleFailures = collectConsoleFailures(page);
+  const dialogs: string[] = [];
+  page.on("dialog", async (dialog) => {
+    dialogs.push(dialog.message());
+    await dialog.dismiss();
+  });
+
+  const admin = await startRoleSession(page, "admin");
+  const adminURL = adminBaseURL();
+  const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  const title = `E2E announcement confirm ${suffix}`;
+  let announcementId: string | undefined;
+
+  try {
+    await prisma.appSetting.deleteMany({ where: { key: "announcements" } });
+    await page.goto(`${adminURL}/admin/announcements`);
+    await expectAdminShellReady(page, "Announcements");
+
+    await page.getByRole("textbox", { name: "Title", exact: true }).fill(title);
+    await page.getByRole("textbox", { name: "Body", exact: true }).fill("Announcement confirmation smoke");
+    await page.getByRole("textbox", { name: "Link URL (optional)" }).fill("/helpdesk");
+    await page.getByPlaceholder("Reason (≥3)").fill("E2E create announcement confirmation");
+    const createButton = page.getByRole("button", { name: "Create" });
+    await expect(createButton).toBeDisabled();
+    await page.getByRole("textbox", { name: "Announcement create confirmation" }).fill("ANNOUNCE");
+    await expect(createButton).toBeDisabled();
+    await expect(prisma.appSetting.findUnique({ where: { key: "announcements" } })).resolves.toBeNull();
+    await page.getByRole("textbox", { name: "Announcement create confirmation" }).fill(title);
+    await expect(createButton).toBeEnabled();
+    await createButton.click();
+
+    const row = page.getByRole("row").filter({ hasText: title });
+    await expect(row).toBeVisible({ timeout: 10_000 });
+    const setting = await prisma.appSetting.findUniqueOrThrow({ where: { key: "announcements" } });
+    const created = (setting.value as { items?: Array<{ id?: string; title?: string }> }).items?.find(
+      (item) => item.title === title,
+    );
+    announcementId = created?.id;
+    expect(announcementId).toBeTruthy();
+    await row.getByRole("button", { name: "Deactivate" }).click();
+
+    const confirmUpdate = page.getByRole("button", { name: "Confirm update" });
+    await expect(confirmUpdate).toBeDisabled();
+    await page.getByRole("textbox", { name: "Announcement action reason" }).fill("E2E deactivate announcement");
+    await expect(confirmUpdate).toBeDisabled();
+    await page.getByRole("textbox", { name: "Announcement action confirmation" }).fill("WRONG");
+    await expect(confirmUpdate).toBeDisabled();
+    await page.getByRole("textbox", { name: "Announcement action confirmation" }).fill("ANNOUNCE");
+    await expect(confirmUpdate).toBeDisabled();
+    await page.getByRole("textbox", { name: "Announcement action confirmation" }).fill(announcementId ?? "");
+    await expect(confirmUpdate).toBeEnabled();
+    await confirmUpdate.click();
+    await expect(row).toContainText("no", { timeout: 10_000 });
+
+    await row.getByRole("button", { name: "Delete announcement" }).click();
+    const confirmDelete = page.getByRole("button", { name: "Confirm delete" });
+    await expect(confirmDelete).toBeDisabled();
+    await page.getByRole("textbox", { name: "Announcement action reason" }).fill("E2E delete announcement");
+    await page.getByRole("textbox", { name: "Announcement action confirmation" }).fill("DELETE");
+    await expect(confirmDelete).toBeDisabled();
+    await page.getByRole("textbox", { name: "Announcement action confirmation" }).fill(announcementId ?? "");
+    await expect(confirmDelete).toBeEnabled();
+    await confirmDelete.click();
+    await expect(row).toHaveCount(0, { timeout: 10_000 });
+
+    const audit = await prisma.adminAuditLog.findFirstOrThrow({
+      where: {
+        actorId: admin.id,
+        action: "growth.announcement.delete",
+        targetId: announcementId,
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(audit.reason).toBe("E2E delete announcement");
+    expect(dialogs).toEqual([]);
+    expect(consoleFailures).toEqual([]);
+  } finally {
+    if (announcementId) await prisma.adminAuditLog.deleteMany({ where: { targetId: announcementId } });
+    await prisma.appSetting.deleteMany({ where: { key: "announcements" } });
+    await prisma.session.deleteMany({ where: { userId: admin.id } });
+    await prisma.user.deleteMany({ where: { id: admin.id } });
+  }
 });
 
 test("admin API Phase 4: announcement write (admin) + public read + growth gating", async ({
@@ -922,7 +2180,7 @@ test("admin API Phase 4: announcement write (admin) + public read + growth gatin
         level: "info",
         active: true,
         reason: "e2e banner",
-        confirmation: "ANNOUNCE",
+        confirmation: "E2E banner",
       },
     });
     expect(create.status(), await create.text()).toBe(200);

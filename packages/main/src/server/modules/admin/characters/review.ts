@@ -61,7 +61,7 @@ export async function listReviewQueue(request: Request): Promise<Response> {
 export async function reviewSubmission(request: Request, id: string): Promise<Response> {
   const actor = await actorWithPermission(request, "safety.review.write");
   const body = reviewDecisionSchema.parse(await jsonBody(request));
-  if (body.confirmation !== "REVIEW") {
+  if (body.confirmation !== id) {
     throw Errors.badRequest("Confirmation did not match review decision");
   }
 

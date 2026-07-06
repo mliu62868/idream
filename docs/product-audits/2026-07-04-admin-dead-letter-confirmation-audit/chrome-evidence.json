@@ -1,0 +1,14 @@
+{
+  "checkedAt": "2026-07-04T19:55:57.743Z",
+  "route": "/admin/generation/dead-letter",
+  "jobId": "e2e-dl-evidence-1783194957043-655968",
+  "rejectedConfirmation": "DISCARD",
+  "acceptedConfirmation": "e2e-dl-evidence-1783194957043-655968",
+  "finalStatus": "refunded",
+  "refundDelta": 11,
+  "auditAction": "ops.deadletter.discard",
+  "screenshots": {
+    "wrongConfirmationDisabled": "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-dead-letter-confirmation-audit/wrong-confirmation-disabled.png",
+    "discarded": "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-dead-letter-confirmation-audit/discarded.png"
+  }
+}

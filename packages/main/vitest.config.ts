@@ -64,6 +64,10 @@ export default defineConfig({
         import.meta.url,
       ).pathname,
       "@idream/shared/bff": new URL("../shared/src/bff/signing.ts", import.meta.url).pathname,
+      "@idream/shared/media/generated-image-sanity": new URL(
+        "../shared/src/media/generated-image-sanity.ts",
+        import.meta.url,
+      ).pathname,
       "@idream/shared/storage/local-blob": new URL(
         "../shared/src/storage/local-blob.ts",
         import.meta.url,

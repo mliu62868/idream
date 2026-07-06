@@ -1,0 +1,32 @@
+{
+  "chromeVersion": "149.0.7827.201",
+  "consoleFailures": [],
+  "pageErrors": [],
+  "memoryFirstClickVisible": true,
+  "relationshipFirstClickStillClose": true,
+  "messageAfterFirstClick": {
+    "content": "chrome confirm delete 1783185823277-237382",
+    "deletedAt": null,
+    "status": "sent"
+  },
+  "messageAfterConfirm": {
+    "content": "",
+    "deletedAt": "2026-07-04T17:23:46.268Z",
+    "status": "deleted"
+  },
+  "sessionStatusAfterFirstClick": "active",
+  "sessionStatusAfterConfirm": "deleted",
+  "screenshots": [
+    "screenshots/01-memory-before-delete.png",
+    "screenshots/02-memory-delete-confirmation.png",
+    "screenshots/03-memory-deleted.png",
+    "screenshots/04-relationship-reset-confirmation.png",
+    "screenshots/05-relationship-reset.png",
+    "screenshots/06-message-before-delete.png",
+    "screenshots/07-message-delete-confirmation.png",
+    "screenshots/08-message-deleted.png",
+    "screenshots/09-session-before-delete.png",
+    "screenshots/10-session-delete-confirmation.png",
+    "screenshots/11-session-deleted-redirect.png"
+  ]
+}

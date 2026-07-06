@@ -1,0 +1,45 @@
+{
+  "date": "2026-07-04",
+  "surface": "admin target confirmation sweep",
+  "playwrightRuns": [
+    {
+      "command": "PW_WEBSERVER=1 PW_BASE_URL=http://127.0.0.1:3198 PW_ADMIN_BASE_URL=http://127.0.0.1:3197 bun --cwd packages/main playwright test src/e2e/admin-web.e2e.ts -g \"admin content ops requires confirmation|admin support plaintext panel|admin approval decisions require request-id confirmation|admin review queue approves|admin tag taxonomy metadata edits|admin compliance UI requires typed confirmations\"",
+      "tests": 6,
+      "passed": 6
+    },
+    {
+      "command": "PW_WEBSERVER=1 PW_BASE_URL=http://127.0.0.1:3198 PW_ADMIN_BASE_URL=http://127.0.0.1:3197 bun --cwd packages/main playwright test src/e2e/admin-web.e2e.ts -g \"admin official characters and templates require inline confirmation\"",
+      "tests": 1,
+      "passed": 1
+    }
+  ],
+  "genericTokensRejectedOrDisabled": [
+    "VIEW",
+    "ERASE",
+    "OVERRIDE",
+    "MERGE",
+    "APPROVE",
+    "REJECT",
+    "REVIEW",
+    "ROLE",
+    "ASSET",
+    "PLACEMENT",
+    "REGENERATE",
+    "PUBLISH",
+    "OFFLINE"
+  ],
+  "exactConfirmationsAccepted": [
+    "plaintext target id",
+    "approval request id",
+    "review submission id",
+    "tag sourceId:targetId",
+    "compliance user id",
+    "age verification id",
+    "content item id",
+    "asset id",
+    "placement id",
+    "userId:role",
+    "character template id"
+  ],
+  "consoleFailures": []
+}

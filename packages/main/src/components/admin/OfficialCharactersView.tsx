@@ -71,6 +71,8 @@ export function OfficialCharactersView() {
   const [reason, setReason] = useState("");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [confirmKey, setConfirmKey] = useState<string | null>(null);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
@@ -96,6 +98,8 @@ export function OfficialCharactersView() {
   const reload = useCallback(async () => {
     setLoading(true);
     setListError(null);
+    setNotice(null);
+    setConfirmKey(null);
     try {
       const data = await apiGet<{ items: OfficialRow[] }>("/api/v1/admin/content/official");
       setRows(data.items);
@@ -139,8 +143,16 @@ export function OfficialCharactersView() {
   }
 
   async function createCharacter() {
+    const nextKey = officialCreateConfirmKey({ name, age, gender, style, description, tags, reason });
+    if (confirmKey !== nextKey) {
+      setCreateError(null);
+      setNotice("Press Confirm create official character to publish this official character.");
+      setConfirmKey(nextKey);
+      return;
+    }
     setCreating(true);
     setCreateError(null);
+    setNotice(null);
     try {
       await apiWrite("/api/v1/admin/content/official", "POST", {
         name: name.trim(),
@@ -164,6 +176,7 @@ export function OfficialCharactersView() {
       await reload();
     } catch (error) {
       setCreateError(error instanceof Error ? error.message : "Create failed");
+      setConfirmKey(null);
     } finally {
       setCreating(false);
     }
@@ -183,8 +196,25 @@ export function OfficialCharactersView() {
 
   async function updateCharacter() {
     if (!editingId) return;
+    const nextKey = officialEditConfirmKey({
+      id: editingId,
+      name: editName,
+      age: editAge,
+      gender: editGender,
+      style: editStyle,
+      description: editDescription,
+      tags: editTags,
+      reason: editReason,
+    });
+    if (confirmKey !== nextKey) {
+      setEditError(null);
+      setNotice("Press Confirm save official character to update this official character.");
+      setConfirmKey(nextKey);
+      return;
+    }
     setUpdating(true);
     setEditError(null);
+    setNotice(null);
     try {
       await apiWrite(`/api/v1/admin/content/official/${editingId}`, "PATCH", {
         name: editName.trim(),
@@ -202,6 +232,7 @@ export function OfficialCharactersView() {
       await reload();
     } catch (error) {
       setEditError(error instanceof Error ? error.message : "Update failed");
+      setConfirmKey(null);
     } finally {
       setUpdating(false);
     }
@@ -209,8 +240,17 @@ export function OfficialCharactersView() {
 
   async function setState(id: string, status: "approved" | "archived") {
     const actionReason = (rowReason[id] ?? "").trim();
+    const nextKey = officialStateConfirmKey({ id, status, reason: actionReason });
+    if (confirmKey !== nextKey) {
+      const action = status === "approved" ? "publish" : "archive";
+      setRowError(null);
+      setNotice(`Press Confirm ${action} official character to update this official character.`);
+      setConfirmKey(nextKey);
+      return;
+    }
     setRowBusy(id);
     setRowError(null);
+    setNotice(null);
     try {
       await apiWrite(`/api/v1/admin/content/official/${id}/state`, "POST", {
         status,
@@ -220,6 +260,7 @@ export function OfficialCharactersView() {
       await reload();
     } catch (error) {
       setRowError(error instanceof Error ? error.message : "Update failed");
+      setConfirmKey(null);
     } finally {
       setRowBusy(null);
     }
@@ -238,9 +279,28 @@ export function OfficialCharactersView() {
     editDescription.trim().length < 1 ||
     editReason.trim().length < 3 ||
     intFromText(editAge, 0) < 18;
+  const createAwaitingConfirm = confirmKey === officialCreateConfirmKey({ name, age, gender, style, description, tags, reason });
+  const editAwaitingConfirm =
+    editingId !== null &&
+    confirmKey ===
+      officialEditConfirmKey({
+        id: editingId,
+        name: editName,
+        age: editAge,
+        gender: editGender,
+        style: editStyle,
+        description: editDescription,
+        tags: editTags,
+        reason: editReason,
+      });
 
   return (
     <div className="space-y-5">
+      {notice ? (
+        <div className="border border-amber-400/30 bg-amber-950/20 px-4 py-3 text-sm text-amber-100">
+          {notice}
+        </div>
+      ) : null}
       <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
         <h2 className="text-sm font-semibold">{t("Create official character")}</h2>
         <p className="mt-1 text-xs text-[rgb(170,170,170)]">
@@ -328,7 +388,7 @@ export function OfficialCharactersView() {
             type="button"
           >
             {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-            {t("Create")}
+            {createAwaitingConfirm ? t("Confirm create official character") : t("Create")}
           </button>
           {createError ? <p className="text-xs text-red-300">{createError}</p> : null}
         </div>
@@ -414,7 +474,7 @@ export function OfficialCharactersView() {
               type="button"
             >
               {updating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-              {t("Save changes")}
+              {editAwaitingConfirm ? t("Confirm save changes") : t("Save changes")}
             </button>
             {editError ? <p className="text-xs text-red-300">{editError}</p> : null}
           </div>
@@ -458,6 +518,20 @@ export function OfficialCharactersView() {
                   rows.map((row) => {
                     const busy = rowBusy === row.id;
                     const canAct = (rowReason[row.id] ?? "").trim().length >= 3 && !busy;
+                    const archiveConfirming =
+                      confirmKey ===
+                      officialStateConfirmKey({
+                        id: row.id,
+                        status: "archived",
+                        reason: (rowReason[row.id] ?? "").trim(),
+                      });
+                    const publishConfirming =
+                      confirmKey ===
+                      officialStateConfirmKey({
+                        id: row.id,
+                        status: "approved",
+                        reason: (rowReason[row.id] ?? "").trim(),
+                      });
                     return (
                       <tr className="border-b border-white/5" key={row.id}>
                         <td className="px-4 py-2">
@@ -523,7 +597,7 @@ export function OfficialCharactersView() {
                               ) : (
                                 <Archive className="h-3.5 w-3.5" />
                               )}
-                              {t("Archive")}
+                              {archiveConfirming ? t("Confirm archive") : t("Archive")}
                             </button>
                           ) : (
                             <button
@@ -537,7 +611,7 @@ export function OfficialCharactersView() {
                               ) : (
                                 <Upload className="h-3.5 w-3.5" />
                               )}
-                              {t("Publish")}
+                              {publishConfirming ? t("Confirm publish") : t("Publish")}
                             </button>
                           )}
                         </td>
@@ -552,4 +626,52 @@ export function OfficialCharactersView() {
       </section>
     </div>
   );
+}
+
+function officialCreateConfirmKey(input: {
+  name: string;
+  age: string;
+  gender: string;
+  style: string;
+  description: string;
+  tags: string;
+  reason: string;
+}) {
+  return [
+    "official:create",
+    input.name.trim(),
+    input.age.trim(),
+    input.gender,
+    input.style,
+    input.description.trim(),
+    input.tags.trim(),
+    input.reason.trim(),
+  ].join(":");
+}
+
+function officialEditConfirmKey(input: {
+  id: string;
+  name: string;
+  age: string;
+  gender: string;
+  style: string;
+  description: string;
+  tags: string;
+  reason: string;
+}) {
+  return [
+    "official:edit",
+    input.id,
+    input.name.trim(),
+    input.age.trim(),
+    input.gender,
+    input.style,
+    input.description.trim(),
+    input.tags.trim(),
+    input.reason.trim(),
+  ].join(":");
+}
+
+function officialStateConfirmKey(input: { id: string; status: "approved" | "archived"; reason: string }) {
+  return ["official:state", input.id, input.status, input.reason.trim()].join(":");
 }

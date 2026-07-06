@@ -16,6 +16,15 @@ const publicRoutes = [
   { path: "/feed", title: /feed/i },
   { path: "/community", title: /community/i },
   { path: "/helpdesk", title: /help desk/i },
+  { path: "/ai-girl", title: /ai girl/i },
+  { path: "/ai-girlfriend", title: /ai girlfriend/i },
+  { path: "/ai-boyfriend", title: /ai boyfriend/i },
+  { path: "/affiliate", title: /affiliate/i },
+  { path: "/authors/lizzie-od", title: /lizzie od/i },
+  { path: "/site/rprp-ai", title: /rprp ai/i },
+  { path: "/nude-ai", title: /nude ai/i },
+  { path: "/free-ai-girlfriend", title: /free ai girlfriend/i },
+  { path: "/lovescape-ai-alternatives", title: /lovescape ai alternatives/i },
   { path: "/resources-hub", title: /resources hub/i },
   { path: "/type", title: /ai girlfriend types/i },
   { path: "/comparison", title: /compare ai girlfriend platforms/i },
@@ -141,6 +150,111 @@ test.describe("public route smoke", () => {
     ).toHaveAttribute("href", "/helpdesk");
   });
 
+  test("guide article pages expose readable content sections and FAQ", async ({ page }) => {
+    await startSignedInAdultSession(page, "/guides/character-cards");
+    await page.goto("/guides/character-cards");
+    await dismissAgeGateIfPresent(page);
+
+    await expect(
+      page.getByRole("heading", { name: "Character Cards", exact: true }),
+    ).toBeVisible();
+    await expect(page.getByRole("link", { name: "FAQ", exact: true })).toHaveAttribute(
+      "href",
+      "#faq",
+    );
+    await expect(
+      page.getByRole("heading", { name: "What should a character card include?" }),
+    ).toBeVisible();
+    await expect(page.getByText("A strong character card is a compact profile")).toBeVisible();
+    await expect(page.getByText("Name, age, role, and relationship to the user.")).toBeVisible();
+
+    const articleText = await page.locator("article").innerText();
+    expect(articleText).not.toContain(
+      "Ourdream combines adult character discovery, private chat, companion creation, generation tools",
+    );
+  });
+
+  test("comparison pages explain feature and pricing differences with CTAs", async ({
+    page,
+  }) => {
+    await startSignedInAdultSession(page, "/comparison/character-ai-alternative");
+    await page.goto("/comparison/character-ai-alternative");
+    await dismissAgeGateIfPresent(page);
+
+    await expect(
+      page.getByRole("heading", { name: /compare character ai by the workflow/i }),
+    ).toBeVisible();
+    await expect(page.getByText("Image generation tools", { exact: true })).toBeVisible();
+    await expect(
+      page.getByText("Premium monthly is $19.99 with 1,500 dreamcoins", {
+        exact: false,
+      }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("Deluxe monthly is $59.99 with 6,000 dreamcoins", {
+        exact: false,
+      }),
+    ).toBeVisible();
+    await expect(page.getByRole("link", { name: /compare premium/i })).toHaveAttribute(
+      "href",
+      "/upgrade?plan=premium&billing=monthly",
+    );
+    await expect(page.getByRole("link", { name: /see plans/i })).toHaveAttribute(
+      "href",
+      "/upgrade",
+    );
+    await expect(page.getByRole("link", { name: /create a companion/i })).toHaveAttribute(
+      "href",
+      "/create",
+    );
+  });
+
+  test("resources hub shows readable route titles instead of raw slugs", async ({
+    page,
+  }) => {
+    await startSignedInAdultSession(page, "/resources-hub");
+    await page.goto("/resources-hub");
+    await dismissAgeGateIfPresent(page);
+
+    await expect(
+      page.getByRole("heading", { name: "Resources Hub", exact: true }),
+    ).toBeVisible();
+    await expect(page.getByRole("link", { name: /How To Use Character AI/i })).toBeVisible();
+    await expect(
+      page.getByText("How To Use Character AI explains the workflow", {
+        exact: false,
+      }),
+    ).toBeVisible();
+
+    const visibleCopy = await page.locator("main").innerText();
+    expect(visibleCopy).not.toContain("how-to-use-character-ai");
+    expect(visibleCopy).not.toContain("character-ai-alternative");
+  });
+
+  test("library routes without child paths still expose curated cards", async ({
+    page,
+  }) => {
+    await startSignedInAdultSession(page, "/games");
+
+    await page.goto("/games");
+    await dismissAgeGateIfPresent(page);
+    await expect(
+      page.getByRole("heading", { name: "AI Games", exact: true }),
+    ).toBeVisible();
+    await expect(page.locator('main a[href="/generator/ai-roleplay-generator"]')).toBeVisible();
+    await expect(page.locator('main a[href="/sex-chat/ai-sex-chat-roleplay"]')).toBeVisible();
+    await expect(page.locator('main a[href="/type/roleplay-ai-girlfriend"]')).toBeVisible();
+
+    await page.goto("/romantasy");
+    await dismissAgeGateIfPresent(page);
+    await expect(
+      page.getByRole("heading", { name: "AI Romantasy", exact: true }),
+    ).toBeVisible();
+    await expect(page.locator('main a[href="/guides/character-card-creator"]')).toBeVisible();
+    await expect(page.locator('main a[href="/type/angel-ai-girlfriend"]')).toBeVisible();
+    await expect(page.locator('main a[href="/type/goth-ai-girlfriend"]')).toBeVisible();
+  });
+
   test("/terms is readable before age-gate acceptance", async ({ page }) => {
     await page.context().clearCookies();
     await page.goto("/terms");
@@ -255,19 +369,100 @@ test.describe("public route smoke", () => {
     await expect(footerDiscord).toHaveAttribute("rel", "noopener noreferrer");
   });
 
-  test("active app copy does not promise video tools while video generation is disabled", async ({
+  test("promised catch-all marketing and comparison pages keep More active", async ({
     page,
   }) => {
-    await startSignedInAdultSession(page, "/");
-    await page.goto("/");
-    await dismissAgeGateIfPresent(page);
+    await startSignedInAdultSession(page, "/ai-girl");
 
-    const homeCopy = await page.evaluate(() => document.body.innerText.toLowerCase());
-    expect(homeCopy).not.toContain("chat, image, and video tools");
-    expect(homeCopy).not.toContain("generating images and videos");
-    expect(homeCopy).not.toContain("image and video generation access");
+    const promisedContentRoutes = [
+      "/ai-girl",
+      "/affiliate",
+      "/authors/lizzie-od",
+      "/site/rprp-ai",
+      "/nude-ai",
+      "/free-ai-girlfriend",
+      "/lovescape-ai-alternatives",
+    ] as const;
 
-    await page.goto("/generate");
+    for (const routePath of promisedContentRoutes) {
+      await page.goto(routePath);
+      await dismissAgeGateIfPresent(page);
+      await expect(page.locator("main")).toBeVisible();
+      await expect(page.locator("aside").getByRole("link", { name: "More" })).toHaveAttribute(
+        "aria-current",
+        "page",
+      );
+      await expect(page.locator("aside").getByRole("link", { name: "Explore" })).not.toHaveAttribute(
+        "aria-current",
+        "page",
+      );
+    }
+  });
+
+  test("account shell routes expose exactly one current sidebar destination", async ({
+    page,
+  }) => {
+    await startSignedInAdultSession(page, "/profile");
+
+    const cases = [
+      { path: "/custom", current: ["My AI"], heading: "My AI" },
+      { path: "/profile", current: ["Profile"], heading: "Profile" },
+      { path: "/profile/notifications", current: ["Profile"], heading: "Profile" },
+      { path: "/upgrade", current: ["Upgrade"] },
+    ] as const;
+
+    for (const item of cases) {
+      await page.goto(item.path);
+      await dismissAgeGateIfPresent(page);
+      await expect(page.locator("main")).toBeVisible();
+      if ("heading" in item) {
+        await expect(page.getByRole("heading", { name: item.heading })).toBeVisible();
+      }
+      const currentLabels = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('aside a[aria-current="page"]')).map((link) =>
+          (link.textContent ?? "").replace(/\s+/g, " ").trim(),
+        ),
+      );
+      expect(currentLabels).toEqual(item.current);
+    }
+  });
+
+test("active app copy avoids unavailable video and unsupported sale promises", async ({
+  page,
+}) => {
+  await startSignedInAdultSession(page, "/");
+  await page.goto("/");
+  await dismissAgeGateIfPresent(page);
+
+  const homeCopy = await page.evaluate(() => document.body.innerText.toLowerCase());
+  expect(homeCopy).not.toContain("chat, image, and video tools");
+  expect(homeCopy).not.toContain("generating images and videos");
+  expect(homeCopy).not.toContain("image and video generation access");
+  expect(homeCopy).not.toContain("75% pride sale");
+
+  await expect(page.getByRole("link", { name: "Pride offer - view plans" })).toBeVisible({
+    timeout: 10_000,
+  });
+  const homePromotionalLabels = await page.evaluate(() =>
+    Array.from(document.querySelectorAll("a, img"))
+      .map((element) =>
+        [
+          element.textContent,
+          element.getAttribute("aria-label"),
+          element.getAttribute("alt"),
+          element.getAttribute("src"),
+        ].join(" "),
+      )
+      .join(" ")
+      .toLowerCase(),
+  );
+  expect(homePromotionalLabels).toContain("pride offer");
+  expect(homePromotionalLabels).not.toContain("75%");
+  expect(homePromotionalLabels).not.toContain("pride sale");
+  expect(homePromotionalLabels).not.toContain("pride-card-female");
+  expect(homePromotionalLabels).not.toContain("pride-banner-female");
+
+  await page.goto("/generate");
     await expect(page).toHaveTitle(/ai image generator/i);
     const generateMetadata = await page.evaluate(() => ({
       title: document.title.toLowerCase(),
@@ -282,5 +477,32 @@ test.describe("public route smoke", () => {
     const comparisonCopy = await page.evaluate(() => document.body.innerText.toLowerCase());
     expect(comparisonCopy).not.toContain("image and video tools");
     expect(comparisonCopy).toContain("image generation tools");
+
+    await page.goto("/upgrade");
+    await expect(page.locator("article").filter({ hasText: "Premium monthly" })).toBeVisible({
+      timeout: 10_000,
+    });
+    const planCardCopy = (await page.locator("article").allInnerTexts()).join("\n").toLowerCase();
+    expect(planCardCopy).toContain("includes 1,500 dreamcoins");
+    expect(planCardCopy).toContain("unlimited text messages & audio");
+    expect(planCardCopy).not.toContain("video");
+    expect(planCardCopy).not.toContain("videos");
+  });
+
+  test("my ai metadata does not market deferred group chats or packs as active features", async ({
+    page,
+  }) => {
+    await startSignedInAdultSession(page, "/custom");
+    await page.goto("/custom");
+    await dismissAgeGateIfPresent(page);
+
+    const metadata = await page.evaluate(() => ({
+      description:
+        document.querySelector('meta[name="description"]')?.getAttribute("content")?.toLowerCase() ??
+        "",
+    }));
+
+    expect(metadata.description).not.toContain("group chats, packs");
+    expect(metadata.description).toContain("deferred group-chat and pack tabs");
   });
 });

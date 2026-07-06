@@ -677,7 +677,12 @@ export function CreateWorkspace() {
             </div>
 
             {status && (
-              <p className="mt-4 text-[13px] font-medium text-[rgb(220,220,220)]" data-testid="create-status">
+              <p
+                aria-live="polite"
+                className="mt-4 text-[13px] font-medium text-[rgb(220,220,220)]"
+                data-testid="create-status"
+                role="status"
+              >
                 {status}
               </p>
             )}

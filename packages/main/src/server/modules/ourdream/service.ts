@@ -37,9 +37,12 @@ import { nameMatch } from "@/server/lib/db/search";
 import { env } from "@/server/lib/env";
 import { AppError, Errors } from "@/server/lib/errors";
 import { empty, fail, ok } from "@/server/lib/http";
+import { getOurdreamRoute, ourdreamRoutePaths } from "@/lib/ourdream-data";
 import { activeAnnouncements, readAnnouncements } from "@/server/announcements/store";
 import { logger } from "@/server/lib/logger";
+import { redeemCodeHashCandidates } from "@/server/lib/redeem-codes";
 import { providers } from "@/server/providers";
+import type { OurdreamRoute, OurdreamRouteTemplate } from "@/types/ourdream";
 import {
   dimensionsForImageOrientation,
   imageOrientations,
@@ -48,6 +51,12 @@ import {
 
 type ApiMethod = "GET" | "POST" | "PATCH" | "DELETE" | "PUT";
 type JsonRecord = Record<string, Prisma.JsonValue>;
+type SearchRouteSuggestion = {
+  description: string;
+  href: string;
+  template: OurdreamRouteTemplate;
+  title: string;
+};
 
 const credentialProvider = "credential";
 const fallbackCharacterImages = [
@@ -226,7 +235,7 @@ const profilePatchSchema = z.object({
 
 const preferencesPatchSchema = z.object({
   locale: z.string().trim().min(2).max(16).optional(),
-  mutedTags: z.array(z.string()).max(80).optional(),
+  mutedTags: z.array(z.string().trim().min(1).max(80)).max(80).optional(),
   safeModeFlags: z.record(z.string(), z.unknown()).optional(),
   notificationSettings: z.record(z.string(), z.unknown()).optional(),
 });
@@ -366,7 +375,7 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
     if (id && !action && method === "DELETE") return archiveCharacter(request, id);
   }
 
-  if (resource === "tags" && !id && method === "GET") return listTags();
+  if (resource === "tags" && !id && method === "GET") return listTags(request);
   // 前台创建页拉取可用角色模板（仅 isActive，公开只读，见 CHARACTER_MANAGEMENT_PLAN §B）。
   if (resource === "character-templates" && !id && method === "GET") {
     return listActiveTemplates();
@@ -797,6 +806,7 @@ async function listCharacters(request: Request) {
   const limit = clampInt(url.searchParams.get("limit"), 1, 60, 28);
   const cursor = decodeCursor(url.searchParams.get("cursor"));
   const sort = exploreSort(url.searchParams.get("sort"));
+  const mutedTagSlugs = ctx.userId ? await mutedTagSlugsForUser(ctx.userId) : [];
   const gender = publicCharacterEnumFilter(url.searchParams.get("gender"), [
     "female",
     "male",
@@ -826,7 +836,19 @@ async function listCharacters(request: Request) {
                 slug: { in: tags.map(slugify) },
               },
             },
-      }
+          }
+        : undefined,
+    NOT:
+      mutedTagSlugs.length > 0
+        ? {
+            tags: {
+              some: {
+                tag: {
+                  slug: { in: mutedTagSlugs },
+                },
+              },
+            },
+          }
         : undefined,
   };
 
@@ -957,7 +979,9 @@ async function unlikeCharacter(request: Request, id: string) {
   return ok({ liked: false });
 }
 
-async function listTags() {
+async function listTags(request: Request) {
+  const ctx = await getAuthCtx(request);
+  const mutedTagSlugs = new Set(ctx.userId ? await mutedTagSlugsForUser(ctx.userId) : []);
   const tags = await prisma.tag.findMany({
     include: {
       _count: {
@@ -979,6 +1003,7 @@ async function listTags() {
   return ok({
     items: tags.map(({ _count, ...tag }) => ({
       ...tag,
+      isMutedByUser: mutedTagSlugs.has(tag.slug),
       publicCharacterCount: _count.characters,
     })),
   });
@@ -989,26 +1014,47 @@ async function suggest(request: Request) {
   requireAgeGate(ctx);
   const q = new URL(request.url).searchParams.get("q") ?? "";
   const normalized = q.trim();
-  if (!normalized) return ok({ characters: [], tags: [] });
+  if (!normalized) return ok({ characters: [], tags: [], routes: [] });
+  const mutedTagSlugs = ctx.userId ? await mutedTagSlugsForUser(ctx.userId) : [];
 
   const [characters, tags] = await Promise.all([
     prisma.character.findMany({
       where: {
+        deletedAt: null,
         visibility: "public",
         status: "approved",
         name: { contains: normalized },
+        NOT:
+          mutedTagSlugs.length > 0
+            ? {
+                tags: {
+                  some: {
+                    tag: {
+                      slug: { in: mutedTagSlugs },
+                    },
+                  },
+                },
+              }
+            : undefined,
       },
       include: characterInclude(ctx.userId),
+      orderBy: exploreOrderBy("popular"),
       take: 8,
     }),
     prisma.tag.findMany({
-      where: { label: { contains: normalized } },
+      where: {
+        isMutedByDefault: false,
+        label: { contains: normalized },
+        slug: mutedTagSlugs.length > 0 ? { notIn: mutedTagSlugs } : undefined,
+      },
+      orderBy: [{ category: "asc" }, { label: "asc" }],
       take: 8,
     }),
   ]);
 
   return ok({
     characters: characters.map((character) => characterDTO(character, ctx.userId)),
+    routes: suggestRoutes(normalized, 6),
     tags,
   });
 }
@@ -3606,7 +3652,7 @@ async function library(request: Request, tab: string) {
 
   if (tab === "media") return listMedia(request);
   if (tab === "group-chats" || tab === "packs") {
-    return ok({ items: [], emptyCta: "/create" });
+    return ok({ items: [], emptyCta: null });
   }
 
   throw Errors.notFound("Library tab not found");
@@ -3654,11 +3700,12 @@ async function updatePreferences(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
   const body = preferencesPatchSchema.parse(await jsonBody(request));
+  const mutedTags = body.mutedTags ? normalizeMutedTags(body.mutedTags) : undefined;
   const preferences = await prisma.userPreferences.upsert({
     where: { userId: user.id },
     update: {
       locale: body.locale,
-      mutedTags: body.mutedTags ? toInputJson(body.mutedTags) : undefined,
+      mutedTags: mutedTags ? toInputJson(mutedTags) : undefined,
       safeModeFlags: body.safeModeFlags ? toInputJson(body.safeModeFlags) : undefined,
       notificationSettings: body.notificationSettings
         ? toInputJson(body.notificationSettings)
@@ -3667,7 +3714,7 @@ async function updatePreferences(request: Request) {
     create: {
       userId: user.id,
       locale: body.locale ?? "en",
-      mutedTags: toInputJson(body.mutedTags ?? []),
+      mutedTags: toInputJson(mutedTags ?? []),
       safeModeFlags: toInputJson(body.safeModeFlags ?? {}),
       notificationSettings: toInputJson(body.notificationSettings ?? {}),
     },
@@ -3689,21 +3736,34 @@ async function redeemCode(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
   const body = redeemSchema.parse(await jsonBody(request));
-  const codeHash = simpleHash(body.code.toUpperCase());
-  const code = await prisma.redeemCode.findUnique({ where: { codeHash } });
+  const code = await prisma.redeemCode.findFirst({
+    where: { codeHash: { in: redeemCodeHashCandidates(body.code) } },
+    orderBy: { createdAt: "desc" },
+  });
   if (!code || code.status !== "active" || (code.expiresAt && code.expiresAt < new Date())) {
     throw Errors.notFound("Redeem code not found");
   }
   const reward = isRecord(code.reward) ? code.reward : {};
   const coins = typeof reward.dreamcoins === "number" ? reward.dreamcoins : 100;
 
-  // Reward exactly once per user — surface a graceful conflict on replay.
-  const already = await prisma.redeemCodeRedemption.findUnique({
-    where: { redeemCodeId_userId: { redeemCodeId: code.id, userId: user.id } },
-  });
-  if (already) throw Errors.conflict("Code already redeemed");
-
   const redemption = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM redeem_codes WHERE id = ${code.id} FOR UPDATE`;
+
+    // Reward exactly once per user — surface a graceful conflict on replay.
+    const already = await tx.redeemCodeRedemption.findUnique({
+      where: { redeemCodeId_userId: { redeemCodeId: code.id, userId: user.id } },
+    });
+    if (already) throw Errors.conflict("Code already redeemed");
+
+    if (code.maxRedemptions !== null) {
+      const redemptions = await tx.redeemCodeRedemption.count({
+        where: { redeemCodeId: code.id },
+      });
+      if (redemptions >= code.maxRedemptions) {
+        throw Errors.conflict("Code redemption limit reached");
+      }
+    }
+
     const created = await tx.redeemCodeRedemption.create({
       data: { redeemCodeId: code.id, userId: user.id },
     });
@@ -4389,6 +4449,25 @@ async function community(request: Request, segments: string[]) {
     return ok({ collections: collections.map(mediaCollectionDTO) });
   }
 
+  if (view === "campaigns") {
+    const campaigns = await prisma.mediaAssetPlacement.findMany({
+      where: {
+        slot: "campaign",
+        status: "published",
+        mediaAsset: {
+          deletedAt: null,
+          safetyStatus: "passed",
+          type: "image",
+          visibility: { in: ["public_pack", "unlisted"] },
+        },
+      },
+      include: { mediaAsset: true },
+      orderBy: [{ publishedAt: "desc" }, { createdAt: "desc" }],
+      take: 6,
+    });
+    return ok({ campaigns: campaigns.map(communityCampaignDTO) });
+  }
+
   const followedCreatorIds = ctx.userId ? await communityFollowedCreatorIds(ctx.userId) : [];
   const [characters, topDreamerRows, followedDreamerRows] = await Promise.all([
     prisma.character.findMany({
@@ -4429,6 +4508,25 @@ async function community(request: Request, segments: string[]) {
       collections: [],
     },
   });
+}
+
+type CommunityCampaignPlacement = Prisma.MediaAssetPlacementGetPayload<{
+  include: { mediaAsset: true };
+}>;
+
+function communityCampaignDTO(placement: CommunityCampaignPlacement) {
+  const metadata = jsonRecord(placement.metadata);
+  const image = placement.mediaAsset.storageKey
+    ? mediaViewUrl(placement.mediaAsset)
+    : (placement.mediaAsset.thumbnailUrl ?? placement.mediaAsset.url);
+  return {
+    id: placement.id,
+    eyebrow: stringMetadata(metadata, "eyebrow", 80) ?? "Community",
+    title: stringMetadata(metadata, "title", 120) ?? "Dreamers, Characters, Collections",
+    ctaLabel: stringMetadata(metadata, "ctaLabel", 60),
+    href: publicCampaignHref(stringMetadata(metadata, "href", 512)),
+    image,
+  };
 }
 
 type CommunityDreamerRow = {
@@ -4693,6 +4791,7 @@ type CharacterWithPublicRelations = Prisma.CharacterGetPayload<{
 function characterDTO(character: CharacterWithPublicRelations, viewerId?: string | null) {
   const visualProfile = character.visualProfiles[0] ?? null;
   const fallbackImage = fallbackCharacterImage(character.id);
+  const creatorName = character.creator?.displayName ?? character.creator?.name ?? null;
   return {
     id: character.id,
     name: character.name,
@@ -4705,8 +4804,8 @@ function characterDTO(character: CharacterWithPublicRelations, viewerId?: string
     gender: character.gender,
     relationship: character.relationship,
     creatorId: character.creatorId,
-    creator: character.relationship ?? "@ourdream",
-    creatorName: character.creator?.displayName ?? character.creator?.name ?? null,
+    creator: creatorName ?? (character.source === "official" ? "@ourdream" : "Creator"),
+    creatorName,
     canEditIdentity: Boolean(viewerId && character.creatorId === viewerId),
     image: character.imageAsset?.url ?? fallbackImage,
     thumbnailUrl: character.imageAsset?.thumbnailUrl ?? character.imageAsset?.url ?? fallbackImage,
@@ -5011,10 +5110,112 @@ function jsonRecord(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
 }
 
+function stringMetadata(record: Record<string, unknown>, key: string, max: number) {
+  const value = record[key];
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, max) : null;
+}
+
+function publicCampaignHref(value: string | null) {
+  if (!value) return null;
+  if (value.startsWith("/")) return value;
+  if (/^https?:\/\//i.test(value)) return value;
+  return null;
+}
+
 function jsonStringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
     : [];
+}
+
+function normalizeMutedTags(values: readonly string[]) {
+  return Array.from(new Set(values.map(slugify).filter(Boolean))).slice(0, 80);
+}
+
+async function mutedTagSlugsForUser(userId: string) {
+  const preferences = await ensurePreferences(userId);
+  return normalizeMutedTags(jsonStringArray(preferences.mutedTags));
+}
+
+function suggestRoutes(query: string, limit: number): SearchRouteSuggestion[] {
+  const normalizedQuery = normalizeSearchText(query);
+  if (!normalizedQuery) return [];
+
+  const querySlug = slugify(query);
+  const queryTerms = normalizedQuery.split(/\s+/).filter(Boolean);
+  return ourdreamRoutePaths
+    .filter(isSearchableRouteSuggestionPath)
+    .map((routePath) => getOurdreamRoute(routePath))
+    .filter((route): route is OurdreamRoute => Boolean(route))
+    .map((route) => ({
+      route,
+      score: scoreRouteSuggestion(route, normalizedQuery, querySlug, queryTerms),
+    }))
+    .filter(({ score }) => score > 0)
+    .sort((left, right) => {
+      if (right.score !== left.score) return right.score - left.score;
+      return left.route.title.localeCompare(right.route.title);
+    })
+    .slice(0, limit)
+    .map(({ route }) => ({
+      description: route.description,
+      href: route.path,
+      template: route.template,
+      title: route.title,
+    }));
+}
+
+function isSearchableRouteSuggestionPath(routePath: string) {
+  return (
+    routePath === "/ai-girl" ||
+    routePath === "/ai-girlfriend" ||
+    routePath === "/ai-boyfriend" ||
+    routePath === "/ai-instructions" ||
+    routePath === "/free-ai-girlfriend" ||
+    routePath === "/games" ||
+    routePath === "/generate" ||
+    routePath === "/nude-ai" ||
+    routePath === "/resources-hub" ||
+    routePath === "/romantasy" ||
+    routePath === "/type" ||
+    routePath === "/videos" ||
+    routePath.startsWith("/ai-girlfriend/") ||
+    routePath.startsWith("/comparison/") ||
+    routePath.startsWith("/generate/") ||
+    routePath.startsWith("/generator/") ||
+    routePath.startsWith("/guides/") ||
+    routePath.startsWith("/sex-chat/") ||
+    routePath.startsWith("/type/") ||
+    routePath.startsWith("/videos/") ||
+    routePath.includes("alternatives")
+  );
+}
+
+function scoreRouteSuggestion(
+  route: OurdreamRoute,
+  normalizedQuery: string,
+  querySlug: string,
+  queryTerms: string[],
+) {
+  const normalizedTitle = normalizeSearchText(route.title);
+  const normalizedDescription = normalizeSearchText(route.description);
+  const normalizedPath = normalizeSearchText(route.path.replaceAll("/", " "));
+  const routeSlug = slugify(route.path);
+  const searchableText = `${normalizedTitle} ${normalizedPath} ${normalizedDescription}`;
+
+  if (normalizedTitle === normalizedQuery) return 120;
+  if (normalizedTitle.startsWith(normalizedQuery)) return 100;
+  if (normalizedTitle.includes(normalizedQuery)) return 90;
+  if (querySlug && routeSlug.includes(querySlug)) return 85;
+  if (queryTerms.every((term) => searchableText.includes(term))) return 70;
+  if (normalizedDescription.includes(normalizedQuery)) return 55;
+  return 0;
+}
+
+function normalizeSearchText(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
 function stringControl(
@@ -5971,12 +6172,6 @@ async function trackEvent(
 
 function referralCode(userId: string) {
   return `DREAM-${userId.slice(-8).toUpperCase()}`;
-}
-
-function simpleHash(value: string) {
-  let hash = 5381;
-  for (const char of value) hash = (hash * 33) ^ char.charCodeAt(0);
-  return `redeem_${Math.abs(hash)}`;
 }
 
 function cryptoRandomId(prefix: string) {

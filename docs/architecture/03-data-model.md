@@ -1053,7 +1053,7 @@ CREATE INDEX characters_name_trgm ON characters USING gin (name gin_trgm_ops);
 
 1. **Tags**：从 `src/lib/ourdream-data.ts` 的 `categoryFilters` 导入（含 `isSensitive`/`isMutedByDefault` 标记，如 BDSM/Teen 等需正确标注语义为 18+ young adult）。
 2. **Characters**：从 `characterCards`（28 个）导入为 `approved`+`public`，`age` 解析为 Int（强制 ≥18），display 计数（"2.2k"/"2.2M"）解析进 `character_stats`，建一个系统 creator 用户。
-3. **Plans**：Premium/Deluxe × Monthly/Yearly，价格与权益按 `ProductFeatureMap §5.5`（Premium $19.99/$9.99yr，Deluxe $59.99/$29.99yr，dreamcoins/images/videos/voice 额度）。
+3. **Plans**：Premium/Deluxe × Monthly/Yearly，价格与权益按 `ProductFeatureMap §5.5` 与 `seed.ts`（Premium $19.99/mo 或 $99.90/yr，Deluxe $59.99/mo 或 $299.90/yr；`includedDreamcoins` 顶层字段；`features` 为 image/voice/video entitlement，不再有 image/video quota 计数器）。
 4. **GenerationPreset（built_in）**：background/pose/outfit/mode 各若干内置 preset。
 5. **PolicyVersion**：从 `packages/main/src/lib/ourdream-safety-data.ts` 导入镜像政策。
 6. **RoutePage**：从既有 164 条静态路由导入 path/template/title/description。

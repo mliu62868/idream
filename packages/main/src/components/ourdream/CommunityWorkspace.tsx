@@ -2,7 +2,8 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { ChevronDown, Flag, HeartHandshake, Users } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, Flag, HeartHandshake, Users } from "lucide-react";
+import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { authHrefForTarget } from "./authRedirect";
 
@@ -29,6 +30,15 @@ type Collection = {
   previews?: string[];
 };
 
+type CampaignBanner = {
+  ctaLabel?: string | null;
+  eyebrow: string;
+  href?: string | null;
+  id: string;
+  image: string;
+  title: string;
+};
+
 type Dreamer = {
   id: string;
   displayName: string;
@@ -53,6 +63,14 @@ type CommunityPayload = {
   error?: { message?: string };
 };
 
+type CommunityCampaignPayload = {
+  ok?: boolean;
+  data?: {
+    campaigns?: CampaignBanner[];
+  };
+  error?: { message?: string };
+};
+
 const releaseOptions = [
   { value: "all", label: "All time" },
   { value: "30d", label: "Last 30 days" },
@@ -72,8 +90,21 @@ const styleOptions = [
   { value: "hybrid", label: "Hybrid" },
 ] as const;
 
+const fallbackCampaign: CampaignBanner = {
+  eyebrow: "Community",
+  id: "fallback-community",
+  image: "/images/ourdream/promo-card-female.webp",
+  title: "Dreamers, Characters, Collections",
+};
+
+function countLabel(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
 export function CommunityWorkspace() {
   const [characters, setCharacters] = useState<CommunityCharacter[]>([]);
+  const [campaigns, setCampaigns] = useState<CampaignBanner[]>([]);
+  const [campaignIndex, setCampaignIndex] = useState(0);
   const [dreamers, setDreamers] = useState<Dreamer[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [gender, setGender] = useState("any");
@@ -97,6 +128,12 @@ export function CommunityWorkspace() {
     [collections, focusedCollectionId],
   );
   const visibleStatus = status || (focusedCollection ? `Showing collection: ${focusedCollection.name}.` : "");
+  const visibleCampaigns = useMemo(
+    () => (campaigns.length > 0 ? campaigns : [fallbackCampaign]),
+    [campaigns],
+  );
+  const normalizedCampaignIndex = campaignIndex % visibleCampaigns.length;
+  const activeCampaign = visibleCampaigns[normalizedCampaignIndex] ?? fallbackCampaign;
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -110,12 +147,14 @@ export function CommunityWorkspace() {
     async function loadCommunity() {
       setStatus("");
       setLoading(true);
-      const [leaderboards, publicCollections] = await Promise.all([
+      const [leaderboards, publicCollections, campaignResponse] = await Promise.all([
         fetch(`/api/v1/community/leaderboards?${query.toString()}`),
         fetch("/api/v1/community/collections"),
+        fetch("/api/v1/community/campaigns"),
       ]);
       const leaderboardPayload = (await leaderboards.json()) as CommunityPayload;
       const collectionsPayload = (await publicCollections.json()) as CommunityPayload;
+      const campaignPayload = (await campaignResponse.json()) as CommunityCampaignPayload;
       if (!active) return;
       if (!leaderboards.ok || leaderboardPayload.ok === false) {
         setStatus(leaderboardPayload.error?.message ?? "Accept the age gate to view community.");
@@ -124,6 +163,7 @@ export function CommunityWorkspace() {
       setCharacters(leaderboardPayload.data?.leaderboards?.characters ?? []);
       setDreamers(leaderboardPayload.data?.leaderboards?.dreamers ?? []);
       setCollections(collectionsPayload.data?.collections ?? []);
+      setCampaigns(campaignResponse.ok && campaignPayload.ok !== false ? (campaignPayload.data?.campaigns ?? []) : []);
     }
 
     loadCommunity()
@@ -229,23 +269,66 @@ export function CommunityWorkspace() {
   return (
     <section className="px-4 py-8 md:px-[60px] md:py-12">
       <div className="mx-auto max-w-6xl">
-        <div className="relative overflow-hidden rounded-[16px] bg-[rgb(18,18,18)]">
-            <Image
-              alt=""
-              className="absolute inset-0 h-full w-full object-cover opacity-55"
-              height={288}
-              loading="eager"
-              src="/images/ourdream/pride-banner-female.webp"
-              width={1440}
-            />
-          <div className="relative p-6 md:p-10">
+        <div
+          className="relative overflow-hidden rounded-[16px] bg-[rgb(18,18,18)]"
+          data-testid="community-campaign-hero"
+        >
+          <Image
+            alt=""
+            className="absolute inset-0 h-full w-full object-cover opacity-55"
+            height={288}
+            loading="eager"
+            src={activeCampaign.image}
+            width={1440}
+          />
+          <div className="relative p-6 md:p-10" aria-live="polite">
             <p className="text-[12px] font-black uppercase text-[rgb(253,95,194)]">
-              Community
+              {activeCampaign.eyebrow}
             </p>
             <h1 className="mt-3 max-w-2xl text-[42px] font-black uppercase leading-none md:text-[64px]">
-              Dreamers, Characters, Collections
+              {activeCampaign.title}
             </h1>
+            {activeCampaign.href && activeCampaign.ctaLabel ? (
+              <CampaignLink
+                className="mt-5 inline-flex h-10 items-center justify-center rounded-full bg-white px-4 text-[13px] font-black text-[rgb(13,13,13)]"
+                href={activeCampaign.href}
+              >
+                {activeCampaign.ctaLabel}
+              </CampaignLink>
+            ) : null}
           </div>
+          {visibleCampaigns.length > 1 ? (
+            <div className="absolute bottom-4 right-4 flex items-center gap-2">
+              <button
+                aria-label="Previous campaign"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-black/50 text-white backdrop-blur"
+                onClick={() =>
+                  setCampaignIndex((current) =>
+                    (current - 1 + visibleCampaigns.length) % visibleCampaigns.length,
+                  )
+                }
+                type="button"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </button>
+              <span
+                aria-label={`Campaign ${normalizedCampaignIndex + 1} of ${visibleCampaigns.length}`}
+                className="rounded-full bg-black/50 px-3 py-1 text-[12px] font-bold text-white backdrop-blur"
+              >
+                {normalizedCampaignIndex + 1}/{visibleCampaigns.length}
+              </span>
+              <button
+                aria-label="Next campaign"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-black/50 text-white backdrop-blur"
+                onClick={() =>
+                  setCampaignIndex((current) => (current + 1) % visibleCampaigns.length)
+                }
+                type="button"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </button>
+            </div>
+          ) : null}
         </div>
         <div
           className="mt-5 grid grid-cols-1 gap-2 sm:grid-cols-3 md:flex md:flex-wrap"
@@ -274,6 +357,8 @@ export function CommunityWorkspace() {
           <p
             aria-live="polite"
             className="mt-5 rounded-[12px] bg-[rgb(36,36,36)] px-4 py-3 text-[13px] font-semibold text-[rgb(220,220,220)]"
+            data-testid="community-status"
+            role="status"
           >
             {visibleStatus}
           </p>
@@ -313,7 +398,8 @@ export function CommunityWorkspace() {
                         {dreamer.displayName}
                       </h3>
                       <p className="mt-1 text-[12px] font-medium text-[rgb(170,170,170)]">
-                        {dreamer.characters} characters · {dreamer.followers} followers
+                        {countLabel(dreamer.characters, "character")} ·{" "}
+                        {countLabel(dreamer.followers, "follower")}
                       </p>
                     </div>
                   </Link>
@@ -469,7 +555,8 @@ export function CommunityWorkspace() {
                       {collection.name}
                     </p>
                     <p className="mt-2 text-[12px] font-medium text-[rgb(170,170,170)]">
-                      {collection.itemCount ?? 0} items · by {collection.ownerName ?? "Dreamer"}
+                      {countLabel(collection.itemCount ?? 0, "item")} · by{" "}
+                      {collection.ownerName ?? "Dreamer"}
                     </p>
                   </div>
                 </div>
@@ -516,6 +603,25 @@ function SelectPill({
         className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[rgb(170,170,170)]"
       />
     </label>
+  );
+}
+
+function CampaignLink({
+  children,
+  className,
+  href,
+}: Readonly<{ children: ReactNode; className: string; href: string }>) {
+  if (/^https?:\/\//i.test(href)) {
+    return (
+      <a className={className} href={href} rel="noreferrer" target="_blank">
+        {children}
+      </a>
+    );
+  }
+  return (
+    <Link className={className} href={href}>
+      {children}
+    </Link>
   );
 }
 

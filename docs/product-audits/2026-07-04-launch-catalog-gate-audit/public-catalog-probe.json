@@ -1,0 +1,22 @@
+{
+  "ok": true,
+  "checkedAt": "2026-07-04T23:30:03.450Z",
+  "durationMs": 111,
+  "counts": {
+    "publicCharacters": 16,
+    "publicCollections": 3,
+    "publicCreators": 13,
+    "distinctImages": 16
+  },
+  "thresholds": {
+    "maxDuplicateImageRatio": 0.4,
+    "maxPublicMetric": 10000000
+  },
+  "issueTotals": {
+    "total": 0,
+    "fail": 0,
+    "warn": 0
+  },
+  "issues": [],
+  "error": null
+}

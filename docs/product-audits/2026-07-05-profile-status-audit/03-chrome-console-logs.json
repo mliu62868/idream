@@ -1,0 +1,44 @@
+[
+  {
+    "level": "error",
+    "message": "ReferenceError: isBlankImagePreview is not defined\n    at Object.onLoad (http://127.0.0.1:3257/_next/static/chunks/packages_main_src_components_ourdream_0ral9vw._.js?id=%255Bproject%255D%252Fpackages%252Fmain%252Fsrc%252Fcomponents%252Fourdream%252FProfileWorkspace.tsx+%255Bapp-client%255D+%2528ecmascript%2529:1960:84)\n    at http://127.0.0.1:3257/_next/static/chunks/node_modules__bun_0xnb~bh._.js:3226:23",
+    "timestamp": "2026-07-05T08:51:32.349Z",
+    "url": "http://127.0.0.1:3257/_next/static/chunks/packages_main_src_components_ourdream_0ral9vw._.js?id=%255Bproject%255D%252Fpackages%252Fmain%252Fsrc%252Fcomponents%252Fourdream%252FProfileWorkspace.tsx+%255Bapp-client%255D+%2528ecmascript%2529"
+  },
+  {
+    "level": "error",
+    "message": "ReferenceError: isBlankImagePreview is not defined\n    at Object.onLoad [as current] (http://127.0.0.1:3257/_next/static/chunks/packages_main_src_components_ourdream_0ral9vw._.js?id=%255Bproject%255D%252Fpackages%252Fmain%252Fsrc%252Fcomponents%252Fourdream%252FProfileWorkspace.tsx+%255Bapp-client%255D+%2528ecmascript%2529:1960:84)\n    at http://127.0.0.1:3257/_next/static/chunks/node_modules__bun_0xnb~bh._.js:3226:23",
+    "timestamp": "2026-07-05T08:51:32.355Z",
+    "url": "http://127.0.0.1:3257/_next/static/chunks/packages_main_src_components_ourdream_0ral9vw._.js?id=%255Bproject%255D%252Fpackages%252Fmain%252Fsrc%252Fcomponents%252Fourdream%252FProfileWorkspace.tsx+%255Bapp-client%255D+%2528ecmascript%2529"
+  },
+  {
+    "level": "error",
+    "message": "ReferenceError: isBlankImagePreview is not defined\n    at Object.onLoad [as current] (http://127.0.0.1:3257/_next/static/chunks/packages_main_src_components_ourdream_0ral9vw._.js?id=%255Bproject%255D%252Fpackages%252Fmain%252Fsrc%252Fcomponents%252Fourdream%252FProfileWorkspace.tsx+%255Bapp-client%255D+%2528ecmascript%2529:1960:84)\n    at http://127.0.0.1:3257/_next/static/chunks/node_modules__bun_0xnb~bh._.js:3226:23",
+    "timestamp": "2026-07-05T08:51:32.359Z",
+    "url": "http://127.0.0.1:3257/_next/static/chunks/packages_main_src_components_ourdream_0ral9vw._.js?id=%255Bproject%255D%252Fpackages%252Fmain%252Fsrc%252Fcomponents%252Fourdream%252FProfileWorkspace.tsx+%255Bapp-client%255D+%2528ecmascript%2529"
+  },
+  {
+    "level": "error",
+    "message": "ReferenceError: isBlankImagePreview is not defined\n    at Object.onLoad [as current] (http://127.0.0.1:3257/_next/static/chunks/packages_main_src_components_ourdream_0ral9vw._.js?id=%255Bproject%255D%252Fpackages%252Fmain%252Fsrc%252Fcomponents%252Fourdream%252FProfileWorkspace.tsx+%255Bapp-client%255D+%2528ecmascript%2529:1960:84)\n    at http://127.0.0.1:3257/_next/static/chunks/node_modules__bun_0xnb~bh._.js:3226:23",
+    "timestamp": "2026-07-05T08:51:32.362Z",
+    "url": "http://127.0.0.1:3257/_next/static/chunks/packages_main_src_components_ourdream_0ral9vw._.js?id=%255Bproject%255D%252Fpackages%252Fmain%252Fsrc%252Fcomponents%252Fourdream%252FProfileWorkspace.tsx+%255Bapp-client%255D+%2528ecmascript%2529"
+  },
+  {
+    "level": "error",
+    "message": "ReferenceError: isBlankImagePreview is not defined\n    at Object.onLoad [as current] (http://127.0.0.1:3257/_next/static/chunks/packages_main_src_components_ourdream_0ral9vw._.js?id=%255Bproject%255D%252Fpackages%252Fmain%252Fsrc%252Fcomponents%252Fourdream%252FProfileWorkspace.tsx+%255Bapp-client%255D+%2528ecmascript%2529:1960:84)\n    at http://127.0.0.1:3257/_next/static/chunks/node_modules__bun_0xnb~bh._.js:3226:23",
+    "timestamp": "2026-07-05T08:51:32.363Z",
+    "url": "http://127.0.0.1:3257/_next/static/chunks/packages_main_src_components_ourdream_0ral9vw._.js?id=%255Bproject%255D%252Fpackages%252Fmain%252Fsrc%252Fcomponents%252Fourdream%252FProfileWorkspace.tsx+%255Bapp-client%255D+%2528ecmascript%2529"
+  },
+  {
+    "level": "error",
+    "message": "ReferenceError: isBlankImagePreview is not defined\n    at Object.onLoad [as current] (http://127.0.0.1:3257/_next/static/chunks/packages_main_src_components_ourdream_0ral9vw._.js?id=%255Bproject%255D%252Fpackages%252Fmain%252Fsrc%252Fcomponents%252Fourdream%252FProfileWorkspace.tsx+%255Bapp-client%255D+%2528ecmascript%2529:1960:84)\n    at http://127.0.0.1:3257/_next/static/chunks/node_modules__bun_0xnb~bh._.js:3226:23",
+    "timestamp": "2026-07-05T08:51:32.363Z",
+    "url": "http://127.0.0.1:3257/_next/static/chunks/packages_main_src_components_ourdream_0ral9vw._.js?id=%255Bproject%255D%252Fpackages%252Fmain%252Fsrc%252Fcomponents%252Fourdream%252FProfileWorkspace.tsx+%255Bapp-client%255D+%2528ecmascript%2529"
+  },
+  {
+    "level": "error",
+    "message": "ReferenceError: isBlankImagePreview is not defined\n    at Object.onLoad [as current] (http://127.0.0.1:3257/_next/static/chunks/packages_main_src_components_ourdream_0ral9vw._.js?id=%255Bproject%255D%252Fpackages%252Fmain%252Fsrc%252Fcomponents%252Fourdream%252FProfileWorkspace.tsx+%255Bapp-client%255D+%2528ecmascript%2529:1960:84)\n    at http://127.0.0.1:3257/_next/static/chunks/node_modules__bun_0xnb~bh._.js:3226:23",
+    "timestamp": "2026-07-05T08:51:32.363Z",
+    "url": "http://127.0.0.1:3257/_next/static/chunks/packages_main_src_components_ourdream_0ral9vw._.js?id=%255Bproject%255D%252Fpackages%252Fmain%252Fsrc%252Fcomponents%252Fourdream%252FProfileWorkspace.tsx+%255Bapp-client%255D+%2528ecmascript%2529"
+  }
+]

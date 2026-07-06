@@ -12,6 +12,7 @@ import {
   expectOk,
   purgeTestData,
 } from "@/server/test/helpers";
+import { legacyRedeemCodeHash } from "@/server/lib/redeem-codes";
 
 // SPEC: Remaining API surface (BackendFeatureSpec §5.1/5.6/5.7/5.9/5.10) —
 // age gate/verification, profile/preferences/language, redeem, referrals,
@@ -86,10 +87,11 @@ describe("profile, preferences, language", () => {
 
     const prefs = await api("PATCH", "me/preferences", {
       userId,
-      body: { locale: "fr", mutedTags: ["teen"] },
+      body: { locale: "fr", mutedTags: ["Teen", "slow burn"] },
     });
     expectOk(prefs);
     expect(prefs.data.preferences.locale).toBe("fr");
+    expect(prefs.data.preferences.mutedTags).toEqual(["teen", "slow-burn"]);
 
     const lang = await api("PATCH", "profile/language", { userId, body: { locale: "de" } });
     expectOk(lang);
@@ -121,6 +123,53 @@ describe("redeem codes (reward exactly once)", () => {
 
     const me2 = await api("GET", "me", { userId });
     expect(me2.data.dreamcoins.balance).toBe(300);
+  });
+
+  it("enforces a code-wide redemption limit across users", async () => {
+    const firstUser = `${P}limited-1`;
+    const secondUser = `${P}limited-2`;
+    await createUser({ id: firstUser });
+    await createUser({ id: secondUser });
+    await createRedeemCode(`${P}LIMITED`, { dreamcoins: 25 }, { maxRedemptions: 1 });
+
+    const first = await api("POST", "redeem-codes/redeem", {
+      userId: firstUser,
+      body: { code: `${P}LIMITED` },
+    });
+    expectOk(first);
+
+    const second = await api("POST", "redeem-codes/redeem", {
+      userId: secondUser,
+      body: { code: `${P}LIMITED` },
+    });
+    expectError(second, 409, "conflict");
+    expect(second.json.error.message).toBe("Code redemption limit reached");
+
+    const redemptions = await prisma.redeemCodeRedemption.count({
+      where: { redeemCode: { id: `${P}LIMITED` } },
+    });
+    expect(redemptions).toBe(1);
+  });
+
+  it("redeems legacy admin-hashed codes that were created before hash unification", async () => {
+    const userId = `${P}legacy-redeemer`;
+    const code = `${P}LEGACY`;
+    await createUser({ id: userId });
+    await prisma.redeemCode.create({
+      data: {
+        id: `${P}legacy-code`,
+        codeHash: legacyRedeemCodeHash(code.toUpperCase()),
+        reward: { dreamcoins: 40 },
+        status: "active",
+      },
+    });
+
+    const redeemed = await api("POST", "redeem-codes/redeem", {
+      userId,
+      body: { code: code.toLowerCase() },
+    });
+    expectOk(redeemed);
+    expect(redeemed.data.dreamcoins).toBe(40);
   });
 
   it("rejects an unknown code with 404", async () => {
@@ -269,12 +318,12 @@ describe("library tabs", () => {
     const groupChats = await api("GET", "library/group-chats", { userId, ageGate: true });
     expectOk(groupChats);
     expect(groupChats.data.items).toEqual([]);
-    expect(groupChats.data.emptyCta).toBe("/create");
+    expect(groupChats.data.emptyCta).toBeNull();
 
     const packs = await api("GET", "library/packs", { userId, ageGate: true });
     expectOk(packs);
     expect(packs.data.items).toEqual([]);
-    expect(packs.data.emptyCta).toBe("/create");
+    expect(packs.data.emptyCta).toBeNull();
 
     const recent = await api("GET", "library/recent", { userId, ageGate: true });
     expectOk(recent);
@@ -349,7 +398,9 @@ describe("feed actions", () => {
 });
 
 describe("tags, likes, duplicate", () => {
-  it("lists tags with public character counts", async () => {
+  it("lists tags with public character counts and user mute state", async () => {
+    const userId = `${P}tag-user`;
+    await createUser({ id: userId });
     const tag = await prisma.tag.create({
       data: { id: `${P}tag-counted`, slug: `${P}counted`, label: "Counted" },
     });
@@ -372,6 +423,97 @@ describe("tags, likes, duplicate", () => {
         (item) => item.slug === `${P}counted`,
       ),
     ).toMatchObject({ publicCharacterCount: 1 });
+
+    await api("PATCH", "profile/preferences", { userId, body: { mutedTags: [tag.slug] } });
+    const personalized = await api("GET", "tags", { userId });
+    expectOk(personalized);
+    expect(
+      (
+        personalized.data.items as Array<{
+          isMutedByUser?: boolean;
+          publicCharacterCount?: number;
+          slug: string;
+        }>
+      ).find((item) => item.slug === `${P}counted`),
+    ).toMatchObject({ isMutedByUser: true, publicCharacterCount: 1 });
+  });
+
+  it("excludes user-muted tags from character exploration", async () => {
+    const userId = `${P}muted-explore-user`;
+    const characterId = `${P}muted-explore-char`;
+    const tag = await prisma.tag.create({
+      data: { id: `${P}muted-explore-tag`, slug: `${P}muted-explore`, label: "Muted Explore" },
+    });
+    await createUser({ id: userId });
+    await createCharacter({ id: characterId, creatorId: SYS, visibility: "public", status: "approved" });
+    await prisma.characterTag.create({ data: { characterId, tagId: tag.id } });
+
+    const anonymous = await api("GET", "characters", {
+      ageGate: true,
+      query: { tags: tag.slug, gender: "female" },
+    });
+    expectOk(anonymous);
+    expect((anonymous.data.items as Array<{ id: string }>).map((item) => item.id)).toContain(
+      characterId,
+    );
+
+    await api("PATCH", "profile/preferences", { userId, body: { mutedTags: [tag.slug] } });
+    const personalized = await api("GET", "characters", {
+      ageGate: true,
+      query: { tags: tag.slug, gender: "female" },
+      userId,
+    });
+    expectOk(personalized);
+    expect((personalized.data.items as Array<{ id: string }>).map((item) => item.id)).not.toContain(
+      characterId,
+    );
+  });
+
+  it("excludes user-muted tags from search suggestions", async () => {
+    const userId = `${P}muted-suggest-user`;
+    const characterId = `${P}muted-suggest-char`;
+    const tag = await prisma.tag.create({
+      data: {
+        id: `${P}muted-suggest-tag`,
+        slug: `${P}muted-suggest`,
+        label: "Muted Suggest",
+      },
+    });
+    await createUser({ id: userId });
+    await createCharacter({
+      id: characterId,
+      creatorId: SYS,
+      name: "Muted Suggest Character",
+      visibility: "public",
+      status: "approved",
+    });
+    await prisma.characterTag.create({ data: { characterId, tagId: tag.id } });
+
+    const anonymous = await api("GET", "search/suggest", {
+      ageGate: true,
+      query: { q: "Muted Suggest" },
+    });
+    expectOk(anonymous);
+    expect((anonymous.data.characters as Array<{ id: string }>).map((item) => item.id)).toContain(
+      characterId,
+    );
+    expect((anonymous.data.tags as Array<{ slug: string }>).map((item) => item.slug)).toContain(
+      tag.slug,
+    );
+
+    await api("PATCH", "profile/preferences", { userId, body: { mutedTags: [tag.slug] } });
+    const personalized = await api("GET", "search/suggest", {
+      ageGate: true,
+      query: { q: "Muted Suggest" },
+      userId,
+    });
+    expectOk(personalized);
+    expect(
+      (personalized.data.characters as Array<{ id: string }>).map((item) => item.id),
+    ).not.toContain(characterId);
+    expect(
+      (personalized.data.tags as Array<{ slug: string }>).map((item) => item.slug),
+    ).not.toContain(tag.slug);
   });
 
   it("likes then unlikes a character and adjusts stats", async () => {
@@ -494,16 +636,70 @@ describe("feed, community, policies, analytics", () => {
     const res = await api("GET", "community/leaderboards", { ageGate: true });
     expectOk(res);
     expect(res.data.leaderboards).toHaveProperty("characters");
-    expect(res.data.leaderboards.dreamers).toEqual(
+    const dreamers = res.data.leaderboards.dreamers as Array<{
+      id: string;
+      displayName: string;
+      characters: number;
+    }>;
+    expect(dreamers).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           id: SYS,
           displayName: "Test User",
-          characters: 1,
         }),
       ]),
     );
-    expect(JSON.stringify(res.data.leaderboards.dreamers)).not.toContain("@test.local");
+    const sysDreamer = dreamers.find((dreamer) => dreamer.id === SYS);
+    expect(sysDreamer?.characters).toBeGreaterThanOrEqual(1);
+    expect(JSON.stringify(dreamers)).not.toContain("@test.local");
+  });
+
+  it("returns published community campaign banners", async () => {
+    const mediaId = `${P}campaign-media`;
+    const placementId = `${P}campaign-placement`;
+    await createMedia({
+      id: mediaId,
+      ownerId: SYS,
+      safetyStatus: "passed",
+      visibility: "unlisted",
+    });
+    await prisma.mediaAssetPlacement.create({
+      data: {
+        id: placementId,
+        mediaAssetId: mediaId,
+        slot: "campaign",
+        targetType: "campaign",
+        targetId: `${P}campaign`,
+        status: "published",
+        publishedAt: new Date(),
+        createdById: SYS,
+        metadata: {
+          ctaLabel: "Open collection",
+          eyebrow: "Featured",
+          href: "/community?collection=seed-collection-fantasy-escapes",
+          title: "Community campaign",
+        },
+      },
+    });
+
+    const res = await api("GET", "community/campaigns", { ageGate: true });
+    expectOk(res);
+    expect(
+      (res.data.campaigns as Array<{
+        ctaLabel?: string;
+        eyebrow: string;
+        href?: string;
+        id: string;
+        image: string;
+        title: string;
+      }>).find((item) => item.id === placementId),
+    ).toMatchObject({
+      ctaLabel: "Open collection",
+      eyebrow: "Featured",
+      href: "/community?collection=seed-collection-fantasy-escapes",
+      image: "/images/ourdream/card-sarah-mercer.webp",
+      title: "Community campaign",
+    });
   });
 
   it("returns a public creator profile with their characters and follow state", async () => {

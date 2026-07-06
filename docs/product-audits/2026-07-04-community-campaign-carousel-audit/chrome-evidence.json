@@ -1,0 +1,43 @@
+{
+  "date": "2026-07-04",
+  "surface": "Community campaign carousel",
+  "url": "http://localhost:3217/community",
+  "fixture": {
+    "email": "chrome-community-campaign-1783210260940-433945@test.local",
+    "firstTitle": "Chrome Campaign Beta 1783210260940-433945",
+    "secondTitle": "Chrome Campaign Alpha 1783210260940-433945",
+    "firstImage": "/images/ourdream/promo-card-female.webp",
+    "secondImage": "/images/ourdream/pride-card-female.webp"
+  },
+  "initialState": {
+    "hasHero": true,
+    "hasFirstTitle": true,
+    "imageSrc": "/_next/image?url=%2Fimages%2Fourdream%2Fpromo-card-female.webp&w=3840&q=75",
+    "imageLoading": "eager",
+    "ctaHref": "/community",
+    "indicatorAria": "Campaign 1 of 2",
+    "nextAria": "Next campaign",
+    "characterCards": 16,
+    "collectionCards": 3,
+    "horizontalOverflow": false
+  },
+  "afterNextState": {
+    "hasSecondTitle": true,
+    "hasFirstTitle": false,
+    "imageSrc": "/_next/image?url=%2Fimages%2Fourdream%2Fpride-card-female.webp&w=3840&q=75",
+    "imageLoading": "eager",
+    "indicatorAria": "Campaign 2 of 2",
+    "horizontalOverflow": false
+  },
+  "filterContinuityState": {
+    "gender": "female",
+    "characterCards": 16,
+    "horizontalOverflow": false,
+    "consoleLogs": []
+  },
+  "screenshots": [
+    "01-community-campaign-initial.png",
+    "02-community-campaign-next.png",
+    "03-community-filter-continuity.png"
+  ]
+}

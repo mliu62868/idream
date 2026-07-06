@@ -11,6 +11,7 @@ import {
   Loader2,
   MessageCircle,
   Plus,
+  RefreshCw,
   Scale,
   Send,
   Sparkles,
@@ -202,6 +203,7 @@ export function HelpDeskWorkspace() {
   const [submitting, setSubmitting] = useState(false);
   const [feedbackItems, setFeedbackItems] = useState<FeedbackItem[]>([]);
   const [feedbackLoading, setFeedbackLoading] = useState(true);
+  const [feedbackLoadError, setFeedbackLoadError] = useState("");
   const [feedbackStatus, setFeedbackStatus] = useState("");
   const [feedbackDraft, setFeedbackDraft] = useState<FeedbackDraft>(INITIAL_FEEDBACK_DRAFT);
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
@@ -268,16 +270,19 @@ export function HelpDeskWorkspace() {
 
   const loadFeedbackItems = useCallback(async () => {
     setFeedbackLoading(true);
+    setFeedbackLoadError("");
     try {
       const response = await fetch("/api/v1/feedback/items", { method: "GET" });
       const payload = (await response.json()) as FeedbackPayload;
       if (!response.ok || payload.ok === false) {
-        setFeedbackStatus(payload.error?.message ?? "Could not load feature voting.");
+        setFeedbackItems([]);
+        setFeedbackLoadError(payload.error?.message ?? "Could not load feature voting.");
         return;
       }
       setFeedbackItems(payload.data?.items ?? []);
     } catch {
-      setFeedbackStatus("Could not load feature voting.");
+      setFeedbackItems([]);
+      setFeedbackLoadError("Could not load feature voting.");
     } finally {
       setFeedbackLoading(false);
     }
@@ -316,6 +321,21 @@ export function HelpDeskWorkspace() {
         setAppealDraft(restoredAppeal);
         setAppealStatus("Your appeal draft was restored. Submit it after signing in.");
       }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    const draft = appealDraftFromSearch(window.location.search);
+    if (!draft) return;
+
+    const timer = window.setTimeout(() => {
+      setAppealDraft(draft);
+      setAppealStatus("Appeal details were prefilled from your selected item.");
+      window.requestAnimationFrame(() => {
+        document.getElementById("appeals")?.scrollIntoView({ block: "start" });
+        document.querySelector<HTMLElement>('[name="appealText"]')?.focus({ preventScroll: true });
+      });
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);
@@ -645,6 +665,7 @@ export function HelpDeskWorkspace() {
 
           {status && (
             <p
+              aria-live="polite"
               className="mt-4 rounded-[10px] border border-white/10 bg-[rgb(36,36,36)] px-3 py-3 text-[13px] font-semibold text-white"
               data-testid="helpdesk-status"
               role="status"
@@ -656,7 +677,7 @@ export function HelpDeskWorkspace() {
         </form>
       </section>
 
-      <section className="mt-10 grid gap-4 lg:grid-cols-[minmax(0,1fr)_420px]">
+      <section className="mt-10 grid gap-4 lg:grid-cols-[minmax(0,1fr)_420px]" id="appeals">
         <div className="rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-5">
           <div className="flex items-start justify-between gap-4">
             <div>
@@ -737,6 +758,7 @@ export function HelpDeskWorkspace() {
 
           {appealStatus && (
             <p
+              aria-live="polite"
               className="mt-4 rounded-[10px] border border-white/10 bg-[rgb(36,36,36)] px-3 py-3 text-[13px] font-semibold text-white"
               data-testid="appeal-status"
               role="status"
@@ -830,7 +852,15 @@ export function HelpDeskWorkspace() {
               {feedbackLoading ? (
                 <Loader2 className="h-5 w-5 animate-spin text-[rgb(170,170,170)]" />
               ) : (
-                <ThumbsUp className="h-5 w-5 text-[rgb(253,95,194)]" />
+                <button
+                  aria-label="Refresh roadmap items"
+                  className="grid h-9 w-9 place-items-center rounded-full border border-white/10 bg-[rgb(36,36,36)] text-white transition hover:bg-[rgb(53,53,54)]"
+                  data-testid="feedback-list-refresh"
+                  onClick={() => void loadFeedbackItems()}
+                  type="button"
+                >
+                  <RefreshCw className="h-4 w-4" />
+                </button>
               )}
             </div>
 
@@ -886,6 +916,7 @@ export function HelpDeskWorkspace() {
 
             {feedbackStatus && (
               <p
+                aria-live="polite"
                 className="mt-4 rounded-[10px] border border-white/10 bg-[rgb(36,36,36)] px-3 py-3 text-[13px] font-semibold text-white"
                 data-testid="feedback-status"
                 role="status"
@@ -895,7 +926,34 @@ export function HelpDeskWorkspace() {
             )}
 
             <div className="mt-5 grid gap-3" data-testid="feedback-items">
-              {feedbackItems.map((item) => (
+              {feedbackLoading ? (
+                <p
+                  aria-live="polite"
+                  className="rounded-[10px] border border-white/10 bg-[rgb(28,28,28)] p-4 text-[13px] font-semibold text-[rgb(170,170,170)]"
+                  data-testid="feedback-list-status"
+                  role="status"
+                >
+                  Loading roadmap items...
+                </p>
+              ) : null}
+              {!feedbackLoading && feedbackLoadError ? (
+                <div
+                  aria-live="assertive"
+                  className="rounded-[10px] border border-white/10 bg-[rgb(28,28,28)] p-4"
+                  data-testid="feedback-list-status"
+                  role="alert"
+                >
+                  <p className="text-[13px] font-semibold text-white">{feedbackLoadError}</p>
+                  <button
+                    className="mt-3 inline-flex h-9 items-center justify-center rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]"
+                    onClick={() => void loadFeedbackItems()}
+                    type="button"
+                  >
+                    Retry
+                  </button>
+                </div>
+              ) : null}
+              {!feedbackLoading && !feedbackLoadError ? feedbackItems.map((item) => (
                 <article
                   className="rounded-[10px] border border-white/10 bg-[rgb(28,28,28)] p-4"
                   key={item.id}
@@ -926,9 +984,14 @@ export function HelpDeskWorkspace() {
                     {item.description}
                   </p>
                 </article>
-              ))}
-              {!feedbackLoading && feedbackItems.length === 0 && (
-                <p className="rounded-[10px] border border-white/10 bg-[rgb(28,28,28)] p-4 text-[13px] font-semibold text-[rgb(170,170,170)]">
+              )) : null}
+              {!feedbackLoading && !feedbackLoadError && feedbackItems.length === 0 && (
+                <p
+                  aria-live="polite"
+                  className="rounded-[10px] border border-white/10 bg-[rgb(28,28,28)] p-4 text-[13px] font-semibold text-[rgb(170,170,170)]"
+                  data-testid="feedback-list-status"
+                  role="status"
+                >
                   No roadmap items yet.
                 </p>
               )}
@@ -1158,6 +1221,37 @@ function parseAppealDraft(raw: string | null): AppealDraft | null {
   } catch {
     return null;
   }
+}
+
+function appealDraftFromSearch(search: string): AppealDraft | null {
+  const params = new URLSearchParams(search);
+  if (
+    !params.has("appealTargetType") &&
+    !params.has("appealTargetId") &&
+    !params.has("appealDecisionId") &&
+    !params.has("appealText")
+  ) {
+    return null;
+  }
+
+  const targetId = searchParamValue(params, "appealTargetId", 300);
+  const decisionId = searchParamValue(params, "appealDecisionId", 160);
+  const text = searchParamValue(params, "appealText", 4000);
+  if (!targetId && !decisionId && !text) return null;
+
+  const targetTypeParam = params.get("appealTargetType");
+  return {
+    targetType: isAppealTargetType(targetTypeParam)
+      ? targetTypeParam
+      : INITIAL_APPEAL_DRAFT.targetType,
+    targetId,
+    decisionId,
+    text,
+  };
+}
+
+function searchParamValue(params: URLSearchParams, key: string, maxLength: number) {
+  return (params.get(key) ?? "").trim().slice(0, maxLength);
 }
 
 function isSupportCategory(value: unknown): value is SupportCategory {

@@ -22,6 +22,7 @@ export function MobileBottomNav({
         return (
           <Link
             key={item.label}
+            aria-current={item.href === activeHref ? "page" : undefined}
             className={cn(
               "flex flex-col items-center justify-center gap-1 text-[10px] font-medium leading-3 text-[rgb(114,113,112)]",
               item.href === activeHref && "text-white",

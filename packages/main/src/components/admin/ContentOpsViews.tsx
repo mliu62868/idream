@@ -279,13 +279,13 @@ export function ProductionStudioView() {
       if (action === "regenerate") {
         await apiWrite(`/api/v1/admin/content/production/items/${itemId}/regenerate`, "POST", {
           reason: "Regenerated from Production Studio",
-          confirmation: "REGENERATE",
+          confirmation: itemId,
         });
       } else {
         await apiWrite(`/api/v1/admin/content/production/items/${itemId}/${action}`, "POST", {
           tags: [],
           reason: `${action === "approve" ? "Approved" : "Rejected"} from Production Studio`,
-          confirmation: action === "approve" ? "APPROVE" : "REJECT",
+          confirmation: itemId,
         });
       }
       await load();
@@ -485,10 +485,14 @@ export function AssetLibraryView() {
   const [purpose, setPurpose] = useState("all");
   const [assets, setAssets] = useState<ContentAsset[]>([]);
   const [assetDrafts, setAssetDrafts] = useState<Record<string, { tags: string; description: string }>>({});
+  const [assetConfirmKey, setAssetConfirmKey] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setNotice(null);
+    setAssetConfirmKey(null);
     try {
       const params = new URLSearchParams();
       if (status !== "all") params.set("status", status);
@@ -521,8 +525,16 @@ export function AssetLibraryView() {
   }, [load]);
 
   async function patchAsset(asset: ContentAsset, nextStatus: "approved" | "rejected" | "archived") {
+    const confirmKey = `asset:${asset.id}:${nextStatus}`;
+    if (nextStatus === "archived" && assetConfirmKey !== confirmKey) {
+      setError(null);
+      setNotice("Press Confirm archive asset to archive this asset.");
+      setAssetConfirmKey(confirmKey);
+      return;
+    }
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
       const draft = assetDrafts[asset.id] ?? { tags: asset.tags.join(", "), description: asset.description ?? "" };
       await apiWrite(`/api/v1/admin/content/assets/${asset.id}`, "PATCH", {
@@ -530,11 +542,12 @@ export function AssetLibraryView() {
         tags: splitTags(draft.tags),
         description: draft.description.trim() || undefined,
         reason: `${nextStatus} from Asset Library`,
-        confirmation: "ASSET",
+        confirmation: asset.id,
       });
       await load();
     } catch (patchError) {
       setError(patchError instanceof Error ? patchError.message : "Asset update failed");
+      setAssetConfirmKey(null);
     } finally {
       setBusy(false);
     }
@@ -549,7 +562,7 @@ export function AssetLibraryView() {
         tags: splitTags(draft.tags),
         description: draft.description.trim() || undefined,
         reason: "Updated asset search metadata",
-        confirmation: "ASSET",
+        confirmation: asset.id,
       });
       await load();
     } catch (patchError) {
@@ -570,6 +583,7 @@ export function AssetLibraryView() {
         title="Asset Library"
       />
       <InlineError message={error} />
+      <InlineNotice message={notice} />
       <section className="flex flex-wrap gap-3 border border-white/10 bg-[rgb(18,18,18)] p-4">
         <Field label="Status">
           <select className="admin-input min-w-44" onChange={(event) => setStatus(event.target.value)} value={status}>
@@ -592,9 +606,9 @@ export function AssetLibraryView() {
       </section>
       {assets.length ? (
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          {assets.map((asset) => (
+          {assets.map((asset, index) => (
             <article className="overflow-hidden border border-white/10 bg-[rgb(18,18,18)]" key={asset.id}>
-              <AssetImage asset={asset} />
+              <AssetImage asset={asset} eager={index < 4} />
               <div className="space-y-3 p-3">
                 <div className="flex items-center justify-between gap-2">
                   <StatusBadge value={asset.platformStatus} />
@@ -645,8 +659,17 @@ export function AssetLibraryView() {
                   <SmallButton disabled={busy} icon={<X className="h-3.5 w-3.5" />} onClick={() => void patchAsset(asset, "rejected")}>
                     Reject
                   </SmallButton>
-                  <SmallButton disabled={busy} icon={<Archive className="h-3.5 w-3.5" />} onClick={() => void patchAsset(asset, "archived")}>
-                    Archive
+                  <SmallButton
+                    ariaLabel={
+                      assetConfirmKey === `asset:${asset.id}:archived`
+                        ? `Confirm archive asset ${asset.id}`
+                        : `Archive asset ${asset.id}`
+                    }
+                    disabled={busy}
+                    icon={<Archive className="h-3.5 w-3.5" />}
+                    onClick={() => void patchAsset(asset, "archived")}
+                  >
+                    {assetConfirmKey === `asset:${asset.id}:archived` ? "Confirm archive" : "Archive"}
                   </SmallButton>
                 </div>
               </div>
@@ -665,6 +688,8 @@ export function PlacementsView() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [placementConfirmKey, setPlacementConfirmKey] = useState<string | null>(null);
   const [assets, setAssets] = useState<ContentAsset[]>([]);
   const [placements, setPlacements] = useState<Placement[]>([]);
   const [form, setForm] = useState({
@@ -678,6 +703,8 @@ export function PlacementsView() {
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setNotice(null);
+    setPlacementConfirmKey(null);
     try {
       const [assetData, placementData] = await Promise.all([
         apiGet<{ items: ContentAsset[] }>("/api/v1/admin/content/assets?status=approved&limit=100"),
@@ -703,9 +730,23 @@ export function PlacementsView() {
     });
   }, [load]);
 
+  function updateForm(next: typeof form) {
+    setPlacementConfirmKey(null);
+    setNotice(null);
+    setForm(next);
+  }
+
   async function create() {
+    const confirmKey = `placement:create:${form.mediaAssetId}:${form.slot}:${form.targetType}:${form.targetId}:${form.status}`;
+    if (form.status === "published" && placementConfirmKey !== confirmKey) {
+      setError(null);
+      setNotice("Press Confirm create placement to publish this placement.");
+      setPlacementConfirmKey(confirmKey);
+      return;
+    }
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
       await apiWrite("/api/v1/admin/content/placements", "POST", {
         mediaAssetId: form.mediaAssetId,
@@ -718,23 +759,34 @@ export function PlacementsView() {
       await load();
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : "Placement create failed");
+      setPlacementConfirmKey(null);
     } finally {
       setBusy(false);
     }
   }
 
   async function patchPlacement(id: string, nextStatus: "published" | "paused" | "archived") {
+    const confirmKey = `placement:${id}:${nextStatus}`;
+    if (placementConfirmKey !== confirmKey) {
+      const action = placementActionLabel(nextStatus).toLowerCase();
+      setError(null);
+      setNotice(`Press Confirm ${action} placement to update this placement.`);
+      setPlacementConfirmKey(confirmKey);
+      return;
+    }
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
       await apiWrite(`/api/v1/admin/content/placements/${id}`, "PATCH", {
         status: nextStatus,
         reason: `${nextStatus} from Placements`,
-        confirmation: "PLACEMENT",
+        confirmation: id,
       });
       await load();
     } catch (patchError) {
       setError(patchError instanceof Error ? patchError.message : "Placement update failed");
+      setPlacementConfirmKey(null);
     } finally {
       setBusy(false);
     }
@@ -751,6 +803,7 @@ export function PlacementsView() {
         title="Placements"
       />
       <InlineError message={error} />
+      <InlineNotice message={notice} />
       <section className="grid gap-4 xl:grid-cols-[minmax(340px,420px)_minmax(0,1fr)]">
         <div className="border border-white/10 bg-[rgb(18,18,18)] p-4">
           <h2 className="text-sm font-semibold">{t("Create placement")}</h2>
@@ -760,7 +813,7 @@ export function PlacementsView() {
                 className="admin-input"
                 onChange={(event) => {
                   const asset = assets.find((item) => item.id === event.target.value);
-                  setForm({
+                  updateForm({
                     ...form,
                     mediaAssetId: event.target.value,
                     targetId: asset?.targetId ?? form.targetId,
@@ -778,7 +831,7 @@ export function PlacementsView() {
             <Field label="Slot">
               <select
                 className="admin-input"
-                onChange={(event) => setForm({ ...form, slot: event.target.value })}
+                onChange={(event) => updateForm({ ...form, slot: event.target.value })}
                 value={form.slot}
               >
                 {slotOptions.map((slot) => (
@@ -792,7 +845,7 @@ export function PlacementsView() {
               <Field label="Target type">
                 <select
                   className="admin-input"
-                  onChange={(event) => setForm({ ...form, targetType: event.target.value })}
+                  onChange={(event) => updateForm({ ...form, targetType: event.target.value })}
                   value={form.targetType}
                 >
                   {["character", "template", "route_page", "campaign"].map((targetType) => (
@@ -805,7 +858,7 @@ export function PlacementsView() {
               <Field label="Target ID">
                 <input
                   className="admin-input"
-                  onChange={(event) => setForm({ ...form, targetId: event.target.value })}
+                  onChange={(event) => updateForm({ ...form, targetId: event.target.value })}
                   value={form.targetId}
                 />
               </Field>
@@ -813,7 +866,7 @@ export function PlacementsView() {
             <Field label="Status">
               <select
                 className="admin-input"
-                onChange={(event) => setForm({ ...form, status: event.target.value })}
+                onChange={(event) => updateForm({ ...form, status: event.target.value })}
                 value={form.status}
               >
                 {["draft", "scheduled", "published"].map((statusValue) => (
@@ -824,13 +877,22 @@ export function PlacementsView() {
               </select>
             </Field>
             <button
+              aria-label={
+                placementConfirmKey ===
+                `placement:create:${form.mediaAssetId}:${form.slot}:${form.targetType}:${form.targetId}:${form.status}`
+                  ? "Confirm create placement"
+                  : "Create placement"
+              }
               className="inline-flex h-10 items-center justify-center gap-2 bg-white px-4 text-sm font-semibold text-black hover:bg-[rgb(230,230,230)] disabled:opacity-50"
               disabled={busy || !form.mediaAssetId || !form.targetId}
               onClick={() => void create()}
               type="button"
             >
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-              {t("Create placement")}
+              {placementConfirmKey ===
+              `placement:create:${form.mediaAssetId}:${form.slot}:${form.targetType}:${form.targetId}:${form.status}`
+                ? t("Confirm create placement")
+                : t("Create placement")}
             </button>
           </div>
         </div>
@@ -839,9 +901,9 @@ export function PlacementsView() {
             <h2 className="text-sm font-semibold">{t("Placement history")}</h2>
           </div>
           <div className="divide-y divide-white/10">
-            {placements.map((placement) => (
+            {placements.map((placement, index) => (
               <article className="grid gap-3 p-4 md:grid-cols-[96px_minmax(0,1fr)_auto]" key={placement.id}>
-                <AssetImage asset={placement.asset} compact />
+                <AssetImage asset={placement.asset} compact eager={index < 6} />
                 <div className="min-w-0 text-sm">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-semibold">{t("Slot")}: {value(placement.slot)}</span>
@@ -853,14 +915,41 @@ export function PlacementsView() {
                   <p className="mt-1 truncate font-mono text-[11px] text-[rgb(114,113,112)]">{placement.mediaAssetId}</p>
                 </div>
                 <div className="flex flex-wrap gap-2 md:justify-end">
-                  <SmallButton disabled={busy} icon={<Send className="h-3.5 w-3.5" />} onClick={() => void patchPlacement(placement.id, "published")}>
-                    Publish
+                  <SmallButton
+                    ariaLabel={
+                      placementConfirmKey === `placement:${placement.id}:published`
+                        ? `Confirm publish placement ${placement.id}`
+                        : `Publish placement ${placement.id}`
+                    }
+                    disabled={busy}
+                    icon={<Send className="h-3.5 w-3.5" />}
+                    onClick={() => void patchPlacement(placement.id, "published")}
+                  >
+                    {placementConfirmKey === `placement:${placement.id}:published` ? "Confirm publish" : "Publish"}
                   </SmallButton>
-                  <SmallButton disabled={busy} icon={<X className="h-3.5 w-3.5" />} onClick={() => void patchPlacement(placement.id, "paused")}>
-                    Pause
+                  <SmallButton
+                    ariaLabel={
+                      placementConfirmKey === `placement:${placement.id}:paused`
+                        ? `Confirm pause placement ${placement.id}`
+                        : `Pause placement ${placement.id}`
+                    }
+                    disabled={busy}
+                    icon={<X className="h-3.5 w-3.5" />}
+                    onClick={() => void patchPlacement(placement.id, "paused")}
+                  >
+                    {placementConfirmKey === `placement:${placement.id}:paused` ? "Confirm pause" : "Pause"}
                   </SmallButton>
-                  <SmallButton disabled={busy} icon={<Archive className="h-3.5 w-3.5" />} onClick={() => void patchPlacement(placement.id, "archived")}>
-                    Archive
+                  <SmallButton
+                    ariaLabel={
+                      placementConfirmKey === `placement:${placement.id}:archived`
+                        ? `Confirm archive placement ${placement.id}`
+                        : `Archive placement ${placement.id}`
+                    }
+                    disabled={busy}
+                    icon={<Archive className="h-3.5 w-3.5" />}
+                    onClick={() => void patchPlacement(placement.id, "archived")}
+                  >
+                    {placementConfirmKey === `placement:${placement.id}:archived` ? "Confirm archive" : "Archive"}
                   </SmallButton>
                 </div>
               </article>
@@ -895,10 +984,10 @@ function ReviewGrid({
         <StatusBadge value={batch.status} />
       </div>
       <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-4">
-        {batch.items.map((item) => (
+        {batch.items.map((item, index) => (
           <article className="overflow-hidden border border-white/10 bg-black/20" key={item.id}>
             {item.asset ? (
-              <AssetImage asset={item.asset} />
+              <AssetImage asset={item.asset} eager={index < 4} />
             ) : (
               <div className="grid aspect-[4/5] place-items-center bg-white/[0.04] text-center text-xs text-[rgb(170,170,170)]">
                 <div>
@@ -1008,17 +1097,40 @@ function PresetPicker({
   );
 }
 
-function AssetImage({ asset, compact = false }: { asset: AssetSummary; compact?: boolean }) {
+function AssetImage({
+  asset,
+  compact = false,
+  eager = false,
+}: {
+  asset: AssetSummary;
+  compact?: boolean;
+  eager?: boolean;
+}) {
+  const imageSrc = asset.thumbnailUrl || asset.url;
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const hasFailed = failedSrc === imageSrc;
+
   return (
     <div className={cn("relative overflow-hidden bg-white/[0.04]", compact ? "h-24 w-24" : "aspect-[4/5]")}>
-      <Image
-        alt=""
-        fill
-        className="h-full w-full object-cover"
-        sizes={compact ? "96px" : "(min-width: 1280px) 25vw, (min-width: 768px) 50vw, 100vw"}
-        src={asset.thumbnailUrl || asset.url}
-        unoptimized
-      />
+      {hasFailed ? (
+        <div className="grid h-full w-full place-items-center gap-2 p-3 text-center text-xs text-[rgb(170,170,170)]">
+          <div>
+            <ImageIcon className="mx-auto mb-2 h-5 w-5" />
+            {compact ? "Missing" : "Missing asset"}
+          </div>
+        </div>
+      ) : (
+        <Image
+          alt=""
+          fill
+          className="h-full w-full object-cover"
+          loading={eager ? "eager" : undefined}
+          onError={() => setFailedSrc(imageSrc)}
+          sizes={compact ? "96px" : "(min-width: 1280px) 25vw, (min-width: 768px) 50vw, 100vw"}
+          src={imageSrc}
+          unoptimized
+        />
+      )}
     </div>
   );
 }
@@ -1103,12 +1215,20 @@ function StatusBadge({ value }: { value: string }) {
   );
 }
 
+function placementActionLabel(status: "published" | "paused" | "archived") {
+  if (status === "published") return "publish";
+  if (status === "paused") return "pause";
+  return "archive";
+}
+
 function SmallButton({
+  ariaLabel,
   children,
   disabled,
   icon,
   onClick,
 }: {
+  ariaLabel?: string;
   children: React.ReactNode;
   disabled?: boolean;
   icon: React.ReactNode;
@@ -1116,6 +1236,7 @@ function SmallButton({
 }) {
   return (
     <button
+      aria-label={ariaLabel}
       className="inline-flex h-8 items-center gap-1.5 border border-white/10 px-2.5 text-xs text-[rgb(230,230,230)] hover:bg-white/10 disabled:opacity-50"
       disabled={disabled}
       onClick={() => void onClick()}
@@ -1124,6 +1245,15 @@ function SmallButton({
       {icon}
       {children}
     </button>
+  );
+}
+
+function InlineNotice({ message }: { message: string | null }) {
+  if (!message) return null;
+  return (
+    <div className="border border-amber-400/30 bg-amber-950/20 px-4 py-3 text-sm text-amber-100">
+      {message}
+    </div>
   );
 }
 

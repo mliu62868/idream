@@ -1,6 +1,6 @@
 import Image from "next/image";
 import Link from "next/link";
-import { LoaderCircle } from "lucide-react";
+import { ArrowRight, LoaderCircle } from "lucide-react";
 import { characterCards } from "@/lib/ourdream-data";
 import { CharacterCard } from "./CharacterCard";
 import type { CharacterCardData } from "@/types/ourdream";
@@ -34,17 +34,31 @@ export function CharacterGrid({
             <CharacterCard card={card} imageLoading={index < 10 ? "eager" : "lazy"} />
             {index === 5 && (
               <Link
-                aria-label="75% Pride Sale — upgrade"
-                className="relative hidden aspect-[240/400] overflow-hidden rounded-[12px] bg-[rgb(36,36,36)] md:block"
+                aria-label="Pride offer - view plans"
+                className="group relative hidden aspect-[240/400] overflow-hidden rounded-[12px] bg-[rgb(36,36,36)] md:block"
                 href="/upgrade"
               >
                 <Image
-                  src="/images/ourdream/pride-card-female.webp"
-                  alt="75% Pride Sale"
-                  fill
-                  sizes="210px"
+                  alt=""
                   className="object-cover"
+                  fill
+                  loading="eager"
+                  sizes="(max-width: 767px) 0px, calc((100vw - 168px) / 5)"
+                  src="/images/ourdream/promo-card-female.webp"
                 />
+                <span className="absolute inset-0 bg-[linear-gradient(0deg,rgba(0,0,0,.78),rgba(0,0,0,.18)_60%,transparent)]" />
+                <span className="absolute inset-x-0 bottom-0 p-4">
+                  <span className="block text-[24px] font-black uppercase leading-6 text-white">
+                    Pride offer
+                  </span>
+                  <span className="mt-2 block text-[12px] font-bold leading-4 text-white/80">
+                    Upgrade for more dreamcoins and longer chats.
+                  </span>
+                  <span className="mt-4 inline-flex h-9 items-center gap-2 rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]">
+                    View plans
+                    <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
+                  </span>
+                </span>
               </Link>
             )}
           </div>
@@ -52,14 +66,24 @@ export function CharacterGrid({
       </div>
 
       {loading && (
-        <div className="flex h-20 items-center justify-center gap-2 text-[12px] font-medium leading-4 text-[rgb(114,113,112)]">
+        <div
+          aria-live="polite"
+          className="flex h-20 items-center justify-center gap-2 text-[12px] font-medium leading-4 text-[rgb(114,113,112)]"
+          data-testid="character-grid-status"
+          role="status"
+        >
           <LoaderCircle className="h-4 w-4 animate-spin" />
           Loading more characters...
         </div>
       )}
 
       {!loading && error && (
-        <div className="flex min-h-44 flex-col items-center justify-center rounded-[16px] border border-white/10 bg-[rgb(18,18,18)] px-6 py-8 text-center">
+        <div
+          aria-live="assertive"
+          className="flex min-h-44 flex-col items-center justify-center rounded-[16px] border border-white/10 bg-[rgb(18,18,18)] px-6 py-8 text-center"
+          data-testid="character-grid-status"
+          role="alert"
+        >
           <h2 className="text-[16px] font-black uppercase leading-6 text-white">
             {error}
           </h2>
@@ -74,7 +98,12 @@ export function CharacterGrid({
       )}
 
       {!loading && !error && cards.length === 0 && (
-        <div className="flex min-h-64 flex-col items-center justify-center rounded-[16px] border border-white/10 bg-[rgb(18,18,18)] px-6 py-12 text-center">
+        <div
+          aria-live="polite"
+          className="flex min-h-64 flex-col items-center justify-center rounded-[16px] border border-white/10 bg-[rgb(18,18,18)] px-6 py-12 text-center"
+          data-testid="character-grid-status"
+          role="status"
+        >
           <h2 className="text-[18px] font-black uppercase leading-6 text-white">
             {emptyTitle}
           </h2>

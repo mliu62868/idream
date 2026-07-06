@@ -1,0 +1,44 @@
+{
+  "email": "chrome-chat-image-1783270000000@test.local",
+  "userId": "cmr7pd2yv0000lhl78wbfcoic",
+  "chat": {
+    "attachmentsDeleted": 1,
+    "versionsDeleted": 1,
+    "messagesDeleted": 2,
+    "usageDeleted": 1,
+    "outboxDeleted": 4,
+    "inboxDeleted": 2,
+    "sessionsDeleted": 1
+  },
+  "mainUsersDeleted": 1,
+  "remainingUser": 0,
+  "remainingChatSessions": 0,
+  "remainingChatAttachments": 0,
+  "blob": {
+    "storageKeys": [
+      "gen/cmr7pdz1z0000n9l7fv20mtjy/image-1.png",
+      "gen/cmr7pem650006lhl7tod9yo5j/image-1.png"
+    ],
+    "results": [
+      {
+        "key": "gen/cmr7pdz1z0000n9l7fv20mtjy/image-1.png",
+        "existed": true,
+        "removed": true
+      },
+      {
+        "key": "gen/cmr7pem650006lhl7tod9yo5j/image-1.png",
+        "existed": true,
+        "removed": true
+      }
+    ],
+    "removed": 2
+  },
+  "redis": {
+    "pattern": "idream:chat-image-current-1783270000000:*",
+    "scanned": 61,
+    "deleted": 61,
+    "secondPassScanned": 5,
+    "secondPassDeleted": 5,
+    "finalRemaining": 0
+  }
+}

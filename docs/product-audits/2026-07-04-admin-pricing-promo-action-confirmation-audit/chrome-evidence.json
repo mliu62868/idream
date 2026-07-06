@@ -1,0 +1,17 @@
+{
+  "ruleKey": "e2e_pricing_action_1783196999722-737221",
+  "activeRuleId": "e2e-pricing-active-1783196999722-737221",
+  "draftRuleId": "e2e-pricing-draft-1783196999722-737221",
+  "codeId": "e2e-promo-code-1783196999722-737221",
+  "rejectedConfirmations": [
+    "PUBLISH",
+    "ROLLBACK",
+    "DISABLE"
+  ],
+  "acceptedConfirmations": [
+    "e2e-pricing-draft-1783196999722-737221",
+    "e2e-promo-code-1783196999722-737221"
+  ],
+  "consoleFailures": [],
+  "verifiedAt": "2026-07-04T20:30:01.181Z"
+}

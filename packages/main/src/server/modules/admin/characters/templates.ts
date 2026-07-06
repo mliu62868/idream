@@ -50,6 +50,7 @@ const updateSchema = z.object({
 const activeSchema = z.object({
   active: z.boolean(),
   reason: z.string().trim().min(3).max(2_000),
+  confirmation: z.string().trim().min(1).max(160),
 });
 
 // SPEC: 文本签名 = name + summary + advancedDetails + tags，喂给 moderation 的 input 层。
@@ -175,6 +176,7 @@ export async function setTemplateActive(request: Request, id: string): Promise<R
 
   const existing = await prisma.characterTemplate.findUnique({ where: { id } });
   if (!existing) throw Errors.notFound("Template not found");
+  if (body.confirmation !== id) throw Errors.badRequest("Confirmation did not match target");
 
   const template = await prisma.characterTemplate.update({
     where: { id },

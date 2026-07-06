@@ -1,0 +1,23 @@
+{
+  "browser": "Google Chrome",
+  "browserVersion": "149.0.7827.201",
+  "mainURL": "http://127.0.0.1:3160",
+  "adminURL": "http://127.0.0.1:3161",
+  "routePath": "/chrome-cms-confirm-1783182709881-4483",
+  "announcementId": "ccb66d5a-1136-4b10-94bb-0ac1d59684fa",
+  "screenshots": [
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-content-confirmation-audit/screenshots/01-cms-publish-confirmation.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-content-confirmation-audit/screenshots/02-cms-published.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-content-confirmation-audit/screenshots/03-cms-unpublish-confirmation.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-content-confirmation-audit/screenshots/04-announcement-deactivate-confirmation.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-content-confirmation-audit/screenshots/05-announcement-inactive.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-content-confirmation-audit/screenshots/06-announcement-delete-confirmation.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-content-confirmation-audit/screenshots/07-announcement-deleted.png"
+  ],
+  "dialogs": [],
+  "consoleFailures": [],
+  "ignoredConsole": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found) (http://127.0.0.1:3161/favicon.ico)"
+  ],
+  "verifiedAt": "2026-07-04T16:31:51.640Z"
+}

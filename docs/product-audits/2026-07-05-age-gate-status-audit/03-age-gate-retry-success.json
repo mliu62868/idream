@@ -1,0 +1,25 @@
+{
+  "buttonText": [
+    "",
+    "",
+    "Create",
+    "Jobs",
+    "Gallery",
+    "Presets",
+    "Image Edit",
+    "balanced"
+  ],
+  "hasMain": true,
+  "headingText": [
+    "Active Jobs",
+    "Gallery",
+    "Related pages",
+    "Learn",
+    "Popular",
+    "Help"
+  ],
+  "horizontalOverflow": false,
+  "statusText": null,
+  "title": "NSFW AI Image Generator | ourdream.ai",
+  "url": "http://age-gate-status-1783260000.localhost:3263/generate"
+}

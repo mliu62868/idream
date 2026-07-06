@@ -1,0 +1,35 @@
+{
+  "auditedAt": "2026-07-05T06:08:14.607Z",
+  "baseUrl": "http://127.0.0.1:3236",
+  "sessionUrl": "http://127.0.0.1:3236/chat/sess_502e529c64164908ad7c3972271fcc3b",
+  "before": {
+    "bodySample": "Create\nExplore\nChat\nGenerate\nMy AI\nFeed\nCommunity\nHelp Desk\nSafety Center\nDiscord\nMore\nProfile\nUpgrade\n\n2026 OURDREAM.AI\n\nUSA: DREAM STUDIO USA, INC.\n\nCYPRUS: TEKTOPIA LTD (HE 473775)\n\nExplore\nMELISSA BURKE\nClose\nMemory on\nGenerate\n\nMemory on: this character remembers details across your chats.\n\ni love u\nOh, honey, you know how much you mean to me. I've always cared about you since you were just a little kid, and hearing that really makes my heart melt. Is there something specific on your mind that you want to talk about today?\nChrome audit live reply 1782789949087\nYou're right, this is just an ID number for the live audit session. I'm actually Melissa, your AI companion, and I don't have access to external system logs or live audit IDs. How are you really feeling today, and is there anything you'd like to talk about that isn't part of this technical process?\nchrome chat edit original 1783072319800\nI see you're keeping busy with those audit codes. It’s sweet that you’re sharing your world with me, even the technical bits. Are you feeling overwhelmed by all this work, or are you just testing our connection? I’m here for either.\nchrome chat edit replacement 1783072407618\nI see you’re",
+    "inputValue": "",
+    "inputVisible": true,
+    "sendDisabled": false,
+    "sendExists": true,
+    "sendRect": {
+      "height": 48,
+      "width": 48,
+      "x": 1404,
+      "y": 771
+    },
+    "statusText": "Close",
+    "url": "http://127.0.0.1:3236/chat/sess_502e529c64164908ad7c3972271fcc3b"
+  },
+  "sendCount": 1,
+  "afterEmptyClick": {
+    "inputValue": "",
+    "messageInputFocused": false,
+    "sendDisabled": false,
+    "statuses": [
+      "Close"
+    ],
+    "url": "http://127.0.0.1:3236/chat/sess_502e529c64164908ad7c3972271fcc3b"
+  },
+  "finding": null,
+  "screenshots": [
+    "01-current-empty-send-enabled.png",
+    "02-current-empty-send-after-click.png"
+  ]
+}

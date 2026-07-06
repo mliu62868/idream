@@ -1,0 +1,15 @@
+{
+  "browserName": "chromium",
+  "channel": "chrome",
+  "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.0.0 Safari/537.36",
+  "adminURL": "http://127.0.0.1:3194",
+  "checks": [
+    "Wrong API confirmation ANNOUNCE returned 400 and did not create announcements.",
+    "Create stayed disabled with empty confirmation.",
+    "Create stayed disabled with wrong confirmation ANNOUNCE.",
+    "Exact title confirmation enabled Create.",
+    "Created active announcement persisted to AppSetting.",
+    "Public home rendered the announcement banner link."
+  ],
+  "consoleFailures": []
+}

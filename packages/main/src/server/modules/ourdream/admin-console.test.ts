@@ -444,19 +444,36 @@ describe("generation config control plane", () => {
         confirmation: "PUBLISH",
       },
     });
-    expectOk(publish);
-    expect(publish.data.profile).toMatchObject({ status: "active", enabled: true, rolloutPercent: 100, version: 2 });
+    expectError(publish, 400, "bad_request");
+
+    const exactPublish = await api("POST", `admin/generation/model-profiles/${draft.data.profile.id}/publish`, {
+      userId: admin,
+      role: "admin",
+      body: {
+        reason: "verified dry run",
+        confirmation: draft.data.profile.id,
+      },
+    });
+    expectOk(exactPublish);
+    expect(exactPublish.data.profile).toMatchObject({ status: "active", enabled: true, rolloutPercent: 100, version: 2 });
     expect(await prisma.generationModelProfile.findUnique({ where: { id: `${P}profile-v1` } })).toMatchObject({
       status: "archived",
     });
 
-    const rollback = await api("POST", `admin/generation/model-profiles/${publish.data.profile.id}/rollback`, {
+    const rollback = await api("POST", `admin/generation/model-profiles/${exactPublish.data.profile.id}/rollback`, {
       userId: admin,
       role: "admin",
       body: { reason: "regression detected", confirmation: "ROLLBACK" },
     });
-    expectOk(rollback);
-    expect(rollback.data).toMatchObject({ fromVersion: 2, toVersion: 1 });
+    expectError(rollback, 400, "bad_request");
+
+    const exactRollback = await api("POST", `admin/generation/model-profiles/${exactPublish.data.profile.id}/rollback`, {
+      userId: admin,
+      role: "admin",
+      body: { reason: "regression detected", confirmation: exactPublish.data.profile.id },
+    });
+    expectOk(exactRollback);
+    expect(exactRollback.data).toMatchObject({ fromVersion: 2, toVersion: 1 });
 
     const audits = await prisma.adminAuditLog.findMany({
       where: { actorId: admin, targetType: "generation_model_profile" },
@@ -501,7 +518,7 @@ describe("generation config control plane", () => {
       role: "admin",
       body: {
         reason: "publish bad candidate",
-        confirmation: "PUBLISH",
+        confirmation: draft.id,
       },
     });
 
@@ -542,7 +559,7 @@ describe("generation config control plane", () => {
       role: "admin",
       body: {
         reason: "publish too early",
-        confirmation: "PUBLISH",
+        confirmation: draft.id,
       },
     });
     expectError(smallSample, 400, "bad_request");
@@ -562,7 +579,7 @@ describe("generation config control plane", () => {
       role: "admin",
       body: {
         reason: "publish without consistency",
-        confirmation: "PUBLISH",
+        confirmation: draft.id,
       },
     });
     expectError(missingConsistency, 400, "bad_request");
@@ -600,7 +617,7 @@ describe("generation config control plane", () => {
       role: "admin",
       body: {
         reason: "try to publish without model verification",
-        confirmation: "PUBLISH",
+        confirmation: draft.id,
       },
     });
 
@@ -644,7 +661,7 @@ describe("generation config control plane", () => {
       role: "admin",
       body: {
         reason: "try to publish missing components",
-        confirmation: "PUBLISH",
+        confirmation: draft.id,
       },
     });
 
@@ -711,7 +728,7 @@ describe("generation config control plane", () => {
       role: "admin",
       body: {
         reason: "try to override failed evidence",
-        confirmation: "PUBLISH",
+        confirmation: draft.id,
         dryRunSummary: {
           sampleCount: 20,
           successRate: 1,
@@ -754,15 +771,22 @@ describe("generation config control plane", () => {
         enabled: false,
         pipelineModel: "unexpected-model",
         reason: "pause bad profile",
-        confirmation: "DISABLE",
+        confirmation: profileId,
       },
     });
     expectError(hijack, 400, "bad_request");
 
-    const disabled = await api("PATCH", `admin/generation/model-profiles/${profileId}`, {
+    const genericDisable = await api("PATCH", `admin/generation/model-profiles/${profileId}`, {
       userId: admin,
       role: "admin",
       body: { enabled: false, reason: "pause bad profile", confirmation: "DISABLE" },
+    });
+    expectError(genericDisable, 400, "bad_request");
+
+    const disabled = await api("PATCH", `admin/generation/model-profiles/${profileId}`, {
+      userId: admin,
+      role: "admin",
+      body: { enabled: false, reason: "pause bad profile", confirmation: profileId },
     });
     expectOk(disabled);
     expect(await prisma.generationModelProfile.findUnique({ where: { id: profileId } })).toMatchObject({
@@ -839,7 +863,7 @@ describe("generation config control plane", () => {
         body: {
           enabled: false,
           reason: "pause built-in profile",
-          confirmation: "DISABLE",
+          confirmation: profileId,
         },
       });
       expectOk(disabled);
@@ -917,8 +941,15 @@ describe("generation config control plane", () => {
       role: "admin",
       body: { reason: "verify managed import metadata", confirmation: "DRYRUN" },
     });
-    expectOk(dryRun);
-    expect(dryRun.data.dryRun).toMatchObject({ status: "pass", total: 2 });
+    expectError(dryRun, 400, "bad_request");
+
+    const exactDryRun = await api("POST", `admin/generation/model-profiles/${draft.data.profile.id}/dry-run`, {
+      userId: admin,
+      role: "admin",
+      body: { reason: "verify managed import metadata", confirmation: draft.data.profile.id },
+    });
+    expectOk(exactDryRun);
+    expect(exactDryRun.data.dryRun).toMatchObject({ status: "pass", total: 2 });
 
     const invalid = await api("POST", "admin/generation/model-profiles", {
       userId: admin,
@@ -1041,7 +1072,7 @@ describe("generation config control plane", () => {
     const dryRun = await api("POST", `admin/generation/model-profiles/${draft.data.profile.id}/dry-run`, {
       userId: admin,
       role: "admin",
-      body: { reason: "verify missing components", confirmation: "DRYRUN" },
+      body: { reason: "verify missing components", confirmation: draft.data.profile.id },
     });
     expectOk(dryRun);
     expect(dryRun.data.dryRun).toMatchObject({
@@ -1109,8 +1140,21 @@ describe("generation config control plane", () => {
         confirmation: "TEST",
       },
     });
-    expectOk(queued, 202);
-    expect(queued.data.job).toMatchObject({
+    expectError(queued, 400, "bad_request");
+
+    const exactQueued = await api("POST", `admin/generation/model-profiles/${draft.data.profile.id}/test-job`, {
+      userId: admin,
+      role: "admin",
+      body: {
+        prompt: "studio portrait, soft lighting",
+        orientation: "4:5",
+        outputCount: 1,
+        reason: "verify generated image effect",
+        confirmation: draft.data.profile.id,
+      },
+    });
+    expectOk(exactQueued, 202);
+    expect(exactQueued.data.job).toMatchObject({
       status: "queued",
       costDreamcoins: 0,
       profileId: `${P}sdcpp-test-job`,
@@ -1118,7 +1162,7 @@ describe("generation config control plane", () => {
     });
 
     const stored = await prisma.generationJob.findUniqueOrThrow({
-      where: { id: queued.data.job.id },
+      where: { id: exactQueued.data.job.id },
     });
     expect(stored).toMatchObject({
       userId: admin,
@@ -1142,7 +1186,7 @@ describe("generation config control plane", () => {
 
     await runQueuedGenerationJobs(8);
     const completed = await prisma.generationJob.findUniqueOrThrow({
-      where: { id: queued.data.job.id },
+      where: { id: exactQueued.data.job.id },
       include: { assets: true },
     });
     expect(completed.status).toBe("completed");
@@ -1159,7 +1203,7 @@ describe("generation config control plane", () => {
     expect(list.data.items).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          id: queued.data.job.id,
+          id: exactQueued.data.job.id,
           assets: [expect.objectContaining({ id: completed.assets[0]?.id })],
         }),
       ]),
@@ -1196,7 +1240,7 @@ describe("generation config control plane", () => {
         prompt: "legacy profile smoke",
         outputCount: 1,
         reason: "verify legacy config normalization",
-        confirmation: "TEST",
+        confirmation: profile.id,
       },
     });
     expectOk(queued, 202);
@@ -1341,7 +1385,9 @@ describe("generation config control plane", () => {
     }>;
     expect(generatedItems.every((item) => item.status === "generated" && item.asset?.id)).toBe(true);
 
-    const approve = await api("POST", `admin/content/production/items/${generatedItems[0]?.id}/approve`, {
+    const approveItemId = generatedItems[0]?.id as string;
+    const rejectItemId = generatedItems[1]?.id as string;
+    const genericApprove = await api("POST", `admin/content/production/items/${approveItemId}/approve`, {
       userId: admin,
       role: "admin",
       body: {
@@ -1352,14 +1398,27 @@ describe("generation config control plane", () => {
         confirmation: "APPROVE",
       },
     });
+    expectError(genericApprove, 400, "bad_request");
+
+    const approve = await api("POST", `admin/content/production/items/${approveItemId}/approve`, {
+      userId: admin,
+      role: "admin",
+      body: {
+        tags: ["cover", "winner"],
+        description: "Reusable sunset selfie for chat retrieval",
+        rating: 5,
+        reason: "best cover candidate",
+        confirmation: approveItemId,
+      },
+    });
     expectOk(approve);
-    const reject = await api("POST", `admin/content/production/items/${generatedItems[1]?.id}/reject`, {
+    const reject = await api("POST", `admin/content/production/items/${rejectItemId}/reject`, {
       userId: admin,
       role: "admin",
       body: {
         tags: ["discard"],
         reason: "weaker composition",
-        confirmation: "REJECT",
+        confirmation: rejectItemId,
       },
     });
     expectOk(reject);
@@ -1670,8 +1729,15 @@ describe("generation config control plane", () => {
       role: "admin",
       body: { reason: "sample matrix passed", confirmation: "PUBLISH" },
     });
-    expectOk(publish);
-    expect(publish.data.template).toMatchObject({ status: "active", version: 2 });
+    expectError(publish, 400, "bad_request");
+
+    const exactPublish = await api("POST", `admin/generation/prompt-templates/${draft.data.template.id}/publish`, {
+      userId: admin,
+      role: "admin",
+      body: { reason: "sample matrix passed", confirmation: draft.data.template.id },
+    });
+    expectOk(exactPublish);
+    expect(exactPublish.data.template).toMatchObject({ status: "active", version: 2 });
     expect(await prisma.generationPromptTemplate.findUnique({ where: { id: `${P}template-v1` } })).toMatchObject({
       status: "archived",
     });
@@ -1700,10 +1766,32 @@ describe("pricing control plane", () => {
     const voice = await api("POST", "admin/pricing/rules", {
       userId: admin,
       role: "admin",
-      body: { ruleKey: `${P}voice_pricing`, label: "Voice overflow", mode: "voice", baseCost: 2 },
+      body: {
+        ruleKey: `${P}voice_pricing`,
+        label: "Voice overflow",
+        mode: "voice",
+        baseCost: 2,
+        reason: "voice pricing draft",
+        confirmation: `${P}voice_pricing`,
+      },
     });
     expectOk(voice);
     expect(voice.data.rule).toMatchObject({ mode: "voice", status: "draft" });
+
+    const wrongConfirmation = await api("POST", "admin/pricing/rules", {
+      userId: admin,
+      role: "admin",
+      body: {
+        ruleKey: `${P}voice_pricing_wrong`,
+        label: "Voice wrong confirmation",
+        mode: "voice",
+        baseCost: 3,
+        reason: "wrong confirmation",
+        confirmation: "CREATE",
+      },
+    });
+    expectError(wrongConfirmation, 400, "bad_request");
+    expect(await prisma.pricingRule.count({ where: { ruleKey: `${P}voice_pricing_wrong` } })).toBe(0);
   });
 
   it("publishes and rolls back pricing rules with audit, keeping one active per mode", async () => {
@@ -1726,7 +1814,15 @@ describe("pricing control plane", () => {
     const draft = await api("POST", "admin/pricing/rules", {
       userId: admin,
       role: "admin",
-      body: { ruleKey, label: "Video base v2", mode: "video", baseCost: 60, multiplier: 1 },
+      body: {
+        ruleKey,
+        label: "Video base v2",
+        mode: "video",
+        baseCost: 60,
+        multiplier: 1,
+        reason: "create promo price draft",
+        confirmation: ruleKey,
+      },
     });
     expectOk(draft);
     expect(draft.data.rule).toMatchObject({ status: "draft", version: 2, baseCost: 60 });
@@ -1744,8 +1840,15 @@ describe("pricing control plane", () => {
       role: "admin",
       body: { reason: "promo price drop", confirmation: "PUBLISH" },
     });
-    expectOk(publish);
-    expect(publish.data.rule).toMatchObject({ status: "active", version: 2, baseCost: 60 });
+    expectError(publish, 400, "bad_request");
+
+    const exactPublish = await api("POST", `admin/pricing/rules/${draft.data.rule.id}/publish`, {
+      userId: admin,
+      role: "admin",
+      body: { reason: "promo price drop", confirmation: draft.data.rule.id },
+    });
+    expectOk(exactPublish);
+    expect(exactPublish.data.rule).toMatchObject({ status: "active", version: 2, baseCost: 60 });
     expect(await prisma.pricingRule.findUnique({ where: { id: `${P}pricing-v1` } })).toMatchObject({
       status: "archived",
     });
@@ -1754,13 +1857,20 @@ describe("pricing control plane", () => {
       await prisma.pricingRule.count({ where: { ruleKey, mode: "video", status: "active" } }),
     ).toBe(1);
 
-    const rollback = await api("POST", `admin/pricing/rules/${publish.data.rule.id}/rollback`, {
+    const rollback = await api("POST", `admin/pricing/rules/${exactPublish.data.rule.id}/rollback`, {
       userId: admin,
       role: "admin",
       body: { reason: "promo ended", confirmation: "ROLLBACK" },
     });
-    expectOk(rollback);
-    expect(rollback.data).toMatchObject({ fromVersion: 2, toVersion: 1 });
+    expectError(rollback, 400, "bad_request");
+
+    const exactRollback = await api("POST", `admin/pricing/rules/${exactPublish.data.rule.id}/rollback`, {
+      userId: admin,
+      role: "admin",
+      body: { reason: "promo ended", confirmation: exactPublish.data.rule.id },
+    });
+    expectOk(exactRollback);
+    expect(exactRollback.data).toMatchObject({ fromVersion: 2, toVersion: 1 });
     expect(await prisma.pricingRule.findUnique({ where: { id: `${P}pricing-v1` } })).toMatchObject({
       status: "active",
       baseCost: 80,
@@ -1787,18 +1897,49 @@ describe("admin writes are audited", () => {
     const target = `${P}target-user`;
     await createUser({ id: target });
 
-    const status = await api("POST", `admin/users/${target}/status`, {
+    const wrongStatusConfirmation = await api("POST", `admin/users/${target}/status`, {
       userId: admin,
       role: "admin",
       body: { status: "suspended", reason: "chargeback risk", confirmation: "SUSPENDED" },
     });
+    expectError(wrongStatusConfirmation, 400, "bad_request");
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: target } })).status).toBe("active");
+
+    const status = await api("POST", `admin/users/${target}/status`, {
+      userId: admin,
+      role: "admin",
+      body: { status: "suspended", reason: "chargeback risk", confirmation: `${target}:suspended` },
+    });
     expectOk(status);
     expect(status.data.user.status).toBe("suspended");
+
+    const wrongRoleConfirmation = await api("POST", `admin/users/${target}/role`, {
+      userId: admin,
+      role: "admin",
+      body: { role: "support", reason: "support handoff", confirmation: "ROLE" },
+    });
+    expectError(wrongRoleConfirmation, 400, "bad_request");
+
+    const roleChange = await api("POST", `admin/users/${target}/role`, {
+      userId: admin,
+      role: "admin",
+      body: { role: "support", reason: "support handoff", confirmation: `${target}:support` },
+    });
+    expectOk(roleChange);
+    expect(roleChange.data.user.role).toBe("support");
+
+    const wrongAdjustConfirmation = await api("POST", "admin/billing/adjustments", {
+      userId: admin,
+      role: "admin",
+      body: { userId: target, delta: 42, reason: "wrong adjustment confirmation", confirmation: "ADJUST" },
+    });
+    expectError(wrongAdjustConfirmation, 400, "bad_request");
+    expect(await dreamcoinBalance(target)).toBe(0);
 
     const adjust = await api("POST", "admin/billing/adjustments", {
       userId: admin,
       role: "admin",
-      body: { userId: target, delta: 42, reason: "support credit", confirmation: "ADJUST" },
+      body: { userId: target, delta: 42, reason: "support credit", confirmation: `${target}:42` },
     });
     expectOk(adjust);
     expect(await dreamcoinBalance(target)).toBe(42);
@@ -1817,10 +1958,17 @@ describe("admin writes are audited", () => {
     });
     expectError(camelHardPolicy, 403, "forbidden");
 
+    const wrongFlagConfirmation = await api("PATCH", "admin/feature-flags/image_edit", {
+      userId: admin,
+      role: "admin",
+      body: { enabled: true, reason: "wrong flag confirmation", confirmation: "FLAG" },
+    });
+    expectError(wrongFlagConfirmation, 400, "bad_request");
+
     const flag = await api("PATCH", "admin/feature-flags/image_edit", {
       userId: admin,
       role: "admin",
-      body: { enabled: true, reason: "rollout test", confirmation: "FLAG" },
+      body: { enabled: true, reason: "rollout test", confirmation: "image_edit:enabled" },
     });
     expectOk(flag);
 
@@ -1856,7 +2004,7 @@ describe("admin writes are audited", () => {
     const discarded = await api("POST", `admin/generation/jobs/${P}completed-job/discard`, {
       userId: admin,
       role: "admin",
-      body: { reason: "should not refund completed work", confirmation: "DISCARD" },
+      body: { reason: "should not refund completed work", confirmation: `${P}completed-job` },
     });
     expectError(discarded, 400, "bad_request");
     expect(await prisma.generationJob.findUnique({ where: { id: `${P}completed-job` } })).toMatchObject({
@@ -1922,13 +2070,28 @@ describe("dead-letter operations console", () => {
       },
     });
 
+    const requeueIds = [`${P}dl-rq-failed`, `${P}dl-rq-refunded`, `${P}dl-rq-missing`];
+    const wrongConfirmation = await api("POST", "admin/generation/dead-letter/requeue", {
+      userId: admin,
+      role: "admin",
+      body: {
+        jobIds: requeueIds,
+        reason: "wrong batch requeue confirmation",
+        confirmation: "REQUEUE",
+      },
+    });
+    expectError(wrongConfirmation, 400, "bad_request");
+    expect(await prisma.generationJob.findUnique({ where: { id: `${P}dl-rq-failed` } })).toMatchObject({
+      status: "failed",
+    });
+
     const res = await api("POST", "admin/generation/dead-letter/requeue", {
       userId: admin,
       role: "admin",
       body: {
-        jobIds: [`${P}dl-rq-failed`, `${P}dl-rq-refunded`, `${P}dl-rq-missing`],
+        jobIds: requeueIds,
         reason: "provider recovered",
-        confirmation: "REQUEUE",
+        confirmation: requeueIds.join(","),
       },
     });
     expectOk(res);
@@ -1964,13 +2127,28 @@ describe("dead-letter operations console", () => {
       },
     });
 
+    const discardIds = [`${P}dl-dc-failed`, `${P}dl-dc-refunded`];
+    const wrongConfirmation = await api("POST", "admin/generation/dead-letter/discard", {
+      userId: admin,
+      role: "admin",
+      body: {
+        jobIds: discardIds,
+        reason: "wrong batch discard confirmation",
+        confirmation: "DISCARD",
+      },
+    });
+    expectError(wrongConfirmation, 400, "bad_request");
+    expect(
+      await prisma.dreamcoinLedger.count({ where: { sourceId: `${P}dl-dc-failed`, reason: "refund" } }),
+    ).toBe(0);
+
     const res = await api("POST", "admin/generation/dead-letter/discard", {
       userId: admin,
       role: "admin",
       body: {
-        jobIds: [`${P}dl-dc-failed`, `${P}dl-dc-refunded`],
+        jobIds: discardIds,
         reason: "permanent provider outage",
-        confirmation: "DISCARD",
+        confirmation: discardIds.join(","),
       },
     });
     expectOk(res);
@@ -2285,7 +2463,7 @@ describe("user permission overrides", () => {
       await api("POST", "admin/billing/adjustments", {
         userId: support,
         role: "support",
-        body: { userId: support, delta: 1, reason: "noop baseline", confirmation: "ADJUST" },
+        body: { userId: support, delta: 1, reason: "noop baseline", confirmation: `${support}:1` },
       }),
       403,
     );
@@ -2299,11 +2477,24 @@ describe("user permission overrides", () => {
           permissionKey: "billing.ledger.adjust",
           effect: "grant",
           reason: "self grant attempt",
-          confirmation: "PERMISSION",
+          confirmation: `${support}:billing.ledger.adjust:grant`,
         },
       }),
       403,
     );
+
+    const wrongGrantConfirmation = await api("POST", `admin/users/${support}/permissions`, {
+      userId: admin,
+      role: "admin",
+      body: {
+        permissionKey: "billing.ledger.adjust",
+        effect: "grant",
+        reason: "wrong grant confirmation",
+        confirmation: "PERMISSION",
+      },
+    });
+    expectError(wrongGrantConfirmation, 400, "bad_request");
+    expect(await prisma.adminUserPermission.count({ where: { userId: support } })).toBe(0);
 
     // admin 授予 support billing.ledger.adjust → 现在能调整 ledger。
     expectOk(
@@ -2314,7 +2505,7 @@ describe("user permission overrides", () => {
           permissionKey: "billing.ledger.adjust",
           effect: "grant",
           reason: "temp finance cover",
-          confirmation: "PERMISSION",
+          confirmation: `${support}:billing.ledger.adjust:grant`,
         },
       }),
     );
@@ -2322,7 +2513,7 @@ describe("user permission overrides", () => {
       await api("POST", "admin/billing/adjustments", {
         userId: support,
         role: "support",
-        body: { userId: support, delta: 1, reason: "granted adjust", confirmation: "ADJUST" },
+        body: { userId: support, delta: 1, reason: "granted adjust", confirmation: `${support}:1` },
       }),
     );
 
@@ -2335,7 +2526,7 @@ describe("user permission overrides", () => {
           permissionKey: "billing.read",
           effect: "revoke",
           reason: "scope down",
-          confirmation: "PERMISSION",
+          confirmation: `${support}:billing.read:revoke`,
         },
       }),
     );
@@ -2358,7 +2549,7 @@ describe("user permission overrides", () => {
           permissionKey: "billing.read",
           effect: "clear",
           reason: "restore",
-          confirmation: "PERMISSION",
+          confirmation: `${support}:billing.read:clear`,
         },
       }),
     );
@@ -2373,7 +2564,7 @@ describe("user permission overrides", () => {
           permissionKey: "not.a.real.key",
           effect: "grant",
           reason: "bad key",
-          confirmation: "PERMISSION",
+          confirmation: `${support}:not.a.real.key:grant`,
         },
       }),
       400,
@@ -2423,7 +2614,7 @@ describe("support plaintext gate", () => {
         targetId: job.id,
         ticketId: `${P}ticket`,
         reason: "debug user issue",
-        confirmation: "VIEW",
+        confirmation: job.id,
       },
     });
     expectError(denied, 403, "forbidden");
@@ -2450,7 +2641,7 @@ describe("support plaintext gate", () => {
         targetId: job.id,
         ticketId: `${P}wrong-ticket`,
         reason: "debug user issue",
-        confirmation: "VIEW",
+        confirmation: job.id,
       },
     });
     expectError(wrongOwnerGrant, 403, "forbidden");
@@ -2468,7 +2659,7 @@ describe("support plaintext gate", () => {
       },
     });
 
-    const allowed = await api("POST", "admin/support/plaintext/view", {
+    const genericView = await api("POST", "admin/support/plaintext/view", {
       userId: support,
       role: "support",
       body: {
@@ -2477,6 +2668,19 @@ describe("support plaintext gate", () => {
         ticketId: `${P}ticket`,
         reason: "debug user issue",
         confirmation: "VIEW",
+      },
+    });
+    expectError(genericView, 400, "bad_request");
+
+    const allowed = await api("POST", "admin/support/plaintext/view", {
+      userId: support,
+      role: "support",
+      body: {
+        targetType: "generation_job",
+        targetId: job.id,
+        ticketId: `${P}ticket`,
+        reason: "debug user issue",
+        confirmation: job.id,
       },
     });
     expectOk(allowed);
@@ -2536,7 +2740,7 @@ describe("admin content/character governance (F2)", () => {
       await api("POST", `admin/content/characters/${charId}/visibility`, {
         userId: ops,
         role: "ops",
-        body: { visibility: "private", reason: "test", confirmation: "VISIBILITY" },
+        body: { visibility: "private", reason: "test", confirmation: `${charId}:visibility:private` },
       }),
       403,
     );
@@ -2553,11 +2757,44 @@ describe("admin content/character governance (F2)", () => {
     expectOk(detail);
     expect(detail.data.character.id).toBe(charId);
 
+    const wrongVisibility = await api("POST", `admin/content/characters/${charId}/visibility`, {
+      userId: admin,
+      role: "admin",
+      body: { visibility: "private", reason: "valid reason", confirmation: "VISIBILITY" },
+    });
+    expectError(wrongVisibility, 400, "bad_request");
+    expect((await prisma.character.findUniqueOrThrow({ where: { id: charId } })).visibility).toBe("public");
+
+    const privateVisibility = await api("POST", `admin/content/characters/${charId}/visibility`, {
+      userId: admin,
+      role: "admin",
+      body: {
+        visibility: "private",
+        reason: "hide public listing",
+        confirmation: `${charId}:visibility:private`,
+      },
+    });
+    expectOk(privateVisibility);
+    expect(privateVisibility.data.character.visibility).toBe("private");
+
+    const visibilityAudit = await prisma.adminAuditLog.findFirst({
+      where: { action: "content.visibility.write", targetId: charId },
+    });
+    expect(visibilityAudit).not.toBeNull();
+
+    const wrongStatus = await api("POST", `admin/content/characters/${charId}/status`, {
+      userId: admin,
+      role: "admin",
+      body: { status: "removed", reason: "policy violation", confirmation: "STATUS" },
+    });
+    expectError(wrongStatus, 400, "bad_request");
+    expect((await prisma.character.findUniqueOrThrow({ where: { id: charId } })).status).toBe("approved");
+
     // Takedown: set status=removed (typed+reason), audited.
     const removed = await api("POST", `admin/content/characters/${charId}/status`, {
       userId: admin,
       role: "admin",
-      body: { status: "removed", reason: "policy violation", confirmation: "STATUS" },
+      body: { status: "removed", reason: "policy violation", confirmation: `${charId}:status:removed` },
     });
     expectOk(removed);
     expect(removed.data.character.status).toBe("removed");
@@ -2566,16 +2803,6 @@ describe("admin content/character governance (F2)", () => {
       where: { action: "content.status.write", targetId: charId },
     });
     expect(audit).not.toBeNull();
-
-    // Bad confirmation → 400.
-    expectError(
-      await api("POST", `admin/content/characters/${charId}/visibility`, {
-        userId: admin,
-        role: "admin",
-        body: { visibility: "private", reason: "x", confirmation: "wrong" },
-      }),
-      400,
-    );
   });
 });
 
@@ -2598,11 +2825,20 @@ describe("admin featured curation (F3)", () => {
     const put = await api("PUT", "admin/content/featured", {
       userId: admin,
       role: "admin",
-      body: { characterIds: [cold, priv], reason: "promo push", confirmation: "FEATURED" },
+      body: { characterIds: [cold, priv], reason: "promo push", confirmation: `${cold},${priv}` },
     });
     expectOk(put);
     expect(put.data.characterIds).toEqual([cold]);
     expect(put.data.skipped).toContain(priv);
+
+    const wrongConfirmation = await api("PUT", "admin/content/featured", {
+      userId: admin,
+      role: "admin",
+      body: { characterIds: [hot], reason: "wrong confirmation", confirmation: "FEATURED" },
+    });
+    expectError(wrongConfirmation, 400, "bad_request");
+    const settingAfterWrong = await prisma.appSetting.findUniqueOrThrow({ where: { key: "feed.featured" } });
+    expect((settingAfterWrong.value as { characterIds?: string[] }).characterIds).toEqual([cold]);
 
     // Public feed: the featured public+approved character appears first; private picks are absent.
     const feed = await api("GET", "feed", { userId: user, role: "user", ageGate: true });
@@ -2634,11 +2870,24 @@ describe("admin promo: redeem codes + referrals (F4)", () => {
         reward: { dreamcoins: 50, note: "welcome" },
         maxRedemptions: 100,
         reason: "launch promo",
-        confirmation: "CREATE",
+        confirmation: `${P}WELCOME50`,
       },
     });
     expectOk(created);
     const codeId = created.data.id as string;
+
+    const wrongConfirmation = await api("POST", "admin/promo/redeem-codes", {
+      userId: admin,
+      role: "admin",
+      body: {
+        code: `${P}WRONGCONFIRM`,
+        reward: { dreamcoins: 25 },
+        maxRedemptions: 10,
+        reason: "wrong confirmation",
+        confirmation: "CREATE",
+      },
+    });
+    expectError(wrongConfirmation, 400, "bad_request");
 
     // analyst can read, cannot write.
     expectOk(await api("GET", "admin/promo/redeem-codes", { userId: analyst, role: "analyst" }));
@@ -2655,13 +2904,39 @@ describe("admin promo: redeem codes + referrals (F4)", () => {
     const list = await api("GET", "admin/promo/redeem-codes", { userId: admin, role: "admin" });
     expect(JSON.stringify(list.json)).not.toContain("WELCOME50");
 
+    const redeemer = `${P}promo-redeemer`;
+    await createUser({ id: redeemer });
+    const redeemed = await api("POST", "redeem-codes/redeem", {
+      userId: redeemer,
+      body: { code: `${P}WELCOME50` },
+    });
+    expectOk(redeemed);
+    expect(redeemed.data.dreamcoins).toBe(50);
+
+    const listAfterRedeem = await api("GET", "admin/promo/redeem-codes", {
+      userId: admin,
+      role: "admin",
+    });
+    expectOk(listAfterRedeem);
+    const listedCreatedCode = (listAfterRedeem.data.items as Array<{ id: string; redemptions: number }>).find(
+      (item) => item.id === codeId,
+    );
+    expect(listedCreatedCode?.redemptions).toBe(1);
+
     const disabled = await api("POST", `admin/promo/redeem-codes/${codeId}/disable`, {
       userId: admin,
       role: "admin",
       body: { reason: "fraud", confirmation: "DISABLE" },
     });
-    expectOk(disabled);
-    expect(disabled.data.status).toBe("disabled");
+    expectError(disabled, 400, "bad_request");
+
+    const exactDisabled = await api("POST", `admin/promo/redeem-codes/${codeId}/disable`, {
+      userId: admin,
+      role: "admin",
+      body: { reason: "fraud", confirmation: codeId },
+    });
+    expectOk(exactDisabled);
+    expect(exactDisabled.data.status).toBe("disabled");
 
     // Audit must not leak the plaintext code.
     const audit = await prisma.adminAuditLog.findFirst({
@@ -2679,6 +2954,8 @@ describe("admin dual-approval (F5)", () => {
     const a1 = await setupActor("admin", "appr-1");
     const a2 = await setupActor("admin", "appr-2");
     const support = await setupActor("support", "appr"); // lacks config.pricing.write & approval.review
+    const targetId = `${P}rule`;
+    const requestConfirmation = `${targetId}:config.pricing.publish`;
 
     // Requester must hold the target key: support cannot request config.pricing.write.
     expectError(
@@ -2689,14 +2966,29 @@ describe("admin dual-approval (F5)", () => {
           permissionKey: "config.pricing.write",
           action: "config.pricing.publish",
           targetType: "pricing_rule",
-          targetId: `${P}rule`,
+          targetId,
           payload: { baseCost: 4 },
           reason: "drop image price",
-          confirmation: "REQUEST",
+          confirmation: requestConfirmation,
         },
       }),
       403,
     );
+
+    const genericRequest = await api("POST", "admin/approvals", {
+      userId: a1,
+      role: "admin",
+      body: {
+        permissionKey: "config.pricing.write",
+        action: "config.pricing.publish",
+        targetType: "pricing_rule",
+        targetId,
+        payload: { baseCost: 4 },
+        reason: "drop image price",
+        confirmation: "REQUEST",
+      },
+    });
+    expectError(genericRequest, 400, "bad_request");
 
     const created = await api("POST", "admin/approvals", {
       userId: a1,
@@ -2705,10 +2997,10 @@ describe("admin dual-approval (F5)", () => {
         permissionKey: "config.pricing.write",
         action: "config.pricing.publish",
         targetType: "pricing_rule",
-        targetId: `${P}rule`,
+        targetId,
         payload: { baseCost: 4 },
         reason: "drop image price",
-        confirmation: "REQUEST",
+        confirmation: requestConfirmation,
       },
     });
     expectOk(created);
@@ -2719,7 +3011,7 @@ describe("admin dual-approval (F5)", () => {
       await api("POST", `admin/approvals/${reqId}/approve`, {
         userId: support,
         role: "support",
-        body: { reason: "ok", confirmation: "APPROVE" },
+        body: { reason: "ok", confirmation: reqId },
       }),
       403,
     );
@@ -2729,16 +3021,23 @@ describe("admin dual-approval (F5)", () => {
       await api("POST", `admin/approvals/${reqId}/approve`, {
         userId: a1,
         role: "admin",
-        body: { reason: "self", confirmation: "APPROVE" },
+        body: { reason: "self", confirmation: reqId },
       }),
       400,
     );
+
+    const genericApprove = await api("POST", `admin/approvals/${reqId}/approve`, {
+      userId: a2,
+      role: "admin",
+      body: { reason: "looks right", confirmation: "APPROVE" },
+    });
+    expectError(genericApprove, 400, "bad_request");
 
     // A different admin approves.
     const approved = await api("POST", `admin/approvals/${reqId}/approve`, {
       userId: a2,
       role: "admin",
-      body: { reason: "looks right", confirmation: "APPROVE" },
+      body: { reason: "looks right", confirmation: reqId },
     });
     expectOk(approved);
     expect(approved.data.request.status).toBe("approved");
@@ -2749,7 +3048,7 @@ describe("admin dual-approval (F5)", () => {
       await api("POST", `admin/approvals/${reqId}/reject`, {
         userId: a2,
         role: "admin",
-        body: { reason: "again", confirmation: "REJECT" },
+        body: { reason: "again", confirmation: reqId },
       }),
       400,
     );
@@ -2797,9 +3096,24 @@ describe("admin CMS / SEO (T1)", () => {
       await api("POST", "admin/cms/pages", {
         userId: analyst,
         role: "analyst",
-        body: { path, title: "X", description: "d", reason: "x", confirmation: "CMS" },
+        body: { path, title: "X", description: "d", reason: "x", confirmation: path },
       }),
       403,
+    );
+
+    expectError(
+      await api("POST", "admin/cms/pages", {
+        userId: admin,
+        role: "admin",
+        body: {
+          path,
+          title: "AI Girlfriend Guide",
+          description: "Everything about AI companions.",
+          reason: "seed cms page",
+          confirmation: "CMS",
+        },
+      }),
+      400,
     );
 
     const created = await api("POST", "admin/cms/pages", {
@@ -2812,7 +3126,7 @@ describe("admin CMS / SEO (T1)", () => {
         body: { heading: "Guide", sections: [{ heading: "Intro", paragraphs: ["Hello."] }] },
         contentStatus: "draft",
         reason: "seed cms page",
-        confirmation: "CMS",
+        confirmation: path,
       },
     });
     expectOk(created);
@@ -2822,7 +3136,24 @@ describe("admin CMS / SEO (T1)", () => {
       await api("PATCH", "admin/cms/pages", {
         userId: admin,
         role: "admin",
-        body: { path, title: "Y", reason: "valid edit reason", confirmation: "nope" },
+        body: { path, title: "Y", reason: "valid edit reason", confirmation: "CMS" },
+      }),
+      400,
+    );
+
+    const patched = await api("PATCH", "admin/cms/pages", {
+      userId: admin,
+      role: "admin",
+      body: { path, title: "AI Girlfriend Guide Updated", reason: "valid edit reason", confirmation: path },
+    });
+    expectOk(patched);
+    expect(patched.data.page.title).toBe("AI Girlfriend Guide Updated");
+
+    expectError(
+      await api("POST", "admin/cms/pages/publish", {
+        userId: admin,
+        role: "admin",
+        body: { path, contentStatus: "published", reason: "go live", confirmation: "PUBLISH" },
       }),
       400,
     );
@@ -2830,14 +3161,14 @@ describe("admin CMS / SEO (T1)", () => {
     const published = await api("POST", "admin/cms/pages/publish", {
       userId: admin,
       role: "admin",
-      body: { path, contentStatus: "published", reason: "go live", confirmation: "PUBLISH" },
+      body: { path, contentStatus: "published", reason: "go live", confirmation: path },
     });
     expectOk(published);
     expect(published.data.page.contentStatus).toBe("published");
 
     const got = await api("GET", "admin/cms/pages", { userId: admin, role: "admin", query: { path } });
     expectOk(got);
-    expect(got.data.page.title).toBe("AI Girlfriend Guide");
+    expect(got.data.page.title).toBe("AI Girlfriend Guide Updated");
 
     const audit = await prisma.adminAuditLog.findFirst({
       where: { action: "cms.page.publish", targetId: path },
@@ -2866,15 +3197,22 @@ describe("admin compliance: DSAR + age verification (T2)", () => {
       await api("POST", `admin/compliance/users/${target}/erase`, {
         userId: support,
         role: "support",
-        body: { reason: "dsar request", confirmation: "ERASE" },
+        body: { reason: "dsar request", confirmation: target },
       }),
       403,
     );
 
-    const erased = await api("POST", `admin/compliance/users/${target}/erase`, {
+    const genericErase = await api("POST", `admin/compliance/users/${target}/erase`, {
       userId: admin,
       role: "admin",
       body: { reason: "dsar erasure request", confirmation: "ERASE" },
+    });
+    expectError(genericErase, 400, "bad_request");
+
+    const erased = await api("POST", `admin/compliance/users/${target}/erase`, {
+      userId: admin,
+      role: "admin",
+      body: { reason: "dsar erasure request", confirmation: target },
     });
     expectOk(erased);
     expect(erased.data.erased).toBe(true);
@@ -2882,7 +3220,7 @@ describe("admin compliance: DSAR + age verification (T2)", () => {
     const again = await api("POST", `admin/compliance/users/${target}/erase`, {
       userId: admin,
       role: "admin",
-      body: { reason: "dsar erasure request retry", confirmation: "ERASE" },
+      body: { reason: "dsar erasure request retry", confirmation: target },
     });
     expectOk(again);
     expect(again.data.idempotent).toBe(true);
@@ -2899,10 +3237,17 @@ describe("admin compliance: DSAR + age verification (T2)", () => {
       query: { status: "pending" },
     });
     expectOk(list);
-    const override = await api("POST", `admin/compliance/age-verifications/${av.id}/override`, {
+    const genericOverride = await api("POST", `admin/compliance/age-verifications/${av.id}/override`, {
       userId: admin,
       role: "admin",
       body: { status: "verified", reason: "manual appeal approved", confirmation: "OVERRIDE" },
+    });
+    expectError(genericOverride, 400, "bad_request");
+
+    const override = await api("POST", `admin/compliance/age-verifications/${av.id}/override`, {
+      userId: admin,
+      role: "admin",
+      body: { status: "verified", reason: "manual appeal approved", confirmation: av.id },
     });
     expectOk(override);
     expect(override.data.ageVerification.status).toBe("verified");
@@ -2949,8 +3294,15 @@ describe("admin generation health + dry-run (T4)", () => {
       role: "admin",
       body: { reason: "pre-publish check", confirmation: "DRYRUN" },
     });
-    expectOk(dryRun);
-    expect(dryRun.data.dryRun.status).toBe("pass");
+    expectError(dryRun, 400, "bad_request");
+
+    const exactDryRun = await api("POST", `admin/generation/model-profiles/${profile.id}/dry-run`, {
+      userId: admin,
+      role: "admin",
+      body: { reason: "pre-publish check", confirmation: profile.id },
+    });
+    expectOk(exactDryRun);
+    expect(exactDryRun.data.dryRun.status).toBe("pass");
     const refreshed = await prisma.generationModelProfile.findUnique({ where: { id: profile.id } });
     expect(refreshed?.dryRunSummary).not.toBeNull();
   });
@@ -2976,7 +3328,7 @@ describe("admin generation health + dry-run (T4)", () => {
     const dryRun = await api("POST", `admin/generation/model-profiles/${profile.id}/dry-run`, {
       userId: admin,
       role: "admin",
-      body: { reason: "pre-publish check", confirmation: "DRYRUN" },
+      body: { reason: "pre-publish check", confirmation: profile.id },
     });
     expectOk(dryRun);
     expect(dryRun.data.dryRun).toMatchObject({
@@ -3011,7 +3363,7 @@ describe("admin dual-approval hard enforcement (T4)", () => {
       create: { key: "dual_approval_enforced", label: "Dual approval", enabled: true, targetRoles: [], targetPlans: [] },
     });
     try {
-      const big = { userId: target, delta: 5000, reason: "large comp", confirmation: "ADJUST" };
+      const big = { userId: target, delta: 5000, reason: "large comp", confirmation: `${target}:5000` };
 
       // no approval → 403
       expectError(await api("POST", "admin/billing/adjustments", { userId: a1, role: "admin", body: big }), 403);
@@ -3027,7 +3379,7 @@ describe("admin dual-approval hard enforcement (T4)", () => {
           targetId: target,
           payload: { delta: 5000 },
           reason: "approve large comp",
-          confirmation: "REQUEST",
+          confirmation: `${target}:billing.ledger.adjust`,
         },
       });
       expectOk(req);
@@ -3035,7 +3387,7 @@ describe("admin dual-approval hard enforcement (T4)", () => {
         await api("POST", `admin/approvals/${req.data.request.id}/approve`, {
           userId: a2,
           role: "admin",
-          body: { reason: "approved ok", confirmation: "APPROVE" },
+          body: { reason: "approved ok", confirmation: req.data.request.id },
         }),
       );
 
@@ -3055,7 +3407,7 @@ describe("admin dual-approval hard enforcement (T4)", () => {
           targetId: target,
           payload: { delta: 5000 },
           reason: "approve concurrent comp",
-          confirmation: "REQUEST",
+          confirmation: `${target}:billing.ledger.adjust`,
         },
       });
       expectOk(concurrentReq);
@@ -3063,7 +3415,7 @@ describe("admin dual-approval hard enforcement (T4)", () => {
         await api("POST", `admin/approvals/${concurrentReq.data.request.id}/approve`, {
           userId: a2,
           role: "admin",
-          body: { reason: "approved once", confirmation: "APPROVE" },
+          body: { reason: "approved once", confirmation: concurrentReq.data.request.id },
         }),
       );
 
@@ -3129,6 +3481,19 @@ describe("admin announcements (Phase 4)", () => {
           body: "bad protocol",
           href: "javascript:alert(1)",
           reason: "reject unsafe link",
+          confirmation: "Unsafe link",
+        },
+      }),
+      400,
+    );
+    expectError(
+      await api("POST", "admin/announcements", {
+        userId: admin,
+        role: "admin",
+        body: {
+          title: "Wrong confirmation",
+          body: "should not create",
+          reason: "reject wrong confirmation",
           confirmation: "ANNOUNCE",
         },
       }),
@@ -3145,7 +3510,7 @@ describe("admin announcements (Phase 4)", () => {
         level: "promo",
         active: true,
         reason: "promo launch",
-        confirmation: "ANNOUNCE",
+        confirmation: "Launch sale",
       },
     });
     expectOk(created);
@@ -3162,19 +3527,43 @@ describe("admin announcements (Phase 4)", () => {
       | undefined;
     expect(publicItem?.href).toBe("https://help.ourdream.ai/");
 
+    const wrongUpdateConfirmation = await api("PATCH", `admin/announcements/${id}`, {
+      userId: admin,
+      role: "admin",
+      body: { active: false, reason: "pause promo wrong", confirmation: "ANNOUNCE" },
+    });
+    expectError(wrongUpdateConfirmation, 400, "bad_request");
+
     // deactivate → public excludes
     expectOk(
       await api("PATCH", `admin/announcements/${id}`, {
         userId: admin,
         role: "admin",
-        body: { active: false, reason: "pause promo", confirmation: "ANNOUNCE" },
+        body: { active: false, reason: "pause promo", confirmation: id },
       }),
     );
     const pub2 = await api("GET", "announcements", {});
     expect(pub2.data.items.some((a: { id: string }) => a.id === id)).toBe(false);
 
-    // delete (DELETE, no body needed) → gone
-    expectOk(await api("DELETE", `admin/announcements/${id}`, { userId: admin, role: "admin" }));
+    expectError(await api("DELETE", `admin/announcements/${id}`, { userId: admin, role: "admin" }), 400);
+    expectError(
+      await api("DELETE", `admin/announcements/${id}`, {
+        userId: admin,
+        role: "admin",
+        body: { reason: "wrong delete confirmation", confirmation: "DELETE" },
+      }),
+      400,
+      "bad_request",
+    );
+
+    // delete → gone
+    expectOk(
+      await api("DELETE", `admin/announcements/${id}`, {
+        userId: admin,
+        role: "admin",
+        body: { reason: "delete promo", confirmation: id },
+      }),
+    );
     const list = await api("GET", "admin/announcements", { userId: admin, role: "admin" });
     expect(list.data.items.some((a: { id: string }) => a.id === id)).toBe(false);
 

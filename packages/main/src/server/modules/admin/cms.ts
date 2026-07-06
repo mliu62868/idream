@@ -61,8 +61,8 @@ const publishSchema = z.object({
   confirmation: z.string().trim().min(1).max(160),
 });
 
-function assertConfirmation(value: string, ...accepted: string[]) {
-  if (!accepted.includes(value)) throw Errors.badRequest("Confirmation did not match");
+function assertPathConfirmation(value: string, path: string) {
+  if (value !== path) throw Errors.badRequest("Confirmation did not match");
 }
 
 function revalidateCmsPage(path: string) {
@@ -114,7 +114,7 @@ export async function getCmsPage(request: Request): Promise<Response> {
 export async function createCmsPage(request: Request): Promise<Response> {
   const actor = await actorWithPermission(request, CMS_WRITE);
   const body = createSchema.parse(await jsonBody(request));
-  assertConfirmation(body.confirmation, "CMS", body.path);
+  assertPathConfirmation(body.confirmation, body.path);
   const existing = await prisma.routePage.findUnique({ where: { path: body.path } });
   if (existing) throw Errors.badRequest("A page with this path already exists");
   const page = await prisma.routePage.create({
@@ -142,7 +142,7 @@ export async function createCmsPage(request: Request): Promise<Response> {
 export async function patchCmsPage(request: Request): Promise<Response> {
   const actor = await actorWithPermission(request, CMS_WRITE);
   const body = patchSchema.parse(await jsonBody(request));
-  assertConfirmation(body.confirmation, "CMS", body.path);
+  assertPathConfirmation(body.confirmation, body.path);
   const before = await prisma.routePage.findUnique({ where: { path: body.path } });
   if (!before) throw Errors.notFound("Route page not found");
   const page = await prisma.routePage.update({
@@ -171,7 +171,7 @@ export async function patchCmsPage(request: Request): Promise<Response> {
 export async function publishCmsPage(request: Request): Promise<Response> {
   const actor = await actorWithPermission(request, CMS_WRITE);
   const body = publishSchema.parse(await jsonBody(request));
-  assertConfirmation(body.confirmation, "PUBLISH", body.path);
+  assertPathConfirmation(body.confirmation, body.path);
   const before = await prisma.routePage.findUnique({ where: { path: body.path } });
   if (!before) throw Errors.notFound("Route page not found");
   const page = await prisma.routePage.update({

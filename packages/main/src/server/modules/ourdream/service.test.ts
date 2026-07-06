@@ -89,7 +89,11 @@ describe("ourdream API dispatcher", () => {
       ok: true,
       data: {
         items: expect.arrayContaining([
-          expect.objectContaining({ id: testCharacterId }),
+          expect.objectContaining({
+            id: testCharacterId,
+            creator: "API Smoke Owner",
+            creatorName: "API Smoke Owner",
+          }),
         ]),
       },
     });

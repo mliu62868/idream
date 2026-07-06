@@ -1,0 +1,8 @@
+{
+  "helpdeskHref": "/helpdesk",
+  "statusAriaLive": "assertive",
+  "statusRole": "alert",
+  "statusTag": "P",
+  "statusText": "Invalid email or password",
+  "url": "http://auth-status-1783233102065.localhost:3238/login"
+}

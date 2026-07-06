@@ -4,6 +4,8 @@ import { Check, Crown } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
+import { safeInternalAuthRedirect } from "./authRedirect";
+
 type Plan = {
   id: string;
   slug: string;
@@ -56,6 +58,7 @@ export function UpgradeWorkspace() {
   const [billingMode, setBillingMode] = useState<BillingMode | null>(null);
   const [checkoutResult, setCheckoutResult] = useState<CheckoutResult | null>(null);
   const [pendingPlan, setPendingPlan] = useState("");
+  const [returnTarget, setReturnTarget] = useState("/generate");
   // Lowercased "name billingPeriod" of the user's active plan; "" when unknown
   // (logged out / free / fetch failed) so no card gets marked as current.
   const [activePlan, setActivePlan] = useState("");
@@ -84,6 +87,13 @@ export function UpgradeWorkspace() {
     const timer = window.setTimeout(() => void loadPlans(), 0);
     return () => window.clearTimeout(timer);
   }, [loadPlans]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setReturnTarget(upgradeReturnTarget());
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   // Best-effort current-plan lookup; any failure simply leaves the cards unmarked.
   useEffect(() => {
@@ -131,7 +141,7 @@ export function UpgradeWorkspace() {
         error?: { code?: string; message: string };
       };
       if (response.status === 401 || payload.error?.code === "unauthorized") {
-        window.location.assign(signupUrlForCheckout(plan));
+        window.location.assign(signupUrlForCheckout(plan, returnTarget));
         return;
       }
       if (payload.data?.billing) setBillingMode(payload.data.billing);
@@ -167,12 +177,22 @@ export function UpgradeWorkspace() {
         {FREE_CHAT_SUMMARY}
       </p>
       {plansState === "loading" && (
-        <p className="mx-auto max-w-5xl text-[13px] font-medium text-[rgb(170,170,170)]">
+        <p
+          aria-live="polite"
+          className="mx-auto max-w-5xl text-[13px] font-medium text-[rgb(170,170,170)]"
+          data-testid="upgrade-plans-status"
+          role="status"
+        >
           Loading plans…
         </p>
       )}
       {plansState === "error" && (
-        <div className="mx-auto max-w-5xl rounded-[12px] border border-white/10 bg-[rgb(18,18,18)] p-6 text-[13px] font-medium text-[rgb(220,220,220)]">
+        <div
+          aria-live="assertive"
+          className="mx-auto max-w-5xl rounded-[12px] border border-white/10 bg-[rgb(18,18,18)] p-6 text-[13px] font-medium text-[rgb(220,220,220)]"
+          data-testid="upgrade-plans-status"
+          role="alert"
+        >
           Could not load plans.
           <button
             className="ml-3 inline-flex h-9 items-center rounded-full bg-white px-4 text-[13px] font-black text-[rgb(13,13,13)]"
@@ -184,7 +204,12 @@ export function UpgradeWorkspace() {
         </div>
       )}
       {plansState === "ready" && plans.length === 0 && (
-        <p className="mx-auto max-w-5xl text-[13px] font-medium text-[rgb(170,170,170)]">
+        <p
+          aria-live="polite"
+          className="mx-auto max-w-5xl text-[13px] font-medium text-[rgb(170,170,170)]"
+          data-testid="upgrade-plans-status"
+          role="status"
+        >
           No plans available right now.
         </p>
       )}
@@ -262,14 +287,14 @@ export function UpgradeWorkspace() {
       </div>
       {checkoutResult && (
         <div
-          aria-live="polite"
+          aria-live={checkoutResult.kind === "error" ? "assertive" : "polite"}
           className={`mx-auto mt-5 max-w-5xl rounded-[14px] border p-5 ${
             checkoutResult.kind === "success"
               ? "border-[rgb(253,95,194)] bg-[rgb(36,36,36)]"
               : "border-[rgb(255,140,140)] bg-[rgb(18,18,18)]"
           }`}
           data-testid="upgrade-checkout-result"
-          role="status"
+          role={checkoutResult.kind === "error" ? "alert" : "status"}
         >
           <p className="text-[14px] font-black text-white">{checkoutResult.message}</p>
           {checkoutResult.kind === "success" && (
@@ -282,9 +307,9 @@ export function UpgradeWorkspace() {
               </Link>
               <Link
                 className="inline-flex h-10 items-center justify-center rounded-full bg-[rgb(253,95,194)] px-5 text-[13px] font-black text-[rgb(13,13,13)]"
-                href="/generate"
+                href={returnTarget}
               >
-                Start generating
+                {returnTargetActionLabel(returnTarget)}
               </Link>
             </div>
           )}
@@ -303,10 +328,26 @@ export function UpgradeWorkspace() {
   );
 }
 
-function signupUrlForCheckout(plan: Plan) {
+function signupUrlForCheckout(plan: Plan, returnTarget: string) {
   const intent = new URLSearchParams({
     plan: plan.slug,
     billing: plan.billingPeriod,
   });
+  if (returnTarget !== "/generate") {
+    intent.set("returnTo", returnTarget);
+  }
   return `/signup?next=${encodeURIComponent(`/upgrade?${intent.toString()}`)}`;
+}
+
+function upgradeReturnTarget() {
+  if (typeof window === "undefined") return "/generate";
+  const rawTarget = new URLSearchParams(window.location.search).get("returnTo");
+  const target = safeInternalAuthRedirect(rawTarget, window.location.origin);
+  return target === "/" ? "/generate" : target;
+}
+
+function returnTargetActionLabel(returnTarget: string) {
+  if (returnTarget.startsWith("/chat/")) return "Continue chat";
+  if (returnTarget.startsWith("/generate")) return "Start generating";
+  return "Continue";
 }

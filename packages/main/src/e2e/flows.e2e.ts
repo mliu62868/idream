@@ -150,6 +150,45 @@ test("age gate blocks generator workspace and protected API fetches before accep
   expect(preGateApiRequests).toEqual([]);
 });
 
+test("age gate accept failures are announced as assertive alerts and can retry", async ({
+  page,
+}) => {
+  let acceptAttempts = 0;
+  await page.route("**/api/v1/age-gate/accept", async (route) => {
+    acceptAttempts += 1;
+    if (acceptAttempts === 1) {
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: false,
+          error: { message: "forced age gate failure" },
+        }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto("/generate");
+
+  const enter = page.getByRole("button", { name: /over 18/i });
+  await expect(enter).toBeVisible();
+  await enter.click();
+
+  const status = page.getByTestId("age-gate-status");
+  await expect(status).toHaveText("Something went wrong. Please try again.");
+  await expect(status).toHaveAttribute("role", "alert");
+  await expect(status).toHaveAttribute("aria-live", "assertive");
+  await expect(enter).toBeVisible();
+  await expect(page.locator("main")).toHaveCount(0);
+
+  await enter.click();
+  await expect(enter).toBeHidden();
+  await expect(page.locator("main")).toBeVisible();
+  expect(acceptAttempts).toBeGreaterThanOrEqual(2);
+});
+
 test("age gate restores the API cookie from prior browser acceptance", async ({
   context,
   page,
@@ -194,6 +233,7 @@ test("auth UI handles invalid login, duplicate signup recovery, logout, returnin
 }) => {
   const email = uniqueEmail("auth-returning");
   const generateTarget = "/generate?characterId=melissa-burke";
+  const encodedGenerateTarget = encodeURIComponent(generateTarget);
   await page.request.post("/api/v1/age-gate/accept", { data: { sourcePath: "/" } });
 
   await page.goto("/login");
@@ -201,6 +241,8 @@ test("auth UI handles invalid login, duplicate signup recovery, logout, returnin
   await page.getByLabel("Password").fill("wrong-password");
   await page.getByRole("button", { name: "Login" }).click();
   await expect(page.getByText("Invalid email or password")).toBeVisible();
+  await expect(page.getByTestId("auth-status")).toHaveAttribute("role", "alert");
+  await expect(page.getByTestId("auth-status")).toHaveAttribute("aria-live", "assertive");
   await expect(page.getByRole("link", { name: "Contact Help Desk" })).toHaveAttribute(
     "href",
     "/helpdesk",
@@ -226,18 +268,21 @@ test("auth UI handles invalid login, duplicate signup recovery, logout, returnin
   body = await me.json();
   expect(body.data.user).toBeNull();
 
-  await page.goto(`/signup?next=${encodeURIComponent(generateTarget)}`);
+  await page.goto(`/signup?next=${encodedGenerateTarget}`);
   await page.getByLabel("Display name").fill("E2E Returning User");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
   await page.getByRole("button", { name: "Join Free" }).click();
   await expect(page.getByText("Email already registered")).toBeVisible();
+  await expect(page.getByTestId("auth-status")).toHaveAttribute("role", "alert");
+  await expect(page.getByTestId("auth-status")).toHaveAttribute("aria-live", "assertive");
   await expect(page.getByRole("link", { name: "Log in instead" })).toHaveAttribute(
     "href",
-    `/login?next=${encodeURIComponent(generateTarget)}`,
+    `/login?next=${encodedGenerateTarget}`,
   );
 
   await page.getByRole("link", { name: "Log in instead" }).click();
+  await expect(page).toHaveURL(new RegExp(`/login\\?next=${encodedGenerateTarget}$`));
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
   await page.getByRole("button", { name: "Login" }).click();

@@ -1,0 +1,29 @@
+{
+  "auditedAt": "2026-07-05T06:12:00.377Z",
+  "baseUrl": "http://127.0.0.1:3236",
+  "sessionUrl": "http://127.0.0.1:3236/chat/sess_502e529c64164908ad7c3972271fcc3b",
+  "before": {
+    "inputValue": "",
+    "sendAriaDisabled": null,
+    "sendDisabled": true,
+    "url": "http://127.0.0.1:3236/chat/sess_502e529c64164908ad7c3972271fcc3b"
+  },
+  "whitespace": {
+    "inputValue": "   ",
+    "sendAriaDisabled": null,
+    "sendDisabled": true,
+    "url": "http://127.0.0.1:3236/chat/sess_502e529c64164908ad7c3972271fcc3b"
+  },
+  "typed": {
+    "inputValue": "chrome empty-send fixed check",
+    "sendAriaDisabled": null,
+    "sendDisabled": false,
+    "url": "http://127.0.0.1:3236/chat/sess_502e529c64164908ad7c3972271fcc3b"
+  },
+  "logs": [],
+  "screenshots": [
+    "03-fixed-empty-send-disabled.png",
+    "04-fixed-send-enabled-after-typing.png"
+  ],
+  "findingResolved": true
+}

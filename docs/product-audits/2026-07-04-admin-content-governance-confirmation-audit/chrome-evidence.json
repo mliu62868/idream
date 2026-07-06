@@ -1,0 +1,16 @@
+{
+  "browserName": "chromium",
+  "channel": "chrome",
+  "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.0.0 Safari/537.36",
+  "adminURL": "http://127.0.0.1:3197",
+  "checks": [
+    "Wrong API confirmation VISIBILITY returned 400 and left visibility public.",
+    "Wrong API confirmation STATUS returned 400 and left status approved.",
+    "Generic VISIBILITY stayed disabled in the Make private modal.",
+    "Exact characterId:visibility:private confirmation enabled Confirm.",
+    "Generic STATUS stayed disabled in the Remove modal.",
+    "Exact characterId:status:removed confirmation enabled Confirm.",
+    "Character ended private/removed with visibility and status audit rows."
+  ],
+  "consoleFailures": []
+}

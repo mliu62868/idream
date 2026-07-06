@@ -24,6 +24,14 @@ type Template = {
   sortOrder: number;
 };
 
+type TemplateActionDraft = {
+  templateId: string;
+  templateName: string;
+  active: boolean;
+  reason: string;
+  confirmation: string;
+};
+
 function intFromText(value: string, fallback: number) {
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -54,6 +62,9 @@ export function TemplatesView() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [confirmKey, setConfirmKey] = useState<string | null>(null);
+  const [actionDraft, setActionDraft] = useState<TemplateActionDraft | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState({ ...EMPTY_FORM });
 
@@ -65,6 +76,8 @@ export function TemplatesView() {
   const reload = useCallback(async () => {
     setLoading(true);
     setErr(null);
+    setNotice(null);
+    setConfirmKey(null);
     try {
       const data = await apiGet<{ items: Template[] }>(ADMIN_LIST);
       setTemplates(data.items);
@@ -85,6 +98,8 @@ export function TemplatesView() {
   function resetForm() {
     setEditingId(null);
     setForm({ ...EMPTY_FORM });
+    setNotice(null);
+    setConfirmKey(null);
   }
 
   function startEdit(template: Template) {
@@ -99,11 +114,31 @@ export function TemplatesView() {
       sortOrder: String(template.sortOrder),
       reason: "",
     });
+    setNotice(null);
+    setConfirmKey(null);
+  }
+
+  function updateForm(next: typeof form) {
+    setForm(next);
+    setNotice(null);
+    setConfirmKey(null);
   }
 
   async function submit() {
+    const nextKey = templateFormConfirmKey({ editingId, form });
+    if (confirmKey !== nextKey) {
+      setErr(null);
+      setNotice(
+        editingId
+          ? "Press Confirm save template to update this character template."
+          : "Press Confirm create template to publish this character template.",
+      );
+      setConfirmKey(nextKey);
+      return;
+    }
     setBusy(true);
     setErr(null);
+    setNotice(null);
     try {
       const payload = {
         name: form.name.trim(),
@@ -124,6 +159,7 @@ export function TemplatesView() {
       await reload();
     } catch (error) {
       setErr(error instanceof Error ? error.message : "Save failed");
+      setConfirmKey(null);
     } finally {
       setBusy(false);
     }
@@ -153,14 +189,29 @@ export function TemplatesView() {
     }
   }
 
-  async function toggleActive(template: Template) {
+  function startToggleActive(template: Template) {
+    setErr(null);
+    setNotice(null);
+    setActionDraft({
+      templateId: template.id,
+      templateName: template.name,
+      active: !template.isActive,
+      reason: "",
+      confirmation: "",
+    });
+  }
+
+  async function confirmToggleActive() {
+    if (!actionDraft) return;
     setBusy(true);
     setErr(null);
     try {
-      await apiWrite(`${ADMIN_LIST}/${template.id}/active`, "POST", {
-        active: !template.isActive,
-        reason: template.isActive ? "take offline" : "publish",
+      await apiWrite(`${ADMIN_LIST}/${actionDraft.templateId}/active`, "POST", {
+        active: actionDraft.active,
+        reason: actionDraft.reason.trim(),
+        confirmation: actionDraft.confirmation.trim(),
       });
+      setActionDraft(null);
       await reload();
     } catch (error) {
       setErr(error instanceof Error ? error.message : "Toggle failed");
@@ -170,9 +221,21 @@ export function TemplatesView() {
   }
 
   const canSubmit = form.name.trim().length >= 1 && form.reason.trim().length >= 3;
+  const formConfirming = confirmKey === templateFormConfirmKey({ editingId, form });
+  const actionConfirmation = actionDraft?.templateId ?? "";
+  const canConfirmAction =
+    Boolean(actionDraft) &&
+    !busy &&
+    (actionDraft?.reason.trim().length ?? 0) >= 3 &&
+    actionDraft?.confirmation.trim() === actionConfirmation;
 
   return (
     <div className="space-y-5">
+      {notice ? (
+        <div className="border border-amber-400/30 bg-amber-950/20 px-4 py-3 text-sm text-amber-100">
+          {notice}
+        </div>
+      ) : null}
       <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold">
@@ -212,19 +275,19 @@ export function TemplatesView() {
         <div className="mt-3 grid gap-3 md:grid-cols-3">
           <input
             className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
-            onChange={(event) => setForm((f) => ({ ...f, name: event.target.value }))}
+            onChange={(event) => updateForm({ ...form, name: event.target.value })}
             placeholder={t("Name (≥1)")}
             value={form.name}
           />
           <input
             className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
-            onChange={(event) => setForm((f) => ({ ...f, summary: event.target.value }))}
+            onChange={(event) => updateForm({ ...form, summary: event.target.value })}
             placeholder={t("Summary (≤200)")}
             value={form.summary}
           />
           <select
             className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
-            onChange={(event) => setForm((f) => ({ ...f, scope: event.target.value }))}
+            onChange={(event) => updateForm({ ...form, scope: event.target.value })}
             value={form.scope}
           >
           <option value="built_in">{valueLabel("built_in")}</option>
@@ -232,31 +295,31 @@ export function TemplatesView() {
           </select>
           <input
             className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
-            onChange={(event) => setForm((f) => ({ ...f, gender: event.target.value }))}
+            onChange={(event) => updateForm({ ...form, gender: event.target.value })}
             placeholder={t("Gender")}
             value={form.gender}
           />
           <input
             className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
-            onChange={(event) => setForm((f) => ({ ...f, style: event.target.value }))}
+            onChange={(event) => updateForm({ ...form, style: event.target.value })}
             placeholder={t("Style")}
             value={form.style}
           />
           <input
             className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
-            onChange={(event) => setForm((f) => ({ ...f, tags: event.target.value }))}
+            onChange={(event) => updateForm({ ...form, tags: event.target.value })}
             placeholder={t("Tags (comma-separated, ≤12)")}
             value={form.tags}
           />
           <input
             className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
-            onChange={(event) => setForm((f) => ({ ...f, sortOrder: event.target.value }))}
+            onChange={(event) => updateForm({ ...form, sortOrder: event.target.value })}
             placeholder={t("Sort order")}
             value={form.sortOrder}
           />
           <input
             className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
-            onChange={(event) => setForm((f) => ({ ...f, reason: event.target.value }))}
+            onChange={(event) => updateForm({ ...form, reason: event.target.value })}
             placeholder={t("Reason (≥3)")}
             value={form.reason}
           />
@@ -273,11 +336,66 @@ export function TemplatesView() {
             ) : (
               <Plus className="h-4 w-4" />
             )}
-            {editingId ? t("Save") : t("Create")}
+            {formConfirming
+              ? editingId
+                ? t("Confirm save template")
+                : t("Confirm create template")
+              : editingId
+                ? t("Save")
+                : t("Create")}
           </button>
         </div>
         {err ? <p className="mt-2 text-xs text-red-300">{err}</p> : null}
       </section>
+
+      {actionDraft ? (
+        <section className="border border-amber-400/30 bg-amber-950/20 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold">
+                {actionDraft.active ? t("Confirm publish template") : t("Confirm offline template")}
+              </h2>
+              <p className="mt-1 text-xs text-amber-100/80">
+                {actionDraft.templateName} · {t("Type")} {t("template ID")} {actionConfirmation}
+              </p>
+            </div>
+            <button
+              className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs"
+              disabled={busy}
+              onClick={() => setActionDraft(null)}
+              type="button"
+            >
+              <X className="h-3.5 w-3.5" />
+              {t("Cancel")}
+            </button>
+          </div>
+          <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_220px_auto]">
+            <input
+              aria-label="Template action reason"
+              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+              onChange={(event) => setActionDraft({ ...actionDraft, reason: event.target.value })}
+              placeholder={t("Reason (≥3)")}
+              value={actionDraft.reason}
+            />
+            <input
+              aria-label="Template action confirmation"
+              className="h-10 w-full border border-white/10 bg-black/30 px-3 font-mono text-sm outline-none focus:border-white/30"
+              onChange={(event) => setActionDraft({ ...actionDraft, confirmation: event.target.value })}
+              placeholder={actionConfirmation}
+              value={actionDraft.confirmation}
+            />
+            <button
+              className="inline-flex h-10 items-center justify-center gap-2 bg-amber-200 px-3 text-sm font-semibold text-amber-950 disabled:opacity-50"
+              disabled={!canConfirmAction}
+              onClick={() => void confirmToggleActive()}
+              type="button"
+            >
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              {actionDraft.active ? t("Confirm publish") : t("Confirm offline")}
+            </button>
+          </div>
+        </section>
+      ) : null}
 
       <section className="border border-white/10 bg-[rgb(18,18,18)]">
         <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
@@ -346,7 +464,7 @@ export function TemplatesView() {
                         <button
                           className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs hover:border-white/30 disabled:opacity-50"
                           disabled={busy}
-                          onClick={() => void toggleActive(template)}
+                          onClick={() => startToggleActive(template)}
                           type="button"
                         >
                           {template.isActive ? (
@@ -370,4 +488,18 @@ export function TemplatesView() {
       </section>
     </div>
   );
+}
+
+function templateFormConfirmKey({ editingId, form }: { editingId: string | null; form: typeof EMPTY_FORM }) {
+  return [
+    editingId ? `template:update:${editingId}` : "template:create",
+    form.name.trim(),
+    form.summary.trim(),
+    form.gender.trim(),
+    form.style.trim(),
+    form.scope,
+    form.tags.trim(),
+    form.sortOrder.trim(),
+    form.reason.trim(),
+  ].join(":");
 }

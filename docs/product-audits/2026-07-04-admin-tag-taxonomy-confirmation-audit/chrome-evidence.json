@@ -1,0 +1,14 @@
+{
+  "browserChannel": "chrome",
+  "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.0.0 Safari/537.36",
+  "adminURL": "http://127.0.0.1:3185",
+  "tagId": "cmr6p2mzt0000qkl79s13odte",
+  "slug": "aaa-chrome-tag-confirm-1783189643752-880084",
+  "checks": [
+    "server rejects wrong tag confirmation without mutating metadata",
+    "tag edit stays disabled and DB unchanged before exact slug confirmation",
+    "exact slug confirmation enables save and writes tag metadata",
+    "tag metadata update writes the operator audit reason"
+  ],
+  "consoleFailures": []
+}

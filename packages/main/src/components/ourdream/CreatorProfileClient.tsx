@@ -91,7 +91,7 @@ export function CreatorProfileClient({ id }: Readonly<{ id: string }>) {
   return (
     <main className="min-h-screen bg-[rgb(13,13,13)] text-white">
       <div className="flex min-h-screen w-full">
-        <AppSidebar activeHref="/" />
+        <AppSidebar activeHref="/community" />
         <section className="min-w-0 flex-1 px-4 py-8 pb-24 md:px-[60px] md:py-12">
           <Link
             className="inline-flex items-center gap-2 text-[13px] font-bold text-[rgb(170,170,170)] hover:text-white"
@@ -129,6 +129,7 @@ export function CreatorProfileClient({ id }: Readonly<{ id: string }>) {
                 </div>
                 {!creator.isSelf && (
                   <button
+                    aria-pressed={creator.isFollowing}
                     className={`ml-auto inline-flex h-10 items-center justify-center gap-2 rounded-full px-5 text-[13px] font-black ${
                       creator.isFollowing
                         ? "bg-[rgb(36,36,36)] text-white"
@@ -146,8 +147,10 @@ export function CreatorProfileClient({ id }: Readonly<{ id: string }>) {
 
               {status && (
                 <p
+                  aria-live="polite"
                   className="mt-4 text-[13px] font-bold text-[rgb(255,138,210)]"
                   data-testid="creator-profile-status"
+                  role="status"
                 >
                   {status}
                 </p>
@@ -170,12 +173,19 @@ export function CreatorProfileClient({ id }: Readonly<{ id: string }>) {
               )}
             </>
           ) : (
-            <p className="mt-8 text-[13px] font-medium text-[rgb(170,170,170)]">{status}</p>
+            <p
+              aria-live="polite"
+              className="mt-8 text-[13px] font-medium text-[rgb(170,170,170)]"
+              data-testid="creator-profile-status"
+              role="status"
+            >
+              {status}
+            </p>
           )}
         </section>
       </div>
       <SiteFooter />
-      <MobileBottomNav activeHref="/" />
+      <MobileBottomNav activeHref="/community" />
     </main>
   );
 }

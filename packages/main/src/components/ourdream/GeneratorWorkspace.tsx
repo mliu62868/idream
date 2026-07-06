@@ -15,7 +15,7 @@ import {
   Trash2,
   WandSparkles,
 } from "lucide-react";
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { CharacterCardData } from "@/types/ourdream";
 import { authHrefForTarget } from "./authRedirect";
@@ -27,6 +27,8 @@ type MediaItem = {
   url: string;
   thumbnailUrl: string;
   contentType?: string | null;
+  width?: number | null;
+  height?: number | null;
   prompt: string | null;
   liked: boolean;
   canEditIdentity?: boolean;
@@ -162,13 +164,18 @@ export function GeneratorWorkspace() {
   const [configError, setConfigError] = useState("");
   const [pending, setPending] = useState(false);
   const [failedMediaIds, setFailedMediaIds] = useState<Set<string>>(() => new Set());
+  const [invalidPreviewMediaIds, setInvalidPreviewMediaIds] = useState<Set<string>>(() => new Set());
   const [userPresets, setUserPresets] = useState<UserPreset[]>([]);
   const [presetName, setPresetName] = useState("");
   const [manageMode, setManageMode] = useState(false);
   const [selectedMediaIds, setSelectedMediaIds] = useState<Set<string>>(() => new Set());
+  const [deleteConfirmMediaId, setDeleteConfirmMediaId] = useState<string | null>(null);
+  const [bulkDeleteConfirmKey, setBulkDeleteConfirmKey] = useState<string | null>(null);
+  const [deleteConfirmPresetId, setDeleteConfirmPresetId] = useState<string | null>(null);
   const [editSourceMediaId, setEditSourceMediaId] = useState("");
   const [remixFeedItemId, setRemixFeedItemId] = useState("");
   const [authReturnTarget, setAuthReturnTarget] = useState("/generate");
+  const workspaceTopRef = useRef<HTMLDivElement>(null);
 
   const videoModeEnabled = Boolean(config?.video.enabled && (config.video.models.length ?? 0) > 0);
   const availableModels = useMemo(
@@ -200,9 +207,10 @@ export function GeneratorWorkspace() {
     Boolean(config) && estimatedCost > (config?.dreamcoins.balance ?? 0);
   const imageEditMode = mode === "image" && imageWorkflow === "image-edit";
   const anonymousViewer = config?.viewer?.authenticated === false;
+  const upgradeHref = upgradeHrefForTarget(authReturnTarget);
   const insufficientBalanceHref = anonymousViewer
     ? authHrefForTarget("/signup", authReturnTarget)
-    : "/upgrade";
+    : upgradeHref;
   const selectedCharacter = useMemo(
     () => characters.find((character) => character.id === characterId) ?? null,
     [characterId, characters],
@@ -259,6 +267,16 @@ export function GeneratorWorkspace() {
     modeAvailable &&
     (!imageEditMode || Boolean(selectedEditSource)) &&
     !insufficientBalance;
+  const selectedMediaConfirmKey = Array.from(selectedMediaIds).sort().join("|");
+  const bulkDeleteArmed =
+    selectedMediaIds.size > 0 && bulkDeleteConfirmKey === selectedMediaConfirmKey;
+
+  const showJobsView = useCallback(() => {
+    setView("jobs");
+    window.setTimeout(() => {
+      workspaceTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 0);
+  }, []);
 
   useEffect(() => {
     const draft = readPresetDraft();
@@ -329,6 +347,8 @@ export function GeneratorWorkspace() {
     if (!response.ok) return;
     const payload = (await response.json()) as ApiPayload<{ items: MediaItem[] }>;
     setMedia(payload.data?.items ?? []);
+    setDeleteConfirmMediaId(null);
+    setBulkDeleteConfirmKey(null);
   }, [galleryTab]);
 
   const refreshPresets = useCallback(async () => {
@@ -338,6 +358,7 @@ export function GeneratorWorkspace() {
     if (!response.ok) return;
     const payload = (await response.json()) as ApiPayload<{ items: UserPreset[] }>;
     setUserPresets(payload.data?.items ?? []);
+    setDeleteConfirmPresetId(null);
   }, []);
 
   const refreshIdentityMedia = useCallback(async () => {
@@ -479,7 +500,7 @@ export function GeneratorWorkspace() {
       const job = payload.data.job;
       setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
       setStatus("Generation queued.");
-      setView("jobs");
+      showJobsView();
       void refreshConfig();
       void pollGeneration(job.id);
     } catch {
@@ -522,9 +543,26 @@ export function GeneratorWorkspace() {
   }
 
   async function deleteMedia(id: string) {
+    setStatus("");
+    if (deleteConfirmMediaId !== id) {
+      setDeleteConfirmMediaId(id);
+      setStatus("Press Confirm delete to remove this media.");
+      return;
+    }
     setMedia((current) => current.filter((item) => item.id !== id));
-    const response = await fetch(`/api/v1/media/${id}`, { method: "DELETE" });
-    if (!response.ok) void refreshMedia(galleryTab);
+    setDeleteConfirmMediaId(null);
+    try {
+      const response = await fetch(`/api/v1/media/${id}`, { method: "DELETE" });
+      if (!response.ok) {
+        setStatus("Delete failed.");
+        void refreshMedia(galleryTab);
+        return;
+      }
+      setStatus("Media deleted.");
+    } catch {
+      setStatus("Delete failed.");
+      void refreshMedia(galleryTab);
+    }
   }
 
   async function downloadMedia(id: string) {
@@ -622,7 +660,7 @@ export function GeneratorWorkspace() {
       const job = payload.data.job;
       setJobs((current) => [job, ...current.filter((itemJob) => itemJob.id !== job.id)]);
       setStatus(imageEditMode ? "Image edit queued." : "Variation queued.");
-      setView("jobs");
+      showJobsView();
       void refreshConfig();
       void pollGeneration(job.id);
     } catch {
@@ -635,6 +673,8 @@ export function GeneratorWorkspace() {
     setView("gallery");
     setManageMode(false);
     setSelectedMediaIds(new Set());
+    setDeleteConfirmMediaId(null);
+    setBulkDeleteConfirmKey(null);
     void refreshMedia(tab);
   }
 
@@ -681,6 +721,7 @@ export function GeneratorWorkspace() {
         return;
       }
       setPresetName("");
+      setDeleteConfirmPresetId(null);
       clearPresetDraft();
       setStatus(`Saved preset "${label}".`);
       void refreshPresets();
@@ -698,14 +739,20 @@ export function GeneratorWorkspace() {
     const savedPrompt = presetControlString(controls, "prompt");
     if (savedPrompt && canUsePrompt) setPrompt(savedPrompt);
     setMode("image");
+    setDeleteConfirmPresetId(null);
     setStatus(`Applied preset "${preset.label}".`);
   }
 
   async function deletePreset(id: string) {
-    setUserPresets((current) => current.filter((preset) => preset.id !== id));
+    if (deleteConfirmPresetId !== id) {
+      setDeleteConfirmPresetId(id);
+      setStatus("Press Confirm delete preset to delete this preset.");
+      return;
+    }
     try {
       const response = await fetch(`/api/v1/generation/presets/${id}`, { method: "DELETE" });
       if (!response.ok) {
+        setDeleteConfirmPresetId(null);
         setStatus("Couldn't delete preset.");
         void refreshPresets();
         return;
@@ -721,9 +768,11 @@ export function GeneratorWorkspace() {
   function toggleManage() {
     setManageMode((current) => !current);
     setSelectedMediaIds(new Set());
+    setBulkDeleteConfirmKey(null);
   }
 
   function toggleSelect(id: string) {
+    setBulkDeleteConfirmKey(null);
     setSelectedMediaIds((current) => {
       const next = new Set(current);
       if (next.has(id)) next.delete(id);
@@ -733,6 +782,7 @@ export function GeneratorWorkspace() {
   }
 
   function toggleSelectAll() {
+    setBulkDeleteConfirmKey(null);
     setSelectedMediaIds((current) =>
       current.size === media.length ? new Set() : new Set(media.map((item) => item.id)),
     );
@@ -742,6 +792,14 @@ export function GeneratorWorkspace() {
     const ids = Array.from(selectedMediaIds);
     if (ids.length === 0) {
       setStatus("Select media first.");
+      return;
+    }
+    const confirmKey = ids.slice().sort().join("|");
+    if (action === "delete" && bulkDeleteConfirmKey !== confirmKey) {
+      setBulkDeleteConfirmKey(confirmKey);
+      setStatus(
+        `Press Confirm delete selected to delete ${ids.length} item${ids.length === 1 ? "" : "s"}.`,
+      );
       return;
     }
     try {
@@ -761,6 +819,7 @@ export function GeneratorWorkspace() {
           : `Updated ${ids.length} item${ids.length === 1 ? "" : "s"}.`,
       );
       setSelectedMediaIds(new Set());
+      setBulkDeleteConfirmKey(null);
       void refreshMedia(galleryTab);
     } catch {
       setStatus("Bulk action failed. Check your connection and try again.");
@@ -769,7 +828,7 @@ export function GeneratorWorkspace() {
 
   return (
     <section className="px-4 py-8 md:px-[60px] md:py-12">
-      <div className="mx-auto max-w-6xl">
+      <div className="mx-auto max-w-6xl" ref={workspaceTopRef}>
         <div className="mb-4 grid grid-cols-3 gap-2 md:hidden">
           {(["create", "jobs", "gallery"] as const).map((item) => (
             <button
@@ -951,6 +1010,8 @@ export function GeneratorWorkspace() {
                     aria-label="Character"
                     className="mt-2 h-12 w-full rounded-[10px] bg-[rgb(36,36,36)] px-4 text-[13px] font-semibold text-white outline-none"
                     disabled={freeplay}
+                    id="generator-character"
+                    name="characterId"
                     onChange={(event) => setCharacterId(event.target.value)}
                     value={characterId}
                   >
@@ -966,6 +1027,8 @@ export function GeneratorWorkspace() {
                   <input
                     checked={freeplay}
                     className="h-4 w-4 accent-[rgb(255,64,180)]"
+                    id="generator-freeplay"
+                    name="freeplay"
                     onChange={(event) => setFreeplay(event.target.checked)}
                     type="checkbox"
                   />
@@ -1008,23 +1071,29 @@ export function GeneratorWorkspace() {
                       </span>
                     </div>
                     <div className="grid grid-cols-4 gap-2">
-                      {identityTimeline.map((item) => (
-                        <div
-                          className="relative aspect-square overflow-hidden rounded-[8px] bg-[rgb(36,36,36)]"
-                          key={item.id}
-                        >
-                          <Image
-                            alt="Identity reference"
-                            className="object-cover object-top"
-                            fill
-                            sizes="64px"
-                            src={item.thumbnailUrl ?? item.url}
-                          />
-                          <span className="absolute bottom-1 left-1 rounded-full bg-black/70 px-1.5 py-0.5 text-[9px] font-black text-white">
-                            {item.identity?.selectedAsCharacterImage ? "Main" : `v${item.visualProfileVersion ?? "?"}`}
-                          </span>
-                        </div>
-                      ))}
+                      {identityTimeline.map((item) => {
+                        const source = item.thumbnailUrl ?? item.url;
+                        return (
+                          <div
+                            className="relative aspect-square overflow-hidden rounded-[8px] bg-[rgb(36,36,36)]"
+                            key={item.id}
+                          >
+                            <Image
+                              alt="Identity reference"
+                              className="object-cover object-top"
+                              fill
+                              sizes="64px"
+                              src={source}
+                              unoptimized={isPrivateMediaUrl(source)}
+                            />
+                            <span className="absolute bottom-1 left-1 rounded-full bg-black/70 px-1.5 py-0.5 text-[9px] font-black text-white">
+                              {item.identity?.selectedAsCharacterImage
+                                ? "Main"
+                                : `v${item.visualProfileVersion ?? "?"}`}
+                            </span>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 )}
@@ -1053,6 +1122,8 @@ export function GeneratorWorkspace() {
                   Orientation
                   <select
                     className="mt-2 h-11 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] font-semibold text-white outline-none"
+                    id="generator-orientation"
+                    name="orientation"
                     onChange={(event) => setOrientation(event.target.value)}
                     value={orientation}
                   >
@@ -1070,8 +1141,10 @@ export function GeneratorWorkspace() {
                   Count
                   <input
                     className="mt-2 h-11 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] font-semibold text-white outline-none"
+                    id="generator-output-count"
                     max={maxCount}
                     min={1}
+                    name="outputCount"
                     onChange={(event) =>
                       setCount(Math.max(1, Math.min(maxCount, Number(event.target.value))))
                     }
@@ -1086,8 +1159,10 @@ export function GeneratorWorkspace() {
                 Count
                 <input
                   className="mt-2 h-11 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] font-semibold text-white outline-none"
+                  id="generator-output-count"
                   max={maxCount}
                   min={1}
+                  name="outputCount"
                   onChange={(event) =>
                     setCount(Math.max(1, Math.min(maxCount, Number(event.target.value))))
                   }
@@ -1102,6 +1177,8 @@ export function GeneratorWorkspace() {
                 Model
                 <select
                   className="mt-2 h-11 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] font-semibold text-white outline-none"
+                  id="generator-model"
+                  name="modelId"
                   onChange={(event) => {
                     const nextId = event.target.value;
                     const nextModel = availableModels.find((item) => item.id === nextId);
@@ -1166,6 +1243,8 @@ export function GeneratorWorkspace() {
                   <input
                     aria-label="Preset name"
                     className="h-11 flex-1 rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] font-semibold text-white outline-none"
+                    id="generator-preset-name"
+                    name="presetName"
                     onChange={(event) => setPresetName(event.target.value)}
                     placeholder="Name this preset"
                     value={presetName}
@@ -1185,35 +1264,46 @@ export function GeneratorWorkspace() {
                   </p>
                 ) : (
                   <ul className="grid gap-2">
-                    {userPresets.map((preset) => (
-                      <li
-                        className="flex items-center justify-between gap-2 rounded-[10px] bg-[rgb(36,36,36)] px-3 py-2"
-                        data-testid="my-preset-item"
-                        key={preset.id}
-                      >
-                        <span className="truncate text-[13px] font-semibold text-white">
-                          {preset.label}
-                        </span>
-                        <span className="flex shrink-0 gap-2">
-                          <button
-                            className="h-8 rounded-full bg-white px-3 text-[11px] font-black text-[rgb(13,13,13)]"
-                            onClick={() => applyPreset(preset)}
-                            type="button"
-                          >
-                            Apply
-                          </button>
-                          <button
-                            aria-label={`Delete preset ${preset.label}`}
-                            className="grid h-8 w-8 place-items-center rounded-full bg-black/40 text-white"
-                            onClick={() => void deletePreset(preset.id)}
-                            title="Delete preset"
-                            type="button"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </button>
-                        </span>
-                      </li>
-                    ))}
+                    {userPresets.map((preset) => {
+                      const confirmingDelete = deleteConfirmPresetId === preset.id;
+                      return (
+                        <li
+                          className="flex items-center justify-between gap-2 rounded-[10px] bg-[rgb(36,36,36)] px-3 py-2"
+                          data-testid="my-preset-item"
+                          key={preset.id}
+                        >
+                          <span className="min-w-0 truncate text-[13px] font-semibold text-white">
+                            {preset.label}
+                          </span>
+                          <span className="flex shrink-0 flex-wrap justify-end gap-2">
+                            <button
+                              className="h-8 rounded-full bg-white px-3 text-[11px] font-black text-[rgb(13,13,13)]"
+                              onClick={() => applyPreset(preset)}
+                              type="button"
+                            >
+                              Apply
+                            </button>
+                            <button
+                              aria-label={
+                                confirmingDelete
+                                  ? `Confirm delete preset ${preset.label}`
+                                  : `Delete preset ${preset.label}`
+                              }
+                              className={`h-8 rounded-full text-[11px] font-black ${
+                                confirmingDelete
+                                  ? "bg-white px-3 text-[rgb(13,13,13)]"
+                                  : "grid w-8 place-items-center bg-black/40 text-white"
+                              }`}
+                              onClick={() => void deletePreset(preset.id)}
+                              title={confirmingDelete ? "Confirm delete preset" : "Delete preset"}
+                              type="button"
+                            >
+                              {confirmingDelete ? "Confirm delete" : <Trash2 className="h-4 w-4" />}
+                            </button>
+                          </span>
+                        </li>
+                      );
+                    })}
                   </ul>
                 )}
               </div>
@@ -1227,6 +1317,8 @@ export function GeneratorWorkspace() {
                     aria-label="Prompt"
                     className="mt-2 min-h-24 w-full rounded-[10px] bg-[rgb(36,36,36)] p-4 text-[13px] font-semibold text-white outline-none disabled:text-[rgb(114,113,112)]"
                     disabled={!canUsePrompt}
+                    id="generator-prompt"
+                    name="prompt"
                     onChange={(event) => setPrompt(event.target.value)}
                     placeholder={canUsePrompt ? "Scene, pose, mood" : "Premium control"}
                     value={prompt}
@@ -1238,6 +1330,8 @@ export function GeneratorWorkspace() {
                   <input
                     className="mt-2 h-11 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] font-semibold text-white outline-none disabled:text-[rgb(114,113,112)]"
                     disabled={!canUsePrompt}
+                    id="generator-negative-prompt"
+                    name="negativePrompt"
                     onChange={(event) => setNegativePrompt(event.target.value)}
                     placeholder={canUsePrompt ? "Artifacts to avoid" : "Premium control"}
                     value={negativePrompt}
@@ -1249,7 +1343,7 @@ export function GeneratorWorkspace() {
             {!imageEditMode && !canUsePrompt && (
               <Link
                 className="mt-2 flex items-center justify-between gap-2 rounded-[10px] bg-[rgb(36,36,36)] px-4 py-3 text-[12px] font-semibold text-[rgb(190,190,190)]"
-                href="/upgrade"
+                href={upgradeHref}
               >
                 <span>Custom prompt &amp; negative prompt are Premium controls.</span>
                 <span className="rounded-full bg-[rgb(255,48,170)] px-3 py-1 text-[11px] font-black text-white">
@@ -1286,12 +1380,24 @@ export function GeneratorWorkspace() {
               {pending ? (imageEditMode ? "Queuing edit..." : "Queuing...") : imageEditMode ? "Create edit" : "Generate"}
             </button>
             {configError && (
-              <p className="mt-4 text-[13px] font-medium text-[rgb(255,184,112)]">
+              <p
+                aria-live="assertive"
+                className="mt-4 text-[13px] font-medium text-[rgb(255,184,112)]"
+                data-testid="generator-config-error"
+                role="alert"
+              >
                 {configError}
               </p>
             )}
             {status && (
-              <p className="mt-4 text-[13px] font-medium text-[rgb(190,190,190)]">{status}</p>
+              <p
+                aria-live="polite"
+                className="mt-4 text-[13px] font-medium text-[rgb(190,190,190)]"
+                data-testid="generator-status"
+                role="status"
+              >
+                {status}
+              </p>
             )}
           </form>
 
@@ -1436,13 +1542,14 @@ export function GeneratorWorkspace() {
                       Make private
                     </button>
                     <button
+                      aria-label={bulkDeleteArmed ? "Confirm delete selected" : "Delete selected"}
                       className="flex h-9 items-center gap-2 rounded-full bg-[rgb(255,48,170)] px-4 text-[12px] font-black text-white disabled:bg-[rgb(64,64,64)] disabled:text-[rgb(150,150,150)]"
                       disabled={selectedMediaIds.size === 0}
                       onClick={() => void runBulkMedia("delete")}
                       type="button"
                     >
                       <Trash2 className="h-4 w-4" />
-                      Delete selected
+                      {bulkDeleteArmed ? "Confirm delete selected" : "Delete selected"}
                     </button>
                   </span>
                 </div>
@@ -1451,7 +1558,10 @@ export function GeneratorWorkspace() {
                 {media.map((item, index) => {
                   const source = item.thumbnailUrl ?? item.url;
                   const isUnavailable =
-                    failedMediaIds.has(item.id) || isBuiltInMediaPlaceholderUrl(source);
+                    failedMediaIds.has(item.id) ||
+                    invalidPreviewMediaIds.has(item.id) ||
+                    isUnusableImagePreview(item) ||
+                    isBuiltInMediaPlaceholderUrl(source);
                   const isSelected = selectedMediaIds.has(item.id);
                   return (
                     <div
@@ -1467,9 +1577,12 @@ export function GeneratorWorkspace() {
                           className="grid h-full place-items-center px-4 text-center text-[13px] font-semibold text-[rgb(170,170,170)]"
                           data-testid="gallery-media-unavailable"
                         >
-                          <div className="flex flex-col items-center gap-2">
+                          <div
+                            className="flex flex-col items-center gap-2"
+                            data-testid="gallery-media-preview-fallback"
+                          >
                             <ImageIcon className="h-5 w-5" />
-                            Media unavailable
+                            Preview unavailable
                           </div>
                         </div>
                       ) : (
@@ -1478,6 +1591,14 @@ export function GeneratorWorkspace() {
                           loading={index < 3 ? "eager" : "lazy"}
                           onError={() =>
                             setFailedMediaIds((current) => {
+                              if (current.has(item.id)) return current;
+                              const next = new Set(current);
+                              next.add(item.id);
+                              return next;
+                            })
+                          }
+                          onInvalidPreview={() =>
+                            setInvalidPreviewMediaIds((current) => {
                               if (current.has(item.id)) return current;
                               const next = new Set(current);
                               next.add(item.id);
@@ -1562,9 +1683,27 @@ export function GeneratorWorkspace() {
                             <IconButton label="Report" onClick={() => reportMedia(item.id)}>
                               <Flag className="h-4 w-4" />
                             </IconButton>
-                            <IconButton label="Delete" onClick={() => deleteMedia(item.id)}>
-                              <Trash2 className="h-4 w-4" />
-                            </IconButton>
+                            <button
+                              aria-label={
+                                deleteConfirmMediaId === item.id ? "Confirm delete media" : "Delete"
+                              }
+                              className={
+                                deleteConfirmMediaId === item.id
+                                  ? "inline-flex h-9 items-center justify-center rounded-full bg-[rgb(170,20,45)] px-3 text-[12px] font-bold text-white"
+                                  : "grid h-9 w-9 place-items-center rounded-full bg-black/70 text-white"
+                              }
+                              onClick={() => deleteMedia(item.id)}
+                              title={
+                                deleteConfirmMediaId === item.id ? "Confirm delete media" : "Delete"
+                              }
+                              type="button"
+                            >
+                              {deleteConfirmMediaId === item.id ? (
+                                "Confirm delete"
+                              ) : (
+                                <Trash2 className="h-4 w-4" />
+                              )}
+                            </button>
                           </div>
                         </>
                       )}
@@ -1643,6 +1782,7 @@ function PresetSelect({
   onChange: (value: string) => void;
 }) {
   const testId = `preset-select-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+  const fieldName = testId.replace("preset-select-", "preset-");
   return (
     <label className="block text-[11px] font-bold uppercase text-[rgb(114,113,112)]">
       {label}
@@ -1650,6 +1790,8 @@ function PresetSelect({
         className="mt-2 h-11 w-full rounded-[10px] bg-[rgb(36,36,36)] px-2 text-[12px] font-semibold text-white outline-none disabled:text-[rgb(114,113,112)]"
         data-testid={testId}
         disabled={options.length === 0}
+        id={testId}
+        name={fieldName}
         onChange={(event) => onChange(event.target.value)}
         value={value}
       >
@@ -1668,11 +1810,13 @@ function MediaPreview({
   item,
   loading,
   onError,
+  onInvalidPreview,
   source,
 }: {
   item: MediaItem;
   loading: "eager" | "lazy";
   onError: () => void;
+  onInvalidPreview: () => void;
   source: string;
 }) {
   if (item.type === "video") {
@@ -1698,6 +1842,16 @@ function MediaPreview({
       data-testid="gallery-media-image"
       fill
       loading={loading}
+      onLoad={(event) => {
+        const image = event.currentTarget;
+        if (
+          image.naturalWidth <= 1 ||
+          image.naturalHeight <= 1 ||
+          isBlankImagePreview(image)
+        ) {
+          onInvalidPreview();
+        }
+      }}
       onError={onError}
       sizes="(min-width: 1024px) 240px, 45vw"
       src={source}
@@ -1826,6 +1980,10 @@ function navigateDownloadWindow(target: Window | null, url: string) {
   window.location.href = url;
 }
 
+function upgradeHrefForTarget(target: string) {
+  return `/upgrade?returnTo=${encodeURIComponent(target || "/generate")}`;
+}
+
 function isPrivateMediaUrl(url: string) {
   return url.startsWith("/api/v1/media/") || url.startsWith("/user-content/");
 }
@@ -1836,6 +1994,44 @@ function isBuiltInMediaPlaceholderUrl(url: string) {
     lower.includes("/images/ourdream/card-sarah-mercer.webp") ||
     lower.includes("%2fimages%2fourdream%2fcard-sarah-mercer.webp")
   );
+}
+
+function isUnusableImagePreview(item: MediaItem) {
+  if (item.type !== "image") return false;
+  if (item.width == null || item.height == null) return false;
+  return item.width <= 1 || item.height <= 1;
+}
+
+function isBlankImagePreview(image: HTMLImageElement) {
+  const width = Math.min(16, image.naturalWidth);
+  const height = Math.min(16, image.naturalHeight);
+  if (width <= 0 || height <= 0) return false;
+
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) return false;
+
+    context.drawImage(image, 0, 0, width, height);
+    const data = context.getImageData(0, 0, width, height).data;
+    let min = 255;
+    let max = 0;
+    for (let index = 0; index < data.length; index += 4) {
+      const red = data[index] ?? 0;
+      const green = data[index + 1] ?? 0;
+      const blue = data[index + 2] ?? 0;
+      const luminance = Math.round(red * 0.2126 + green * 0.7152 + blue * 0.0722);
+      min = Math.min(min, luminance);
+      max = Math.max(max, luminance);
+    }
+
+    const range = max - min;
+    return range <= 1 || (range <= 4 && (min >= 250 || max <= 5));
+  } catch {
+    return false;
+  }
 }
 
 function generationConfigErrorMessage(status: number) {

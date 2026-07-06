@@ -1,0 +1,100 @@
+{
+  "runId": 1783249648047,
+  "email": "chrome-billing-current-1783249648047@test.local",
+  "baseUrl": "http://127.0.0.1:3273",
+  "steps": [
+    {
+      "step": "signup-return-upgrade",
+      "counts": {
+        "name": 1,
+        "email": 1,
+        "password": 1,
+        "submit": 1
+      },
+      "state": {
+        "hasDemoNotice": true,
+        "hasLogout": true,
+        "hasPremiumMonthly": false,
+        "horizontalOverflow": false,
+        "title": "Upgrade Ourdream | ourdream.ai",
+        "url": "http://127.0.0.1:3273/upgrade?plan=premium&billing=monthly&returnTo=/profile%23billing"
+      }
+    },
+    {
+      "step": "premium-monthly-activation",
+      "cardCount": 1,
+      "buttonCount": 1,
+      "state": {
+        "horizontalOverflow": false,
+        "links": [
+          {
+            "href": "/profile#billing",
+            "text": "View billing"
+          },
+          {
+            "href": "/profile#billing",
+            "text": "Continue"
+          }
+        ],
+        "premiumCardText": null,
+        "resultAriaLive": "polite",
+        "resultRole": "status",
+        "resultText": "Premium monthly is active. 1,500 dreamcoins were added.View billingContinue",
+        "url": "http://127.0.0.1:3273/upgrade?plan=premium&billing=monthly&returnTo=/profile%23billing"
+      }
+    },
+    {
+      "step": "profile-billing-active",
+      "viewBillingCount": 1,
+      "state": {
+        "cardText": "Billing PortalPremium monthlyRenews Aug 4, 2026ManageChange planCancel renewal",
+        "hash": "#billing",
+        "horizontalOverflow": false,
+        "statusAriaLive": null,
+        "statusRole": null,
+        "statusText": null,
+        "url": "http://127.0.0.1:3273/profile#billing"
+      }
+    },
+    {
+      "step": "cancel-renewal",
+      "cancelCount": 1,
+      "state": {
+        "cardText": "Billing PortalPremium monthlyRenewal canceled · benefits active until Aug 4, 2026ManageChange planResume renewal",
+        "horizontalOverflow": false,
+        "statusAriaLive": "polite",
+        "statusRole": "status",
+        "statusText": "Renewal canceled. Benefits stay active until the current period ends.",
+        "url": "http://127.0.0.1:3273/profile#billing"
+      }
+    },
+    {
+      "step": "resume-renewal",
+      "resumeCount": 1,
+      "state": {
+        "cardText": "Billing PortalPremium monthlyRenews Aug 4, 2026ManageChange planCancel renewal",
+        "horizontalOverflow": false,
+        "statusAriaLive": "polite",
+        "statusRole": "status",
+        "statusText": "Renewal resumed.",
+        "url": "http://127.0.0.1:3273/profile#billing"
+      }
+    },
+    {
+      "step": "manage-billing-status",
+      "manageCount": 1,
+      "changePlanCount": 1,
+      "changePlanHref": "/upgrade",
+      "state": {
+        "cardText": "Billing PortalPremium monthlyRenews Aug 4, 2026ManageChange planCancel renewal",
+        "horizontalOverflow": false,
+        "statusAriaLive": "polite",
+        "statusRole": "status",
+        "statusText": "Subscription management is available for the active local plan.",
+        "url": "http://127.0.0.1:3273/profile#billing"
+      }
+    }
+  ],
+  "browserLogs": [],
+  "finalUrl": "http://127.0.0.1:3273/profile#billing"
+}

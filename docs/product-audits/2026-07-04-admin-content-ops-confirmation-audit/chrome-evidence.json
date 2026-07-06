@@ -1,0 +1,21 @@
+{
+  "browserChannel": "chrome",
+  "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.0.0 Safari/537.36",
+  "adminURL": "http://127.0.0.1:3174",
+  "screenshots": [
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-content-ops-confirmation-audit/01-asset-archive-confirmation.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-content-ops-confirmation-audit/02-asset-archived.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-content-ops-confirmation-audit/03-placement-create-confirmation.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-content-ops-confirmation-audit/04-placement-pause-confirmation.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-content-ops-confirmation-audit/05-placement-paused.png"
+  ],
+  "checks": [
+    "asset archive requires second click",
+    "archived asset status persists",
+    "archived asset rejected by placement API",
+    "archived asset hidden from approved asset select",
+    "published placement create requires second click",
+    "pause placement requires second click",
+    "character avatar placement applies after confirmed publish"
+  ]
+}

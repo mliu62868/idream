@@ -6,6 +6,7 @@ import { AGE_GATE_COOKIE, type ActorRole } from "@/server/lib/auth";
 import { dispatchV1 } from "@/server/modules/ourdream/service";
 import { jobQueue } from "@/server/jobs/queue";
 import { drainLocalAiPipeline, localAiQueueNames } from "@/server/ai/local-pipeline";
+import { redeemCodeHash } from "@/server/lib/redeem-codes";
 
 // SPEC: Shared integration-test client + fixtures for the /api/v1 surface.
 // INTENT: One ergonomic `api()` that drives dispatchV1 exactly like the route
@@ -228,22 +229,26 @@ export async function createMedia(input: CreateMediaInput) {
   });
 }
 
-/** Mirror of service.simpleHash — used to seed redeem codes for tests. */
-export function redeemCodeHash(code: string) {
-  let hash = 5381;
-  for (const char of code) hash = (hash * 33) ^ char.charCodeAt(0);
-  return `redeem_${Math.abs(hash)}`;
-}
-
 export async function createRedeemCode(
   code: string,
   reward: Prisma.InputJsonValue = { dreamcoins: 500 },
+  options: { maxRedemptions?: number | null; expiresAt?: Date | null } = {},
 ) {
-  const codeHash = redeemCodeHash(code.toUpperCase());
+  const codeHash = redeemCodeHash(code);
+  const update: Prisma.RedeemCodeUpdateInput = { reward, status: "active" };
+  if (options.maxRedemptions !== undefined) update.maxRedemptions = options.maxRedemptions;
+  if (options.expiresAt !== undefined) update.expiresAt = options.expiresAt;
   return prisma.redeemCode.upsert({
     where: { codeHash },
-    update: { reward, status: "active" },
-    create: { id: code, codeHash, reward, status: "active" },
+    update,
+    create: {
+      id: code,
+      codeHash,
+      reward,
+      status: "active",
+      maxRedemptions: options.maxRedemptions ?? null,
+      expiresAt: options.expiresAt ?? null,
+    },
   });
 }
 

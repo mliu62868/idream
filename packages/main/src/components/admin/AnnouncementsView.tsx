@@ -1,7 +1,7 @@
 "use client";
 
 // SPEC: 公告/banner 后台面板（ADMIN_PHASE4_DESIGN §3）。新建 / 启停 / 删除，写后 refetch。
-// INTENT: 自取数、无 props；样式对齐 TagsView。启停/删除经 prompt 收 reason（≥3）。
+// INTENT: 自取数、无 props；样式对齐 TagsView。启停/删除经 inline typed confirmation。
 import { useEffect, useState } from "react";
 import { Loader2, Plus, RefreshCcw, Trash2 } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
@@ -15,6 +15,13 @@ type Announcement = {
   active: boolean;
   href: string | null;
   createdAt: string;
+};
+
+type AnnouncementActionDraft = {
+  kind: "toggle" | "delete";
+  item: Announcement;
+  reason: string;
+  confirmation: string;
 };
 
 const inputClass =
@@ -35,6 +42,8 @@ export function AnnouncementsView() {
   const [items, setItems] = useState<Announcement[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [actionDraft, setActionDraft] = useState<AnnouncementActionDraft | null>(null);
+  const [actionBusy, setActionBusy] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -54,32 +63,33 @@ export function AnnouncementsView() {
     return () => window.clearTimeout(timer);
   }, []);
 
-  async function toggleActive(item: Announcement) {
-    const reason = window.prompt(`Reason for ${item.active ? "deactivating" : "activating"} (≥3)`);
-    if (!reason || reason.trim().length < 3) return;
-    try {
-      await apiWrite(`/api/v1/admin/announcements/${item.id}`, "PATCH", {
-        active: !item.active,
-        reason: reason.trim(),
-        confirmation: "ANNOUNCE",
-      });
-      load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Update failed");
-    }
+  function startAction(kind: AnnouncementActionDraft["kind"], item: Announcement) {
+    setError(null);
+    setActionDraft({ kind, item, reason: "", confirmation: "" });
   }
 
-  async function remove(item: Announcement) {
-    const reason = window.prompt(`Reason for deleting "${item.title}" (≥3)`);
-    if (!reason || reason.trim().length < 3) return;
+  async function submitAction() {
+    if (!actionDraft || !canConfirmAnnouncementAction(actionDraft)) return;
+    setActionBusy(true);
     try {
-      await apiDelete(`/api/v1/admin/announcements/${item.id}`, {
-        reason: reason.trim(),
-        confirmation: "DELETE",
-      });
-      load();
+      if (actionDraft.kind === "toggle") {
+        await apiWrite(`/api/v1/admin/announcements/${actionDraft.item.id}`, "PATCH", {
+          active: !actionDraft.item.active,
+          reason: actionDraft.reason.trim(),
+          confirmation: actionDraft.confirmation.trim(),
+        });
+      } else {
+        await apiDelete(`/api/v1/admin/announcements/${actionDraft.item.id}`, {
+          reason: actionDraft.reason.trim(),
+          confirmation: actionDraft.confirmation.trim(),
+        });
+      }
+      setActionDraft(null);
+      await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Delete failed");
+      setError(err instanceof Error ? err.message : "Announcement action failed");
+    } finally {
+      setActionBusy(false);
     }
   }
 
@@ -101,6 +111,52 @@ export function AnnouncementsView() {
 
       <CreateAnnouncementForm reload={load} />
 
+      {actionDraft ? (
+        <section className="border border-amber-300/30 bg-amber-950/20 p-3">
+          <p className="text-xs font-semibold text-amber-100">
+            {actionDraft.kind === "delete"
+              ? t("Confirm announcement delete")
+              : actionDraft.item.active
+                ? t("Confirm announcement deactivation")
+                : t("Confirm announcement activation")}{" "}
+            <span className="font-mono">{actionDraft.item.id}</span>
+          </p>
+          <p className="mt-1 text-xs text-[rgb(170,170,170)]">{actionDraft.item.title}</p>
+          <div className="mt-3 grid gap-3 md:grid-cols-[1fr_260px_auto_auto]">
+            <input
+              aria-label={t("Announcement action reason")}
+              className={inputClass}
+              onChange={(event) => setActionDraft({ ...actionDraft, reason: event.target.value })}
+              placeholder={t("Reason (≥3)")}
+              value={actionDraft.reason}
+            />
+            <input
+              aria-label={t("Announcement action confirmation")}
+              className={`${inputClass} font-mono`}
+              onChange={(event) => setActionDraft({ ...actionDraft, confirmation: event.target.value })}
+              placeholder={actionDraft.item.id}
+              value={actionDraft.confirmation}
+            />
+            <button
+              className="inline-flex h-10 items-center justify-center border border-white/10 px-3 text-sm"
+              onClick={() => setActionDraft(null)}
+              type="button"
+            >
+              {t("Cancel")}
+            </button>
+            <button
+              className="inline-flex h-10 items-center justify-center bg-amber-200 px-3 text-sm font-semibold text-amber-950 disabled:opacity-50"
+              disabled={actionBusy || !canConfirmAnnouncementAction(actionDraft)}
+              onClick={() => void submitAction()}
+              type="button"
+            >
+              {actionBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              {actionDraft.kind === "delete" ? t("Confirm delete") : t("Confirm update")}
+            </button>
+          </div>
+        </section>
+      ) : null}
+
       <section className="border border-white/10 bg-[rgb(18,18,18)]">
         <table className="w-full text-left text-sm">
           <thead className="border-b border-white/10 text-xs text-[rgb(170,170,170)]">
@@ -121,14 +177,17 @@ export function AnnouncementsView() {
                   <div className="flex justify-end gap-2">
                     <button
                       className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs"
-                      onClick={() => void toggleActive(item)}
+                      disabled={actionBusy}
+                      onClick={() => startAction("toggle", item)}
                       type="button"
                     >
                       {item.active ? t("Deactivate") : t("Activate")}
                     </button>
                     <button
+                      aria-label={t("Delete announcement")}
                       className="inline-flex h-8 items-center gap-1 border border-red-400/30 px-2 text-xs text-red-200"
-                      onClick={() => void remove(item)}
+                      disabled={actionBusy}
+                      onClick={() => startAction("delete", item)}
                       type="button"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
@@ -151,6 +210,11 @@ export function AnnouncementsView() {
   );
 }
 
+function canConfirmAnnouncementAction(draft: AnnouncementActionDraft) {
+  const confirmation = draft.confirmation.trim();
+  return draft.reason.trim().length >= 3 && confirmation === draft.item.id;
+}
+
 function CreateAnnouncementForm({ reload }: { reload: () => void }) {
   const { t, value: valueLabel } = useAdminI18n();
   const [title, setTitle] = useState("");
@@ -159,8 +223,10 @@ function CreateAnnouncementForm({ reload }: { reload: () => void }) {
   const [level, setLevel] = useState<"info" | "promo" | "warning">("info");
   const [active, setActive] = useState(true);
   const [reason, setReason] = useState("");
+  const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const trimmedTitle = title.trim();
 
   async function create() {
     setBusy(true);
@@ -173,12 +239,13 @@ function CreateAnnouncementForm({ reload }: { reload: () => void }) {
         level,
         active,
         reason: reason.trim(),
-        confirmation: "ANNOUNCE",
+        confirmation: confirmation.trim(),
       });
       setTitle("");
       setBody("");
       setHref("");
       setReason("");
+      setConfirmation("");
       reload();
     } catch (error) {
       setErr(error instanceof Error ? error.message : "Create failed");
@@ -188,7 +255,11 @@ function CreateAnnouncementForm({ reload }: { reload: () => void }) {
   }
 
   const canCreate =
-    !busy && title.trim().length > 0 && body.trim().length > 0 && reason.trim().length >= 3;
+    !busy &&
+    trimmedTitle.length > 0 &&
+    body.trim().length > 0 &&
+    reason.trim().length >= 3 &&
+    confirmation.trim() === trimmedTitle;
 
   return (
     <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
@@ -222,6 +293,13 @@ function CreateAnnouncementForm({ reload }: { reload: () => void }) {
           onChange={(e) => setReason(e.target.value)}
           placeholder={t("Reason (≥3)")}
           value={reason}
+        />
+        <input
+          aria-label={t("Announcement create confirmation")}
+          className={inputClass}
+          onChange={(e) => setConfirmation(e.target.value)}
+          placeholder={t("Type title to confirm")}
+          value={confirmation}
         />
         <button
           className="inline-flex h-10 items-center justify-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"

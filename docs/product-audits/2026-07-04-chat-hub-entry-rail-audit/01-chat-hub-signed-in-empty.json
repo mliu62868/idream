@@ -1,0 +1,127 @@
+{
+  "state": {
+    "buttons": [
+      "Open navigation menu",
+      "Search",
+      "Log out"
+    ],
+    "headings": [
+      "Your chats",
+      "No chats yet",
+      "Start a conversation",
+      "Learn",
+      "Popular",
+      "Help"
+    ],
+    "links": [
+      {
+        "href": "/create",
+        "testid": null,
+        "text": "Create"
+      },
+      {
+        "href": "/",
+        "testid": null,
+        "text": "Explore"
+      },
+      {
+        "href": "/chat",
+        "testid": null,
+        "text": "Chat"
+      },
+      {
+        "href": "/generate",
+        "testid": null,
+        "text": "Generate"
+      },
+      {
+        "href": "/custom",
+        "testid": null,
+        "text": "My AI"
+      },
+      {
+        "href": "/feed",
+        "testid": null,
+        "text": "Feed"
+      },
+      {
+        "href": "/community",
+        "testid": null,
+        "text": "Community"
+      },
+      {
+        "href": "/helpdesk",
+        "testid": null,
+        "text": "Help Desk"
+      },
+      {
+        "href": "/safety/introduction",
+        "testid": null,
+        "text": "Safety Center"
+      },
+      {
+        "href": "https://discord.gg/P47YU7je5D",
+        "testid": null,
+        "text": "Discord"
+      },
+      {
+        "href": "/resources-hub",
+        "testid": null,
+        "text": "More"
+      },
+      {
+        "href": "/profile",
+        "testid": null,
+        "text": "Profile"
+      },
+      {
+        "href": "/upgrade",
+        "testid": null,
+        "text": "Upgrade"
+      },
+      {
+        "href": "/",
+        "testid": null,
+        "text": ""
+      },
+      {
+        "href": "/profile",
+        "testid": null,
+        "text": "CChrome Muted Tags"
+      },
+      {
+        "href": "/",
+        "testid": null,
+        "text": "Explore"
+      },
+      {
+        "href": "/",
+        "testid": null,
+        "text": "Explore characters"
+      },
+      {
+        "href": "/create",
+        "testid": null,
+        "text": "Create private character"
+      },
+      {
+        "href": "/characters/melissa-burke",
+        "testid": "chat-hub-character-card",
+        "text": "Melissa Burke2.2M chats"
+      },
+      {
+        "href": "/characters/summoned-world",
+        "testid": "chat-hub-character-card",
+        "text": "Summoned to Another World1.4M chats"
+      }
+    ],
+    "testids": [
+      "chat-hub-start-panel",
+      "chat-hub-character-card",
+      "chat-hub-character-card",
+      "chat-hub-character-card"
+    ],
+    "url": "http://localhost:3234/chat"
+  },
+  "logs": []
+}

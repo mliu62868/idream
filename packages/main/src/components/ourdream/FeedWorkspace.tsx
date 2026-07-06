@@ -40,6 +40,10 @@ type FeedCollectionItem = {
 
 type FeedItem = FeedCharacterItem | FeedCollectionItem;
 
+function countLabel(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
 type FeedPayload = {
   ok?: boolean;
   data?: {
@@ -257,6 +261,8 @@ export function FeedWorkspace() {
           <p
             aria-live="polite"
             className="mb-5 rounded-[12px] bg-[rgb(36,36,36)] px-4 py-3 text-[13px] font-semibold text-[rgb(220,220,220)]"
+            data-testid="feed-status"
+            role="status"
           >
             {status}
           </p>
@@ -390,6 +396,7 @@ function CharacterFeedCard({
           icon={<Heart className={`h-4 w-4 ${liked ? "fill-current" : ""}`} />}
           label={liked ? "Liked" : "Like"}
           onClick={onLike}
+          pressed={liked}
         />
         <ActionButton icon={<Share2 className="h-4 w-4" />} label="Share" onClick={onShare} />
         <ActionButton icon={<Flag className="h-4 w-4" />} label="Report" onClick={onReport} />
@@ -448,7 +455,8 @@ function CollectionFeedCard({
             {item.collection.name}
           </h2>
           <p className="mt-2 text-[13px] font-semibold text-[rgb(220,220,220)]">
-            {item.collection.itemCount} items · by {item.collection.ownerName ?? "Dreamer"}
+            {countLabel(item.collection.itemCount, "item")} · by{" "}
+            {item.collection.ownerName ?? "Dreamer"}
           </p>
         </div>
       </Link>
@@ -527,17 +535,19 @@ function ActionButton({
   icon,
   label,
   onClick,
+  pressed,
 }: Readonly<{
   active?: boolean;
   disabled?: boolean;
   icon: React.ReactNode;
   label: string;
   onClick: () => void;
+  pressed?: boolean;
 }>) {
   return (
     <button
       aria-label={label}
-      aria-pressed={active}
+      aria-pressed={pressed}
       className={actionClass(active)}
       disabled={disabled}
       onClick={onClick}

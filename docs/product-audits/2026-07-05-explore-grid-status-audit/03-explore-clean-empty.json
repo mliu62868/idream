@@ -1,0 +1,58 @@
+{
+  "cleanEmptyQuery": "chrome empty grid patched 1783244863722",
+  "cleanEmptyState": {
+    "capturedAt": "2026-07-05T09:47:45.270Z",
+    "characterCardCount": 0,
+    "horizontalOverflow": false,
+    "searchValues": [
+      "chrome empty grid patched 1783244863722",
+      "chrome empty grid patched 1783244863722"
+    ],
+    "statusLive": "polite",
+    "statusRole": "status",
+    "statusText": "No characters foundTry another search term, clear a category, or switch the gender, style, and age filters.",
+    "url": "http://explore-grid-status-1783261000.localhost:3265/?q=chrome+empty+grid+patched+1783244863722&gender=any",
+    "viewport": {
+      "height": 827,
+      "width": 1512
+    }
+  },
+  "logs": [
+    {
+      "level": "info",
+      "message": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+      "timestamp": "2026-07-05T09:41:23.498Z",
+      "url": "http://explore-grid-status-1783261000.localhost:3265/_next/static/chunks/0rrz_next_dist_0l8l5wh._.js"
+    },
+    {
+      "level": "log",
+      "message": "[HMR] connected",
+      "timestamp": "2026-07-05T09:41:23.536Z",
+      "url": "http://explore-grid-status-1783261000.localhost:3265/_next/static/chunks/0rrz_next_dist_0l8l5wh._.js"
+    },
+    {
+      "level": "log",
+      "message": "[Fast Refresh] rebuilding",
+      "timestamp": "2026-07-05T09:41:23.704Z",
+      "url": "http://explore-grid-status-1783261000.localhost:3265/_next/static/chunks/0rrz_next_dist_0l8l5wh._.js"
+    },
+    {
+      "level": "log",
+      "message": "[Fast Refresh] done in 228ms",
+      "timestamp": "2026-07-05T09:41:23.831Z",
+      "url": "http://explore-grid-status-1783261000.localhost:3265/_next/static/chunks/0rrz_next_dist_0l8l5wh._.js"
+    },
+    {
+      "level": "info",
+      "message": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+      "timestamp": "2026-07-05T09:47:44.125Z",
+      "url": "http://explore-grid-status-1783261000.localhost:3265/_next/static/chunks/0rrz_next_dist_0l8l5wh._.js"
+    },
+    {
+      "level": "log",
+      "message": "[HMR] connected",
+      "timestamp": "2026-07-05T09:47:44.154Z",
+      "url": "http://explore-grid-status-1783261000.localhost:3265/_next/static/chunks/0rrz_next_dist_0l8l5wh._.js"
+    }
+  ]
+}

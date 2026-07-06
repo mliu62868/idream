@@ -1,0 +1,42 @@
+{
+  "fixture": {
+    "characterId": "chrome-search-suggest-char-1783213991361-466318",
+    "token": "Chrome Search Suggest 1783213991361-466318"
+  },
+  "suggestions": {
+    "bodyOverflowX": false,
+    "expectedHref": "/characters/chrome-search-suggest-char-1783213991361-466318",
+    "inputValue": "Chrome Search Suggest 1783213991361-466318 Alpha",
+    "optionCount": 1,
+    "options": [
+      {
+        "ariaLabel": "Open Chrome Search Suggest 1783213991361-466318 Alpha",
+        "href": "/characters/chrome-search-suggest-char-1783213991361-466318",
+        "imageComplete": true,
+        "imageNaturalWidth": 40,
+        "text": "Chrome Search Suggest 1783213991361-466318 Alpha27 · Chrome Search Creator"
+      }
+    ],
+    "panelRect": {
+      "height": 66,
+      "top": 52,
+      "width": 340
+    },
+    "panelVisible": true
+  },
+  "detail": {
+    "bodyOverflowX": false,
+    "expectedPath": "/characters/chrome-search-suggest-char-1783213991361-466318",
+    "hasCharacterName": true,
+    "path": "/characters/chrome-search-suggest-char-1783213991361-466318",
+    "url": "http://localhost:3221/characters/chrome-search-suggest-char-1783213991361-466318"
+  },
+  "navigation": {
+    "mechanism": "router.push keyboard selection; waitForURL observed the App Router destination"
+  },
+  "logs": [],
+  "screenshots": [
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-global-search-suggestions-audit/01-search-suggestions.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-global-search-suggestions-audit/02-search-suggestion-detail.png"
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "authPanelVisible": false,
+  "characterCards": [
+    {
+      "href": "/characters/melissa-burke",
+      "label": "Chat with Melissa Burke",
+      "text": "Melissa Burke2.2M chats"
+    },
+    {
+      "href": "/characters/summoned-world",
+      "label": "Chat with Summoned to Another World",
+      "text": "Summoned to Another World1.4M chats"
+    },
+    {
+      "href": "/characters/sarah-mercer",
+      "label": "Chat with Sarah Mercer",
+      "text": "Sarah Mercer1.3M chats"
+    }
+  ],
+  "heading": "Your chats",
+  "horizontalOverflow": false,
+  "sessionCards": 3,
+  "startPanelVisible": true,
+  "statusNodes": [],
+  "url": "http://127.0.0.1:3258/chat",
+  "visibleTextSample": "CreateExploreChatGenerateMy AIFeedCommunityHelp DeskSafety CenterDiscordMoreProfileUpgrade2026 OURDREAM.AIUSA: Dream Studio USA, Inc.Cyprus: TEKTOPIA LTD (HE 473775)AAdminLog outYour chatsPick up a conversation or start a new one from Explore.ExploreUntitled chat1h agoUser: Hi Melissa, how was your day? Assistant: Hi there. I had a really lovely day, mostly spent hanging out with you and making sure everyone at school was safe. I'm so glad to meet you, too. Did you get to see that new art project? User: 你几岁了？ Assistant: 我今年38岁了。虽然时间过得真快，但看着你们长大感觉就像昨天发生的事一样。你呢，你今天过得怎么样？ User: 你几岁了？ Assistant: 我今年 38 岁了。虽然看着你长大，但在我眼里，你就像个永远长不大的孩子，让我既心疼又骄傲。 你呢？最近过得怎么样？ User: 你几岁了？ Assistant: 我今年 38 岁了。虽然看着你长大，但在我眼里，你就像个永远长不大的孩子，让我既心疼又骄傲。 你呢？最近过得怎么样？ User: i love u Assistant: That makes me so happy, my dear. You know I've always been here for you, just like I've always been your best friend's mom and the one who made you those sandwiches after school. Knowing you love me means the world to me. Do you want "
+}

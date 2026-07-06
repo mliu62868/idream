@@ -76,13 +76,13 @@ const itemReviewSchema = z.object({
   rating: z.number().int().min(1).max(5).optional(),
   tags: z.array(z.string().trim().min(1).max(60)).max(24).default([]),
   reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.string().trim().max(160).optional(),
+  confirmation: z.string().trim().min(1).max(160),
 });
 
 const itemRegenerateSchema = z.object({
   brief: optionalText(2_000),
   reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.string().trim().max(160).optional(),
+  confirmation: z.string().trim().min(1).max(160),
 });
 
 const assetPatchSchema = z.object({
@@ -92,7 +92,7 @@ const assetPatchSchema = z.object({
   description: optionalText(2_000),
   reviewNote: optionalText(2_000),
   reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.string().trim().max(160).optional(),
+  confirmation: z.string().trim().min(1).max(160),
 });
 
 const assetBulkSchema = z.object({
@@ -101,7 +101,7 @@ const assetBulkSchema = z.object({
   tags: z.array(z.string().trim().min(1).max(60)).max(48).optional(),
   description: optionalText(2_000),
   reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.string().trim().max(160).optional(),
+  confirmation: z.string().trim().min(1).max(20_000),
 });
 
 const placementCreateSchema = z.object({
@@ -120,7 +120,7 @@ const placementPatchSchema = z.object({
   scheduledAt: optionalText(80),
   metadata: z.record(z.string(), z.unknown()).optional(),
   reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.string().trim().max(160).optional(),
+  confirmation: z.string().trim().min(1).max(160),
 });
 
 const productionBatchInclude = {
@@ -353,7 +353,7 @@ export async function getProductionBatch(request: Request, id: string) {
 export async function approveProductionItem(request: Request, id: string) {
   const actor = await actorWithPermission(request, "content.asset.review");
   const body = itemReviewSchema.parse(await jsonBody(request));
-  if (body.confirmation && body.confirmation !== id && body.confirmation !== "APPROVE") {
+  if (body.confirmation !== id) {
     throw Errors.badRequest("Confirmation did not match production item");
   }
   const item = await itemWithAsset(id);
@@ -408,7 +408,7 @@ export async function approveProductionItem(request: Request, id: string) {
 export async function rejectProductionItem(request: Request, id: string) {
   const actor = await actorWithPermission(request, "content.asset.review");
   const body = itemReviewSchema.parse(await jsonBody(request));
-  if (body.confirmation && body.confirmation !== id && body.confirmation !== "REJECT") {
+  if (body.confirmation !== id) {
     throw Errors.badRequest("Confirmation did not match production item");
   }
   const item = await itemWithAsset(id);
@@ -459,7 +459,7 @@ export async function rejectProductionItem(request: Request, id: string) {
 export async function regenerateProductionItem(request: Request, id: string) {
   const actor = await actorWithPermission(request, "content.production.write");
   const body = itemRegenerateSchema.parse(await jsonBody(request));
-  if (body.confirmation && body.confirmation !== id && body.confirmation !== "REGENERATE") {
+  if (body.confirmation !== id) {
     throw Errors.badRequest("Confirmation did not match production item");
   }
   const sourceItem = await prisma.contentProductionItem.findUnique({
@@ -604,6 +604,7 @@ export async function listContentAssets(request: Request) {
   await actorWithPermission(request, "content.asset.read");
   const url = new URL(request.url);
   const status = url.searchParams.get("status")?.trim() || undefined;
+  const productionItemStatus = status === "archived" ? undefined : status;
   const purpose = productionPurposeSchema.safeParse(url.searchParams.get("purpose")).data;
   const profileId = url.searchParams.get("profileId")?.trim() || undefined;
   const targetId = url.searchParams.get("targetId")?.trim() || undefined;
@@ -614,7 +615,7 @@ export async function listContentAssets(request: Request) {
       sourceJob: profileId ? { profileId } : undefined,
       productionItems: {
         some: {
-          status,
+          status: productionItemStatus,
           batch: {
             purpose,
             targetId,
@@ -627,9 +628,15 @@ export async function listContentAssets(request: Request) {
     take: clampInt(url.searchParams.get("limit"), 1, 200, 80),
   });
   const tag = url.searchParams.get("tag")?.trim();
+  const statusFiltered =
+    status === "archived"
+      ? assets.filter((asset) => platformAssetMetadata(asset).status === "archived")
+      : status
+        ? assets.filter((asset) => platformAssetMetadata(asset).status !== "archived")
+        : assets;
   const filtered = tag
-    ? assets.filter((asset) => assetTags(asset).includes(tag))
-    : assets;
+    ? statusFiltered.filter((asset) => assetTags(asset).includes(tag))
+    : statusFiltered;
   return ok({ items: filtered.map(contentAssetDTO) });
 }
 
@@ -646,7 +653,7 @@ export async function getContentAsset(request: Request, id: string) {
 export async function patchContentAsset(request: Request, id: string) {
   const actor = await actorWithPermission(request, "content.asset.review");
   const body = assetPatchSchema.parse(await jsonBody(request));
-  if (body.confirmation && body.confirmation !== id && body.confirmation !== "ASSET") {
+  if (body.confirmation !== id) {
     throw Errors.badRequest("Confirmation did not match asset");
   }
   const asset = await prisma.mediaAsset.findUnique({ where: { id } });
@@ -709,8 +716,8 @@ export async function patchContentAsset(request: Request, id: string) {
 export async function bulkPatchContentAssets(request: Request) {
   const actor = await actorWithPermission(request, "content.asset.review");
   const body = assetBulkSchema.parse(await jsonBody(request));
-  if (body.confirmation && body.confirmation !== "ASSET_BULK") {
-    throw Errors.badRequest("Bulk asset action requires ASSET_BULK confirmation");
+  if (body.confirmation !== body.assetIds.join(",")) {
+    throw Errors.badRequest("Confirmation did not match bulk asset targets");
   }
   const updatedIds: string[] = [];
   await prisma.$transaction(async (tx) => {
@@ -827,7 +834,7 @@ export async function createPlacement(request: Request) {
 export async function patchPlacement(request: Request, id: string) {
   const actor = await actorWithPermission(request, "content.placement.write");
   const body = placementPatchSchema.parse(await jsonBody(request));
-  if (body.confirmation && body.confirmation !== id && body.confirmation !== "PLACEMENT") {
+  if (body.confirmation !== id) {
     throw Errors.badRequest("Confirmation did not match placement");
   }
   const before = await prisma.mediaAssetPlacement.findUnique({ where: { id } });
@@ -1161,8 +1168,9 @@ async function assertApprovedAsset(mediaAssetId: string) {
       mediaAssetId,
       status: { in: ["approved", "published"] },
     },
+    include: { mediaAsset: true },
   });
-  if (!approved) {
+  if (!approved?.mediaAsset || platformAssetMetadata(approved.mediaAsset).status === "archived") {
     throw Errors.badRequest("Only approved content assets can be placed");
   }
 }
@@ -1325,10 +1333,12 @@ function productionItemDTO(
 
 function contentAssetDTO(asset: ContentAssetWithRelations) {
   const item = asset.productionItems[0] ?? null;
+  const platform = platformAssetMetadata(asset);
+  const platformStatus = platform.status === "archived" ? "archived" : (item?.status ?? platform.status);
   return {
     ...mediaAssetDTO(asset),
-    platformStatus: item?.status ?? platformAssetMetadata(asset).status ?? "generated",
-    purpose: item?.batch.purpose ?? platformAssetMetadata(asset).purpose ?? null,
+    platformStatus: platformStatus ?? "generated",
+    purpose: item?.batch.purpose ?? platform.purpose ?? null,
     targetType: item?.batch.targetType ?? null,
     targetId: item?.batch.targetId ?? null,
     tags: item ? jsonStringArray(item.tags) : assetTags(asset),

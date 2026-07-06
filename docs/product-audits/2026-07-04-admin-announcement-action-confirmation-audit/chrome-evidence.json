@@ -1,0 +1,19 @@
+{
+  "checkedAt": "2026-07-04T20:02:27.046Z",
+  "route": "/admin/announcements",
+  "announcementId": "cd1926f7-c053-49b0-ab95-6af948f2720e",
+  "rejectedUpdateConfirmation": "ANNOUNCE",
+  "rejectedDeleteConfirmation": "DELETE",
+  "acceptedConfirmation": "cd1926f7-c053-49b0-ab95-6af948f2720e",
+  "auditActions": [
+    "growth.announcement.create",
+    "growth.announcement.delete",
+    "growth.announcement.update"
+  ],
+  "screenshots": {
+    "updateGenericDisabled": "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-announcement-action-confirmation-audit/update-generic-disabled.png",
+    "updated": "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-announcement-action-confirmation-audit/updated.png",
+    "deleteGenericDisabled": "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-announcement-action-confirmation-audit/delete-generic-disabled.png",
+    "deleted": "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-announcement-action-confirmation-audit/deleted.png"
+  }
+}

@@ -1,8 +1,10 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
-import { Compass, MessageCircle, Plus } from "lucide-react";
+import { ArrowRight, Compass, MessageCircle, Plus, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
+import { characterCards } from "@/lib/ourdream-data";
 import { authHrefForTarget } from "./authRedirect";
 
 // SPEC: /chat landing — a real hub listing the user's chat sessions (most-recent
@@ -22,6 +24,8 @@ type SessionRow = {
 };
 
 type HubState = "loading" | "ready" | "error" | "signed-out";
+
+const featuredChatCards = characterCards.slice(0, 3);
 
 export function ChatHubWorkspace() {
   const [sessions, setSessions] = useState<SessionRow[]>([]);
@@ -58,7 +62,7 @@ export function ChatHubWorkspace() {
 
   return (
     <section className="px-4 py-10 md:px-[60px]">
-      <div className="mx-auto max-w-5xl">
+      <div className="mx-auto max-w-6xl">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
             <h1 className="text-[38px] font-black uppercase leading-10 text-white">
@@ -77,115 +81,196 @@ export function ChatHubWorkspace() {
           </Link>
         </div>
 
-        <div className="mt-6 rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-4 md:p-6">
-          {state === "loading" && (
-            <p className="p-10 text-center text-[13px] font-medium text-[rgb(170,170,170)]" role="status">
-              Loading your chats…
-            </p>
-          )}
-
-          {state === "error" && (
-            <div className="p-10 text-center">
-              <MessageCircle className="mx-auto h-10 w-10 text-[rgb(114,113,112)]" />
-              <h2 className="mt-4 text-[22px] font-black uppercase">Couldn&apos;t load your chats</h2>
-              <p className="mx-auto mt-3 max-w-md text-[14px] leading-6 text-[rgb(170,170,170)]">
-                Something went wrong. Please try again.
-              </p>
-              <button
-                className="mt-6 inline-flex h-11 items-center justify-center rounded-full bg-white px-5 text-[14px] font-bold text-[rgb(13,13,13)]"
-                onClick={() => void load()}
-                type="button"
+        <div className="mt-6 grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
+          <div className="rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-4 md:p-6">
+            {state === "loading" && (
+              <p
+                aria-live="polite"
+                className="p-10 text-center text-[13px] font-medium text-[rgb(170,170,170)]"
+                data-testid="chat-hub-status"
+                role="status"
               >
-                Retry
-              </button>
-            </div>
-          )}
-
-          {state === "signed-out" && (
-            <div className="p-10 text-center" data-testid="chat-hub-auth-required">
-              <MessageCircle className="mx-auto h-10 w-10 text-[rgb(114,113,112)]" />
-              <h2 className="mt-4 text-[22px] font-black uppercase">Sign in to see your chats</h2>
-              <p className="mx-auto mt-3 max-w-md text-[14px] leading-6 text-[rgb(170,170,170)]">
-                Log in to pick up your conversations across devices.
+                Loading your chats...
               </p>
-              <div className="mt-6 flex flex-wrap justify-center gap-2">
-                <Link
-                  className="inline-flex h-11 items-center justify-center rounded-full bg-white px-5 text-[14px] font-bold text-[rgb(13,13,13)]"
-                  href={authHrefForTarget("/login", "/chat")}
-                >
-                  Log in
-                </Link>
-                <Link
-                  className="inline-flex h-11 items-center justify-center rounded-full bg-[rgb(36,36,36)] px-5 text-[14px] font-bold text-white"
-                  href={authHrefForTarget("/signup", "/chat")}
-                >
-                  Join free
-                </Link>
-              </div>
-            </div>
-          )}
+            )}
 
-          {state === "ready" && sessions.length === 0 && (
-            <div className="p-10 text-center">
-              <MessageCircle className="mx-auto h-10 w-10 text-[rgb(114,113,112)]" />
-              <h2 className="mt-4 text-[22px] font-black uppercase">No chats yet</h2>
-              <p className="mx-auto mt-3 max-w-md text-[14px] leading-6 text-[rgb(170,170,170)]">
-                Find a character to start your first conversation.
-              </p>
-              <div className="mt-6 flex flex-wrap justify-center gap-2">
-                <Link
-                  className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-white px-5 text-[14px] font-bold text-[rgb(13,13,13)]"
-                  href="/"
+            {state === "error" && (
+              <div
+                aria-live="assertive"
+                className="p-10 text-center"
+                data-testid="chat-hub-status"
+                role="alert"
+              >
+                <MessageCircle className="mx-auto h-10 w-10 text-[rgb(114,113,112)]" />
+                <h2 className="mt-4 text-[22px] font-black uppercase">Couldn&apos;t load your chats</h2>
+                <p className="mx-auto mt-3 max-w-md text-[14px] leading-6 text-[rgb(170,170,170)]">
+                  Something went wrong. Please try again.
+                </p>
+                <button
+                  className="mt-6 inline-flex h-11 items-center justify-center rounded-full bg-white px-5 text-[14px] font-bold text-[rgb(13,13,13)]"
+                  onClick={() => void load()}
+                  type="button"
                 >
-                  <Compass className="h-4 w-4" />
-                  Start a chat from Explore
-                </Link>
-                <Link
-                  className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-[rgb(36,36,36)] px-5 text-[14px] font-bold text-white"
-                  href="/create"
-                >
-                  <Plus className="h-4 w-4" />
-                  Create
-                </Link>
+                  Retry
+                </button>
               </div>
-            </div>
-          )}
+            )}
 
-          {state === "ready" && sessions.length > 0 && (
-            <ul className="grid gap-3 md:grid-cols-2">
-              {sessions.map((row) => (
-                <li key={row.id}>
+            {state === "signed-out" && (
+              <div className="p-10 text-center" data-testid="chat-hub-auth-required">
+                <MessageCircle className="mx-auto h-10 w-10 text-[rgb(114,113,112)]" />
+                <h2 className="mt-4 text-[22px] font-black uppercase">Sign in to see your chats</h2>
+                <p className="mx-auto mt-3 max-w-md text-[14px] leading-6 text-[rgb(170,170,170)]">
+                  Save long-running sessions, keep memory across characters, and return to your latest roleplay.
+                </p>
+                <div className="mt-6 flex flex-wrap justify-center gap-2">
                   <Link
-                    className="flex h-full flex-col rounded-[14px] border border-white/10 bg-[rgb(36,36,36)] p-4 transition-colors hover:bg-[rgb(46,46,46)]"
-                    data-testid="chat-hub-session"
-                    href={`/chat/${row.id}`}
+                    className="inline-flex h-11 items-center justify-center rounded-full bg-white px-5 text-[14px] font-bold text-[rgb(13,13,13)]"
+                    href={authHrefForTarget("/login", "/chat")}
                   >
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="truncate text-[16px] font-bold text-white">
-                        {row.title ?? "Untitled chat"}
-                      </span>
-                      <span className="shrink-0 text-[12px] font-medium text-[rgb(114,113,112)]">
-                        {formatRelative(row.lastMessageAt)}
-                      </span>
-                    </div>
-                    {row.memorySummary ? (
-                      <p className="mt-2 line-clamp-1 text-[13px] font-medium leading-5 text-[rgb(170,170,170)]">
-                        {row.memorySummary}
-                      </p>
-                    ) : null}
-                    {row.status === "archived" ? (
-                      <span className="mt-3 inline-flex w-fit rounded-full bg-black/30 px-2 py-1 text-[11px] font-bold uppercase text-[rgb(114,113,112)]">
-                        Archived
-                      </span>
-                    ) : null}
+                    Log in
                   </Link>
-                </li>
-              ))}
-            </ul>
-          )}
+                  <Link
+                    className="inline-flex h-11 items-center justify-center rounded-full bg-[rgb(36,36,36)] px-5 text-[14px] font-bold text-white"
+                    href={authHrefForTarget("/signup", "/chat")}
+                  >
+                    Join free
+                  </Link>
+                </div>
+              </div>
+            )}
+
+            {state === "ready" && sessions.length === 0 && (
+              <div className="p-10 text-center">
+                <MessageCircle className="mx-auto h-10 w-10 text-[rgb(114,113,112)]" />
+                <h2 className="mt-4 text-[22px] font-black uppercase">No chats yet</h2>
+                <p className="mx-auto mt-3 max-w-md text-[14px] leading-6 text-[rgb(170,170,170)]">
+                  Start from a public character, then return here when you want to continue.
+                </p>
+                <div className="mt-6 flex flex-wrap justify-center gap-2">
+                  <Link
+                    className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-white px-5 text-[14px] font-bold text-[rgb(13,13,13)]"
+                    href="/"
+                  >
+                    <Compass className="h-4 w-4" />
+                    Explore characters
+                  </Link>
+                  <Link
+                    className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-[rgb(36,36,36)] px-5 text-[14px] font-bold text-white"
+                    href="/create"
+                  >
+                    <Plus className="h-4 w-4" />
+                    Create private character
+                  </Link>
+                </div>
+              </div>
+            )}
+
+            {state === "ready" && sessions.length > 0 && (
+              <ul className="grid gap-3 md:grid-cols-2">
+                {sessions.map((row) => (
+                  <li key={row.id}>
+                    <Link
+                      className="flex h-full flex-col rounded-[14px] border border-white/10 bg-[rgb(36,36,36)] p-4 transition-colors hover:bg-[rgb(46,46,46)]"
+                      data-testid="chat-hub-session"
+                      href={`/chat/${row.id}`}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="truncate text-[16px] font-bold text-white">
+                          {row.title ?? "Untitled chat"}
+                        </span>
+                        <span className="shrink-0 text-[12px] font-medium text-[rgb(114,113,112)]">
+                          {formatRelative(row.lastMessageAt)}
+                        </span>
+                      </div>
+                      {row.memorySummary ? (
+                        <p className="mt-2 line-clamp-1 text-[13px] font-medium leading-5 text-[rgb(170,170,170)]">
+                          {row.memorySummary}
+                        </p>
+                      ) : null}
+                      {row.status === "archived" ? (
+                        <span className="mt-3 inline-flex w-fit rounded-full bg-black/30 px-2 py-1 text-[11px] font-bold uppercase text-[rgb(114,113,112)]">
+                          Archived
+                        </span>
+                      ) : null}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          {state !== "loading" ? <ChatStartPanel /> : null}
         </div>
       </div>
     </section>
+  );
+}
+
+function ChatStartPanel() {
+  return (
+    <aside
+      className="rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-4 md:p-5"
+      data-testid="chat-hub-start-panel"
+    >
+      <div className="flex items-center gap-2">
+        <Sparkles className="h-4 w-4 text-[rgb(253,95,194)]" />
+        <h2 className="text-[16px] font-black uppercase leading-5 text-white">
+          Start a conversation
+        </h2>
+      </div>
+      <p className="mt-2 text-[13px] font-medium leading-5 text-[rgb(170,170,170)]">
+        Jump into a featured character, browse the full catalog, or create a private character.
+      </p>
+
+      <div className="mt-4 grid gap-3">
+        {featuredChatCards.map((card) => (
+          <Link
+            aria-label={`Chat with ${card.title}`}
+            className="group grid grid-cols-[64px_minmax(0,1fr)_18px] items-center gap-3 rounded-[14px] border border-white/10 bg-[rgb(36,36,36)] p-2 transition-colors hover:bg-[rgb(46,46,46)]"
+            data-testid="chat-hub-character-card"
+            href={`/characters/${card.id}`}
+            key={card.id}
+          >
+            <span className="relative block aspect-[4/5] overflow-hidden rounded-[10px] bg-black">
+              <Image
+                alt=""
+                className="object-cover object-top transition-transform duration-200 group-hover:scale-[1.03]"
+                fill
+                sizes="64px"
+                src={card.image}
+              />
+            </span>
+            <span className="min-w-0">
+              <span className="block truncate text-[14px] font-bold text-white">
+                {card.title}
+              </span>
+              <span className="mt-1 block text-[12px] font-medium text-[rgb(170,170,170)]">
+                {card.chats} chats
+              </span>
+            </span>
+            <ArrowRight className="h-4 w-4 text-[rgb(114,113,112)] transition-colors group-hover:text-white" />
+          </Link>
+        ))}
+      </div>
+
+      <div className="mt-4 grid gap-2">
+        <Link
+          className="inline-flex h-10 items-center justify-center gap-2 rounded-full bg-white px-4 text-[13px] font-black text-[rgb(13,13,13)]"
+          href="/"
+        >
+          <Compass className="h-4 w-4" />
+          Explore characters
+        </Link>
+        <Link
+          className="inline-flex h-10 items-center justify-center gap-2 rounded-full bg-[rgb(36,36,36)] px-4 text-[13px] font-black text-white"
+          href="/create"
+        >
+          <Plus className="h-4 w-4" />
+          Create private character
+        </Link>
+      </div>
+    </aside>
   );
 }
 

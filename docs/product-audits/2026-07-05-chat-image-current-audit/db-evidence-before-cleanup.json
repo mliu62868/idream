@@ -1,0 +1,316 @@
+{
+  "email": "chrome-chat-image-1783270000000@test.local",
+  "user": {
+    "id": "cmr7pd2yv0000lhl78wbfcoic",
+    "email": "chrome-chat-image-1783270000000@test.local",
+    "displayName": "Chrome Chat Image Audit",
+    "role": "user",
+    "status": "active",
+    "createdAt": "2026-07-05T11:23:17.192Z",
+    "dreamcoinBalanceFromLedger": 240
+  },
+  "counts": {
+    "ledger": 3,
+    "jobs": 2,
+    "assets": 2,
+    "analytics": 0,
+    "sessions": 1,
+    "messages": 2,
+    "attachments": 1,
+    "outbox": 4,
+    "inbox": 2
+  },
+  "ledger": [
+    {
+      "delta": 250,
+      "reason": "signup_bonus",
+      "sourceId": "signup",
+      "balanceAfter": 250,
+      "idempotencyKey": null,
+      "createdAt": "2026-07-05T11:23:17.200Z"
+    },
+    {
+      "delta": -5,
+      "reason": "generation_spend",
+      "sourceId": "cmr7pdz1z0000n9l7fv20mtjy",
+      "balanceAfter": 245,
+      "idempotencyKey": "generation:cmr7pdz1z0000n9l7fv20mtjy:reserve",
+      "createdAt": "2026-07-05T11:23:58.784Z"
+    },
+    {
+      "delta": -5,
+      "reason": "generation_spend",
+      "sourceId": "cmr7pem650006lhl7tod9yo5j",
+      "balanceAfter": 240,
+      "idempotencyKey": "generation:cmr7pem650006lhl7tod9yo5j:reserve",
+      "createdAt": "2026-07-05T11:24:28.738Z"
+    }
+  ],
+  "jobs": [
+    {
+      "id": "cmr7pdz1z0000n9l7fv20mtjy",
+      "status": "completed",
+      "mode": "image",
+      "sourceType": "chat_image",
+      "sourceId": "att_54bccea79b614badbe382f8e5452d30d",
+      "sourceMeta": {
+        "messageId": "msg_fe0a0f8a1b20423ca2ac8bac6153aca7",
+        "sessionId": "sess_858ab1ed8e0e4e629afbfdf5bd0993f1",
+        "promptHint": "Realistic in-character photo from the current chat scene, warm evening light, intimate portrait framing",
+        "conversationContext": "user: Please make an image from this chat moment 1783270000000\nassistant: I can make that image for you now."
+      },
+      "costDreamcoins": 5,
+      "characterId": "melissa-burke",
+      "outputCount": 1,
+      "prompt": "High quality in-character portrait photo of Melissa Burke. Subject: adult, female, realistic. Locked identity: Melissa Burke, adult female companion; 38 years old; realistic visual style; She's been your best friend's mom your whole life. The woman who made you both sandwiches after school.. Identity consistency: balanced; preserve the character identity while allowing the requested scene, pose, outfit, and lighting. Character notes: She's been your best friend's mom your whole life. The woman who made you both sandwiches after school.. Requested scene: Realistic in-character photo from the current chat scene, warm evening light, intimate portrait framing. single coherent subject, face and body matching the character, expressive eyes, natural pose, well-lit visible face, properly exposed, sharp focus, detailed skin and hair, clean photographic composition",
+      "createdAt": "2026-07-05T11:23:58.775Z",
+      "completedAt": "2026-07-05T11:23:59.390Z"
+    },
+    {
+      "id": "cmr7pem650006lhl7tod9yo5j",
+      "status": "completed",
+      "mode": "image",
+      "sourceType": "media_variation",
+      "sourceId": "media:media_7umh22uyszmr7pdziz:variation:variation_xjmzh8lap6omr7pem5m",
+      "sourceMeta": {
+        "sourceJobId": "cmr7pdz1z0000n9l7fv20mtjy",
+        "sourceMediaId": "media_7umh22uyszmr7pdziz"
+      },
+      "costDreamcoins": 5,
+      "characterId": "melissa-burke",
+      "outputCount": 1,
+      "prompt": "High quality in-character portrait photo of Melissa Burke. Subject: adult, female, realistic. Locked identity: Melissa Burke, adult female companion; 38 years old; realistic visual style; She's been your best friend's mom your whole life. The woman who made you both sandwiches after school.. Identity consistency: balanced; preserve the character identity while allowing the requested scene, pose, outfit, and lighting. Character notes: She's been your best friend's mom your whole life. The woman who made you both sandwiches after school.. Requested scene: More like this image: Realistic in-character photo from the current chat scene, warm evening light, intimate portrait framing. single coherent subject, face and body matching the character, expressive eyes, natural pose, well-lit visible face, properly exposed, sharp focus, detailed skin and hair, clean photographic composition",
+      "createdAt": "2026-07-05T11:24:28.733Z",
+      "completedAt": "2026-07-05T11:24:28.980Z"
+    }
+  ],
+  "assets": [
+    {
+      "id": "media_7umh22uyszmr7pdziz",
+      "sourceJobId": "cmr7pdz1z0000n9l7fv20mtjy",
+      "characterId": "melissa-burke",
+      "type": "image",
+      "url": "/user-content/bWVkaWFfN3VtaDIydXlzem1yN3Bkeml6/content.png",
+      "thumbnailUrl": "/user-content/bWVkaWFfN3VtaDIydXlzem1yN3Bkeml6/content.png",
+      "width": 1024,
+      "height": 1024,
+      "visibility": "private",
+      "safetyStatus": "passed",
+      "prompt": "High quality in-character portrait photo of Melissa Burke. Subject: adult, female, realistic. Locked identity: Melissa Burke, adult female companion; 38 years old; realistic visual style; She's been your best friend's mom your whole life. The woman who made you both sandwiches after school.. Identity consistency: balanced; preserve the character identity while allowing the requested scene, pose, outfit, and lighting. Character notes: She's been your best friend's mom your whole life. The woman who made you both sandwiches after school.. Requested scene: Realistic in-character photo from the current chat scene, warm evening light, intimate portrait framing. single coherent subject, face and body matching the character, expressive eyes, natural pose, well-lit visible face, properly exposed, sharp focus, detailed skin and hair, clean photographic composition",
+      "metadata": {
+        "seed": "character:melissa-burke:visual:1",
+        "index": 0,
+        "usage": {
+          "model": "pornmaster-zimage-turbo",
+          "gpuSeconds": 1.2
+        },
+        "width": 1024,
+        "height": 1024,
+        "provider": "mock-pipeline",
+        "storageKey": "gen/cmr7pdz1z0000n9l7fv20mtjy/image-1.png",
+        "contentType": "image/png",
+        "providerKey": "mock/images/character:melissa-burke:visual:1-1.png",
+        "consistencyMode": "balanced",
+        "visualProfileId": "cmr3g68nc0044akl7hmulg9id",
+        "referenceAssetIds": [],
+        "visualProfileVersion": 1
+      },
+      "createdAt": "2026-07-05T11:23:59.388Z"
+    },
+    {
+      "id": "media_whwr6791n5lmr7pemcx",
+      "sourceJobId": "cmr7pem650006lhl7tod9yo5j",
+      "characterId": "melissa-burke",
+      "type": "image",
+      "url": "/user-content/bWVkaWFfd2h3cjY3OTFuNWxtcjdwZW1jeA/content.png",
+      "thumbnailUrl": "/user-content/bWVkaWFfd2h3cjY3OTFuNWxtcjdwZW1jeA/content.png",
+      "width": 1024,
+      "height": 1024,
+      "visibility": "private",
+      "safetyStatus": "passed",
+      "prompt": "High quality in-character portrait photo of Melissa Burke. Subject: adult, female, realistic. Locked identity: Melissa Burke, adult female companion; 38 years old; realistic visual style; She's been your best friend's mom your whole life. The woman who made you both sandwiches after school.. Identity consistency: balanced; preserve the character identity while allowing the requested scene, pose, outfit, and lighting. Character notes: She's been your best friend's mom your whole life. The woman who made you both sandwiches after school.. Requested scene: More like this image: Realistic in-character photo from the current chat scene, warm evening light, intimate portrait framing. single coherent subject, face and body matching the character, expressive eyes, natural pose, well-lit visible face, properly exposed, sharp focus, detailed skin and hair, clean photographic composition",
+      "metadata": {
+        "seed": "character:melissa-burke:visual:1",
+        "index": 0,
+        "usage": {
+          "model": "pornmaster-zimage-turbo",
+          "gpuSeconds": 1.2
+        },
+        "width": 1024,
+        "height": 1024,
+        "provider": "mock-pipeline",
+        "storageKey": "gen/cmr7pem650006lhl7tod9yo5j/image-1.png",
+        "contentType": "image/png",
+        "providerKey": "mock/images/character:melissa-burke:visual:1-1.png",
+        "consistencyMode": "balanced",
+        "visualProfileId": "cmr3g68nc0044akl7hmulg9id",
+        "referenceAssetIds": [],
+        "visualProfileVersion": 1
+      },
+      "createdAt": "2026-07-05T11:24:28.977Z"
+    }
+  ],
+  "analytics": [],
+  "sessions": [
+    {
+      "id": "sess_858ab1ed8e0e4e629afbfdf5bd0993f1",
+      "userId": "cmr7pd2yv0000lhl78wbfcoic",
+      "characterId": "melissa-burke",
+      "status": "active",
+      "title": null,
+      "memoryEnabled": true,
+      "createdAt": "2026-07-05T11:23:35.584Z",
+      "lastMessageAt": "2026-07-05T11:23:58.592Z"
+    }
+  ],
+  "messages": [
+    {
+      "id": "msg_0f2af5c0f8b7441db8a854ecb704f261",
+      "sessionId": "sess_858ab1ed8e0e4e629afbfdf5bd0993f1",
+      "role": "user",
+      "content": "Please make an image from this chat moment 1783270000000",
+      "status": "sent",
+      "createdAt": "2026-07-05T11:23:58.537Z"
+    },
+    {
+      "id": "msg_fe0a0f8a1b20423ca2ac8bac6153aca7",
+      "sessionId": "sess_858ab1ed8e0e4e629afbfdf5bd0993f1",
+      "role": "assistant",
+      "content": "I can make that image for you now.",
+      "status": "sent",
+      "createdAt": "2026-07-05T11:23:58.538Z"
+    }
+  ],
+  "attachments": [
+    {
+      "id": "att_54bccea79b614badbe382f8e5452d30d",
+      "sessionId": "sess_858ab1ed8e0e4e629afbfdf5bd0993f1",
+      "messageId": "msg_fe0a0f8a1b20423ca2ac8bac6153aca7",
+      "kind": "generated_image",
+      "status": "completed",
+      "generationJobId": "cmr7pdz1z0000n9l7fv20mtjy",
+      "mediaAssetId": "media_7umh22uyszmr7pdziz",
+      "costDreamcoins": 5,
+      "promptHint": "Realistic in-character photo from the current chat scene, warm evening light, intimate portrait framing",
+      "width": 1024,
+      "height": 1024,
+      "errorCode": null,
+      "metadata": {
+        "trigger": "agent_tool_call",
+        "toolName": "generate_image_async",
+        "orientation": "4:5",
+        "outputCount": 1,
+        "assistantCaption": "I can make that image for you now.",
+        "sourceUserMessageId": "msg_0f2af5c0f8b7441db8a854ecb704f261"
+      },
+      "createdAt": "2026-07-05T11:23:58.597Z",
+      "updatedAt": "2026-07-05T11:23:59.421Z"
+    }
+  ],
+  "outbox": [
+    {
+      "id": "evt_2bb33b1454944a0f80072833dd49eda3",
+      "eventType": "chat.session.created",
+      "aggregateType": "session",
+      "aggregateId": "sess_858ab1ed8e0e4e629afbfdf5bd0993f1",
+      "status": "delivered",
+      "attempts": 0,
+      "deliveredAt": "2026-07-05T11:23:37.155Z",
+      "payload": {
+        "userId": "cmr7pd2yv0000lhl78wbfcoic",
+        "characterId": "melissa-burke"
+      },
+      "createdAt": "2026-07-05T11:23:35.586Z"
+    },
+    {
+      "id": "evt_b54c3936c6ad4a7ead5a290ea28c254d",
+      "eventType": "chat.message.completed",
+      "aggregateType": "message",
+      "aggregateId": "msg_fe0a0f8a1b20423ca2ac8bac6153aca7",
+      "status": "delivered",
+      "attempts": 0,
+      "deliveredAt": "2026-07-05T11:23:58.615Z",
+      "payload": {
+        "model": "Qwen3.6-35B-A3B-uncensored-heretic-Native-MTP-Preserved-mlx-8Bit",
+        "userId": "cmr7pd2yv0000lhl78wbfcoic",
+        "sessionId": "sess_858ab1ed8e0e4e629afbfdf5bd0993f1",
+        "tokenCount": 9,
+        "characterId": "melissa-burke"
+      },
+      "createdAt": "2026-07-05T11:23:58.594Z"
+    },
+    {
+      "id": "evt_5c46d8158f774b0683e3cde2c9995c41",
+      "eventType": "chat.image.requested",
+      "aggregateType": "message_attachment",
+      "aggregateId": "att_54bccea79b614badbe382f8e5452d30d",
+      "status": "delivered",
+      "attempts": 0,
+      "deliveredAt": "2026-07-05T11:23:58.631Z",
+      "payload": {
+        "kind": "chat.image.requested",
+        "userId": "cmr7pd2yv0000lhl78wbfcoic",
+        "version": 1,
+        "controls": {
+          "orientation": "4:5",
+          "outputCount": 1
+        },
+        "messageId": "msg_fe0a0f8a1b20423ca2ac8bac6153aca7",
+        "requestId": "chat_img_req_642e17a14b2049b5baa7a1c421660767",
+        "sessionId": "sess_858ab1ed8e0e4e629afbfdf5bd0993f1",
+        "promptHint": "Realistic in-character photo from the current chat scene, warm evening light, intimate portrait framing",
+        "characterId": "melissa-burke",
+        "attachmentId": "att_54bccea79b614badbe382f8e5452d30d",
+        "conversationContext": "user: Please make an image from this chat moment 1783270000000\nassistant: I can make that image for you now."
+      },
+      "createdAt": "2026-07-05T11:23:58.598Z"
+    },
+    {
+      "id": "evt_c5fdb416518e45409b00eba05b6aa0d0",
+      "eventType": "chat.relationship.updated",
+      "aggregateType": "character",
+      "aggregateId": "melissa-burke",
+      "status": "delivered",
+      "attempts": 0,
+      "deliveredAt": "2026-07-05T11:24:07.160Z",
+      "payload": {
+        "userId": "cmr7pd2yv0000lhl78wbfcoic"
+      },
+      "createdAt": "2026-07-05T11:23:58.612Z"
+    }
+  ],
+  "inbox": [
+    {
+      "id": "chat_image_accepted_att_54bccea79b614badbe382f8e5452d30d_cmr7pdz1z0000n9l7fv20mtjy",
+      "eventType": "chat.image.accepted",
+      "status": "consumed",
+      "attempts": 0,
+      "payload": {
+        "kind": "chat.image.accepted",
+        "version": 1,
+        "attachmentId": "att_54bccea79b614badbe382f8e5452d30d",
+        "costDreamcoins": 5,
+        "generationJobId": "cmr7pdz1z0000n9l7fv20mtjy"
+      },
+      "consumedAt": "2026-07-05T11:23:58.811Z",
+      "createdAt": "2026-07-05T11:23:58.803Z"
+    },
+    {
+      "id": "chat_image_completed_att_54bccea79b614badbe382f8e5452d30d_cmr7pdz1z0000n9l7fv20mtjy_media_7umh22uyszmr7pdziz",
+      "eventType": "chat.image.completed",
+      "status": "consumed",
+      "attempts": 0,
+      "payload": {
+        "kind": "chat.image.completed",
+        "width": 1024,
+        "height": 1024,
+        "version": 1,
+        "attachmentId": "att_54bccea79b614badbe382f8e5452d30d",
+        "mediaAssetId": "media_7umh22uyszmr7pdziz",
+        "generationJobId": "cmr7pdz1z0000n9l7fv20mtjy"
+      },
+      "consumedAt": "2026-07-05T11:23:59.425Z",
+      "createdAt": "2026-07-05T11:23:59.416Z"
+    }
+  ]
+}

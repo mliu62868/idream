@@ -1,0 +1,35 @@
+{
+  "capturedAt": "2026-07-04T22:21:26.851Z",
+  "url": "http://127.0.0.1:3006/admin/content/assets",
+  "metrics": {
+    "brokenVisible": [],
+    "heading": "Asset Library",
+    "horizontalOverflow": false,
+    "imageCount": 2,
+    "missingTextCount": 0,
+    "textSample": "iDream Admin\n\nadmin\n\nOVERVIEW\n\nDashboard\n\nGENERATION OPS\n\nJobs & Incidents\nProfiles & Rollout\nDead-letter\nProvider Health\n\nCONTENT OPS\n\nProduction Studio\nAsset Library\nPlacements\nContent\nOfficial Characters\nTemplates\nTags\nReview Queue\nCMS / SEO\n\nTRUST OPS\n\nModeration\nChat Ops\nSupport Requests\n\nBUSINESS OPS\n\nUsers\nBilling\nPricing\nPromo\nAnnouncements\n\nINSIGHTS\n\nAnalytics\nInsights\nExperiments\nRisk & Abuse\n\nSYSTEM\n\nCompliance\nApprovals\nAudit Log\nAsset Library\n\nseed-admin-user\n\nLanguage\nEnglish\n中文\nRefresh\nLogout\n\nCONTENT OPS\n\nAsset Library\nRefresh\nStatus\nall\ngenerated\napproved\nrejected\npublished\narchived\nPurpose\nall\ncharacter_cover\ncharacter_hero\ncharacter_chat\nfeed\nhomepage\nseo\ntemplate_cover\ncampaign\nmodel_eval\nrejected\n512x640\n\nSource job cmr56ghb7000b8gl790a69nvd\n\nBatch Chrome Refresh Probe 1783097909176\n\nProfile profile_image_default_v1\n\nApprove\nSave\nReject\nArchive\npublished\n512x640\n\nSou",
+    "visibleUserContent": [
+      {
+        "complete": true,
+        "height": 366,
+        "loading": "eager",
+        "naturalHeight": 640,
+        "naturalWidth": 512,
+        "src": "http://127.0.0.1:3006/user-content/bWVkaWFfajFkdzc1ZmZqeGttcjU2aDd4ZQ/content.png",
+        "visible": true,
+        "width": 293
+      },
+      {
+        "complete": true,
+        "height": 366,
+        "loading": "eager",
+        "naturalHeight": 640,
+        "naturalWidth": 512,
+        "src": "http://127.0.0.1:3006/user-content/bWVkaWFfb2pwYzhkZWtsamptcjU2MTZtdQ/content.png",
+        "visible": true,
+        "width": 293
+      }
+    ]
+  },
+  "logs": []
+}

@@ -1,0 +1,68 @@
+{
+  "auditedAt": "2026-07-05T05:58:26.098Z",
+  "browser": {
+    "id": "-147f-4cc2-bbcf-4661b7cbc08f",
+    "capabilities": {}
+  },
+  "baseUrl": "http://127.0.0.1:3235",
+  "home": {
+    "bodySample": "Create\nExplore\nChat\nGenerate\nMy AI\nFeed\nCommunity\nHelp Desk\nSafety Center\nDiscord\nMore\nProfile\nUpgrade\n\n2026 OURDREAM.AI\n\nUSA: DREAM STUDIO USA, INC.\n\nCYPRUS: TEKTOPIA LTD (HE 473775)\n\nA\nAdmin\nLog out\nFor You\nFemale\nMale\nTrans\nAny Gender\nAny Style\nRealistic\nAnime\nHybrid\nAny Age\n18-24\n25-34\n35+\nAll\nSlow Burn\nElf\nMelissa Burke· 38\n\nShe's been your best friend's mom your whole life. The woman who made you both sandwiches after school.\n\n2.2k\n2.2M\n@some1cool\nSummoned to Another World· 22\n\n(Recently Updated) A normal day at college becomes the beginning of something far greater.\n\n871\n1.4M\n@fuze\nVIVID\nSarah Mercer· 27\n\nSarah Mercer is your loving wife. Eight years together, high school sweethearts.\n\n811\n1.3M\n@some1cool\nVIVID\nAlexa Reeves· 19\n\nThree guys. One girl. A yacht. She knows what she's walking into.\n\n1.1k\n1.2M\n@archerz\nVIVID\nTamsin Jacobs - A 'Bullish' Request· 20\n\nFriends Sister / Cuckold (Bull User). Your friend group is the bedrock of your life.\n\n1.1k\n1.1M\n@wordshitmelikeablow\nTruth or Dare : Confessional· 18\n\nYour parents are away and your stepsister wants you to play with her.\n\n1.0k\n1.0M\n@thebigbadwolf\nPRIDE OFFER\nUpgrade for more dreamcoins and longer chats.\nView plans\nVIVID",
+    "hasPrideOfferText": true,
+    "images": [
+      "/images/ourdream/ourdream-logo.svg"
+    ],
+    "promoLinks": [
+      {
+        "alt": null,
+        "aria": "Pride offer - view plans",
+        "href": "/upgrade",
+        "src": null,
+        "tag": "a",
+        "text": "Pride offerUpgrade for more dreamcoins and longer chats.View plans",
+        "visible": true
+      }
+    ],
+    "title": "ourdream.ai | Unlimited AI Roleplay Platform",
+    "unsupportedMatches": [],
+    "url": "http://127.0.0.1:3235/",
+    "viewport": {
+      "devicePixelRatio": 2,
+      "height": 771,
+      "width": 1512
+    }
+  },
+  "click": {
+    "method": "chrome.dom_cua.click",
+    "nodeId": "22",
+    "href": "/upgrade"
+  },
+  "upgrade": {
+    "bodySample": "Create\nExplore\nChat\nGenerate\nMy AI\nFeed\nCommunity\nHelp Desk\nSafety Center\nDiscord\nMore\nProfile\nUpgrade\n\n2026 OURDREAM.AI\n\nUSA: DREAM STUDIO USA, INC.\n\nCYPRUS: TEKTOPIA LTD (HE 473775)\n\nA\nAdmin\nLog out\nOURDREAM.AI\nUPGRADE\nUPGRADE OURDREAM\n\nSubscription upgrade page with yearly and monthly plan cards, dreamcoin allowances, and premium generation controls.\n\nCreate your AI\nExplore characters\n\nFree: 30 text messages per day · basic chat model · base memory.\n\nDEMO CHECKOUT\n\nLocal mock billing activates plans immediately for testing. No real payment is collected.\n\nCURRENT PLAN\nDELUXE MONTHLY\n\n$59.99\n\nIncludes 6,000 dreamcoins.\n\nUnlimited text messages & audio\nPremium chat model (highest quality replies)\n3× chat memory depth\nLongest context window + highest rate limit\nCurrent plan\nDELUXE YEARLY\n\n$299.90\n\nIncludes 72,000 dreamcoins.\n\nUnlimited text messages & audio\nPremium chat model (highest quality replies)\n3× chat memory depth\nLongest context window + highest rate limit\nDemo upgrade\nPREMIUM MONTHLY\n\n$19.99\n\nIncludes 1,500 dreamcoins.\n\nUnlimited text messages & audio\nLonger conversation context\nAdvanced generation controls\nDemo upgrade\nPREMIUM YEARLY\n\n$99.90\n\nIncludes 18,000 dreamcoins.\n\nUnlimited text messages & audio\nLonger conversation context\nAdvanced generation controls\nDemo upgrade\nLEARN\nResources Hub\nAI Girlfriend Types\nComparisons\nVideos\nAI Instructions\nPOPULAR\nAI Girlfriend\nAI Boyfriend\nAI Anime\nGames\nRomantasy\nour dream ai\nHELP\nHelp Centre\nAffiliates\nHelp Desk\nSafety\n\n2026 OURDREAM.AI\n\nUSA: DREAM STUDIO USA, INC.\n\nCYPRUS: TEKTOPIA LTD (HE 473775)",
+    "hasUpgradeWorkspace": true,
+    "planButtons": [
+      "Current plan",
+      "Demo upgrade",
+      "Demo upgrade",
+      "Demo upgrade"
+    ],
+    "planHeadings": [
+      "Upgrade Ourdream",
+      "Deluxe monthly",
+      "Deluxe yearly",
+      "Premium monthly",
+      "Premium yearly",
+      "Learn",
+      "Popular",
+      "Help"
+    ],
+    "title": "Upgrade Ourdream | ourdream.ai",
+    "unsupportedMatches": [],
+    "url": "http://127.0.0.1:3235/upgrade"
+  },
+  "consoleWarningsAndErrors": [],
+  "screenshots": [
+    "01-home-promo.png",
+    "02-upgrade-after-promo-click.png"
+  ],
+  "pass": true
+}

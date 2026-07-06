@@ -26,6 +26,11 @@ type Health = {
     latencyP95Ms: number;
   };
 };
+type DryRunDraft = {
+  profileId: string;
+  reason: string;
+  confirmation: string;
+};
 
 export function InsightsView() {
   return (
@@ -144,6 +149,7 @@ function ProfileHealthSection() {
   const [busy, setBusy] = useState<"health" | "dryrun" | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [dryRunDraft, setDryRunDraft] = useState<DryRunDraft | null>(null);
 
   async function loadHealth() {
     setBusy("health");
@@ -161,18 +167,29 @@ function ProfileHealthSection() {
     }
   }
 
+  function startDryRun() {
+    const id = profileId.trim();
+    if (!id) return;
+    setErr(null);
+    setNote(null);
+    setDryRunDraft({ profileId: id, reason: "", confirmation: "" });
+  }
+
   async function dryRun() {
-    const reason = window.prompt("Reason for dry-run (≥3 chars)");
-    if (!reason || reason.trim().length < 3) return;
+    if (!dryRunDraft || !canConfirmDryRun(dryRunDraft)) return;
     setBusy("dryrun");
     setErr(null);
     setNote(null);
     try {
       const data = await apiWrite<{ dryRun: { status: string; passed: number; total: number } }>(
-        `/api/v1/admin/generation/model-profiles/${encodeURIComponent(profileId.trim())}/dry-run`,
+        `/api/v1/admin/generation/model-profiles/${encodeURIComponent(dryRunDraft.profileId)}/dry-run`,
         "POST",
-        { reason: reason.trim(), confirmation: "DRYRUN" },
+        {
+          reason: dryRunDraft.reason.trim(),
+          confirmation: dryRunDraft.confirmation.trim(),
+        },
       );
+      setDryRunDraft(null);
       setNote(
         t("Dry-run {status}: {passed}/{total} samples passed.", {
           status: data.dryRun.status,
@@ -195,6 +212,7 @@ function ProfileHealthSection() {
       </p>
       <div className="mt-3 grid gap-3 md:grid-cols-[1fr_auto_auto]">
         <input
+          aria-label={t("Model profile id")}
           className={inputClass}
           onChange={(e) => setProfileId(e.target.value)}
           placeholder={t("Model profile id")}
@@ -212,13 +230,52 @@ function ProfileHealthSection() {
         <button
           className="inline-flex h-10 items-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
           disabled={busy !== null || !profileId.trim()}
-          onClick={() => void dryRun()}
+          onClick={startDryRun}
           type="button"
         >
           {busy === "dryrun" ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
           {t("Dry-run")}
         </button>
       </div>
+      {dryRunDraft ? (
+        <section className="mt-3 border border-amber-300/30 bg-amber-950/20 p-3">
+          <p className="text-xs font-semibold text-amber-100">
+            {t("Confirm dry-run")} <span className="font-mono">{dryRunDraft.profileId}</span>
+          </p>
+          <div className="mt-3 grid gap-3 md:grid-cols-[1fr_260px_auto_auto]">
+            <input
+              aria-label={t("Dry-run reason")}
+              className={inputClass}
+              onChange={(event) => setDryRunDraft({ ...dryRunDraft, reason: event.target.value })}
+              placeholder={t("Reason (≥3)")}
+              value={dryRunDraft.reason}
+            />
+            <input
+              aria-label={t("Dry-run confirmation")}
+              className={`${inputClass} font-mono`}
+              onChange={(event) => setDryRunDraft({ ...dryRunDraft, confirmation: event.target.value })}
+              placeholder={t("Type profile ID")}
+              value={dryRunDraft.confirmation}
+            />
+            <button
+              className="inline-flex h-10 items-center justify-center border border-white/10 px-3 text-sm"
+              onClick={() => setDryRunDraft(null)}
+              type="button"
+            >
+              {t("Cancel")}
+            </button>
+            <button
+              className="inline-flex h-10 items-center justify-center bg-amber-200 px-3 text-sm font-semibold text-amber-950 disabled:opacity-50"
+              disabled={busy !== null || !canConfirmDryRun(dryRunDraft)}
+              onClick={() => void dryRun()}
+              type="button"
+            >
+              {busy === "dryrun" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              {t("Confirm dry-run")}
+            </button>
+          </div>
+        </section>
+      ) : null}
       {err ? <p className="mt-2 text-xs text-red-300">{err}</p> : null}
       {note ? <p className="mt-2 text-xs text-emerald-300">{note}</p> : null}
       {health ? (
@@ -235,6 +292,11 @@ function ProfileHealthSection() {
       ) : null}
     </section>
   );
+}
+
+function canConfirmDryRun(draft: DryRunDraft) {
+  const confirmation = draft.confirmation.trim();
+  return draft.reason.trim().length >= 3 && confirmation === draft.profileId;
 }
 
 function Metric({ label, value }: { label: string; value: string | number }) {

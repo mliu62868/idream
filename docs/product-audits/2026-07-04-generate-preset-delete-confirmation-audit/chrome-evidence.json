@@ -1,0 +1,15 @@
+{
+  "baseURL": "http://127.0.0.1:3167",
+  "presetLabel": "Chrome Preset Delete 1783186493781",
+  "presetId": "cmr6n764f00079yl7rzdybagt",
+  "browserChannel": "chrome",
+  "firstClickStatus": "active",
+  "finalStatus": "archived",
+  "screenshots": {
+    "01-saved-preset": "/Users/kk/code/idream/docs/product-audits/2026-07-04-generate-preset-delete-confirmation-audit/01-saved-preset.png",
+    "02-delete-confirmation": "/Users/kk/code/idream/docs/product-audits/2026-07-04-generate-preset-delete-confirmation-audit/02-delete-confirmation.png",
+    "03-preset-deleted": "/Users/kk/code/idream/docs/product-audits/2026-07-04-generate-preset-delete-confirmation-audit/03-preset-deleted.png"
+  },
+  "consoleFailures": [],
+  "pageErrors": []
+}

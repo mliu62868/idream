@@ -1,0 +1,8 @@
+{
+  "ariaLive": "polite",
+  "consoleUrl": "http://127.0.0.1:3252/helpdesk",
+  "role": "status",
+  "tagName": "P",
+  "testId": "helpdesk-status",
+  "text": "Support request SUP-RK5F17AU3D received."
+}

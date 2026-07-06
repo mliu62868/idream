@@ -1,0 +1,8 @@
+{
+  "statusAriaLive": "polite",
+  "statusRole": "status",
+  "statusTag": "P",
+  "statusTestId": "community-status",
+  "statusText": "Profile report submitted.",
+  "url": "http://localhost:3240/community"
+}

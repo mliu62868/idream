@@ -1,0 +1,9 @@
+{
+  "hasRetry": true,
+  "horizontalOverflow": false,
+  "itemCount": 0,
+  "statusAriaLive": "assertive",
+  "statusRole": "alert",
+  "statusText": "Could not load feature voting.Retry",
+  "url": "http://127.0.0.1:3269/helpdesk"
+}

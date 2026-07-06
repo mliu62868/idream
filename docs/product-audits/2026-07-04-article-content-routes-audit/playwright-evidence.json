@@ -1,0 +1,21 @@
+{
+  "bodyOverflowX": false,
+  "faqLink": "#faq",
+  "hasSpecificIntro": true,
+  "hasSpecificFaq": true,
+  "hasOldRepeatedTemplate": false,
+  "headings": [
+    "Character Cards",
+    "Overview",
+    "How it works",
+    "Best practices",
+    "FAQ",
+    "What should a character card include?",
+    "Do character cards replace the Create flow?",
+    "How long should the card be?"
+  ],
+  "path": "/guides/character-cards",
+  "title": "Character Cards | ourdream.ai",
+  "url": "http://localhost:3225/guides/character-cards",
+  "logs": []
+}

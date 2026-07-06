@@ -1,0 +1,14 @@
+{
+  "chromeVersion": "149.0.7827.201",
+  "consoleFailures": [],
+  "email": "chrome-profile-media-delete-1783184113441-840632@test.local",
+  "finalDeletedAt": "2026-07-04T16:55:14.356Z",
+  "firstClickDeletedAt": null,
+  "mediaId": "chrome-profile-media-delete-1783184113441-840632",
+  "pageErrors": [],
+  "screenshots": [
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-profile-media-delete-confirmation-audit/screenshots/01-profile-media-before-delete.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-profile-media-delete-confirmation-audit/screenshots/02-profile-media-delete-confirmation.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-profile-media-delete-confirmation-audit/screenshots/03-profile-media-deleted.png"
+  ]
+}

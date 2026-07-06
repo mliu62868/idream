@@ -1,0 +1,72 @@
+{
+  "capturedAt": "2026-07-04T22:17:54.595Z",
+  "pages": [
+    {
+      "route": "/admin/content/assets",
+      "screenshot": "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-asset-library-current-audit/screenshots/05-admin-content-assets-postfix-settled.png",
+      "metrics": {
+        "brokenVisible": [],
+        "heading": "Asset Library",
+        "horizontalOverflow": false,
+        "imageCount": 2,
+        "incompleteVisibleUserContent": [],
+        "loadingValues": [
+          "eager",
+          "eager"
+        ],
+        "url": "http://127.0.0.1:3006/admin/content/assets",
+        "visibleUserContent": [
+          {
+            "complete": true,
+            "height": 366,
+            "loading": "eager",
+            "naturalHeight": 640,
+            "naturalWidth": 512,
+            "src": "http://127.0.0.1:3006/user-content/bWVkaWFfajFkdzc1ZmZqeGttcjU2aDd4ZQ/content.png",
+            "visible": true,
+            "width": 293
+          },
+          {
+            "complete": true,
+            "height": 366,
+            "loading": "eager",
+            "naturalHeight": 640,
+            "naturalWidth": 512,
+            "src": "http://127.0.0.1:3006/user-content/bWVkaWFfb2pwYzhkZWtsamptcjU2MTZtdQ/content.png",
+            "visible": true,
+            "width": 293
+          }
+        ]
+      },
+      "logs": []
+    },
+    {
+      "route": "/admin/content/placements",
+      "screenshot": "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-asset-library-current-audit/screenshots/06-admin-content-placements-postfix-settled.png",
+      "metrics": {
+        "brokenVisible": [],
+        "heading": "Placements",
+        "horizontalOverflow": false,
+        "imageCount": 1,
+        "incompleteVisibleUserContent": [],
+        "loadingValues": [
+          "eager"
+        ],
+        "url": "http://127.0.0.1:3006/admin/content/placements",
+        "visibleUserContent": [
+          {
+            "complete": true,
+            "height": 96,
+            "loading": "eager",
+            "naturalHeight": 640,
+            "naturalWidth": 512,
+            "src": "http://127.0.0.1:3006/user-content/bWVkaWFfb2pwYzhkZWtsamptcjU2MTZtdQ/content.png",
+            "visible": true,
+            "width": 96
+          }
+        ]
+      },
+      "logs": []
+    }
+  ]
+}

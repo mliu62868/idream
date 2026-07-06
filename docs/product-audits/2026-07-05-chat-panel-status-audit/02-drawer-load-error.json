@@ -1,0 +1,10 @@
+{
+  "capturedAt": "2026-07-05T09:58:14.311Z",
+  "hasRetry": true,
+  "overflow": false,
+  "sessionRows": 0,
+  "statusLive": "assertive",
+  "statusRole": "alert",
+  "statusText": "Couldn't load your chats.Retry",
+  "url": "http://chat-panel-status-1783267.localhost:3267/chat/sess_1232ec8b38024466b819d6e2f5b11838"
+}

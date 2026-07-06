@@ -1,0 +1,37 @@
+{
+  "capturedAt": "2026-07-04T22:12:54.188Z",
+  "url": "http://127.0.0.1:3006/admin/content/assets",
+  "metrics": {
+    "brokenVisible": [],
+    "heading": "Asset Library",
+    "horizontalOverflow": false,
+    "imageCount": 2,
+    "loadingValues": [
+      "eager",
+      "eager"
+    ],
+    "visibleUserContent": [
+      {
+        "complete": true,
+        "height": 366,
+        "loading": "eager",
+        "naturalHeight": 640,
+        "naturalWidth": 512,
+        "src": "http://127.0.0.1:3006/user-content/bWVkaWFfajFkdzc1ZmZqeGttcjU2aDd4ZQ/content.png",
+        "visible": true,
+        "width": 293
+      },
+      {
+        "complete": true,
+        "height": 366,
+        "loading": "eager",
+        "naturalHeight": 640,
+        "naturalWidth": 512,
+        "src": "http://127.0.0.1:3006/user-content/bWVkaWFfb2pwYzhkZWtsamptcjU2MTZtdQ/content.png",
+        "visible": true,
+        "width": 293
+      }
+    ]
+  },
+  "logs": []
+}

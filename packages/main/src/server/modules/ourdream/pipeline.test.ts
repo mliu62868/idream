@@ -1,3 +1,4 @@
+import { deflateSync } from "node:zlib";
 import type { Prisma } from "@prisma/client";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/server/lib/db";
@@ -141,6 +142,49 @@ describe("local AI service pipeline", () => {
       provider: "mock-pipeline",
       contentType: "image/png",
     });
+  });
+
+  it("fails and refunds image generation when provider output is blank", async () => {
+    const userId = `${P}blank-image-user`;
+    await createUser({ id: userId });
+    await grantCoins(userId, 100, "seed");
+    const imageGenerate = vi.spyOn(providers.image, "generate").mockResolvedValueOnce({
+      ok: true,
+      data: {
+        assets: [
+          {
+            key: "pipeline/blank.png",
+            width: 4,
+            height: 4,
+            contentType: "image/png",
+            body: whitePng(4, 4),
+          },
+        ],
+      },
+    });
+    const blobPut = vi.spyOn(providers.blob, "putPrivate");
+
+    const gen = await api("POST", "generation/jobs", {
+      userId,
+      ageGate: true,
+      body: { mode: "image", characterId: CHAR, outputCount: 1 },
+    });
+    expectOk(gen, 202);
+    const jobId = gen.data.job.id as string;
+    cleanupJobDedupeKeys.push(`generation:${jobId}`, `generation-finalize:${jobId}:failed`);
+    cleanupModerationTargetIds.push(jobId);
+    await requeueAsFinalAttempt("ai.image.generate", jobId);
+
+    await runQueuedGenerationJobs(8);
+
+    expect(imageGenerate).toHaveBeenCalledTimes(1);
+    expect(blobPut).not.toHaveBeenCalled();
+    const poll = await api("GET", `generation/jobs/${jobId}`, { userId, ageGate: true });
+    expectOk(poll);
+    expect(poll.data.job.status).toBe("failed");
+    expect(poll.data.job.errorCode).toBe("asset_quality_failed");
+    expect(await dreamcoinBalance(userId)).toBe(100);
+    expect(await prisma.mediaAsset.count({ where: { sourceJobId: jobId } })).toBe(0);
   });
 
   it("settles async character preview as failed when the worker throws on its final attempt", async () => {
@@ -341,3 +385,50 @@ describe("local AI service pipeline", () => {
     }
   });
 });
+
+function whitePng(width: number, height: number) {
+  const rows = Array.from({ length: height }, () => {
+    const row = Buffer.alloc(1 + width * 3, 255);
+    row[0] = 0;
+    return row;
+  });
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", deflateSync(Buffer.concat(rows))),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+function pngChunk(type: string, data: Buffer) {
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length, 0);
+  const chunk = Buffer.concat([Buffer.from(type, "ascii"), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(chunk), 0);
+  return Buffer.concat([length, chunk, crc]);
+}
+
+const pngCrcTable = new Uint32Array(256).map((_, value) => {
+  let crc = value;
+  for (let bit = 0; bit < 8; bit += 1) {
+    crc = crc & 1 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1;
+  }
+  return crc >>> 0;
+});
+
+function crc32(data: Buffer) {
+  let crc = 0xffffffff;
+  for (const byte of data) {
+    crc = pngCrcTable[(crc ^ byte) & 0xff]! ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}

@@ -1,0 +1,16 @@
+{
+  "browserName": "chromium",
+  "channel": "chrome",
+  "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.0.0 Safari/537.36",
+  "adminURL": "http://127.0.0.1:3191",
+  "checks": [
+    "Wrong API confirmation FEATURED returned 400 and did not create feed.featured.",
+    "Save featured stayed disabled with empty confirmation.",
+    "Save featured stayed disabled with wrong confirmation FEATURED.",
+    "Exact normalized IDs enabled Save featured.",
+    "Saved setting preserved the intended featured order.",
+    "Public feed rendered the first featured character first.",
+    "Audit log stored the operator reason and resulting featured IDs."
+  ],
+  "consoleFailures": []
+}

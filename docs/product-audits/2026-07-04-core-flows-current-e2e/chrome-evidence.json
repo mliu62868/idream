@@ -1,0 +1,81 @@
+{
+  "date": "2026-07-04",
+  "server": {
+    "package": "@idream/main",
+    "command": "bun run dev --port 3203",
+    "baseUrl": "http://127.0.0.1:3203"
+  },
+  "automatedE2e": {
+    "command": "PW_WEBSERVER=1 PW_BASE_URL=http://127.0.0.1:3202 PW_ADMIN_BASE_URL=http://127.0.0.1:3999 bun --cwd packages/main playwright test src/e2e/flows.e2e.ts",
+    "result": "9 passed (15.4s)"
+  },
+  "chrome": {
+    "consoleWarningsAndErrors": [],
+    "screenshots": [
+      "screenshots/02-explore-accepted-viewport.png",
+      "screenshots/03-character-detail.png",
+      "screenshots/04-signup-form.png",
+      "screenshots/05-generate-after-signup.png",
+      "screenshots/06-generate-job-queued.png",
+      "screenshots/07-generate-completed-gallery.png",
+      "screenshots/08-chat-session-composer.png",
+      "screenshots/08-chat-message-roundtrip.png",
+      "screenshots/09-create-start.png",
+      "screenshots/10-create-before-submit.png",
+      "screenshots/11-create-saved-character.png",
+      "screenshots/12-upgrade-plans.png",
+      "screenshots/13-upgrade-success-return.png",
+      "screenshots/14-upgrade-return-generate.png"
+    ],
+    "flowAssertions": {
+      "explore": {
+        "characterLinks": 16,
+        "visibleImageFailures": 0
+      },
+      "detail": {
+        "character": "Melissa Burke",
+        "actions": ["Chat", "Generate", "Like", "Report"]
+      },
+      "signupReturn": {
+        "startUrl": "/signup?next=%2Fgenerate%3FcharacterId%3Dmelissa-burke",
+        "returnedUrl": "/generate?characterId=melissa-burke",
+        "starterBalance": "250 coins"
+      },
+      "generation": {
+        "jobId": "cmr6v5mx200070sl7wsxc3ea3",
+        "queuedBalance": "245 coins",
+        "finalStatus": "completed",
+        "assetCount": 1,
+        "assetUrl": "/user-content/bWVkaWFfODN5ZzN6czhoNG1yNnY2aXVs/content.png",
+        "eventChain": [
+          "created",
+          "reserved",
+          "queued",
+          "provider_completed",
+          "moderating_output",
+          "moderation_passed",
+          "completed"
+        ]
+      },
+      "chat": {
+        "userMessages": 1,
+        "assistantMessages": 1,
+        "sentText": "hello from chrome audit"
+      },
+      "create": {
+        "status": "Saved Nova Vale to My AI.",
+        "createdCharacterHref": "/characters/cmr6vdvli000g0sl7ulwytvhr"
+      },
+      "upgrade": {
+        "activatedPlan": "Deluxe monthly",
+        "grant": "6,000 dreamcoins",
+        "returnHref": "/generate?characterId=melissa-burke",
+        "returnedBalance": "6,245 coins"
+      }
+    }
+  },
+  "limitations": [
+    "Chrome profile had already accepted the local age gate; first-visit age gate proof is covered by Playwright E2E in this pass.",
+    "This is local/internal beta proof, not public production-provider launch proof."
+  ]
+}

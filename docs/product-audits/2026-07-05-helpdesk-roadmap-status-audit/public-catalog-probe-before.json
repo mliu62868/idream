@@ -1,0 +1,68 @@
+{
+  "ok": false,
+  "checkedAt": "2026-07-05T10:15:13.915Z",
+  "durationMs": 92,
+  "counts": {
+    "publicCharacters": 16,
+    "publicCollections": 3,
+    "publicCreators": 13,
+    "publicFeedbackItems": 6,
+    "distinctImages": 16
+  },
+  "thresholds": {
+    "maxDuplicateImageRatio": 0.4,
+    "maxPublicMetric": 10000000
+  },
+  "issueTotals": {
+    "total": 5,
+    "fail": 5,
+    "warn": 0
+  },
+  "issues": [
+    {
+      "severity": "fail",
+      "entity": "feedback",
+      "id": "cmr5m8j92003hv1l7p500p9mr",
+      "field": "title",
+      "message": "Public catalog contains audit/test user marker.",
+      "value": "Chrome roadmap restore 1783124412614"
+    },
+    {
+      "severity": "fail",
+      "entity": "feedback",
+      "id": "cmr5m8j92003hv1l7p500p9mr",
+      "field": "description",
+      "message": "Public catalog contains audit/test user marker.",
+      "value": "Chrome anonymous roadmap idea should preserve intent through signup."
+    },
+    {
+      "severity": "fail",
+      "entity": "feedback",
+      "id": "cmr5m4k1f000cv1l7qkk6uf1o",
+      "field": "title",
+      "message": "Public catalog contains audit/test user marker.",
+      "value": "Chrome roadmap restore 1783124227003"
+    },
+    {
+      "severity": "fail",
+      "entity": "feedback",
+      "id": "cmr5m4k1f000cv1l7qkk6uf1o",
+      "field": "description",
+      "message": "Public catalog contains audit/test user marker.",
+      "value": "Chrome anonymous roadmap idea should preserve intent through signup."
+    },
+    {
+      "severity": "fail",
+      "entity": "feedback",
+      "id": "cmqzzrdez001whtl77ag1k016",
+      "field": "title",
+      "message": "Public catalog contains audit/test user marker.",
+      "value": "Chrome audit launch readiness blocker"
+    }
+  ],
+  "error": {
+    "code": "public_catalog_probe_failed",
+    "message": "5 launch-blocking public catalog issue(s) found.",
+    "retryable": false
+  }
+}

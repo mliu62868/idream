@@ -1,0 +1,74 @@
+{
+  "runId": "1783270000000",
+  "testEmail": "chrome-chat-image-1783270000000@test.local",
+  "baseUrl": "http://127.0.0.1:3274",
+  "steps": [
+    {
+      "screenshot": "01-signup-character-return.png",
+      "url": "http://127.0.0.1:3274/signup?next=%2Fcharacters%2Fmelissa-burke",
+      "title": "Signup | ourdream.ai"
+    },
+    {
+      "screenshot": "02-character-after-signup.png",
+      "url": "http://127.0.0.1:3274/characters/melissa-burke",
+      "title": "ourdream.ai | Unlimited AI Roleplay Platform"
+    },
+    {
+      "screenshot": "03-chat-session-ready.png",
+      "url": "http://127.0.0.1:3274/chat/sess_858ab1ed8e0e4e629afbfdf5bd0993f1",
+      "title": "ourdream.ai | Unlimited AI Roleplay Platform"
+    },
+    {
+      "screenshot": "04-chat-after-image-request.png",
+      "url": "http://127.0.0.1:3274/chat/sess_858ab1ed8e0e4e629afbfdf5bd0993f1",
+      "title": "ourdream.ai | Unlimited AI Roleplay Platform"
+    },
+    {
+      "screenshot": "05-chat-image-completed.png",
+      "url": "http://127.0.0.1:3274/chat/sess_858ab1ed8e0e4e629afbfdf5bd0993f1",
+      "title": "ourdream.ai | Unlimited AI Roleplay Platform"
+    },
+    {
+      "screenshot": "06-chat-more-like-this-queued.png",
+      "url": "http://127.0.0.1:3274/chat/sess_858ab1ed8e0e4e629afbfdf5bd0993f1",
+      "title": "ourdream.ai | Unlimited AI Roleplay Platform"
+    },
+    {
+      "screenshot": "07-open-in-generate.png",
+      "url": "http://127.0.0.1:3274/generate?characterId=melissa-burke",
+      "title": "NSFW AI Image Generator | ourdream.ai"
+    },
+    {
+      "screenshot": "08-chat-image-fallback-after-fix.png",
+      "url": "http://127.0.0.1:3274/chat/sess_858ab1ed8e0e4e629afbfdf5bd0993f1",
+      "title": "ourdream.ai | Unlimited AI Roleplay Platform"
+    },
+    {
+      "note": "After code fix, chat completed bad preview renders fallback."
+    }
+  ],
+  "browserLogs": [],
+  "finalUrl": "http://127.0.0.1:3274/generate?characterId=melissa-burke",
+  "sessionId": "sess_858ab1ed8e0e4e629afbfdf5bd0993f1",
+  "completedChecks": {
+    "chatAttachmentCompleted": true,
+    "moreLikeThisQueued": true,
+    "openInGenerateCharacter": "melissa-burke",
+    "noHorizontalOverflowObserved": true
+  },
+  "afterFix": {
+    "bodyText": "Create\nExplore\nChat\nGenerate\nMy AI\nFeed\nCommunity\nHelp Desk\nSafety Center\nDiscord\nMore\nProfile\nUpgrade\n\n2026 OURDREAM.AI\n\nUSA: DREAM STUDIO USA, INC.\n\nCYPRUS: TEKTOPIA LTD (HE 473775)\n\nExplore\nMELISSA BURKE\nGetting to know each other\nMemory on\nGenerate\n\nMemory on: this character remembers details across your chats.\n\nPlease make an image from this chat moment 1783270000000\nI can make that image for you now.\n\nImage unavailable\n\nPreview unavailable\nRealistic in-character photo from the current chat scene, warm evening light, intimate portrait framing\nMore like this\nOpen in Generate",
+    "buttons": [
+      "Memory on",
+      "More like this"
+    ],
+    "cardTexts": [
+      "Image unavailablePreview unavailableRealistic in-character photo from the current chat scene, warm evening light, intimate portrait framingMore like thisOpen in Generate"
+    ],
+    "fallbackText": "Preview unavailableRealistic in-character photo from the current chat scene, warm evening light, intimate portrait framing",
+    "hasFallback": true,
+    "imageCount": 0,
+    "overflow": false
+  },
+  "browserLogsAfterFix": []
+}

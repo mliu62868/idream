@@ -69,7 +69,7 @@ describe("admin tag taxonomy governance", () => {
       adminRequest("PATCH", `admin/content/tags/${tag.id}`, {
         userId: admin,
         role: "admin",
-        body: { isSensitive: true, reason: "reclassify as sensitive" },
+        body: { isSensitive: true, reason: "reclassify as sensitive", confirmation: tag.slug },
       }),
       tag.id,
     );
@@ -91,6 +91,29 @@ describe("admin tag taxonomy governance", () => {
     expect((audit?.after as { isSensitive?: boolean })?.isSensitive).toBe(true);
   });
 
+  it("rejects tag metadata edits when confirmation does not match the tag", async () => {
+    const admin = await setupActor("admin", "patch-confirm");
+    const tag = await createTag("patch-confirm", { isSensitive: false });
+
+    await expect(
+      patchTag(
+        adminRequest("PATCH", `admin/content/tags/${tag.id}`, {
+          userId: admin,
+          role: "admin",
+          body: {
+            isSensitive: true,
+            reason: "wrong tag confirmation",
+            confirmation: "wrong-slug",
+          },
+        }),
+        tag.id,
+      ),
+    ).rejects.toMatchObject({ status: 400 });
+
+    const persisted = await prisma.tag.findUnique({ where: { id: tag.id } });
+    expect(persisted?.isSensitive).toBe(false);
+  });
+
   it("rejects writes from actors without content.tag.write", async () => {
     const analyst = await setupActor("analyst", "perm");
     const tag = await createTag("perm");
@@ -100,7 +123,7 @@ describe("admin tag taxonomy governance", () => {
         adminRequest("PATCH", `admin/content/tags/${tag.id}`, {
           userId: analyst,
           role: "analyst",
-          body: { label: "Nope", reason: "should be blocked" },
+          body: { label: "Nope", reason: "should be blocked", confirmation: tag.slug },
         }),
         tag.id,
       ),
@@ -135,7 +158,7 @@ describe("admin tag taxonomy governance", () => {
           sourceId: source.id,
           targetId: target.id,
           reason: "consolidate duplicate tags",
-          confirmation: "MERGE",
+          confirmation: `${source.id}:${target.id}`,
         },
       }),
     );
@@ -156,7 +179,7 @@ describe("admin tag taxonomy governance", () => {
     expect((audit?.before as { sourceId?: string })?.sourceId).toBe(source.id);
   });
 
-  it("rejects merge when confirmation does not equal MERGE", async () => {
+  it("rejects merge when confirmation does not match source and target", async () => {
     const admin = await setupActor("admin", "confirm");
     const source = await createTag("confirm-src");
     const target = await createTag("confirm-dst");
@@ -169,8 +192,8 @@ describe("admin tag taxonomy governance", () => {
           body: {
             sourceId: source.id,
             targetId: target.id,
-            reason: "missing confirmation token",
-            confirmation: "merge",
+            reason: "missing exact target confirmation",
+            confirmation: "MERGE",
           },
         }),
       ),

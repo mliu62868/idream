@@ -1,0 +1,51 @@
+{
+  "capturedAt": "2026-07-04T22:11:02.807Z",
+  "url": "http://127.0.0.1:3006/admin/content/assets",
+  "metrics": {
+    "brokenVisible": [],
+    "heading": "Asset Library",
+    "horizontalOverflow": false,
+    "imageCount": 2,
+    "nonEagerVisibleUserContent": [
+      "[Circular]",
+      "[Circular]"
+    ],
+    "textSample": "iDream Admin\n\nadmin\n\nOVERVIEW\n\nDashboard\n\nGENERATION OPS\n\nJobs & Incidents\nProfiles & Rollout\nDead-letter\nProvider Health\n\nCONTENT OPS\n\nProduction Studio\nAsset Library\nPlacements\nContent\nOfficial Characters\nTemplates\nTags\nReview Queue\nCMS / SEO\n\nTRUST OPS\n\nModeration\nChat Ops\nSupport Requests\n\nBUSINESS OPS\n\nUsers\nBilling\nPricing\nPromo\nAnnouncements\n\nINSIGHTS\n\nAnalytics\nInsights\nExperiments\nRisk & Abuse\n\nSYSTEM\n\nCompliance\nApprovals\nAudit Log\nAsset Library\n\nseed-admin-user\n\nLanguage\nEnglish\n中文\nRefresh\nLogout\n\nCONTENT OPS\n\nAsset Library\nRefresh\nStatus\nall\ngenerated\napproved\nrejected\npublished\narchived\nPurpose\nall\ncharacter_cover\ncharacter_hero\ncharacter_chat\nfeed\nhomepage\nseo\ntemplate_cover\ncampaign\nmodel_eval\nrejected\n512x640\n\nSource job cmr56ghb7000b8gl790a69nvd\n\nBatch Chrome Refresh Probe",
+    "title": "Admin | iDream",
+    "url": "http://127.0.0.1:3006/admin/content/assets",
+    "visibleUserContent": [
+      {
+        "alt": "",
+        "cardText": "rejected512x640Source job cmr56ghb7000b8gl790a69nvdBatch Chrome Refresh Probe 1783097909176Profile profile_image_default_v1ApproveSaveRejectArchive",
+        "complete": true,
+        "height": 366,
+        "loading": "lazy",
+        "naturalHeight": 640,
+        "naturalWidth": 512,
+        "src": "http://127.0.0.1:3006/user-content/bWVkaWFfajFkdzc1ZmZqeGttcjU2aDd4ZQ/content.png",
+        "visible": true,
+        "width": 293
+      },
+      {
+        "alt": "",
+        "cardText": "published512x640Source job cmr560ggg00028gl7m64aqmkfBatch Chrome Content Ops 1783097136351Profile profile_image_default_v1ApproveSaveRejectArchive",
+        "complete": true,
+        "height": 366,
+        "loading": "lazy",
+        "naturalHeight": 640,
+        "naturalWidth": 512,
+        "src": "http://127.0.0.1:3006/user-content/bWVkaWFfb2pwYzhkZWtsamptcjU2MTZtdQ/content.png",
+        "visible": true,
+        "width": 293
+      }
+    ]
+  },
+  "logs": [
+    {
+      "level": "warn",
+      "message": "Image with src \"/user-content/bWVkaWFfajFkdzc1ZmZqeGttcjU2aDd4ZQ/content.png\" was detected as the Largest Contentful Paint (LCP). Please add the `loading=\"eager\"` property if this image is above the fold.\nRead more: https://nextjs.org/docs/app/api-reference/components/image#loading",
+      "timestamp": "2026-07-04T22:10:40.729Z",
+      "url": "http://127.0.0.1:3006/_next/static/chunks/0rrz_next_dist_0l8l5wh._.js"
+    }
+  ]
+}

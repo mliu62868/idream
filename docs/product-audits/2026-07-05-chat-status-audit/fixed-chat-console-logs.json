@@ -1,0 +1,62 @@
+[
+  {
+    "level": "info",
+    "message": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+    "timestamp": "2026-07-05T07:45:32.113Z",
+    "url": "http://127.0.0.1:3253/_next/static/chunks/0rrz_next_dist_0l8l5wh._.js"
+  },
+  {
+    "level": "log",
+    "message": "[HMR] connected",
+    "timestamp": "2026-07-05T07:45:32.148Z",
+    "url": "http://127.0.0.1:3253/_next/static/chunks/0rrz_next_dist_0l8l5wh._.js"
+  },
+  {
+    "level": "log",
+    "message": "[Fast Refresh] rebuilding",
+    "timestamp": "2026-07-05T07:45:32.334Z",
+    "url": "http://127.0.0.1:3253/_next/static/chunks/0rrz_next_dist_0l8l5wh._.js"
+  },
+  {
+    "level": "log",
+    "message": "[Fast Refresh] done in 230ms",
+    "timestamp": "2026-07-05T07:45:32.462Z",
+    "url": "http://127.0.0.1:3253/_next/static/chunks/0rrz_next_dist_0l8l5wh._.js"
+  },
+  {
+    "level": "info",
+    "message": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+    "timestamp": "2026-07-05T07:46:02.115Z",
+    "url": "http://127.0.0.1:3253/_next/static/chunks/0rrz_next_dist_0l8l5wh._.js"
+  },
+  {
+    "level": "log",
+    "message": "[HMR] connected",
+    "timestamp": "2026-07-05T07:46:02.128Z",
+    "url": "http://127.0.0.1:3253/_next/static/chunks/0rrz_next_dist_0l8l5wh._.js"
+  },
+  {
+    "level": "log",
+    "message": "[Fast Refresh] rebuilding",
+    "timestamp": "2026-07-05T07:48:17.225Z",
+    "url": "http://127.0.0.1:3253/_next/static/chunks/0rrz_next_dist_0l8l5wh._.js"
+  },
+  {
+    "level": "log",
+    "message": "[Fast Refresh] done in 188ms",
+    "timestamp": "2026-07-05T07:48:17.330Z",
+    "url": "http://127.0.0.1:3253/_next/static/chunks/0rrz_next_dist_0l8l5wh._.js"
+  },
+  {
+    "level": "info",
+    "message": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+    "timestamp": "2026-07-05T07:50:59.856Z",
+    "url": "http://127.0.0.1:3253/_next/static/chunks/0rrz_next_dist_0l8l5wh._.js"
+  },
+  {
+    "level": "log",
+    "message": "[HMR] connected",
+    "timestamp": "2026-07-05T07:50:59.868Z",
+    "url": "http://127.0.0.1:3253/_next/static/chunks/0rrz_next_dist_0l8l5wh._.js"
+  }
+]

@@ -1,0 +1,15 @@
+{
+  "browserName": "chromium",
+  "channel": "chrome",
+  "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.0.0 Safari/537.36",
+  "adminURL": "http://127.0.0.1:3197",
+  "checks": [
+    "Wrong API confirmation SUSPENDED returned 400 and left the user active.",
+    "Confirm stayed disabled with empty confirmation.",
+    "Confirm stayed disabled with wrong confirmation SUSPENDED.",
+    "Exact userId:suspended confirmation enabled Suspend.",
+    "Exact userId:active confirmation enabled Restore.",
+    "Two user.status.write audit rows stored operator reasons."
+  ],
+  "consoleFailures": []
+}

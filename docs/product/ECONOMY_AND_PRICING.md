@@ -12,14 +12,14 @@
 
 复刻自 ourdream.ai 的真实模型，反推并验证得到以下结论：
 
-> **dreamcoin 是平台唯一的消耗型货币。** 一切付费生成（图片、视频、语音）都按费率扣 dreamcoin。
-> 计划卡上的「200 张图 / 10 个视频 / 20 分钟语音」**不是三个独立配额**，而是「把当月 dreamcoin 全部花在该类目时的上限示意」。
+> **dreamcoin 是平台唯一的消耗型货币。** 图片/视频生成按费率扣 dreamcoin；语音优先消耗计划分钟额度，额度用尽后按 clip 兜底扣 dreamcoin。
+> 参考站计划卡上的「N 张图 / N 个视频 / N 分钟语音」不是三个独立配额，而是「把当月 dreamcoin 全部花在该类目时的上限示意」。当前 iDream 受控 beta 的 `/upgrade` 计划卡不展示这些媒体等价数字；若未来恢复，必须动态计算，且 `video_gen=false` 时不得展示视频承诺。
 
 官方文案佐证（对标站 ourdream.ai 计划卡文案）：
 
 > "1,000 dreamcoins is included in the subscription which **covers all your needs including videos**."
 
-这条决策**纠正了早期文档把 image_quota / video_quota / voice_minutes 当作独立计数器的设计**（见 `08-billing §6` 旧表述）。MVP 一律折算为 dreamcoin，KISS：一种货币、一个 append-only ledger。
+这条决策**纠正了早期文档把 image_quota / video_quota 当作独立计数器的设计**（见 `08-billing §6` 旧表述）。MVP 的图片/视频消耗收敛到 dreamcoin + append-only ledger；语音分钟额度仍是 `Plan.features.voiceMinutes`。
 
 ### 0.1 反推验证（数值自洽性）
 
@@ -83,8 +83,8 @@
 | 计划 | 月付 | 年付（一次付清 / 等效月价） | 当月 dreamcoin | 关键权益 |
 | --- | --- | --- | --- | --- |
 | **Free** | $0 | — | 注册赠币（一次性，见 §3） | 浏览、有限聊天、无付费生成（除非用赠币/充值） |
-| **Premium** | $19.99/mo | $99.90/yr（≈$8.33/mo） | 1,500 / 月（年付 18,000/年） | unlimited messages、image gen、voice（30 min/月）、video gen |
-| **Deluxe** | $59.99/mo | $299.90/yr（≈$24.99/mo） | 6,000 / 月（年付 72,000/年） | Premium 全部 + **premium models** + voice（120 min/月） + video gen |
+| **Premium** | $19.99/mo | $99.90/yr（≈$8.33/mo） | 1,500 / 月（年付 18,000/年） | unlimited messages、image gen、voice（30 min/月）、`videoGeneration=false` |
+| **Deluxe** | $59.99/mo | $299.90/yr（≈$24.99/mo） | 6,000 / 月（年付 72,000/年） | Premium 全部 + **premium models** + voice（120 min/月） + video entitlement；仅在 `video_gen` 与 provider gate 同时 ready 时曝光 |
 
 ### 2.1 年付促销
 
@@ -112,7 +112,7 @@
 > 注意：
 > - 旧 `features` 里的 `image_quota / video_quota` 计数器字段**已废弃**（被单一货币模型取代）；图片/视频额度统一折算 dreamcoin。
 > - `voiceMinutes` **仍在使用、并按滚动 30 天窗口计量**（见 §1.1），不是废弃字段。
-> - 计划卡 UI 上的「N images / N videos」文案由 `includedDreamcoins ÷ 费率` 动态算出展示，不硬编码。
+> - 当前计划卡 UI 展示 `includedDreamcoins` 与聊天/模型权益，不展示「N images / N videos」等媒体等价数字。若未来恢复媒体等价文案，必须由 `includedDreamcoins ÷ 费率` 动态算出，不硬编码，并且 `video_gen=false` 时隐藏视频等价。
 > - 「custom prompt / negative prompt / premium chat models / chat memory multiplier」等高阶权益由 entitlement / Chat Service 层计算，**不落在 `Plan.features`** 内。
 
 ---
@@ -177,13 +177,13 @@
 | `BackendFeatureSpec.md §5.5` | 生成请求契约引用本文 §1.2 的费率与乘数公式 |
 | `ADMIN_CONSOLE_PLAN.md` | `PricingRule` 字段语义；改价走配置版本化 + 审计 |
 | `CHAT_SERVICE_PRD.md` | `chat_memory_multiplier` 数值与语音计费口径 |
-| `PRD.md §6.7` | 计划卡展示口径（动态算出 images 等示意，不硬编码） |
+| `PRD.md §6.7` | 计划卡展示口径（当前只展示 dreamcoins + 权益；未来媒体等价必须动态算出且受 feature flag 控制） |
 
 ---
 
 ## 7. 验收
 
-- [ ] 任意计划的「images/videos/voice 示意数字」= `monthly_dreamcoins ÷ 对应费率`，由代码动态算出，无硬编码独立配额。
+- [ ] 当前 `/upgrade` 计划卡不展示已禁用的视频承诺；若恢复「images/videos/voice 示意数字」，必须由 `includedDreamcoins ÷ 对应费率` 动态算出，无硬编码独立配额，并受 feature flag 控制。
 - [ ] 生成扣费严格遵循 `cost = ceil(base × count × model_mult × duration_mult)`，全平台一处定义。
 - [ ] 免费档赠币、日消息额度为可配置运营参数，不写死在判定逻辑。
 - [ ] 失败/拦截/部分拦截退款幂等收敛（`sourceId=jobId`），不重复退、不漏退。

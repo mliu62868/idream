@@ -1,0 +1,162 @@
+{
+  "baseUrl": "http://127.0.0.1:3272",
+  "runId": 1783249025217,
+  "emailSignout": "chrome-profile-signout-1783249025217@test.local",
+  "emailDelete": "chrome-profile-delete-1783249025217@test.local",
+  "logs": [
+    {
+      "step": "signed-up-signout-user",
+      "state": {
+        "accountPanel": {
+          "ariaLive": null,
+          "role": null,
+          "text": "Account managementSign out all sessionsDelete accountDelete",
+          "visible": true
+        },
+        "activeElementLabel": "CreateExploreChatGenerateMy AIFeedCommunityHelp DeskSafety CenterDiscordMoreProfileUpgrade2026 OURDREAM.AIUSA: Dream Studio USA, Inc.Cyprus: TEKTOPIA LTD (HE 47...",
+        "authRequired": null,
+        "authStatus": null,
+        "deleteButtonDisabled": true,
+        "deleteInputVisible": true,
+        "h1": "Profile",
+        "horizontalOverflow": false,
+        "signOutButtonVisible": true,
+        "status": null,
+        "title": "Account Management | ourdream.ai",
+        "url": "http://127.0.0.1:3272/profile/account-management"
+      }
+    },
+    {
+      "step": "after-sign-out-all",
+      "state": {
+        "accountPanel": null,
+        "activeElementLabel": "CreateExploreChatGenerateMy AIFeedCommunityHelp DeskSafety CenterDiscordMoreProfileUpgrade2026 OURDREAM.AIUSA: Dream Studio USA, Inc.Cyprus: TEKTOPIA LTD (HE 47...",
+        "authRequired": null,
+        "authStatus": null,
+        "deleteButtonDisabled": null,
+        "deleteInputVisible": false,
+        "h1": "Log in to Ourdream",
+        "horizontalOverflow": false,
+        "signOutButtonVisible": false,
+        "status": null,
+        "title": "Login | ourdream.ai",
+        "url": "http://127.0.0.1:3272/login"
+      }
+    },
+    {
+      "step": "signed-up-delete-user-initial",
+      "state": {
+        "accountPanel": {
+          "ariaLive": null,
+          "role": null,
+          "text": "Account managementSign out all sessionsDelete accountDelete",
+          "visible": true
+        },
+        "activeElementLabel": "CreateExploreChatGenerateMy AIFeedCommunityHelp DeskSafety CenterDiscordMoreProfileUpgrade2026 OURDREAM.AIUSA: Dream Studio USA, Inc.Cyprus: TEKTOPIA LTD (HE 47...",
+        "authRequired": null,
+        "authStatus": null,
+        "deleteButtonDisabled": true,
+        "deleteInputVisible": true,
+        "h1": "Profile",
+        "horizontalOverflow": false,
+        "signOutButtonVisible": true,
+        "status": null,
+        "title": "Account Management | ourdream.ai",
+        "url": "http://127.0.0.1:3272/profile/account-management"
+      }
+    },
+    {
+      "step": "wrong-confirmation",
+      "state": {
+        "accountPanel": {
+          "ariaLive": null,
+          "role": null,
+          "text": "Account managementSign out all sessionsDelete accountDelete",
+          "visible": true
+        },
+        "activeElementLabel": "Delete confirmation",
+        "authRequired": null,
+        "authStatus": null,
+        "deleteButtonDisabled": true,
+        "deleteInputVisible": true,
+        "h1": "Profile",
+        "horizontalOverflow": false,
+        "signOutButtonVisible": true,
+        "status": null,
+        "title": "Account Management | ourdream.ai",
+        "url": "http://127.0.0.1:3272/profile/account-management"
+      }
+    },
+    {
+      "step": "ready-to-delete",
+      "state": {
+        "accountPanel": {
+          "ariaLive": null,
+          "role": null,
+          "text": "Account managementSign out all sessionsDelete accountDelete",
+          "visible": true
+        },
+        "activeElementLabel": "Delete confirmation",
+        "authRequired": null,
+        "authStatus": null,
+        "deleteButtonDisabled": false,
+        "deleteInputVisible": true,
+        "h1": "Profile",
+        "horizontalOverflow": false,
+        "signOutButtonVisible": true,
+        "status": null,
+        "title": "Account Management | ourdream.ai",
+        "url": "http://127.0.0.1:3272/profile/account-management"
+      }
+    },
+    {
+      "step": "after-delete-navigation",
+      "state": {
+        "accountPanel": null,
+        "activeElementLabel": "CreateExploreChatGenerateMy AIFeedCommunityHelp DeskSafety CenterDiscordMoreProfileUpgrade2026 OURDREAM.AIUSA: Dream Studio USA, Inc.Cyprus: TEKTOPIA LTD (HE 47...",
+        "authRequired": null,
+        "authStatus": null,
+        "deleteButtonDisabled": null,
+        "deleteInputVisible": false,
+        "h1": "Log in to Ourdream",
+        "horizontalOverflow": false,
+        "signOutButtonVisible": false,
+        "status": null,
+        "title": "Login | ourdream.ai",
+        "url": "http://127.0.0.1:3272/login"
+      }
+    },
+    {
+      "step": "deleted-account-login-blocked",
+      "state": {
+        "accountPanel": null,
+        "activeElementLabel": "CreateExploreChatGenerateMy AIFeedCommunityHelp DeskSafety CenterDiscordMoreProfileUpgrade2026 OURDREAM.AIUSA: Dream Studio USA, Inc.Cyprus: TEKTOPIA LTD (HE 47...",
+        "authRequired": null,
+        "authStatus": {
+          "ariaLive": "assertive",
+          "role": "alert",
+          "text": "Account is not active",
+          "visible": true
+        },
+        "deleteButtonDisabled": null,
+        "deleteInputVisible": false,
+        "h1": "Log in to Ourdream",
+        "horizontalOverflow": false,
+        "signOutButtonVisible": false,
+        "status": null,
+        "title": "Login | ourdream.ai",
+        "url": "http://127.0.0.1:3272/login"
+      }
+    }
+  ],
+  "screenshots": [
+    "/Users/kk/code/idream/docs/product-audits/2026-07-05-profile-account-management-current-audit/01-account-management-after-signup.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-05-profile-account-management-current-audit/02-after-sign-out-all.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-05-profile-account-management-current-audit/03-account-delete-disabled.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-05-profile-account-management-current-audit/04-account-delete-wrong-confirmation.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-05-profile-account-management-current-audit/05-account-delete-ready.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-05-profile-account-management-current-audit/06-after-account-delete.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-05-profile-account-management-current-audit/07-deleted-account-login-blocked.png"
+  ],
+  "browserLogs": []
+}

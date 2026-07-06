@@ -10,6 +10,7 @@
     ".": "./src/index.ts",
     "./contracts": "./src/contracts/index.ts",
     "./bff": "./src/bff/signing.ts",
+    "./media/generated-image-sanity": "./src/media/generated-image-sanity.ts",
     "./media/mock-video": "./src/media/mock-video.ts",
     "./storage": "./src/storage/s3-blob.ts",
     "./storage/local-blob": "./src/storage/local-blob.ts",

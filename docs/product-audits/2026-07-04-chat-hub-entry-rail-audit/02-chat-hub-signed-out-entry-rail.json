@@ -1,0 +1,71 @@
+{
+  "state": {
+    "authLinks": [
+      {
+        "aria": null,
+        "href": "/login?next=%2Fchat",
+        "testid": null,
+        "text": "Log in"
+      },
+      {
+        "aria": null,
+        "href": "/signup?next=%2Fchat",
+        "testid": null,
+        "text": "Join free"
+      }
+    ],
+    "buttons": [
+      "Open navigation menu",
+      "Search"
+    ],
+    "headings": [
+      "Your chats",
+      "Sign in to see your chats",
+      "Start a conversation",
+      "Learn",
+      "Popular",
+      "Help"
+    ],
+    "startLinks": [
+      {
+        "aria": "Chat with Melissa Burke",
+        "href": "/characters/melissa-burke",
+        "testid": "chat-hub-character-card",
+        "text": "Melissa Burke2.2M chats"
+      },
+      {
+        "aria": "Chat with Summoned to Another World",
+        "href": "/characters/summoned-world",
+        "testid": "chat-hub-character-card",
+        "text": "Summoned to Another World1.4M chats"
+      },
+      {
+        "aria": "Chat with Sarah Mercer",
+        "href": "/characters/sarah-mercer",
+        "testid": "chat-hub-character-card",
+        "text": "Sarah Mercer1.3M chats"
+      },
+      {
+        "aria": null,
+        "href": "/",
+        "testid": null,
+        "text": "Explore characters"
+      },
+      {
+        "aria": null,
+        "href": "/create",
+        "testid": null,
+        "text": "Create private character"
+      }
+    ],
+    "testids": [
+      "chat-hub-auth-required",
+      "chat-hub-start-panel",
+      "chat-hub-character-card",
+      "chat-hub-character-card",
+      "chat-hub-character-card"
+    ],
+    "url": "http://localhost:3234/chat"
+  },
+  "logs": []
+}

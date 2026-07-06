@@ -1,0 +1,17 @@
+{
+  "demoNotice": "",
+  "heading": "Upgrade Ourdream",
+  "horizontalOverflow": false,
+  "planCards": [],
+  "statusNodes": [
+    {
+      "ariaLive": "polite",
+      "role": "status",
+      "tag": "P",
+      "testId": "upgrade-plans-status",
+      "text": "Loading plans…"
+    }
+  ],
+  "url": "http://127.0.0.1:3261/upgrade",
+  "visibleTextSample": "CreateExploreChatGenerateMy AIFeedCommunityHelp DeskSafety CenterDiscordMoreProfileUpgrade2026 OURDREAM.AIUSA: Dream Studio USA, Inc.Cyprus: TEKTOPIA LTD (HE 473775)ourdream.aiupgradeUpgrade OurdreamSubscription upgrade page with yearly and monthly plan cards, dreamcoin allowances, and premium generation controls.Create your AIExplore charactersFree: 30 text messages per day · basic chat model · base memory.Loading plans…LearnResources HubAI Girlfriend TypesComparisonsVideosAI InstructionsPopularAI GirlfriendAI BoyfriendAI AnimeGamesRomantasyour dream aiHelpHelp CentreAffiliatesHelp DeskSafety2026 OURDREAM.AIUSA: Dream Studio USA, Inc.Cyprus: TEKTOPIA LTD (HE 473775)ExploreChatCreateGenerateself.__next_r=\"3epW9cbykyQqPSzzKc_gF\"(self.__next_f=self.__next_f||[]).push([0])self.__next_f.push([1,\"7:I[\\\"[project]/node_modules/.bun/next@16.2.1+026d2aed98aa01b1/node_modules/next/dist/next-devtools/userspace/app/segment-explorer-node.js [app-client] (ecmascript)\\\",[\\\"/_next/static/chunks/node_m"
+}

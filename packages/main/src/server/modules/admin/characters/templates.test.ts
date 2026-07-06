@@ -133,7 +133,7 @@ describe("character template library service (feature B)", () => {
     const offline = await call((req) => setTemplateActive(req, id), {
       userId: admin,
       role: "admin",
-      body: { active: false, reason: "take offline" },
+      body: { active: false, reason: "take offline", confirmation: id },
     });
     expect(offline.status).toBe(200);
     expect(offline.data.template.isActive).toBe(false);
@@ -141,13 +141,34 @@ describe("character template library service (feature B)", () => {
     const online = await call((req) => setTemplateActive(req, id), {
       userId: admin,
       role: "admin",
-      body: { active: true, reason: "back online" },
+      body: { active: true, reason: "back online", confirmation: id },
     });
     expect(online.data.template.isActive).toBe(true);
 
     expect(
       await prisma.adminAuditLog.count({ where: { action: "content.template.active", targetId: id } }),
     ).toBe(2);
+  });
+
+  it("rejects active toggles when confirmation is not the template id", async () => {
+    const admin = await setupAdmin("active-confirmation");
+    const created = await call(createTemplate, {
+      userId: admin,
+      role: "admin",
+      body: { name: "Confirm Toggle Me", reason: "seed" },
+    });
+    const id = created.data.template.id as string;
+
+    const rejected = await call((req) => setTemplateActive(req, id), {
+      userId: admin,
+      role: "admin",
+      body: { active: false, reason: "take offline", confirmation: "OFFLINE" },
+    });
+    expect(rejected.status).toBe(400);
+    expect(rejected.code).toBe("bad_request");
+    expect(
+      await prisma.characterTemplate.findUniqueOrThrow({ where: { id }, select: { isActive: true } }),
+    ).toEqual({ isActive: true });
   });
 
   it("listActiveTemplates returns only active, ordered by sortOrder, and needs no admin perm", async () => {
@@ -165,7 +186,7 @@ describe("character template library service (feature B)", () => {
     await call((req) => setTemplateActive(req, hidden.data.template.id), {
       userId: admin,
       role: "admin",
-      body: { active: false, reason: "hide it" },
+      body: { active: false, reason: "hide it", confirmation: hidden.data.template.id },
     });
 
     // 公开路由：不传任何 admin 身份也能读。

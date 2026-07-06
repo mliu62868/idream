@@ -1,0 +1,49 @@
+{
+  "checkedAt": "2026-07-04T22:36:29.481Z",
+  "routes": [
+    {
+      "route": {
+        "path": "/explore",
+        "name": "explore",
+        "screenshot": "07-explore-scrolled-after-cleanup.png"
+      },
+      "metrics": {
+        "brokenVisibleImages": [],
+        "fixtureMatches": [],
+        "horizontalOverflow": false,
+        "incompleteVisibleImages": [],
+        "scrollY": 3026,
+        "url": "http://127.0.0.1:3218/explore",
+        "viewport": {
+          "height": 771,
+          "width": 1512
+        },
+        "visibleImageCount": 1
+      },
+      "warnErrorLogs": [],
+      "screenshotPath": "/Users/kk/code/idream/docs/product-audits/2026-07-04-public-catalog-post-e2e-cleanliness-audit/07-explore-scrolled-after-cleanup.png"
+    },
+    {
+      "route": {
+        "path": "/community",
+        "name": "community",
+        "screenshot": "08-community-scrolled-after-cleanup.png"
+      },
+      "metrics": {
+        "brokenVisibleImages": [],
+        "fixtureMatches": [],
+        "horizontalOverflow": false,
+        "incompleteVisibleImages": [],
+        "scrollY": 3517,
+        "url": "http://127.0.0.1:3218/community",
+        "viewport": {
+          "height": 771,
+          "width": 1512
+        },
+        "visibleImageCount": 13
+      },
+      "warnErrorLogs": [],
+      "screenshotPath": "/Users/kk/code/idream/docs/product-audits/2026-07-04-public-catalog-post-e2e-cleanliness-audit/08-community-scrolled-after-cleanup.png"
+    }
+  ]
+}

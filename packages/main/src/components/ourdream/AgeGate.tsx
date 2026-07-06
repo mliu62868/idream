@@ -82,7 +82,14 @@ export function AgeGate({
           {pending ? "Entering..." : "I'm over 18"}
         </button>
         {error && (
-          <p className="mt-3 text-[12px] font-semibold text-[rgb(255,140,140)]">{error}</p>
+          <p
+            aria-live="assertive"
+            className="mt-3 text-[12px] font-semibold text-[rgb(255,140,140)]"
+            data-testid="age-gate-status"
+            role="alert"
+          >
+            {error}
+          </p>
         )}
         <a
           className="mt-4 text-[12px] font-medium leading-4 text-[rgb(114,113,112)]"

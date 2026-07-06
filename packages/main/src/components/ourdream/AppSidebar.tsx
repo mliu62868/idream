@@ -55,6 +55,7 @@ export function AppSidebar({
             return (
               <Link
                 key={item.label}
+                aria-current={item.href === activeHref ? "page" : undefined}
                 className={cn(
                   "flex h-10 items-center gap-3 rounded-[10px] px-3 text-[12px] font-semibold leading-4 text-[rgb(170,170,170)] transition-colors hover:bg-[rgb(46,46,46)] hover:text-white",
                   item.href === activeHref && "bg-[rgb(46,46,46)] text-white",
@@ -110,6 +111,7 @@ export function AppSidebar({
             return (
               <Link
                 key={item.label}
+                aria-current={item.href === activeHref ? "page" : undefined}
                 className={className}
                 data-link-kind="internal"
                 href={item.href}
@@ -123,13 +125,18 @@ export function AppSidebar({
         <div className="mt-auto px-3">
           <div className="mb-3 h-px bg-[rgb(36,36,36)]" />
           <Link
-            className="mb-3 flex h-9 items-center gap-3 rounded-[10px] px-3 text-[12px] font-semibold leading-4 text-[rgb(170,170,170)]"
+            aria-current={activeHref === "/profile" ? "page" : undefined}
+            className={cn(
+              "mb-3 flex h-9 items-center gap-3 rounded-[10px] px-3 text-[12px] font-semibold leading-4 text-[rgb(170,170,170)] transition-colors hover:bg-[rgb(46,46,46)] hover:text-white",
+              activeHref === "/profile" && "bg-[rgb(46,46,46)] text-white",
+            )}
             href="/profile"
           >
             <UserRound className="h-4 w-4" strokeWidth={2.2} />
             Profile
           </Link>
           <Link
+            aria-current={activeHref === "/upgrade" ? "page" : undefined}
             className="flex h-10 w-full items-center justify-center gap-2 rounded-full bg-[linear-gradient(0deg,#ff1cac,#fd5fc2_50%,#ff79d1)] text-[12px] font-bold leading-4 text-white shadow-[inset_0_-2px_0_rgba(0,0,0,0.25)]"
             href="/upgrade"
           >

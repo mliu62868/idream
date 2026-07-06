@@ -1,6 +1,6 @@
 # 08 · 计费、权益与 dreamcoin
 
-更新日期：2026-06-13
+更新日期：2026-07-04
 
 落地 `BackendFeatureSpec §3.5/§4.5/§5.8` 与 ADR-4（支付抽象 + **加密货币**）。核心三件事：**订阅生命周期**、**权益（entitlement）派生**、**dreamcoin append-only ledger**。
 
@@ -8,25 +8,21 @@
 
 | plan | billing | 价格 | 关键权益（`Plan.features` JSON） |
 | --- | --- | --- | --- |
-| premium | monthly | $19.99/mo | 1,000 dreamcoins、200 images、20m voice、10 videos、unlimited messages、audio messages、publish characters |
-| premium | yearly | $9.99/mo（年付） | 同上 + free coins 促销 |
-| deluxe | monthly | $59.99/mo | premium chat models、3x chat memory、5,000 dreamcoins、1,000 images、100m voice、50 videos |
-| deluxe | yearly | $29.99/mo（年付） | 同上 + free coins 促销 |
+| premium | monthly | $19.99/mo | 1,500 dreamcoins、unlimited messages、imageGeneration、voiceEnabled、voiceMinutes=30、videoGeneration=false |
+| premium | yearly | $99.90/yr | 18,000 dreamcoins、unlimited messages、imageGeneration、voiceEnabled、voiceMinutes=360、videoGeneration=false |
+| deluxe | monthly | $59.99/mo | 6,000 dreamcoins、Premium 全部 + premiumModels、voiceMinutes=120、videoGeneration=true（仅在 `video_gen` + provider ready 时曝光） |
+| deluxe | yearly | $299.90/yr | 72,000 dreamcoins、Premium 全部 + premiumModels、voiceMinutes=1440、videoGeneration=true（仅在 `video_gen` + provider ready 时曝光） |
 
 `Plan.features` 示例（SSoT 在 seed + `lib/constants.ts`）：
 
 ```jsonc
 {
-  "unlimited_messages": true,
-  "custom_prompt": true,
-  "negative_prompt": true,
-  "video_gen": true,
-  "premium_models": false,        // deluxe=true
-  "chat_memory_multiplier": 1,    // deluxe=3
-  "monthly_dreamcoins": 1000,
-  "image_quota": 200,
-  "video_quota": 10,
-  "voice_minutes": 20
+  "unlimitedMessages": true,
+  "imageGeneration": true,
+  "videoGeneration": false,       // deluxe=true, still gated by global video_gen/provider readiness
+  "voiceEnabled": true,
+  "voiceMinutes": 30,             // yearly premium=360; deluxe monthly/yearly=120/1440
+  "premiumModels": false          // deluxe=true
 }
 ```
 
@@ -124,9 +120,9 @@ async function has(userId: string, key: string): Promise<boolean> {
 > **经济模型已定稿，SSoT 见 `product/ECONOMY_AND_PRICING.md`。** 本节服从该文档；下面只保留工程口径。
 
 - **entitlement**：布尔/配置型能力门（能不能用 custom prompt / video / premium models）。
-- **dreamcoin 是平台唯一消耗型货币**（决策见 ECONOMY §0）。计划卡上的「200 images / 10 videos / 20m voice」**不是独立配额**，而是「当月 dreamcoins ÷ 费率」的上限示意（5 币/图、100 币/视频、50 币/分钟，见 ECONOMY §1）。
-  - 因此 `Plan.features` 不再设 `image_quota / video_quota / voice_minutes` 独立计数；只保留 `monthly_dreamcoins`，UI 数字由 `monthly_dreamcoins ÷ 费率` 动态算出。
-  - 生成扣费走 dreamcoin ledger（§4）；语音通话按分钟扣 coin（ECONOMY §1.1），`voice_enabled` 仅作能力门。
+- **dreamcoin 是平台唯一消耗型货币**（决策见 ECONOMY §0）。当前计划卡展示 `includedDreamcoins` 与聊天/模型权益，不展示 images/videos/voice quota；若未来恢复媒体等价数字，必须按 `includedDreamcoins ÷ 费率` 动态计算，且 `video_gen=false` 时不得展示视频承诺。
+  - 因此 `Plan.features` 不再设 `image_quota / video_quota` 独立计数；币量在 `Plan.includedDreamcoins` 顶层字段，媒体消耗按 PricingRule 从 ledger 扣。
+  - 语音分钟额度仍使用 `Plan.features.voiceMinutes`（滚动窗口），额度用尽后按 clip 兜底扣 coin；`voiceEnabled` 作能力门。
   - 免费聊天额度（每日 messages）仍用 `chat_usage`（ECONOMY §3）——消息免费，只限频，不走 coin。
 
 ## 7. 退款、争议、降级

@@ -1,0 +1,19 @@
+{
+  "bulkFinalDeletedAt": "2026-07-04T17:08:09.097Z",
+  "bulkFirstClickDeletedAt": null,
+  "bulkMediaId": "chrome-gallery-bulk-delete-1783184887842-674463",
+  "chromeVersion": "149.0.7827.201",
+  "consoleFailures": [],
+  "email": "chrome-generate-gallery-delete-1783184887842-674463@test.local",
+  "pageErrors": [],
+  "screenshots": [
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-generate-gallery-delete-confirmation-audit/screenshots/01-gallery-media-before-delete.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-generate-gallery-delete-confirmation-audit/screenshots/02-gallery-single-delete-confirmation.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-generate-gallery-delete-confirmation-audit/screenshots/03-gallery-single-deleted.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-generate-gallery-delete-confirmation-audit/screenshots/04-gallery-bulk-delete-confirmation.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-generate-gallery-delete-confirmation-audit/screenshots/05-gallery-bulk-deleted.png"
+  ],
+  "singleFinalDeletedAt": "2026-07-04T17:08:08.847Z",
+  "singleFirstClickDeletedAt": null,
+  "singleMediaId": "chrome-gallery-single-delete-1783184887842-674463"
+}

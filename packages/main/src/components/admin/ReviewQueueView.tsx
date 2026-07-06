@@ -1,8 +1,8 @@
 "use client";
 
 // SPEC: 角色审核队列面板 —— 自取数列出待审（pending）角色提交，逐行 Approve/Reject。
-// INTENT: 决策弹窗收集 reviewReason(可选) + reason(必填) + confirmation("REVIEW")，复用 safety.review.* 权限。
-// INVARIANTS: 仅展示后端返回的 pending 项；决策成功后刷新队列；confirmation 必须等于 REVIEW 才允许提交。
+// INTENT: 决策弹窗收集 reviewReason(可选) + reason(必填) + confirmation(submissionId)，复用 safety.review.* 权限。
+// INVARIANTS: 仅展示后端返回的 pending 项；决策成功后刷新队列；confirmation 必须等于 submissionId 才允许提交。
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Bookmark, Check, Filter, Loader2, Trash2, X } from "lucide-react";
 import { apiDelete, apiGet, apiWrite } from "@/components/admin/api";
@@ -50,7 +50,6 @@ type SavedView = {
   updatedAt: string;
 };
 
-const CONFIRM_TOKEN = "REVIEW";
 const REVIEW_QUEUE_SAVED_VIEW_SCOPE = "moderation.review_queue";
 const DEFAULT_FILTERS: SavedReviewQueueFilters = { query: "", reportFilter: "all" };
 const REPORT_FILTER_OPTIONS: Array<{ value: ReportFilter; label: string }> = [
@@ -166,6 +165,7 @@ export function ReviewQueueView() {
             <input
               aria-label={t("Search review queue")}
               className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm text-[rgb(230,230,230)] outline-none focus:border-white/30"
+              name="review-queue-search"
               onChange={(event) => setFilters((current) => ({ ...current, query: event.target.value }))}
               placeholder={t("Name, description, or ID")}
               value={filters.query}
@@ -205,6 +205,7 @@ export function ReviewQueueView() {
               <input
                 aria-label={t("Saved view label")}
                 className="h-10 min-w-0 flex-1 border border-white/10 bg-black/30 px-3 text-sm text-[rgb(230,230,230)] outline-none focus:border-white/30"
+                name="review-queue-saved-view-label"
                 onChange={(event) => setSavedViewLabel(event.target.value)}
                 placeholder={t("Saved view label")}
                 value={savedViewLabel}
@@ -366,7 +367,7 @@ function DecisionDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const canSubmit = reason.trim().length >= 3 && confirmation === CONFIRM_TOKEN && !busy;
+  const canSubmit = reason.trim().length >= 3 && confirmation === item.submissionId && !busy;
 
   async function submit() {
     if (!canSubmit) return;
@@ -405,20 +406,23 @@ function DecisionDialog({
         <div className="mt-4 space-y-3">
           <textarea
             className="min-h-16 w-full border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-white/30"
+            name="review-note"
             onChange={(event) => setReviewReason(event.target.value)}
             placeholder={t("Review note (optional, shown to creator)")}
             value={reviewReason}
           />
           <input
             className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            name="audit-reason"
             onChange={(event) => setReason(event.target.value)}
             placeholder={t("Audit reason (≥3)")}
             value={reason}
           />
           <input
             className="h-10 w-full border border-white/10 bg-black/30 px-3 font-mono text-sm outline-none focus:border-white/30"
+            name="approval-confirmation"
             onChange={(event) => setConfirmation(event.target.value)}
-            placeholder={t("Type {token} to confirm", { token: CONFIRM_TOKEN })}
+            placeholder={t("Type {token} to confirm", { token: item.submissionId })}
             value={confirmation}
           />
           {error ? <p className="text-xs text-red-300">{error}</p> : null}

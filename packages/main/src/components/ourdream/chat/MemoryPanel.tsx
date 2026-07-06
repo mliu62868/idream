@@ -36,10 +36,13 @@ export function MemoryPanel({
   const [memories, setMemories] = useState<MemoryItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [retryIndex, setRetryIndex] = useState(0);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [resetting, setResetting] = useState(false);
+  const [deleteConfirmMemoryId, setDeleteConfirmMemoryId] = useState<string | null>(null);
+  const [resetConfirm, setResetConfirm] = useState(false);
 
   useEffect(() => {
     if (!open || !characterId) return;
@@ -69,9 +72,11 @@ export function MemoryPanel({
     return () => {
       cancelled = true;
     };
-  }, [open, characterId]);
+  }, [open, characterId, retryIndex]);
 
   function startEdit(memory: MemoryItem) {
+    setDeleteConfirmMemoryId(null);
+    setResetConfirm(false);
     setEditingId(memory.id);
     setDraft(memory.text);
   }
@@ -79,6 +84,8 @@ export function MemoryPanel({
   async function saveEdit(memoryId: string) {
     const text = draft.trim();
     if (!text) return;
+    setDeleteConfirmMemoryId(null);
+    setResetConfirm(false);
     setBusyId(memoryId);
     try {
       const res = await fetch(`/api/v1/chat/memories/${encodeURIComponent(memoryId)}`, {
@@ -101,6 +108,11 @@ export function MemoryPanel({
   }
 
   async function deleteMemory(memoryId: string) {
+    if (deleteConfirmMemoryId !== memoryId) {
+      setDeleteConfirmMemoryId(memoryId);
+      setResetConfirm(false);
+      return;
+    }
     setBusyId(memoryId);
     try {
       const res = await fetch(`/api/v1/chat/memories/${encodeURIComponent(memoryId)}`, {
@@ -109,6 +121,7 @@ export function MemoryPanel({
       if (res.ok) {
         setMemories((current) => current.filter((memory) => memory.id !== memoryId));
         if (editingId === memoryId) setEditingId(null);
+        setDeleteConfirmMemoryId(null);
       }
     } finally {
       setBusyId(null);
@@ -117,19 +130,33 @@ export function MemoryPanel({
 
   async function resetRelationship() {
     if (!characterId) return;
+    if (!resetConfirm) {
+      setResetConfirm(true);
+      setDeleteConfirmMemoryId(null);
+      return;
+    }
     setResetting(true);
     try {
       const res = await fetch(
         `/api/v1/chat/relationships/${encodeURIComponent(characterId)}`,
         { method: "DELETE" },
       );
-      if (res.ok) onRelationshipReset();
+      if (res.ok) {
+        setResetConfirm(false);
+        onRelationshipReset();
+      }
     } finally {
       setResetting(false);
     }
   }
 
   if (!open) return null;
+
+  function closePanel() {
+    setDeleteConfirmMemoryId(null);
+    setResetConfirm(false);
+    onClose();
+  }
 
   return (
     <div
@@ -138,14 +165,14 @@ export function MemoryPanel({
       className="fixed inset-0 z-50 flex"
       role="dialog"
     >
-      <button aria-label="Close" className="absolute inset-0 bg-black/60" onClick={onClose} type="button" />
+      <button aria-label="Close" className="absolute inset-0 bg-black/60" onClick={closePanel} type="button" />
       <div className="relative ml-auto flex h-full w-full max-w-[380px] flex-col border-l border-white/10 bg-[rgb(18,18,18)] shadow-2xl">
         <header className="flex items-center justify-between border-b border-white/10 px-4 py-4">
           <h2 className="text-[16px] font-black uppercase">Memory</h2>
           <button
             aria-label="Close memory settings"
             className="grid h-8 w-8 place-items-center rounded-full bg-[rgb(36,36,36)] text-[rgb(170,170,170)] hover:text-white"
-            onClick={onClose}
+            onClick={closePanel}
             type="button"
           >
             <X className="h-4 w-4" />
@@ -167,17 +194,39 @@ export function MemoryPanel({
           </h3>
 
           {loading ? (
-            <p className="py-4 text-[13px] text-[rgb(170,170,170)]" role="status">
+            <p
+              aria-live="polite"
+              className="py-4 text-[13px] text-[rgb(170,170,170)]"
+              data-testid="memory-panel-status"
+              role="status"
+            >
               Loading…
             </p>
           ) : null}
           {error ? (
-            <p className="py-4 text-[13px] font-semibold text-[#ff7ac8]" role="status">
-              {error}
-            </p>
+            <div
+              aria-live="assertive"
+              className="py-4"
+              data-testid="memory-panel-status"
+              role="alert"
+            >
+              <p className="text-[13px] font-semibold text-[#ff7ac8]">{error}</p>
+              <button
+                className="mt-3 inline-flex h-9 items-center justify-center rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]"
+                onClick={() => setRetryIndex((current) => current + 1)}
+                type="button"
+              >
+                Retry
+              </button>
+            </div>
           ) : null}
           {!loading && !error && memories.length === 0 ? (
-            <p className="py-4 text-[13px] text-[rgb(170,170,170)]">
+            <p
+              aria-live="polite"
+              className="py-4 text-[13px] text-[rgb(170,170,170)]"
+              data-testid="memory-panel-status"
+              role="status"
+            >
               No memories yet. As you chat, important details will show up here.
             </p>
           ) : null}
@@ -231,14 +280,23 @@ export function MemoryPanel({
                       <Pencil className="h-3.5 w-3.5" />
                     </button>
                     <button
-                      aria-label="Delete memory"
-                      className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-[rgb(170,170,170)] hover:bg-black/40 hover:text-white disabled:opacity-50"
+                      aria-label={
+                        deleteConfirmMemoryId === memory.id ? "Confirm delete memory" : "Delete memory"
+                      }
+                      className={`inline-flex h-8 shrink-0 items-center justify-center rounded-full text-[rgb(170,170,170)] hover:bg-black/40 hover:text-white disabled:opacity-50 ${
+                        deleteConfirmMemoryId === memory.id
+                          ? "min-w-[76px] px-2 text-[11px] font-bold uppercase"
+                          : "w-8"
+                      }`}
                       data-testid="memory-delete"
                       disabled={busyId === memory.id}
                       onClick={() => deleteMemory(memory.id)}
+                      title={
+                        deleteConfirmMemoryId === memory.id ? "Confirm delete memory" : "Delete memory"
+                      }
                       type="button"
                     >
-                      <Trash2 className="h-3.5 w-3.5" />
+                      {deleteConfirmMemoryId === memory.id ? "Confirm" : <Trash2 className="h-3.5 w-3.5" />}
                     </button>
                   </div>
                 )}
@@ -255,7 +313,7 @@ export function MemoryPanel({
             Reset how close you are to start over from scratch.
           </p>
           <button
-            aria-label="Reset relationship"
+            aria-label={resetConfirm ? "Confirm reset relationship" : "Reset relationship"}
             className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-[rgb(36,36,36)] px-4 py-2 text-[13px] font-semibold text-[rgb(170,170,170)] transition-colors hover:text-white disabled:opacity-50"
             data-testid="relationship-reset"
             disabled={resetting || !characterId}
@@ -263,7 +321,7 @@ export function MemoryPanel({
             type="button"
           >
             <RotateCcw className="h-4 w-4" />
-            Reset relationship
+            {resetConfirm ? "Confirm reset" : "Reset relationship"}
           </button>
         </div>
       </div>

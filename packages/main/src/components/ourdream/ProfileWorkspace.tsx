@@ -16,6 +16,7 @@ import {
   LogOut,
   Pencil,
   Save,
+  Scale,
   Search,
   Trash2,
   UserCog,
@@ -82,7 +83,7 @@ function chatEntitlementSummary(plan: string): string {
 type LibraryPayload = {
   data?: {
     items?: LibraryItem[];
-    emptyCta?: string;
+    emptyCta?: string | null;
   };
 };
 
@@ -90,8 +91,23 @@ type PreferencesPayload = {
   data?: {
     preferences?: {
       locale?: string | null;
+      mutedTags?: string[] | null;
       notificationSettings?: Record<string, unknown> | null;
     };
+  };
+};
+
+type ProfileTag = {
+  isMutedByDefault?: boolean;
+  isMutedByUser?: boolean;
+  label: string;
+  publicCharacterCount?: number;
+  slug: string;
+};
+
+type ProfileTagsPayload = {
+  data?: {
+    items?: ProfileTag[];
   };
 };
 
@@ -123,9 +139,20 @@ type MediaCollection = {
   itemCount: number;
 };
 
+type MediaCollectionCreatePayload = {
+  ok?: boolean;
+  error?: { message?: string };
+  data?: {
+    collection?: Pick<MediaCollection, "id" | "visibility">;
+  };
+};
+
 type AuthState = "loading" | "authenticated" | "anonymous";
 type CharacterEditInput = { name: string; description: string };
 type CollectionVisibility = MediaCollection["visibility"];
+type ProfileWorkspaceProps = {
+  routePath: string;
+};
 
 const tabs = ["recent", "characters", "created", "presets", "media", "group-chats", "packs"] as const;
 type LibraryTab = (typeof tabs)[number];
@@ -141,7 +168,10 @@ const tabLabels: Record<LibraryTab, string> = {
 };
 
 function emptyStateForTab(tab: LibraryTab, emptyCta: string | null) {
-  const defaults: Record<LibraryTab, { title: string; copy: string; ctaHref: string; ctaLabel: string }> = {
+  const defaults: Record<
+    LibraryTab,
+    { title: string; copy: string; ctaHref: string | null; ctaLabel: string }
+  > = {
     recent: {
       title: "No recent activity",
       copy: "Create a character, start a chat, or generate media to fill this tab.",
@@ -175,17 +205,49 @@ function emptyStateForTab(tab: LibraryTab, emptyCta: string | null) {
     "group-chats": {
       title: "Group chats are not in this beta",
       copy: "One-on-one companion chat is available now. This tab stays empty until group chat launches.",
-      ctaHref: "/create",
-      ctaLabel: "Create",
+      ctaHref: null,
+      ctaLabel: "",
     },
     packs: {
       title: "Packs are not in this beta",
       copy: "Saved bundles will appear here when packs are enabled. Current beta keeps characters and presets separate.",
-      ctaHref: "/create",
-      ctaLabel: "Create",
+      ctaHref: null,
+      ctaLabel: "",
     },
   };
   return { ...defaults[tab], ctaHref: emptyCta ?? defaults[tab].ctaHref };
+}
+
+function isBlankImagePreview(image: HTMLImageElement) {
+  const width = Math.min(16, image.naturalWidth);
+  const height = Math.min(16, image.naturalHeight);
+  if (width <= 0 || height <= 0) return false;
+
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) return false;
+
+    context.drawImage(image, 0, 0, width, height);
+    const data = context.getImageData(0, 0, width, height).data;
+    let min = 255;
+    let max = 0;
+    for (let index = 0; index < data.length; index += 4) {
+      const red = data[index] ?? 0;
+      const green = data[index + 1] ?? 0;
+      const blue = data[index + 2] ?? 0;
+      const luminance = Math.round(red * 0.2126 + green * 0.7152 + blue * 0.0722);
+      min = Math.min(min, luminance);
+      max = Math.max(max, luminance);
+    }
+
+    const range = max - min;
+    return range <= 1 || (range <= 4 && (min >= 250 || max <= 5));
+  } catch {
+    return false;
+  }
 }
 
 const profileDeepLinkTargets: Record<string, { selector: string; focusSelector: string }> = {
@@ -213,7 +275,7 @@ function focusProfileDeepLink() {
   }, 50);
 }
 
-export function ProfileWorkspace() {
+export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>) {
   const [authState, setAuthState] = useState<AuthState>("loading");
   const [authTarget, setAuthTarget] = useState("/profile");
   const [balance, setBalance] = useState(0);
@@ -229,12 +291,17 @@ export function ProfileWorkspace() {
   const [libraryError, setLibraryError] = useState(false);
   const [redeemCode, setRedeemCode] = useState("");
   const [emailUpdates, setEmailUpdates] = useState(true);
+  const [mutedTags, setMutedTags] = useState<string[]>([]);
+  const [preferenceTags, setPreferenceTags] = useState<ProfileTag[]>([]);
   const [deleteConfirm, setDeleteConfirm] = useState("");
+  const [deleteConfirmMediaId, setDeleteConfirmMediaId] = useState<string | null>(null);
   const [deleteConfirmCharacterId, setDeleteConfirmCharacterId] = useState<string | null>(null);
   const [status, setStatus] = useState("");
   const [referralUrl, setReferralUrl] = useState("");
   const [failedImageIds, setFailedImageIds] = useState<Set<string>>(new Set());
+  const [invalidPreviewImageIds, setInvalidPreviewImageIds] = useState<Set<string>>(new Set());
   const [mediaCollections, setMediaCollections] = useState<MediaCollection[]>([]);
+  const [publishedCollectionHref, setPublishedCollectionHref] = useState("");
 
   const refreshProfile = useCallback(async () => {
     // Surface a real load failure instead of silently showing a fake "0 dreamcoins · Free".
@@ -294,15 +361,32 @@ export function ProfileWorkspace() {
   }, []);
 
   const refreshPreferences = useCallback(async () => {
-    await fetch("/api/v1/profile/preferences")
-      .then((response) => response.json())
-      .then((payload: PreferencesPayload) => {
+    try {
+      const response = await fetch("/api/v1/profile/preferences");
+      if (response.ok) {
+        const payload = (await response.json()) as PreferencesPayload;
         const preferences = payload.data?.preferences;
         const notificationSettings = preferences?.notificationSettings ?? {};
         const updates = notificationSettings.productUpdates;
         if (typeof updates === "boolean") setEmailUpdates(updates);
-      })
-      .catch(() => undefined);
+        setMutedTags(preferences?.mutedTags ?? []);
+      }
+    } catch {
+      // Preferences are non-critical for first paint; keep the current local defaults.
+    }
+
+    try {
+      const response = await fetch("/api/v1/tags");
+      if (!response.ok) throw new Error("tags fetch failed");
+      const payload = (await response.json()) as ProfileTagsPayload;
+      setPreferenceTags(
+        (payload.data?.items ?? []).filter(
+          (tag) => !tag.isMutedByDefault && (tag.publicCharacterCount ?? 0) > 0,
+        ),
+      );
+    } catch {
+      setPreferenceTags([]);
+    }
   }, []);
 
   // Defer initial loads to a macrotask so the first render commits before any setState
@@ -441,6 +525,7 @@ export function ProfileWorkspace() {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
+          mutedTags,
           notificationSettings: { productUpdates: emailUpdates },
         }),
       });
@@ -448,6 +533,13 @@ export function ProfileWorkspace() {
     } catch {
       setStatus("Network error. Please try again.");
     }
+  }
+
+  function toggleMutedTag(slug: string, checked: boolean) {
+    setMutedTags((current) => {
+      if (checked) return current.includes(slug) ? current : [...current, slug];
+      return current.filter((item) => item !== slug);
+    });
   }
 
   async function openBillingPortal() {
@@ -528,8 +620,20 @@ export function ProfileWorkspace() {
   }
 
   async function deleteMedia(id: string) {
+    setStatus("");
+    if (deleteConfirmMediaId !== id) {
+      setDeleteConfirmMediaId(id);
+      setStatus("Press Confirm delete to remove this media.");
+      return;
+    }
     try {
-      await fetch(`/api/v1/media/${id}`, { method: "DELETE" });
+      const response = await fetch(`/api/v1/media/${id}`, { method: "DELETE" });
+      if (!response.ok) {
+        setStatus("Delete failed.");
+        return;
+      }
+      setStatus("Media deleted.");
+      setDeleteConfirmMediaId(null);
       await refreshLibrary(tab);
     } catch {
       setStatus("Network error. Please try again.");
@@ -678,6 +782,7 @@ export function ProfileWorkspace() {
     input: { name: string; visibility: CollectionVisibility },
   ) {
     setStatus("");
+    setPublishedCollectionHref("");
     const name = input.name.trim();
     if (!name) {
       setStatus("Name the collection first.");
@@ -693,13 +798,16 @@ export function ProfileWorkspace() {
           visibility: input.visibility,
         }),
       });
-      const payload = (await response.json()) as {
-        ok?: boolean;
-        error?: { message?: string };
-      };
+      const payload = (await response.json()) as MediaCollectionCreatePayload;
       if (!response.ok || payload.ok === false) {
         setStatus(payload.error?.message ?? "Collection create failed.");
         return;
+      }
+      if (input.visibility === "public") {
+        const collectionId = payload.data?.collection?.id;
+        setPublishedCollectionHref(
+          collectionId ? `/community?collection=${encodeURIComponent(collectionId)}` : "/community",
+        );
       }
       setStatus(
         input.visibility === "public"
@@ -761,12 +869,20 @@ export function ProfileWorkspace() {
       ? `Renewal canceled · benefits active until ${subscriptionPeriod}`
       : `Renews ${subscriptionPeriod}`
     : "No active subscription";
+  const isMyAiRoute = routePath.startsWith("/custom");
+  const workspaceTitle = isMyAiRoute ? "My AI" : "Profile";
+  const authRequiredTitle = isMyAiRoute ? "Sign in to open My AI" : "Sign in to open Profile";
+  const authRequiredCopy = isMyAiRoute
+    ? "Your characters, generated media, presets, and created companions live in your private My AI library."
+    : "Your account settings, billing, referrals, preferences, and private AI library live in your profile.";
 
   if (authState === "loading") {
     return (
       <section className="px-4 py-10 md:px-[60px]">
         <div className="mx-auto max-w-5xl">
-          <h1 className="text-[38px] font-black uppercase leading-10 text-white">My AI</h1>
+          <h1 className="text-[38px] font-black uppercase leading-10 text-white">
+            {workspaceTitle}
+          </h1>
           <div className="mt-6 rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-10 text-center">
             <Bot className="mx-auto h-10 w-10 text-[rgb(114,113,112)]" />
             <h2 className="mt-4 text-[22px] font-black uppercase text-white">
@@ -785,18 +901,19 @@ export function ProfileWorkspace() {
     return (
       <section className="px-4 py-10 md:px-[60px]">
         <div className="mx-auto max-w-5xl">
-          <h1 className="text-[38px] font-black uppercase leading-10 text-white">My AI</h1>
+          <h1 className="text-[38px] font-black uppercase leading-10 text-white">
+            {workspaceTitle}
+          </h1>
           <div
             className="mt-6 rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-10 text-center"
             data-testid="profile-auth-required"
           >
             <Bot className="mx-auto h-10 w-10 text-[rgb(114,113,112)]" />
             <h2 className="mt-4 text-[22px] font-black uppercase text-white">
-              Sign in to open My AI
+              {authRequiredTitle}
             </h2>
             <p className="mx-auto mt-3 max-w-md text-[14px] leading-6 text-[rgb(170,170,170)]">
-              Your characters, generated media, billing, referrals, and account controls live in
-              your private profile.
+              {authRequiredCopy}
             </p>
             <div className="mt-6 flex flex-wrap justify-center gap-3">
               <Link
@@ -824,7 +941,7 @@ export function ProfileWorkspace() {
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
             <h1 className="text-[38px] font-black uppercase leading-10 text-white">
-              My AI
+              {workspaceTitle}
             </h1>
             <p className="mt-2 text-[14px] font-semibold text-white">{displayName}</p>
             {profileError ? (
@@ -861,9 +978,10 @@ export function ProfileWorkspace() {
             {chatEntitlementSummary(plan)}
           </p>
         </div>
-        <div className="mt-6 flex flex-wrap gap-2">
+        <div aria-label="Library sections" className="mt-6 flex flex-wrap gap-2">
           {tabs.map((item) => (
             <button
+              aria-pressed={tab === item}
               className={`h-10 rounded-full px-4 text-[13px] font-bold ${
                 tab === item ? "bg-[rgb(46,46,46)] text-white" : "text-[rgb(170,170,170)]"
               }`}
@@ -959,7 +1077,24 @@ export function ProfileWorkspace() {
         {(status || referralUrl) && (
           <div className="mt-4 space-y-3">
             {status && (
-              <p className="text-[13px] font-semibold text-[rgb(170,170,170)]">{status}</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <p
+                  aria-live="polite"
+                  className="text-[13px] font-semibold text-[rgb(170,170,170)]"
+                  data-testid="profile-status"
+                  role="status"
+                >
+                  {status}
+                </p>
+                {publishedCollectionHref && status === "Collection published to Community." && (
+                  <Link
+                    className="inline-flex h-8 items-center justify-center rounded-full bg-[rgb(36,36,36)] px-3 text-[12px] font-bold text-white"
+                    href={publishedCollectionHref}
+                  >
+                    View in Community
+                  </Link>
+                )}
+              </div>
             )}
             {referralUrl && (
               <div className="flex max-w-xl items-center gap-2">
@@ -1008,28 +1143,54 @@ export function ProfileWorkspace() {
               </div>
             </label>
             <div
-              className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-[10px] bg-[rgb(36,36,36)] px-3 py-2"
+              className="mt-4 rounded-[10px] bg-[rgb(36,36,36)] p-3"
               data-testid="profile-notifications-panel"
               id="notifications"
             >
-              <label className="flex items-center gap-2 text-[13px] font-semibold text-white">
-                <input
-                  aria-label="Product updates"
-                  checked={emailUpdates}
-                  className="h-4 w-4 accent-[rgb(253,95,194)]"
-                  onChange={(event) => setEmailUpdates(event.target.checked)}
-                  type="checkbox"
-                />
-                Product updates
-              </label>
-              <button
-                className="inline-flex h-9 items-center gap-2 rounded-full bg-black/30 px-3 text-[12px] font-bold text-white"
-                onClick={savePreferences}
-                type="button"
-              >
-                <Bell className="h-4 w-4" />
-                Save preferences
-              </button>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <label className="flex items-center gap-2 text-[13px] font-semibold text-white">
+                  <input
+                    aria-label="Product updates"
+                    checked={emailUpdates}
+                    className="h-4 w-4 accent-[rgb(253,95,194)]"
+                    onChange={(event) => setEmailUpdates(event.target.checked)}
+                    type="checkbox"
+                  />
+                  Product updates
+                </label>
+                <button
+                  className="inline-flex h-9 items-center gap-2 rounded-full bg-black/30 px-3 text-[12px] font-bold text-white"
+                  onClick={savePreferences}
+                  type="button"
+                >
+                  <Bell className="h-4 w-4" />
+                  Save preferences
+                </button>
+              </div>
+              {preferenceTags.length > 0 ? (
+                <div className="mt-4 border-t border-white/10 pt-3">
+                  <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+                    Muted tags
+                  </p>
+                  <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                    {preferenceTags.map((tag) => (
+                      <label
+                        className="flex min-h-9 items-center gap-2 rounded-[8px] bg-black/20 px-3 text-[12px] font-semibold text-white"
+                        key={tag.slug}
+                      >
+                        <input
+                          aria-label={`Mute ${tag.label}`}
+                          checked={mutedTags.includes(tag.slug)}
+                          className="h-4 w-4 accent-[rgb(253,95,194)]"
+                          onChange={(event) => toggleMutedTag(tag.slug, event.target.checked)}
+                          type="checkbox"
+                        />
+                        <span className="min-w-0 truncate">{tag.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
             </div>
           </div>
           <div
@@ -1115,12 +1276,21 @@ export function ProfileWorkspace() {
                 <LibraryCard
                   failedImageIds={failedImageIds}
                   imageLoading={index < 3 ? "eager" : "lazy"}
+                  invalidPreviewImageIds={invalidPreviewImageIds}
                   item={item}
                   key={item.id}
                   onDelete={deleteMedia}
                   onDownload={downloadMedia}
                   onImageError={(id) =>
                     setFailedImageIds((current) => {
+                      if (current.has(id)) return current;
+                      const next = new Set(current);
+                      next.add(id);
+                      return next;
+                    })
+                  }
+                  onInvalidImagePreview={(id) =>
+                    setInvalidPreviewImageIds((current) => {
                       if (current.has(id)) return current;
                       const next = new Set(current);
                       next.add(id);
@@ -1134,6 +1304,7 @@ export function ProfileWorkspace() {
                   showCharacterActions={isCreatedTab}
                   onUpdateCharacter={updateCharacterDetails}
                   onDuplicateCharacter={duplicateCharacter}
+                  deleteConfirmMediaId={deleteConfirmMediaId}
                   deleteConfirmCharacterId={deleteConfirmCharacterId}
                   onDeleteCharacter={deleteCharacter}
                   onToggleVisibility={toggleCharacterVisibility}
@@ -1155,12 +1326,14 @@ export function ProfileWorkspace() {
               <p className="mx-auto mt-3 max-w-md text-[14px] leading-6 text-[rgb(170,170,170)]">
                 {emptyState.copy}
               </p>
-              <Link
-                className="mt-6 inline-flex h-11 items-center justify-center rounded-full bg-white px-5 text-[14px] font-bold text-[rgb(13,13,13)]"
-                href={emptyState.ctaHref}
-              >
-                {emptyState.ctaLabel}
-              </Link>
+              {emptyState.ctaHref ? (
+                <Link
+                  className="mt-6 inline-flex h-11 items-center justify-center rounded-full bg-white px-5 text-[14px] font-bold text-[rgb(13,13,13)]"
+                  href={emptyState.ctaHref}
+                >
+                  {emptyState.ctaLabel}
+                </Link>
+              ) : null}
             </div>
           )}
         </div>
@@ -1173,16 +1346,19 @@ function LibraryCard({
   collections,
   failedImageIds,
   imageLoading = "lazy",
+  invalidPreviewImageIds,
   item,
   onAddToCollection,
   onCreateCollection,
   onDelete,
   onDownload,
   onImageError,
+  onInvalidImagePreview,
   onReport,
   showCharacterActions = false,
   onUpdateCharacter,
   onDuplicateCharacter,
+  deleteConfirmMediaId,
   deleteConfirmCharacterId,
   onDeleteCharacter,
   onToggleVisibility,
@@ -1190,6 +1366,7 @@ function LibraryCard({
   collections?: MediaCollection[];
   failedImageIds: Set<string>;
   imageLoading?: "eager" | "lazy";
+  invalidPreviewImageIds: Set<string>;
   item: LibraryItem;
   onAddToCollection?: (mediaAssetId: string, collectionId: string) => Promise<void>;
   onCreateCollection?: (
@@ -1199,10 +1376,12 @@ function LibraryCard({
   onDelete: (id: string) => void;
   onDownload: (id: string) => void;
   onImageError: (id: string) => void;
+  onInvalidImagePreview: (id: string) => void;
   onReport: (id: string) => void;
   showCharacterActions?: boolean;
   onUpdateCharacter?: (id: string, input: CharacterEditInput) => Promise<boolean>;
   onDuplicateCharacter?: (id: string) => void;
+  deleteConfirmMediaId?: string | null;
   deleteConfirmCharacterId?: string | null;
   onDeleteCharacter?: (id: string) => void;
   onToggleVisibility?: (id: string, current?: string) => void;
@@ -1226,6 +1405,7 @@ function LibraryCard({
   const source = item.thumbnailUrl ?? item.image ?? character?.image ?? item.url;
   const mediaUnavailable =
     (isVisualMediaItem && failedImageIds.has(item.id)) ||
+    (isVisualMediaItem && invalidPreviewImageIds.has(item.id)) ||
     (isVisualMediaItem && source ? isBuiltInMediaPlaceholderUrl(source) : false) ||
     (isMediaItem && !source);
   const href =
@@ -1234,6 +1414,11 @@ function LibraryCard({
       : isMediaItem
         ? undefined
         : `/characters/${item.id}`;
+  const appealHref =
+    showCharacterActions && !isMediaItem && isAppealableCharacterStatus(item.status)
+      ? characterAppealHref(character?.id ?? item.id, title)
+      : null;
+  const confirmMediaDelete = isMediaItem && deleteConfirmMediaId === item.id;
 
   function startCharacterEdit() {
     setEditName(title);
@@ -1280,9 +1465,9 @@ function LibraryCard({
               className="grid h-full place-items-center px-4 text-center text-[13px] font-semibold text-[rgb(170,170,170)]"
               data-testid="profile-media-unavailable"
             >
-              <div className="flex flex-col items-center gap-2">
+              <div className="flex flex-col items-center gap-2" data-testid="profile-media-preview-fallback">
                 <ImageIcon className="h-5 w-5" />
-                Media unavailable
+                Preview unavailable
               </div>
             </div>
           ) : isAudioItem && source ? (
@@ -1318,8 +1503,19 @@ function LibraryCard({
             <Image
               alt=""
               className="object-cover object-top"
+              data-testid="profile-media-image"
               fill
               loading={imageLoading}
+              onLoad={(event) => {
+                const image = event.currentTarget;
+                if (
+                  image.naturalWidth <= 1 ||
+                  image.naturalHeight <= 1 ||
+                  isBlankImagePreview(image)
+                ) {
+                  onInvalidImagePreview(item.id);
+                }
+              }}
               onError={() => onImageError(item.id)}
               sizes="280px"
               src={source}
@@ -1355,12 +1551,16 @@ function LibraryCard({
                 <Flag className="h-4 w-4" />
               </button>
               <button
-                aria-label="Delete media"
-                className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-black/30 text-white"
+                aria-label={confirmMediaDelete ? "Confirm delete media" : "Delete media"}
+                className={
+                  confirmMediaDelete
+                    ? "inline-flex h-9 items-center justify-center rounded-full bg-[rgb(170,20,45)] px-3 text-[12px] font-bold text-white"
+                    : "inline-flex h-9 w-9 items-center justify-center rounded-full bg-black/30 text-white"
+                }
                 onClick={() => onDelete(item.id)}
                 type="button"
               >
-                <Trash2 className="h-4 w-4" />
+                {confirmMediaDelete ? "Confirm delete" : <Trash2 className="h-4 w-4" />}
               </button>
             </div>
             <div className="rounded-[12px] border border-white/10 bg-black/20 p-3">
@@ -1468,6 +1668,16 @@ function LibraryCard({
             <Copy className="h-3.5 w-3.5" />
             Duplicate
           </button>
+          {appealHref && (
+            <Link
+              aria-label={`Appeal decision for ${title}`}
+              className="inline-flex h-8 items-center gap-1 rounded-full bg-[rgb(46,46,46)] px-3 text-[12px] font-bold text-white hover:bg-[rgb(60,60,60)]"
+              href={appealHref}
+            >
+              <Scale className="h-3.5 w-3.5" />
+              Appeal
+            </Link>
+          )}
           <button
             aria-label={confirmDelete ? "Confirm delete character" : "Delete character"}
             className={
@@ -1529,6 +1739,20 @@ function LibraryCard({
   }
 
   return card;
+}
+
+function isAppealableCharacterStatus(status?: string) {
+  return status === "removed" || status === "rejected";
+}
+
+function characterAppealHref(characterId: string, title: string) {
+  const safeTitle = title.trim().slice(0, 120) || characterId;
+  const params = new URLSearchParams({
+    appealTargetType: "character",
+    appealTargetId: characterId,
+    appealText: `Please review this character decision again. Character: ${safeTitle}.`,
+  });
+  return `/helpdesk?${params.toString()}#appeals`;
 }
 
 function triggerDownload(url: string) {

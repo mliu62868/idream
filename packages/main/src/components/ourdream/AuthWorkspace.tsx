@@ -41,10 +41,6 @@ export function AuthWorkspace({
     void redirectIfAlreadyAuthenticated();
   }, [redirectIfAlreadyAuthenticated]);
 
-  useEffect(() => {
-    setLoginRecoveryHref(authLoginRecoveryHref());
-  }, []);
-
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setPending(true);
@@ -69,6 +65,7 @@ export function AuthWorkspace({
       };
       if (!response.ok || !payload.ok) {
         if (await redirectIfAlreadyAuthenticated()) return;
+        setLoginRecoveryHref(authLoginRecoveryHref());
         setStatus(payload.error?.message ?? "Authentication failed");
         return;
       }
@@ -138,7 +135,12 @@ export function AuthWorkspace({
           </button>
           {status && (
             <div className="mt-4 space-y-2">
-              <p className="text-[13px] font-medium text-[rgb(170,170,170)]">
+              <p
+                aria-live="assertive"
+                className="text-[13px] font-medium text-[rgb(170,170,170)]"
+                data-testid="auth-status"
+                role="alert"
+              >
                 {status}
               </p>
               {mode === "login" && (

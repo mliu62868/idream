@@ -1,16 +1,15 @@
 import Image from "next/image";
-import Form from "next/form";
 import Link from "next/link";
 import {
   ArrowRight,
   Check,
   ChevronRight,
   PlayCircle,
-  Search,
   Sparkles,
 } from "lucide-react";
 import {
   characterCards,
+  getOurdreamRoute,
   getRoutesByPrefix,
   ourdreamRoutePaths,
 } from "@/lib/ourdream-data";
@@ -22,6 +21,7 @@ import { SafetyCenterPage } from "./SafetyCenterPage";
 import { SiteFooter } from "./SiteFooter";
 import { AuthNav } from "./AuthNav";
 import { AuthWorkspace } from "./AuthWorkspace";
+import { AppSearch } from "./AppSearch";
 import { ChatHubWorkspace } from "./ChatHubWorkspace";
 import { CommunityWorkspace } from "./CommunityWorkspace";
 import { CreateWorkspace } from "./CreateWorkspace";
@@ -39,7 +39,8 @@ function activeHrefForPath(path: string) {
   if (path.startsWith("/generate") || path.startsWith("/generator")) {
     return "/generate";
   }
-  if (path.startsWith("/custom") || path.startsWith("/profile")) return "/custom";
+  if (path.startsWith("/custom")) return "/custom";
+  if (path.startsWith("/profile")) return "/profile";
   if (path.startsWith("/feed")) return "/feed";
   if (path.startsWith("/community")) return "/community";
   if (path.startsWith("/helpdesk")) return "/helpdesk";
@@ -48,10 +49,19 @@ function activeHrefForPath(path: string) {
     path.startsWith("/resources-hub") ||
     path.startsWith("/type") ||
     path.startsWith("/comparison") ||
+    path.includes("alternatives") ||
     path.startsWith("/videos") ||
     path.startsWith("/ai-instructions") ||
+    path.startsWith("/ai-girl") ||
     path.startsWith("/ai-girlfriend") ||
     path.startsWith("/ai-boyfriend") ||
+    path.startsWith("/affiliate") ||
+    path.startsWith("/authors") ||
+    path.startsWith("/site") ||
+    path.startsWith("/guides") ||
+    path.startsWith("/sex-chat") ||
+    path.startsWith("/nude-ai") ||
+    path.startsWith("/free-ai-girlfriend") ||
     path.startsWith("/games") ||
     path.startsWith("/romantasy")
   ) {
@@ -78,26 +88,7 @@ function AppTopbar({
             width={130}
           />
         </Link>
-        <Form
-          action="/"
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-full bg-[rgb(36,36,36)] px-4 py-2 text-[12px] font-medium leading-4 text-[rgb(170,170,170)] md:max-w-[340px]"
-        >
-          <button
-            aria-label="Search"
-            className="grid h-4 w-4 shrink-0 place-items-center text-[rgb(170,170,170)] transition hover:text-white"
-            type="submit"
-          >
-            <Search aria-hidden="true" className="h-4 w-4" />
-          </button>
-          <input
-            aria-label="Search characters, guides, and generators"
-            autoComplete="off"
-            className="min-w-0 flex-1 truncate bg-transparent text-white outline-none placeholder:text-[rgb(170,170,170)]"
-            name="q"
-            placeholder="Search characters, guides, and generators"
-            type="search"
-          />
-        </Form>
+        <AppSearch />
         <div className="flex items-center gap-3">
           <AuthNav />
         </div>
@@ -176,6 +167,7 @@ function CharacterStrip() {
                 alt=""
                 className="object-cover object-top transition-transform duration-200 group-hover:scale-[1.03]"
                 fill
+                loading="eager"
                 sizes="(max-width: 767px) 50vw, 220px"
                 src={card.image}
               />
@@ -246,7 +238,8 @@ function MarketingPage({ route }: Readonly<{ route: OurdreamRoute }>) {
             alt=""
             className="absolute inset-0 h-full w-full object-cover opacity-55"
             height={288}
-            src="/images/ourdream/pride-banner-female.webp"
+            loading="eager"
+            src="/images/ourdream/promo-card-female.webp"
             width={1440}
           />
           <div className="relative max-w-xl p-6 md:p-10">
@@ -320,27 +313,13 @@ function ProfilePage({ route }: Readonly<{ route: OurdreamRoute }>) {
 
   return (
     <RouteShell route={route}>
-      <ProfileWorkspace />
+      <ProfileWorkspace routePath={route.path} />
     </RouteShell>
   );
 }
 
 function LibraryPage({ route }: Readonly<{ route: OurdreamRoute }>) {
-  const cards =
-    route.path === "/type"
-      ? getRoutesByPrefix("/type/")
-      : route.path === "/videos"
-        ? getRoutesByPrefix("/videos/")
-        : route.path === "/resources-hub"
-          ? ourdreamRoutePaths
-              .filter((path) =>
-                ["/guides/", "/comparison/", "/videos/", "/type/"].some((prefix) =>
-                  path.startsWith(prefix),
-                ),
-              )
-              .slice(0, 24)
-              .map((path) => ({ path, title: path.split("/").at(-1) ?? path }))
-          : getRoutesByPrefix(`${route.path}/`);
+  const cards = libraryCardsForRoute(route);
 
   return (
     <RouteShell route={route}>
@@ -360,8 +339,7 @@ function LibraryPage({ route }: Readonly<{ route: OurdreamRoute }>) {
                 {card.title}
               </h2>
               <p className="mt-3 text-[13px] font-medium leading-6 text-[rgb(170,170,170)]">
-                Browse related guides, generators, companion styles, and
-                discovery routes in the Ourdream experience.
+                {card.description}
               </p>
               <span className="mt-5 inline-flex items-center gap-2 text-[13px] font-bold text-white">
                 Open
@@ -376,7 +354,246 @@ function LibraryPage({ route }: Readonly<{ route: OurdreamRoute }>) {
   );
 }
 
+function routeCardsFromPaths(paths: string[]) {
+  return paths
+    .map((path) => getOurdreamRoute(path))
+    .filter((item): item is OurdreamRoute => Boolean(item));
+}
+
+function libraryCardsForRoute(route: OurdreamRoute) {
+  if (route.path === "/type") return getRoutesByPrefix("/type/");
+  if (route.path === "/videos") return getRoutesByPrefix("/videos/");
+  if (route.path === "/resources-hub") {
+    return routeCardsFromPaths(
+      ourdreamRoutePaths
+        .filter((path) =>
+          ["/guides/", "/comparison/", "/videos/", "/type/"].some((prefix) =>
+            path.startsWith(prefix),
+          ),
+        )
+        .slice(0, 24),
+    );
+  }
+  if (route.path === "/games") {
+    return routeCardsFromPaths([
+      "/generator/ai-roleplay-generator",
+      "/sex-chat/ai-sex-chat-roleplay",
+      "/type/roleplay-ai-girlfriend",
+      "/guides/character-cards",
+      "/generate/ai-anime-porn-generator",
+      "/type/anime-ai-girlfriend",
+    ]);
+  }
+  if (route.path === "/romantasy") {
+    return routeCardsFromPaths([
+      "/guides/character-card-creator",
+      "/generator/ai-roleplay-generator",
+      "/type/roleplay-ai-girlfriend",
+      "/type/angel-ai-girlfriend",
+      "/type/goth-ai-girlfriend",
+      "/guides/character-cards",
+    ]);
+  }
+  return getRoutesByPrefix(`${route.path}/`);
+}
+
+type ArticleContent = {
+  intro: string;
+  sections: Array<{
+    body: string;
+    bullets?: string[];
+    title: string;
+  }>;
+  faq: Array<{
+    answer: string;
+    question: string;
+  }>;
+};
+
+const articleContentByPath: Record<string, ArticleContent> = {
+  "/guides/character-cards": {
+    intro:
+      "Use character cards as portable source material for a companion: who they are, how they speak, what scenario they start in, and what should stay consistent across chat and image generation.",
+    sections: [
+      {
+        title: "Overview",
+        body:
+          "A strong character card is a compact profile, not a lore dump. It gives enough detail for a roleplay model to hold the same voice and situation while leaving room for the user to steer the scene.",
+        bullets: [
+          "Name, age, role, and relationship to the user.",
+          "Personality traits that affect dialogue, not just appearance.",
+          "Opening scenario, first message, and the emotional hook.",
+          "Visual notes that should carry into generation prompts.",
+        ],
+      },
+      {
+        title: "How it works",
+        body:
+          "In Ourdream, the card idea usually starts in Create, becomes a saved companion, then flows into chat, Generate, and My AI without losing the original character context.",
+        bullets: [
+          "Start with the character premise and choose the closest style.",
+          "Add appearance and personality details before previewing.",
+          "Use the first chat turns to test voice and scenario clarity.",
+          "Save generated media only after the character identity feels stable.",
+        ],
+      },
+      {
+        title: "Best practices",
+        body:
+          "The best cards are specific where consistency matters and flexible where the user should have control. Keep the profile direct, test it in a real first conversation, then tighten anything that makes the character drift.",
+        bullets: [
+          "Prefer concrete behavior over long abstract adjectives.",
+          "Write one memorable first-message hook.",
+          "Keep visual traits short enough to reuse in prompts.",
+          "Update the card after testing instead of adding more backstory by default.",
+        ],
+      },
+    ],
+    faq: [
+      {
+        question: "What should a character card include?",
+        answer:
+          "Include identity, relationship context, personality, scenario, first message, and a few visual anchors. Those fields are enough to make chat and generation feel connected.",
+      },
+      {
+        question: "Do character cards replace the Create flow?",
+        answer:
+          "No. Treat the card as the source brief. The Create flow turns that brief into a saved companion with profile details, visibility, preview media, and later edits.",
+      },
+      {
+        question: "How long should the card be?",
+        answer:
+          "Short enough to scan in one sitting. If a detail does not change dialogue, appearance, or the opening scene, keep it out of the first version.",
+      },
+    ],
+  },
+  "/guides/character-card-creator": {
+    intro:
+      "A creator workflow turns a rough companion idea into a reusable card with a clear first scene, repeatable personality, and enough visual direction for media generation.",
+    sections: [
+      {
+        title: "Overview",
+        body:
+          "Start by deciding the user's relationship to the companion, then write the traits that should show up in the first five chat turns.",
+        bullets: [
+          "Define the user role before writing the opening.",
+          "Choose a voice pattern the model can repeat.",
+          "Keep appearance details separate from personality details.",
+        ],
+      },
+      {
+        title: "How it works",
+        body:
+          "Draft the card, test it in chat, revise the first message, then save the stable version to My AI for later generation and edits.",
+      },
+      {
+        title: "Best practices",
+        body:
+          "Avoid stuffing every possible scene into the card. A focused opening plus a few constraints produces a more consistent companion than a long encyclopedia entry.",
+      },
+    ],
+    faq: [
+      {
+        question: "Can I revise a card after saving?",
+        answer:
+          "Yes. Use My AI to edit created companions, duplicate experiments, and keep private drafts separate from public submissions.",
+      },
+      {
+        question: "What makes a card easier to generate from?",
+        answer:
+          "Clear visual anchors: hair, outfit, mood, setting, and one or two distinctive details that can survive different poses.",
+      },
+    ],
+  },
+  "/guides/sillytavern-setup-guide": {
+    intro:
+      "Use this page as a practical bridge from external card-writing habits into an Ourdream workflow that keeps discovery, chat, creation, and generation in one account.",
+    sections: [
+      {
+        title: "Overview",
+        body:
+          "SillyTavern-style cards often contain personality, scenario, and first-message fields. Those map cleanly into Ourdream's Create steps when you keep each field focused.",
+      },
+      {
+        title: "How it works",
+        body:
+          "Move the persona into personality, the scenario into description and opening context, and the visual prompt into appearance details before testing the companion.",
+      },
+      {
+        title: "Best practices",
+        body:
+          "Keep imported wording concise. After the first chat test, remove anything that makes replies verbose or distracts from the current scene.",
+      },
+    ],
+    faq: [
+      {
+        question: "Can I bring over an existing card idea?",
+        answer:
+          "Yes, when you have the right to use that material. Convert it into the Create fields instead of pasting a large unedited block.",
+      },
+      {
+        question: "Where do visuals belong?",
+        answer:
+          "Put stable appearance details in the character profile and use Generate prompts for scene-specific pose, outfit, and background changes.",
+      },
+    ],
+  },
+};
+
+function articleContentForRoute(route: OurdreamRoute): ArticleContent {
+  return articleContentByPath[route.path] ?? defaultArticleContent(route);
+}
+
+function defaultArticleContent(route: OurdreamRoute): ArticleContent {
+  const routeKind = articleKind(route.path);
+  return {
+    intro: `${route.title} is a practical ${routeKind} for moving from discovery into a saved Ourdream workflow without losing character context.`,
+    sections: [
+      {
+        title: "Overview",
+        body: `${route.title} starts with a clear user intent: decide whether you are trying to discover a companion, create one, compare options, or prepare a generation workflow.`,
+        bullets: [
+          "Use the page title to anchor the scenario.",
+          "Choose the next action before adding detail.",
+          "Keep the result connected to Explore, Create, Chat, or Generate.",
+        ],
+      },
+      {
+        title: "How it works",
+        body: `Open the relevant Ourdream surface, carry the ${route.title.toLowerCase()} context into the next step, and check that the character, prompt, or comparison still matches the user's original goal.`,
+      },
+      {
+        title: "Best practices",
+        body:
+          "Start narrow, test the workflow once, then expand. A focused route produces better saved companions, cleaner prompts, and less confusing handoff between product surfaces.",
+      },
+    ],
+    faq: [
+      {
+        question: `Where should I start with ${route.title}?`,
+        answer:
+          "Start from the page's primary call to action, then use Explore for discovery, Create for companion setup, Chat for testing, and Generate for visual output.",
+      },
+      {
+        question: "Can I come back to this later?",
+        answer:
+          "Yes. Saved characters, generated media, presets, and profile library items keep the workflow available from My AI and Profile.",
+      },
+    ],
+  };
+}
+
+function articleKind(path: string) {
+  if (path.startsWith("/sex-chat/")) return "chat guide";
+  if (path.startsWith("/type/")) return "companion type guide";
+  if (path.startsWith("/videos/")) return "video idea guide";
+  return "guide";
+}
+
 function ArticlePage({ route }: Readonly<{ route: OurdreamRoute }>) {
+  const content = articleContentForRoute(route);
+  const tocItems = [...content.sections.map((section) => section.title), "FAQ"];
+
   return (
     <RouteShell route={route}>
       <article className="px-4 py-10 md:px-[60px] md:py-14">
@@ -386,7 +603,7 @@ function ArticlePage({ route }: Readonly<{ route: OurdreamRoute }>) {
               <p className="text-[12px] font-black uppercase text-[rgb(253,95,194)]">
                 In this guide
               </p>
-              {["Overview", "How it works", "Best practices", "FAQ"].map((item) => (
+              {tocItems.map((item) => (
                 <a
                   className="mt-4 block text-[13px] font-semibold text-[rgb(170,170,170)]"
                   href={`#${item.toLowerCase().replaceAll(" ", "-")}`}
@@ -407,39 +624,59 @@ function ArticlePage({ route }: Readonly<{ route: OurdreamRoute }>) {
             <p className="mt-5 max-w-3xl text-[17px] font-medium leading-8 text-[rgb(170,170,170)]">
               {route.description}
             </p>
-            {["Overview", "How it works", "Best practices"].map((section, index) => (
+            <p className="mt-5 max-w-3xl text-[15px] font-medium leading-7 text-white/80">
+              {content.intro}
+            </p>
+            {content.sections.map((section) => (
               <section
                 className="mt-10 rounded-[16px] border border-white/10 bg-[rgb(18,18,18)] p-6"
-                id={section.toLowerCase().replaceAll(" ", "-")}
-                key={section}
+                id={section.title.toLowerCase().replaceAll(" ", "-")}
+                key={section.title}
               >
                 <h2 className="text-[26px] font-black uppercase leading-8">
-                  {section}
+                  {section.title}
                 </h2>
                 <p className="mt-4 text-[15px] leading-8 text-[rgb(170,170,170)]">
-                  Ourdream combines adult character discovery, private chat,
-                  companion creation, generation tools, and safety controls so
-                  each workflow can move from idea to saved experience.
+                  {section.body}
                 </p>
-                {index === 1 && (
-                  <div className="mt-5 grid gap-3 md:grid-cols-3">
-                    {characterCards.slice(0, 3).map((card) => (
-                      <div
-                        className="rounded-[12px] bg-[rgb(36,36,36)] p-3"
-                        key={card.id}
+                {section.bullets ? (
+                  <ul className="mt-5 grid gap-3 md:grid-cols-2">
+                    {section.bullets.map((bullet) => (
+                      <li
+                        className="flex gap-3 rounded-[12px] bg-[rgb(36,36,36)] p-3 text-[13px] font-medium leading-5 text-[rgb(210,210,210)]"
+                        key={bullet}
                       >
-                        <p className="text-[14px] font-bold text-white">
-                          {card.title}
-                        </p>
-                        <p className="mt-1 text-[12px] text-[rgb(170,170,170)]">
-                          {card.chats} chats
-                        </p>
-                      </div>
+                        <Check className="mt-0.5 h-4 w-4 shrink-0 text-[rgb(253,95,194)]" />
+                        <span>{bullet}</span>
+                      </li>
                     ))}
-                  </div>
-                )}
+                  </ul>
+                ) : null}
               </section>
             ))}
+            <section
+              className="mt-10 rounded-[16px] border border-white/10 bg-[rgb(18,18,18)] p-6"
+              id="faq"
+            >
+              <h2 className="text-[26px] font-black uppercase leading-8">
+                FAQ
+              </h2>
+              <div className="mt-5 grid gap-3">
+                {content.faq.map((item) => (
+                  <div
+                    className="rounded-[12px] bg-[rgb(36,36,36)] p-4"
+                    key={item.question}
+                  >
+                    <h3 className="text-[15px] font-black leading-5 text-white">
+                      {item.question}
+                    </h3>
+                    <p className="mt-2 text-[13px] font-medium leading-6 text-[rgb(170,170,170)]">
+                      {item.answer}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </section>
           </div>
         </div>
       </article>
@@ -447,44 +684,226 @@ function ArticlePage({ route }: Readonly<{ route: OurdreamRoute }>) {
   );
 }
 
-function ComparisonPage({ route }: Readonly<{ route: OurdreamRoute }>) {
+const comparisonFeatureRows = [
+  {
+    area: "Roleplay",
+    ourdream:
+      "Public and private companions flow from Explore into persistent chat sessions, My AI, and creator profiles.",
+    compare:
+      "Check whether the alternative keeps character context across discovery, chat history, and private library actions.",
+  },
+  {
+    area: "Creator tools",
+    ourdream:
+      "Guided Create supports private drafts, public review submission, edit, duplicate, and status handoff in My AI.",
+    compare:
+      "Check whether the alternative has a full character builder or only prompt-style bot setup.",
+  },
+  {
+    area: "Image generation tools",
+    ourdream:
+      "Generate supports character selection, mode/background/pose/outfit presets, Gallery actions, Image Edit, and Feed remix provenance.",
+    compare:
+      "Check whether media creation is connected to the same companion identity or handled as a separate tool.",
+  },
+  {
+    area: "Account and pricing",
+    ourdream:
+      "Free accounts start with dreamcoins. Premium monthly is $19.99 with 1,500 dreamcoins; Deluxe monthly is $59.99 with 6,000 dreamcoins.",
+    compare:
+      "Compare included credits, chat limits, renewal controls, and whether plan changes preserve the current workflow.",
+  },
+] as const;
+
+const comparisonPlanSummaries = [
+  {
+    name: "Free starter",
+    price: "$0",
+    details: "Starter dreamcoins, Explore, Create, Chat, Feed, Community, and Gallery access.",
+    href: "/signup",
+    action: "Join free",
+  },
+  {
+    name: "Premium monthly",
+    price: "$19.99",
+    details:
+      "Includes 1,500 dreamcoins, unlimited text messages & audio, longer conversation context, and advanced generation controls.",
+    href: "/upgrade?plan=premium&billing=monthly",
+    action: "Compare Premium",
+  },
+  {
+    name: "Deluxe monthly",
+    price: "$59.99",
+    details:
+      "Includes 6,000 dreamcoins, premium chat model, 3x chat memory depth, longest context window, and highest rate limit.",
+    href: "/upgrade?plan=deluxe&billing=monthly",
+    action: "Compare Deluxe",
+  },
+] as const;
+
+function comparisonSubject(route: OurdreamRoute) {
+  if (route.path === "/comparison") return "AI companion platforms";
+  return route.title
+    .replace(/\bAlternative(s)?\b/gi, "")
+    .replace(/\bVs\b/g, "vs")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function ComparisonChecklist({ route }: Readonly<{ route: OurdreamRoute }>) {
+  const subject = comparisonSubject(route);
+
+  return (
+    <section className="px-4 py-10 md:px-[60px] md:py-12">
+      <div className="mx-auto max-w-6xl">
+        <div className="max-w-3xl">
+          <p className="text-[12px] font-black uppercase leading-4 text-[rgb(253,95,194)]">
+            Decision checklist
+          </p>
+          <h2 className="mt-3 text-[32px] font-black uppercase leading-9 text-white md:text-[42px] md:leading-[44px]">
+            Compare {subject} by the workflow users actually finish
+          </h2>
+          <p className="mt-4 text-[15px] font-medium leading-7 text-[rgb(170,170,170)]">
+            Use this section to compare roleplay depth, creator controls,
+            media tools, and pricing before moving into Create, Chat, Generate,
+            or Upgrade.
+          </p>
+        </div>
+        <div className="mt-7 overflow-hidden rounded-[16px] border border-white/10 bg-[rgb(18,18,18)]">
+          <div className="grid border-b border-white/10 bg-[rgb(28,28,28)] text-[12px] font-black uppercase leading-4 text-white md:grid-cols-[180px_1fr_1fr]">
+            <div className="p-4 text-[rgb(170,170,170)]">Area</div>
+            <div className="p-4">Ourdream</div>
+            <div className="p-4">What to verify elsewhere</div>
+          </div>
+          {comparisonFeatureRows.map((row) => (
+            <div
+              className="grid border-b border-white/10 last:border-b-0 md:grid-cols-[180px_1fr_1fr]"
+              key={row.area}
+            >
+              <div className="bg-[rgb(24,24,24)] p-4 text-[13px] font-black uppercase leading-5 text-[rgb(253,95,194)]">
+                {row.area}
+              </div>
+              <div className="p-4 text-[14px] font-medium leading-7 text-white/85">
+                {row.ourdream}
+              </div>
+              <div className="p-4 text-[14px] font-medium leading-7 text-[rgb(170,170,170)]">
+                {row.compare}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function PricingComparison() {
+  return (
+    <section className="px-4 py-10 md:px-[60px] md:py-12">
+      <div className="mx-auto max-w-6xl">
+        <div className="max-w-3xl">
+          <p className="text-[12px] font-black uppercase leading-4 text-[rgb(253,95,194)]">
+            Price and entitlement snapshot
+          </p>
+          <h2 className="mt-3 text-[32px] font-black uppercase leading-9 text-white md:text-[42px] md:leading-[44px]">
+            Know what each Ourdream tier unlocks
+          </h2>
+        </div>
+        <div className="mt-7 grid gap-3 md:grid-cols-3">
+          {comparisonPlanSummaries.map((plan) => (
+            <article
+              className="rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-5"
+              key={plan.name}
+            >
+              <p className="text-[12px] font-black uppercase leading-4 text-[rgb(253,95,194)]">
+                {plan.name}
+              </p>
+              <h3 className="mt-4 text-[34px] font-black uppercase leading-none text-white">
+                {plan.price}
+              </h3>
+              <p className="mt-4 min-h-24 text-[14px] font-medium leading-7 text-[rgb(170,170,170)]">
+                {plan.details}
+              </p>
+              <Link
+                className="mt-5 inline-flex h-10 items-center justify-center gap-2 rounded-full bg-white px-5 text-[13px] font-black text-[rgb(13,13,13)] hover:bg-white/90"
+                href={plan.href}
+              >
+                {plan.action}
+                <ArrowRight className="h-4 w-4" />
+              </Link>
+            </article>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ComparisonRouteCards({ route }: Readonly<{ route: OurdreamRoute }>) {
   const routes = route.path === "/comparison" ? getRoutesByPrefix("/comparison/") : [];
-  const competitors = routes.length
+  const cards = routes.length
     ? routes
     : [
-        route,
-        { ...route, path: "/upgrade", title: "Pricing" },
-        { ...route, path: "/generate", title: "Generation" },
+        { path: "/comparison", title: "All comparisons" },
+        { path: "/create", title: "Create a companion" },
+        { path: "/generate", title: "Open Generate" },
       ];
 
   return (
-    <RouteShell route={route}>
-      <PageHero route={route} />
-      <section className="px-4 pb-12 md:px-[60px]">
-        <div className="grid gap-3 md:grid-cols-3">
-          {competitors.slice(0, 18).map((item) => (
+    <section className="px-4 py-10 md:px-[60px] md:py-12">
+      <div className="mx-auto max-w-6xl">
+        <div className="flex flex-col justify-between gap-4 md:flex-row md:items-end">
+          <div>
+            <p className="text-[12px] font-black uppercase leading-4 text-[rgb(253,95,194)]">
+              Next routes
+            </p>
+            <h2 className="mt-3 text-[32px] font-black uppercase leading-9 text-white md:text-[42px] md:leading-[44px]">
+              {route.path === "/comparison"
+                ? "Open a focused competitor page"
+                : "Move from comparison into the product"}
+            </h2>
+          </div>
+          <Link
+            className="inline-flex h-10 items-center justify-center gap-2 rounded-full bg-[rgb(46,46,46)] px-5 text-[13px] font-black text-white hover:bg-[rgb(53,53,54)]"
+            href="/upgrade"
+          >
+            See plans
+            <ArrowRight className="h-4 w-4" />
+          </Link>
+        </div>
+        <div className="mt-7 grid gap-3 md:grid-cols-3">
+          {cards.slice(0, 18).map((item) => (
             <Link
-              className="rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-5 hover:bg-[rgb(36,36,36)]"
+              className="group rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-5 transition-colors hover:bg-[rgb(36,36,36)]"
               href={item.path}
               key={item.path}
             >
-              <h2 className="text-[20px] font-black uppercase leading-6">
+              <h3 className="text-[20px] font-black uppercase leading-6 text-white">
                 {item.title}
-              </h2>
-              <ul className="mt-5 space-y-3 text-[13px] font-medium leading-5 text-[rgb(170,170,170)]">
-                {["Unlimited messaging", "Creator controls", "Image generation tools"].map(
-                  (feature) => (
-                    <li className="flex gap-2" key={feature}>
-                      <Check className="mt-0.5 h-4 w-4 shrink-0 text-[rgb(253,95,194)]" />
-                      <span>{feature}</span>
-                    </li>
-                  ),
-                )}
-              </ul>
+              </h3>
+              <p className="mt-3 text-[13px] font-medium leading-6 text-[rgb(170,170,170)]">
+                Review feature fit, pricing, creator workflow, and the fastest
+                path into a real Ourdream action.
+              </p>
+              <span className="mt-5 inline-flex items-center gap-2 text-[13px] font-bold text-white">
+                Open
+                <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
+              </span>
             </Link>
           ))}
         </div>
-      </section>
+      </div>
+    </section>
+  );
+}
+
+function ComparisonPage({ route }: Readonly<{ route: OurdreamRoute }>) {
+  return (
+    <RouteShell route={route}>
+      <PageHero route={route} />
+      <ComparisonChecklist route={route} />
+      <PricingComparison />
+      <ComparisonRouteCards route={route} />
     </RouteShell>
   );
 }

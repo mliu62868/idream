@@ -1,0 +1,21 @@
+{
+  "browserChannel": "chrome",
+  "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.0.0 Safari/537.36",
+  "adminURL": "http://127.0.0.1:3180",
+  "screenshots": [
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-official-template-confirmation-audit/01-official-create-confirmation.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-official-template-confirmation-audit/02-official-created.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-official-template-confirmation-audit/03-official-archive-confirmation.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-official-template-confirmation-audit/04-official-archived.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-official-template-confirmation-audit/05-template-create-confirmation.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-official-template-confirmation-audit/06-template-created.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-official-template-confirmation-audit/07-template-offline-panel.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-official-template-confirmation-audit/08-template-offline.png"
+  ],
+  "checks": [
+    "official create requires confirmation before public approved character exists",
+    "official archive requires confirmation before status changes",
+    "template create requires confirmation before active template exists",
+    "template offline requires operator reason and typed OFFLINE confirmation"
+  ]
+}

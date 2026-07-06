@@ -1,0 +1,448 @@
+{
+  "ok": false,
+  "summary": {
+    "pass": 31,
+    "fail": 34,
+    "warn": 0
+  },
+  "checks": [
+    {
+      "id": "app-env-production",
+      "area": "Runtime",
+      "status": "pass",
+      "message": "APP_ENV is production.",
+      "remediation": "Run the launch gate with APP_ENV=production."
+    },
+    {
+      "id": "database-url",
+      "area": "Data",
+      "status": "fail",
+      "message": "DATABASE_URL is missing or not Postgres.",
+      "remediation": "Set DATABASE_URL to the production Postgres pooled URL."
+    },
+    {
+      "id": "better-auth-url",
+      "area": "Runtime",
+      "status": "pass",
+      "message": "BETTER_AUTH_URL is a public HTTPS origin.",
+      "remediation": "Set BETTER_AUTH_URL to the public production origin, for example https://ourdream.ai."
+    },
+    {
+      "id": "better-auth-secret",
+      "area": "Security",
+      "status": "fail",
+      "message": "BETTER_AUTH_SECRET is missing, short, or still the development placeholder.",
+      "remediation": "Generate a unique production BETTER_AUTH_SECRET with at least 32 characters."
+    },
+    {
+      "id": "internal-token",
+      "area": "Security",
+      "status": "fail",
+      "message": "Internal API token is missing or invalid.",
+      "remediation": "Set INTERNAL_TOKEN to a production-only secret."
+    },
+    {
+      "id": "cron-secret",
+      "area": "Security",
+      "status": "fail",
+      "message": "Cron secret is missing or invalid.",
+      "remediation": "Set CRON_SECRET to a production-only secret distinct from INTERNAL_TOKEN."
+    },
+    {
+      "id": "service-token-separation",
+      "area": "Security",
+      "status": "fail",
+      "message": "Internal and cron tokens are missing or identical.",
+      "remediation": "Use separate random secrets for INTERNAL_TOKEN and CRON_SECRET."
+    },
+    {
+      "id": "web-surface-live-probe",
+      "area": "Runtime",
+      "status": "fail",
+      "message": "Web surface probe evidence is missing or invalid: probe main URL does not match MAIN_WEB_URL or BETTER_AUTH_URL; probe admin URL does not match ADMIN_WEB_URL; probe is older than 1440 minutes.",
+      "remediation": "Run `bun run --filter @idream/main probe:web-surface -- --report .tmp/launch-web-surface-probe.json` against the deployed main/admin web surfaces, then set WEB_SURFACE_PROBE_REPORT before check:launch."
+    },
+    {
+      "id": "redis-url",
+      "area": "Queues",
+      "status": "fail",
+      "message": "Redis URL is missing or invalid.",
+      "remediation": "Set REDIS_URL to the production queue Redis instance."
+    },
+    {
+      "id": "bullmq-prefix",
+      "area": "Queues",
+      "status": "pass",
+      "message": "BULLMQ_PREFIX is explicitly configured for production.",
+      "remediation": "Set one shared production BULLMQ_PREFIX, such as idream:prod, for main-web, chat, and gen workers."
+    },
+    {
+      "id": "chat-provider-non-mock",
+      "area": "Providers",
+      "status": "pass",
+      "message": "CHAT_PROVIDER=pipeline is not mock.",
+      "remediation": "Configure a production CHAT_PROVIDER adapter and credentials before launch."
+    },
+    {
+      "id": "chat-provider-implementation",
+      "area": "Providers",
+      "status": "pass",
+      "message": "CHAT_PROVIDER=pipeline is supported by this build."
+    },
+    {
+      "id": "image-provider-non-mock",
+      "area": "Providers",
+      "status": "pass",
+      "message": "IMAGE_PROVIDER=pipeline is not mock.",
+      "remediation": "Configure a production IMAGE_PROVIDER adapter and credentials before launch."
+    },
+    {
+      "id": "image-provider-implementation",
+      "area": "Providers",
+      "status": "pass",
+      "message": "IMAGE_PROVIDER=pipeline is supported by this build."
+    },
+    {
+      "id": "voice-provider-non-mock",
+      "area": "Providers",
+      "status": "pass",
+      "message": "VOICE_PROVIDER=pipeline is not mock.",
+      "remediation": "Configure a production VOICE_PROVIDER adapter and credentials before launch."
+    },
+    {
+      "id": "voice-provider-implementation",
+      "area": "Providers",
+      "status": "pass",
+      "message": "VOICE_PROVIDER=pipeline is supported by this build."
+    },
+    {
+      "id": "moderation-provider-non-mock",
+      "area": "Providers",
+      "status": "pass",
+      "message": "MODERATION_PROVIDER=mock is allowed by the current launch scope."
+    },
+    {
+      "id": "payment-provider-non-mock",
+      "area": "Providers",
+      "status": "pass",
+      "message": "PAYMENT_PROVIDER=btcpay is not mock.",
+      "remediation": "Configure a production PAYMENT_PROVIDER adapter and credentials before launch."
+    },
+    {
+      "id": "payment-provider-implementation",
+      "area": "Providers",
+      "status": "pass",
+      "message": "PAYMENT_PROVIDER=btcpay is supported by this build."
+    },
+    {
+      "id": "blob-provider-non-mock",
+      "area": "Providers",
+      "status": "pass",
+      "message": "BLOB_PROVIDER=r2 is not mock.",
+      "remediation": "Configure a production BLOB_PROVIDER adapter and credentials before launch."
+    },
+    {
+      "id": "blob-provider-implementation",
+      "area": "Providers",
+      "status": "pass",
+      "message": "BLOB_PROVIDER=r2 is supported by this build."
+    },
+    {
+      "id": "age-verification-provider-non-mock",
+      "area": "Providers",
+      "status": "pass",
+      "message": "AGE_VERIFICATION_PROVIDER=gocam is not mock.",
+      "remediation": "Configure a production AGE_VERIFICATION_PROVIDER adapter and credentials before launch."
+    },
+    {
+      "id": "age-verification-provider-implementation",
+      "area": "Providers",
+      "status": "pass",
+      "message": "AGE_VERIFICATION_PROVIDER=gocam is supported by this build."
+    },
+    {
+      "id": "chat-service-url",
+      "area": "Chat",
+      "status": "fail",
+      "message": "Chat service URL is missing or invalid.",
+      "remediation": "Deploy packages/chat and set CHAT_SERVICE_URL."
+    },
+    {
+      "id": "chat-bff-signing-secret",
+      "area": "Chat",
+      "status": "fail",
+      "message": "Chat BFF signing secret is missing or invalid.",
+      "remediation": "Set CHAT_BFF_SIGNING_SECRET to the same shared secret used by packages/chat."
+    },
+    {
+      "id": "chat-database-url",
+      "area": "Chat",
+      "status": "fail",
+      "message": "CHAT_DATABASE_URL is missing, not Postgres, or not using the chat_service role.",
+      "remediation": "Set CHAT_DATABASE_URL to the production Postgres URL for the chat_service role; do not reuse main-web DATABASE_URL."
+    },
+    {
+      "id": "chat-redis-url",
+      "area": "Chat",
+      "status": "fail",
+      "message": "Chat Redis URL is missing or invalid.",
+      "remediation": "Set CHAT_REDIS_URL or shared REDIS_URL so packages/chat uses the production queue Redis instance."
+    },
+    {
+      "id": "chat-fs-root",
+      "area": "Chat",
+      "status": "pass",
+      "message": "CHAT_FS_ROOT is an absolute durable-storage path.",
+      "remediation": "Set CHAT_FS_ROOT to an absolute path mounted on durable storage for chat logs and memories."
+    },
+    {
+      "id": "chat-model-provider",
+      "area": "Chat",
+      "status": "pass",
+      "message": "Chat model provider is pipeline.",
+      "remediation": "Set CHAT_MODEL_PROVIDER=pipeline or openai for packages/chat; mock is not production-ready."
+    },
+    {
+      "id": "chat-model-base-url",
+      "area": "Chat",
+      "status": "fail",
+      "message": "Chat model base URL is missing or invalid.",
+      "remediation": "Set CHAT_MODEL_BASE_URL or PIPELINE_API_URL to the production OpenAI-compatible chat gateway."
+    },
+    {
+      "id": "chat-model-api-key",
+      "area": "Chat",
+      "status": "fail",
+      "message": "Chat model API key is missing or invalid.",
+      "remediation": "Set CHAT_MODEL_API_KEY or PIPELINE_API_TOKEN so packages/chat can authenticate to the chat gateway."
+    },
+    {
+      "id": "chat-service-live-probe",
+      "area": "Chat",
+      "status": "fail",
+      "message": "Chat service probe evidence is missing or invalid: probe service URL does not match CHAT_SERVICE_URL; probe is older than 1440 minutes.",
+      "remediation": "Run `bun run --filter @idream/main probe:chat-service -- --report .tmp/launch-chat-service-probe.json` against the real chat service, then set CHAT_SERVICE_PROBE_REPORT before check:launch."
+    },
+    {
+      "id": "chat-model-live-probe",
+      "area": "Chat",
+      "status": "fail",
+      "message": "Chat model probe evidence is missing or invalid: probe base URL does not match CHAT_MODEL_BASE_URL or PIPELINE_API_URL; probe is older than 1440 minutes.",
+      "remediation": "Run `bun run --filter @idream/main probe:chat -- --report .tmp/launch-chat-probe.json` against the real chat model gateway, then set CHAT_MODEL_PROBE_REPORT before check:launch."
+    },
+    {
+      "id": "chat-moderation-provider",
+      "area": "Chat",
+      "status": "pass",
+      "message": "Chat moderation provider is mock.",
+      "remediation": "Set CHAT_MODERATION_PROVIDER to a supported provider: mock or safety-gateway."
+    },
+    {
+      "id": "chat-moderation-service-url",
+      "area": "Chat",
+      "status": "pass",
+      "message": "Chat moderation provider mock does not require CHAT_MODERATION_SERVICE_URL."
+    },
+    {
+      "id": "chat-moderation-api-key",
+      "area": "Chat",
+      "status": "pass",
+      "message": "Chat moderation provider mock does not require CHAT_MODERATION_API_KEY."
+    },
+    {
+      "id": "gen-image-provider",
+      "area": "Generation",
+      "status": "pass",
+      "message": "Image generation worker is configured for the pipeline provider."
+    },
+    {
+      "id": "pipeline-api-url",
+      "area": "Generation",
+      "status": "fail",
+      "message": "Pipeline API URL is missing or invalid.",
+      "remediation": "Set PIPELINE_API_URL to the internal ComfyUI/Z-Image gateway."
+    },
+    {
+      "id": "pipeline-api-token",
+      "area": "Generation",
+      "status": "fail",
+      "message": "Pipeline API token is missing or invalid.",
+      "remediation": "Set PIPELINE_API_TOKEN so product services authenticate to the pipeline."
+    },
+    {
+      "id": "pipeline-image-model",
+      "area": "Generation",
+      "status": "pass",
+      "message": "Default image model is documented for the pipeline."
+    },
+    {
+      "id": "pipeline-image-live-probe",
+      "area": "Generation",
+      "status": "fail",
+      "message": "Image pipeline probe evidence is missing or invalid: probe pipeline URL does not match PIPELINE_API_URL; probe is older than 1440 minutes.",
+      "remediation": "Run `bun run --filter @idream/gen probe:image -- --report .tmp/launch-image-probe.json` against the real pipeline, then set PIPELINE_IMAGE_PROBE_REPORT to that report before check:launch."
+    },
+    {
+      "id": "product-config-live-probe",
+      "area": "Product",
+      "status": "fail",
+      "message": "Product config probe evidence is missing or invalid: probe is older than 1440 minutes.",
+      "remediation": "Run `bun run --filter @idream/main probe:product-config -- --report .tmp/launch-product-config-probe.json`, then set PRODUCT_CONFIG_PROBE_REPORT before check:launch."
+    },
+    {
+      "id": "public-catalog-live-probe",
+      "area": "Product",
+      "status": "pass",
+      "message": "Recent public catalog probe found clean public characters, creators, collections, and images."
+    },
+    {
+      "id": "gen-video-provider",
+      "area": "Generation",
+      "status": "pass",
+      "message": "Video generation is disabled in product config; a production video provider is not required for launch."
+    },
+    {
+      "id": "voice-model-live-probe",
+      "area": "Generation",
+      "status": "fail",
+      "message": "Voice model probe evidence is missing or invalid: probe base URL does not match PIPELINE_VOICE_API_URL or PIPELINE_API_URL; probe model does not match PIPELINE_VOICE_MODEL_DEFAULT; probe is older than 1440 minutes.",
+      "remediation": "Run `bun run --filter @idream/main probe:voice -- --report .tmp/launch-voice-probe.json` against the real voice model gateway, then set VOICE_MODEL_PROBE_REPORT before check:launch."
+    },
+    {
+      "id": "moderation-service-url",
+      "area": "Safety",
+      "status": "pass",
+      "message": "MODERATION_PROVIDER=mock does not require MODERATION_SERVICE_URL."
+    },
+    {
+      "id": "moderation-api-key",
+      "area": "Safety",
+      "status": "pass",
+      "message": "MODERATION_PROVIDER=mock does not require MODERATION_API_KEY."
+    },
+    {
+      "id": "safety-gateway-live-probe",
+      "area": "Safety",
+      "status": "pass",
+      "message": "MODERATION_PROVIDER=mock; external probe evidence is not required for this provider."
+    },
+    {
+      "id": "payment-api-key",
+      "area": "Billing",
+      "status": "fail",
+      "message": "Payment provider API key is missing.",
+      "remediation": "Configure production payment processor credentials."
+    },
+    {
+      "id": "payment-btcpay-base-url",
+      "area": "Billing",
+      "status": "fail",
+      "message": "BTCPay base URL is missing or invalid.",
+      "remediation": "Set BTCPAY_BASE_URL when PAYMENT_PROVIDER=btcpay."
+    },
+    {
+      "id": "payment-btcpay-store-id",
+      "area": "Billing",
+      "status": "fail",
+      "message": "BTCPay store id is missing or invalid.",
+      "remediation": "Set BTCPAY_STORE_ID for the production payment store."
+    },
+    {
+      "id": "payment-webhook-secret",
+      "area": "Billing",
+      "status": "fail",
+      "message": "Payment webhook secret is missing.",
+      "remediation": "Configure and verify the production payment webhook secret."
+    },
+    {
+      "id": "payment-provider-live-probe",
+      "area": "Billing",
+      "status": "fail",
+      "message": "Payment provider probe evidence is missing or invalid: probe provider is mock, not btcpay; probe base URL does not match BTCPAY_BASE_URL; probe could not create a BTCPay invoice; probe did not return a BTCPay invoice id; probe did not return a public HTTPS BTCPay checkout URL.",
+      "remediation": "Run `bun run --filter @idream/main probe:payment -- --report .tmp/launch-payment-probe.json` against the real payment provider. The BTCPay probe creates a small launch-test invoice, so the API key must include Create invoice permission. Then set PAYMENT_PROVIDER_PROBE_REPORT before check:launch."
+    },
+    {
+      "id": "age-verification-service-url",
+      "area": "Compliance",
+      "status": "fail",
+      "message": "Age verification service URL is missing or invalid.",
+      "remediation": "Set AGE_VERIFY_SERVICE_URL to the Go.cam gateway service."
+    },
+    {
+      "id": "age-verification-api-key",
+      "area": "Compliance",
+      "status": "fail",
+      "message": "Age verification API key is missing or invalid.",
+      "remediation": "Set AGE_VERIFY_API_KEY for the Go.cam gateway service."
+    },
+    {
+      "id": "age-verification-webhook-secret",
+      "area": "Compliance",
+      "status": "fail",
+      "message": "Age verification webhook secret is missing or invalid.",
+      "remediation": "Set AGE_VERIFY_WEBHOOK_SECRET and configure the gateway to sign callbacks."
+    },
+    {
+      "id": "age-verification-link-back-url",
+      "area": "Compliance",
+      "status": "pass",
+      "message": "Age verification link-back URL is public HTTPS.",
+      "remediation": "Set AGE_VERIFY_LINK_BACK_URL to the public page users return to after age verification."
+    },
+    {
+      "id": "age-verification-callback-url",
+      "area": "Compliance",
+      "status": "pass",
+      "message": "Age verification callback URL is public HTTPS.",
+      "remediation": "Set AGE_VERIFY_CALLBACK_URL to the public signed-webhook endpoint for Go.cam callbacks."
+    },
+    {
+      "id": "age-verification-live-probe",
+      "area": "Compliance",
+      "status": "fail",
+      "message": "Age verification probe evidence is missing or invalid: probe provider is mock, not gocam; probe service URL does not match AGE_VERIFY_SERVICE_URL; probe session status is not_required, not pending; probe verification URL is missing or not public HTTPS.",
+      "remediation": "Run `bun run --filter @idream/main probe:age -- --report .tmp/launch-age-probe.json` against the real age gateway, then set AGE_VERIFICATION_PROBE_REPORT before check:launch."
+    },
+    {
+      "id": "blob-bucket",
+      "area": "Storage",
+      "status": "pass",
+      "message": "Object storage bucket is configured."
+    },
+    {
+      "id": "blob-endpoint",
+      "area": "Storage",
+      "status": "fail",
+      "message": "Object storage endpoint is missing or invalid.",
+      "remediation": "Set BLOB_ENDPOINT for the production object store."
+    },
+    {
+      "id": "blob-access-key",
+      "area": "Storage",
+      "status": "fail",
+      "message": "Object storage access key is missing.",
+      "remediation": "Configure object storage access credentials."
+    },
+    {
+      "id": "blob-secret-key",
+      "area": "Storage",
+      "status": "fail",
+      "message": "Object storage secret key is missing.",
+      "remediation": "Configure object storage secret credentials."
+    },
+    {
+      "id": "blob-storage-live-probe",
+      "area": "Storage",
+      "status": "fail",
+      "message": "Object storage probe evidence is missing or invalid: probe provider is mock, not r2; probe endpoint does not match BLOB_ENDPOINT; probe bucket does not match BLOB_BUCKET.",
+      "remediation": "Run `bun run --filter @idream/main probe:blob -- --report .tmp/launch-blob-probe.json` against the real object store, then set BLOB_STORAGE_PROBE_REPORT before check:launch."
+    },
+    {
+      "id": "sentry-dsn",
+      "area": "Observability",
+      "status": "fail",
+      "message": "Sentry DSN is missing or invalid.",
+      "remediation": "Set SENTRY_DSN so production errors are captured."
+    }
+  ]
+}

@@ -271,6 +271,33 @@ describe("explore: search, filter, sort, pagination", () => {
     expect((res.data.characters as Array<{ id: string }>).map((c) => c.id)).toContain(
       `${P}c-alpha`,
     );
+
+    const tagRes = await api("GET", "search/suggest", {
+      ageGate: true,
+      query: { q: `${P}cosplay` },
+    });
+    expectOk(tagRes);
+    expect((tagRes.data.tags as Array<{ slug: string }>).map((tag) => tag.slug)).toContain(
+      `${P}cosplay`,
+    );
+
+    const guideRes = await api("GET", "search/suggest", {
+      ageGate: true,
+      query: { q: "character cards" },
+    });
+    expectOk(guideRes);
+    expect((guideRes.data.routes as Array<{ href: string }>).map((route) => route.href)).toContain(
+      "/guides/character-cards",
+    );
+
+    const generatorRes = await api("GET", "search/suggest", {
+      ageGate: true,
+      query: { q: "ai roleplay generator" },
+    });
+    expectOk(generatorRes);
+    expect(
+      (generatorRes.data.routes as Array<{ href: string }>).map((route) => route.href),
+    ).toContain("/generator/ai-roleplay-generator");
   });
 });
 

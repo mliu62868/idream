@@ -1,0 +1,22 @@
+{
+  "emails": [
+    "chrome-profile-signout-1783249025217@test.local",
+    "chrome-profile-delete-1783249025217@test.local"
+  ],
+  "users": [
+    {
+      "id": "cmr7offgl000fu3l7m3go1q3q",
+      "email": "chrome-profile-delete-1783249025217@test.local",
+      "status": "deleted",
+      "deletedAt": "2026-07-05T10:57:07.754Z",
+      "sessions": []
+    },
+    {
+      "id": "cmr7ofek8000au3l76k3uboox",
+      "email": "chrome-profile-signout-1783249025217@test.local",
+      "status": "active",
+      "deletedAt": null,
+      "sessions": []
+    }
+  ]
+}

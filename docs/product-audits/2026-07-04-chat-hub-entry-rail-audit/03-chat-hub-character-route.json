@@ -1,0 +1,42 @@
+{
+  "state": {
+    "actionLabels": [
+      {
+        "href": "/chat",
+        "text": "Chat"
+      },
+      {
+        "href": "/generate",
+        "text": "Generate"
+      },
+      {
+        "href": null,
+        "text": "Chat"
+      },
+      {
+        "href": "/generate?characterId=melissa-burke",
+        "text": "Generate"
+      },
+      {
+        "href": null,
+        "text": "Like"
+      },
+      {
+        "href": "/chat",
+        "text": "Chat"
+      },
+      {
+        "href": "/generate",
+        "text": "Generate"
+      }
+    ],
+    "headings": [
+      "Melissa Burke",
+      "Learn",
+      "Popular",
+      "Help"
+    ],
+    "url": "http://localhost:3234/characters/melissa-burke"
+  },
+  "logs": []
+}

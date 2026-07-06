@@ -1,0 +1,57 @@
+{
+  "suggestions": {
+    "bodyOverflowX": false,
+    "inputValue": "character cards",
+    "optionCount": 2,
+    "options": [
+      {
+        "ariaLabel": "Open Character Cards",
+        "href": "/guides/character-cards",
+        "text": "Character CardsGuide"
+      },
+      {
+        "ariaLabel": "Open AI Games",
+        "href": "/games",
+        "text": "AI GamesResource"
+      }
+    ],
+    "panelRect": {
+      "height": 122,
+      "top": 52,
+      "width": 340
+    },
+    "panelVisible": true,
+    "viewport": {
+      "height": 827,
+      "width": 1512
+    }
+  },
+  "detail": {
+    "bodyOverflowX": false,
+    "hasCharacterCardsHeading": true,
+    "headings": [
+      "Character Cards",
+      "Overview",
+      "How it works",
+      "Best practices",
+      "Learn",
+      "Popular",
+      "Help"
+    ],
+    "path": "/guides/character-cards",
+    "title": "Character Cards | ourdream.ai",
+    "url": "http://localhost:3223/guides/character-cards",
+    "viewport": {
+      "height": 827,
+      "width": 1512
+    }
+  },
+  "navigation": {
+    "mechanism": "router.push keyboard selection; final URL observed at /guides/character-cards"
+  },
+  "logs": [],
+  "screenshots": [
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-global-search-route-suggestions-audit/01-route-suggestions.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-global-search-route-suggestions-audit/02-route-suggestion-detail.png"
+  ]
+}

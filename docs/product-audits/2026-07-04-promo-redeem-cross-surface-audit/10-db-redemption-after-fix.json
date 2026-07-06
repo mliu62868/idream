@@ -1,0 +1,33 @@
+{
+  "code": "CHROME-PROMO-1783205351191",
+  "candidates": [
+    "redeem_111404128",
+    "8205bba4789767a522a6451dd379044188062b8bbd489739a1247d7c2ebd8977"
+  ],
+  "redeemCode": {
+    "id": "cmr6ygiam0000sil7chy4etnt",
+    "status": "active",
+    "reward": {
+      "dreamcoins": 77
+    },
+    "maxRedemptions": 1,
+    "redemptions": 1,
+    "legacyHashMatched": true
+  },
+  "redemptionUsers": [
+    {
+      "id": "cmr6yqmhh0000rpl7upl83quo",
+      "userId": "seed-admin-user",
+      "createdAt": "2026-07-04T22:57:59.381Z"
+    }
+  ],
+  "ledger": [
+    {
+      "userId": "seed-admin-user",
+      "delta": 77,
+      "balanceAfter": 7222,
+      "reason": "redeem",
+      "sourceId": "cmr6yqmhh0000rpl7upl83quo"
+    }
+  ]
+}

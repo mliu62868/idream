@@ -2,6 +2,10 @@ import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { mockVideoMp4Bytes } from "@idream/shared";
 import { MAIN_TO_CHAT_EVENTS, MAIN_TO_CHAT_QUEUE, idempotencyKeys } from "@idream/shared/contracts";
+import {
+  GeneratedImageSanityError,
+  assertGeneratedImageSanity,
+} from "@idream/shared/media/generated-image-sanity";
 import { jobQueue } from "@/server/jobs/queue";
 import type { QueueJob } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
@@ -333,9 +337,16 @@ async function runImageGenerate(payload: ImageGeneratePayload, jobMeta: QueueJob
           contentType,
           ".png",
         );
+        const body = asset.body ?? new Uint8Array(placeholderImagePng);
+        if (hasProviderBody) {
+          assertGeneratedImageSanity(
+            Buffer.from(body),
+            `${payload.generationJobId} asset ${index + 1}`,
+          );
+        }
         const persisted = await providers.blob.putPrivate({
           key,
-          body: asset.body ?? new Uint8Array(placeholderImagePng),
+          body,
           contentType,
         });
         if (!persisted.ok) {
@@ -354,7 +365,7 @@ async function runImageGenerate(payload: ImageGeneratePayload, jobMeta: QueueJob
     if (!isFinalAttempt(jobMeta)) throw error;
     await enqueueGenerationFailed(
       payload,
-      "asset_persist_failed",
+      error instanceof GeneratedImageSanityError ? error.code : "asset_persist_failed",
       errorMessage(error, "Failed to persist generated image assets"),
     );
     return;

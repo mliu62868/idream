@@ -231,6 +231,26 @@ export interface ProductConfigProbeEvidence {
   error?: { code?: string; message?: string } | null;
 }
 
+export interface PublicCatalogProbeEvidence {
+  ok?: boolean;
+  checkedAt?: string | null;
+  durationMs?: number;
+  counts?: {
+    publicCharacters?: number;
+    publicCollections?: number;
+    publicCreators?: number;
+    publicFeedbackItems?: number;
+    distinctImages?: number;
+  } | null;
+  issueTotals?: {
+    total?: number;
+    fail?: number;
+    warn?: number;
+  } | null;
+  loadError?: string;
+  error?: { code?: string; message?: string } | null;
+}
+
 export interface WebSurfaceProbeEvidence {
   ok?: boolean;
   checkedAt?: string | null;
@@ -320,6 +340,7 @@ export interface LaunchReadinessOptions {
   paymentProviderProbe?: PaymentProviderProbeEvidence | null;
   ageVerificationProbe?: AgeVerificationProbeEvidence | null;
   productConfigProbe?: ProductConfigProbeEvidence | null;
+  publicCatalogProbe?: PublicCatalogProbeEvidence | null;
   webSurfaceProbe?: WebSurfaceProbeEvidence | null;
   now?: Date;
   preflightChecks?: LaunchReadinessCheck[];
@@ -1306,6 +1327,74 @@ function addProductConfigProbeCheck(
   });
 }
 
+function addPublicCatalogProbeCheck(
+  checks: LaunchReadinessCheck[],
+  env: EnvLike,
+  probe: PublicCatalogProbeEvidence | null,
+  now: Date,
+) {
+  const problems: string[] = [];
+
+  if (!env.PUBLIC_CATALOG_PROBE_REPORT) {
+    problems.push("PUBLIC_CATALOG_PROBE_REPORT is not set");
+  }
+  if (!probe) {
+    problems.push("no probe report was loaded");
+  } else if (probe.loadError) {
+    problems.push(probe.loadError);
+  } else {
+    if (probe.ok !== true) problems.push("probe did not complete successfully");
+    if ((probe.counts?.publicCharacters ?? 0) < 1) {
+      problems.push("no approved public characters were found");
+    }
+    if ((probe.counts?.publicCollections ?? 0) < 1) {
+      problems.push("no public collections were found");
+    }
+    if ((probe.counts?.publicCreators ?? 0) < 1) {
+      problems.push("no public creators were found");
+    }
+    if ((probe.counts?.publicFeedbackItems ?? 0) < 1) {
+      problems.push("no public roadmap feedback items were found");
+    }
+    if ((probe.counts?.distinctImages ?? 0) < 1) {
+      problems.push("no distinct public catalog images were found");
+    }
+    if ((probe.issueTotals?.fail ?? 0) > 0) {
+      problems.push(`${probe.issueTotals?.fail ?? 0} launch-blocking catalog issue(s) found`);
+    }
+    if ((probe.issueTotals?.warn ?? 0) > 0) {
+      problems.push(`${probe.issueTotals?.warn ?? 0} catalog warning issue(s) found`);
+    }
+
+    const checkedAt = parseProbeDate(probe.checkedAt);
+    if (!checkedAt) {
+      problems.push("probe checkedAt is missing or invalid");
+    } else {
+      const maxAgeMs = probeMaxAgeMs(env, "PUBLIC_CATALOG_PROBE_MAX_AGE_MINUTES");
+      if (now.getTime() - checkedAt.getTime() > maxAgeMs) {
+        problems.push(`probe is older than ${Math.round(maxAgeMs / 60_000)} minutes`);
+      }
+      if (checkedAt.getTime() - now.getTime() > 60_000) {
+        problems.push("probe checkedAt is in the future");
+      }
+    }
+  }
+
+  addCheck(checks, {
+    id: "public-catalog-live-probe",
+    area: "Product",
+    status: problems.length === 0 ? "pass" : "fail",
+    message:
+      problems.length === 0
+        ? "Recent public catalog probe found clean public characters, creators, collections, roadmap items, and images."
+        : `Public catalog probe evidence is missing or invalid: ${problems.join("; ")}.`,
+    remediation:
+      problems.length === 0
+        ? undefined
+        : "Run `bun run --filter @idream/main probe:catalog -- --report .tmp/public-catalog-probe.json`, then set PUBLIC_CATALOG_PROBE_REPORT before check:launch.",
+  });
+}
+
 function addWebSurfaceProbeCheck(
   checks: LaunchReadinessCheck[],
   env: EnvLike,
@@ -1782,6 +1871,21 @@ function loadProductConfigProbeEvidence(env: EnvLike): ProductConfigProbeEvidenc
   }
 }
 
+function loadPublicCatalogProbeEvidence(env: EnvLike): PublicCatalogProbeEvidence | null {
+  const reportPath = env.PUBLIC_CATALOG_PROBE_REPORT;
+  if (!reportPath) return null;
+  try {
+    return normalizePublicCatalogProbeEvidence(
+      JSON.parse(readFileSync(resolveWorkspacePath(reportPath), "utf8")),
+    );
+  } catch (error) {
+    return {
+      ok: false,
+      loadError: `failed to read PUBLIC_CATALOG_PROBE_REPORT: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
 function loadWebSurfaceProbeEvidence(env: EnvLike): WebSurfaceProbeEvidence | null {
   const reportPath = env.WEB_SURFACE_PROBE_REPORT;
   if (!reportPath) return null;
@@ -2250,6 +2354,62 @@ function normalizeProductConfigProbeEvidence(value: unknown): ProductConfigProbe
   };
 }
 
+function normalizePublicCatalogProbeEvidence(value: unknown): PublicCatalogProbeEvidence {
+  if (!isRecord(value)) {
+    return { ok: false, loadError: "probe report is not a JSON object" };
+  }
+
+  const counts = isRecord(value.counts)
+    ? {
+        publicCharacters:
+          typeof value.counts.publicCharacters === "number"
+            ? value.counts.publicCharacters
+            : undefined,
+        publicCollections:
+          typeof value.counts.publicCollections === "number"
+            ? value.counts.publicCollections
+            : undefined,
+        publicCreators:
+          typeof value.counts.publicCreators === "number"
+            ? value.counts.publicCreators
+            : undefined,
+        publicFeedbackItems:
+          typeof value.counts.publicFeedbackItems === "number"
+            ? value.counts.publicFeedbackItems
+            : undefined,
+        distinctImages:
+          typeof value.counts.distinctImages === "number"
+            ? value.counts.distinctImages
+            : undefined,
+      }
+    : null;
+  const issueTotals = isRecord(value.issueTotals)
+    ? {
+        total:
+          typeof value.issueTotals.total === "number"
+            ? value.issueTotals.total
+            : undefined,
+        fail:
+          typeof value.issueTotals.fail === "number"
+            ? value.issueTotals.fail
+            : undefined,
+        warn:
+          typeof value.issueTotals.warn === "number"
+            ? value.issueTotals.warn
+            : undefined,
+      }
+    : null;
+
+  return {
+    ok: typeof value.ok === "boolean" ? value.ok : false,
+    checkedAt: typeof value.checkedAt === "string" ? value.checkedAt : null,
+    durationMs: typeof value.durationMs === "number" ? value.durationMs : undefined,
+    counts,
+    issueTotals,
+    error: normalizeProbeError(value.error),
+  };
+}
+
 function normalizeWebSurfaceProbeEvidence(value: unknown): WebSurfaceProbeEvidence {
   if (!isRecord(value)) {
     return { ok: false, loadError: "probe report is not a JSON object" };
@@ -2383,6 +2543,10 @@ export function assessLaunchReadiness(
     options.productConfigProbe !== undefined
       ? options.productConfigProbe
       : loadProductConfigProbeEvidence(env);
+  const publicCatalogProbe =
+    options.publicCatalogProbe !== undefined
+      ? options.publicCatalogProbe
+      : loadPublicCatalogProbeEvidence(env);
   const webSurfaceProbe =
     options.webSurfaceProbe !== undefined
       ? options.webSurfaceProbe
@@ -2518,6 +2682,7 @@ export function assessLaunchReadiness(
 
   addImagePipelineChecks(checks, env, capabilities, imagePipelineProbe, now);
   addProductConfigProbeCheck(checks, env, productConfigProbe, now);
+  addPublicCatalogProbeCheck(checks, env, publicCatalogProbe, now);
   addVideoPipelineChecks(checks, env, capabilities, productConfigProbe);
   addVoiceModelProbeCheck(checks, env, voiceModelProbe, now);
 

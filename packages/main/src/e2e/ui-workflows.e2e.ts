@@ -2,12 +2,14 @@ import { expect, test, type APIRequestContext, type Page } from "@playwright/tes
 import { PrismaPg } from "@prisma/adapter-pg";
 import { config as loadEnvFile } from "dotenv";
 import { mkdir, rm, writeFile } from "node:fs/promises";
+import { deflateSync } from "node:zlib";
 import path from "node:path";
 import { mockVideoMp4Bytes } from "@idream/shared";
 import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
 import { localAiQueueNames } from "@/server/ai/local-pipeline";
 import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
+import { redeemCodeHash } from "@/server/lib/redeem-codes";
 import { PrismaClient as ChatPrismaClient } from "../../../chat/generated/client/client";
 
 loadChatEnv();
@@ -46,6 +48,57 @@ function uniqueEmail(tag: string) {
 
 function uniqueName(tag: string) {
   return `E2E ${tag} ${Date.now()} ${Math.floor(Math.random() * 1e6)}`;
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function whitePng(width: number, height: number) {
+  const rows = Array.from({ length: height }, () => {
+    const row = Buffer.alloc(1 + width * 3, 255);
+    row[0] = 0;
+    return row;
+  });
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", deflateSync(Buffer.concat(rows))),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+function pngChunk(type: string, data: Buffer) {
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length, 0);
+  const chunk = Buffer.concat([Buffer.from(type, "ascii"), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(chunk), 0);
+  return Buffer.concat([length, chunk, crc]);
+}
+
+const pngCrcTable = new Uint32Array(256).map((_, value) => {
+  let crc = value;
+  for (let bit = 0; bit < 8; bit += 1) {
+    crc = crc & 1 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1;
+  }
+  return crc >>> 0;
+});
+
+function crc32(data: Buffer) {
+  let crc = 0xffffffff;
+  for (const byte of data) {
+    crc = pngCrcTable[(crc ^ byte) & 0xff]! ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
 }
 
 function internalToken() {
@@ -91,14 +144,32 @@ async function seedLegacyPlaceholderMedia(email: string) {
   return id;
 }
 
-function redeemCodeHash(code: string) {
-  let hash = 5381;
-  for (const char of code) hash = (hash * 33) ^ char.charCodeAt(0);
-  return `redeem_${Math.abs(hash)}`;
+async function seedCreatedCharacterForStatus(email: string, status: "removed" | "rejected") {
+  const user = await prisma.user.findUniqueOrThrow({
+    where: { email },
+    select: { id: true },
+  });
+  const characterId = `e2e-ui-created-appeal-${status}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  const characterName = uniqueName(`Created ${status} appeal`);
+  await prisma.character.create({
+    data: {
+      id: characterId,
+      creatorId: user.id,
+      name: characterName,
+      age: 25,
+      description: `E2E ${status} created character used to verify direct creator appeal entry.`,
+      visibility: "public",
+      status,
+      appearance: {},
+      advancedDetails: {},
+    },
+  });
+  await prisma.characterStats.create({ data: { characterId } });
+  return { characterId, characterName, userId: user.id };
 }
 
 async function seedRedeemCode(code: string, dreamcoins: number) {
-  const codeHash = redeemCodeHash(code.toUpperCase());
+  const codeHash = redeemCodeHash(code);
   await prisma.redeemCode.upsert({
     where: { codeHash },
     update: { reward: { dreamcoins }, status: "active" },
@@ -145,6 +216,125 @@ async function seedDownloadableMedia(email: string) {
     },
   });
   return id;
+}
+
+async function seedBlankProfileMedia(email: string) {
+  const user = await prisma.user.findUniqueOrThrow({
+    where: { email },
+    select: { id: true },
+  });
+  const id = `e2e-ui-profile-blank-media-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  const storageKey = `e2e/profile/${id}.png`;
+  const target = resolveLocalBlobPath(storageKey);
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, whitePng(16, 16));
+  await prisma.mediaAsset.create({
+    data: {
+      id,
+      ownerId: user.id,
+      type: "image",
+      url: `/user-content/${Buffer.from(id, "utf8").toString("base64url")}/content.png`,
+      thumbnailUrl: null,
+      storageKey,
+      contentType: "image/png",
+      width: 16,
+      height: 16,
+      prompt: "blank profile media for preview fallback regression",
+      visibility: "private",
+      safetyStatus: "passed",
+      metadata: { e2e: true, providerKey: storageKey, blankPreview: true },
+    },
+  });
+  return id;
+}
+
+async function seedProfileMutedTagFixture(email: string) {
+  const user = await prisma.user.findUniqueOrThrow({
+    where: { email },
+    select: { id: true },
+  });
+  const tag = await prisma.tag.upsert({
+    where: { slug: "slow-burn" },
+    update: { label: "Slow Burn" },
+    create: {
+      id: `e2e-ui-profile-tag-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
+      slug: "slow-burn",
+      label: "Slow Burn",
+      category: "mood",
+    },
+  });
+  const characterId = `e2e-ui-profile-muted-tag-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  await prisma.character.create({
+    data: {
+      id: characterId,
+      creatorId: user.id,
+      name: uniqueName("profile muted tag"),
+      age: 25,
+      description: "seeded for Profile muted tag preferences",
+      visibility: "public",
+      status: "approved",
+      style: "realistic",
+      gender: "female",
+      appearance: {},
+      advancedDetails: {},
+      tags: { create: { tagId: tag.id } },
+      stats: {
+        create: {
+          chatsCount: 25,
+          likesCount: 25,
+          viewsCount: 25,
+        },
+      },
+    },
+  });
+  return tag.slug;
+}
+
+async function seedCommunityCampaigns(email: string) {
+  const user = await prisma.user.findUniqueOrThrow({
+    where: { email },
+    select: { id: true },
+  });
+  const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  const titles = [`Community Campaign A ${suffix}`, `Community Campaign B ${suffix}`];
+  for (const [index, title] of titles.entries()) {
+    const mediaId = `e2e-ui-community-campaign-media-${suffix}-${index}`;
+    await prisma.mediaAsset.create({
+      data: {
+        id: mediaId,
+        ownerId: user.id,
+        type: "image",
+        url: index === 0
+          ? "/images/ourdream/card-sarah-mercer.webp"
+          : "/images/ourdream/promo-card-female.webp",
+        thumbnailUrl: index === 0
+          ? "/images/ourdream/card-sarah-mercer.webp"
+          : "/images/ourdream/promo-card-female.webp",
+        visibility: "unlisted",
+        safetyStatus: "passed",
+        metadata: { e2e: true },
+      },
+    });
+    await prisma.mediaAssetPlacement.create({
+      data: {
+        id: `e2e-ui-community-campaign-placement-${suffix}-${index}`,
+        mediaAssetId: mediaId,
+        slot: "campaign",
+        targetType: "campaign",
+        targetId: `e2e-ui-community-campaign-${suffix}`,
+        status: "published",
+        publishedAt: new Date(Date.now() + index),
+        createdById: user.id,
+        metadata: {
+          ctaLabel: "Open Community",
+          eyebrow: "Featured",
+          href: "/community",
+          title,
+        },
+      },
+    });
+  }
+  return { firstTitle: titles[1], secondTitle: titles[0] };
 }
 
 async function seedOwnedIdentityMedia(email: string) {
@@ -198,6 +388,36 @@ async function seedOwnedIdentityMedia(email: string) {
     },
   });
   return { characterId, mediaId };
+}
+
+async function seedBlankGalleryMedia(email: string) {
+  const user = await prisma.user.findUniqueOrThrow({
+    where: { email },
+    select: { id: true },
+  });
+  const mediaId = `e2e-ui-blank-gallery-media-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  const storageKey = `e2e/generate/${mediaId}.png`;
+  const target = resolveLocalBlobPath(storageKey);
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, whitePng(16, 16));
+  await prisma.mediaAsset.create({
+    data: {
+      id: mediaId,
+      ownerId: user.id,
+      type: "image",
+      url: `/user-content/${Buffer.from(mediaId, "utf8").toString("base64url")}/content.png`,
+      thumbnailUrl: null,
+      storageKey,
+      contentType: "image/png",
+      width: 16,
+      height: 16,
+      prompt: "blank gallery media for preview fallback regression",
+      visibility: "private",
+      safetyStatus: "passed",
+      metadata: { e2e: true, providerKey: storageKey, blankPreview: true },
+    },
+  });
+  return mediaId;
 }
 
 async function ensureGenerationPreset(
@@ -262,6 +482,7 @@ async function seedCompletedChatImageAttachment(input: {
   sessionId: string;
   messageId: string;
   characterId: string;
+  fixture?: "valid" | "blank";
 }) {
   const user = await prisma.user.findUniqueOrThrow({
     where: { email: input.email },
@@ -270,21 +491,33 @@ async function seedCompletedChatImageAttachment(input: {
   const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
   const mediaId = `e2e-ui-chat-image-media-${suffix}`;
   const attachmentId = `e2e-ui-chat-image-attachment-${suffix}`;
+  const fixture = input.fixture ?? "valid";
+  const storageKey = fixture === "blank" ? `e2e/chat/${mediaId}.png` : null;
+  if (storageKey) {
+    const target = resolveLocalBlobPath(storageKey);
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, whitePng(16, 16));
+  }
+  const mediaUrl =
+    fixture === "blank"
+      ? `/user-content/${Buffer.from(mediaId, "utf8").toString("base64url")}/content.png`
+      : "/images/ourdream/card-sarah-mercer.webp";
   await prisma.mediaAsset.create({
     data: {
       id: mediaId,
       ownerId: user.id,
       characterId: input.characterId,
       type: "image",
-      url: "/images/ourdream/card-sarah-mercer.webp",
-      thumbnailUrl: "/images/ourdream/card-sarah-mercer.webp",
-      contentType: "image/webp",
-      width: 512,
-      height: 640,
-      prompt: "E2E completed chat image",
+      url: mediaUrl,
+      thumbnailUrl: fixture === "blank" ? null : mediaUrl,
+      storageKey,
+      contentType: fixture === "blank" ? "image/png" : "image/webp",
+      width: fixture === "blank" ? 16 : 512,
+      height: fixture === "blank" ? 16 : 640,
+      prompt: fixture === "blank" ? "E2E blank completed chat image" : "E2E completed chat image",
       visibility: "private",
       safetyStatus: "passed",
-      metadata: { e2e: true, fixture: "completed-chat-image" },
+      metadata: { e2e: true, fixture: `completed-chat-image-${fixture}` },
     },
   });
   await chatPrisma.messageAttachment.create({
@@ -296,10 +529,13 @@ async function seedCompletedChatImageAttachment(input: {
       status: "completed",
       mediaAssetId: mediaId,
       costDreamcoins: 5,
-      promptHint: "E2E completed in-character image from this chat moment",
-      width: 512,
-      height: 640,
-      metadata: { e2e: true, fixture: "completed-chat-image" },
+      promptHint:
+        fixture === "blank"
+          ? "E2E blank in-character image from this chat moment"
+          : "E2E completed in-character image from this chat moment",
+      width: fixture === "blank" ? 16 : 512,
+      height: fixture === "blank" ? 16 : 640,
+      metadata: { e2e: true, fixture: `completed-chat-image-${fixture}` },
     },
   });
   return { attachmentId, mediaId };
@@ -545,6 +781,12 @@ async function cleanupPublicE2EFixtures() {
   const mediaAssetIds = mediaAssets.map((asset) => asset.id);
   const mediaCollectionIds = mediaCollections.map((collection) => collection.id);
 
+  if (characterIds.length > 0) {
+    await prisma.characterSubmission.deleteMany({
+      where: { characterId: { in: characterIds } },
+    });
+  }
+
   await Promise.all(
     generationJobIds.flatMap((jobId) => [
       jobQueue.removeByDedupePrefix(`generation:${jobId}`, [...localAiQueueNames]),
@@ -675,8 +917,32 @@ test("help desk submits a tracked support request", async ({ page }) => {
     pageErrors.push(error.message);
   });
 
+  let failFeedbackListRequest = true;
+  await page.route("**/api/v1/feedback/items", async (route) => {
+    if (route.request().method() !== "GET" || !failFeedbackListRequest) {
+      await route.continue();
+      return;
+    }
+    failFeedbackListRequest = false;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: false, error: { message: "forced roadmap failure" } }),
+    });
+  });
+
   await page.goto("/helpdesk");
   await expect(page.getByRole("heading", { name: /get support without losing context/i })).toBeVisible();
+  const feedbackListStatus = page.getByTestId("feedback-list-status");
+  await expect(feedbackListStatus).toContainText("forced roadmap failure", { timeout: 10_000 });
+  await expect(feedbackListStatus).toHaveAttribute("role", "alert");
+  await expect(feedbackListStatus).toHaveAttribute("aria-live", "assertive");
+  await feedbackListStatus.getByRole("button", { name: "Retry" }).click();
+  await expect(page.getByRole("heading", { name: "Saved generator recipes" })).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(feedbackListStatus).toHaveCount(0);
+
   await page.getByLabel("Category").selectOption("generation");
   await page.getByLabel("Subject").fill("Generation job stuck");
   await page
@@ -687,12 +953,11 @@ test("help desk submits a tracked support request", async ({ page }) => {
 
   await expect(page.getByTestId("helpdesk-status")).toContainText(/SUP-/);
   await expect(page.getByTestId("helpdesk-status")).toContainText(/received/i);
+  await expect(page.getByTestId("helpdesk-status")).toHaveAttribute("role", "status");
+  await expect(page.getByTestId("helpdesk-status")).toHaveAttribute("aria-live", "polite");
 
   const featureTitle = uniqueName("Feature voting");
   await expect(page.getByRole("heading", { name: /vote on what should ship next/i })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Saved generator recipes" })).toBeVisible({
-    timeout: 10_000,
-  });
   await page.getByLabel("Feedback type").selectOption("feature");
   await page.getByLabel("Feature title").fill(featureTitle);
   await page
@@ -700,6 +965,8 @@ test("help desk submits a tracked support request", async ({ page }) => {
     .fill("Let beta users vote on roadmap priorities from the Help Desk.");
   await page.getByRole("button", { name: /submit idea/i }).click();
   await expect(page.getByTestId("feedback-status")).toContainText(/submitted/i);
+  await expect(page.getByTestId("feedback-status")).toHaveAttribute("role", "status");
+  await expect(page.getByTestId("feedback-status")).toHaveAttribute("aria-live", "polite");
   const featureCard = page.getByTestId("feedback-items").locator("article").filter({
     hasText: featureTitle,
   });
@@ -723,6 +990,8 @@ test("help desk submits a tracked support request", async ({ page }) => {
     .fill("Please review this character decision again with the attached context.");
   await page.getByRole("button", { name: /submit appeal/i }).click();
   await expect(page.getByTestId("appeal-status")).toContainText(/Appeal .* submitted/);
+  await expect(page.getByTestId("appeal-status")).toHaveAttribute("role", "status");
+  await expect(page.getByTestId("appeal-status")).toHaveAttribute("aria-live", "polite");
 
   const user = await prisma.user.findUniqueOrThrow({ where: { email }, select: { id: true } });
   const appeal = await prisma.appeal.findFirst({
@@ -1329,7 +1598,7 @@ async function expectGeneratedAssetServed(
   expect(bytes.length).toBeGreaterThan(0);
   if (mediaType === "video") {
     expectMp4Bytes(bytes, asset.url);
-    return;
+    return asset;
   }
 
   const header = bytes.subarray(0, 12).toString("hex");
@@ -1339,6 +1608,7 @@ async function expectGeneratedAssetServed(
     header.startsWith("47494638") ||
     header.startsWith("52494646");
   expect(looksLikeImage, `${asset.url} did not return decodable image bytes`).toBeTruthy();
+  return asset;
 }
 
 function expectMp4Bytes(bytes: Buffer, url: string) {
@@ -1403,6 +1673,9 @@ test("explore UI syncs filters to URL and paginates results", async ({ page }) =
 
   await expect(alpha).toBeVisible({ timeout: 10_000 });
   await expect(beta).toBeVisible({ timeout: 10_000 });
+  await expect(alpha).toContainText("Explore Creator");
+  await expect(beta).toContainText("Explore Creator");
+  await expect(alpha).not.toContainText("@ourdream");
   await expect(gamma).toHaveCount(0);
 
   await page.getByRole("button", { name: "Load more" }).click();
@@ -1459,6 +1732,62 @@ test("explore UI syncs filters to URL and paginates results", async ({ page }) =
   await page.setViewportSize({ width: 390, height: 812 });
   await expect(page.getByRole("textbox", { name: "Search characters" })).toBeVisible();
   await expect(page.getByRole("navigation").filter({ hasText: "Explore" })).toBeVisible();
+});
+
+test("explore character grid exposes retryable load errors and empty results", async ({
+  page,
+}) => {
+  await startSignedInAdultSession(page, "explore-grid-status");
+  const token = `E2E Empty ${Date.now()} ${Math.floor(Math.random() * 1e6)}`;
+  let allowCharacters = false;
+
+  await page.route("**/api/v1/characters?**", async (route) => {
+    if (!allowCharacters) {
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: false,
+          error: { message: "forced character grid failure" },
+        }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto(`/?q=${encodeURIComponent(token)}&gender=any`);
+
+  const status = page.getByTestId("character-grid-status");
+  await expect(status).toContainText("Could not load characters.", { timeout: 10_000 });
+  await expect(status).toHaveAttribute("role", "alert");
+  await expect(status).toHaveAttribute("aria-live", "assertive");
+
+  allowCharacters = true;
+  await status.getByRole("button", { name: "Retry" }).click();
+
+  await expect(status).toContainText("No characters found", { timeout: 10_000 });
+  await expect(status).toHaveAttribute("role", "status");
+  await expect(status).toHaveAttribute("aria-live", "polite");
+  await expect(status).toContainText(
+    "Try another search term, clear a category, or switch the gender, style, and age filters.",
+  );
+
+  const staleToken = `E2E Stale ${Date.now()} ${Math.floor(Math.random() * 1e6)}`;
+  const seeded = await seedExploreCharacters(staleToken);
+  await page.goto(`/?q=${encodeURIComponent(staleToken)}&gender=any&limit=2`);
+  const staleCharacter = page.locator(`a[href="/characters/${seeded.alpha}"]`);
+  await expect(staleCharacter).toBeVisible({ timeout: 10_000 });
+
+  allowCharacters = false;
+  await page
+    .locator('input[aria-label="Search characters"][placeholder^="Try"]')
+    .fill(`E2E Missing ${Date.now()} ${Math.floor(Math.random() * 1e6)}`);
+
+  await expect(status).toContainText("Could not load characters.", { timeout: 10_000 });
+  await expect(status).toHaveAttribute("role", "alert");
+  await expect(status).toHaveAttribute("aria-live", "assertive");
+  await expect(staleCharacter).toHaveCount(0);
 });
 
 test("mobile explore keeps bottom nav fixed and cards unobscured", async ({ page }) => {
@@ -1639,6 +1968,73 @@ test("global header search routes app pages into Explore results", async ({ page
   });
 });
 
+test("global header search suggestions open character detail", async ({ page }) => {
+  await startSignedInAdultSession(page, "global-search-suggestions");
+  const token = `E2E Search Suggest ${Date.now()} ${Math.floor(Math.random() * 1e6)}`;
+  const ids = await seedExploreCharacters(token);
+
+  await page.goto("/generate?characterId=melissa-burke");
+  const globalSearch = page.getByRole("searchbox", {
+    name: "Search characters, guides, and generators",
+  });
+  await expect(globalSearch).toBeVisible();
+
+  await globalSearch.fill(`${token} Alpha`);
+  await expect(page.getByRole("listbox", { name: "Search suggestions" })).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(page.getByRole("option", { name: `Open ${token} Alpha` })).toBeVisible();
+
+  await globalSearch.press("ArrowDown");
+  await globalSearch.press("Enter");
+
+  await expect.poll(() => new URL(page.url()).pathname).toBe(`/characters/${ids.alpha}`);
+});
+
+test("global header search suggestions open guide routes", async ({ page }) => {
+  await startSignedInAdultSession(page, "global-search-route-suggestions");
+
+  await page.goto("/generate?characterId=melissa-burke");
+  const globalSearch = page.getByRole("searchbox", {
+    name: "Search characters, guides, and generators",
+  });
+  await expect(globalSearch).toBeVisible();
+
+  await globalSearch.fill("character cards");
+  await expect(page.getByRole("listbox", { name: "Search suggestions" })).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(page.getByRole("option", { name: "Open Character Cards" })).toBeVisible();
+
+  await globalSearch.press("ArrowDown");
+  await globalSearch.press("Enter");
+
+  await expect.poll(() => new URL(page.url()).pathname).toBe("/guides/character-cards");
+  await expect(page.getByRole("heading", { name: "Character Cards", exact: true })).toBeVisible({
+    timeout: 10_000,
+  });
+});
+
+test("global header search suggestions expose empty status semantics", async ({ page }) => {
+  await startSignedInAdultSession(page, "global-search-empty-status");
+
+  await page.goto("/generate?characterId=melissa-burke");
+  const globalSearch = page.getByRole("searchbox", {
+    name: "Search characters, guides, and generators",
+  });
+  await expect(globalSearch).toBeVisible();
+
+  const query = `zz no suggestions ${Date.now()} ${Math.floor(Math.random() * 1e6)}`;
+  await globalSearch.fill(query);
+  await expect(page.getByRole("listbox", { name: "Search suggestions" })).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(globalSearch).toHaveAttribute("aria-describedby", "app-search-status");
+  await expect(page.getByTestId("app-search-status")).toHaveText("No suggestions found");
+  await expect(page.getByTestId("app-search-status")).toHaveAttribute("role", "status");
+  await expect(page.getByTestId("app-search-status")).toHaveAttribute("aria-live", "polite");
+});
+
 test("global header signup redirect returns anonymous generator intent", async ({
   page,
 }) => {
@@ -1651,7 +2047,7 @@ test("global header signup redirect returns anonymous generator intent", async (
   await expect(page.getByText("Balance", { exact: true })).toBeVisible({
     timeout: 10_000,
   });
-  const joinFree = page.getByRole("link", { name: "Join Free" });
+  const joinFree = page.locator("header").getByRole("link", { name: "Join Free" });
   await expect(joinFree).toHaveAttribute("href", "/signup?next=%2Fgenerate");
   await joinFree.click();
 
@@ -1875,6 +2271,60 @@ test("create UI walks the multi-step builder and shows the character in My AI", 
   await expect(originalCard).toHaveCount(0, { timeout: 10_000 });
 });
 
+test("created removed character links to a prefilled Help Desk appeal", async ({ page }) => {
+  const { email } = await startSignedInAdultSession(page, "created-appeal");
+  const { characterId, characterName, userId } = await seedCreatedCharacterForStatus(email, "removed");
+  const consoleErrors: string[] = [];
+  const pageErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+  page.on("pageerror", (error) => {
+    pageErrors.push(error.message);
+  });
+
+  await page.goto("/custom");
+  await page.getByRole("button", { name: "created" }).click();
+  const createdCard = page.locator('a[href^="/characters/"]').filter({ hasText: characterName });
+  await expect(createdCard).toBeVisible({ timeout: 10_000 });
+  const characterShell = createdCard.locator("xpath=..");
+  await expect(characterShell.getByText("removed", { exact: true })).toBeVisible();
+
+  const appealLink = characterShell.getByRole("link", {
+    name: `Appeal decision for ${characterName}`,
+  });
+  await expect(appealLink).toBeVisible();
+  const href = await appealLink.getAttribute("href");
+  expect(href).toContain("/helpdesk?");
+  const appealUrl = new URL(href ?? "", "http://127.0.0.1");
+  expect(appealUrl.searchParams.get("appealTargetId")).toBe(characterId);
+
+  await appealLink.click();
+  await expect.poll(() => new URL(page.url()).pathname).toBe("/helpdesk");
+  expect(new URL(page.url()).hash).toBe("#appeals");
+
+  const appealForm = page.getByTestId("appeal-form");
+  await expect(appealForm.getByLabel("Target type")).toHaveValue("character");
+  await expect(appealForm.getByLabel("Target ID or link")).toHaveValue(characterId);
+  await expect(appealForm.getByLabel("Appeal details")).toHaveValue(
+    new RegExp(`Please review this character decision again\\. Character: ${escapeRegExp(characterName)}\\.`),
+  );
+  await expect(page.getByTestId("appeal-status")).toContainText(/prefilled from your selected item/i);
+
+  await appealForm.getByRole("button", { name: /submit appeal/i }).click();
+  await expect(page.getByTestId("appeal-status")).toContainText(/Appeal .* submitted/);
+
+  const appeal = await prisma.appeal.findFirst({
+    where: { userId, targetType: "character", targetId: characterId },
+  });
+  expect(appeal).toMatchObject({
+    appealText: `Please review this character decision again. Character: ${characterName}.`,
+    status: "open",
+  });
+  expect(pageErrors).toEqual([]);
+  expect(consoleErrors.filter((message) => !message.includes("favicon"))).toEqual([]);
+});
+
 test("create UI resumes a draft and submits public characters for review", async ({ page }) => {
   await startSignedInAdultSession(page, "create-review");
   const characterName = uniqueName("Create review");
@@ -1885,6 +2335,8 @@ test("create UI resumes a draft and submits public characters for review", async
   await page.getByLabel("Age").fill("17");
   await page.getByTestId("create-next").click();
   await expect(page.getByTestId("create-status")).toHaveText("Age must be between 18 and 99.");
+  await expect(page.getByTestId("create-status")).toHaveAttribute("role", "status");
+  await expect(page.getByTestId("create-status")).toHaveAttribute("aria-live", "polite");
   await expect(page.getByTestId("create-step-identity")).toBeVisible();
 
   await page.getByLabel("Age").fill("24");
@@ -2013,6 +2465,11 @@ test("character detail like signup redirect returns anonymous intent and persist
     page.getByTestId("character-detail-actions").getByRole("button", { name: "Liked" }),
   ).toBeVisible({ timeout: 10_000 });
   await expect(page.getByText("Character liked.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByTestId("character-detail-status")).toHaveAttribute("role", "status");
+  await expect(page.getByTestId("character-detail-status")).toHaveAttribute(
+    "aria-live",
+    "polite",
+  );
 
   const user = await prisma.user.findUniqueOrThrow({ where: { email }, select: { id: true } });
   await expect
@@ -2024,7 +2481,9 @@ test("character detail like signup redirect returns anonymous intent and persist
     .not.toBeNull();
 
   await page.goto("/profile");
-  await expect(page.getByRole("heading", { name: "My AI" })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("heading", { name: "Profile" })).toBeVisible({
+    timeout: 10_000,
+  });
   const likedProfileCard = page.locator('a[href="/characters/melissa-burke"]').filter({
     hasText: "Melissa Burke",
   });
@@ -2056,7 +2515,7 @@ test("character detail generate signup redirect preserves character intent", asy
     timeout: 10_000,
   });
 
-  const joinFree = page.getByRole("link", { name: "Join Free" });
+  const joinFree = page.locator("header").getByRole("link", { name: "Join Free" });
   await expect(joinFree).toHaveAttribute(
     "href",
     "/signup?next=%2Fgenerate%3FcharacterId%3Dmelissa-burke",
@@ -2094,8 +2553,14 @@ test("chat UI starts from character detail, sends a message, and persists histor
   await page.getByRole("button", { name: "Chat" }).click();
   await expect(page).toHaveURL(/\/chat\/[^/]+$/);
 
-  await page.getByRole("textbox", { name: "Message", exact: true }).fill(message);
-  await page.getByRole("button", { name: "Send message" }).click();
+  const messageInput = page.getByRole("textbox", { name: "Message", exact: true });
+  const sendButton = page.getByRole("button", { name: "Send message" });
+  await expect(sendButton).toBeDisabled();
+  await messageInput.fill("   ");
+  await expect(sendButton).toBeDisabled();
+  await messageInput.fill(message);
+  await expect(sendButton).toBeEnabled();
+  await sendButton.click();
 
   await expect(page.getByTestId("chat-message-user").filter({ hasText: message })).toBeVisible({
     timeout: 10_000,
@@ -2105,6 +2570,8 @@ test("chat UI starts from character detail, sends a message, and persists histor
   expect(reportedMessageId).toBeTruthy();
   await reportedMessage.getByRole("button", { name: "Report message" }).click();
   await expect(page.getByText("Report submitted.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByTestId("chat-session-status")).toHaveAttribute("role", "status");
+  await expect(page.getByTestId("chat-session-status")).toHaveAttribute("aria-live", "polite");
   await expectContentReport("chat_message", reportedMessageId ?? "");
   await expectAssistantReplyVisible(page);
 
@@ -2167,7 +2634,23 @@ test("chat UI opens Generate with character context and renders chat image attac
   await expect(completedImage).toHaveAttribute("alt", /Generated image:/);
   await expect(assistantBubble.getByRole("button", { name: "More like this" })).toBeVisible();
   await expect(assistantBubble.getByRole("button", { name: "Add identity" })).toHaveCount(0);
-  await assistantBubble.getByRole("button", { name: "More like this" }).click();
+
+  await seedCompletedChatImageAttachment({
+    email,
+    sessionId,
+    messageId: assistantMessageId ?? "",
+    characterId,
+    fixture: "blank",
+  });
+  await page.reload();
+  await expect(assistantBubble.getByTestId("chat-image-preview-fallback")).toContainText(
+    "Preview unavailable",
+    { timeout: 10_000 },
+  );
+  await expect(assistantBubble.getByTestId("chat-image-attachment")).toHaveCount(1);
+  await expect(assistantBubble.getByRole("button", { name: "More like this" })).toHaveCount(2);
+
+  await assistantBubble.getByRole("button", { name: "More like this" }).first().click();
   await expect(page.getByText("Variation queued. It will appear in Generate and Gallery.")).toBeVisible({
     timeout: 10_000,
   });
@@ -2184,7 +2667,7 @@ test("chat UI opens Generate with character context and renders chat image attac
   );
   expect(variationJob.prompt).toContain("More like this image:");
 
-  const attachmentGenerate = assistantBubble.getByRole("link", { name: "Open in Generate" });
+  const attachmentGenerate = assistantBubble.getByRole("link", { name: "Open in Generate" }).first();
   await expect(attachmentGenerate).toHaveAttribute("href", `/generate?characterId=${characterId}`);
   await attachmentGenerate.click();
   await expect(page).toHaveURL(new RegExp(`/generate\\?characterId=${characterId}$`), {
@@ -2213,6 +2696,20 @@ test("chat hub signup redirect returns anonymous user to the hub", async ({ page
     "href",
     "/signup?next=%2Fchat",
   );
+  const startPanel = page.getByTestId("chat-hub-start-panel");
+  await expect(startPanel).toBeVisible();
+  await expect(startPanel.getByRole("link", { name: "Chat with Melissa Burke" })).toHaveAttribute(
+    "href",
+    "/characters/melissa-burke",
+  );
+  await expect(startPanel.getByRole("link", { name: "Explore characters" })).toHaveAttribute(
+    "href",
+    "/",
+  );
+  await expect(startPanel.getByRole("link", { name: "Create private character" })).toHaveAttribute(
+    "href",
+    "/create",
+  );
   await authPanel.getByRole("link", { name: "Join free" }).click();
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/signup");
@@ -2228,6 +2725,38 @@ test("chat hub signup redirect returns anonymous user to the hub", async ({ page
   await expect(page.getByRole("heading", { name: "Your chats" })).toBeVisible({
     timeout: 10_000,
   });
+  await expect(page.getByRole("heading", { name: "No chats yet" })).toBeVisible();
+  await expect(page.getByTestId("chat-hub-start-panel")).toBeVisible();
+  await expect(page.getByTestId("chat-hub-character-card")).toHaveCount(3);
+});
+
+test("chat hub exposes retryable load errors as an assertive alert", async ({ page }) => {
+  await startSignedInAdultSession(page, "chat-hub-load-error");
+  let failSessionsRequest = true;
+  await page.route("**/api/v1/chat/sessions", (route) => {
+    if (!failSessionsRequest) {
+      void route.continue();
+      return;
+    }
+    failSessionsRequest = false;
+    void route.fulfill({
+      body: JSON.stringify({ ok: false, error: { message: "forced chat hub failure" } }),
+      contentType: "application/json",
+      status: 500,
+    });
+  });
+
+  await page.goto("/chat");
+  const status = page.getByTestId("chat-hub-status");
+  await expect(status).toContainText("Couldn't load your chats", { timeout: 10_000 });
+  await expect(status).toHaveAttribute("role", "alert");
+  await expect(status).toHaveAttribute("aria-live", "assertive");
+
+  await status.getByRole("button", { name: "Retry" }).click();
+  await expect(page.getByRole("heading", { name: "No chats yet" })).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(page.getByTestId("chat-hub-start-panel")).toBeVisible();
 });
 
 test("chat session deep links prompt anonymous users to log back in", async ({ page }) => {
@@ -2293,6 +2822,7 @@ test("chat UI preserves input and shows upgrade path at the free daily limit", a
   });
   await page.getByRole("button", { name: "Chat" }).click();
   await expect(page).toHaveURL(/\/chat\/[^/]+$/);
+  const sessionPath = new URL(page.url()).pathname;
 
   const messageInput = page.getByRole("textbox", { name: "Message", exact: true });
   await messageInput.fill(draft);
@@ -2301,11 +2831,36 @@ test("chat UI preserves input and shows upgrade path at the free daily limit", a
   await expect(page.getByText("Daily free message limit reached.")).toBeVisible({
     timeout: 10_000,
   });
+  await expect(page.getByTestId("chat-session-status")).toHaveAttribute("role", "status");
+  await expect(page.getByTestId("chat-session-status")).toHaveAttribute("aria-live", "polite");
   const upgradeLink = page.getByRole("link", { name: "Upgrade for unlimited messages" });
   await expect(upgradeLink).toBeVisible();
-  await expect(upgradeLink).toHaveAttribute("href", "/upgrade");
+  await expect(upgradeLink).toHaveAttribute(
+    "href",
+    `/upgrade?returnTo=${encodeURIComponent(sessionPath)}`,
+  );
   await expect(messageInput).toHaveValue(draft);
   await expect(page.getByTestId("chat-message-user").filter({ hasText: draft })).toHaveCount(0);
+
+  await upgradeLink.click();
+  await expect.poll(() => new URL(page.url()).pathname).toBe("/upgrade");
+  expect(new URL(page.url()).searchParams.get("returnTo")).toBe(sessionPath);
+  const premiumMonthly = page.locator("article").filter({ hasText: "Premium monthly" });
+  await expect(premiumMonthly).toBeVisible({ timeout: 10_000 });
+  await premiumMonthly.getByRole("button", { name: "Demo upgrade" }).click();
+  await expect(
+    page.getByText("Premium monthly is active. 1,500 dreamcoins were added."),
+  ).toBeVisible({ timeout: 10_000 });
+  const continueChat = page
+    .getByTestId("upgrade-checkout-result")
+    .getByRole("link", { name: "Continue chat" });
+  await expect(continueChat).toBeVisible();
+  await expect(continueChat).toHaveAttribute("href", sessionPath);
+  await continueChat.click();
+  await expect.poll(() => new URL(page.url()).pathname).toBe(sessionPath);
+  await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeVisible({
+    timeout: 10_000,
+  });
 });
 
 test("chat UI plays assistant voice clips for entitled users", async ({ page }) => {
@@ -2420,11 +2975,26 @@ test("chat UI exposes edit, regenerate, delete, memory toggle, and the session l
   await expect(page.getByTestId("session-list-item").first()).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: "Close your chats" }).click();
 
-  // Delete the user message; it is gone after a reload (authority-layer delete).
-  await page
+  // Delete the user message only after explicit confirmation; the first click
+  // arms the row but must not remove the persisted message.
+  const editedBubbleBeforeConfirm = page
     .getByTestId("chat-message-user")
-    .filter({ hasText: editedMessage })
-    .getByTestId("chat-delete-message")
+    .filter({ hasText: editedMessage });
+  await editedBubbleBeforeConfirm.getByTestId("chat-delete-message").click();
+  await expect(page.getByText("Press Confirm delete to remove this message.")).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(
+    editedBubbleBeforeConfirm.getByRole("button", { name: "Confirm delete message" }),
+  ).toBeVisible();
+  await page.reload();
+  const editedBubbleAfterFirstClick = page
+    .getByTestId("chat-message-user")
+    .filter({ hasText: editedMessage });
+  await expect(editedBubbleAfterFirstClick).toBeVisible({ timeout: 10_000 });
+  await editedBubbleAfterFirstClick.getByTestId("chat-delete-message").click();
+  await editedBubbleAfterFirstClick
+    .getByRole("button", { name: "Confirm delete message" })
     .click();
   await page.reload();
   await expect(page.getByTestId("chat-message-user").filter({ hasText: editedMessage })).toHaveCount(0, {
@@ -2443,7 +3013,27 @@ test("chat session drawer renames, archives, and redirects after deleting the cu
   await page.getByRole("button", { name: "Chat" }).click();
   await expect(page).toHaveURL(/\/chat\/[^/]+$/);
 
+  let failDrawerRequest = true;
+  await page.route("**/api/v1/chat/sessions", async (route) => {
+    if (!failDrawerRequest) {
+      await route.continue();
+      return;
+    }
+    failDrawerRequest = false;
+    await route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: false, error: { message: "forced drawer failure" } }),
+    });
+  });
+
   await page.getByTestId("session-list-open").click();
+  const drawerStatus = page.getByTestId("chat-drawer-status");
+  await expect(drawerStatus).toContainText("Couldn't load your chats.", { timeout: 10_000 });
+  await expect(drawerStatus).toHaveAttribute("role", "alert");
+  await expect(drawerStatus).toHaveAttribute("aria-live", "assertive");
+  await drawerStatus.getByRole("button", { name: "Retry" }).click();
+
   const sessionRow = page.getByTestId("session-list-item").first();
   await expect(sessionRow).toBeVisible({ timeout: 10_000 });
 
@@ -2456,6 +3046,12 @@ test("chat session drawer renames, archives, and redirects after deleting the cu
   await expect(sessionRow.getByText("Archived")).toBeVisible({ timeout: 10_000 });
 
   await sessionRow.getByTestId("session-delete").click();
+  await expect(sessionRow.getByRole("button", { name: "Confirm delete chat" })).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(sessionRow).toBeVisible();
+  await expect(page).toHaveURL(/\/chat\/[^/]+$/);
+  await sessionRow.getByRole("button", { name: "Confirm delete chat" }).click();
   await expect(page).toHaveURL(/\/chat$/, { timeout: 10_000 });
   await expect(page.getByRole("heading", { name: "Your chats" })).toBeVisible({
     timeout: 10_000,
@@ -2477,7 +3073,27 @@ test("chat memory panel edits memories, deletes memories, and resets relationshi
     timeout: 10_000,
   });
 
+  let failMemoryRequest = true;
+  await page.route("**/api/v1/chat/memories?**", async (route) => {
+    if (!failMemoryRequest) {
+      await route.continue();
+      return;
+    }
+    failMemoryRequest = false;
+    await route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: false, error: { message: "forced memory failure" } }),
+    });
+  });
+
   await page.getByTestId("memory-panel-open").click();
+  const memoryStatus = page.getByTestId("memory-panel-status");
+  await expect(memoryStatus).toContainText("Couldn't load memories.", { timeout: 10_000 });
+  await expect(memoryStatus).toHaveAttribute("role", "alert");
+  await expect(memoryStatus).toHaveAttribute("aria-live", "assertive");
+  await memoryStatus.getByRole("button", { name: "Retry" }).click();
+
   const memoryItem = page.getByTestId("memory-item").filter({ hasText: initialMemory });
   await expect(memoryItem).toBeVisible({ timeout: 10_000 });
 
@@ -2489,10 +3105,24 @@ test("chat memory panel edits memories, deletes memories, and resets relationshi
   await expect(page.getByText(initialMemory)).toHaveCount(0);
 
   await editedItem.getByTestId("memory-delete").click();
+  await expect(editedItem.getByRole("button", { name: "Confirm delete memory" })).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(editedItem).toBeVisible();
+  await editedItem.getByRole("button", { name: "Confirm delete memory" }).click();
   await expect(editedItem).toHaveCount(0, { timeout: 10_000 });
-  await expect(page.getByText("No memories yet. As you chat, important details will show up here.")).toBeVisible();
+  await expect(memoryStatus).toContainText(
+    "No memories yet. As you chat, important details will show up here.",
+  );
+  await expect(memoryStatus).toHaveAttribute("role", "status");
+  await expect(memoryStatus).toHaveAttribute("aria-live", "polite");
 
   await page.getByTestId("relationship-reset").click();
+  await expect(page.getByRole("button", { name: "Confirm reset relationship" })).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(page.getByTestId("relationship-badge")).toContainText("Close");
+  await page.getByRole("button", { name: "Confirm reset relationship" }).click();
   await page.getByRole("button", { name: "Close memory settings" }).click();
   await expect(page.getByTestId("relationship-badge")).toContainText("Getting to know each other", {
     timeout: 10_000,
@@ -2532,16 +3162,47 @@ test("generator UI explains config load failures instead of showing a fake zero 
 test("generator UI blocks insufficient-balance requests with an upgrade path", async ({ page }) => {
   const { email } = await startSignedInAdultSession(page, "generate-low-balance");
   await clearDreamcoins(email);
+  const returnTarget = "/generate?characterId=lola-moonstruck";
 
-  await page.goto("/generate");
+  await page.goto(returnTarget);
 
   const insufficientBalance = page.getByTestId("generator-insufficient-balance");
   await expect(insufficientBalance).toBeVisible({ timeout: 45_000 });
+  await expect(page.locator('select[aria-label="Character"]')).toHaveValue("lola-moonstruck");
   await expect(insufficientBalance).toContainText("Need 5 coins");
   await expect(insufficientBalance).toContainText("you have 0");
-  await expect(insufficientBalance).toHaveAttribute("href", "/upgrade");
+  await expect(insufficientBalance).toHaveAttribute(
+    "href",
+    `/upgrade?returnTo=${encodeURIComponent(returnTarget)}`,
+  );
   await expect(insufficientBalance.getByText("Get coins")).toBeVisible();
   await expect(page.getByRole("button", { name: "Generate" })).toBeDisabled();
+});
+
+test("mobile generator keeps queued job feedback in view after submit", async ({ page }) => {
+  await startSignedInAdultSession(page, "mobile-generate-scroll");
+  await page.setViewportSize({ width: 390, height: 812 });
+
+  await page.goto("/generate?characterId=melissa-burke");
+  const generate = page.getByRole("button", { name: "Generate" });
+  await expect(generate).toBeEnabled({ timeout: 45_000 });
+  await generate.scrollIntoViewIfNeeded();
+  await generate.click();
+
+  const jobCard = page.getByTestId("generator-job-card").first();
+  await expect(jobCard).toBeVisible({ timeout: 10_000 });
+  await expect
+    .poll(
+      async () => {
+        const [box, viewport] = await Promise.all([
+          jobCard.boundingBox(),
+          page.evaluate(() => ({ height: window.innerHeight })),
+        ]);
+        return Boolean(box && box.y >= 0 && box.y < viewport.height);
+      },
+      { timeout: 5_000 },
+    )
+    .toBe(true);
 });
 
 test("generator UI explains failed and blocked job recovery states", async ({ page }) => {
@@ -2609,6 +3270,25 @@ test("generator Image Edit queues a variation from a gallery source", async ({ p
   await expect(page.getByText("Generation complete.")).toBeVisible({ timeout: 10_000 });
 });
 
+test("generator Gallery replaces tiny completed media with a preview fallback", async ({ page }) => {
+  const { email } = await startSignedInAdultSession(page, "generate-tiny-media");
+  const { mediaId: tinyMediaId } = await seedOwnedIdentityMedia(email);
+  const blankMediaId = await seedBlankGalleryMedia(email);
+
+  await page.goto("/generate");
+  for (const mediaId of [tinyMediaId, blankMediaId]) {
+    const mediaCard = page.locator(`[data-media-id="${mediaId}"]`);
+    await expect(mediaCard).toBeVisible({ timeout: 10_000 });
+    await expect(mediaCard.getByTestId("gallery-media-preview-fallback")).toContainText(
+      "Preview unavailable",
+    );
+    await expect(mediaCard.getByTestId("gallery-media-image")).toHaveCount(0);
+    await expect(mediaCard.getByRole("button", { name: "Download" })).toBeVisible();
+    await expect(mediaCard.getByRole("button", { name: "Delete", exact: true })).toBeVisible();
+    await expect(mediaCard.getByRole("button", { name: "Report" })).toBeVisible();
+  }
+});
+
 test("generator UI queues an image job and surfaces completed media in the gallery", async ({
   page,
 }) => {
@@ -2637,6 +3317,8 @@ test("generator UI queues an image job and surfaces completed media in the galle
   await generate.click();
 
   await expect(page.getByText("Generation queued.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByTestId("generator-status")).toHaveAttribute("role", "status");
+  await expect(page.getByTestId("generator-status")).toHaveAttribute("aria-live", "polite");
   const job = await latestImageJob(page.request);
   await drainWorker(page.request, job.id);
 
@@ -2653,6 +3335,15 @@ test("generator UI queues an image job and surfaces completed media in the galle
   await expect(
     page.locator('[data-testid="gallery-media-image"][src*="card-sarah-mercer"]'),
   ).toHaveCount(0);
+  const legacyMediaCard = page.locator(`[data-media-id="${legacyMediaId}"]`);
+  await legacyMediaCard.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(page.getByText("Press Confirm delete to remove this media.")).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(legacyMediaCard).toBeVisible();
+  await legacyMediaCard.getByRole("button", { name: "Confirm delete media" }).click();
+  await expect(page.getByText("Media deleted.")).toBeVisible({ timeout: 10_000 });
+  await expect(legacyMediaCard).toHaveCount(0, { timeout: 10_000 });
 
   const generatedCard = page
     .locator('[data-testid="gallery-media-card"]')
@@ -2677,6 +3368,10 @@ test("generator UI queues an image job and surfaces completed media in the galle
   await page.getByRole("button", { name: "Images" }).click();
   const ownedMediaCard = page.locator(`[data-media-id="${ownedIdentityMedia.mediaId}"]`);
   await expect(ownedMediaCard).toBeVisible({ timeout: 10_000 });
+  await expect(ownedMediaCard.getByTestId("gallery-media-preview-fallback")).toContainText(
+    "Preview unavailable",
+  );
+  await expect(ownedMediaCard.getByTestId("gallery-media-image")).toHaveCount(0);
   await expect(ownedMediaCard.getByRole("button", { name: "Use as character image" })).toBeVisible();
   await expect(ownedMediaCard.getByRole("button", { name: "Add to identity" })).toBeVisible();
   await expect(ownedMediaCard.getByRole("button", { name: "Create variation" })).toBeVisible();
@@ -2695,6 +3390,11 @@ test("generator UI queues an image job and surfaces completed media in the galle
 
   await likedCard.getByRole("button", { name: "Select media" }).click();
   await page.getByRole("button", { name: "Delete selected" }).click();
+  await expect(page.getByText("Press Confirm delete selected to delete 1 item.")).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(likedCard).toBeVisible();
+  await page.getByRole("button", { name: "Confirm delete selected" }).click();
   await expect(page.getByText("Deleted 1 item.")).toBeVisible({ timeout: 10_000 });
   await expect(likedCard).toHaveCount(0, { timeout: 10_000 });
 });
@@ -2789,13 +3489,37 @@ test("generator user-preset round-trip and bulk media route are wired", async ({
     }>;
     const found = items.find((p) => p.label === presetLabel);
     expect(found).toBeTruthy();
+    const presetId = found?.id ?? "";
+    expect(presetId).not.toBe("");
 
     await presetItem.getByRole("button", { name: `Delete preset ${presetLabel}` }).click();
+    await expect(page.getByText("Press Confirm delete preset to delete this preset.")).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(presetItem).toBeVisible();
+    const afterFirstClick = await ctx.get("/api/v1/generation/presets?scope=user");
+    expect(afterFirstClick.ok()).toBeTruthy();
+    const stillListed = (await afterFirstClick.json()).data.items as Array<{ id: string; label: string }>;
+    expect(stillListed.some((p) => p.id === presetId && p.label === presetLabel)).toBe(true);
+    await expect(
+      prisma.generationPreset.findUniqueOrThrow({
+        where: { id: presetId },
+        select: { status: true },
+      }),
+    ).resolves.toEqual({ status: "active" });
+
+    await presetItem.getByRole("button", { name: `Confirm delete preset ${presetLabel}` }).click();
     await expect(page.getByText("Preset deleted.")).toBeVisible({ timeout: 10_000 });
     await expect(presetItem).toHaveCount(0, { timeout: 10_000 });
     const after = await ctx.get("/api/v1/generation/presets?scope=user");
     const remaining = (await after.json()).data.items as Array<{ label: string }>;
     expect(remaining.some((p) => p.label === presetLabel)).toBe(false);
+    await expect(
+      prisma.generationPreset.findUniqueOrThrow({
+        where: { id: presetId },
+        select: { status: true },
+      }),
+    ).resolves.toEqual({ status: "archived" });
 
     // Bulk media route is reachable + schema-valid (no-op on a non-owned id).
     const bulk = await ctx.post("/api/v1/media/bulk", {
@@ -2810,8 +3534,9 @@ test("generator user-preset round-trip and bulk media route are wired", async ({
 test("upgrade signup redirect returns anonymous checkout intent to plans", async ({ page }) => {
   await page.request.post("/api/v1/age-gate/accept", { data: { sourcePath: "/upgrade" } });
   const email = uniqueEmail("upgrade-signup-redirect");
+  const returnTarget = "/generate?characterId=lola-moonstruck";
 
-  await page.goto("/upgrade");
+  await page.goto(`/upgrade?returnTo=${encodeURIComponent(returnTarget)}`);
   await expect(page.getByTestId("upgrade-demo-checkout-notice")).toContainText(
     "No real payment is collected",
     { timeout: 10_000 },
@@ -2822,7 +3547,7 @@ test("upgrade signup redirect returns anonymous checkout intent to plans", async
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/signup");
   expect(new URL(page.url()).searchParams.get("next")).toBe(
-    "/upgrade?plan=premium&billing=monthly",
+    `/upgrade?plan=premium&billing=monthly&returnTo=${encodeURIComponent(returnTarget)}`,
   );
   const authExploreClass = await page
     .locator("aside")
@@ -2838,6 +3563,7 @@ test("upgrade signup redirect returns anonymous checkout intent to plans", async
   await expect.poll(() => new URL(page.url()).pathname).toBe("/upgrade");
   expect(new URL(page.url()).searchParams.get("plan")).toBe("premium");
   expect(new URL(page.url()).searchParams.get("billing")).toBe("monthly");
+  expect(new URL(page.url()).searchParams.get("returnTo")).toBe(returnTarget);
   await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
   await expect(page.getByTestId("upgrade-demo-checkout-notice")).toContainText(
     "No real payment is collected",
@@ -2851,13 +3577,68 @@ test("upgrade signup redirect returns anonymous checkout intent to plans", async
   await expect(premiumMonthly.getByRole("button", { name: "Demo upgrade" })).toBeVisible();
 });
 
+test("upgrade exposes retryable plan load errors as assertive alerts", async ({ page }) => {
+  await startSignedInAdultSession(page, "upgrade-plans-load-error");
+  let failPlansRequest = true;
+  await page.route("**/api/v1/plans", (route) => {
+    if (!failPlansRequest) {
+      void route.continue();
+      return;
+    }
+    failPlansRequest = false;
+    void route.fulfill({
+      body: JSON.stringify({ ok: false, error: { message: "forced plans failure" } }),
+      contentType: "application/json",
+      status: 500,
+    });
+  });
+
+  await page.goto("/upgrade");
+  const status = page.getByTestId("upgrade-plans-status");
+  await expect(status).toContainText("Could not load plans.", { timeout: 10_000 });
+  await expect(status).toHaveAttribute("role", "alert");
+  await expect(status).toHaveAttribute("aria-live", "assertive");
+
+  await status.getByRole("button", { name: "Retry" }).click();
+  await expect(page.getByTestId("upgrade-demo-checkout-notice")).toContainText(
+    "No real payment is collected",
+    { timeout: 10_000 },
+  );
+  await expect(page.locator("article").filter({ hasText: "Premium monthly" })).toBeVisible();
+});
+
+test("upgrade checkout failures are announced as assertive alerts", async ({ page }) => {
+  await startSignedInAdultSession(page, "upgrade-checkout-failure");
+  await page.route("**/api/v1/billing/checkout", (route) =>
+    route.fulfill({
+      body: JSON.stringify({ ok: false, error: { message: "forced checkout failure" } }),
+      contentType: "application/json",
+      status: 500,
+    }),
+  );
+
+  await page.goto("/upgrade");
+  await expect(page.getByTestId("upgrade-demo-checkout-notice")).toContainText(
+    "No real payment is collected",
+    { timeout: 10_000 },
+  );
+  const premiumMonthly = page.locator("article").filter({ hasText: "Premium monthly" });
+  await premiumMonthly.getByRole("button", { name: "Demo upgrade" }).click();
+
+  const checkoutResult = page.getByTestId("upgrade-checkout-result");
+  await expect(checkoutResult).toContainText("forced checkout failure", { timeout: 10_000 });
+  await expect(checkoutResult).toHaveAttribute("role", "alert");
+  await expect(checkoutResult).toHaveAttribute("aria-live", "assertive");
+});
+
 test("upgrade UI activates Premium, grants dreamcoins, and unlocks prompt controls", async ({
   page,
 }) => {
   test.setTimeout(120_000);
   await startSignedInAdultSession(page, "upgrade");
+  const returnTarget = "/generate?characterId=lola-moonstruck";
 
-  await page.goto("/upgrade");
+  await page.goto(`/upgrade?returnTo=${encodeURIComponent(returnTarget)}`);
   await expect(page.getByTestId("upgrade-demo-checkout-notice")).toContainText(
     "No real payment is collected",
     { timeout: 10_000 },
@@ -2869,10 +3650,20 @@ test("upgrade UI activates Premium, grants dreamcoins, and unlocks prompt contro
     page.getByText("Premium monthly is active. 1,500 dreamcoins were added."),
   ).toBeVisible({ timeout: 10_000 });
   await expect(premiumMonthly.getByRole("button", { name: "Current plan" })).toBeDisabled();
-  await expect(page.getByTestId("upgrade-checkout-result").getByRole("link", { name: "View billing" })).toBeVisible();
+  await expect(page.getByTestId("upgrade-checkout-result")).toHaveAttribute("role", "status");
+  await expect(page.getByTestId("upgrade-checkout-result")).toHaveAttribute("aria-live", "polite");
   await expect(
-    page.getByTestId("upgrade-checkout-result").getByRole("link", { name: "Start generating" }),
+    page.getByTestId("upgrade-checkout-result").getByRole("link", { name: "View billing" }),
   ).toBeVisible();
+  const startGenerating = page
+    .getByTestId("upgrade-checkout-result")
+    .getByRole("link", { name: "Start generating" });
+  await expect(startGenerating).toBeVisible();
+  await expect(startGenerating).toHaveAttribute("href", returnTarget);
+  await startGenerating.click();
+  await expect.poll(() => new URL(page.url()).pathname).toBe("/generate");
+  expect(new URL(page.url()).searchParams.get("characterId")).toBe("lola-moonstruck");
+  await expect(page.locator('select[aria-label="Character"]')).toHaveValue("lola-moonstruck");
 
   await page.goto("/profile");
   await expect(page.getByText(/1,?750 dreamcoins · Premium monthly/)).toBeVisible({
@@ -2890,7 +3681,7 @@ test("upgrade UI activates Premium, grants dreamcoins, and unlocks prompt contro
   await expect(page.getByText("Renewal resumed.")).toBeVisible({ timeout: 10_000 });
   await expect(billingCard.getByText(/Renews/)).toBeVisible({ timeout: 10_000 });
 
-  await page.goto("/generate");
+  await page.goto(returnTarget);
   const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
   await expect(prompt).toBeEnabled({ timeout: 10_000 });
   await prompt.fill("premium e2e prompt control");
@@ -2900,11 +3691,19 @@ test("upgrade UI activates Premium, grants dreamcoins, and unlocks prompt contro
   const job = await latestImageJob(page.request);
   await drainWorker(page.request, job.id);
   await expect(page.getByText("Generation complete.")).toBeVisible({ timeout: 10_000 });
-  await expectGeneratedAssetServed(page.request, job.id);
+  const asset = await expectGeneratedAssetServed(page.request, job.id);
   await page.getByRole("button", { name: "Images" }).click();
-  await expect(page.getByTestId("gallery-media-image")).toHaveAttribute("src", /\/user-content\//, {
-    timeout: 10_000,
-  });
+  const generatedCard = page.locator(`[data-media-id="${asset.id}"]`);
+  await expect(generatedCard).toBeVisible({ timeout: 10_000 });
+  await expect
+    .poll(
+      async () =>
+        (await generatedCard.getByTestId("gallery-media-image").count()) +
+        (await generatedCard.getByTestId("gallery-media-preview-fallback").count()),
+      { timeout: 10_000 },
+    )
+    .toBeGreaterThan(0);
+  await expect(generatedCard.getByRole("button", { name: "Create variation" })).toBeVisible();
 });
 
 test("creator profile signup redirect returns anonymous follow intent to creator", async ({
@@ -2923,6 +3722,7 @@ test("creator profile signup redirect returns anonymous follow intent to creator
     timeout: 10_000,
   });
   await expect(page.getByTestId("creator-follow")).toHaveText(/Follow/);
+  await expect(page.getByTestId("creator-follow")).toHaveAttribute("aria-pressed", "false");
 
   await page.getByTestId("creator-follow").click();
   await expect.poll(() => new URL(page.url()).pathname).toBe("/signup");
@@ -2947,6 +3747,7 @@ test("creator profile signup redirect returns anonymous follow intent to creator
   });
   await page.getByTestId("creator-follow").click();
   await expect(page.getByTestId("creator-follow")).toHaveText(/Following/, { timeout: 10_000 });
+  await expect(page.getByTestId("creator-follow")).toHaveAttribute("aria-pressed", "true");
 });
 
 test("community signup redirect returns anonymous follow intent to creator", async ({
@@ -3000,6 +3801,8 @@ test("community UI lists dreamers and reports user profiles", async ({ page }) =
   await expect(dreamerCard).toBeVisible({ timeout: 10_000 });
   await dreamerCard.getByRole("button", { name: `Report user profile ${dreamer.displayName}` }).click();
   await expect(page.getByText("Profile report submitted.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByTestId("community-status")).toHaveAttribute("role", "status");
+  await expect(page.getByTestId("community-status")).toHaveAttribute("aria-live", "polite");
   await expectContentReport("user_profile", dreamer.id);
 
   // Creator public profile (§G): name links to /creators/:id, follow toggles to Following.
@@ -3009,6 +3812,14 @@ test("community UI lists dreamers and reports user profiles", async ({ page }) =
   await expect(page.getByRole("heading", { name: dreamer.displayName, level: 1 })).toBeVisible({
     timeout: 10_000,
   });
+  await expect(page.locator("aside").getByRole("link", { name: "Community" })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+  await expect(page.locator("aside").getByRole("link", { name: "Explore" })).not.toHaveAttribute(
+    "aria-current",
+    "page",
+  );
   const creatorCharacterCard = page.locator(`a[href="/characters/${dreamer.characterId}"]`);
   await expect(creatorCharacterCard).toBeVisible({ timeout: 10_000 });
   const creatorCharacterImage = creatorCharacterCard.locator("img").first();
@@ -3035,9 +3846,10 @@ test("community UI lists dreamers and reports user profiles", async ({ page }) =
 });
 
 test("community UI filters characters and shows collections", async ({ page }) => {
-  await startSignedInAdultSession(page, "community-filters");
+  const { email } = await startSignedInAdultSession(page, "community-filters");
   const token = `E2E Community ${Date.now()} ${Math.floor(Math.random() * 1e6)}`;
   await seedExploreCharacters(token);
+  const campaign = await seedCommunityCampaigns(email);
   const lcpWarnings: string[] = [];
   page.on("console", (message) => {
     if (message.text().includes("Largest Contentful Paint")) {
@@ -3046,13 +3858,27 @@ test("community UI filters characters and shows collections", async ({ page }) =
   });
 
   await page.goto("/community");
-  await expect(page.getByRole("heading", { exact: true, name: "Characters" })).toBeVisible({
+  await expect(page.getByRole("heading", { name: campaign.firstTitle })).toBeVisible({
     timeout: 10_000,
   });
-  await expect(page.locator('img[src*="pride-banner-female"]')).toHaveAttribute(
+  await expect(page.getByRole("link", { name: "Open Community" })).toHaveAttribute(
+    "href",
+    "/community",
+  );
+  const campaignHero = page.getByTestId("community-campaign-hero");
+  await expect(campaignHero.locator('img[src*="promo-card-female"]')).toHaveAttribute(
     "loading",
     "eager",
   );
+  await expect(page.getByLabel("Campaign 1 of 2")).toBeVisible();
+  await page.getByRole("button", { name: "Next campaign" }).click();
+  await expect(page.getByRole("heading", { name: campaign.secondTitle })).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(campaignHero.locator('img[src*="card-sarah-mercer"]')).toBeVisible();
+  await expect(page.getByRole("heading", { exact: true, name: "Characters" })).toBeVisible({
+    timeout: 10_000,
+  });
 
   const alphaCard = page
     .getByTestId("community-character-card")
@@ -3312,7 +4138,7 @@ test("feed UI supports share, report, and remix actions", async ({ page }) => {
   const collectionCard = page.getByTestId("feed-collection-card").filter({ hasText: collection.name });
   await expect(collectionCard).toBeVisible({ timeout: 10_000 });
   await expect(collectionCard.getByText("Creator collection")).toBeVisible();
-  await expect(collectionCard.getByText("1 items")).toBeVisible();
+  await expect(collectionCard.getByText("1 item")).toBeVisible();
   await expect(collectionCard.locator("img").first()).toHaveAttribute("loading", "eager");
   const collectionCommunityHref = `/community?collection=${encodeURIComponent(collection.id)}`;
   await expect(collectionCard.getByRole("link", { name: "View" })).toHaveAttribute(
@@ -3344,6 +4170,8 @@ test("feed UI supports share, report, and remix actions", async ({ page }) => {
   await expect(focusedCollectionCard).toHaveAttribute("data-focused", "true", { timeout: 10_000 });
   await focusedCollectionCard.getByRole("button", { name: "Report" }).click();
   await expect(page.getByText("Report submitted.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByTestId("feed-status")).toHaveAttribute("role", "status");
+  await expect(page.getByTestId("feed-status")).toHaveAttribute("aria-live", "polite");
   await expectContentReport("feed_item", collection.itemId);
 
   await page.goto("/feed");
@@ -3352,6 +4180,16 @@ test("feed UI supports share, report, and remix actions", async ({ page }) => {
   });
   await expect(feedCard).toHaveCount(1, { timeout: 10_000 });
   await expect(feedCard).toBeVisible();
+  for (const actionName of ["Chat", "Remix", "Share", "Report"]) {
+    await expect(feedCard.getByRole("button", { name: actionName })).not.toHaveAttribute(
+      "aria-pressed",
+      /.+/,
+    );
+  }
+  await expect(feedCard.getByRole("button", { name: "Like" })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
 
   await feedCard.getByRole("button", { name: "Like" }).click();
   await expect(feedCard.getByRole("button", { name: "Liked" })).toHaveAttribute(
@@ -3383,6 +4221,8 @@ test("feed UI supports share, report, and remix actions", async ({ page }) => {
 
   await sharedFeedCard.getByRole("button", { name: "Report" }).click();
   await expect(page.getByText("Report submitted.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByTestId("feed-status")).toHaveAttribute("role", "status");
+  await expect(page.getByTestId("feed-status")).toHaveAttribute("aria-live", "polite");
   await expectContentReport("feed_item", `character:${characterId}`);
 
   await sharedFeedCard.getByRole("button", { name: "Remix" }).click();
@@ -3419,10 +4259,21 @@ test("feed UI supports share, report, and remix actions", async ({ page }) => {
 });
 
 test("profile UI handles redeem, referral, billing, and media actions", async ({ page }) => {
+  const consoleErrors: string[] = [];
+  const pageErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+  page.on("pageerror", (error) => {
+    pageErrors.push(error.message);
+  });
+
   const { email } = await startSignedInAdultSession(page, "profile");
   const code = `PROFILE${Date.now()}${Math.floor(Math.random() * 1e6)}`;
   await seedRedeemCode(code, 300);
+  const mutedTagSlug = await seedProfileMutedTagFixture(email);
   const mediaId = await seedDownloadableMedia(email);
+  const blankMediaId = await seedBlankProfileMedia(email);
   const videoMediaId = await seedDownloadableVideoMedia(email);
   const nextName = uniqueName("profile renamed");
   const collectionName = uniqueName("profile collection");
@@ -3436,6 +4287,7 @@ test("profile UI handles redeem, referral, billing, and media actions", async ({
   await expect(page.getByText(nextName)).toBeVisible({ timeout: 10_000 });
 
   await page.getByRole("checkbox", { name: "Product updates" }).uncheck();
+  await page.getByRole("checkbox", { name: "Mute Slow Burn" }).check({ timeout: 10_000 });
   await page.getByRole("button", { name: "Save preferences" }).click();
   await expect(page.getByText("Preferences updated.")).toBeVisible({ timeout: 10_000 });
   await expect
@@ -3455,10 +4307,29 @@ test("profile UI handles redeem, referral, billing, and media actions", async ({
       return notificationSettings?.productUpdates;
     })
     .toBe(false);
+  await expect
+    .poll(async () => {
+      const user = await prisma.user.findUniqueOrThrow({
+        where: { email },
+        select: { id: true },
+      });
+      const preferences = await prisma.userPreferences.findUnique({
+        where: { userId: user.id },
+        select: { mutedTags: true },
+      });
+      return Array.isArray(preferences?.mutedTags) ? preferences.mutedTags : [];
+    })
+    .toContain(mutedTagSlug);
   await page.reload();
   await expect(page.getByRole("checkbox", { name: "Product updates" })).not.toBeChecked({
     timeout: 10_000,
   });
+  await expect(page.getByRole("checkbox", { name: "Mute Slow Burn" })).toBeChecked({
+    timeout: 10_000,
+  });
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Slow Burn" })).toHaveCount(0);
+  await page.goto("/profile");
 
   await page.getByRole("button", { name: "Redeem code" }).click();
   await expect(page.getByText("Enter a code.")).toBeVisible({ timeout: 10_000 });
@@ -3470,6 +4341,8 @@ test("profile UI handles redeem, referral, billing, and media actions", async ({
 
   await page.getByRole("button", { name: "Invite" }).click();
   await expect(page.getByText("Referral invite ready.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByTestId("profile-status")).toHaveAttribute("role", "status");
+  await expect(page.getByTestId("profile-status")).toHaveAttribute("aria-live", "polite");
   await expect(page.getByLabel("Referral link")).toHaveValue(/ref=DREAM-/, { timeout: 10_000 });
   await expect(page.getByRole("button", { name: "Copy invite link" })).toBeVisible({
     timeout: 10_000,
@@ -3488,8 +4361,16 @@ test("profile UI handles redeem, referral, billing, and media actions", async ({
   await page.getByRole("button", { name: "media", exact: true }).click();
   const mediaCard = page.locator(`[data-media-id="${mediaId}"]`);
   await expect(mediaCard).toBeVisible({ timeout: 10_000 });
+  const blankMediaCard = page.locator(`[data-media-id="${blankMediaId}"]`);
+  await expect(blankMediaCard).toBeVisible({ timeout: 10_000 });
+  await expect(blankMediaCard.getByTestId("profile-media-preview-fallback")).toContainText(
+    "Preview unavailable",
+  );
+  await expect(blankMediaCard.getByTestId("profile-media-image")).toHaveCount(0);
   const videoCard = page.locator(`[data-media-id="${videoMediaId}"]`);
   await expect(videoCard.getByTestId("profile-media-video")).toBeVisible({ timeout: 10_000 });
+  expect(pageErrors).toEqual([]);
+  expect(consoleErrors.filter((message) => !message.includes("favicon"))).toEqual([]);
 
   await page.getByRole("textbox", { name: "Search your library" }).fill("profile downloadable media");
   await expect(mediaCard).toBeVisible({ timeout: 10_000 });
@@ -3498,6 +4379,9 @@ test("profile UI handles redeem, referral, billing, and media actions", async ({
   await expect(page.getByRole("heading", { name: "No matches" })).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: "Clear search" }).click();
   await expect(mediaCard).toBeVisible({ timeout: 10_000 });
+  await expect(blankMediaCard.getByTestId("profile-media-preview-fallback")).toContainText(
+    "Preview unavailable",
+  );
   await expect(videoCard.getByTestId("profile-media-video")).toBeVisible({ timeout: 10_000 });
 
   await mediaCard.getByLabel("Collection name").fill(collectionName);
@@ -3506,13 +4390,19 @@ test("profile UI handles redeem, referral, billing, and media actions", async ({
   await expect(page.getByText("Collection published to Community.")).toBeVisible({
     timeout: 10_000,
   });
+  const viewCommunityLink = page.getByRole("link", { name: "View in Community" });
+  await expect(viewCommunityLink).toHaveAttribute("href", /\/community\?collection=/, {
+    timeout: 10_000,
+  });
 
-  await page.goto("/community");
+  await viewCommunityLink.click();
+  await expect.poll(() => new URL(page.url()).pathname).toBe("/community");
   const collectionCard = page
     .getByTestId("community-collection-card")
     .filter({ hasText: collectionName });
   await expect(collectionCard).toBeVisible({ timeout: 10_000 });
-  await expect(collectionCard.getByText("1 items")).toBeVisible();
+  await expect(collectionCard).toHaveAttribute("data-focused", "true", { timeout: 10_000 });
+  await expect(collectionCard.getByText("1 item")).toBeVisible();
 
   await page.goto("/profile");
   await page.getByRole("button", { name: "media", exact: true }).click();
@@ -3527,7 +4417,58 @@ test("profile UI handles redeem, referral, billing, and media actions", async ({
   await expect(page).toHaveURL(/\/profile$/);
 
   await mediaCard.getByRole("button", { name: "Delete media" }).click();
+  await expect(page.getByText("Press Confirm delete to remove this media.")).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(mediaCard).toBeVisible();
+  await mediaCard.getByRole("button", { name: "Confirm delete media" }).click();
+  await expect(page.getByText("Media deleted.")).toBeVisible({ timeout: 10_000 });
   await expect(mediaCard).toHaveCount(0, { timeout: 10_000 });
+  expect(pageErrors).toEqual([]);
+  expect(consoleErrors.filter((message) => !message.includes("favicon"))).toEqual([]);
+});
+
+test("mobile profile media publish links directly to the focused Community collection", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const { email } = await startSignedInAdultSession(page, "profile-collection-mobile");
+  const mediaId = await seedDownloadableMedia(email);
+  const collectionName = uniqueName("mobile profile collection");
+
+  await page.goto("/profile");
+  await page.getByRole("button", { name: "media", exact: true }).click();
+  const mediaCard = page.locator(`[data-media-id="${mediaId}"]`);
+  await expect(mediaCard).toBeVisible({ timeout: 10_000 });
+
+  await mediaCard.getByLabel("Collection name").fill(collectionName);
+  await mediaCard.getByRole("button", { name: "Create collection from media" }).click();
+  await expect(page.getByText("Collection published to Community.")).toBeVisible({
+    timeout: 10_000,
+  });
+  const viewCommunityLink = page.getByRole("link", { name: "View in Community" });
+  await expect(viewCommunityLink).toBeVisible({ timeout: 10_000 });
+  await expect(viewCommunityLink).toHaveAttribute("href", /\/community\?collection=/);
+  await expect
+    .poll(() =>
+      page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1),
+    )
+    .toBe(true);
+
+  await viewCommunityLink.click();
+  await expect.poll(() => new URL(page.url()).pathname).toBe("/community");
+  await expect(page.getByText(`Showing collection: ${collectionName}.`)).toBeVisible({
+    timeout: 10_000,
+  });
+  const collectionCard = page
+    .getByTestId("community-collection-card")
+    .filter({ hasText: collectionName });
+  await expect(collectionCard).toHaveAttribute("data-focused", "true", { timeout: 10_000 });
+  await expect
+    .poll(() =>
+      page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1),
+    )
+    .toBe(true);
 });
 
 test("profile prompts anonymous visitors to sign in before showing private controls", async ({
@@ -3543,7 +4484,7 @@ test("profile prompts anonymous visitors to sign in before showing private contr
 
   const authPanel = page.getByTestId("profile-auth-required");
   await expect(authPanel).toBeVisible({ timeout: 10_000 });
-  await expect(authPanel.getByRole("heading", { name: "Sign in to open My AI" })).toBeVisible();
+  await expect(authPanel.getByRole("heading", { name: "Sign in to open Profile" })).toBeVisible();
   await expect(authPanel.getByRole("link", { name: "Log in" })).toHaveAttribute(
     "href",
     "/login?next=%2Fprofile%23billing",
@@ -3570,7 +4511,7 @@ test("profile prompts anonymous visitors to sign in before showing private contr
   expect(new URL(page.url()).hash).toBe("#billing");
   await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
   await expect(page.getByTestId("profile-billing-card")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "My AI" })).toBeVisible({
+  await expect(page.getByRole("heading", { name: "Profile" })).toBeVisible({
     timeout: 10_000,
   });
 });
@@ -3631,22 +4572,29 @@ test("my ai shows deferred group chat and pack tabs as explicit empty states", a
   await page.goto("/custom");
 
   await expect(page.getByRole("heading", { name: "My AI" })).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByRole("button", { name: "group chats" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "recent" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(page.getByRole("button", { name: "group chats" })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
   await expect(page.getByRole("button", { name: "packs" })).toBeVisible();
 
   await page.getByRole("button", { name: "group chats" }).click();
+  await expect(page.getByRole("button", { name: "group chats" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
   await expect(
     page.getByRole("heading", { name: "Group chats are not in this beta" }),
   ).toBeVisible();
-  await expect(
-    page.getByTestId("library-empty-state").getByRole("link", { name: "Create" }),
-  ).toHaveAttribute("href", "/create");
+  await expect(page.getByTestId("library-empty-state").getByRole("link")).toHaveCount(0);
 
   await page.getByRole("button", { name: "packs" }).click();
   await expect(page.getByRole("heading", { name: "Packs are not in this beta" })).toBeVisible();
-  await expect(
-    page.getByTestId("library-empty-state").getByRole("link", { name: "Create" }),
-  ).toHaveAttribute("href", "/create");
+  await expect(page.getByTestId("library-empty-state").getByRole("link")).toHaveCount(0);
   expect(consoleErrors.filter((message) => !message.includes("favicon"))).toEqual([]);
 });
 
@@ -3672,7 +4620,9 @@ test("profile subroutes deep-link to the matching account panels", async ({ page
 
   for (const profileRoute of cases) {
     await page.goto(profileRoute.path);
-    await expect(page.getByRole("heading", { name: "My AI" })).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole("heading", { name: "Profile" })).toBeVisible({
+      timeout: 10_000,
+    });
     await expect(page.getByTestId(profileRoute.testId)).toBeVisible();
     await expect.poll(() =>
       page.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? ""),

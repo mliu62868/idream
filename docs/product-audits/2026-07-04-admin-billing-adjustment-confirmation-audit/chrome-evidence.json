@@ -1,0 +1,15 @@
+{
+  "browserName": "chromium",
+  "channel": "chrome",
+  "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.0.0 Safari/537.36",
+  "adminURL": "http://127.0.0.1:3197",
+  "checks": [
+    "Wrong API confirmation ADJUST returned 400 and did not create a ledger entry.",
+    "Confirm stayed disabled with empty confirmation.",
+    "Confirm stayed disabled with wrong confirmation ADJUST.",
+    "Exact userId:delta confirmation enabled Confirm.",
+    "Ledger adjustment persisted one admin_adjust row with balanceAfter 37.",
+    "Admin audit stored the operator reason."
+  ],
+  "consoleFailures": []
+}

@@ -1,0 +1,15 @@
+{
+  "ariaControls": "app-search-suggestions",
+  "ariaDescribedBy": null,
+  "ariaExpanded": null,
+  "ariaHasPopup": null,
+  "inputRole": null,
+  "inputType": "search",
+  "panelAriaBusy": null,
+  "panelRole": "listbox",
+  "statusAriaLive": null,
+  "statusRole": null,
+  "statusTestId": null,
+  "statusText": "No suggestions found",
+  "url": "http://127.0.0.1:3254/generate?characterId=melissa-burke"
+}

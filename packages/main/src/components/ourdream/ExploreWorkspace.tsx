@@ -21,6 +21,7 @@ type TagResponse = {
   data?: {
     items: Array<{
       isMutedByDefault?: boolean;
+      isMutedByUser?: boolean;
       label: string;
       publicCharacterCount?: number;
       slug: string;
@@ -86,6 +87,10 @@ export function ExploreWorkspace() {
         setNextCursor(payload.data?.nextCursor ?? null);
       } catch {
         if (serial !== requestSerial.current) return;
+        if (!cursor) {
+          setCards([]);
+          setNextCursor(null);
+        }
         setError(cursor ? "Could not load more characters." : "Could not load characters.");
       } finally {
         if (serial !== requestSerial.current) return;
@@ -139,13 +144,21 @@ export function ExploreWorkspace() {
         if (cancelled) return;
         const visibleSlugs = new Set(
           (payload.data?.items ?? [])
-            .filter((tag) => !tag.isMutedByDefault && (tag.publicCharacterCount ?? 0) > 0)
+            .filter(
+              (tag) =>
+                !tag.isMutedByDefault &&
+                !tag.isMutedByUser &&
+                (tag.publicCharacterCount ?? 0) > 0,
+            )
             .map((tag) => tag.slug),
         );
         const nextCategories = categoryFilters.filter(
           (category) => category === "All" || visibleSlugs.has(categoryParam(category)),
         );
         setAvailableCategories(nextCategories.length > 1 ? nextCategories : ["All"]);
+        setActiveCategory((current) =>
+          nextCategories.includes(current) ? current : "All",
+        );
       } catch {
         if (!cancelled) setAvailableCategories(["All"]);
       }

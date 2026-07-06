@@ -34,7 +34,7 @@
 | Marketing | `/chat`、`/ai-girlfriend`、`/ai-boyfriend`、`/ai-girl`、`/affiliate`、`/authors/*`、`/site/*`、`/login`、`/signup`、`/helpdesk` | 产品说明、转注册、营销实验、登录/注册真实表单、帮助内容 |
 | Create | `/create` | 性别/风格、外观、发型、体型、名称、高级详情、tag、预览生成、最终创建、审核 |
 | Generator | `/generate`、`/generate/*`、`/generator/*` | 图片任务、条件启用的视频任务、角色选择、preset 库、Premium prompt、模型/比例/数量设置、图库管理 |
-| Profile | `/custom`、`/profile` | My AI、最近角色、群聊、packs、presets、created、余额、订阅、兑换码、推荐、偏好 |
+| Profile | `/custom`、`/profile` | My AI、最近角色、presets、created、media、余额、订阅、兑换码、推荐、偏好；group chats/packs 仅为明确 deferred 的无行动入口空态 |
 | Feed | `/feed` | 推荐 feed、cursor、Chat、Remix、Like、Share、Report |
 | Community | `/community`、`/creators/:id` | banner carousel、Dreamers/Characters/Collections、creator public profiles、leaderboards、Release/Gender/Style filters |
 | Library | `/resources-hub`、`/type`、`/videos`、`/games`、`/romantasy` | 资源聚合、分类页、内容运营入口 |
@@ -125,14 +125,14 @@
 
 ### 5.5 Subscription
 
-> **单一货币口径**：dreamcoin 是唯一消耗型货币，图片/视频/语音**无独立配额**。下表中「200 images / 10 videos / 20m voice」等均为「当月 dreamcoin ÷ 费率」的展示示意（动态算出），定价/费率/免费档 SSoT 见 `ECONOMY_AND_PRICING.md`。
+> **当前上线口径**：dreamcoin 是唯一消耗型货币；语音按计划分钟额度优先、超出后再扣 dreamcoin。当前 `/upgrade` 计划卡展示 included dreamcoins 与聊天/模型权益，不展示 images/videos/voice quota 示意；未来若恢复媒体等价展示，必须由 `includedDreamcoins ÷ 费率` 动态算出，且 `video_gen=false` 时不得展示视频承诺。定价/费率/免费档 SSoT 见 `ECONOMY_AND_PRICING.md`。
 
 | 功能 | 页面 | 数据 |
 | --- | --- | --- |
 | Upgrade plan cards | `/upgrade` | SubscriptionPlan |
 | Monthly/Yearly | `/upgrade` | billingPeriod（Monthly、Yearly Save 75% + free coins） |
-| Premium plan | `/upgrade` | plan=premium（$19.99/mo 或 $9.99/mo yearly；1,000 dreamcoins，卡面 200 images/20m voice/10 videos 为折算示意，见 economy） |
-| Deluxe plan | `/upgrade` | plan=deluxe（$59.99/mo 或 $29.99/mo yearly；Premium models、3x memory、5,000 dreamcoins，卡面 images/voice/videos 为同一套费率折算示意，见 economy） |
+| Premium plan | `/upgrade` | plan=premium（$19.99/mo 或 $99.90/yr；1,500 dreamcoins/月或 18,000/年；image + voice enabled，videoGeneration=false；卡面展示 dreamcoins + chat entitlements） |
+| Deluxe plan | `/upgrade` | plan=deluxe（$59.99/mo 或 $299.90/yr；6,000 dreamcoins/月或 72,000/年；Premium models、3x memory、voice 120 min/月；video entitlement 需 `video_gen` + provider ready 才能曝光） |
 | Promo surfaces | home toast/banner | campaign |
 | Checkout | `/upgrade` | payment provider |
 | Premium entitlement | app-wide | plan flags |
@@ -143,7 +143,7 @@
 | 功能 | 页面 | 数据 |
 | --- | --- | --- |
 | My AI search | `/custom` | user library search |
-| My AI tabs | `/custom` | recent、characters、groupChats、packs、presets、created |
+| My AI tabs | `/custom` | recent、characters、presets、created、media；groupChats/packs 仅显示无行动入口的延期空态 |
 | Profile settings | `/profile` | User、Preferences |
 | Dreamcoin balance | `/profile`、app-wide | DreamcoinLedger |
 | Billing management | `/profile#billing`、`/upgrade` | Subscription |
@@ -190,8 +190,8 @@
 
 | 域 | 出现位置 | 状态 | 一句话范围草图 |
 | --- | --- | --- | --- |
-| Group Chats | My AI tab（§5.6） | V1.1 / 暂不实现 | 一个会话内多角色参与的群聊；MVP 仅保留 tab 空态，不实现多角色编排与额度；Explore 不展示空结果 chip，未来只有在有公开可浏览内容时才作为内容 tag 出现。 |
-| Packs | My AI tab（§5.6） | V1.1 / 暂不实现 | 角色/preset 的打包合集（可能可分享或购买）；MVP 仅空态，不实现打包模型与分发。 |
+| Group Chats | My AI tab（§5.6） | V1.1 / 暂不实现 | 一个会话内多角色参与的群聊；MVP 仅保留无 CTA 空态，不实现多角色编排与额度；Explore 不展示空结果 chip，未来只有在有公开可浏览内容时才作为内容 tag 出现。 |
+| Packs | My AI tab（§5.6） | V1.1 / 暂不实现 | 角色/preset 的打包合集（可能可分享或购买）；MVP 仅保留无 CTA 空态，不实现打包模型与分发。 |
 
 ## 6. 页面族摘要（用户任务）
 
@@ -227,8 +227,8 @@
 用户任务：
 
 - 查看最近角色和已创建角色。
-- 管理群聊、packs、presets。
-- 从空态进入创建。
+- 管理 presets；群聊和 packs 在当前 beta 仅作为明确延期空态展示。
+- 从可创建域的空态进入创建；延期域不展示行动入口。
 - 在 Profile 查看余额、订阅、兑换码、推荐奖励、偏好、支持、法律和账号管理。
 
 ### Feed/Community `/feed`、`/community`

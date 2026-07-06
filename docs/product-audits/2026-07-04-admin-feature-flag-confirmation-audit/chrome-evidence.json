@@ -1,0 +1,13 @@
+{
+  "checkedAt": "2026-07-04T19:47:25.216Z",
+  "route": "/admin/generation/config?tab=settings",
+  "flagKey": "e2e_flag_evidence_1783194444526-724753",
+  "rejectedConfirmation": "FLAG",
+  "acceptedConfirmation": "e2e_flag_evidence_1783194444526-724753:enabled",
+  "finalEnabled": true,
+  "auditAction": "config.feature_flag.write",
+  "screenshots": {
+    "wrongConfirmationDisabled": "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-feature-flag-confirmation-audit/wrong-confirmation-disabled.png",
+    "flagEnabled": "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-feature-flag-confirmation-audit/flag-enabled.png"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "buttonText": [
+    "I'm over 18"
+  ],
+  "hasMain": false,
+  "horizontalOverflow": false,
+  "statusAriaLive": "assertive",
+  "statusRole": "alert",
+  "statusText": "Something went wrong. Please try again.",
+  "url": "http://age-gate-status-1783260000.localhost:3263/generate"
+}

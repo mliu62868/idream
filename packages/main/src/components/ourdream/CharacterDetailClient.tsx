@@ -226,14 +226,24 @@ export function CharacterDetailClient({ id }: Readonly<{ id: string }>) {
                   </button>
                 </div>
                 {status && (
-                  <p className="mt-5 text-[13px] font-medium text-[rgb(170,170,170)]">
+                  <p
+                    aria-live="polite"
+                    className="mt-5 text-[13px] font-medium text-[rgb(170,170,170)]"
+                    data-testid="character-detail-status"
+                    role="status"
+                  >
                     {status}
                   </p>
                 )}
               </div>
             </div>
           ) : (
-            <div className="mt-10 rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-8 text-[14px] text-[rgb(170,170,170)]">
+            <div
+              aria-live="polite"
+              className="mt-10 rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-8 text-[14px] text-[rgb(170,170,170)]"
+              data-testid="character-detail-status"
+              role="status"
+            >
               {status}
             </div>
           )}

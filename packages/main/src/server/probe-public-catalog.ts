@@ -12,7 +12,7 @@ type ProbeOptions = {
 
 type CatalogIssue = {
   severity: "fail" | "warn";
-  entity: "character" | "creator" | "catalog";
+  entity: "character" | "collection" | "creator" | "feedback" | "catalog";
   id: string;
   field: string;
   message: string;
@@ -25,7 +25,9 @@ type PublicCatalogProbeReport = {
   durationMs: number;
   counts: {
     publicCharacters: number;
+    publicCollections: number;
     publicCreators: number;
+    publicFeedbackItems: number;
     distinctImages: number;
   };
   thresholds: {
@@ -52,7 +54,7 @@ const fixturePatterns = [
   },
   {
     label: "audit/test user marker",
-    regex: /\bpm audit\b|audit user/i,
+    regex: /\bpm audit\b|audit user|chrome\s+(handoff|collection|collection auditor|refresh|content ops|pm|e2e|roadmap|anonymous|audit)|playwright/i,
   },
   {
     label: "verification fixture copy",
@@ -140,6 +142,45 @@ async function runProbe(options: ProbeOptions): Promise<PublicCatalogProbeReport
       },
       orderBy: { createdAt: "desc" },
     });
+    const collections = await prisma.mediaCollection.findMany({
+      where: { visibility: "public" },
+      include: {
+        owner: {
+          select: {
+            id: true,
+            email: true,
+            displayName: true,
+            name: true,
+          },
+        },
+        items: {
+          include: {
+            mediaAsset: {
+              select: {
+                id: true,
+                prompt: true,
+                url: true,
+                thumbnailUrl: true,
+              },
+            },
+          },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    const feedbackItems = await prisma.productFeedbackItem.findMany({
+      include: {
+        createdBy: {
+          select: {
+            id: true,
+            email: true,
+            displayName: true,
+            name: true,
+          },
+        },
+      },
+      orderBy: [{ voteCount: "desc" }, { createdAt: "desc" }],
+    });
 
     const issues: CatalogIssue[] = [];
     const creatorIds = new Set<string>();
@@ -182,6 +223,53 @@ async function runProbe(options: ProbeOptions): Promise<PublicCatalogProbeReport
       );
     }
 
+    for (const collection of collections) {
+      if (collection.ownerId) creatorIds.add(collection.ownerId);
+      checkText(issues, "collection", collection.id, "id", collection.id);
+      checkText(issues, "collection", collection.id, "name", collection.name);
+      checkText(issues, "creator", collection.owner.id, "email", collection.owner.email);
+      checkText(
+        issues,
+        "creator",
+        collection.owner.id,
+        "displayName",
+        collection.owner.displayName ?? collection.owner.name ?? null,
+      );
+      for (const item of collection.items) {
+        checkText(
+          issues,
+          "collection",
+          collection.id,
+          `media.${item.mediaAsset.id}.prompt`,
+          item.mediaAsset.prompt,
+        );
+        checkText(
+          issues,
+          "collection",
+          collection.id,
+          `media.${item.mediaAsset.id}.url`,
+          item.mediaAsset.url ?? item.mediaAsset.thumbnailUrl ?? null,
+        );
+      }
+    }
+
+    for (const item of feedbackItems) {
+      if (item.createdById) creatorIds.add(item.createdById);
+      checkText(issues, "feedback", item.id, "id", item.id);
+      checkText(issues, "feedback", item.id, "title", item.title);
+      checkText(issues, "feedback", item.id, "description", item.description);
+      if (item.createdBy) {
+        checkText(issues, "creator", item.createdBy.id, "email", item.createdBy.email);
+        checkText(
+          issues,
+          "creator",
+          item.createdBy.id,
+          "displayName",
+          item.createdBy.displayName ?? item.createdBy.name ?? null,
+        );
+      }
+    }
+
     const duplicateImageIssue = duplicateImageConcentrationIssue(
       imageCounts,
       characters.length,
@@ -199,7 +287,9 @@ async function runProbe(options: ProbeOptions): Promise<PublicCatalogProbeReport
       durationMs: Date.now() - startedAt,
       counts: {
         publicCharacters: characters.length,
+        publicCollections: collections.length,
         publicCreators: creatorIds.size,
+        publicFeedbackItems: feedbackItems.length,
         distinctImages: imageCounts.size,
       },
       thresholds: {
@@ -227,7 +317,9 @@ async function runProbe(options: ProbeOptions): Promise<PublicCatalogProbeReport
       durationMs: Date.now() - startedAt,
       counts: {
         publicCharacters: 0,
+        publicCollections: 0,
         publicCreators: 0,
+        publicFeedbackItems: 0,
         distinctImages: 0,
       },
       thresholds: {
@@ -253,7 +345,7 @@ async function runProbe(options: ProbeOptions): Promise<PublicCatalogProbeReport
 
 function checkText(
   issues: CatalogIssue[],
-  entity: "character" | "creator",
+  entity: "character" | "collection" | "creator" | "feedback",
   id: string,
   field: string,
   value: string | null,

@@ -1,0 +1,17 @@
+{
+  "browser": "Google Chrome",
+  "browserVersion": "149.0.7827.201",
+  "mainURL": "http://127.0.0.1:3160",
+  "adminURL": "http://127.0.0.1:3161",
+  "profileId": "cmr6l7n1u000016l7gig10jsg",
+  "screenshots": [
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-content-confirmation-audit/screenshots/08-insights-dry-run-confirmation.png",
+    "/Users/kk/code/idream/docs/product-audits/2026-07-04-admin-content-confirmation-audit/screenshots/09-insights-dry-run-success.png"
+  ],
+  "dialogs": [],
+  "consoleFailures": [],
+  "ignoredConsole": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found) (http://127.0.0.1:3161/favicon.ico)"
+  ],
+  "verifiedAt": "2026-07-04T16:39:19.200Z"
+}

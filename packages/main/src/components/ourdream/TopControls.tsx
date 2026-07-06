@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import Link from "next/link";
 import { Check, ChevronDown, Search } from "lucide-react";
 import { useState } from "react";
 import { categoryFilters } from "@/lib/ourdream-data";
@@ -38,11 +39,13 @@ const ageOptions = [
 
 function SelectPill({
   ariaLabel,
+  name,
   onChange,
   options,
   value,
 }: Readonly<{
   ariaLabel: string;
+  name: string;
   onChange?: (value: string) => void;
   options: readonly { label: string; value: string }[];
   value: string;
@@ -52,6 +55,7 @@ function SelectPill({
       <select
         aria-label={ariaLabel}
         className="h-9 w-full min-w-0 appearance-none truncate rounded-full bg-[rgb(53,53,54)] pl-4 pr-8 text-[12px] font-medium leading-4 text-white outline-none transition-colors hover:bg-[rgb(62,62,63)] focus-visible:ring-2 focus-visible:ring-white/40 md:min-w-28 md:pr-9"
+        name={name}
         onChange={(event) => onChange?.(event.target.value)}
         value={value}
       >
@@ -114,22 +118,36 @@ export function TopControls({
       </header>
 
       <section className="w-full px-2 pt-0 md:px-[60px] md:pt-[14px]">
-        <div className="mb-3 overflow-hidden md:hidden">
+        <Link
+          aria-label="Pride offer - view plans"
+          className="relative mb-3 flex h-[58px] overflow-hidden rounded-[12px] bg-[rgb(36,36,36)] md:hidden"
+          href="/upgrade"
+        >
           <Image
-            src="/images/ourdream/pride-banner-female.webp"
-            alt="Pride Sale - Upgrade Now"
-            width={800}
-            height={160}
-            className="h-[52px] w-full object-cover"
+            alt=""
+            className="object-cover object-[center_35%]"
+            fill
             loading="eager"
+            sizes="(max-width: 767px) calc(100vw - 16px), 0px"
+            src="/images/ourdream/promo-card-female.webp"
           />
-        </div>
+          <span className="absolute inset-0 bg-[linear-gradient(90deg,rgba(0,0,0,.78),rgba(0,0,0,.35)_58%,rgba(0,0,0,.08))]" />
+          <span className="relative flex h-full flex-col justify-center px-4">
+            <span className="text-[17px] font-black uppercase leading-5 text-white">
+              Pride offer
+            </span>
+            <span className="text-[11px] font-bold leading-4 text-white/80">
+              View upgrade plans
+            </span>
+          </span>
+        </Link>
 
         <label className="mb-3 flex h-10 items-center gap-2 rounded-full bg-[rgb(53,53,54)] px-4 text-[12px] font-medium leading-4 text-[rgb(170,170,170)] md:hidden">
           <Search className="h-4 w-4 shrink-0" />
           <input
             aria-label="Search characters"
             className="min-w-0 flex-1 bg-transparent text-white outline-none placeholder:text-[rgb(170,170,170)]"
+            name="character-search-mobile"
             onChange={(event) => onQueryChange?.(event.target.value)}
             placeholder="Search characters"
             value={query}
@@ -184,6 +202,7 @@ export function TopControls({
             <input
               aria-label="Search characters"
               className="min-w-0 flex-1 bg-transparent text-white outline-none placeholder:text-[rgb(170,170,170)]"
+              name="character-search"
               onChange={(event) => onQueryChange?.(event.target.value)}
               placeholder="Try 'Busty blonde' or 'Petite asian'"
               value={query}
@@ -193,18 +212,21 @@ export function TopControls({
           <div className="grid grid-cols-3 gap-2 md:flex md:justify-end">
             <SelectPill
               ariaLabel="Gender filter"
+              name="gender"
               onChange={onGenderChange}
               options={genderOptions}
               value={gender}
             />
             <SelectPill
               ariaLabel="Style filter"
+              name="style"
               onChange={onStyleChange}
               options={styleOptions}
               value={style}
             />
             <SelectPill
               ariaLabel="Age filter"
+              name="age"
               onChange={onAgeChange}
               options={ageOptions}
               value={age}

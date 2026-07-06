@@ -92,7 +92,7 @@ export async function exportUserData(request: Request, userId: string): Promise<
 export async function eraseUser(request: Request, userId: string): Promise<Response> {
   const actor = await actorWithPermission(request, COMPLIANCE_WRITE);
   const body = eraseSchema.parse(await jsonBody(request));
-  if (body.confirmation !== userId && body.confirmation !== "ERASE") {
+  if (body.confirmation !== userId) {
     throw Errors.badRequest("Confirmation did not match erase target");
   }
   const user = await prisma.user.findUnique({ where: { id: userId } });
@@ -157,7 +157,7 @@ export async function listAgeVerifications(request: Request): Promise<Response> 
 export async function overrideAgeVerification(request: Request, id: string): Promise<Response> {
   const actor = await actorWithPermission(request, COMPLIANCE_WRITE);
   const body = ageOverrideSchema.parse(await jsonBody(request));
-  if (body.confirmation !== id && body.confirmation !== "OVERRIDE") {
+  if (body.confirmation !== id) {
     throw Errors.badRequest("Confirmation did not match override target");
   }
   const before = await prisma.ageVerification.findUnique({ where: { id } });

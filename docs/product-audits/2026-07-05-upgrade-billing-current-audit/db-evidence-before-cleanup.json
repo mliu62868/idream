@@ -1,0 +1,215 @@
+{
+  "email": "chrome-billing-current-1783249648047@test.local",
+  "user": {
+    "id": "cmr7ou59g000081l7q4ntf76y",
+    "email": "chrome-billing-current-1783249648047@test.local",
+    "emailVerified": true,
+    "name": "Chrome Billing Audit",
+    "image": null,
+    "displayName": "Chrome Billing Audit",
+    "role": "user",
+    "status": "active",
+    "anonymousId": null,
+    "createdAt": "2026-07-05T11:08:33.700Z",
+    "updatedAt": "2026-07-05T11:08:33.700Z",
+    "deletedAt": null,
+    "subscriptions": [
+      {
+        "id": "cmr7ouz6f000681l7d38bbl6w",
+        "userId": "cmr7ou59g000081l7q4ntf76y",
+        "planId": "cmqs2963w000m84l73xwmnh6c",
+        "provider": "mock",
+        "providerCustomerId": null,
+        "providerSubscriptionId": "mock-invoice-cmr7ou59g000081l7q4ntf76y-1999-usd",
+        "status": "active",
+        "currentPeriodEnd": "2026-08-04T11:09:12.471Z",
+        "cancelAtPeriodEnd": false,
+        "createdAt": "2026-07-05T11:09:12.471Z",
+        "updatedAt": "2026-07-05T11:10:07.588Z",
+        "plan": {
+          "id": "cmqs2963w000m84l73xwmnh6c",
+          "slug": "premium",
+          "name": "Premium",
+          "billingPeriod": "monthly",
+          "priceCents": 1999,
+          "currency": "usd",
+          "includedDreamcoins": 1500,
+          "features": {
+            "voiceEnabled": true,
+            "voiceMinutes": 30,
+            "imageGeneration": true,
+            "videoGeneration": false,
+            "unlimitedMessages": true
+          },
+          "active": true
+        }
+      }
+    ],
+    "entitlements": [
+      {
+        "id": "cmr7ouz6m000a81l7hb42albv",
+        "userId": "cmr7ou59g000081l7q4ntf76y",
+        "key": "image_generation",
+        "value": true,
+        "source": "subscription",
+        "expiresAt": "2026-08-04T11:09:12.471Z",
+        "createdAt": "2026-07-05T11:09:12.478Z"
+      },
+      {
+        "id": "cmr7ouz6h000781l7stft38lo",
+        "userId": "cmr7ou59g000081l7q4ntf76y",
+        "key": "plan",
+        "value": {
+          "slug": "premium",
+          "billingPeriod": "monthly"
+        },
+        "source": "subscription",
+        "expiresAt": "2026-08-04T11:09:12.471Z",
+        "createdAt": "2026-07-05T11:09:12.473Z"
+      },
+      {
+        "id": "cmr7ouz6o000d81l7384jgx10",
+        "userId": "cmr7ou59g000081l7q4ntf76y",
+        "key": "premium_controls",
+        "value": true,
+        "source": "subscription",
+        "expiresAt": "2026-08-04T11:09:12.471Z",
+        "createdAt": "2026-07-05T11:09:12.480Z"
+      },
+      {
+        "id": "cmr7ouz6n000c81l774wxuipi",
+        "userId": "cmr7ou59g000081l7q4ntf76y",
+        "key": "unlimited_messages",
+        "value": true,
+        "source": "subscription",
+        "expiresAt": "2026-08-04T11:09:12.471Z",
+        "createdAt": "2026-07-05T11:09:12.479Z"
+      },
+      {
+        "id": "cmr7ouz6n000b81l7twfeqkck",
+        "userId": "cmr7ou59g000081l7q4ntf76y",
+        "key": "video_generation",
+        "value": false,
+        "source": "subscription",
+        "expiresAt": "2026-08-04T11:09:12.471Z",
+        "createdAt": "2026-07-05T11:09:12.479Z"
+      },
+      {
+        "id": "cmr7ouz6j000881l70uopstl7",
+        "userId": "cmr7ou59g000081l7q4ntf76y",
+        "key": "voice_enabled",
+        "value": true,
+        "source": "subscription",
+        "expiresAt": "2026-08-04T11:09:12.471Z",
+        "createdAt": "2026-07-05T11:09:12.475Z"
+      },
+      {
+        "id": "cmr7ouz6l000981l70txkixgp",
+        "userId": "cmr7ou59g000081l7q4ntf76y",
+        "key": "voice_minutes",
+        "value": 30,
+        "source": "subscription",
+        "expiresAt": "2026-08-04T11:09:12.471Z",
+        "createdAt": "2026-07-05T11:09:12.477Z"
+      }
+    ],
+    "ledgerEntries": [
+      {
+        "id": "cmr7ou59t000381l70rfno3uy",
+        "userId": "cmr7ou59g000081l7q4ntf76y",
+        "delta": 250,
+        "balanceAfter": 250,
+        "reason": "signup_bonus",
+        "sourceId": "signup",
+        "idempotencyKey": null,
+        "createdAt": "2026-07-05T11:08:33.713Z"
+      },
+      {
+        "id": "cmr7ouz6t000e81l7lf998jv1",
+        "userId": "cmr7ou59g000081l7q4ntf76y",
+        "delta": 1500,
+        "balanceAfter": 1750,
+        "reason": "subscription_grant",
+        "sourceId": "cmr7ouz6f000681l7d38bbl6w",
+        "idempotencyKey": "subscription:grant:mock-invoice-cmr7ou59g000081l7q4ntf76y-1999-usd",
+        "createdAt": "2026-07-05T11:09:12.485Z"
+      }
+    ],
+    "checkoutSessions": [
+      {
+        "id": "cmr7ouz5p000581l7qyp4l3cc",
+        "userId": "cmr7ou59g000081l7q4ntf76y",
+        "provider": "mock",
+        "providerSessionId": "mock-invoice-cmr7ou59g000081l7q4ntf76y-1999-usd",
+        "status": "completed",
+        "returnPath": "/profile",
+        "createdAt": "2026-07-05T11:09:12.445Z"
+      }
+    ],
+    "sessions": [
+      {
+        "id": "cmr7ou59k000281l7yz8uluhp",
+        "userId": "cmr7ou59g000081l7q4ntf76y",
+        "token": "sess_6dc4b61f4c1c9b2f7c7a1c99fccb1c8aad3ebe949398d3eb39a2a951355b41a2",
+        "expiresAt": "2026-08-04T11:08:33.668Z",
+        "ipAddress": null,
+        "userAgent": null,
+        "createdAt": "2026-07-05T11:08:33.700Z",
+        "updatedAt": "2026-07-05T11:08:33.700Z"
+      }
+    ],
+    "accounts": [
+      {
+        "id": "cmr7ou59i000181l72sd37reh",
+        "userId": "cmr7ou59g000081l7q4ntf76y",
+        "providerId": "credential",
+        "accountId": "chrome-billing-current-1783249648047@test.local",
+        "password": "scrypt$c1f6a40523f009a1e69ac83e8110eea4$d1410b9b5c8a06fc04592f38bd6faa19e7eb3a8d6ff7a01a6a409ef6a296b7536ccc621eaa5055b3d3a223ce758c63998446b0a2b7cd4d3657162087e4d9ad52",
+        "accessToken": null,
+        "refreshToken": null,
+        "accessTokenExpiresAt": null,
+        "scope": null,
+        "createdAt": "2026-07-05T11:08:33.700Z",
+        "updatedAt": "2026-07-05T11:08:33.700Z"
+      }
+    ]
+  },
+  "analytics": [
+    {
+      "id": "cmr7ouz70000g81l7bv2tbyml",
+      "userId": "cmr7ou59g000081l7q4ntf76y",
+      "anonymousId": "anon_d7e08557c11f4fe46b251415a4a48f76",
+      "name": "subscription_started",
+      "props": {
+        "planId": "cmqs2963w000m84l73xwmnh6c",
+        "source": "checkout",
+        "provider": "mock"
+      },
+      "createdAt": "2026-07-05T11:09:12.492Z"
+    },
+    {
+      "id": "cmr7ovrcn000h81l75h30us5i",
+      "userId": "cmr7ou59g000081l7q4ntf76y",
+      "anonymousId": "anon_d7e08557c11f4fe46b251415a4a48f76",
+      "name": "subscription_cancel_requested",
+      "props": {
+        "planId": "cmqs2963w000m84l73xwmnh6c",
+        "source": "profile",
+        "provider": "mock"
+      },
+      "createdAt": "2026-07-05T11:09:48.983Z"
+    },
+    {
+      "id": "cmr7ow5pt000i81l75mxt7obg",
+      "userId": "cmr7ou59g000081l7q4ntf76y",
+      "anonymousId": "anon_d7e08557c11f4fe46b251415a4a48f76",
+      "name": "subscription_resume_requested",
+      "props": {
+        "planId": "cmqs2963w000m84l73xwmnh6c",
+        "source": "profile",
+        "provider": "mock"
+      },
+      "createdAt": "2026-07-05T11:10:07.601Z"
+    }
+  ]
+}

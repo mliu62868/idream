@@ -25,7 +25,9 @@ export function ChatSessionListDrawer({
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [retryIndex, setRetryIndex] = useState(0);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [deleteConfirmSessionId, setDeleteConfirmSessionId] = useState<string | null>(null);
   // Inline rename: editingId marks the row in edit mode, draft holds the input value.
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -57,9 +59,10 @@ export function ChatSessionListDrawer({
     return () => {
       cancelled = true;
     };
-  }, [open]);
+  }, [open, retryIndex]);
 
   async function archive(sessionId: string) {
+    setDeleteConfirmSessionId(null);
     setBusyId(sessionId);
     try {
       const res = await fetch(
@@ -79,12 +82,14 @@ export function ChatSessionListDrawer({
   }
 
   function startRename(sessionId: string, currentTitle: string | null) {
+    setDeleteConfirmSessionId(null);
     setEditingId(sessionId);
     setDraft(currentTitle ?? "");
     setError(null);
   }
 
   function cancelRename() {
+    setDeleteConfirmSessionId(null);
     setEditingId(null);
     setDraft("");
   }
@@ -96,6 +101,7 @@ export function ChatSessionListDrawer({
       return;
     }
     setBusyId(sessionId);
+    setDeleteConfirmSessionId(null);
     try {
       const res = await fetch(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}`, {
         method: "PATCH",
@@ -121,6 +127,11 @@ export function ChatSessionListDrawer({
   }
 
   async function remove(sessionId: string) {
+    if (deleteConfirmSessionId !== sessionId) {
+      setDeleteConfirmSessionId(sessionId);
+      setError(null);
+      return;
+    }
     setBusyId(sessionId);
     try {
       const res = await fetch(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}`, {
@@ -128,6 +139,7 @@ export function ChatSessionListDrawer({
       });
       if (res.ok) {
         setSessions((current) => current.filter((row) => row.id !== sessionId));
+        setDeleteConfirmSessionId(null);
         if (sessionId === currentSessionId) {
           window.location.assign("/chat");
         }
@@ -139,6 +151,11 @@ export function ChatSessionListDrawer({
 
   if (!open) return null;
 
+  function closeDrawer() {
+    setDeleteConfirmSessionId(null);
+    onClose();
+  }
+
   return (
     <div
       aria-label="Your chats"
@@ -146,14 +163,14 @@ export function ChatSessionListDrawer({
       className="fixed inset-0 z-50 flex"
       role="dialog"
     >
-      <button aria-label="Close" className="absolute inset-0 bg-black/60" onClick={onClose} type="button" />
+      <button aria-label="Close" className="absolute inset-0 bg-black/60" onClick={closeDrawer} type="button" />
       <div className="relative mr-auto flex h-full w-full max-w-[360px] flex-col border-r border-white/10 bg-[rgb(18,18,18)] shadow-2xl">
         <header className="flex items-center justify-between border-b border-white/10 px-4 py-4">
           <h2 className="text-[16px] font-black uppercase">Your chats</h2>
           <button
             aria-label="Close your chats"
             className="grid h-8 w-8 place-items-center rounded-full bg-[rgb(36,36,36)] text-[rgb(170,170,170)] hover:text-white"
-            onClick={onClose}
+            onClick={closeDrawer}
             type="button"
           >
             <X className="h-4 w-4" />
@@ -162,17 +179,39 @@ export function ChatSessionListDrawer({
 
         <div className="flex-1 overflow-y-auto px-3 py-3">
           {loading ? (
-            <p className="px-2 py-6 text-[13px] text-[rgb(170,170,170)]" role="status">
+            <p
+              aria-live="polite"
+              className="px-2 py-6 text-[13px] text-[rgb(170,170,170)]"
+              data-testid="chat-drawer-status"
+              role="status"
+            >
               Loading…
             </p>
           ) : null}
           {error ? (
-            <p className="px-2 py-6 text-[13px] font-semibold text-[#ff7ac8]" role="status">
-              {error}
-            </p>
+            <div
+              aria-live="assertive"
+              className="px-2 py-6"
+              data-testid="chat-drawer-status"
+              role="alert"
+            >
+              <p className="text-[13px] font-semibold text-[#ff7ac8]">{error}</p>
+              <button
+                className="mt-3 inline-flex h-9 items-center justify-center rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]"
+                onClick={() => setRetryIndex((current) => current + 1)}
+                type="button"
+              >
+                Retry
+              </button>
+            </div>
           ) : null}
           {!loading && !error && sessions.length === 0 ? (
-            <div className="px-2 py-8 text-center">
+            <div
+              aria-live="polite"
+              className="px-2 py-8 text-center"
+              data-testid="chat-drawer-status"
+              role="status"
+            >
               <p className="text-[14px] font-semibold text-white">No chats yet</p>
               <p className="mt-1 text-[13px] text-[rgb(170,170,170)]">
                 Find a character or create your own to start chatting.
@@ -181,7 +220,7 @@ export function ChatSessionListDrawer({
                 <Link
                   className="inline-flex h-10 items-center justify-center gap-2 rounded-full bg-[rgb(36,36,36)] text-[13px] font-bold text-white hover:bg-[rgb(46,46,46)]"
                   href="/"
-                  onClick={onClose}
+                  onClick={closeDrawer}
                 >
                   <Compass className="h-4 w-4" />
                   Explore
@@ -189,7 +228,7 @@ export function ChatSessionListDrawer({
                 <Link
                   className="inline-flex h-10 items-center justify-center gap-2 rounded-full bg-[linear-gradient(0deg,#ff1cac,#fd5fc2_50%,#ff79d1)] text-[13px] font-bold text-white"
                   href="/create"
-                  onClick={onClose}
+                  onClick={closeDrawer}
                 >
                   <Plus className="h-4 w-4" />
                   Create
@@ -232,7 +271,7 @@ export function ChatSessionListDrawer({
                   <Link
                     className="flex min-w-0 flex-1 flex-col"
                     href={`/chat/${row.id}`}
-                    onClick={onClose}
+                    onClick={closeDrawer}
                   >
                     <span className="truncate text-[14px] font-semibold text-white">
                       {row.title ?? "Untitled chat"}
@@ -267,15 +306,21 @@ export function ChatSessionListDrawer({
                   <Archive className="h-4 w-4" />
                 </button>
                 <button
-                  aria-label="Delete chat"
-                  className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-[rgb(170,170,170)] hover:bg-black/40 hover:text-white disabled:opacity-50"
+                  aria-label={
+                    deleteConfirmSessionId === row.id ? "Confirm delete chat" : "Delete chat"
+                  }
+                  className={`inline-flex h-8 shrink-0 items-center justify-center rounded-full text-[rgb(170,170,170)] hover:bg-black/40 hover:text-white disabled:opacity-50 ${
+                    deleteConfirmSessionId === row.id
+                      ? "min-w-[76px] px-2 text-[11px] font-bold uppercase"
+                      : "w-8"
+                  }`}
                   data-testid="session-delete"
                   disabled={busyId === row.id}
                   onClick={() => remove(row.id)}
-                  title="Delete chat"
+                  title={deleteConfirmSessionId === row.id ? "Confirm delete chat" : "Delete chat"}
                   type="button"
                 >
-                  <Trash2 className="h-4 w-4" />
+                  {deleteConfirmSessionId === row.id ? "Confirm" : <Trash2 className="h-4 w-4" />}
                 </button>
               </li>
             ))}

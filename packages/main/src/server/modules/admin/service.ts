@@ -23,6 +23,7 @@ import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
+import { redeemCodeHash, redeemCodeHashCandidates } from "@/server/lib/redeem-codes";
 import { dimensionsForImageOrientation } from "@/server/modules/ourdream/generation-dimensions";
 import {
   listOfficialCharacters,
@@ -113,7 +114,7 @@ const permissionOverrideSchema = z.object({
 
 const requeueSchema = z.object({
   reason: z.string().trim().max(2_000).optional(),
-  confirmation: z.union([z.boolean(), z.string()]).optional(),
+  confirmation: z.string().trim().min(1).max(160),
 });
 
 const discardSchema = z.object({
@@ -124,7 +125,7 @@ const discardSchema = z.object({
 const deadLetterBatchSchema = z.object({
   jobIds: z.array(z.string().trim().min(1).max(160)).min(1).max(100),
   reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.string().trim().min(1).max(160),
+  confirmation: z.string().trim().min(1).max(20_000),
 });
 
 const flagPatchSchema = z.object({
@@ -307,7 +308,7 @@ const promptTemplatePatchSchema = promptTemplateSchema.partial();
 
 const publishSchema = z.object({
   reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.literal("PUBLISH"),
+  confirmation: z.string().trim().min(1).max(160),
   dryRunSummary: z.record(z.string(), z.unknown()).optional(),
 });
 
@@ -316,7 +317,7 @@ const modelProfilePublishMinRate = 0.8;
 
 const rollbackSchema = z.object({
   reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.literal("ROLLBACK"),
+  confirmation: z.string().trim().min(1).max(160),
 });
 
 const presetAdminSchema = z.object({
@@ -335,6 +336,8 @@ const pricingRuleSchema = z.object({
   baseCost: z.number().int().min(0).max(100_000),
   multiplier: z.number().min(0.1).max(20).default(1),
   effectiveFrom: z.string().datetime().optional(),
+  reason: z.string().trim().min(3).max(2_000),
+  confirmation: z.string().trim().min(1).max(160),
 });
 
 // ruleKey/mode 在 create 后不可改：避免一条 draft 的 mode 漂离其 ruleKey 版本谱系。
@@ -347,7 +350,7 @@ const pricingRulePatchSchema = z.object({
 
 const pricingPublishSchema = z.object({
   reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.literal("PUBLISH"),
+  confirmation: z.string().trim().min(1).max(160),
   effectiveFrom: z.string().datetime().optional(),
 });
 
@@ -850,8 +853,8 @@ async function getUserDetail(request: Request, userId: string) {
 async function updateUserStatus(request: Request, userId: string) {
   const actor = await actorWithPermission(request, "user.status.write");
   const body = statusChangeSchema.parse(await jsonBody(request));
-  if (body.confirmation !== userId && body.confirmation !== body.status.toUpperCase()) {
-    throw Errors.badRequest("Confirmation did not match target user or status");
+  if (body.confirmation !== userStatusConfirmation(userId, body.status)) {
+    throw Errors.badRequest("Confirmation did not match user status target");
   }
   const before = await prisma.user.findUnique({ where: { id: userId } });
   if (!before) throw Errors.notFound("User not found");
@@ -870,10 +873,14 @@ async function updateUserStatus(request: Request, userId: string) {
   return ok({ user: publicUser(after) });
 }
 
+function userStatusConfirmation(userId: string, status: string) {
+  return `${userId}:${status}`;
+}
+
 async function updateUserRole(request: Request, userId: string) {
   const actor = await actorWithPermission(request, "user.role.write");
   const body = roleChangeSchema.parse(await jsonBody(request));
-  if (body.confirmation !== userId && body.confirmation !== "ROLE") {
+  if (body.confirmation !== userRoleConfirmation(userId, body.role)) {
     throw Errors.badRequest("Confirmation did not match role-change target");
   }
   const before = await prisma.user.findUnique({ where: { id: userId } });
@@ -891,6 +898,10 @@ async function updateUserRole(request: Request, userId: string) {
     after: { role: after.role },
   });
   return ok({ user: publicUser(after) });
+}
+
+function userRoleConfirmation(userId: string, role: string) {
+  return `${userId}:${role}`;
 }
 
 // SPEC: 用户级权限覆盖管理 —— 给单个用户 grant/revoke/clear 某 permission key，admin only，全部审计。
@@ -911,7 +922,7 @@ async function listUserPermissions(request: Request, userId: string) {
 async function setUserPermission(request: Request, userId: string) {
   const actor = await actorWithPermission(request, "user.role.write");
   const body = permissionOverrideSchema.parse(await jsonBody(request));
-  if (body.confirmation !== userId && body.confirmation !== "PERMISSION") {
+  if (body.confirmation !== permissionOverrideConfirmation(userId, body.permissionKey, body.effect)) {
     throw Errors.badRequest("Confirmation did not match permission-override target");
   }
   if (body.effect !== "clear" && !isPermissionKey(body.permissionKey)) {
@@ -948,6 +959,10 @@ async function setUserPermission(request: Request, userId: string) {
     after: { permissionKey: body.permissionKey, effect: body.effect },
   });
   return ok({ override, cleared: body.effect === "clear" });
+}
+
+function permissionOverrideConfirmation(userId: string, permissionKey: string, effect: string) {
+  return `${userId}:${permissionKey}:${effect}`;
 }
 
 async function listGenerationJobs(request: Request) {
@@ -1038,7 +1053,7 @@ async function getGenerationJobDetail(request: Request, jobId: string) {
 async function requeueGenerationJob(request: Request, jobId: string) {
   const actor = await actorWithPermission(request, "generation.job.requeue");
   const body = requeueSchema.parse(await jsonBody(request));
-  if (body.confirmation !== true && body.confirmation !== jobId && body.confirmation !== "REQUEUE") {
+  if (body.confirmation !== jobId) {
     throw Errors.badRequest("Confirmation did not match requeue target");
   }
   const job = await prisma.generationJob.findUnique({ where: { id: jobId } });
@@ -1072,7 +1087,7 @@ async function requeueGenerationJob(request: Request, jobId: string) {
 async function discardGenerationJob(request: Request, jobId: string) {
   const actor = await actorWithPermission(request, "ops.deadletter.write");
   const body = discardSchema.parse(await jsonBody(request));
-  if (body.confirmation !== jobId && body.confirmation !== "DISCARD") {
+  if (body.confirmation !== jobId) {
     throw Errors.badRequest("Confirmation did not match discard target");
   }
   const job = await prisma.generationJob.findUnique({ where: { id: jobId } });
@@ -1115,8 +1130,7 @@ async function discardGenerationJob(request: Request, jobId: string) {
 }
 
 // SPEC: Dead-letter 运营台 —— 列出重试耗尽/不可恢复（failed|blocked）的 job，支持单/批 requeue 与 discard。
-// INTENT: requeue/discard 单条 API 已存在且测试覆盖；本节只新增「列表（带退款状态）+ 批量」前端运营所需后端，
-//         不改动单条 handler（零回归）。批量记一条审计 + 子项列表（§12）。
+// INTENT: 单/批 requeue 与 discard 都绑定具体 job id 确认；批量记一条审计 + 子项列表（§12）。
 // INVARIANTS: 退款幂等 —— 已有 refund ledger 的 job 不再二次退款；requeue 跳过已退款 job。
 async function deadLetterQueue(request: Request) {
   await actorWithPermission(request, "ops.queue.read");
@@ -1148,8 +1162,8 @@ async function deadLetterQueue(request: Request) {
 async function requeueDeadLetterBatch(request: Request) {
   const actor = await actorWithPermission(request, "generation.job.requeue");
   const body = deadLetterBatchSchema.parse(await jsonBody(request));
-  if (body.confirmation !== "REQUEUE") {
-    throw Errors.badRequest("Batch requeue requires REQUEUE confirmation");
+  if (body.confirmation !== deadLetterBatchConfirmation(body.jobIds)) {
+    throw Errors.badRequest("Batch requeue confirmation did not match selected jobs");
   }
   const jobs = await prisma.generationJob.findMany({ where: { id: { in: body.jobIds } } });
   const refundedIds = await refundedJobIds(body.jobIds);
@@ -1185,8 +1199,8 @@ async function requeueDeadLetterBatch(request: Request) {
 async function discardDeadLetterBatch(request: Request) {
   const actor = await actorWithPermission(request, "ops.deadletter.write");
   const body = deadLetterBatchSchema.parse(await jsonBody(request));
-  if (body.confirmation !== "DISCARD") {
-    throw Errors.badRequest("Batch discard requires DISCARD confirmation");
+  if (body.confirmation !== deadLetterBatchConfirmation(body.jobIds)) {
+    throw Errors.badRequest("Batch discard confirmation did not match selected jobs");
   }
   const jobs = await prisma.generationJob.findMany({ where: { id: { in: body.jobIds } } });
   const discarded: string[] = [];
@@ -1246,6 +1260,10 @@ async function refundedJobIds(jobIds: string[]) {
 function missingIds(requested: string[], found: { id: string }[]) {
   const foundIds = new Set(found.map((job) => job.id));
   return requested.filter((id) => !foundIds.has(id));
+}
+
+function deadLetterBatchConfirmation(jobIds: string[]) {
+  return jobIds.join(",");
 }
 
 async function listModelProfiles(request: Request) {
@@ -1772,6 +1790,10 @@ function titleFromSlug(slug: string) {
     .join(" ");
 }
 
+function assertTargetConfirmation(value: string, targetId: string) {
+  if (value !== targetId) throw Errors.badRequest("Confirmation did not match target");
+}
+
 async function createModelProfile(request: Request) {
   if (!modelDiagnosticsEnabled()) throw Errors.notFound("Admin API route not found");
   const actor = await actorWithPermission(request, "generation.config.write");
@@ -1823,9 +1845,10 @@ async function patchModelProfile(request: Request, id: string) {
     throw Errors.badRequest("Draft profiles cannot be enabled directly; publish the profile after verification");
   }
   if (body.enabled === false && before.enabled) {
-    if (!body.reason || body.confirmation !== "DISABLE") {
-      throw Errors.badRequest("Disabling a profile requires reason and DISABLE confirmation");
+    if (!body.reason || !body.confirmation) {
+      throw Errors.badRequest("Disabling a profile requires reason and target confirmation");
     }
+    assertTargetConfirmation(body.confirmation, before.id);
   }
   const shouldPersistRunnerConfig =
     body.runnerConfig !== undefined || body.pipelineModel !== undefined || body.runner !== undefined;
@@ -1905,6 +1928,7 @@ async function publishModelProfile(request: Request, id: string) {
   const body = publishSchema.parse(await jsonBody(request));
   const profile = await prisma.generationModelProfile.findUnique({ where: { id } });
   if (!profile) throw Errors.notFound("Model profile not found");
+  assertTargetConfirmation(body.confirmation, profile.id);
   if (profile.status !== "draft") throw Errors.badRequest("Only draft profiles can be published");
   if (profile.mode === "video" && !(await featureEnabled("video_gen"))) {
     throw Errors.forbidden("Video generation is disabled by feature flag");
@@ -2072,6 +2096,7 @@ async function rollbackModelProfile(request: Request, id: string) {
   const body = rollbackSchema.parse(await jsonBody(request));
   const current = await prisma.generationModelProfile.findUnique({ where: { id } });
   if (!current) throw Errors.notFound("Model profile not found");
+  assertTargetConfirmation(body.confirmation, current.id);
   const previous = await prisma.generationModelProfile.findFirst({
     where: {
       profileKey: current.profileKey,
@@ -2105,11 +2130,9 @@ async function rollbackModelProfile(request: Request, id: string) {
 async function createProfileTestJob(request: Request, id: string) {
   const actor = await actorWithPermission(request, "generation.config.write");
   const body = modelProfileTestJobSchema.parse(await jsonBody(request));
-  if (body.confirmation !== "TEST" && body.confirmation !== id) {
-    throw Errors.badRequest("Test job requires TEST confirmation");
-  }
   const profile = await prisma.generationModelProfile.findUnique({ where: { id } });
   if (!profile) throw Errors.notFound("Model profile not found");
+  assertTargetConfirmation(body.confirmation, profile.id);
   if (profile.status === "archived") {
     throw Errors.badRequest("Archived profiles cannot create test jobs");
   }
@@ -2521,6 +2544,7 @@ async function publishPromptTemplate(request: Request, id: string) {
   const body = publishSchema.parse(await jsonBody(request));
   const template = await prisma.generationPromptTemplate.findUnique({ where: { id } });
   if (!template) throw Errors.notFound("Prompt template not found");
+  assertTargetConfirmation(body.confirmation, template.id);
   if (template.status !== "draft") throw Errors.badRequest("Only draft templates can be published");
   const dryRunSummary = body.dryRunSummary
     ? toInputJson(body.dryRunSummary)
@@ -2555,6 +2579,7 @@ async function rollbackPromptTemplate(request: Request, id: string) {
   const body = rollbackSchema.parse(await jsonBody(request));
   const current = await prisma.generationPromptTemplate.findUnique({ where: { id } });
   if (!current) throw Errors.notFound("Prompt template not found");
+  assertTargetConfirmation(body.confirmation, current.id);
   const previous = await prisma.generationPromptTemplate.findFirst({
     where: {
       templateKey: current.templateKey,
@@ -2663,6 +2688,9 @@ async function listPricingRules(request: Request) {
 async function createPricingRule(request: Request) {
   const actor = await actorWithPermission(request, "config.pricing.write");
   const body = pricingRuleSchema.parse(await jsonBody(request));
+  if (body.confirmation !== body.ruleKey) {
+    throw Errors.badRequest("Confirmation did not match pricing rule key");
+  }
   const latest = await prisma.pricingRule.findFirst({
     where: { ruleKey: body.ruleKey },
     orderBy: { version: "desc" },
@@ -2683,6 +2711,7 @@ async function createPricingRule(request: Request) {
     action: "config.pricing.create",
     targetType: "pricing_rule",
     targetId: rule.id,
+    reason: body.reason,
     after: pricingAuditSnapshot(rule),
   });
   return ok({ rule });
@@ -2724,6 +2753,7 @@ async function publishPricingRule(request: Request, id: string) {
   const { previous, published } = await prisma.$transaction(async (tx) => {
     const rule = await tx.pricingRule.findUnique({ where: { id } });
     if (!rule) throw Errors.notFound("Pricing rule not found");
+    assertTargetConfirmation(body.confirmation, rule.id);
     if (rule.status !== "draft") throw Errors.badRequest("Only draft pricing rules can be published");
     // 高危：改价发布在硬门控开启时需双人审批凭据（见 enforceApproval）。
     await enforceApproval("config.pricing.publish", id, tx);
@@ -2760,6 +2790,7 @@ async function rollbackPricingRule(request: Request, id: string) {
   const body = rollbackSchema.parse(await jsonBody(request));
   const current = await prisma.pricingRule.findUnique({ where: { id } });
   if (!current) throw Errors.notFound("Pricing rule not found");
+  assertTargetConfirmation(body.confirmation, current.id);
   const previous = await prisma.pricingRule.findFirst({
     where: { ruleKey: current.ruleKey, status: "archived", version: { lt: current.version } },
     orderBy: { version: "desc" },
@@ -3039,7 +3070,8 @@ async function billingReconciliation(request: Request) {
 async function billingAdjustment(request: Request) {
   const actor = await actorWithPermission(request, "billing.ledger.adjust");
   const body = ledgerAdjustmentSchema.parse(await jsonBody(request));
-  if (body.confirmation !== body.userId && body.confirmation !== "ADJUST") {
+  const expectedConfirmation = ledgerAdjustmentConfirmation(body.userId, body.delta);
+  if (body.confirmation !== expectedConfirmation) {
     throw Errors.badRequest("Confirmation did not match ledger adjustment target");
   }
   const entry = await prisma.$transaction(async (tx) => {
@@ -3066,6 +3098,15 @@ async function billingAdjustment(request: Request) {
   return ok({ ledgerEntry: entry });
 }
 
+function ledgerAdjustmentConfirmation(userId: string, delta: number) {
+  return `${userId}:${delta}`;
+}
+
+function featureFlagConfirmation(key: string, enabled: boolean | undefined) {
+  if (enabled === undefined) return `${key}:updated`;
+  return `${key}:${enabled === false ? "disabled" : "enabled"}`;
+}
+
 async function listFeatureFlags(request: Request) {
   await actorWithPermission(request, "ops.queue.read");
   const flags = await prisma.featureFlag.findMany({ orderBy: { key: "asc" } });
@@ -3078,8 +3119,9 @@ async function patchFeatureFlag(request: Request, key: string) {
   if (isHardPolicyFlag(key)) {
     throw Errors.forbidden("Hard safety policy flags cannot be changed");
   }
-  if (body.confirmation !== key && body.confirmation !== "FLAG") {
-    throw Errors.badRequest("Confirmation did not match feature flag key");
+  const expectedConfirmation = featureFlagConfirmation(key, body.enabled);
+  if (body.confirmation !== expectedConfirmation) {
+    throw Errors.badRequest("Confirmation did not match feature flag action");
   }
   const before = await prisma.featureFlag.findUnique({ where: { key } });
   if (before?.hardPolicy) throw Errors.forbidden("Hard safety policy flags cannot be changed");
@@ -3590,7 +3632,7 @@ function supportRequestSla(request: SupportRequestRow) {
 async function viewPlaintext(request: Request) {
   const actor = await actorWithPermission(request, "support.plaintext.view");
   const body = plaintextViewSchema.parse(await jsonBody(request));
-  if (body.confirmation !== body.targetId && body.confirmation !== "VIEW") {
+  if (body.confirmation !== body.targetId) {
     throw Errors.badRequest("Confirmation did not match plaintext target");
   }
   const target = await plaintextTarget(body.targetType, body.targetId);
@@ -3751,7 +3793,7 @@ async function getContentCharacter(request: Request, id: string) {
 async function setCharacterVisibility(request: Request, id: string) {
   const actor = await actorWithPermission(request, "content.takedown.write");
   const body = contentVisibilitySchema.parse(await jsonBody(request));
-  if (body.confirmation !== id && body.confirmation !== "VISIBILITY") {
+  if (body.confirmation !== contentVisibilityConfirmation(id, body.visibility)) {
     throw Errors.badRequest("Confirmation did not match visibility target");
   }
   const before = await prisma.character.findUnique({ where: { id } });
@@ -3771,10 +3813,14 @@ async function setCharacterVisibility(request: Request, id: string) {
   return ok({ character: { id: after.id, visibility: after.visibility, status: after.status } });
 }
 
+function contentVisibilityConfirmation(id: string, visibility: string) {
+  return `${id}:visibility:${visibility}`;
+}
+
 async function setCharacterStatus(request: Request, id: string) {
   const actor = await actorWithPermission(request, "content.takedown.write");
   const body = contentStatusSchema.parse(await jsonBody(request));
-  if (body.confirmation !== id && body.confirmation !== "STATUS") {
+  if (body.confirmation !== contentStatusConfirmation(id, body.status)) {
     throw Errors.badRequest("Confirmation did not match status target");
   }
   const before = await prisma.character.findUnique({ where: { id } });
@@ -3792,6 +3838,10 @@ async function setCharacterStatus(request: Request, id: string) {
     after: { status: after.status },
   });
   return ok({ character: { id: after.id, visibility: after.visibility, status: after.status } });
+}
+
+function contentStatusConfirmation(id: string, status: string) {
+  return `${id}:status:${status}`;
 }
 
 // ── F3 Featured 策展（AppSetting key=feed.featured；公开 feed 读路径优先展示，见 ourdream/service feed()） ──
@@ -3817,10 +3867,11 @@ async function getFeaturedCharacters(request: Request) {
 async function putFeaturedCharacters(request: Request) {
   const actor = await actorWithPermission(request, "content.takedown.write");
   const body = featuredPutSchema.parse(await jsonBody(request));
-  if (body.confirmation !== "FEATURED") {
+  const unique = [...new Set(body.characterIds.map((id) => id.trim()).filter(Boolean))];
+  const expectedConfirmation = unique.length > 0 ? unique.join(",") : "CLEAR";
+  if (body.confirmation !== expectedConfirmation) {
     throw Errors.badRequest("Confirmation did not match featured target");
   }
-  const unique = [...new Set(body.characterIds)];
   // 仅允许仍 public+approved 的角色进精选，避免精选位指向已下架内容。
   const valid = unique.length
     ? await prisma.character.findMany({
@@ -3874,11 +3925,13 @@ async function listRedeemCodes(request: Request) {
 async function createRedeemCode(request: Request) {
   const actor = await actorWithPermission(request, "growth.promo.write");
   const body = redeemCodeCreateSchema.parse(await jsonBody(request));
-  if (body.confirmation !== "CREATE" && body.confirmation !== body.code) {
+  if (body.confirmation !== body.code) {
     throw Errors.badRequest("Confirmation did not match");
   }
-  const codeHash = createHash("sha256").update(body.code).digest("hex");
-  const existing = await prisma.redeemCode.findUnique({ where: { codeHash } });
+  const codeHash = redeemCodeHash(body.code);
+  const existing = await prisma.redeemCode.findFirst({
+    where: { codeHash: { in: redeemCodeHashCandidates(body.code) } },
+  });
   if (existing) throw Errors.badRequest("Redeem code already exists");
   const code = await prisma.redeemCode.create({
     data: {
@@ -3903,11 +3956,9 @@ async function createRedeemCode(request: Request) {
 async function disableRedeemCode(request: Request, id: string) {
   const actor = await actorWithPermission(request, "growth.promo.write");
   const body = promoDisableSchema.parse(await jsonBody(request));
-  if (body.confirmation !== id && body.confirmation !== "DISABLE") {
-    throw Errors.badRequest("Confirmation did not match disable target");
-  }
   const before = await prisma.redeemCode.findUnique({ where: { id } });
   if (!before) throw Errors.notFound("Redeem code not found");
+  assertTargetConfirmation(body.confirmation, before.id);
   const after = await prisma.redeemCode.update({ where: { id }, data: { status: "disabled" } });
   await writeAudit(request, actor, {
     action: "promo.redeem_code.disable",
@@ -3951,6 +4002,9 @@ async function createApproval(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
   const body = approvalCreateSchema.parse(await jsonBody(request));
+  if (body.confirmation !== approvalRequestConfirmation(body.targetId, body.action)) {
+    throw Errors.badRequest("Confirmation did not match approval target");
+  }
   if (!isPermissionKey(body.permissionKey)) throw Errors.badRequest("Unknown permission key");
   const perms = await effectivePermissions(user.id, user.role);
   if (!perms.has(body.permissionKey)) {
@@ -3981,11 +4035,16 @@ async function createApproval(request: Request) {
   return ok({ request: created });
 }
 
+function approvalRequestConfirmation(targetId: string, action: string) {
+  return `${targetId}:${action}`;
+}
+
 async function approveApproval(request: Request, id: string) {
   const actor = await actorWithPermission(request, "admin.approval.review");
   const body = approvalDecisionSchema.parse(await jsonBody(request));
   const req = await prisma.adminActionRequest.findUnique({ where: { id } });
   if (!req) throw Errors.notFound("Approval request not found");
+  assertTargetConfirmation(body.confirmation, req.id);
   if (req.status !== "pending") throw Errors.badRequest("Approval request is not pending");
   // 不变量：审批人 ≠ 发起人。
   if (req.requestedById === actor.id) {
@@ -4021,6 +4080,7 @@ async function rejectApproval(request: Request, id: string) {
   const body = approvalDecisionSchema.parse(await jsonBody(request));
   const req = await prisma.adminActionRequest.findUnique({ where: { id } });
   if (!req) throw Errors.notFound("Approval request not found");
+  assertTargetConfirmation(body.confirmation, req.id);
   if (req.status !== "pending") throw Errors.badRequest("Approval request is not pending");
   const updated = await prisma.adminActionRequest.update({
     where: { id },

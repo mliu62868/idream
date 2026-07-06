@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Fragment, type ReactNode, type WheelEvent } from "react";
+import { Fragment, type FormEvent, type ReactNode, type WheelEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
@@ -106,6 +106,30 @@ type SupportRequestFilters = {
   status: SupportStatusFilter;
   sla: SupportSlaFilter;
   category: string;
+};
+
+type PlaintextTargetType = "generation_job" | "media";
+
+type PlaintextAccessDraft = {
+  targetType: PlaintextTargetType;
+  targetId: string;
+  ticketId: string;
+  legalHoldId: string;
+  reason: string;
+  confirmation: string;
+};
+
+type PlaintextAccessResult = {
+  target: {
+    type: PlaintextTargetType;
+    id: string;
+    ownerId: string;
+  };
+  plaintext: Record<string, string | null>;
+  authorization: {
+    ticketId: string | null;
+    legalHoldId: string | null;
+  };
 };
 
 type DashboardData = {
@@ -350,6 +374,8 @@ type PricingDraft = {
   mode: "image" | "video" | "voice";
   baseCost: string;
   multiplier: string;
+  reason: string;
+  confirmation: string;
 };
 
 type PermissionForm = {
@@ -435,7 +461,7 @@ const modelProfileTemplates: Array<{
   {
     id: "reference_identity_sdcpp",
     label: "Reference identity template",
-    description: "CVP identity prompt + anchor/reference images through sd.cpp.",
+    description: "Reference-image candidate for sd.cpp-compatible runners; publish only after reference smoke.",
     intent: "image_to_image_identity_reference",
   },
   {
@@ -468,6 +494,8 @@ const defaultPricingDraft: PricingDraft = {
   mode: "image",
   baseCost: "5",
   multiplier: "1",
+  reason: "",
+  confirmation: "",
 };
 
 const defaultPermissionForm: PermissionForm = {
@@ -494,6 +522,22 @@ const defaultSupportRequestFilters: SupportRequestFilters = {
   sla: "all",
   category: "",
 };
+const defaultPlaintextAccessDraft: PlaintextAccessDraft = {
+  targetType: "generation_job",
+  targetId: "",
+  ticketId: "",
+  legalHoldId: "",
+  reason: "",
+  confirmation: "",
+};
+const plaintextTargetTypeOptions: Array<{
+  value: PlaintextTargetType;
+  label: string;
+  fields: string;
+}> = [
+  { value: "generation_job", label: "Generation job", fields: "prompt, negativePrompt" },
+  { value: "media", label: "Media asset", fields: "prompt" },
+];
 const supportStatusOptions: Array<{ value: SupportStatusFilter; label: string }> = [
   { value: "all", label: "All" },
   { value: "active", label: "Active support" },
@@ -738,6 +782,7 @@ export function AdminConsoleClient({
     setError(null);
     try {
       await apiWrite("/api/v1/admin/pricing/rules", "POST", pricingDraftPayload(pricingDraft));
+      setPricingDraft({ ...pricingDraft, reason: "", confirmation: "" });
       await load();
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : "Pricing rule create failed");
@@ -844,6 +889,7 @@ export function AdminConsoleClient({
                   <input
                     aria-label={t("Filter")}
                     className="h-full min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-[rgb(114,113,112)]"
+                    name="admin-filter"
                     onChange={(event) => setQuery(event.target.value)}
                     placeholder={t("Filter")}
                     value={query}
@@ -856,6 +902,7 @@ export function AdminConsoleClient({
                     <select
                       aria-label={t("Language")}
                       className="h-full bg-transparent text-sm outline-none"
+                      name="admin-language"
                       onChange={(event) => setLocale(event.target.value as AdminLocale)}
                       value={locale}
                     >
@@ -913,14 +960,20 @@ export function AdminConsoleClient({
 
           <div className="p-4 md:p-6">
             {error ? (
-              <div className="mb-4 border border-red-400/30 bg-red-950/30 px-4 py-3 text-sm text-red-100">
+              <div
+                aria-live="assertive"
+                className="mb-4 border border-red-400/30 bg-red-950/30 px-4 py-3 text-sm text-red-100"
+                role="alert"
+              >
                 {error}
               </div>
             ) : null}
             {actionStatus ? (
               <div
+                aria-live="polite"
                 className="mb-4 border border-emerald-400/30 bg-emerald-950/30 px-4 py-3 text-sm text-emerald-100"
                 data-testid="admin-action-status"
+                role="status"
               >
                 {actionStatus}
               </div>
@@ -1355,7 +1408,14 @@ function templateDraftPayload(draft: TemplateDraft): Record<string, unknown> {
 }
 
 function canCreatePricingRule(draft: PricingDraft) {
-  return Boolean(draft.ruleKey.trim() && draft.label.trim() && draft.baseCost.trim() !== "");
+  const ruleKey = draft.ruleKey.trim();
+  return Boolean(
+    ruleKey &&
+      draft.label.trim() &&
+      draft.baseCost.trim() !== "" &&
+      draft.reason.trim().length >= 3 &&
+      draft.confirmation.trim() === ruleKey,
+  );
 }
 
 function pricingDraftPayload(draft: PricingDraft): Record<string, unknown> {
@@ -1365,6 +1425,8 @@ function pricingDraftPayload(draft: PricingDraft): Record<string, unknown> {
     mode: draft.mode,
     baseCost: intFromText(draft.baseCost, 5),
     multiplier: numberFromText(draft.multiplier, 1),
+    reason: draft.reason.trim(),
+    confirmation: draft.confirmation.trim(),
   };
 }
 
@@ -2286,11 +2348,11 @@ function JobsView({
                       title: `Requeue ${id}`,
                       endpoint: `/api/v1/admin/generation/jobs/${id}/requeue`,
                       method: "POST",
-                      confirmText: "REQUEUE",
+                      confirmText: id,
                       reasonRequired: false,
-                      body: (actionReason) => ({
+                      body: (actionReason, actionConfirmation) => ({
                         reason: actionReason || undefined,
-                        confirmation: "REQUEUE",
+                        confirmation: actionConfirmation,
                       }),
                     })
                   }
@@ -2518,7 +2580,7 @@ function ProfileReleaseWorkbench({
           orientation: selectedOrientation,
           outputCount: 1,
           reason: "Admin image test from Generation Config",
-          confirmation: "TEST",
+          confirmation: selectedId,
         },
       );
       const jobId = stringValue(result.job.id);
@@ -2616,9 +2678,12 @@ function ProfileReleaseWorkbench({
                   title: `Dry run profile ${selectedId}`,
                   endpoint: `/api/v1/admin/generation/model-profiles/${selectedId}/dry-run`,
                   method: "POST",
-                  confirmText: "DRYRUN",
+                  confirmText: selectedId,
                   reasonRequired: true,
-                  body: (actionReason) => ({ reason: actionReason, confirmation: "DRYRUN" }),
+                  body: (actionReason, actionConfirmation) => ({
+                    reason: actionReason,
+                    confirmation: actionConfirmation,
+                  }),
                 })
               }
               type="button"
@@ -3126,9 +3191,12 @@ function dryRunProfileAction(id: string): PendingAction {
     title: `Dry run profile ${id}`,
     endpoint: `/api/v1/admin/generation/model-profiles/${id}/dry-run`,
     method: "POST",
-    confirmText: "DRYRUN",
+    confirmText: id,
     reasonRequired: true,
-    body: (actionReason) => ({ reason: actionReason, confirmation: "DRYRUN" }),
+    body: (actionReason, actionConfirmation) => ({
+      reason: actionReason,
+      confirmation: actionConfirmation,
+    }),
   };
 }
 
@@ -3138,13 +3206,13 @@ function publishProfileAction(id: string, mode: string, profile?: Row | null): P
     title: `Publish profile ${id}`,
     endpoint: `/api/v1/admin/generation/model-profiles/${id}/publish`,
     method: "POST",
-    confirmText: "PUBLISH",
+    confirmText: id,
     reasonRequired: true,
     review: requiresReview ? "image_consistency" : undefined,
     verification: profile ? profileVerificationSummary(profile) : undefined,
-    body: (actionReason, _confirmation, review) => ({
+    body: (actionReason, actionConfirmation, review) => ({
       reason: actionReason,
-      confirmation: "PUBLISH",
+      confirmation: actionConfirmation,
       ...(requiresReview ? { dryRunSummary: actionReviewDryRunSummary(review) } : {}),
     }),
   };
@@ -3155,9 +3223,12 @@ function rollbackProfileAction(id: string): PendingAction {
     title: `Rollback profile ${id}`,
     endpoint: `/api/v1/admin/generation/model-profiles/${id}/rollback`,
     method: "POST",
-    confirmText: "ROLLBACK",
+    confirmText: id,
     reasonRequired: true,
-    body: (actionReason) => ({ reason: actionReason, confirmation: "ROLLBACK" }),
+    body: (actionReason, actionConfirmation) => ({
+      reason: actionReason,
+      confirmation: actionConfirmation,
+    }),
   };
 }
 
@@ -3166,12 +3237,12 @@ function disableProfileAction(id: string): PendingAction {
     title: `Disable profile ${id}`,
     endpoint: `/api/v1/admin/generation/model-profiles/${id}`,
     method: "PATCH",
-    confirmText: "DISABLE",
+    confirmText: id,
     reasonRequired: true,
-    body: (actionReason) => ({
+    body: (actionReason, actionConfirmation) => ({
       enabled: false,
       reason: actionReason,
-      confirmation: "DISABLE",
+      confirmation: actionConfirmation,
     }),
   };
 }
@@ -3181,11 +3252,11 @@ function publishTemplateAction(id: string): PendingAction {
     title: `Publish template ${id}`,
     endpoint: `/api/v1/admin/generation/prompt-templates/${id}/publish`,
     method: "POST",
-    confirmText: "PUBLISH",
+    confirmText: id,
     reasonRequired: true,
-    body: (actionReason) => ({
+    body: (actionReason, actionConfirmation) => ({
       reason: actionReason,
-      confirmation: "PUBLISH",
+      confirmation: actionConfirmation,
       dryRunSummary: { source: "admin_console" },
     }),
   };
@@ -3196,23 +3267,28 @@ function rollbackTemplateAction(id: string): PendingAction {
     title: `Rollback template ${id}`,
     endpoint: `/api/v1/admin/generation/prompt-templates/${id}/rollback`,
     method: "POST",
-    confirmText: "ROLLBACK",
+    confirmText: id,
     reasonRequired: true,
-    body: (actionReason) => ({ reason: actionReason, confirmation: "ROLLBACK" }),
+    body: (actionReason, actionConfirmation) => ({
+      reason: actionReason,
+      confirmation: actionConfirmation,
+    }),
   };
 }
 
 function toggleFeatureFlagAction(key: string, enabled: boolean): PendingAction {
+  const nextEnabled = !enabled;
+  const confirmationTarget = `${key}:${nextEnabled ? "enabled" : "disabled"}`;
   return {
     title: `${enabled ? "Disable" : "Enable"} ${key}`,
     endpoint: `/api/v1/admin/feature-flags/${key}`,
     method: "PATCH",
-    confirmText: "FLAG",
+    confirmText: confirmationTarget,
     reasonRequired: true,
-    body: (actionReason) => ({
-      enabled: !enabled,
+    body: (actionReason, actionConfirmation) => ({
+      enabled: nextEnabled,
       reason: actionReason,
-      confirmation: "FLAG",
+      confirmation: actionConfirmation,
     }),
   };
 }
@@ -4921,12 +4997,14 @@ function UsersView({
         </p>
         <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_140px_auto]">
           <input
+            aria-label={t("Permission user ID")}
             className="h-10 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
             onChange={(event) => setPermissionForm({ ...permissionForm, userId: event.target.value })}
             placeholder={t("User ID")}
             value={permissionForm.userId}
           />
           <select
+            aria-label={t("Permission key")}
             className="h-10 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
             onChange={(event) =>
               setPermissionForm({ ...permissionForm, permissionKey: event.target.value })
@@ -4940,6 +5018,7 @@ function UsersView({
             ))}
           </select>
           <select
+            aria-label={t("Permission effect")}
             className="h-10 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
             onChange={(event) =>
               setPermissionForm({
@@ -4958,21 +5037,23 @@ function UsersView({
           <button
             className="inline-flex h-10 items-center justify-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
             disabled={!permissionForm.userId.trim()}
-            onClick={() =>
+            onClick={() => {
+              const targetUserId = permissionForm.userId.trim();
+              const confirmationTarget = `${targetUserId}:${permissionForm.permissionKey}:${permissionForm.effect}`;
               openAction({
                 title: `${permissionForm.effect} ${permissionForm.permissionKey}`,
-                endpoint: `/api/v1/admin/users/${permissionForm.userId.trim()}/permissions`,
+                endpoint: `/api/v1/admin/users/${targetUserId}/permissions`,
                 method: "POST",
-                confirmText: "PERMISSION",
+                confirmText: confirmationTarget,
                 reasonRequired: true,
-                body: (actionReason) => ({
+                body: (actionReason, actionConfirmation) => ({
                   permissionKey: permissionForm.permissionKey,
                   effect: permissionForm.effect,
                   reason: actionReason,
-                  confirmation: "PERMISSION",
+                  confirmation: actionConfirmation,
                 }),
-              })
-            }
+              });
+            }}
             type="button"
           >
             <ShieldCheck className="h-4 w-4" />
@@ -4985,6 +5066,7 @@ function UsersView({
           const id = stringValue(row.id);
           const status = stringValue(row.status);
           const nextStatus = status === "suspended" ? "active" : "suspended";
+          const confirmationTarget = `${id}:${nextStatus}`;
           return (
             <IconAction
               icon={nextStatus === "active" ? <Check className="h-4 w-4" /> : <Ban className="h-4 w-4" />}
@@ -4994,12 +5076,12 @@ function UsersView({
                   title: `${nextStatus === "active" ? "Restore" : "Suspend"} ${id}`,
                   endpoint: `/api/v1/admin/users/${id}/status`,
                   method: "POST",
-                  confirmText: nextStatus.toUpperCase(),
+                  confirmText: confirmationTarget,
                   reasonRequired: true,
-                  body: (actionReason) => ({
+                  body: (actionReason, actionConfirmation) => ({
                     status: nextStatus,
                     reason: actionReason,
-                    confirmation: nextStatus.toUpperCase(),
+                    confirmation: actionConfirmation,
                   }),
                 })
               }
@@ -5090,21 +5172,24 @@ function BillingView({
           <button
             className="inline-flex h-10 items-center justify-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
             disabled={!adjustment.userId || !Number.isFinite(Number(adjustment.delta))}
-            onClick={() =>
+            onClick={() => {
+              const userId = adjustment.userId.trim();
+              const delta = Number(adjustment.delta);
+              const confirmationTarget = `${userId}:${delta}`;
               openAction({
-                title: `Adjust ledger ${adjustment.userId}`,
+                title: `Adjust ledger ${userId}`,
                 endpoint: "/api/v1/admin/billing/adjustments",
                 method: "POST",
-                confirmText: "ADJUST",
+                confirmText: confirmationTarget,
                 reasonRequired: true,
-                body: (actionReason) => ({
-                  userId: adjustment.userId,
-                  delta: Number(adjustment.delta),
+                body: (actionReason, actionConfirmation) => ({
+                  userId,
+                  delta,
                   reason: actionReason,
-                  confirmation: "ADJUST",
+                  confirmation: actionConfirmation,
                 }),
-              })
-            }
+              });
+            }}
             type="button"
           >
             <BadgeDollarSign className="h-4 w-4" />
@@ -5158,7 +5243,7 @@ function PricingView({
             {t("Create Draft")}
           </button>
         </div>
-        <div className="grid gap-3 md:grid-cols-5">
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-7">
           <FormField
             label="Rule Key"
             onChange={(value) => onDraftChange({ ...draft, ruleKey: value })}
@@ -5185,6 +5270,16 @@ function PricingView({
             onChange={(value) => onDraftChange({ ...draft, multiplier: value })}
             value={draft.multiplier}
           />
+          <FormField
+            label="Reason (≥3)"
+            onChange={(value) => onDraftChange({ ...draft, reason: value })}
+            value={draft.reason}
+          />
+          <FormField
+            label="Confirm rule key"
+            onChange={(value) => onDraftChange({ ...draft, confirmation: value })}
+            value={draft.confirmation}
+          />
         </div>
       </section>
 
@@ -5203,9 +5298,12 @@ function PricingView({
                       title: `Publish pricing ${id}`,
                       endpoint: `/api/v1/admin/pricing/rules/${id}/publish`,
                       method: "POST",
-                      confirmText: "PUBLISH",
+                      confirmText: id,
                       reasonRequired: true,
-                      body: (actionReason) => ({ reason: actionReason, confirmation: "PUBLISH" }),
+                      body: (actionReason, actionConfirmation) => ({
+                        reason: actionReason,
+                        confirmation: actionConfirmation,
+                      }),
                     })
                   }
                 />
@@ -5219,9 +5317,12 @@ function PricingView({
                       title: `Rollback pricing ${id}`,
                       endpoint: `/api/v1/admin/pricing/rules/${id}/rollback`,
                       method: "POST",
-                      confirmText: "ROLLBACK",
+                      confirmText: id,
                       reasonRequired: true,
-                      body: (actionReason) => ({ reason: actionReason, confirmation: "ROLLBACK" }),
+                      body: (actionReason, actionConfirmation) => ({
+                        reason: actionReason,
+                        confirmation: actionConfirmation,
+                      }),
                     })
                   }
                 />
@@ -5259,6 +5360,7 @@ function DeadLetterView({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const rowIds = rows.map((row) => stringValue(row.id)).filter(Boolean);
   const selectedIds = rowIds.filter((id) => selected.has(id));
+  const selectedConfirmation = selectedIds.join(",");
   const allSelected = rowIds.length > 0 && selectedIds.length === rowIds.length;
 
   function toggle(id: string) {
@@ -5292,12 +5394,12 @@ function DeadLetterView({
                 title: `Requeue ${selectedIds.length} jobs`,
                 endpoint: "/api/v1/admin/generation/dead-letter/requeue",
                 method: "POST",
-                confirmText: "REQUEUE",
+                confirmText: selectedConfirmation,
                 reasonRequired: true,
-                body: (actionReason) => ({
+                body: (actionReason, actionConfirmation) => ({
                   jobIds: selectedIds,
                   reason: actionReason,
-                  confirmation: "REQUEUE",
+                  confirmation: actionConfirmation,
                 }),
               })
             }
@@ -5314,12 +5416,12 @@ function DeadLetterView({
                 title: `Discard ${selectedIds.length} jobs`,
                 endpoint: "/api/v1/admin/generation/dead-letter/discard",
                 method: "POST",
-                confirmText: "DISCARD",
+                confirmText: selectedConfirmation,
                 reasonRequired: true,
-                body: (actionReason) => ({
+                body: (actionReason, actionConfirmation) => ({
                   jobIds: selectedIds,
                   reason: actionReason,
-                  confirmation: "DISCARD",
+                  confirmation: actionConfirmation,
                 }),
               })
             }
@@ -5382,11 +5484,11 @@ function DeadLetterView({
                                 title: `Requeue ${id}`,
                                 endpoint: `/api/v1/admin/generation/jobs/${id}/requeue`,
                                 method: "POST",
-                                confirmText: "REQUEUE",
+                                confirmText: id,
                                 reasonRequired: false,
-                                body: (actionReason) => ({
+                                body: (actionReason, actionConfirmation) => ({
                                   reason: actionReason || undefined,
-                                  confirmation: "REQUEUE",
+                                  confirmation: actionConfirmation,
                                 }),
                               })
                             }
@@ -5401,11 +5503,11 @@ function DeadLetterView({
                                 title: `Discard ${id}`,
                                 endpoint: `/api/v1/admin/generation/jobs/${id}/discard`,
                                 method: "POST",
-                                confirmText: "DISCARD",
+                                confirmText: id,
                                 reasonRequired: true,
-                                body: (actionReason) => ({
+                                body: (actionReason, actionConfirmation) => ({
                                   reason: actionReason,
-                                  confirmation: "DISCARD",
+                                  confirmation: actionConfirmation,
                                 }),
                               })
                             }
@@ -5558,8 +5660,14 @@ function ContentView({
   const { t } = useAdminI18n();
   const [featuredInput, setFeaturedInput] = useState(featuredIds.join(", "));
   const [reason, setReason] = useState("");
+  const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const expectedConfirmation = parseCsv(featuredInput).join(",") || "CLEAR";
+  const canSaveFeatured =
+    !busy &&
+    reason.trim().length >= 3 &&
+    confirmation.trim() === expectedConfirmation;
 
   async function saveFeatured() {
     setBusy(true);
@@ -5568,9 +5676,10 @@ function ContentView({
       await apiWrite("/api/v1/admin/content/featured", "PUT", {
         characterIds: parseCsv(featuredInput),
         reason: reason.trim(),
-        confirmation: "FEATURED",
+        confirmation: confirmation.trim(),
       });
       setReason("");
+      setConfirmation("");
       reload();
     } catch (error) {
       setErr(error instanceof Error ? error.message : "Save failed");
@@ -5586,10 +5695,13 @@ function ContentView({
         <p className="mt-1 text-xs text-[rgb(170,170,170)]">
           逗号分隔的 character id；仅 public+approved 会被保留，公开 feed 优先展示。
         </p>
-        <div className="mt-3 grid gap-3 md:grid-cols-[1fr_220px_auto]">
+        <div className="mt-3 grid gap-3 md:grid-cols-[1fr_220px_260px_auto]">
           <input
             className="h-10 w-full border border-white/10 bg-black/30 px-3 font-mono text-sm outline-none focus:border-white/30"
-            onChange={(event) => setFeaturedInput(event.target.value)}
+            onChange={(event) => {
+              setFeaturedInput(event.target.value);
+              setConfirmation("");
+            }}
             placeholder="char_a, char_b"
             value={featuredInput}
           />
@@ -5599,9 +5711,16 @@ function ContentView({
             placeholder={t("Reason (≥3 chars)")}
             value={reason}
           />
+          <input
+            aria-label={t("Featured confirmation")}
+            className="h-10 w-full border border-white/10 bg-black/30 px-3 font-mono text-sm outline-none focus:border-white/30"
+            onChange={(event) => setConfirmation(event.target.value)}
+            placeholder={expectedConfirmation === "CLEAR" ? t("Type CLEAR") : t("Type featured IDs")}
+            value={confirmation}
+          />
           <button
             className="inline-flex h-10 items-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
-            disabled={busy || reason.trim().length < 3}
+            disabled={!canSaveFeatured}
             onClick={() => void saveFeatured()}
             type="button"
           >
@@ -5625,7 +5744,7 @@ function ContentView({
                     title: `Make ${id} private`,
                     endpoint: `/api/v1/admin/content/characters/${id}/visibility`,
                     method: "POST",
-                    confirmText: "VISIBILITY",
+                    confirmText: `${id}:visibility:private`,
                     reasonRequired: true,
                     body: (actionReason, confirmation) => ({
                       visibility: "private",
@@ -5643,7 +5762,7 @@ function ContentView({
                     title: `Remove ${id}`,
                     endpoint: `/api/v1/admin/content/characters/${id}/status`,
                     method: "POST",
-                    confirmText: "STATUS",
+                    confirmText: `${id}:status:removed`,
                     reasonRequired: true,
                     body: (actionReason, confirmation) => ({
                       status: "removed",
@@ -5680,8 +5799,16 @@ function PromoView({
   const [dreamcoins, setDreamcoins] = useState("");
   const [maxRedemptions, setMaxRedemptions] = useState("");
   const [reason, setReason] = useState("");
+  const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  const trimmedCode = code.trim();
+  const canCreateCode =
+    !busy &&
+    trimmedCode.length >= 4 &&
+    reason.trim().length >= 3 &&
+    confirmation.trim() === trimmedCode;
 
   async function createCode() {
     setBusy(true);
@@ -5692,12 +5819,13 @@ function PromoView({
         reward: { dreamcoins: intFromText(dreamcoins, 0) },
         maxRedemptions: maxRedemptions.trim() ? intFromText(maxRedemptions, 1) : null,
         reason: reason.trim(),
-        confirmation: "CREATE",
+        confirmation: confirmation.trim(),
       });
       setCode("");
       setDreamcoins("");
       setMaxRedemptions("");
       setReason("");
+      setConfirmation("");
       reload();
     } catch (error) {
       setErr(error instanceof Error ? error.message : "Create failed");
@@ -5711,7 +5839,7 @@ function PromoView({
       <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
         <h2 className="text-sm font-semibold">{t("Create redeem code")}</h2>
         <p className="mt-1 text-xs text-[rgb(170,170,170)]">明文 code 仅用于生成 hash，不入库、不回显、不入审计。</p>
-        <div className="mt-3 grid gap-3 md:grid-cols-5">
+        <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-6">
           <input
             className="h-10 w-full border border-white/10 bg-black/30 px-3 font-mono text-sm outline-none focus:border-white/30"
             onChange={(event) => setCode(event.target.value)}
@@ -5736,9 +5864,16 @@ function PromoView({
             placeholder={t("Reason (≥3)")}
             value={reason}
           />
+          <input
+            aria-label={t("Redeem code confirmation")}
+            className="h-10 w-full border border-white/10 bg-black/30 px-3 font-mono text-sm outline-none focus:border-white/30"
+            onChange={(event) => setConfirmation(event.target.value)}
+            placeholder={t("Type code to confirm")}
+            value={confirmation}
+          />
           <button
             className="inline-flex h-10 items-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
-            disabled={busy || code.trim().length < 4 || reason.trim().length < 3}
+            disabled={!canCreateCode}
             onClick={() => void createCode()}
             type="button"
           >
@@ -5761,7 +5896,7 @@ function PromoView({
                   title: `Disable ${id}`,
                   endpoint: `/api/v1/admin/promo/redeem-codes/${id}/disable`,
                   method: "POST",
-                  confirmText: "DISABLE",
+                  confirmText: id,
                   reasonRequired: true,
                   body: (actionReason, confirmation) => ({ reason: actionReason, confirmation }),
                 })
@@ -5780,6 +5915,244 @@ function PromoView({
       />
     </div>
   );
+}
+
+function PlaintextAccessPanel() {
+  const { t } = useAdminI18n();
+  const formRef = useRef<HTMLFormElement>(null);
+  const [draft, setDraft] = useState<PlaintextAccessDraft>(defaultPlaintextAccessDraft);
+  const [result, setResult] = useState<PlaintextAccessResult | null>(null);
+  const [status, setStatus] = useState<{ tone: "good" | "bad"; message: string } | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const canSubmit = canSubmitPlaintextDraft(draft, loading);
+
+  async function performPlaintextView(form: HTMLFormElement | null = formRef.current) {
+    const payloadDraft = form ? plaintextDraftFromForm(form) : draft;
+    if (!canSubmitPlaintextDraft(payloadDraft, loading)) return;
+    setLoading(true);
+    setStatus(null);
+    setResult(null);
+    try {
+      const data = await apiWrite<PlaintextAccessResult>("/api/v1/admin/support/plaintext/view", "POST", {
+        targetType: payloadDraft.targetType,
+        targetId: payloadDraft.targetId.trim(),
+        ticketId: payloadDraft.ticketId.trim() || undefined,
+        legalHoldId: payloadDraft.legalHoldId.trim() || undefined,
+        reason: payloadDraft.reason.trim(),
+        confirmation: payloadDraft.confirmation.trim(),
+      });
+      setResult(data);
+      setStatus({ tone: "good", message: t("Plaintext access logged.") });
+    } catch (err) {
+      setStatus({ tone: "bad", message: err instanceof Error ? err.message : t("Plaintext access failed.") });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function submitPlaintextView(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    void performPlaintextView(event.currentTarget);
+  }
+
+  const fieldSummary =
+    plaintextTargetTypeOptions.find((option) => option.value === draft.targetType)?.fields ?? "prompt";
+
+  return (
+    <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+      <form className="space-y-4" onSubmit={submitPlaintextView} ref={formRef}>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="text-base font-semibold text-[rgb(245,245,245)]">{t("Plaintext access")}</h2>
+            <p className="mt-1 text-xs text-[rgb(170,170,170)]">
+              {t("Requires active support consent or legal hold.")}
+            </p>
+          </div>
+          <span className="inline-flex items-center gap-2 border border-white/10 px-3 py-1 text-xs text-[rgb(170,170,170)]">
+            <ShieldCheck className="h-3.5 w-3.5" />
+            {t("Audit logged")}
+          </span>
+        </div>
+
+        <div className="grid gap-3 lg:grid-cols-[180px_1fr_1fr]">
+          <label className="flex min-w-0 flex-col gap-1">
+            <span className="text-xs font-semibold text-[rgb(170,170,170)]">{t("Target type")}</span>
+            <select
+              aria-label={t("Target type")}
+              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm text-[rgb(230,230,230)] outline-none focus:border-white/30"
+              name="targetType"
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  targetType: event.target.value as PlaintextTargetType,
+                }))
+              }
+              value={draft.targetType}
+            >
+              {plaintextTargetTypeOptions.map((option) => (
+                <option className="bg-[rgb(18,18,18)] text-white" key={option.value} value={option.value}>
+                  {t(option.label)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex min-w-0 flex-col gap-1">
+            <span className="text-xs font-semibold text-[rgb(170,170,170)]">{t("Plaintext target ID")}</span>
+            <input
+              aria-label={t("Plaintext target ID")}
+              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm text-[rgb(230,230,230)] outline-none focus:border-white/30"
+              name="targetId"
+              onChange={(event) => setDraft((current) => ({ ...current, targetId: event.target.value }))}
+              placeholder="job_or_media_id"
+              value={draft.targetId}
+            />
+          </label>
+          <label className="flex min-w-0 flex-col gap-1">
+            <span className="text-xs font-semibold text-[rgb(170,170,170)]">{t("Consent ticket ID")}</span>
+            <input
+              aria-label={t("Consent ticket ID")}
+              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm text-[rgb(230,230,230)] outline-none focus:border-white/30"
+              name="ticketId"
+              onChange={(event) => setDraft((current) => ({ ...current, ticketId: event.target.value }))}
+              placeholder="SUP-..."
+              value={draft.ticketId}
+            />
+          </label>
+        </div>
+
+        <div className="grid gap-3 lg:grid-cols-[1fr_1fr_1.5fr]">
+          <label className="flex min-w-0 flex-col gap-1">
+            <span className="text-xs font-semibold text-[rgb(170,170,170)]">{t("Legal hold ID")}</span>
+            <input
+              aria-label={t("Legal hold ID")}
+              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm text-[rgb(230,230,230)] outline-none focus:border-white/30"
+              name="legalHoldId"
+              onChange={(event) => setDraft((current) => ({ ...current, legalHoldId: event.target.value }))}
+              placeholder="hold_id"
+              value={draft.legalHoldId}
+            />
+          </label>
+          <label className="flex min-w-0 flex-col gap-1">
+            <span className="text-xs font-semibold text-[rgb(170,170,170)]">{t("Plaintext confirmation")}</span>
+            <input
+              aria-label={t("Plaintext confirmation")}
+              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm text-[rgb(230,230,230)] outline-none focus:border-white/30"
+              name="confirmation"
+              onChange={(event) => setDraft((current) => ({ ...current, confirmation: event.target.value }))}
+              placeholder={t("Type target ID")}
+              value={draft.confirmation}
+            />
+          </label>
+          <label className="flex min-w-0 flex-col gap-1">
+            <span className="text-xs font-semibold text-[rgb(170,170,170)]">{t("Plaintext reason")}</span>
+            <input
+              aria-label={t("Plaintext reason")}
+              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm text-[rgb(230,230,230)] outline-none focus:border-white/30"
+              name="reason"
+              onChange={(event) => setDraft((current) => ({ ...current, reason: event.target.value }))}
+              placeholder={t("Reason for audit")}
+              value={draft.reason}
+            />
+          </label>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            className="inline-flex h-10 items-center gap-2 bg-white px-4 text-sm font-semibold text-black disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={!canSubmit}
+            onClick={(event) => {
+              event.preventDefault();
+              void performPlaintextView(event.currentTarget.form);
+            }}
+            type="submit"
+          >
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+            {loading ? t("Viewing…") : t("View plaintext")}
+          </button>
+          <span className="text-xs text-[rgb(114,113,112)]">
+            {t("Fields available: {fields}", { fields: fieldSummary })}
+          </span>
+          {status ? (
+            <span
+              aria-live="polite"
+              className={cn(
+                "text-xs font-semibold",
+                status.tone === "good" ? "text-emerald-300" : "text-red-300",
+              )}
+              data-testid="admin-plaintext-status"
+              role="status"
+            >
+              {status.message}
+            </span>
+          ) : null}
+        </div>
+      </form>
+
+      {result ? (
+        <div
+          className="mt-4 space-y-3 border border-white/10 bg-black/20 p-3"
+          data-testid="admin-plaintext-result"
+        >
+          <div className="grid gap-2 text-xs text-[rgb(170,170,170)] md:grid-cols-3">
+            <span>
+              {t("Target")}: <code className="text-[rgb(230,230,230)]">{result.target.id}</code>
+            </span>
+            <span>
+              {t("Owner")}: <code className="text-[rgb(230,230,230)]">{result.target.ownerId}</code>
+            </span>
+            <span>
+              {t("Authorization")}:{" "}
+              <code className="text-[rgb(230,230,230)]">
+                {result.authorization.legalHoldId ?? result.authorization.ticketId ?? "-"}
+              </code>
+            </span>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            {Object.entries(result.plaintext).map(([field, value]) => (
+              <div className="border border-white/10 bg-black/20 p-3" key={field}>
+                <div className="text-xs font-semibold uppercase text-[rgb(170,170,170)]">{field}</div>
+                <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap break-words text-sm leading-6 text-[rgb(245,245,245)]">{plaintextValueText(value)}</pre>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function canSubmitPlaintextDraft(draft: PlaintextAccessDraft, loading: boolean) {
+  return (
+    !loading &&
+    draft.targetId.trim().length > 0 &&
+    draft.reason.trim().length >= 3 &&
+    draft.confirmation.trim() === draft.targetId.trim() &&
+    (draft.ticketId.trim().length > 0 || draft.legalHoldId.trim().length > 0)
+  );
+}
+
+function plaintextDraftFromForm(form: HTMLFormElement): PlaintextAccessDraft {
+  const formData = new FormData(form);
+  const targetType = formStringValue(formData, "targetType");
+  return {
+    targetType: targetType === "media" ? "media" : "generation_job",
+    targetId: formStringValue(formData, "targetId"),
+    ticketId: formStringValue(formData, "ticketId"),
+    legalHoldId: formStringValue(formData, "legalHoldId"),
+    confirmation: formStringValue(formData, "confirmation"),
+    reason: formStringValue(formData, "reason"),
+  };
+}
+
+function formStringValue(formData: FormData, key: string) {
+  const value = formData.get(key);
+  return typeof value === "string" ? value : "";
+}
+
+function plaintextValueText(value: string | null) {
+  if (value === null || value === "") return "(empty)";
+  return value;
 }
 
 function SupportRequestsView({
@@ -6000,6 +6373,8 @@ function SupportRequestsView({
         {savedViewError ? <p className="mt-2 text-xs text-red-300">{savedViewError}</p> : null}
       </section>
 
+      <PlaintextAccessPanel />
+
       <DataTable
         actions={(row) => {
           const ticketId = stringValue(row.ticketId);
@@ -6193,7 +6568,7 @@ function ApprovalsView({
                     title: `Approve ${id}`,
                     endpoint: `/api/v1/admin/approvals/${id}/approve`,
                     method: "POST",
-                    confirmText: "APPROVE",
+                    confirmText: id,
                     reasonRequired: true,
                     body: (actionReason, confirmation) => ({ reason: actionReason, confirmation }),
                   })
@@ -6207,7 +6582,7 @@ function ApprovalsView({
                     title: `Reject ${id}`,
                     endpoint: `/api/v1/admin/approvals/${id}/reject`,
                     method: "POST",
-                    confirmText: "REJECT",
+                    confirmText: id,
                     reasonRequired: true,
                     body: (actionReason, confirmation) => ({ reason: actionReason, confirmation }),
                   })

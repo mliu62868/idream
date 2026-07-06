@@ -2,7 +2,7 @@
 
 // SPEC: CMS/SEO 内容管理面板（ADMIN_PHASE3_DESIGN §3）。列页面 / 新建 / 发布。
 // INTENT: 自取数、无 props；样式对齐 TagsView。body 用 JSON 文本域（{heading,intro,sections,cta}）。
-// INVARIANTS: 写需 reason≥3 + confirmation（create/patch=CMS，publish=PUBLISH）；写后 refetch。
+// INVARIANTS: 写需 reason≥3 + confirmation=page path；写后 refetch。
 import { useEffect, useState } from "react";
 import { Loader2, Plus, RefreshCcw, UploadCloud } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
@@ -16,6 +16,13 @@ type PageRow = {
   updatedAt: string;
 };
 
+type PublishDraft = {
+  path: string;
+  nextStatus: "draft" | "published";
+  reason: string;
+  confirmation: string;
+};
+
 const inputClass =
   "h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30";
 
@@ -24,6 +31,8 @@ export function CmsView() {
   const [pages, setPages] = useState<PageRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [publishDraft, setPublishDraft] = useState<PublishDraft | null>(null);
+  const [publishBusy, setPublishBusy] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -43,19 +52,27 @@ export function CmsView() {
     return () => window.clearTimeout(timer);
   }, []);
 
-  async function publish(path: string, contentStatus: string) {
-    const reason = window.prompt(`Reason for setting ${path} → ${contentStatus} (≥3 chars)`);
-    if (!reason || reason.trim().length < 3) return;
+  function startPublish(path: string, nextStatus: PublishDraft["nextStatus"]) {
+    setError(null);
+    setPublishDraft({ path, nextStatus, reason: "", confirmation: "" });
+  }
+
+  async function publish() {
+    if (!publishDraft || !canConfirmPublish(publishDraft)) return;
+    setPublishBusy(true);
     try {
       await apiWrite("/api/v1/admin/cms/pages/publish", "POST", {
-        path,
-        contentStatus,
-        reason: reason.trim(),
-        confirmation: "PUBLISH",
+        path: publishDraft.path,
+        contentStatus: publishDraft.nextStatus,
+        reason: publishDraft.reason.trim(),
+        confirmation: publishDraft.confirmation.trim(),
       });
-      load();
+      setPublishDraft(null);
+      await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Publish failed");
+    } finally {
+      setPublishBusy(false);
     }
   }
 
@@ -77,6 +94,47 @@ export function CmsView() {
 
       <CreatePageForm reload={load} />
 
+      {publishDraft ? (
+        <section className="border border-amber-300/30 bg-amber-950/20 p-3">
+          <p className="text-xs font-semibold text-amber-100">
+            {t("Confirm CMS status change")} <span className="font-mono">{publishDraft.path}</span> →{" "}
+            {valueLabel(publishDraft.nextStatus)}
+          </p>
+          <div className="mt-3 grid gap-3 md:grid-cols-[1fr_260px_auto_auto]">
+            <input
+              aria-label={t("CMS publish reason")}
+              className={inputClass}
+              onChange={(event) => setPublishDraft({ ...publishDraft, reason: event.target.value })}
+              placeholder={t("Reason (≥3)")}
+              value={publishDraft.reason}
+            />
+            <input
+              aria-label={t("CMS publish confirmation")}
+              className={`${inputClass} font-mono`}
+              onChange={(event) => setPublishDraft({ ...publishDraft, confirmation: event.target.value })}
+              placeholder={t("Type page path")}
+              value={publishDraft.confirmation}
+            />
+            <button
+              className="inline-flex h-10 items-center justify-center border border-white/10 px-3 text-sm"
+              onClick={() => setPublishDraft(null)}
+              type="button"
+            >
+              {t("Cancel")}
+            </button>
+            <button
+              className="inline-flex h-10 items-center justify-center bg-amber-200 px-3 text-sm font-semibold text-amber-950 disabled:opacity-50"
+              disabled={publishBusy || !canConfirmPublish(publishDraft)}
+              onClick={() => void publish()}
+              type="button"
+            >
+              {publishBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              {t("Confirm publish change")}
+            </button>
+          </div>
+        </section>
+      ) : null}
+
       <section className="border border-white/10 bg-[rgb(18,18,18)]">
         <table className="w-full text-left text-sm">
           <thead className="border-b border-white/10 text-xs text-[rgb(170,170,170)]">
@@ -97,7 +155,8 @@ export function CmsView() {
                   {page.contentStatus === "published" ? (
                     <button
                       className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs"
-                      onClick={() => void publish(page.path, "draft")}
+                      disabled={publishBusy}
+                      onClick={() => startPublish(page.path, "draft")}
                       type="button"
                     >
                       {t("Unpublish")}
@@ -105,7 +164,8 @@ export function CmsView() {
                   ) : (
                     <button
                       className="inline-flex h-8 items-center gap-1 bg-white px-2 text-xs font-semibold text-black"
-                      onClick={() => void publish(page.path, "published")}
+                      disabled={publishBusy}
+                      onClick={() => startPublish(page.path, "published")}
                       type="button"
                     >
                       <UploadCloud className="h-3.5 w-3.5" />
@@ -129,6 +189,11 @@ export function CmsView() {
   );
 }
 
+function canConfirmPublish(draft: PublishDraft) {
+  const confirmation = draft.confirmation.trim();
+  return draft.reason.trim().length >= 3 && confirmation === draft.path;
+}
+
 function CreatePageForm({ reload }: { reload: () => void }) {
   const { t } = useAdminI18n();
   const [path, setPath] = useState("");
@@ -136,6 +201,7 @@ function CreatePageForm({ reload }: { reload: () => void }) {
   const [description, setDescription] = useState("");
   const [bodyJson, setBodyJson] = useState('{\n  "heading": "",\n  "intro": "",\n  "sections": []\n}');
   const [reason, setReason] = useState("");
+  const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -158,12 +224,13 @@ function CreatePageForm({ reload }: { reload: () => void }) {
         body,
         contentStatus: "draft",
         reason: reason.trim(),
-        confirmation: "CMS",
+        confirmation: confirmation.trim(),
       });
       setPath("");
       setTitle("");
       setDescription("");
       setReason("");
+      setConfirmation("");
       reload();
     } catch (error) {
       setErr(error instanceof Error ? error.message : "Create failed");
@@ -172,8 +239,13 @@ function CreatePageForm({ reload }: { reload: () => void }) {
     }
   }
 
+  const expectedPath = path.trim();
   const canCreate =
-    !busy && path.trim().startsWith("/") && title.trim().length > 0 && reason.trim().length >= 3;
+    !busy &&
+    expectedPath.startsWith("/") &&
+    title.trim().length > 0 &&
+    reason.trim().length >= 3 &&
+    confirmation.trim() === expectedPath;
 
   return (
     <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
@@ -201,8 +273,15 @@ function CreatePageForm({ reload }: { reload: () => void }) {
           placeholder={t("Reason (≥3)")}
           value={reason}
         />
+        <input
+          aria-label={t("CMS page confirmation")}
+          className={`${inputClass} font-mono`}
+          onChange={(e) => setConfirmation(e.target.value)}
+          placeholder={t("Type page path")}
+          value={confirmation}
+        />
         <button
-          className="inline-flex h-10 items-center justify-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+          className="inline-flex h-10 items-center justify-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50 md:col-span-2"
           disabled={!canCreate}
           onClick={() => void create()}
           type="button"

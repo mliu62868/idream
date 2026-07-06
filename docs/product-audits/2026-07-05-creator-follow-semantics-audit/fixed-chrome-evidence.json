@@ -1,0 +1,17 @@
+{
+  "url": "http://localhost:3240/creators/seed-creator-some1cool",
+  "beforeToggle": {
+    "followAriaPressed": "false",
+    "followText": "Follow",
+    "statusAriaLive": null,
+    "statusRole": null,
+    "statusText": null
+  },
+  "afterToggle": {
+    "followAriaPressed": "true",
+    "followText": "Following",
+    "statusAriaLive": null,
+    "statusRole": null,
+    "statusText": null
+  }
+}

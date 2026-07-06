@@ -3,7 +3,7 @@
 // SPEC: 标签分类法治理面板（Character Management §C）—— 列表/编辑标签元数据 + 合并标签。
 // INTENT: 自取数、无 props；样式模仿 PromoView（边框分区 + 暗色输入 + 白底按钮）。
 //         接缝（在 AdminConsoleClient 注册此 View）由编排者接线。
-// INVARIANTS: 写后 refetch；编辑/合并都要求 reason≥3；合并需 confirmation==="MERGE"。
+// INVARIANTS: 写后 refetch；编辑/合并都要求 reason≥3；合并需 confirmation===`${sourceId}:${targetId}`。
 
 import { useEffect, useState } from "react";
 import { GitMerge, Loader2, Pencil, RefreshCcw, Save, X } from "lucide-react";
@@ -27,6 +27,7 @@ type EditDraft = {
   isSensitive: boolean;
   isMutedByDefault: boolean;
   reason: string;
+  confirmation: string;
 };
 
 const inputClass =
@@ -130,6 +131,7 @@ function TagRowItem({ tag, reload }: { tag: TagRow; reload: () => void }) {
         isSensitive: draft.isSensitive,
         isMutedByDefault: draft.isMutedByDefault,
         reason: draft.reason.trim(),
+        confirmation: draft.confirmation.trim(),
       });
       setEditing(false);
       reload();
@@ -162,6 +164,12 @@ function TagRowItem({ tag, reload }: { tag: TagRow; reload: () => void }) {
       </tr>
     );
   }
+
+  const canSave =
+    !busy &&
+    draft.label.trim().length >= 1 &&
+    draft.reason.trim().length >= 3 &&
+    draft.confirmation.trim() === tag.slug;
 
   return (
     <tr className="border-b border-white/5 bg-black/20 align-top">
@@ -203,15 +211,22 @@ function TagRowItem({ tag, reload }: { tag: TagRow; reload: () => void }) {
             placeholder={t("Reason (≥3)")}
             value={draft.reason}
           />
+          <input
+            aria-label={t("Tag edit confirmation")}
+            className={cn(inputClass, "font-mono")}
+            onChange={(event) => setDraft({ ...draft, confirmation: event.target.value })}
+            placeholder={t("Type {token} to confirm", { token: tag.slug })}
+            value={draft.confirmation}
+          />
           <div className="flex justify-end gap-2">
             <button
               className="inline-flex h-8 items-center gap-1 bg-white px-2 text-xs font-semibold text-black disabled:opacity-50"
-              disabled={busy || draft.label.trim().length < 1 || draft.reason.trim().length < 3}
+              disabled={!canSave}
               onClick={() => void save()}
               type="button"
             >
               {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-              {t("Save")}
+              {t("Confirm save")}
             </button>
             <button
               className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs"
@@ -274,16 +289,17 @@ function MergeSection({ tags, reload }: { tags: TagRow[]; reload: () => void }) 
     targetId.length > 0 &&
     sourceId !== targetId &&
     reason.trim().length >= 3 &&
-    confirmation.trim() === "MERGE";
+    confirmation.trim() === `${sourceId}:${targetId}`;
 
   return (
     <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
       <h2 className="text-sm font-semibold">{t("Merge tags")}</h2>
       <p className="mt-1 text-xs text-[rgb(170,170,170)]">
-        把 source 标签的角色全部迁到 target，并删除 source。输入 confirmation 为 MERGE 以确认。
+        把 source 标签的角色全部迁到 target，并删除 source。输入 source:target ID 以确认。
       </p>
       <div className="mt-3 grid gap-3 md:grid-cols-5">
         <select
+          aria-label={t("Source tag")}
           className={cn(inputClass, "appearance-none")}
           onChange={(event) => setSourceId(event.target.value)}
           value={sourceId}
@@ -296,6 +312,7 @@ function MergeSection({ tags, reload }: { tags: TagRow[]; reload: () => void }) 
           ))}
         </select>
         <select
+          aria-label={t("Target tag")}
           className={cn(inputClass, "appearance-none")}
           onChange={(event) => setTargetId(event.target.value)}
           value={targetId}
@@ -316,7 +333,7 @@ function MergeSection({ tags, reload }: { tags: TagRow[]; reload: () => void }) 
         <input
           className={cn(inputClass, "font-mono")}
           onChange={(event) => setConfirmation(event.target.value)}
-          placeholder={t("Type MERGE")}
+          placeholder={t("Type source:target IDs")}
           value={confirmation}
         />
         <button
@@ -362,5 +379,6 @@ function toDraft(tag: TagRow): EditDraft {
     isSensitive: tag.isSensitive,
     isMutedByDefault: tag.isMutedByDefault,
     reason: "",
+    confirmation: "",
   };
 }

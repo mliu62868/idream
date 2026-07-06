@@ -1,0 +1,17 @@
+{
+  "browserChannel": "chrome",
+  "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.0.0 Safari/537.36",
+  "adminURL": "http://127.0.0.1:3188",
+  "pricingRuleId": "cmr6pgl560004ddl7m48rg7xz",
+  "redeemCodeId": "cmr6pgm3n0006ddl7oatwdpic",
+  "ruleKey": "chrome_pricing_confirm_1783190293917-899804",
+  "checks": [
+    "server rejects pricing draft create when confirmation is not the rule key",
+    "pricing create remains disabled and DB unchanged before exact rule-key confirmation",
+    "exact pricing rule-key confirmation creates a draft and writes audit reason",
+    "server rejects redeem-code create when confirmation is not the code",
+    "promo create remains disabled and DB unchanged before exact code confirmation",
+    "exact redeem-code confirmation creates an active code and writes audit reason"
+  ],
+  "consoleFailures": []
+}

@@ -1,0 +1,41 @@
+{
+  "acceptedAgeGate": true,
+  "bodyTextHead": "Create\nExplore\nChat\nGenerate\nMy AI\nFeed\nCommunity\nHelp Desk\nSafety Center\nDiscord\nMore\nProfile\nUpgrade\n\n2026 OURDREAM.AI\n\nUSA: DREAM STUDIO USA, INC.\n\nCYPRUS: TEKTOPIA LTD (HE 473775)\n\nLogin\nJoin Free\n\nFEED\n\nRECOMMENDED DREAMS\nRestart\nMELIS",
+  "buttons": [
+    {
+      "ariaPressed": "false",
+      "disabled": false,
+      "name": "Chat",
+      "role": "button"
+    },
+    {
+      "ariaPressed": "false",
+      "disabled": false,
+      "name": "Remix",
+      "role": "button"
+    },
+    {
+      "ariaPressed": "false",
+      "disabled": false,
+      "name": "Like",
+      "role": "button"
+    },
+    {
+      "ariaPressed": "false",
+      "disabled": false,
+      "name": "Share",
+      "role": "button"
+    },
+    {
+      "ariaPressed": "false",
+      "disabled": false,
+      "name": "Report",
+      "role": "button"
+    }
+  ],
+  "cardCount": 16,
+  "statusAriaLive": null,
+  "statusRole": null,
+  "statusText": null,
+  "url": "http://feed-aria-1783233772052.localhost:3239/feed"
+}

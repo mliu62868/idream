@@ -1,0 +1,8 @@
+{
+  "statusAriaLive": "polite",
+  "statusRole": "status",
+  "statusTag": "P",
+  "statusTestId": "character-detail-status",
+  "statusText": "Character liked.",
+  "url": "http://localhost:3240/characters/melissa-burke"
+}

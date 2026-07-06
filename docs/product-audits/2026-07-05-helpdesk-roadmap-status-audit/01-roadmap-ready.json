@@ -1,0 +1,27 @@
+{
+  "articles": [
+    {
+      "text": "improvement · under reviewChrome roadmap restore 1783124412614Vote1for Chrome roadmap restore 1783124412614Chrome anonymous roadmap idea should preserve intent through signup."
+    },
+    {
+      "text": "improvement · under reviewChrome roadmap restore 1783124227003Vote1for Chrome roadmap restore 1783124227003Chrome anonymous roadmap idea should preserve intent through signup."
+    },
+    {
+      "text": "bug · under reviewChrome audit launch readiness blockerVote1for Chrome audit launch readiness blockerChat assistant response does not complete for a fresh user session when the local OpenAI-compatible provider is hung."
+    },
+    {
+      "text": "improvement · under reviewMemory review before long chatsVote0for Memory review before long chatsGive users a quick way to inspect and adjust remembered facts before continuing a session."
+    },
+    {
+      "text": "feature · under reviewCreator collection boardsVote0for Creator collection boardsLet creators group characters and generated media into public boards followers can browse."
+    }
+  ],
+  "horizontalOverflow": false,
+  "itemCount": 6,
+  "refreshButtonCount": 1,
+  "statusAriaLive": null,
+  "statusRole": null,
+  "statusText": null,
+  "title": "Help Desk | ourdream.ai",
+  "url": "http://127.0.0.1:3269/helpdesk"
+}

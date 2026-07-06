@@ -100,7 +100,7 @@ describe("character review queue (D)", () => {
     const res = await callReview(submission.id, {
       userId: moderator,
       role: "moderator",
-      body: { decision: "approve", reviewReason: "looks good", reason: "meets guidelines", confirmation: "REVIEW" },
+      body: { decision: "approve", reviewReason: "looks good", reason: "meets guidelines", confirmation: submission.id },
     });
     expect(res.status).toBe(200);
     expect(res.data.submission.status).toBe("approved");
@@ -125,7 +125,7 @@ describe("character review queue (D)", () => {
     const res = await callReview(submission.id, {
       userId: moderator,
       role: "moderator",
-      body: { decision: "reject", reason: "policy violation", confirmation: "REVIEW" },
+      body: { decision: "reject", reason: "policy violation", confirmation: submission.id },
     });
     expect(res.status).toBe(200);
     expect(res.data.submission.status).toBe("rejected");
@@ -142,7 +142,7 @@ describe("character review queue (D)", () => {
     const res = await callReview(submission.id, {
       userId: support,
       role: "support",
-      body: { decision: "approve", reason: "should be blocked", confirmation: "REVIEW" },
+      body: { decision: "approve", reason: "should be blocked", confirmation: submission.id },
     });
     expect(res.status).toBe(403);
     expect(res.error.code).toBe("forbidden");
@@ -156,7 +156,7 @@ describe("character review queue (D)", () => {
     const res = await callReview(submission.id, {
       userId: moderator,
       role: "moderator",
-      body: { decision: "approve", reason: "valid reason", confirmation: "nope" },
+      body: { decision: "approve", reason: "valid reason", confirmation: "REVIEW" },
     });
     expect(res.status).toBe(400);
     expect(res.error.code).toBe("bad_request");
@@ -170,7 +170,7 @@ describe("character review queue (D)", () => {
     const res = await callReview(submission.id, {
       userId: moderator,
       role: "moderator",
-      body: { decision: "reject", reason: "already settled", confirmation: "REVIEW" },
+      body: { decision: "reject", reason: "already settled", confirmation: submission.id },
     });
     expect(res.status).toBe(400);
     expect(res.error.code).toBe("bad_request");

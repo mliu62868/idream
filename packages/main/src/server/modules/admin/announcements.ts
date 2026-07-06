@@ -41,6 +41,12 @@ const patchSchema = z.object({
   reason: z.string().trim().min(3).max(2_000),
   confirmation: z.string().trim().min(1).max(160),
 });
+const deleteSchema = z
+  .object({
+    reason: z.string().trim().min(3).max(2_000).optional(),
+    confirmation: z.string().trim().min(1).max(160),
+  })
+  .optional();
 
 export async function listAdminAnnouncements(request: Request): Promise<Response> {
   await actorWithPermission(request, PROMO_READ);
@@ -51,7 +57,9 @@ export async function listAdminAnnouncements(request: Request): Promise<Response
 export async function createAnnouncement(request: Request): Promise<Response> {
   const actor = await actorWithPermission(request, PROMO_WRITE);
   const body = createSchema.parse(await jsonBody(request));
-  if (body.confirmation !== "ANNOUNCE") throw Errors.badRequest("Confirmation did not match");
+  if (body.confirmation !== body.title) {
+    throw Errors.badRequest("Confirmation did not match announcement title");
+  }
   const href = normalizeAnnouncementHref(body.href);
   const items = await readAnnouncements();
   const announcement: Announcement = {
@@ -79,7 +87,7 @@ export async function createAnnouncement(request: Request): Promise<Response> {
 export async function patchAnnouncement(request: Request, id: string): Promise<Response> {
   const actor = await actorWithPermission(request, PROMO_WRITE);
   const body = patchSchema.parse(await jsonBody(request));
-  if (body.confirmation !== id && body.confirmation !== "ANNOUNCE") {
+  if (body.confirmation !== id) {
     throw Errors.badRequest("Confirmation did not match target");
   }
   const items = await readAnnouncements();
@@ -110,9 +118,12 @@ export async function patchAnnouncement(request: Request, id: string): Promise<R
   return ok({ announcement: updated });
 }
 
-// 删除走 DELETE（jsonBody 对 DELETE 返回 {}，故不收 body）：权限门控 + 审计即可（低危、可重建）。
 export async function deleteAnnouncement(request: Request, id: string): Promise<Response> {
   const actor = await actorWithPermission(request, PROMO_WRITE);
+  const body = await readDeleteBody(request);
+  if (!body?.confirmation || body.confirmation !== id) {
+    throw Errors.badRequest("Confirmation did not match target");
+  }
   const items = await readAnnouncements();
   if (!items.some((a) => a.id === id)) throw Errors.notFound("Announcement not found");
   await writeAnnouncements(items.filter((a) => a.id !== id));
@@ -120,8 +131,15 @@ export async function deleteAnnouncement(request: Request, id: string): Promise<
     action: "growth.announcement.delete",
     targetType: "announcement",
     targetId: id,
+    reason: body?.reason,
   });
   return ok({ deleted: true });
+}
+
+async function readDeleteBody(request: Request): Promise<z.infer<typeof deleteSchema>> {
+  const text = await request.text();
+  if (!text.trim()) return undefined;
+  return deleteSchema.parse(JSON.parse(text));
 }
 
 function normalizeAnnouncementHref(value: string | null | undefined) {

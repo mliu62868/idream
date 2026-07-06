@@ -69,6 +69,10 @@ type ChatLoadState = "loading" | "ready" | "signed-out" | "error";
 
 const BLOCKED_ASSISTANT_NOTICE = "I can’t help with that request.";
 
+function upgradeHrefForChatSession(sessionId: string) {
+  return `/upgrade?returnTo=${encodeURIComponent(`/chat/${encodeURIComponent(sessionId)}`)}`;
+}
+
 export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   const [title, setTitle] = useState("Chat");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -89,9 +93,11 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingContent, setEditingContent] = useState("");
   const [editingPending, setEditingPending] = useState(false);
+  const [deleteConfirmMessageId, setDeleteConfirmMessageId] = useState<string | null>(null);
   const streamSources = useRef<Map<string, EventSource>>(new Map());
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const canSend = content.trim().length > 0 && !pending;
 
   // SPEC: Keep the newest message (and its streaming deltas) in view; without this
   //       the reply renders below the fold and the input is pushed off-screen.
@@ -303,6 +309,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
 
   async function reportMessage(messageId: string) {
     setStatus(null);
+    setDeleteConfirmMessageId(null);
     try {
       const response = await fetch("/api/v1/reports", {
         method: "POST",
@@ -322,6 +329,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
 
   function beginEdit(message: ChatMessage) {
     setStatus(null);
+    setDeleteConfirmMessageId(null);
     setEditingMessageId(message.id);
     setEditingContent(message.content);
   }
@@ -335,6 +343,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     const next = editingContent.trim();
     if (!next || editingPending) return;
     setStatus(null);
+    setDeleteConfirmMessageId(null);
     setQuotaReached(false);
     setEditingPending(true);
     try {
@@ -391,6 +400,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   function applySession(session: ChatSession) {
     setTitle(session.title ?? session.character.name);
     setMessages(session.messages);
+    setDeleteConfirmMessageId(null);
     if (session.characterId) setCharacterId(session.characterId);
     setCanUpdateIdentity(Boolean(session.character.canUpdateIdentity));
     if (typeof session.memoryEnabled === "boolean") setMemoryEnabled(session.memoryEnabled);
@@ -400,6 +410,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   //       updated session row the BFF returns (raw, not {ok,data}).
   async function toggleMemory() {
     if (memoryPending) return;
+    setDeleteConfirmMessageId(null);
     const next = !memoryEnabled;
     setMemoryPending(true);
     try {
@@ -421,22 +432,31 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
 
   async function deleteMessage(messageId: string) {
     setStatus(null);
+    if (deleteConfirmMessageId !== messageId) {
+      setDeleteConfirmMessageId(messageId);
+      setStatus("Press Confirm delete to remove this message.");
+      return;
+    }
     try {
       const response = await fetch(`/api/v1/messages/${encodeURIComponent(messageId)}`, {
         method: "DELETE",
       });
       if (response.ok) {
         setMessages((current) => current.filter((message) => message.id !== messageId));
+        setDeleteConfirmMessageId(null);
       } else {
         setStatus("Couldn't delete the message. Please try again.");
+        setDeleteConfirmMessageId(null);
       }
     } catch {
       setStatus("Couldn't delete the message. Please try again.");
+      setDeleteConfirmMessageId(null);
     }
   }
 
   async function confirmImageAttachment(attachmentId: string) {
     setStatus(null);
+    setDeleteConfirmMessageId(null);
     setMessages((current) => updateAttachmentStatus(current, attachmentId, "requesting"));
     try {
       const response = await fetch(
@@ -457,6 +477,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
 
   async function addAttachmentToIdentity(mediaAssetId: string) {
     setStatus(null);
+    setDeleteConfirmMessageId(null);
     try {
       const response = await fetch(`/api/v1/media/${encodeURIComponent(mediaAssetId)}/add-to-identity`, {
         method: "POST",
@@ -471,6 +492,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
 
   async function createAttachmentVariation(mediaAssetId: string) {
     setStatus(null);
+    setDeleteConfirmMessageId(null);
     try {
       const response = await fetch(`/api/v1/media/${encodeURIComponent(mediaAssetId)}/variation`, {
         method: "POST",
@@ -493,6 +515,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   async function regenerate(messageId: string) {
     if (pending) return;
     setStatus(null);
+    setDeleteConfirmMessageId(null);
     try {
       const response = await fetch(
         `/api/v1/messages/${encodeURIComponent(messageId)}/regenerate`,
@@ -638,13 +661,14 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                 {messages.map((message) => {
                   const isUser = message.role === "user";
                   const isEditing = editingMessageId === message.id;
+                  const messageDeleteConfirm = deleteConfirmMessageId === message.id;
                   return (
                     <div
                       aria-label={isUser ? "Your message" : "Assistant message"}
                       className={`group relative max-w-[78%] rounded-[16px] px-4 py-3 text-[14px] leading-6 ${
                         isUser
-                          ? "ml-auto bg-white text-[rgb(13,13,13)] pr-[76px]"
-                          : "bg-[rgb(36,36,36)] text-white pr-[104px]"
+                          ? `ml-auto bg-white text-[rgb(13,13,13)] ${messageDeleteConfirm ? "pr-[128px]" : "pr-[76px]"}`
+                          : `bg-[rgb(36,36,36)] text-white ${messageDeleteConfirm ? "pr-[156px]" : "pr-[104px]"}`
                       }`}
                       data-message-id={message.id}
                       data-testid={`chat-message-${message.role}`}
@@ -751,6 +775,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                           }
                           onReport={() => reportMessage(message.id)}
                           onDelete={() => deleteMessage(message.id)}
+                          deleteConfirm={messageDeleteConfirm}
                           onRegenerate={isUser ? undefined : () => regenerate(message.id)}
                           onPlay={
                             isUser || !message.content.trim()
@@ -771,26 +796,33 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                 <input
                   aria-label="Message"
                   className="h-12 min-w-0 flex-1 rounded-full bg-[rgb(36,36,36)] px-5 text-[14px] font-medium outline-none placeholder:text-[rgb(114,113,112)]"
+                  id={`chat-message-${id}`}
                   onChange={(event) => setContent(event.target.value)}
+                  name="message"
                   placeholder="Message..."
                   value={content}
                 />
                 <button
                   aria-label="Send message"
                   className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-[linear-gradient(0deg,#ff1cac,#fd5fc2_50%,#ff79d1)] text-white disabled:opacity-70"
-                  disabled={pending}
+                  disabled={!canSend}
                   type="submit"
                 >
                   <Send className="h-4 w-4" />
                 </button>
               </form>
               {status ? (
-                <p className="mt-3 text-[13px] font-semibold text-[#ff7ac8]" role="status">
+                <p
+                  aria-live="polite"
+                  className="mt-3 text-[13px] font-semibold text-[#ff7ac8]"
+                  data-testid="chat-session-status"
+                  role="status"
+                >
                   {status}
                   {quotaReached ? (
                     <>
                       {" "}
-                      <Link className="underline hover:text-white" href="/upgrade">
+                      <Link className="underline hover:text-white" href={upgradeHrefForChatSession(id)}>
                         Upgrade for unlimited messages
                       </Link>
                       .
@@ -971,7 +1003,12 @@ function ChatImageAttachmentCard({
   onAddToIdentity?: () => void;
   onMoreLikeThis?: () => void;
 }>) {
-  if (attachment.status === "completed" && attachment.mediaUrl) {
+  const source = attachment.thumbnailUrl ?? attachment.mediaUrl;
+  const previewKey = `${attachment.id}:${source ?? ""}`;
+  const [invalidPreviewKey, setInvalidPreviewKey] = useState<string | null>(null);
+  const invalidPreview = invalidPreviewKey === previewKey;
+
+  if (attachment.status === "completed" && attachment.mediaUrl && source && !invalidPreview) {
     return (
       <figure className="overflow-hidden rounded-[12px] border border-white/10 bg-black/20">
         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -980,39 +1017,20 @@ function ChatImageAttachmentCard({
           className="aspect-[4/5] w-full max-w-[260px] object-cover"
           data-testid="chat-image-attachment"
           height={attachment.height ?? 640}
-          src={attachment.thumbnailUrl ?? attachment.mediaUrl}
+          onError={() => setInvalidPreviewKey(previewKey)}
+          onLoad={(event) => {
+            if (isInvalidChatImagePreview(event.currentTarget)) setInvalidPreviewKey(previewKey);
+          }}
+          src={source}
           width={attachment.width ?? 512}
         />
         {attachment.mediaAssetId ? (
-          <figcaption className="grid gap-2 border-t border-white/10 p-2">
-            <div className={`grid gap-2 ${canAddToIdentity ? "grid-cols-2" : "grid-cols-1"}`}>
-              <button
-                className="inline-flex h-8 items-center justify-center gap-1.5 rounded-full bg-white px-3 text-[11px] font-black text-[rgb(13,13,13)]"
-                onClick={onMoreLikeThis}
-                type="button"
-              >
-                <WandSparkles className="h-3.5 w-3.5" />
-                More like this
-              </button>
-              {canAddToIdentity && (
-                <button
-                  className="inline-flex h-8 items-center justify-center gap-1.5 rounded-full bg-white/10 px-3 text-[11px] font-bold text-white"
-                  onClick={onAddToIdentity}
-                  type="button"
-                >
-                  <ListChecks className="h-3.5 w-3.5" />
-                  Add identity
-                </button>
-              )}
-            </div>
-            <Link
-              className="inline-flex h-8 items-center justify-center gap-1.5 rounded-full bg-black/30 px-3 text-[11px] font-bold text-white"
-              href={characterId ? `/generate?characterId=${encodeURIComponent(characterId)}` : "/generate"}
-            >
-              <ExternalLink className="h-3.5 w-3.5" />
-              Open in Generate
-            </Link>
-          </figcaption>
+          <ChatImageAttachmentActions
+            canAddToIdentity={canAddToIdentity}
+            characterId={characterId}
+            onAddToIdentity={onAddToIdentity}
+            onMoreLikeThis={onMoreLikeThis}
+          />
         ) : null}
       </figure>
     );
@@ -1020,6 +1038,7 @@ function ChatImageAttachmentCard({
 
   const isWaiting = ["requesting", "queued", "running"].includes(attachment.status);
   const failed = ["failed", "blocked", "refunded", "rejected"].includes(attachment.status);
+  const completedUnavailable = attachment.status === "completed" && Boolean(attachment.mediaAssetId);
   return (
     <div
       className="w-full max-w-[260px] rounded-[12px] border border-white/10 bg-black/20 p-3"
@@ -1033,15 +1052,27 @@ function ChatImageAttachmentCard({
           <p className="text-[12px] font-bold text-white">
             {attachment.status === "proposed"
               ? "Image request"
-              : failed
+              : failed || completedUnavailable
                 ? "Image unavailable"
                 : "Generating image"}
           </p>
-          <p className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-white/60">
-            {failed
-              ? "The image could not be completed."
-              : attachment.promptHint || "Create an image from this chat moment."}
-          </p>
+          {completedUnavailable ? (
+            <div
+              className="mt-2 flex flex-col items-start gap-1 text-[11px] leading-4 text-white/60"
+              data-testid="chat-image-preview-fallback"
+            >
+              <span className="font-bold text-white/80">Preview unavailable</span>
+              <span className="line-clamp-2">
+                {attachment.promptHint || "The generated image cannot be previewed."}
+              </span>
+            </div>
+          ) : (
+            <p className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-white/60">
+              {failed
+                ? "The image could not be completed."
+                : attachment.promptHint || "Create an image from this chat moment."}
+            </p>
+          )}
         </div>
       </div>
       {attachment.status === "proposed" || failed ? (
@@ -1054,8 +1085,97 @@ function ChatImageAttachmentCard({
           {failed ? "Retry image" : `Generate image${attachment.costDreamcoins ? ` · ${attachment.costDreamcoins} coins` : ""}`}
         </button>
       ) : null}
+      {completedUnavailable ? (
+        <ChatImageAttachmentActions
+          canAddToIdentity={canAddToIdentity}
+          characterId={characterId}
+          onAddToIdentity={onAddToIdentity}
+          onMoreLikeThis={onMoreLikeThis}
+        />
+      ) : null}
     </div>
   );
+}
+
+function ChatImageAttachmentActions({
+  canAddToIdentity,
+  characterId,
+  onAddToIdentity,
+  onMoreLikeThis,
+}: Readonly<{
+  canAddToIdentity: boolean;
+  characterId: string | null;
+  onAddToIdentity?: () => void;
+  onMoreLikeThis?: () => void;
+}>) {
+  return (
+    <div className="grid gap-2 border-t border-white/10 p-2">
+      <div className={`grid gap-2 ${canAddToIdentity ? "grid-cols-2" : "grid-cols-1"}`}>
+        <button
+          className="inline-flex h-8 items-center justify-center gap-1.5 rounded-full bg-white px-3 text-[11px] font-black text-[rgb(13,13,13)]"
+          onClick={onMoreLikeThis}
+          type="button"
+        >
+          <WandSparkles className="h-3.5 w-3.5" />
+          More like this
+        </button>
+        {canAddToIdentity && (
+          <button
+            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-full bg-white/10 px-3 text-[11px] font-bold text-white"
+            onClick={onAddToIdentity}
+            type="button"
+          >
+            <ListChecks className="h-3.5 w-3.5" />
+            Add identity
+          </button>
+        )}
+      </div>
+      <Link
+        className="inline-flex h-8 items-center justify-center gap-1.5 rounded-full bg-black/30 px-3 text-[11px] font-bold text-white"
+        href={characterId ? `/generate?characterId=${encodeURIComponent(characterId)}` : "/generate"}
+      >
+        <ExternalLink className="h-3.5 w-3.5" />
+        Open in Generate
+      </Link>
+    </div>
+  );
+}
+
+function isInvalidChatImagePreview(image: HTMLImageElement) {
+  if (image.naturalWidth <= 1 || image.naturalHeight <= 1) return true;
+  return isBlankChatImagePreview(image);
+}
+
+function isBlankChatImagePreview(image: HTMLImageElement) {
+  const width = Math.min(16, image.naturalWidth);
+  const height = Math.min(16, image.naturalHeight);
+  if (width <= 0 || height <= 0) return false;
+
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) return false;
+
+    context.drawImage(image, 0, 0, width, height);
+    const data = context.getImageData(0, 0, width, height).data;
+    let min = 255;
+    let max = 0;
+    for (let index = 0; index < data.length; index += 4) {
+      const red = data[index] ?? 0;
+      const green = data[index + 1] ?? 0;
+      const blue = data[index + 2] ?? 0;
+      const luminance = Math.round(red * 0.2126 + green * 0.7152 + blue * 0.0722);
+      min = Math.min(min, luminance);
+      max = Math.max(max, luminance);
+    }
+
+    const range = max - min;
+    return range <= 1 || (range <= 4 && (min >= 250 || max <= 5));
+  } catch {
+    return false;
+  }
 }
 
 function parseStreamEvent(event: Event): Record<string, unknown> {

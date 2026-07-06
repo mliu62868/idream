@@ -1,0 +1,15 @@
+{
+  "articles": [
+    "improvement · under reviewMemory review before long chatsVote0for Memory review before long chatsGive users a quick way to inspect and adjust remembered facts before continuing a session.",
+    "feature · under reviewCreator collection boardsVote0for Creator collection boardsLet creators group characters and generated media into public boards followers can browse.",
+    "feature · plannedSaved generator recipesVote0for Saved generator recipesSave a prompt, character, style, orientation, and preset stack so it can be reused later."
+  ],
+  "fixtureMatches": [],
+  "horizontalOverflow": false,
+  "itemCount": 3,
+  "refreshButtonCount": 1,
+  "statusAriaLive": null,
+  "statusRole": null,
+  "statusText": null,
+  "url": "http://127.0.0.1:3269/helpdesk"
+}

@@ -12,7 +12,7 @@ import { ok } from "@/server/lib/http";
 // SPEC: 标签分类法治理（Character Management §C）—— admin 侧标签的列表/编辑/合并。
 // INTENT: 与 ourdream/service.ts 的前台 listTags() 物理隔离，命名 listAdminTags 以避混淆。
 //         接缝（dispatchAdmin 路由 + UI 注册）由编排者统一接线，本文件不碰其它文件。
-// INVARIANTS: 写操作要 content.tag.write；合并需 confirmation==="MERGE" 且 source≠target；
+// INVARIANTS: 写操作要 content.tag.write；合并需 confirmation===`${sourceId}:${targetId}` 且 source≠target；
 //             合并迁移 CharacterTag 去重（skipDuplicates），最后删除 source tag 本体；全部审计。
 
 // patch：至少一个可变字段 + reason。category 可空（清除分类）。
@@ -23,6 +23,7 @@ const patchTagSchema = z
     isSensitive: z.boolean().optional(),
     isMutedByDefault: z.boolean().optional(),
     reason: z.string().trim().min(3).max(2_000),
+    confirmation: z.string().trim().min(1).max(160),
   })
   .refine(
     (body) =>
@@ -84,6 +85,9 @@ export async function patchTag(request: Request, id: string): Promise<Response> 
 
   const before = await prisma.tag.findUnique({ where: { id } });
   if (!before) throw Errors.notFound("Tag not found");
+  if (body.confirmation !== before.slug && body.confirmation !== before.id) {
+    throw Errors.badRequest("Confirmation did not match tag");
+  }
 
   const tag = await prisma.tag.update({
     where: { id },
@@ -128,9 +132,6 @@ export async function mergeTags(request: Request): Promise<Response> {
   const actor = await actorWithPermission(request, "content.tag.write");
   const body = mergeTagsSchema.parse(await jsonBody(request));
 
-  if (body.confirmation !== "MERGE") {
-    throw Errors.badRequest("Merge requires MERGE confirmation");
-  }
   if (body.sourceId === body.targetId) {
     throw Errors.badRequest("Source and target tags must differ");
   }
@@ -141,6 +142,9 @@ export async function mergeTags(request: Request): Promise<Response> {
   ]);
   if (!source) throw Errors.notFound("Source tag not found");
   if (!target) throw Errors.notFound("Target tag not found");
+  if (body.confirmation !== `${source.id}:${target.id}`) {
+    throw Errors.badRequest("Confirmation did not match tag merge target");
+  }
 
   const movedCount = await prisma.$transaction(async (tx) => {
     const sourceLinks = await tx.characterTag.findMany({

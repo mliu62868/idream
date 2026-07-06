@@ -1,0 +1,13 @@
+{
+  "profileKey": "e2e-config-confirm-1783196625208-330231",
+  "activeId": "e2e-config-active-1783196625208-330231",
+  "draftId": "e2e-config-draft-1783196625208-330231",
+  "rejectedConfirmations": [
+    "DRYRUN",
+    "PUBLISH",
+    "ROLLBACK"
+  ],
+  "acceptedConfirmation": "e2e-config-draft-1783196625208-330231",
+  "consoleFailures": [],
+  "verifiedAt": "2026-07-04T20:23:46.277Z"
+}

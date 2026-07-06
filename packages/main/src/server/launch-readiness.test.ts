@@ -16,6 +16,7 @@ import {
   type LaunchReadinessReport,
   type PaymentProviderProbeEvidence,
   type ProductConfigProbeEvidence,
+  type PublicCatalogProbeEvidence,
   type SafetyGatewayProbeEvidence,
   type VoiceModelProbeEvidence,
   type WebSurfaceProbeEvidence,
@@ -56,6 +57,7 @@ const productionEnv = {
   CHAT_BFF_SIGNING_SECRET: "production-chat-bff-secret-0123456789",
   CHAT_SERVICE_PROBE_REPORT: ".tmp/launch-chat-service-probe.json",
   PRODUCT_CONFIG_PROBE_REPORT: ".tmp/launch-product-config-probe.json",
+  PUBLIC_CATALOG_PROBE_REPORT: ".tmp/public-catalog-probe.json",
   WEB_SURFACE_PROBE_REPORT: ".tmp/launch-web-surface-probe.json",
   GEN_IMAGE_PROVIDER: "pipeline",
   GEN_VIDEO_PROVIDER: "pipeline",
@@ -351,6 +353,30 @@ function passingWebSurfaceProbe(
   };
 }
 
+function passingPublicCatalogProbe(
+  override: Partial<PublicCatalogProbeEvidence> = {},
+): PublicCatalogProbeEvidence {
+  return {
+    ok: true,
+    checkedAt: "2026-06-24T23:59:00.000Z",
+    durationMs: 111,
+    counts: {
+      publicCharacters: 16,
+      publicCollections: 3,
+      publicCreators: 13,
+      publicFeedbackItems: 3,
+      distinctImages: 16,
+    },
+    issueTotals: {
+      total: 0,
+      fail: 0,
+      warn: 0,
+    },
+    error: null,
+    ...override,
+  };
+}
+
 function passingPaymentProbe(
   override: Partial<PaymentProviderProbeEvidence> = {},
 ): PaymentProviderProbeEvidence {
@@ -439,6 +465,7 @@ describe("launch readiness", () => {
         "pipeline-api-url",
         "pipeline-image-live-probe",
         "product-config-live-probe",
+        "public-catalog-live-probe",
         "blob-bucket",
         "age-verification-live-probe",
         "blob-storage-live-probe",
@@ -461,6 +488,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -496,6 +524,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -517,6 +546,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -540,6 +570,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -563,6 +594,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -586,6 +618,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -609,6 +642,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -633,6 +667,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -662,6 +697,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -692,6 +728,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -790,11 +827,12 @@ describe("launch readiness", () => {
         blobStorageProbe: passingBlobProbe(),
         chatModelProbe: passingChatProbe(),
         voiceModelProbe: passingVoiceProbe(),
-      chatServiceProbe: passingChatServiceProbe(),
+        chatServiceProbe: passingChatServiceProbe(),
         paymentProviderProbe: passingPaymentProbe(),
         safetyGatewayProbe: passingSafetyProbe(),
         productConfigProbe: passingProductConfigProbe(),
         webSurfaceProbe: passingWebSurfaceProbe(),
+        publicCatalogProbe: passingPublicCatalogProbe(),
         now,
       });
 
@@ -820,6 +858,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
       preflightChecks: [
         {
@@ -860,6 +899,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -882,6 +922,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -902,6 +943,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -932,6 +974,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -954,6 +997,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -1039,6 +1083,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -1070,6 +1115,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -1097,6 +1143,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -1130,6 +1177,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -1155,6 +1203,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -1175,6 +1224,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -1200,6 +1250,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -1223,6 +1274,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -1245,6 +1297,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -1265,6 +1318,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -1293,6 +1347,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -1314,6 +1369,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -1334,6 +1390,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -1362,6 +1419,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -1397,6 +1455,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -1429,6 +1488,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -1454,6 +1514,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -1474,6 +1535,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -1503,6 +1565,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -1525,6 +1588,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -1545,6 +1609,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
     expect(report.ok).toBe(true);
@@ -1581,6 +1646,9 @@ describe("launch readiness", () => {
       "product-config-live-probe",
     );
     expect(report.checks.map((check) => check.id)).toContain(
+      "public-catalog-live-probe",
+    );
+    expect(report.checks.map((check) => check.id)).toContain(
       "web-surface-live-probe",
     );
     expect(report.checks.map((check) => check.id)).toContain(
@@ -1601,11 +1669,116 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: null,
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
     expect(report.ok).toBe(false);
     expect(failedIds(report)).toContain("web-surface-live-probe");
+  });
+
+  it("fails when production env is configured but the public catalog probe is missing", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      imagePipelineProbe: passingImageProbe(),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: null,
+      now,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(failedIds(report)).toContain("public-catalog-live-probe");
+  });
+
+  it("fails when the public catalog probe finds launch-blocking issues", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      imagePipelineProbe: passingImageProbe(),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe({
+        ok: false,
+        issueTotals: {
+          total: 2,
+          fail: 1,
+          warn: 1,
+        },
+      }),
+      now,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(failedIds(report)).toContain("public-catalog-live-probe");
+    expect(checkById(report, "public-catalog-live-probe")?.message).toContain(
+      "1 launch-blocking catalog issue",
+    );
+  });
+
+  it("fails when the public catalog probe is stale", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      imagePipelineProbe: passingImageProbe(),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe({
+        checkedAt: "2026-06-20T00:00:00.000Z",
+      }),
+      now,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(failedIds(report)).toContain("public-catalog-live-probe");
+  });
+
+  it("fails when the public catalog probe finds no launchable catalog content", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      imagePipelineProbe: passingImageProbe(),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe({
+        counts: {
+          publicCharacters: 0,
+          publicCollections: 0,
+          publicCreators: 0,
+          publicFeedbackItems: 0,
+          distinctImages: 0,
+        },
+      }),
+      now,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(failedIds(report)).toContain("public-catalog-live-probe");
   });
 
   it("fails when the web surface probe finds an unprotected admin surface", () => {
@@ -1633,6 +1806,7 @@ describe("launch readiness", () => {
           error: "admin content was public",
         },
       }),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -1661,6 +1835,7 @@ describe("launch readiness", () => {
           error: "admin API was public",
         },
       }),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -1683,6 +1858,7 @@ describe("launch readiness", () => {
       webSurfaceProbe: passingWebSurfaceProbe({
         checkedAt: "2026-06-20T00:00:00.000Z",
       }),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -1703,6 +1879,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: null,
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -1730,6 +1907,7 @@ describe("launch readiness", () => {
         },
       }),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -1758,6 +1936,7 @@ describe("launch readiness", () => {
         },
       }),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -1787,6 +1966,7 @@ describe("launch readiness", () => {
         activeVideoPricingRules: 1,
       }),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -1813,6 +1993,7 @@ describe("launch readiness", () => {
         videoFeatureEnabled: false,
       }),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -1839,6 +2020,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 
@@ -1859,6 +2041,7 @@ describe("launch readiness", () => {
       safetyGatewayProbe: passingSafetyProbe(),
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     });
 

@@ -15,6 +15,7 @@ export function MessageActions({
   onDelete,
   onRegenerate,
   onPlay,
+  deleteConfirm,
 }: Readonly<{
   isUser: boolean;
   pending: boolean;
@@ -24,6 +25,7 @@ export function MessageActions({
   onDelete: () => void;
   onRegenerate?: () => void;
   onPlay?: () => void;
+  deleteConfirm?: boolean;
 }>) {
   const tone = isUser ? "bg-black/10 text-[rgb(13,13,13)]" : "bg-black/30 text-white";
   const voiceActive = voiceState === "playing";
@@ -81,15 +83,15 @@ export function MessageActions({
         </button>
       ) : null}
       <button
-        aria-label="Delete message"
-        className={`grid h-7 w-7 place-items-center rounded-full ${tone} disabled:opacity-50`}
+        aria-label={deleteConfirm ? "Confirm delete message" : "Delete message"}
+        className={`inline-flex h-7 min-w-7 items-center justify-center rounded-full ${deleteConfirm ? "px-2 text-[11px] font-bold uppercase" : "w-7"} ${tone} disabled:opacity-50`}
         data-testid="chat-delete-message"
         disabled={pending}
         onClick={onDelete}
-        title="Delete message"
+        title={deleteConfirm ? "Confirm delete message" : "Delete message"}
         type="button"
       >
-        <Trash2 className="h-3.5 w-3.5" />
+        {deleteConfirm ? "Confirm" : <Trash2 className="h-3.5 w-3.5" />}
       </button>
       <button
         aria-label="Report message"

@@ -1,0 +1,52 @@
+{
+  "results": {
+    "/games": {
+      "title": "AI Games | ourdream.ai",
+      "path": "/games",
+      "bodyOverflowX": false,
+      "cardHrefs": [
+        "/create",
+        "/",
+        "/generator/ai-roleplay-generator",
+        "/sex-chat/ai-sex-chat-roleplay",
+        "/type/roleplay-ai-girlfriend",
+        "/guides/character-cards",
+        "/generate/ai-anime-porn-generator",
+        "/type/anime-ai-girlfriend"
+      ],
+      "cardTitles": [
+        "AI Roleplay Generator",
+        "AI Sex Chat Roleplay",
+        "Roleplay AI Girlfriend",
+        "Character Cards",
+        "AI Anime Porn Generator",
+        "Anime AI Girlfriend"
+      ]
+    },
+    "/romantasy": {
+      "title": "AI Romantasy | ourdream.ai",
+      "path": "/romantasy",
+      "bodyOverflowX": false,
+      "cardHrefs": [
+        "/create",
+        "/",
+        "/guides/character-card-creator",
+        "/generator/ai-roleplay-generator",
+        "/type/roleplay-ai-girlfriend",
+        "/type/angel-ai-girlfriend",
+        "/type/goth-ai-girlfriend",
+        "/guides/character-cards"
+      ],
+      "cardTitles": [
+        "Character Card Creator",
+        "AI Roleplay Generator",
+        "Roleplay AI Girlfriend",
+        "Angel AI Girlfriend",
+        "Goth AI Girlfriend",
+        "Character Cards"
+      ]
+    }
+  },
+  "logs": [],
+  "pageErrors": []
+}

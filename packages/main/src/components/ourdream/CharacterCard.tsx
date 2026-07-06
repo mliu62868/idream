@@ -16,8 +16,18 @@ export function CharacterCard({
   imageLoading?: "eager" | "lazy";
   imageUnoptimized?: boolean;
 }>) {
+  const description = card.description.trim().replace(/[.!?]+$/, "");
+  const label = [
+    `${card.title}, age ${card.age}`,
+    description,
+    `Creator ${card.creator}`,
+    `${card.likes} likes`,
+    `${card.chats} chats`,
+  ].join(". ");
+
   return (
     <Link
+      aria-label={label}
       className="group relative block aspect-[240/400] w-full cursor-pointer overflow-hidden rounded-[12px] bg-[rgb(36,36,36)] transition-transform duration-200 ease-out hover:scale-[1.012]"
       href={`/characters/${card.id}`}
     >
@@ -45,8 +55,11 @@ export function CharacterCard({
         <div className="min-w-0">
           <h2 className="line-clamp-2 text-[16px] font-bold leading-[18px] text-white">
             {card.title}
-            <span className="ml-2 whitespace-nowrap text-[14px] font-bold leading-[16px]">
-              {card.age}
+            <span
+              aria-label={`age ${card.age}`}
+              className="ml-2 whitespace-nowrap text-[14px] font-bold leading-[16px]"
+            >
+              · {card.age}
             </span>
           </h2>
           <p className="line-clamp-2 pt-0.5 text-[12px] font-medium leading-4 text-[rgb(170,170,170)]">

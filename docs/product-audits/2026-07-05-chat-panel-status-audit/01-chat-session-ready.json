@@ -1,0 +1,53 @@
+{
+  "chatPanelEmail": "chrome-chat-panel-1783245376676@test.local",
+  "chatSessionReadyState": {
+    "bodySample": [
+      "Create",
+      "Explore",
+      "Chat",
+      "Generate",
+      "My AI",
+      "Feed",
+      "Community",
+      "Help Desk",
+      "Safety Center",
+      "Discord",
+      "More",
+      "Profile",
+      "Upgrade",
+      "2026 OURDREAM.AI",
+      "USA: DREAM STUDIO USA, INC.",
+      "CYPRUS: TEKTOPIA LTD (HE 473775)",
+      "Explore",
+      "MELISSA BURKE",
+      "Getting to know each other",
+      "Memory on",
+      "Generate",
+      "Memory on: this character remembers details across your chats."
+    ],
+    "buttons": [
+      {
+        "aria": "Memory on. Turn off memory.",
+        "testid": "memory-toggle",
+        "text": "Memory on"
+      },
+      {
+        "aria": "Open your chats",
+        "testid": "session-list-open",
+        "text": ""
+      },
+      {
+        "aria": "Open memory settings",
+        "testid": "memory-panel-open",
+        "text": ""
+      },
+      {
+        "aria": "Send message",
+        "testid": null,
+        "text": ""
+      }
+    ],
+    "overflow": false,
+    "url": "http://chat-panel-status-1783267.localhost:3267/chat/sess_1232ec8b38024466b819d6e2f5b11838"
+  }
+}

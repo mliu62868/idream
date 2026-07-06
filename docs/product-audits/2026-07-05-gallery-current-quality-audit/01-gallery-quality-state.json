@@ -1,0 +1,64 @@
+{
+  "qualityState": {
+    "cards": {
+      "blank": {
+        "actualMediaId": "chrome-gallery-quality3-blank-1783247954493-207148",
+        "exists": true,
+        "fallbackText": "Preview unavailable",
+        "hasFallback": true,
+        "hasImage": false,
+        "id": "chrome-gallery-quality3-blank-1783247954493-207148",
+        "image": null,
+        "rect": {
+          "height": 285,
+          "left": 717,
+          "top": 406.25,
+          "width": 228
+        },
+        "text": "Preview unavailable"
+      },
+      "tiny": {
+        "actualMediaId": "chrome-gallery-quality3-tiny-1783247954493-207148",
+        "exists": true,
+        "fallbackText": "Preview unavailable",
+        "hasFallback": true,
+        "hasImage": false,
+        "id": "chrome-gallery-quality3-tiny-1783247954493-207148",
+        "image": null,
+        "rect": {
+          "height": 285,
+          "left": 957,
+          "top": 406.25,
+          "width": 228
+        },
+        "text": "Preview unavailable"
+      },
+      "valid": {
+        "actualMediaId": "chrome-gallery-quality3-valid-1783247954493-207148",
+        "exists": true,
+        "fallbackText": null,
+        "hasFallback": false,
+        "hasImage": true,
+        "id": "chrome-gallery-quality3-valid-1783247954493-207148",
+        "image": {
+          "complete": true,
+          "currentSrc": "http://127.0.0.1:3260/user-content/Y2hyb21lLWdhbGxlcnktcXVhbGl0eTMtdmFsaWQtMTc4MzI0Nzk1NDQ5My0yMDcxNDg/content.png",
+          "naturalHeight": 64,
+          "naturalWidth": 64,
+          "src": "http://127.0.0.1:3260/user-content/Y2hyb21lLWdhbGxlcnktcXVhbGl0eTMtdmFsaWQtMTc4MzI0Nzk1NDQ5My0yMDcxNDg/content.png"
+        },
+        "rect": {
+          "height": 285,
+          "left": 1197,
+          "top": 406.25,
+          "width": 228
+        },
+        "text": ""
+      }
+    },
+    "horizontalOverflow": false,
+    "title": "NSFW AI Image Generator | ourdream.ai",
+    "url": "http://127.0.0.1:3260/generate"
+  },
+  "logs": []
+}

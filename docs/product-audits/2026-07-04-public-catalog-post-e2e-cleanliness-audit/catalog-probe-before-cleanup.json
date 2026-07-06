@@ -1,0 +1,43 @@
+{
+  "ok": false,
+  "checkedAt": "2026-07-04T22:32:54.675Z",
+  "durationMs": 112,
+  "counts": {
+    "publicCharacters": 16,
+    "publicCollections": 4,
+    "publicCreators": 14,
+    "distinctImages": 16
+  },
+  "thresholds": {
+    "maxDuplicateImageRatio": 0.4,
+    "maxPublicMetric": 10000000
+  },
+  "issueTotals": {
+    "total": 2,
+    "fail": 2,
+    "warn": 0
+  },
+  "issues": [
+    {
+      "severity": "fail",
+      "entity": "collection",
+      "id": "cmr6hr0880005oml7vrdwa4d4",
+      "field": "name",
+      "message": "Public catalog contains audit/test user marker.",
+      "value": "Chrome handoff 1783177343553"
+    },
+    {
+      "severity": "fail",
+      "entity": "creator",
+      "id": "cmr6hoskn0000oml7w6g4423h",
+      "field": "displayName",
+      "message": "Public catalog contains audit/test user marker.",
+      "value": "Chrome Collection Auditor"
+    }
+  ],
+  "error": {
+    "code": "public_catalog_probe_failed",
+    "message": "2 launch-blocking public catalog issue(s) found.",
+    "retryable": false
+  }
+}

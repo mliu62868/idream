@@ -1,0 +1,81 @@
+{
+  "date": "2026-07-04",
+  "scope": "public-surface-current-e2e",
+  "baseUrl": "http://127.0.0.1:3211",
+  "chromePages": [
+    {
+      "path": "/",
+      "screenshot": "screenshots/home-after-3s.png",
+      "h1": "Ourdream ai, the Unlimited AI Roleplay Platform",
+      "brokenImages": [],
+      "horizontalOverflow": false,
+      "consoleWarningsErrors": [],
+      "notes": "Initial domcontentloaded capture still showed Loading more characters; after 3 seconds characterLinkCount=16 and loadingTextPresent=false."
+    },
+    {
+      "path": "/resources-hub",
+      "screenshot": "screenshots/resources-hub.png",
+      "h1": "Resources Hub",
+      "brokenImages": [],
+      "horizontalOverflow": false,
+      "consoleWarningsErrors": []
+    },
+    {
+      "path": "/helpdesk",
+      "screenshot": "screenshots/helpdesk.png",
+      "h1": "Get support without losing context",
+      "brokenImages": [],
+      "horizontalOverflow": false,
+      "consoleWarningsErrors": []
+    },
+    {
+      "path": "/terms",
+      "screenshot": "screenshots/terms.png",
+      "h1": "Terms & Policies",
+      "brokenImages": [],
+      "horizontalOverflow": false,
+      "consoleWarningsErrors": []
+    },
+    {
+      "path": "/safety/introduction",
+      "screenshot": "screenshots/safety-introduction.png",
+      "h1": "Our approach to safety",
+      "brokenImages": [],
+      "horizontalOverflow": false,
+      "consoleWarningsErrors": []
+    },
+    {
+      "path": "/profile/account-management",
+      "screenshot": "screenshots/profile-account-management.png",
+      "h1": "Profile",
+      "brokenImages": [],
+      "horizontalOverflow": false,
+      "consoleWarningsErrors": []
+    }
+  ],
+  "helpDeskSubmission": {
+    "screenshot": "screenshots/helpdesk-support-submitted.png",
+    "submitEnabledBeforeRequiredFields": false,
+    "submitEnabledAfterRequiredFields": true,
+    "reference": "SUP-VAUVQYM4DP",
+    "consoleWarningsErrors": []
+  },
+  "playwright": [
+    {
+      "command": "PW_WEBSERVER=1 PW_BASE_URL=http://127.0.0.1:3210 PW_ADMIN_BASE_URL=http://127.0.0.1:3999 bun --cwd packages/main playwright test src/e2e/public-routes.e2e.ts",
+      "result": "47 passed (19.5s)"
+    },
+    {
+      "command": "PW_WEBSERVER=1 PW_BASE_URL=http://127.0.0.1:3212 PW_ADMIN_BASE_URL=http://127.0.0.1:3999 bun --cwd packages/main playwright test src/e2e/ui-workflows.e2e.ts",
+      "result": "56 passed (1.8m)"
+    },
+    {
+      "command": "PW_WEBSERVER=1 PW_BASE_URL=http://127.0.0.1:3213 PW_ADMIN_BASE_URL=http://127.0.0.1:3005 bun --cwd packages/main playwright test src/e2e/admin-web.e2e.ts",
+      "result": "25 passed (34.7s)"
+    }
+  ],
+  "limitations": [
+    "Chrome public-surface pass used the existing local authenticated audit profile.",
+    "This is local/internal beta proof and does not remove deferred production-provider launch blockers."
+  ]
+}

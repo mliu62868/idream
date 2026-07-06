@@ -153,6 +153,7 @@ bun run launch:probe:image:local
 bun run launch:probe:generation-model-candidates -- --report .tmp/launch-generation-model-candidates.json
 bun run launch:probe:web-surface -- --report .tmp/launch-web-surface-probe.json
 bun run launch:probe:product-config -- --report .tmp/launch-product-config-probe.json
+bun run launch:probe:catalog -- --report .tmp/public-catalog-probe.json
 bun run launch:probe:chat-service -- --report .tmp/launch-chat-service-probe.json
 bun run launch:probe:chat -- --report .tmp/launch-chat-probe.json
 bun run launch:probe:voice -- --report .tmp/launch-voice-probe.json
@@ -220,6 +221,7 @@ bun run check:launch:direct -- --launch-env-file .tmp/production-launch.env
 `PIPELINE_IMAGE_PROBE_REPORT=.tmp/launch-image-probe.json` 和
 `WEB_SURFACE_PROBE_REPORT=.tmp/launch-web-surface-probe.json`、
 `PRODUCT_CONFIG_PROBE_REPORT=.tmp/launch-product-config-probe.json`、
+`PUBLIC_CATALOG_PROBE_REPORT=.tmp/public-catalog-probe.json`、
 `CHAT_SERVICE_PROBE_REPORT=.tmp/launch-chat-service-probe.json`、
 `CHAT_MODEL_PROBE_REPORT=.tmp/launch-chat-probe.json`、
 `VOICE_MODEL_PROBE_REPORT=.tmp/launch-voice-probe.json`、
@@ -247,6 +249,9 @@ config probe 报告，证明 DB 中至少有 active image model profile、image 
 prompt template 和 image pricing rule；如果 `video_gen` feature flag 打开，还必须同时有
 active video profile、video prompt template 和 video pricing rule，并且 `GEN_VIDEO_PROVIDER`
 不能是 mock。`video_gen=false` 时，视频 provider 可保持 mock 且门禁通过。门禁还要求
+`PUBLIC_CATALOG_PROBE_REPORT` 指向最近一次 public catalog probe 报告，证明公开角色、创作者、
+合集和图片素材存在且没有 fixture/audit marker、异常指标或重复图片集中度问题；否则公开目录脏数据
+不能误报为可上线。门禁还要求
 `CHAT_SERVICE_PROBE_REPORT` 指向最近一次 chat
 service probe 报告，证明 `/healthz` 可达、BFF 签名的只读 chat 请求返回 200、
 未签名请求返回 401；否则 chat split 不能误报为可上线。`VOICE_MODEL_PROBE_REPORT`

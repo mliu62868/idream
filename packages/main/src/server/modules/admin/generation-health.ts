@@ -84,7 +84,7 @@ const dryRunSchema = z.object({
 export async function profileDryRun(request: Request, id: string): Promise<Response> {
   const actor = await actorWithPermission(request, CONFIG_WRITE);
   const body = dryRunSchema.parse(await jsonBody(request));
-  if (body.confirmation !== id && body.confirmation !== "DRYRUN") {
+  if (body.confirmation !== id) {
     throw Errors.badRequest("Confirmation did not match dry-run target");
   }
   const profile = await prisma.generationModelProfile.findUnique({ where: { id } });

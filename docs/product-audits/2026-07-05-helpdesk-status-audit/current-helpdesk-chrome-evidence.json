@@ -1,0 +1,8 @@
+{
+  "ariaLive": null,
+  "consoleUrl": "http://127.0.0.1:3252/helpdesk",
+  "role": "status",
+  "tagName": "P",
+  "testId": "helpdesk-status",
+  "text": "Support request SUP-K1G5LJ4XGU received."
+}

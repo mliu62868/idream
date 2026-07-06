@@ -442,7 +442,26 @@ function whitePng(width: number, height: number) {
 function pngChunk(type: string, data: Buffer) {
   const length = Buffer.alloc(4);
   length.writeUInt32BE(data.length, 0);
-  return Buffer.concat([length, Buffer.from(type, "ascii"), data, Buffer.alloc(4)]);
+  const chunk = Buffer.concat([Buffer.from(type, "ascii"), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(chunk), 0);
+  return Buffer.concat([length, chunk, crc]);
+}
+
+const pngCrcTable = new Uint32Array(256).map((_, value) => {
+  let crc = value;
+  for (let bit = 0; bit < 8; bit += 1) {
+    crc = crc & 1 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1;
+  }
+  return crc >>> 0;
+});
+
+function crc32(data: Buffer) {
+  let crc = 0xffffffff;
+  for (const byte of data) {
+    crc = pngCrcTable[(crc ^ byte) & 0xff]! ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
 }
 
 describe("processVideoGenerate", () => {
