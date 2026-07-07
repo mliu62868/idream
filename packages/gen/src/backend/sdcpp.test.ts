@@ -85,8 +85,14 @@ describe("SdcppBackend", () => {
     expect(state.calls).toHaveLength(1);
     const [{ command, args }] = state.calls;
     expect(command).toBe("/usr/local/bin/sd-cli");
-    // argv contains the flags bindSdcppArgs produces from the descriptor + slots
-    expect(args).toEqual(expect.arrayContaining(["--prompt", "a cat", "--steps", "12"]));
+    // argv pairs each flag with its value in order (not just presence) — verifies
+    // bindSdcppArgs' real output, not just that the tokens appear somewhere.
+    const promptIndex = args.indexOf("--prompt");
+    const stepsIndex = args.indexOf("--steps");
+    expect(promptIndex).toBeGreaterThanOrEqual(0);
+    expect(stepsIndex).toBeGreaterThanOrEqual(0);
+    expect(args[promptIndex + 1]).toBe("a cat");
+    expect(args[stepsIndex + 1]).toBe("12");
 
     const result = await backend.poll(handle);
     expect(result.assets).toHaveLength(1);

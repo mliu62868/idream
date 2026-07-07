@@ -14,6 +14,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { assertGeneratedImageSanity } from "../generated-image-sanity";
+import { env } from "../env";
 import { logger } from "../logger";
 import {
   cleanupSdcppReferenceImages,
@@ -33,7 +34,6 @@ import type {
   ResolvedGenJob,
 } from "./types";
 
-const DEFAULT_TIMEOUT_MS = 300_000;
 const DEFAULT_REFERENCE_MODE: SdcppReferenceMode = "auto";
 const DEFAULT_REFERENCE_STRENGTH = 0.62;
 // Bound stdout/stderr buffering so a runaway/chatty sd-cli process can't grow
@@ -85,7 +85,7 @@ export class SdcppBackend implements GenBackend {
     });
     try {
       const args = buildArgs(job, outputPath, referenceImages, this.referenceMode, this.referenceStrength);
-      await this.runSdcpp(args, job.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+      await this.runSdcpp(args, job.timeoutMs ?? env.PIPELINE_TIMEOUT_MS);
       const image = await readFile(outputPath);
       assertGeneratedImageSanity(image, `sdcpp ${job.descriptor.workflowKey} ${id}`);
       const dimensions = pngDimensions(image) ?? {
@@ -127,13 +127,14 @@ export class SdcppBackend implements GenBackend {
 
   private runSdcpp(args: string[], timeoutMs: number): Promise<void> {
     return new Promise((resolve, reject) => {
-      const child = spawn(this.cli, args, { stdio: ["ignore", "pipe", "pipe"] });
+      const controller = new AbortController();
+      const child = spawn(this.cli, args, {
+        stdio: ["ignore", "pipe", "pipe"],
+        signal: controller.signal,
+      });
       let stderr = "";
       let stdout = "";
-      const timer = setTimeout(() => {
-        child.kill("SIGTERM");
-        reject(new Error(`sd-cli timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
 
       child.stdout?.on("data", (chunk: Buffer) => {
         stdout = appendBounded(stdout, chunk.toString("utf8"));
@@ -143,6 +144,10 @@ export class SdcppBackend implements GenBackend {
       });
       child.on("error", (error) => {
         clearTimeout(timer);
+        if (error instanceof Error && error.name === "AbortError") {
+          reject(new Error(`sd-cli timed out after ${timeoutMs}ms`));
+          return;
+        }
         reject(error);
       });
       child.on("close", (code) => {
