@@ -45,7 +45,7 @@ const EnvSchema = z.object({
   BULLMQ_PREFIX: z.string().min(1).default(`idream:${appEnv}`),
   LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error", "fatal", "silent"]).default("info"),
   CHAT_PROVIDER: z.enum(["mock", "pipeline"]).default("mock"),
-  IMAGE_PROVIDER: z.enum(["mock", "pipeline"]).default("mock"),
+  IMAGE_PROVIDER: z.enum(["mock", "pipeline", "backend"]).default("mock"),
   VIDEO_PROVIDER: z.enum(["mock", "pipeline"]).default("mock"),
   VOICE_PROVIDER: z.enum(["mock", "pipeline"]).default("mock"),
   MODERATION_PROVIDER: z.enum(["mock", "pipeline", "safety-gateway"]).default("mock"),
@@ -69,6 +69,10 @@ const EnvSchema = z.object({
   MODERATION_API_KEY: z.string().optional(),
   MODERATION_TIMEOUT_MS: z.coerce.number().int().positive().default(5_000),
   PIPELINE_API_URL: z.string().url().optional(),
+  // Backend image provider (P1): gen worker's ComfyUI-backed generation path.
+  // Optional here — required only for a production IMAGE_PROVIDER=backend
+  // deploy, enforced by launch-readiness rather than at boot.
+  COMFYUI_API_URL: z.string().url().optional(),
   PIPELINE_VOICE_API_URL: z.string().url().optional(),
   PIPELINE_API_TOKEN: z.string().optional(),
   PIPELINE_VOICE_API_TOKEN: z.string().optional(),

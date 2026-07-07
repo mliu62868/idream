@@ -554,6 +554,65 @@ describe("launch readiness", () => {
     expect(failedIds(report)).toContain("pipeline-image-live-probe");
   });
 
+  it("passes the generation image provider check for a backend (ComfyUI) deploy", () => {
+    const report = assessLaunchReadiness({
+      env: {
+        ...productionEnv,
+        IMAGE_PROVIDER: "backend",
+        GEN_IMAGE_PROVIDER: "backend",
+        COMFYUI_API_URL: "https://comfyui.ourdream.internal",
+      },
+      imagePipelineProbe: null,
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(checkById(report, "gen-image-provider")?.status).toBe("pass");
+    expect(checkById(report, "comfyui-api-url")?.status).toBe("pass");
+    expect(failedIds(report)).not.toContain("gen-image-provider");
+    expect(failedIds(report)).not.toContain("comfyui-api-url");
+    // A backend deploy is not blocked on the legacy pipeline gateway probe/checks.
+    expect(failedIds(report)).not.toContain("pipeline-image-live-probe");
+    expect(report.checks.map((check) => check.id)).not.toContain("pipeline-api-url");
+    expect(report.checks.map((check) => check.id)).not.toContain("pipeline-api-token");
+    expect(report.checks.map((check) => check.id)).not.toContain("pipeline-image-live-probe");
+  });
+
+  it("fails the ComfyUI URL check for a backend deploy missing COMFYUI_API_URL", () => {
+    const report = assessLaunchReadiness({
+      env: {
+        ...productionEnv,
+        IMAGE_PROVIDER: "backend",
+        GEN_IMAGE_PROVIDER: "backend",
+      },
+      imagePipelineProbe: null,
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(checkById(report, "comfyui-api-url")?.status).toBe("fail");
+    expect(failedIds(report)).toContain("comfyui-api-url");
+  });
+
   it("requires the split chat service to use its own least-privilege database role", () => {
     const report = assessLaunchReadiness({
       env: {

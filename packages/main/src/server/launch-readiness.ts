@@ -355,14 +355,14 @@ export interface LaunchReadinessCliOptions {
 export const currentLaunchCapabilities: LaunchReadinessCapabilities = {
   mainProviderImplementations: {
     CHAT_PROVIDER: ["mock", "pipeline"],
-    IMAGE_PROVIDER: ["mock", "pipeline"],
+    IMAGE_PROVIDER: ["mock", "pipeline", "backend"],
     VOICE_PROVIDER: ["mock", "pipeline"],
     MODERATION_PROVIDER: ["mock", "safety-gateway"],
     PAYMENT_PROVIDER: ["mock", "btcpay"],
     BLOB_PROVIDER: ["mock", "r2", "s3"],
     AGE_VERIFICATION_PROVIDER: ["mock", "gocam"],
   },
-  genImageProviders: ["mock", "pipeline"],
+  genImageProviders: ["mock", "pipeline", "backend"],
   genVideoProviders: ["mock", "pipeline"],
 };
 
@@ -1137,37 +1137,52 @@ function addImagePipelineChecks(
 ) {
   const configured = env.GEN_IMAGE_PROVIDER ?? env.IMAGE_PROVIDER ?? "mock";
   const supported = capabilities.genImageProviders.includes(configured);
+  // "pipeline" (legacy OpenAI-compat gateway) and "backend" (P1: gen worker calls
+  // ComfyUI/sd-cli directly via GenBackend) are both valid non-mock production
+  // image providers — see packages/gen/src/providers.ts and docs/architecture.
+  const isNonMockImageProvider = configured === "pipeline" || configured === "backend";
 
   addCheck(checks, {
     id: "gen-image-provider",
     area: "Generation",
-    status: configured === "pipeline" && supported ? "pass" : "fail",
+    status: isNonMockImageProvider && supported ? "pass" : "fail",
     message:
-      configured === "pipeline" && supported
-        ? "Image generation worker is configured for the pipeline provider."
+      isNonMockImageProvider && supported
+        ? `Image generation worker is configured for the ${configured} provider.`
         : `Image generation worker is configured as ${configured}.`,
     remediation:
-      configured === "pipeline" && supported
+      isNonMockImageProvider && supported
         ? undefined
-        : "Set GEN_IMAGE_PROVIDER=pipeline and run the image pipeline probe against the real service.",
+        : "Set GEN_IMAGE_PROVIDER=pipeline or GEN_IMAGE_PROVIDER=backend (matching a supported build) and run the matching live probe against the real service.",
   });
 
-  addRequiredCheck(checks, env, {
-    id: "pipeline-api-url",
-    area: "Generation",
-    key: "PIPELINE_API_URL",
-    label: "Pipeline API URL",
-    url: true,
-    remediation: "Set PIPELINE_API_URL to the internal ComfyUI/Z-Image gateway.",
-  });
-  addRequiredCheck(checks, env, {
-    id: "pipeline-api-token",
-    area: "Generation",
-    key: "PIPELINE_API_TOKEN",
-    label: "Pipeline API token",
-    minLength: 16,
-    remediation: "Set PIPELINE_API_TOKEN so product services authenticate to the pipeline.",
-  });
+  if (configured === "backend") {
+    addRequiredCheck(checks, env, {
+      id: "comfyui-api-url",
+      area: "Generation",
+      key: "COMFYUI_API_URL",
+      label: "ComfyUI API URL",
+      url: true,
+      remediation: "Set COMFYUI_API_URL to the internal ComfyUI backend used by GEN_IMAGE_PROVIDER=backend.",
+    });
+  } else {
+    addRequiredCheck(checks, env, {
+      id: "pipeline-api-url",
+      area: "Generation",
+      key: "PIPELINE_API_URL",
+      label: "Pipeline API URL",
+      url: true,
+      remediation: "Set PIPELINE_API_URL to the internal ComfyUI/Z-Image gateway.",
+    });
+    addRequiredCheck(checks, env, {
+      id: "pipeline-api-token",
+      area: "Generation",
+      key: "PIPELINE_API_TOKEN",
+      label: "Pipeline API token",
+      minLength: 16,
+      remediation: "Set PIPELINE_API_TOKEN so product services authenticate to the pipeline.",
+    });
+  }
 
   const model = env.PIPELINE_IMAGE_MODEL_DEFAULT;
   addCheck(checks, {
@@ -1182,7 +1197,12 @@ function addImagePipelineChecks(
       : "Set PIPELINE_IMAGE_MODEL_DEFAULT or document the default model in the pipeline service.",
   });
 
-  addImagePipelineProbeCheck(checks, env, probe, now);
+  // The pipeline live probe (packages/gen probe:image) only exercises the legacy
+  // OpenAI-compat gateway. A backend/ComfyUI deploy is not blocked on it here — a
+  // dedicated ComfyUI probe is a separate future concern, not invented in this fix.
+  if (configured !== "backend") {
+    addImagePipelineProbeCheck(checks, env, probe, now);
+  }
 }
 
 function addVideoPipelineChecks(

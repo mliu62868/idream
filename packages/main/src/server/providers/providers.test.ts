@@ -122,6 +122,23 @@ describe("mock providers", () => {
     );
   });
 
+  it("parses IMAGE_PROVIDER=backend without throwing (P1 gen backend parity)", async () => {
+    vi.resetModules();
+    process.env = {
+      ...oldEnv,
+      IMAGE_PROVIDER: "backend",
+      COMFYUI_API_URL: "http://127.0.0.1:8188",
+    };
+
+    // Import the env module directly (not the provider registry barrel): this
+    // asserts the Zod schema itself accepts IMAGE_PROVIDER=backend, independent of
+    // ./index's own separate provider-implementation wiring/validation.
+    const { env } = await import("../lib/env");
+
+    expect(env.IMAGE_PROVIDER).toBe("backend");
+    expect(env.COMFYUI_API_URL).toBe("http://127.0.0.1:8188");
+  });
+
   it("rejects production startup when Better Auth uses a localhost origin", async () => {
     vi.resetModules();
     process.env = {
