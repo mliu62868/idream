@@ -31,6 +31,10 @@ export default defineConfig({
         "../shared/src/moderation/safety-gateway.ts",
         import.meta.url,
       ).pathname,
+      "@idream/shared/gen-workflow": new URL(
+        "../shared/src/gen/workflow.ts",
+        import.meta.url,
+      ).pathname,
       "@idream/shared": new URL("../shared/src/index.ts", import.meta.url).pathname,
     },
   },

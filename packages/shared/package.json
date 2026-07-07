@@ -14,7 +14,8 @@
     "./media/mock-video": "./src/media/mock-video.ts",
     "./storage": "./src/storage/s3-blob.ts",
     "./storage/local-blob": "./src/storage/local-blob.ts",
-    "./moderation": "./src/moderation/safety-gateway.ts"
+    "./moderation": "./src/moderation/safety-gateway.ts",
+    "./gen-workflow": "./src/gen/workflow.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

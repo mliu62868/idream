@@ -10,6 +10,7 @@ import { ComfyUIBackend } from "./comfyui";
 import { SdcppBackend } from "./sdcpp";
 import { loadWorkflowDescriptors, type WorkflowDescriptor } from "./workflow";
 import type { GenBackend } from "./types";
+import { logger } from "../logger";
 
 export interface BackendRegistry {
   resolveForModel(modelId: string): { backend: GenBackend; descriptor: WorkflowDescriptor };
@@ -20,7 +21,9 @@ export async function buildBackendRegistry(opts: {
   sdcppCli: string;
   workflowDir: string;
 }): Promise<BackendRegistry> {
-  const descriptors = await loadWorkflowDescriptors(opts.workflowDir);
+  const descriptors = await loadWorkflowDescriptors(opts.workflowDir, {
+    onSkip: (file, err) => logger.warn({ file, err }, "skipping invalid workflow descriptor"),
+  });
   const byModelId = new Map<string, WorkflowDescriptor>();
   for (const descriptor of descriptors) {
     byModelId.set(descriptor.modelId, descriptor);
