@@ -25,4 +25,11 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
     expect(redcraft).toBeDefined();
     expect(() => workflowDescriptorSchema.parse(redcraft)).not.toThrow();
   });
+
+  it("loads the qwen-image-edit img2img descriptor and validates it against the schema", async () => {
+    const descriptors = await loadWorkflowDescriptors(WORKFLOWS_DIR);
+    const qwenEdit = descriptors.find((d) => d.modelId === "qwen-image-edit");
+    expect(qwenEdit).toBeDefined();
+    expect(() => workflowDescriptorSchema.parse(qwenEdit)).not.toThrow();
+  });
 });

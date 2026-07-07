@@ -4,6 +4,10 @@
 // ComfyUIBackend -> POST /prompt. This is the same round trip
 // probe-redcraft-comfyui.ts exercised directly against ComfyUI, but this time
 // through the actual provider seam the gen worker uses in production.
+// Defaults to the txt2img redcraft path; pass --model <modelId> to target any
+// other registered descriptor (e.g. qwen-image-edit), --ref <png path> to drive
+// an img2img/edit workflow off a local reference image, and --prompt to
+// override the default smoke prompt.
 // INTENT: Manual-only dev script, not part of `vitest run` (no live server in
 // CI; see package.json's `smoke:backend` script). Forces GEN_IMAGE_PROVIDER to
 // "backend" unconditionally — env.ts's getter checks GEN_IMAGE_PROVIDER before
@@ -15,9 +19,10 @@
 // script is invoked from inside packages/gen (its `bun run` cwd).
 // INVARIANTS: never commits the generated PNG; writes under the OS temp dir
 // unless --out points elsewhere. Exits 1 on any failure (ok:false, missing
-// body, or a thrown error) so it composes as a CLI health check.
+// body, or a thrown error) so it composes as a CLI health check. --ref is
+// read once into memory (smoke-scale images only, no streaming).
 import { Buffer } from "node:buffer";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -40,28 +45,51 @@ const SMOKE_PROMPT =
 
 async function main() {
   const outPath = resolveOutPath();
+  const modelId = resolveArg("--model") ?? "redcraft-krea2-comfyui";
+  const refPath = resolveArg("--ref");
+  const promptOverride = resolveArg("--prompt");
+  const referenceImages = refPath
+    ? [
+        {
+          assetId: "smoke-ref",
+          role: "source_image" as const,
+          b64Json: (await readFile(refPath)).toString("base64"),
+        },
+      ]
+    : undefined;
+
   const startedAt = Date.now();
 
   const result = await providers.image.generate({
-    model: "redcraft-krea2-comfyui",
-    prompt: SMOKE_PROMPT,
+    model: modelId,
+    prompt: promptOverride ?? SMOKE_PROMPT,
     count: 1,
-    orientation: "4:5",
+    // INTENT: edit/img2img descriptors (e.g. qwen-image-edit) declare their own
+    // default width/height (832x1216) on the width/height slots. Passing the
+    // txt2img default orientation "4:5" here would inject explicit width/height
+    // values that override those declared defaults, so whenever a reference
+    // image drives the run, omit orientation entirely (undefined) and let the
+    // descriptor's own declared slot defaults apply instead.
+    orientation: refPath ? undefined : "4:5",
     seed: "42",
-    controls: { steps: 10 },
+    // Same reasoning as orientation above: redcraft's txt2img default is 10
+    // steps, but qwen-image-edit's P0-validated recipe is 4 steps — don't
+    // clobber a ref-driven descriptor's own steps default.
+    controls: refPath ? {} : { steps: 10 },
+    ...(referenceImages ? { referenceImages } : {}),
   });
 
   const durationMs = Date.now() - startedAt;
 
   if (!result.ok) {
-    logger.error({ error: result.error, durationMs }, "backend smoke failed");
+    logger.error({ model: modelId, error: result.error, durationMs }, "backend smoke failed");
     process.exitCode = 1;
     return;
   }
 
   const assets = result.data.assets;
   if (!assets.length) {
-    logger.error({ durationMs }, "backend smoke returned zero assets");
+    logger.error({ model: modelId, durationMs }, "backend smoke returned zero assets");
     process.exitCode = 1;
     return;
   }
@@ -70,7 +98,7 @@ async function main() {
 
   for (const [index, asset] of assets.entries()) {
     if (!asset.body) {
-      logger.warn({ index, durationMs }, "backend smoke asset has no body, skipping");
+      logger.warn({ model: modelId, index, durationMs }, "backend smoke asset has no body, skipping");
       continue;
     }
     const buffer = Buffer.from(asset.body);
@@ -81,6 +109,7 @@ async function main() {
 
     logger.info(
       {
+        model: modelId,
         width: asset.width,
         height: asset.height,
         bytes: buffer.byteLength,
@@ -96,6 +125,11 @@ function resolveOutPath(): string {
   const flagIndex = process.argv.indexOf("--out");
   const explicit = flagIndex >= 0 ? process.argv[flagIndex + 1] : undefined;
   return explicit ? path.resolve(explicit) : path.join(tmpdir(), `idream-backend-smoke-${Date.now()}.png`);
+}
+
+function resolveArg(flag: string): string | undefined {
+  const flagIndex = process.argv.indexOf(flag);
+  return flagIndex >= 0 ? process.argv[flagIndex + 1] : undefined;
 }
 
 function suffixPath(target: string, index: number): string {
