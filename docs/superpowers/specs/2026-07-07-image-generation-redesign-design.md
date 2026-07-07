@@ -193,6 +193,13 @@ TypeError: Trying to convert Float8_e4m3fn to the MPS backend but it does not ha
 - 产物落位 `~/ComfyUI-Shared/models/{diffusion_models/redcraftKREA2RedMix_krea2Edition-bf16.safetensors, text_encoders/qwen3vl_4b_bf16.safetensors}`；原 fp8 保留给 prod CUDA。
 - 延迟提示：12B 模型 MPS 高分辨率非秒级 → 聊天交互走 sdcpp 快速通道/降分辨率，预生图 batch 用 ComfyUI（异步可接受）。转换器待 P1 收进 repo（`packages/gen/scripts/`）。
 
+**✅✅✅ Qwen-Image-Edit-Rapid-AIO v19 端到端跑通（2026-07-07，P0 两模型全部收口）**：
+- 下载 `Phr00t/Qwen-Image-Edit-Rapid-AIO` v19 NSFW（28.4GB；作者：v19 编辑一致性最佳）。格式为**plain fp8**（2662 个 F8_E4M3 直存权重，无 per-tensor scale；`text_encoders.qwen25_7b.logit_scale` 是真实权重非 sidecar）——转换器已泛化：scaled-fp8 走 `w*scale`，plain-fp8 走直接 cast → bf16 53GB（AIO 单文件含 model/text_encoders/vae 三命名空间，CheckpointLoaderSimple 一次加载）。
+- **t2i 冒烟**：作者官方图（CheckpointLoaderSimple → TextEncodeQwenImageEditPlus → KSampler **4步/cfg1/sa_solver/beta**）→ 768×768 照片级人像，**64s 含 53GB 冷加载**，MPS 原生。
+- **编辑冒烟（核心能力）**：P0 RedCraft 人像 → LoadImage → `TextEncodeQwenImageEditPlus{image1, vae}` → "换红色晚礼服、保持身份" → **72s 出图，身份保持完美**（脸/发色/发型/光向/机位全稳，仅换装）。核心节点为 ComfyUI 原生（fixed-textencode-node 可选增强，>1 图输入时再装）。
+- **运维教训 1（OOM）**：RedCraft bf16 24GB 驻留时再加载 Qwen 53GB → ComfyUI 进程被 macOS 直接杀死（128GB 统一内存也不够двух大模型并存 + 激活）。⇒ P2 Backend 层需要：同 backend **串行换载大模型**（勿并发加载）、health 探针在加载期报 busy、必要时先 `/free` 卸载。
+- **运维教训 2（系统代理）**：macOS 上 python `urllib` 自动读系统代理（`_scproxy`），代理会把 127.0.0.1 请求回 **502 Bad Gateway**（curl 不读系统代理所以正常）。生产链路（Node `fetch`）不受影响；本机 python 探针一律用 `ProxyHandler({})` 直连。
+
 后续 demo 闭环：
 ```
 demos/2026-07-comfyui-bringup/
