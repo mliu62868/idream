@@ -308,6 +308,26 @@ describe("PipelineImageModel", () => {
     });
   });
 
+  it("wires IMAGE_PROVIDER=backend to a BackendImageModel that rejects unknown models", async () => {
+    process.env.GEN_IMAGE_PROVIDER = "backend";
+    process.env.GEN_WORKFLOW_DIR = "workflows"; // no descriptor declares this modelId
+
+    const result = await providers.image.generate({
+      prompt: "a cat",
+      count: 1,
+      model: "does-not-exist",
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: "unknown_model",
+        message: expect.stringContaining("does-not-exist"),
+        retryable: false,
+      },
+    });
+  });
+
   it("rejects production image generation when the provider is mock", () => {
     process.env.APP_ENV = "production";
     process.env.GEN_IMAGE_PROVIDER = "mock";

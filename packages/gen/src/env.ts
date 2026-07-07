@@ -90,4 +90,16 @@ export const env = {
     const parsed = Number.parseInt(process.env.PIPELINE_TIMEOUT_MS ?? "60000", 10);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 60_000;
   },
+  /** ComfyUI native HTTP API base URL, used by IMAGE_PROVIDER=backend's registry. */
+  get COMFYUI_API_URL(): string {
+    return process.env.COMFYUI_API_URL ?? "http://127.0.0.1:8188";
+  },
+  /** sd-cli binary path, used by IMAGE_PROVIDER=backend's registry. */
+  get SDCPP_CLI(): string {
+    return process.env.SDCPP_CLI ?? `${process.env.HOME}/bin/sd-cli`;
+  },
+  /** Directory of workflow descriptor JSON files (see ./backend/workflow.ts). */
+  get GEN_WORKFLOW_DIR(): string {
+    return process.env.GEN_WORKFLOW_DIR ?? "packages/gen/workflows";
+  },
 } as const;

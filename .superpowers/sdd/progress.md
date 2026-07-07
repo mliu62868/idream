@@ -1,38 +1,20 @@
-# Chat Service Capability Completion — Progress Ledger
+# P1 backend abstraction — progress ledger
+Branch: feat/image-gen-redesign
+Base (before Task 1): 8558df8b0bb0a35e7a303cb610953da4ff162cba
+Plan: docs/superpowers/plans/2026-07-07-image-gen-p1-backend-abstraction.md
 
-Plan: docs/product/CHAT_SERVICE_CAPABILITY_COMPLETION_PLAN.md
-Branch: master (direct, per user global instructions)
+Task 1: complete (commit 5823e4b, review clean ✅)
+Task 2: complete (folded into 035b662 ✅)
+Task 3: complete (commit 035b662, review clean ✅)
+Task 4: complete (commits 3d52ed5 + fix c65bf84, review clean ✅)
+Task 5: complete (registry.ts + backend-image-model.ts + wiring, review clean ✅)
+Task 6: pending (BLOCKED on Qwen-Edit download+convert)
+Task 7: pending
+Task 8: pending (BLOCKED on Qwen-Edit)
 
-## Phase 1 — P0 semantic fixes
-- [x] P0-D: policy model → provider (env aliases, ChatModel.stream model, generate passes policy.model)
-- [x] P0-C: free daily 30 quota (day period in service + finalize)
-- [x] P0-E: no-memory skips session.jsonl
-- [x] P0-G: boundaries non-degradable (split read, fail-closed)
-- [x] P0-B: blocked send protocol (status, null streamUrl, BFF adapter, UI)
-- [x] P0-A: dispatchV1 503 for chat/messages when unset + env/README
-- [x] P0-F: inbox user.deleted → account erasure + main enqueue
 
-## Phase 2 — P1 UI (parallel subagents)
-[x] P1-A UI components (subagent)
-[x] Upgrade/Profile copy
-[x] Generate link
-
-## Phase 3 — P1-B/C + probe + docs + E2E
-[x] P1-B relationship injection + reset
-[x] P1-C memory consolidation + tier storage caps
-[x] probe expanded
-[x] docs synced
-[x] E2E added (needs stack)
-
-## FINAL STATUS (2026-06-27)
-Phase 1 (P0 A–G): DONE + tested.
-Phase 2 (P1 UI): DONE — ChatHeaderControls, MessageActions, SessionListDrawer, MemoryPanel,
-  RelationshipBadge, MemoryToggle (subagent, owns ChatSessionClient + chat/*); Upgrade/Profile
-  chat copy; Chat→Generate deep link.
-Phase 3: P1-B relationship injection DONE+tested; probe-chat-service e2e smoke expanded;
-  docs synced (PRD blocked-response); §10.3 management E2E added (needs running stack).
-P1-C semantic memory upgrade: NOT done (plan frames it as a path; deferred — heaviest item).
-Verification: chat 61 tests, main 190 tests, all typecheck+lint green, main production build green.
-
-## P1-C DONE (2026-06-28)
-memory consolidation (dedup+max-conf+union sources) + tier storage cap (Free 30 / Deluxe 90); boundary protection; UI hides confidence. chat tests now 65.
+Minor findings (for final review):
+- Task 1: loadWorkflowDescriptors has no direct unit test (covered by Task 6 loader test).
+- Task 3: pending-map entry leaks if poll() never called (bounded; hardening TODO).
+- Task 3: asset w/h resolved PNG-IHDR-first then slots fallback (defensible; note for consumers).
+- Task 4: no dedicated referenceImages-capability test; no spawn-ENOENT test (deferred).

@@ -9,6 +9,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ImageGeneratePayload } from "@idream/shared/contracts";
 import { S3CompatibleBlobStore, SafetyGatewayModerationProvider } from "@idream/shared";
+import { BackendImageModel } from "./backend/backend-image-model";
+import { buildBackendRegistry, type BackendRegistry } from "./backend/registry";
 import { env } from "./env";
 
 export interface ProviderFailure {
@@ -421,9 +423,32 @@ class MockBlobStore implements BlobStore {
   }
 }
 
+// SPEC: the registry loads workflow descriptors from disk and constructs the
+// backend instances (ComfyUIBackend/SdcppBackend) — do this once and cache the
+// in-flight/resolved Promise at module scope, since buildImageModel() (and thus
+// buildBackendImageModel()) runs on every `providers.image` access.
+let registryPromise: Promise<BackendRegistry> | undefined;
+
+function getBackendRegistry(): Promise<BackendRegistry> {
+  registryPromise ??= buildBackendRegistry({
+    comfyApiUrl: env.COMFYUI_API_URL,
+    sdcppCli: env.SDCPP_CLI,
+    workflowDir: env.GEN_WORKFLOW_DIR,
+  });
+  return registryPromise;
+}
+
+function buildBackendImageModel(): ImageModel {
+  return new BackendImageModel(getBackendRegistry());
+}
+
 function buildImageModel(): ImageModel {
   assertProductionProviderReady("image");
   if (env.IMAGE_PROVIDER === "mock") return new MockImageModel();
+  if (env.IMAGE_PROVIDER === "backend") return buildBackendImageModel();
+  // deprecated: external OpenAI-compatible gateway (self-hosted models behind a
+  // separate pipeline service). IMAGE_PROVIDER=backend talks to ComfyUI/sd-cli
+  // directly via the workflow-native GenBackend abstraction instead.
   if (env.IMAGE_PROVIDER === "pipeline") return new PipelineImageModel();
   throw new Error(`Unsupported image provider: ${env.IMAGE_PROVIDER}`);
 }
@@ -478,7 +503,9 @@ function buildModerationProvider(): ModerationProvider {
 
 export function assertProductionProviderReady(kind: "image" | "video") {
   const provider = kind === "image" ? env.IMAGE_PROVIDER : env.VIDEO_PROVIDER;
-  const supported = ["mock", "pipeline"];
+  // "backend" (local ComfyUI/sd-cli via the workflow-native GenBackend registry) is
+  // only a valid choice for images — video generation still goes through "pipeline".
+  const supported = kind === "image" ? ["mock", "pipeline", "backend"] : ["mock", "pipeline"];
   if (!supported.includes(provider)) {
     throw new Error(`Unsupported ${kind} provider: ${provider}`);
   }
