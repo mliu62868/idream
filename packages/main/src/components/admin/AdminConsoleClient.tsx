@@ -2524,7 +2524,20 @@ function GenerationJobInspector({
   );
 }
 
-type ProfileWorkflowOption = { workflowKey: string; backendKind: string };
+type ProfileWorkflowSlot = { type: string; default?: string | number | null };
+type ProfileWorkflowOption = { workflowKey: string; backendKind: string; inputs?: ProfileWorkflowSlot[] };
+
+// I-1 (P2 final review): edit workflows (e.g. qwen-image-edit-img2img) declare a REQUIRED
+// image slot — type "image" with no default — that gen's bindComfySlots must fill. Binding
+// one to a standard GenerationModelProfile means every plain text-to-image test/publish job
+// (which supplies no reference image) throws "missing required slot" and fails. Edit
+// workflows are driven by the P4 chat/edit reference-image path instead, so the picker below
+// disables (but still lists) them.
+function requiresReferenceImage(workflow: ProfileWorkflowOption): boolean {
+  return Array.isArray(workflow.inputs)
+    ? workflow.inputs.some((slot) => slot.type === "image" && (slot.default === undefined || slot.default === null))
+    : false;
+}
 
 function ProfileReleaseWorkbench({
   jobs,
@@ -2737,11 +2750,20 @@ function ProfileReleaseWorkbench({
                 value={workflowDraft}
               >
                 <option value="">{t("(use pipelineModel)")}</option>
-                {workflowOptions.map((workflow) => (
-                  <option key={workflow.workflowKey} value={workflow.workflowKey}>
-                    {`${workflow.workflowKey} (${workflow.backendKind})`}
-                  </option>
-                ))}
+                {workflowOptions.map((workflow) => {
+                  const needsReferenceImage = requiresReferenceImage(workflow);
+                  return (
+                    <option
+                      key={workflow.workflowKey}
+                      value={workflow.workflowKey}
+                      disabled={needsReferenceImage}
+                    >
+                      {needsReferenceImage
+                        ? `${workflow.workflowKey} (${workflow.backendKind}) ${t("(needs reference image — not for standard profiles)")}`
+                        : `${workflow.workflowKey} (${workflow.backendKind})`}
+                    </option>
+                  );
+                })}
               </select>
               <button
                 className="inline-flex h-10 shrink-0 items-center gap-2 border border-white/10 px-3 text-sm text-[rgb(230,230,230)] hover:bg-white/10 disabled:opacity-50"
