@@ -2524,6 +2524,8 @@ function GenerationJobInspector({
   );
 }
 
+type ProfileWorkflowOption = { workflowKey: string; backendKind: string };
+
 function ProfileReleaseWorkbench({
   jobs,
   onOpenAction,
@@ -2545,6 +2547,12 @@ function ProfileReleaseWorkbench({
   const [testNotice, setTestNotice] = useState<string | null>(null);
   const [testError, setTestError] = useState<string | null>(null);
   const [watchJobId, setWatchJobId] = useState<string | null>(null);
+  const [workflowOptions, setWorkflowOptions] = useState<ProfileWorkflowOption[]>([]);
+  const [workflowDraft, setWorkflowDraft] = useState(() => stringValue(selectedProfile?.workflowKey));
+  const [syncedProfileId, setSyncedProfileId] = useState(() => stringValue(selectedProfile?.id));
+  const [workflowSaveBusy, setWorkflowSaveBusy] = useState(false);
+  const [workflowSaveNotice, setWorkflowSaveNotice] = useState<string | null>(null);
+  const [workflowSaveError, setWorkflowSaveError] = useState<string | null>(null);
 
   const selectedId = stringValue(selectedProfile?.id);
   const selectedKey = stringValue(selectedProfile?.profileKey);
@@ -2552,6 +2560,19 @@ function ProfileReleaseWorkbench({
   const selectedMode = stringValue(selectedProfile?.mode);
   const selectedVersion = numberValue(selectedProfile?.version);
   const selectedOrientation = firstString(jsonStringArrayValue(selectedProfile?.allowedOrientations), "1:1");
+  const selectedWorkflowKey = stringValue(selectedProfile?.workflowKey);
+
+  // Adjust the workflow draft during render (React's "adjusting state when a prop changes"
+  // pattern) rather than in an Effect: resets only when the *selected profile* changes, so a
+  // background reload (e.g. the job-status poll below) that refreshes the same profile's data
+  // never clobbers an in-progress, unsaved dropdown edit.
+  if (selectedId !== syncedProfileId) {
+    setSyncedProfileId(selectedId);
+    setWorkflowDraft(selectedWorkflowKey);
+    setWorkflowSaveNotice(null);
+    setWorkflowSaveError(null);
+  }
+
   const relatedJobs = useMemo(
     () => profileRelatedJobs(jobs, selectedProfile),
     [jobs, selectedProfile],
@@ -2602,6 +2623,40 @@ function ProfileReleaseWorkbench({
       setTestError(error instanceof Error ? error.message : t("Test image failed"));
     } finally {
       setTestBusy(false);
+    }
+  }
+
+  // Populate the workflow dropdown once from the same read-only catalog WorkflowsView
+  // uses; the descriptor list is engineering-seeded and rarely changes within a session.
+  useEffect(() => {
+    let cancelled = false;
+    void apiGet<{ items: ProfileWorkflowOption[] }>("/api/v1/admin/generation/workflows")
+      .then((data) => {
+        if (!cancelled) setWorkflowOptions(data.items);
+      })
+      .catch(() => {
+        // Non-fatal: the select just falls back to "(use pipelineModel)" only.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function saveWorkflowKey() {
+    if (!selectedId) return;
+    setWorkflowSaveBusy(true);
+    setWorkflowSaveNotice(null);
+    setWorkflowSaveError(null);
+    try {
+      await apiWrite(`/api/v1/admin/generation/model-profiles/${selectedId}`, "PATCH", {
+        workflowKey: workflowDraft || null,
+      });
+      setWorkflowSaveNotice(t("Workflow saved"));
+      await onReload();
+    } catch (error) {
+      setWorkflowSaveError(error instanceof Error ? error.message : t("Workflow save failed"));
+    } finally {
+      setWorkflowSaveBusy(false);
     }
   }
 
@@ -2668,6 +2723,51 @@ function ProfileReleaseWorkbench({
               ))}
             </select>
           </label>
+
+          <label className="block">
+            <span className="mb-1 flex items-center gap-1 text-xs font-medium text-[rgb(170,170,170)]">
+              <Workflow className="h-3.5 w-3.5" />
+              {t("Workflow")}
+            </span>
+            <div className="flex gap-2">
+              <select
+                className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30 disabled:opacity-50"
+                disabled={selectedStatus !== "draft"}
+                onChange={(event) => setWorkflowDraft(event.target.value)}
+                value={workflowDraft}
+              >
+                <option value="">{t("(use pipelineModel)")}</option>
+                {workflowOptions.map((workflow) => (
+                  <option key={workflow.workflowKey} value={workflow.workflowKey}>
+                    {`${workflow.workflowKey} (${workflow.backendKind})`}
+                  </option>
+                ))}
+              </select>
+              <button
+                className="inline-flex h-10 shrink-0 items-center gap-2 border border-white/10 px-3 text-sm text-[rgb(230,230,230)] hover:bg-white/10 disabled:opacity-50"
+                disabled={selectedStatus !== "draft" || workflowSaveBusy || workflowDraft === selectedWorkflowKey}
+                onClick={() => void saveWorkflowKey()}
+                type="button"
+              >
+                {workflowSaveBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : t("Save")}
+              </button>
+            </div>
+            {selectedStatus !== "draft" ? (
+              <span className="mt-1 block text-xs text-[rgb(170,170,170)]">
+                {t("Only draft profiles can change workflow routing.")}
+              </span>
+            ) : null}
+          </label>
+          {workflowSaveNotice ? (
+            <div className="border border-emerald-400/30 bg-emerald-950/20 px-3 py-2 text-sm text-emerald-100">
+              {workflowSaveNotice}
+            </div>
+          ) : null}
+          {workflowSaveError ? (
+            <div className="border border-red-400/30 bg-red-950/30 px-3 py-2 text-sm text-red-100">
+              {workflowSaveError}
+            </div>
+          ) : null}
 
           <div className="grid min-w-0 gap-3 md:grid-cols-4">
             <Metric label="Dry Run" value={value(dryRun.status)} meta={dryRun.meta} />

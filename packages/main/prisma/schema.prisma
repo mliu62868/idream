@@ -997,6 +997,7 @@ model GenerationModelProfile {
   mode                String    @default("image") // enum: image | video
   runner              String    @default("sd_cpp") // enum: pipeline | sd_cpp | mlx | comfyui | external
   pipelineModel       String
+  workflowKey         String?
   sourceModelPath     String?
   convertedModelPath  String?
   modelFormat         String    @default("safetensors")

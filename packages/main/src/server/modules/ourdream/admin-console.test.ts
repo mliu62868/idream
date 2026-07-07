@@ -488,6 +488,123 @@ describe("generation config control plane", () => {
     );
   });
 
+  it("validates workflowKey against known workflow descriptors on create and patch", async () => {
+    const admin = await setupActor("admin", "workflow-key");
+
+    const unknownCreate = await api("POST", "admin/generation/model-profiles", {
+      userId: admin,
+      role: "admin",
+      body: {
+        profileKey: `${P}workflow-profile`,
+        label: "Workflow Key Test",
+        mode: "image",
+        runner: "sd_cpp",
+        pipelineModel: "mock-image-workflow",
+        allowedOrientations: ["1:1"],
+        workflowKey: "does-not-exist-workflow",
+      },
+    });
+    expectError(unknownCreate, 400, "bad_request");
+
+    const draft = await api("POST", "admin/generation/model-profiles", {
+      userId: admin,
+      role: "admin",
+      body: {
+        profileKey: `${P}workflow-profile`,
+        label: "Workflow Key Test",
+        mode: "image",
+        runner: "sd_cpp",
+        pipelineModel: "mock-image-workflow",
+        allowedOrientations: ["1:1"],
+        workflowKey: "redcraft-krea2-txt2img",
+      },
+    });
+    expectOk(draft);
+    expect(draft.data.profile.workflowKey).toBe("redcraft-krea2-txt2img");
+    expect(
+      await prisma.generationModelProfile.findUnique({ where: { id: draft.data.profile.id } }),
+    ).toMatchObject({ workflowKey: "redcraft-krea2-txt2img" });
+
+    const unknownPatch = await api(
+      "PATCH",
+      `admin/generation/model-profiles/${draft.data.profile.id}`,
+      {
+        userId: admin,
+        role: "admin",
+        body: { workflowKey: "still-does-not-exist" },
+      },
+    );
+    expectError(unknownPatch, 400, "bad_request");
+
+    const clearPatch = await api(
+      "PATCH",
+      `admin/generation/model-profiles/${draft.data.profile.id}`,
+      { userId: admin, role: "admin", body: { workflowKey: null } },
+    );
+    expectOk(clearPatch);
+    expect(clearPatch.data.profile.workflowKey).toBeNull();
+    expect(
+      await prisma.generationModelProfile.findUnique({ where: { id: draft.data.profile.id } }),
+    ).toMatchObject({ workflowKey: null });
+
+    const restorePatch = await api(
+      "PATCH",
+      `admin/generation/model-profiles/${draft.data.profile.id}`,
+      {
+        userId: admin,
+        role: "admin",
+        body: { workflowKey: "redcraft-krea2-txt2img" },
+      },
+    );
+    expectOk(restorePatch);
+    expect(restorePatch.data.profile.workflowKey).toBe("redcraft-krea2-txt2img");
+  });
+
+  it("routes a generation job through workflowKey when the selected profile has one", async () => {
+    const userId = `${P}workflow-route-user`;
+    const characterId = `${P}workflow-route-char`;
+    await createUser({ id: userId });
+    await createCharacter({
+      id: characterId,
+      creatorId: userId,
+      visibility: "public",
+      status: "approved",
+    });
+    await grantCoins(userId, 100, "seed");
+
+    const profileKey = `${P}workflow-route-profile`;
+    await prisma.generationModelProfile.create({
+      data: {
+        id: `${P}workflow-route-profile-v1`,
+        profileKey,
+        label: "Workflow Route Profile",
+        mode: "image",
+        runner: "sd_cpp",
+        pipelineModel: "mock-image-workflow-route",
+        workflowKey: "redcraft-krea2-txt2img",
+        allowedOrientations: ["1:1"],
+        version: 1,
+        status: "active",
+        enabled: true,
+        dryRunSummary: { sampleCount: 1 },
+        publishedAt: new Date(),
+      },
+    });
+
+    const gen = await api("POST", "generation/jobs", {
+      userId,
+      ageGate: true,
+      body: { mode: "image", characterId, outputCount: 1, model: profileKey },
+    });
+    expectOk(gen, 202);
+    expect(gen.data.job.profileId).toBe(profileKey);
+
+    const stored = await prisma.generationJob.findUnique({ where: { id: gen.data.job.id } });
+    expect(stored?.model).toBe("redcraft-krea2-txt2img");
+
+    await runQueuedGenerationJobs(4);
+  });
+
   it("rejects model profile publish when visual verification failed", async () => {
     const admin = await setupActor("admin", "profile-publish-gate");
     const draft = await prisma.generationModelProfile.create({

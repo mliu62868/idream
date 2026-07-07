@@ -67,6 +67,7 @@ import {
   getGenerationWorkflow,
   listGenerationBackends,
   listGenerationWorkflows,
+  workflowKeyExists,
 } from "./generation-catalog";
 import { analyticsExport, analyticsRetention } from "./analytics-extra";
 import {
@@ -157,6 +158,7 @@ const modelProfileSchema = z.object({
   mode: z.enum(["image", "video"]).default("image"),
   runner: z.enum(["pipeline", "sd_cpp", "mlx", "comfyui", "external"]).default("sd_cpp"),
   pipelineModel: z.string().trim().min(1).max(160),
+  workflowKey: z.string().trim().min(1).max(160).nullable().optional(),
   sourceModelPath: z.string().trim().max(500).nullable().optional(),
   convertedModelPath: z.string().trim().max(500).nullable().optional(),
   modelFormat: z.enum(["safetensors", "gguf", "diffusers", "external"]).default("safetensors"),
@@ -184,6 +186,7 @@ const modelProfilePatchSchema = z.object({
   mode: z.enum(["image", "video"]).optional(),
   runner: z.enum(["pipeline", "sd_cpp", "mlx", "comfyui", "external"]).optional(),
   pipelineModel: z.string().trim().min(1).max(160).optional(),
+  workflowKey: z.string().trim().min(1).max(160).nullable().optional(),
   sourceModelPath: z.string().trim().max(500).nullable().optional(),
   convertedModelPath: z.string().trim().max(500).nullable().optional(),
   modelFormat: z.enum(["safetensors", "gguf", "diffusers", "external"]).optional(),
@@ -1806,11 +1809,23 @@ function assertTargetConfirmation(value: string, targetId: string) {
   if (value !== targetId) throw Errors.badRequest("Confirmation did not match target");
 }
 
+// SPEC: P2 Task 7 —— workflowKey（可空）指向 gen workflow 描述符（packages/gen/workflows），
+// 供入队时覆盖 profile.pipelineModel 路由到具体 workflow。留空/null 表示"沿用 pipelineModel"
+// （不校验，因为它就是不引用任何 workflow）。非空必须命中已知描述符，否则 400。
+// INVARIANT: 复用 generation-catalog.ts 的 60s 描述符缓存（workflowKeyExists），不重复扫目录。
+async function assertKnownWorkflowKey(workflowKey: string | null | undefined) {
+  if (!workflowKey) return;
+  if (!(await workflowKeyExists(workflowKey))) {
+    throw Errors.badRequest("Unknown workflowKey", { workflowKey });
+  }
+}
+
 async function createModelProfile(request: Request) {
   if (!modelDiagnosticsEnabled()) throw Errors.notFound("Admin API route not found");
   const actor = await actorWithPermission(request, "generation.config.write");
   const body = modelProfileSchema.parse(await jsonBody(request));
   validateModelProfileConfig(body);
+  await assertKnownWorkflowKey(body.workflowKey);
   const runnerConfig = normalizedModelProfileRunnerConfig(body);
   const latest = await prisma.generationModelProfile.findFirst({
     where: { profileKey: body.profileKey },
@@ -1819,6 +1834,7 @@ async function createModelProfile(request: Request) {
   const profile = await prisma.generationModelProfile.create({
     data: {
       ...body,
+      workflowKey: body.workflowKey ?? null,
       requiredEntitlement: body.requiredEntitlement ?? null,
       sourceModelPath: body.sourceModelPath ?? null,
       convertedModelPath: body.convertedModelPath ?? null,
@@ -1885,6 +1901,7 @@ async function patchModelProfile(request: Request, id: string) {
     validateModelProfileConfig(nextConfigInput);
     runnerConfig = normalizedModelProfileRunnerConfig(nextConfigInput);
   }
+  await assertKnownWorkflowKey(body.workflowKey);
 
   const updated = await prisma.generationModelProfile.update({
     where: { id },
@@ -1894,6 +1911,7 @@ async function patchModelProfile(request: Request, id: string) {
       mode: body.mode,
       runner: body.runner,
       pipelineModel: body.pipelineModel,
+      workflowKey: body.workflowKey === undefined ? undefined : body.workflowKey,
       sourceModelPath: body.sourceModelPath === undefined ? undefined : body.sourceModelPath,
       convertedModelPath:
         body.convertedModelPath === undefined ? undefined : body.convertedModelPath,

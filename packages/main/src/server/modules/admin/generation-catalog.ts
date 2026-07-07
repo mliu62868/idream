@@ -55,6 +55,17 @@ async function cachedDescriptors(): Promise<WorkflowDescriptor[]> {
   return items;
 }
 
+// SPEC: P2 Task 7 —— admin profile create/patch 校验 GenerationModelProfile.workflowKey
+// 是否为已知 workflow 描述符。复用同一份 60s 描述符缓存（避免重复扫目录），只暴露布尔
+// 判断，不把内部数组结构泄漏给调用方。
+// INTENT: admin/service.ts 已经 import 本模块的 listGenerationWorkflows 等（本模块反过来
+// import admin/service.ts 的 actorWithPermission），二者互相引用；两侧都只在函数体内使用
+// 对方的导出（非模块顶层求值），循环 import 在此安全。
+export async function workflowKeyExists(workflowKey: string): Promise<boolean> {
+  const items = await cachedDescriptors();
+  return items.some((item) => item.workflowKey === workflowKey);
+}
+
 // ---------------------------------------------------------------------------
 // GET generation/backends
 // ---------------------------------------------------------------------------
