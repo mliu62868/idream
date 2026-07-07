@@ -14,6 +14,8 @@ import { bindComfySlots } from "./workflow";
 import type { BackendHandle, BackendHealth, BackendResult, Capabilities, GenBackend, ResolvedGenJob } from "./types";
 
 type JsonRecord = Record<string, unknown>;
+type ReferenceImage = NonNullable<ResolvedGenJob["referenceImages"]>[number];
+type UploadedImage = { name: string; subfolder: string; type: string };
 
 // health() is a readiness probe (launch checks, monitoring), not a generation
 // request — bound it to a short fixed timeout instead of the (much larger) per-job
@@ -50,14 +52,15 @@ export class ComfyUIBackend implements GenBackend {
     return {
       textToImage: true,
       img2img: true,
-      referenceImages: false,
+      referenceImages: true,
       stableSeed: true,
       edit: false,
     };
   }
 
   async submit(job: ResolvedGenJob): Promise<BackendHandle> {
-    const prompt = bindComfySlots(job.descriptor, job.slots);
+    const slots = await this.bindReferenceImageSlots(job);
+    const prompt = bindComfySlots(job.descriptor, slots);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), job.timeoutMs);
     let response: Response;
@@ -139,6 +142,93 @@ export class ComfyUIBackend implements GenBackend {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  // SPEC: image-type descriptor slots (e.g. LoadImage nodes) take a ComfyUI-side
+  // filename, not raw bytes. Pair the i-th declared image slot (inputs declaration
+  // order) with the i-th job.referenceImages entry, upload its bytes via ComfyUI's
+  // /upload/image, and inject the returned filename into the slot values.
+  // INTENT: a slot with no paired reference image is left unset here so
+  // bindComfySlots's own missing-required-slot error fires downstream — one source
+  // of truth for "this slot is required", not a duplicate pre-check.
+  private async bindReferenceImageSlots(job: ResolvedGenJob): Promise<ResolvedGenJob["slots"]> {
+    const imageSlots = job.descriptor.inputs.filter((slot) => slot.type === "image");
+    if (imageSlots.length === 0 || !job.referenceImages?.length) return job.slots;
+    const uploaded: ResolvedGenJob["slots"] = {};
+    for (let i = 0; i < imageSlots.length; i++) {
+      const reference = job.referenceImages[i];
+      if (!reference) continue;
+      const bytes = await this.referenceImageBytes(reference, job.timeoutMs);
+      const image = await this.uploadImage(
+        bytes,
+        `${job.requestId ?? "ref"}-${i}.png`,
+        reference.contentType,
+        job.timeoutMs,
+      );
+      uploaded[imageSlots[i].key] = image.subfolder ? `${image.subfolder}/${image.name}` : image.name;
+    }
+    return { ...job.slots, ...uploaded };
+  }
+
+  private async referenceImageBytes(reference: ReferenceImage, timeoutMs: number): Promise<Uint8Array> {
+    if (reference.b64Json) return new Uint8Array(Buffer.from(reference.b64Json, "base64"));
+    if (reference.url) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetch(reference.url, { signal: controller.signal });
+        if (!response.ok) {
+          throw new Error(`failed to fetch reference image ${reference.assetId}: HTTP ${response.status}`);
+        }
+        return new Uint8Array(await response.arrayBuffer());
+      } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") {
+          throw new Error(`fetching reference image ${reference.assetId} timed out after ${timeoutMs}ms`);
+        }
+        throw error;
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+    // storageKey-only references carry no bytes we can resolve from inside the
+    // backend — the caller (pipeline) is expected to inline b64Json or a fetchable
+    // url before reaching here.
+    throw new Error(
+      `reference image ${reference.assetId} has no b64Json or url — ComfyUIBackend cannot resolve storageKey-only references`,
+    );
+  }
+
+  private async uploadImage(
+    bytes: Uint8Array,
+    filename: string,
+    contentType: string | undefined,
+    timeoutMs: number,
+  ): Promise<UploadedImage> {
+    const form = new FormData();
+    form.append("image", new Blob([bytes], { type: contentType ?? "image/png" }), filename);
+    form.append("overwrite", "true");
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    let response: Response;
+    try {
+      response = await fetch(`${this.apiUrl}/upload/image`, {
+        method: "POST",
+        body: form,
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new Error(`ComfyUI /upload/image timed out after ${timeoutMs}ms`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+    if (!response.ok) throw new Error(`ComfyUI /upload/image HTTP ${response.status}`);
+    const json = (await response.json().catch(() => null)) as JsonRecord | null;
+    const name = json ? stringField(json, "name") : undefined;
+    if (!json || !name) throw new Error(`ComfyUI /upload/image returned malformed response: ${JSON.stringify(json)}`);
+    return { name, subfolder: stringField(json, "subfolder") ?? "", type: stringField(json, "type") ?? "input" };
   }
 
   private async waitForImage(
