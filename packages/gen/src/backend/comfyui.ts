@@ -4,7 +4,9 @@
 // fetchComfyImage), stripped of the OpenAI-route wrapper. Workflow binding now goes
 // through bindComfySlots(descriptor, slots) instead of the hardcoded buildPrompt.
 // INVARIANTS: submit() never blocks on completion — it only enqueues and returns the
-// ComfyUI prompt_id. poll() drives the wait loop with AbortController + job.timeoutMs.
+// ComfyUI prompt_id, bounded by job.timeoutMs via AbortController. poll() drives the
+// wait loop with its own AbortController + job.timeoutMs. health() is a readiness
+// probe, bounded by a fixed HEALTH_TIMEOUT_MS regardless of job timeout config.
 import { randomUUID } from "node:crypto";
 import { assertGeneratedImageSanity } from "../generated-image-sanity";
 import { logger } from "../logger";
@@ -12,6 +14,11 @@ import { bindComfySlots } from "./workflow";
 import type { BackendHandle, BackendHealth, BackendResult, Capabilities, GenBackend, ResolvedGenJob } from "./types";
 
 type JsonRecord = Record<string, unknown>;
+
+// health() is a readiness probe (launch checks, monitoring), not a generation
+// request — bound it to a short fixed timeout instead of the (much larger) per-job
+// timeoutMs so a stuck ComfyUI process fails the probe quickly.
+const HEALTH_TIMEOUT_MS = 5_000;
 
 type ComfyImageOutput = {
   filename: string;
@@ -51,14 +58,27 @@ export class ComfyUIBackend implements GenBackend {
 
   async submit(job: ResolvedGenJob): Promise<BackendHandle> {
     const prompt = bindComfySlots(job.descriptor, job.slots);
-    const response = await fetch(`${this.apiUrl}/prompt`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        prompt,
-        client_id: `idream-comfyui-backend-${randomUUID()}`,
-      }),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), job.timeoutMs);
+    let response: Response;
+    try {
+      response = await fetch(`${this.apiUrl}/prompt`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          prompt,
+          client_id: `idream-comfyui-backend-${randomUUID()}`,
+        }),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new Error(`ComfyUI /prompt timed out after ${job.timeoutMs}ms`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
     const json = (await response.json().catch(() => ({}))) as JsonRecord;
     if (!response.ok) throw new Error(`ComfyUI /prompt HTTP ${response.status}`);
     const promptId = stringField(json, "prompt_id");
@@ -100,12 +120,24 @@ export class ComfyUIBackend implements GenBackend {
   }
 
   async health(): Promise<BackendHealth> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
     try {
-      const response = await fetch(`${this.apiUrl}/system_stats`);
+      const response = await fetch(`${this.apiUrl}/system_stats`, { signal: controller.signal });
       if (!response.ok) return { ok: false, detail: `ComfyUI /system_stats HTTP ${response.status}` };
       return { ok: true };
     } catch (error) {
-      return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+      const aborted = error instanceof Error && error.name === "AbortError";
+      return {
+        ok: false,
+        detail: aborted
+          ? `ComfyUI /system_stats timed out after ${HEALTH_TIMEOUT_MS}ms`
+          : error instanceof Error
+            ? error.message
+            : String(error),
+      };
+    } finally {
+      clearTimeout(timeout);
     }
   }
 

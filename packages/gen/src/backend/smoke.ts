@@ -46,7 +46,7 @@ async function main() {
     model: "redcraft-krea2-comfyui",
     prompt: SMOKE_PROMPT,
     count: 1,
-    orientation: "portrait",
+    orientation: "4:5",
     seed: "42",
     controls: { steps: 10 },
   });

@@ -46,7 +46,7 @@ export const env = {
       process.env.AWS_SECRET_ACCESS_KEY
     );
   },
-  /** Image provider switch. Production uses the pipeline gateway. */
+  /** Image provider switch. Production uses the backend (ComfyUI/sd-cli) provider. */
   get IMAGE_PROVIDER(): string {
     return process.env.GEN_IMAGE_PROVIDER ?? process.env.IMAGE_PROVIDER ?? "mock";
   },

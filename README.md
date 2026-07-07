@@ -65,7 +65,6 @@ PM2 starts the product topology from `ecosystem.config.js`:
 | `gen-video` | n/a | Video worker |
 | `gen-finalizer` | n/a | Main-side generation finalizer |
 | `main-event-consumer` | n/a | Main-side event consumer |
-| `sdcpp-image` | 8091 | Local OpenAI-compatible image gateway wrapper |
 
 After `bun run build`, restart web processes before browser verification:
 
@@ -75,26 +74,19 @@ pm2 restart main-web admin-web
 
 ## Image Generation
 
-Product services do not load `.safetensors` directly and do not call sd.cpp directly. The product boundary is the OpenAI-compatible pipeline gateway:
+Product services do not load `.safetensors` directly. Image generation runs through the workflow-native backend abstraction (`packages/gen/src/backend/`):
 
 ```text
 main-web / packages/gen
-  -> GEN_IMAGE_PROVIDER=pipeline
-  -> PIPELINE_API_URL
-  -> pipeline gateway
-  -> optional local sd.cpp runner
-  -> model files
+  -> IMAGE_PROVIDER=backend
+  -> BackendRegistry (workflow descriptors under GEN_WORKFLOW_DIR)
+  -> ComfyUIBackend -> COMFYUI_API_URL -> ComfyUI server -> model files
+  -> SdcppBackend   -> SDCPP_CLI       -> sd-cli process -> model files
 ```
 
-For local image smoke, the current runner can wrap:
+Each workflow descriptor (`packages/gen/workflows/*.json`) declares its `backendKind` (`comfyui` or `sdcpp`), the model files it binds, and its input slots — adding a model is "drop a descriptor," not new wiring code. For a local end-to-end smoke against a live ComfyUI instance, run `bun run --filter @idream/gen smoke:backend`.
 
-```text
-~/Downloads/pornmasterZImage_turboV35Bf16.safetensors
-```
-
-behind `sdcpp-image`, while product code only sees `PIPELINE_API_URL`, `PIPELINE_API_TOKEN`, and model alias `pornmaster-zimage-turbo`.
-
-`sdcpp-image` defaults to `/Users/kk/Downloads/pornmasterZImage_turboV35Bf16.safetensors` as `SDCPP_SOURCE_MODEL`. If the runner needs a converted artifact, set `SDCPP_CONVERTED_DIFFUSION_MODEL` or `SDCPP_DIFFUSION_MODEL`; keep `SDCPP_SOURCE_MODEL` pointed at the original safetensors so model provenance remains explicit.
+`IMAGE_PROVIDER=pipeline` (an external OpenAI-compatible gateway reached via `PIPELINE_API_URL`) still exists but is deprecated in favor of `backend`.
 
 ## Launch Checks
 

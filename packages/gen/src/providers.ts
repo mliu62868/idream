@@ -634,7 +634,10 @@ function asciiEquals(body: Uint8Array, offset: number, expected: string) {
   return true;
 }
 
-function stableNumericSeed(seed: string | undefined) {
+// Exported so BackendImageModel (backend/backend-image-model.ts) can reuse the same
+// FNV hashing for non-numeric wire seeds instead of duplicating it — see that file's
+// numericSeed() for the wire-contract rationale (job.seed is usually a non-numeric id).
+export function stableNumericSeed(seed: string | undefined) {
   if (!seed) return undefined;
   const numeric = Number.parseInt(seed, 10);
   if (Number.isSafeInteger(numeric) && numeric >= 0) return numeric;

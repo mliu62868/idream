@@ -102,7 +102,7 @@ module.exports = {
         ...mainRedisEnv,
         // Finalize + character.preview — do NOT add ai.image/video.generate, or this
         // main-side process (IMAGE_PROVIDER defaults to mock) races the dedicated
-        // gen-image worker (GEN_IMAGE_PROVIDER=pipeline) → nondeterministic mock output.
+        // gen-image worker (GEN_IMAGE_PROVIDER=backend) → nondeterministic mock output.
         // character.preview is main-only (no gen worker owns it), so it is safe here.
         GEN_FINALIZER_QUEUES: "app.ai.finalize,character.preview",
       },
