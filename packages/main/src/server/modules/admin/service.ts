@@ -41,6 +41,10 @@ import { listAdminTags, patchTag, mergeTags } from "./characters/tags";
 import { listReviewQueue, reviewSubmission } from "./characters/review";
 import { generateCharacterDraft } from "./characters/assist";
 import {
+  listCharacterVisualProfiles,
+  createCharacterVisualProfile,
+} from "./characters/visual-profiles";
+import {
   approveProductionItem,
   bulkPatchContentAssets,
   createPlacement,
@@ -595,6 +599,12 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
     }
     if (action && child === "status" && method === "POST") {
       return setCharacterStatus(request, action);
+    }
+    if (action && child === "visual-profiles" && method === "GET") {
+      return listCharacterVisualProfiles(request, action);
+    }
+    if (action && child === "visual-profiles" && method === "POST") {
+      return createCharacterVisualProfile(request, action);
     }
   }
   if (resource === "content" && id === "featured") {

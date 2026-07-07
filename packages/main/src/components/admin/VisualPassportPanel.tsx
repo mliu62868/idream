@@ -1,0 +1,314 @@
+"use client";
+
+// SPEC: Visual Passport 编辑器面板（P2 Task 8）—— 挂载于 OfficialCharactersView 的角色编辑区，
+//       展示该角色 CharacterVisualProfile 的版本历史 + 当前 active 版本的 traits 只读视图，
+//       并提供 identityPrompt/negativeIdentityPrompt/defaultSeed/style 编辑表单铸造新 active 版本。
+// INTENT: 自取数（挂载/characterId 变化时拉 list），写操作走 /visual-profiles POST，成功后 refetch。
+//         表单初值取自当前 active 版本；MintVersionForm 以 active?.id 为 key 强制重挂载，只在
+//         active 版本真正切换（新铸版）时才重置表单——普通 Refresh 不会打断正在编辑的草稿
+//         （镜像 TagsView：草稿只在明确的用户动作上从最新数据重新播种，而非用 effect 追同步）。
+// INVARIANTS: 文案面向运营，不出现 LoRA/CFG/adapterRefs 等生成模型接线术语；锚点/参考图池本面板
+//             只读展示，不提供编辑（池编辑属 P3 素材联动范畴）。
+import { useCallback, useEffect, useState } from "react";
+import { History, Loader2, RefreshCcw, Save } from "lucide-react";
+import { apiGet, apiWrite } from "@/components/admin/api";
+import { useAdminI18n } from "@/components/admin/i18n";
+import { cn } from "@/lib/utils";
+
+type VisualProfileItem = {
+  id: string;
+  version: number;
+  status: string;
+  style: string;
+  identityPrompt: string;
+  negativeIdentityPrompt: string | null;
+  faceTraits: unknown;
+  hairTraits: unknown;
+  bodyTraits: unknown;
+  signatureTraits: unknown;
+  styleTraits: unknown;
+  defaultSeed: string | null;
+  anchorAssetIds: unknown;
+  referenceAssetIds: unknown;
+  qualityScore: number | null;
+  consistencyScore: number | null;
+  createdFrom: string;
+  createdAt: string;
+};
+
+const STYLES = ["realistic", "anime", "hybrid", "other"] as const;
+
+const inputClass =
+  "h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30";
+const textareaClass =
+  "min-h-20 w-full border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-white/30";
+
+function confirmationToken(characterId: string): string {
+  return `${characterId}:visual-profile`;
+}
+
+function statusBadgeClass(status: string): string {
+  if (status === "active") return "bg-emerald-500/15 text-emerald-300";
+  if (status === "archived") return "bg-white/10 text-[rgb(180,180,180)]";
+  return "bg-amber-500/15 text-amber-200";
+}
+
+export function VisualPassportPanel({ characterId }: { characterId: string }) {
+  const { t, value: valueLabel } = useAdminI18n();
+  const [items, setItems] = useState<VisualProfileItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [listError, setListError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setListError(null);
+    try {
+      const data = await apiGet<{ items: VisualProfileItem[] }>(
+        `/api/v1/admin/content/characters/${characterId}/visual-profiles`,
+      );
+      setItems(data.items);
+    } catch (error) {
+      setListError(error instanceof Error ? error.message : "Load failed");
+    } finally {
+      setLoading(false);
+    }
+  }, [characterId]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void load();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
+
+  const active = items.find((item) => item.status === "active") ?? null;
+
+  return (
+    <section className="mt-4 border border-white/10 bg-[rgb(18,18,18)] p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold">{t("Visual Passport")}</h2>
+          <p className="mt-1 text-xs text-[rgb(170,170,170)]">
+            {t("Version history and identity prompt editing for this character's visual profile.")}
+          </p>
+        </div>
+        <button
+          className="inline-flex h-9 shrink-0 items-center gap-2 border border-white/10 px-3 text-xs font-medium text-[rgb(220,220,220)] hover:border-white/30 disabled:opacity-50"
+          disabled={loading}
+          onClick={() => void load()}
+          type="button"
+        >
+          {loading ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <RefreshCcw className="h-3.5 w-3.5" />
+          )}
+          {t("Refresh")}
+        </button>
+      </div>
+
+      {listError ? <p className="mt-3 text-xs text-red-300">{listError}</p> : null}
+
+      <div className="mt-4">
+        <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-[rgb(170,170,170)]">
+          <History className="h-3.5 w-3.5" />
+          {t("Version history")}
+        </h3>
+        {loading ? (
+          <div className="mt-2 flex items-center gap-2 text-xs text-[rgb(170,170,170)]">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t("Loading…")}
+          </div>
+        ) : items.length === 0 ? (
+          <p className="mt-2 text-xs text-[rgb(170,170,170)]">
+            {t("No visual profile versions yet — minting below creates version 1.")}
+          </p>
+        ) : (
+          <div className="mt-2 overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="text-[rgb(140,140,140)]">
+                <tr className="border-b border-white/10">
+                  <th className="py-1.5 pr-3 font-medium">{t("Version")}</th>
+                  <th className="py-1.5 pr-3 font-medium">{t("Status")}</th>
+                  <th className="py-1.5 pr-3 font-medium">{t("Created from")}</th>
+                  <th className="py-1.5 pr-3 font-medium">{t("Created at")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((item) => (
+                  <tr className="border-b border-white/5" key={item.id}>
+                    <td className="py-1.5 pr-3">v{item.version}</td>
+                    <td className="py-1.5 pr-3">
+                      <span
+                        className={cn(
+                          "inline-flex items-center px-2 py-0.5",
+                          statusBadgeClass(item.status),
+                        )}
+                      >
+                        {valueLabel(item.status)}
+                      </span>
+                    </td>
+                    <td className="py-1.5 pr-3 text-[rgb(170,170,170)]">{item.createdFrom}</td>
+                    <td className="py-1.5 pr-3 text-[rgb(170,170,170)]">
+                      {new Date(item.createdAt).toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {active ? (
+        <div className="mt-4">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-[rgb(170,170,170)]">
+            {t("Active version traits (read-only)")}
+          </h3>
+          <div className="mt-2 grid gap-2 md:grid-cols-3">
+            <TraitBlock label={t("Face")} value={active.faceTraits} />
+            <TraitBlock label={t("Hair")} value={active.hairTraits} />
+            <TraitBlock label={t("Body")} value={active.bodyTraits} />
+            <TraitBlock label={t("Signature")} value={active.signatureTraits} />
+            <TraitBlock label={t("Style traits")} value={active.styleTraits} />
+          </div>
+        </div>
+      ) : null}
+
+      <MintVersionForm
+        active={active}
+        characterId={characterId}
+        key={active?.id ?? "bootstrap"}
+        onMinted={() => void load()}
+      />
+    </section>
+  );
+}
+
+function TraitBlock({ label, value }: { label: string; value: unknown }) {
+  return (
+    <div className="border border-white/10 bg-black/20 p-2">
+      <div className="text-[10px] font-semibold uppercase tracking-wide text-[rgb(140,140,140)]">
+        {label}
+      </div>
+      <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words text-[11px] text-[rgb(200,200,200)]">
+        {JSON.stringify(value, null, 2)}
+      </pre>
+    </div>
+  );
+}
+
+function MintVersionForm({
+  characterId,
+  active,
+  onMinted,
+}: {
+  characterId: string;
+  active: VisualProfileItem | null;
+  onMinted: () => void;
+}) {
+  const { t, value: valueLabel } = useAdminI18n();
+  const [identityPrompt, setIdentityPrompt] = useState(active?.identityPrompt ?? "");
+  const [negativeIdentityPrompt, setNegativeIdentityPrompt] = useState(
+    active?.negativeIdentityPrompt ?? "",
+  );
+  const [defaultSeed, setDefaultSeed] = useState(active?.defaultSeed ?? "");
+  const [style, setStyle] = useState<(typeof STYLES)[number]>(
+    (active?.style as (typeof STYLES)[number] | undefined) ?? "realistic",
+  );
+  const [reason, setReason] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  async function mintVersion() {
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      await apiWrite(`/api/v1/admin/content/characters/${characterId}/visual-profiles`, "POST", {
+        identityPrompt: identityPrompt.trim(),
+        negativeIdentityPrompt: negativeIdentityPrompt.trim() || undefined,
+        style,
+        defaultSeed: defaultSeed.trim() || undefined,
+        reason: reason.trim(),
+        confirmation: confirmation.trim(),
+      });
+      onMinted();
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : "Mint failed");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const canSubmit =
+    !submitting &&
+    identityPrompt.trim().length > 0 &&
+    reason.trim().length >= 3 &&
+    confirmation.trim() === confirmationToken(characterId);
+
+  return (
+    <div className="mt-4 border-t border-white/10 pt-4">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-[rgb(170,170,170)]">
+        {t("Mint new version")}
+      </h3>
+      <div className="mt-2 grid gap-3 md:grid-cols-2">
+        <textarea
+          className={textareaClass}
+          onChange={(event) => setIdentityPrompt(event.target.value)}
+          placeholder={t("Identity prompt")}
+          value={identityPrompt}
+        />
+        <textarea
+          className={textareaClass}
+          onChange={(event) => setNegativeIdentityPrompt(event.target.value)}
+          placeholder={t("Negative identity prompt")}
+          value={negativeIdentityPrompt}
+        />
+      </div>
+      <div className="mt-3 grid gap-3 md:grid-cols-4">
+        <select
+          className={cn(inputClass, "appearance-none")}
+          onChange={(event) => setStyle(event.target.value as (typeof STYLES)[number])}
+          value={style}
+        >
+          {STYLES.map((value) => (
+            <option key={value} value={value}>
+              {valueLabel(value)}
+            </option>
+          ))}
+        </select>
+        <input
+          className={inputClass}
+          onChange={(event) => setDefaultSeed(event.target.value)}
+          placeholder={t("Default seed")}
+          value={defaultSeed}
+        />
+        <input
+          className={inputClass}
+          onChange={(event) => setReason(event.target.value)}
+          placeholder={t("Reason (≥3, for audit)")}
+          value={reason}
+        />
+        <input
+          aria-label={t("Visual profile confirmation")}
+          className={cn(inputClass, "font-mono")}
+          onChange={(event) => setConfirmation(event.target.value)}
+          placeholder={t("Type {token} to confirm", { token: confirmationToken(characterId) })}
+          value={confirmation}
+        />
+      </div>
+      <div className="mt-3 flex items-center gap-3">
+        <button
+          className="inline-flex h-10 items-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+          disabled={!canSubmit}
+          onClick={() => void mintVersion()}
+          type="button"
+        >
+          {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+          {t("Mint new version")}
+        </button>
+        {submitError ? <p className="text-xs text-red-300">{submitError}</p> : null}
+      </div>
+    </div>
+  );
+}

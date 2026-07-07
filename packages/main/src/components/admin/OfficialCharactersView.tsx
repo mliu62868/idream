@@ -8,6 +8,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Archive, ImageIcon, Loader2, Pencil, Plus, Save, Sparkles, Upload, X } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { VisualPassportPanel } from "@/components/admin/VisualPassportPanel";
 import { cn } from "@/lib/utils";
 
 type OfficialStats = {
@@ -478,6 +479,7 @@ export function OfficialCharactersView() {
             </button>
             {editError ? <p className="text-xs text-red-300">{editError}</p> : null}
           </div>
+          <VisualPassportPanel characterId={editingId} />
         </section>
       ) : null}
 
