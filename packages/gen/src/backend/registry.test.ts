@@ -124,4 +124,22 @@ describe("buildBackendRegistry", () => {
       }),
     ).rejects.toThrow(/duplicate registry key/);
   });
+
+  it("allows a descriptor whose workflowKey equals its own modelId (self-collision is not an error)", async () => {
+    dir = await mkdtemp(path.join(tmpdir(), "registry-self-"));
+    await writeFile(
+      path.join(dir, "solo.json"),
+      descriptorJson("solo-model", "comfyui", "solo-model"),
+    );
+
+    const registry = await buildBackendRegistry({
+      comfyApiUrl: "http://127.0.0.1:8188",
+      sdcppCli: "/bin/true",
+      workflowDir: dir,
+    });
+
+    const byModel = registry.resolveForModel("solo-model");
+    expect(byModel.descriptor.modelId).toBe("solo-model");
+    expect(byModel.descriptor.workflowKey).toBe("solo-model");
+  });
 });
