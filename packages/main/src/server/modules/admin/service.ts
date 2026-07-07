@@ -63,6 +63,11 @@ import {
   overrideAgeVerification,
 } from "./compliance";
 import { profileHealth, profileDryRun } from "./generation-health";
+import {
+  getGenerationWorkflow,
+  listGenerationBackends,
+  listGenerationWorkflows,
+} from "./generation-catalog";
 import { analyticsExport, analyticsRetention } from "./analytics-extra";
 import {
   listAdminAnnouncements,
@@ -499,6 +504,13 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
       if (!action && method === "GET") return deadLetterQueue(request);
       if (action === "requeue" && method === "POST") return requeueDeadLetterBatch(request);
       if (action === "discard" && method === "POST") return discardDeadLetterBatch(request);
+    }
+    if (id === "backends") {
+      if (!action && method === "GET") return listGenerationBackends(request);
+    }
+    if (id === "workflows") {
+      if (!action && method === "GET") return listGenerationWorkflows(request);
+      if (action && !child && method === "GET") return getGenerationWorkflow(request, action);
     }
   }
 
