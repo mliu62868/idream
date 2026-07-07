@@ -1,5 +1,19 @@
 import { describe, it, expect } from "vitest";
-import { workflowDescriptorSchema, bindComfySlots, bindSdcppArgs } from "./workflow";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  workflowDescriptorSchema,
+  bindComfySlots,
+  bindSdcppArgs,
+  loadWorkflowDescriptors,
+} from "./workflow";
+
+// Resolve packages/gen/workflows relative to this test file (not process.cwd()),
+// so the test works regardless of which directory vitest is invoked from.
+const WORKFLOWS_DIR = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../../workflows",
+);
 
 const comfyDescriptor = workflowDescriptorSchema.parse({
   workflowKey: "t2i",
@@ -32,6 +46,18 @@ describe("bindComfySlots", () => {
   });
   it("throws when a required slot (no default) is missing", () => {
     expect(() => bindComfySlots(comfyDescriptor, { prompt: "x" })).toThrow(/seed/);
+  });
+});
+
+describe("loadWorkflowDescriptors (real files on disk)", () => {
+  it("loads the redcraft-krea2 txt2img descriptor and validates it against the schema", async () => {
+    const descriptors = await loadWorkflowDescriptors(WORKFLOWS_DIR);
+    // The dir also contains a legacy non-conforming file
+    // (redcraft-krea2-comfyui-text.json) which the loader warn-skips —
+    // so we assert presence of the target modelId, not array length.
+    const redcraft = descriptors.find((d) => d.modelId === "redcraft-krea2-comfyui");
+    expect(redcraft).toBeDefined();
+    expect(() => workflowDescriptorSchema.parse(redcraft)).not.toThrow();
   });
 });
 
