@@ -15,7 +15,8 @@
     "start:video": "tsx src/video.ts",
     "probe:image": "tsx src/probe-image-pipeline.ts",
     "probe:character-consistency": "tsx src/probe-character-consistency.ts",
-    "probe:redcraft-comfyui": "tsx src/probe-redcraft-comfyui.ts"
+    "probe:redcraft-comfyui": "tsx src/probe-redcraft-comfyui.ts",
+    "smoke:backend": "tsx src/backend/smoke.ts"
   },
   "dependencies": {
     "@idream/shared": "workspace:*",
