@@ -518,6 +518,10 @@ export function assertProductionProviderReady(kind: "image" | "video") {
   if (provider === "pipeline" && !env.PIPELINE_API_URL) {
     throw new Error(`Production ${kind} generation requires PIPELINE_API_URL`);
   }
+
+  if (provider === "backend" && !env.COMFYUI_API_URL) {
+    throw new Error(`Production ${kind} generation requires COMFYUI_API_URL`);
+  }
 }
 
 export function assertProductionModerationReady() {

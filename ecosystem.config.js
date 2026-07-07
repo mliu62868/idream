@@ -90,32 +90,6 @@ module.exports = {
     //   exec_mode: "fork",
     //   instances: 1,
     // },
-    // slow · local runner gateway — wraps stable-diffusion.cpp as OpenAI-compatible images
-    {
-      name: "sdcpp-image",
-      cwd: dir("packages/gen"),
-      script: "node_modules/tsx/dist/cli.mjs",
-      args: "src/sdcpp-openai-image-server.ts",
-      exec_mode: "fork",
-      instances: 1,
-      env: {
-        SDCPP_IMAGE_PORT: process.env.SDCPP_IMAGE_PORT ?? "8091",
-        SDCPP_IMAGE_MODEL_ID: process.env.SDCPP_IMAGE_MODEL_ID ?? "pornmaster-zimage-turbo",
-        SDCPP_CLI: process.env.SDCPP_CLI ?? "/Users/kk/bin/sd-cli",
-        SDCPP_SOURCE_MODEL:
-          process.env.SDCPP_SOURCE_MODEL ??
-          "/Users/kk/Downloads/models/pornmasterZImage_turboV35Bf16.safetensors",
-        SDCPP_LLM:
-          process.env.SDCPP_LLM ??
-          "/Users/kk/.localai/models/z-image-components/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
-        SDCPP_VAE:
-          process.env.SDCPP_VAE ??
-          "/Users/kk/.localai/models/z-image-components/split_files/vae/ae.safetensors",
-        SDCPP_STEPS: process.env.SDCPP_STEPS ?? "8",
-        SDCPP_MAX_COUNT: process.env.SDCPP_MAX_COUNT ?? "1",
-        SDCPP_TIMEOUT_MS: process.env.SDCPP_TIMEOUT_MS ?? "300000",
-      },
-    },
     // medium · async — main-side authority write-back
     {
       name: "gen-finalizer",
