@@ -273,8 +273,8 @@ chat→main→gen→finalizer→chat 的 outbox/inbox 事件链（`chat.image.re
 | 阶段 | 内容 | 验证 |
 |------|------|------|
 | **P0 底座打通** | 本机 ComfyUI Desktop 起服务；RedCraft Krea2 解禁；下载并跑通 Qwen-Edit。demo 闭环。 | `demos/2026-07-comfyui-bringup/run.sh` 出两张达标图 |
-| **P1 底座抽象** | `GenBackend` 接口 + ComfyUI/Sdcpp 两实现；删两个 OpenAI shim；Workflow 描述符 + 声明式槽绑定；gen worker 直调。 | 现有 image 生成 e2e 绿；`bun run check` |
-| **P2 运营配置** | Admin 新增 Backends/Workflows 页；Profile 改引用 Workflow；Visual Passport 编辑器。 | Chrome 走查：运营选图填槽发布出图 |
+| **P1 底座抽象** ✅ | `GenBackend` 接口 + ComfyUI/Sdcpp 两实现；删两个 OpenAI shim；Workflow 描述符 + 声明式槽绑定；gen worker 直调。已合入 master（2026-07-07）。 | 现有 image 生成 e2e 绿；真实 smoke 832×1216 |
+| **P2 运营配置** ✅ | workflow 描述符上移 `@idream/shared/gen-workflow`；registry 双键(modelId+workflowKey)；ComfyUIBackend 参考图上传+image 槽；qwen-image-edit 描述符+编辑 smoke(70s 走抽象层保脸)；admin `generation/backends`+`generation/workflows` API+页；Profile.workflowKey 路由(SQL 交用户)；Visual Passport 编辑器。分支 `feat/image-gen-p2-ops-console`，Tasks 1-8 双审全绿。 | typecheck 6/6 + lint 全绿；Chrome 全链走查(待 dev SQL) |
 | **P3 角色预生图 + Metric** | per-character 预生图面板 → Batch；Metric rollup；Batch 成本接 PricingRule。 | 一键为官方角色出封面/chat 包并投放 |
 | **P4 聊天 Agent** | 工具注册表；原生 function-calling；文本+图同回合；护照注入；运营开关。 | 聊天内"发张自拍/换个场景"端到端 + 一致性 |
 
