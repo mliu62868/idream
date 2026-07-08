@@ -351,9 +351,9 @@ describe("chat generate agent image tool", () => {
       status: "requesting",
       promptHint: "change the background to snowy mountains",
     });
-    expect((attachmentCreates[0]?.data.metadata as { editSourceAssetId?: string }).editSourceAssetId).toBe(
-      "media_source_1",
-    );
+    const metadata = attachmentCreates[0]?.data.metadata as { editSourceAssetId?: string; toolName?: string };
+    expect(metadata.editSourceAssetId).toBe("media_source_1");
+    expect(metadata.toolName).toBe("edit_last_image");
     const imageOutbox = outboxCreates.find((call) => call.data.eventType === CHAT_TO_MAIN_EVENTS.imageRequested);
     expect(imageOutbox?.data.payload).toMatchObject({
       kind: "chat.image.requested",
@@ -388,7 +388,12 @@ describe("chat generate agent image tool", () => {
       status: "requesting",
       promptHint: "change the background to snowy mountains",
     });
-    expect((attachmentCreates[0]?.data.metadata as { editSourceAssetId?: string }).editSourceAssetId).toBeUndefined();
+    const metadata = attachmentCreates[0]?.data.metadata as { editSourceAssetId?: string; toolName?: string };
+    expect(metadata.editSourceAssetId).toBeUndefined();
+    // Degraded attachment must be tagged with the tool it actually became — not a stale
+    // "edit_last_image" — so a later retry (which reads metadata.editSourceAssetId, absent
+    // here) can never resurrect a sourceImageAssetId that was never resolved.
+    expect(metadata.toolName).toBe("generate_image_async");
     const imageOutbox = outboxCreates.find((call) => call.data.eventType === CHAT_TO_MAIN_EVENTS.imageRequested);
     expect((imageOutbox?.data.payload as { controls: Record<string, unknown> }).controls).not.toHaveProperty(
       "sourceImageAssetId",

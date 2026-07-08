@@ -446,7 +446,7 @@ async function finalize(input: FinalizeInput): Promise<void> {
             promptHint: built.promptHint,
             metadata: {
               trigger: toolCallTrigger,
-              toolName: toolPlan.tool,
+              toolName: built.toolName,
               sourceUserMessageId: payload.userMessageId,
               assistantCaption: built.assistantCaption,
               orientation: built.controls.orientation,
@@ -600,6 +600,11 @@ interface ImageRequestFromPlan {
   promptHint: string;
   assistantCaption: string | null;
   controls: { orientation: string; outputCount: number; sourceImageAssetId?: string };
+  // The tool this request actually ended up as — distinct from plan.tool when
+  // edit_last_image degrades to a fresh generate (no source photo). Recorded on the
+  // attachment as metadata.toolName so the trail reflects what actually happened,
+  // never a stale "edit_last_image" tag on what is, in fact, a plain generate.
+  toolName: typeof GENERATE_IMAGE_ASYNC_TOOL | typeof EDIT_LAST_IMAGE_TOOL;
 }
 
 // Shapes the attachment/outbox payload fields per plan.tool. The edit_last_image arm
@@ -618,6 +623,7 @@ async function buildImageRequestFromPlan(
         promptHint: plan.args.prompt,
         assistantCaption: plan.args.caption ?? null,
         controls: { orientation: plan.args.orientation, outputCount: plan.args.outputCount },
+        toolName: GENERATE_IMAGE_ASYNC_TOOL,
       };
     case EDIT_LAST_IMAGE_TOOL: {
       const source = await tx.messageAttachment.findFirst({
@@ -632,12 +638,14 @@ async function buildImageRequestFromPlan(
           promptHint: plan.args.instruction,
           assistantCaption: plan.args.caption ?? null,
           controls: { orientation: "4:5", outputCount: 1 },
+          toolName: GENERATE_IMAGE_ASYNC_TOOL,
         };
       }
       return {
         promptHint: plan.args.instruction,
         assistantCaption: plan.args.caption ?? null,
         controls: { orientation: "4:5", outputCount: 1, sourceImageAssetId: source.mediaAssetId },
+        toolName: EDIT_LAST_IMAGE_TOOL,
       };
     }
     default: {
