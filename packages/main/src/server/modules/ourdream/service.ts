@@ -1759,6 +1759,23 @@ async function createGenerationJobForUser(
       : null;
   const selectedModel = body.model ?? body.controls.model;
   const profile = await selectGenerationProfile(body.mode, selectedModel);
+  // Guard: if "chat-image-edit" was requested (edit_last_image) but selectGenerationProfile
+  // fell back to a different profile — missing/disabled edit profile — the fallback's
+  // capabilities are unrelated to img2img (it may even have initImage:true for an unrelated
+  // reason, e.g. an sd_cpp default), so forwarding sourceImageAssetId into it risks the wrong
+  // pipeline rather than a clean degrade. Drop it explicitly so degradation to plain
+  // generation is deterministic and independent of whatever profile ends up resolved.
+  const requestedSourceImageAssetId = (body.controls as Record<string, unknown>).sourceImageAssetId;
+  const sourceImageAssetIdDroppedOnFallback =
+    typeof requestedSourceImageAssetId === "string" &&
+    selectedModel === "chat-image-edit" &&
+    profile.profileKey !== "chat-image-edit";
+  if (sourceImageAssetIdDroppedOnFallback) {
+    logger.warn(
+      { requestedProfile: selectedModel, resolvedProfile: profile.profileKey },
+      "chat-image-edit profile unavailable; dropping sourceImageAssetId to avoid mismatched pipeline",
+    );
+  }
 
   if (body.mode === "video" && !entitlements.video_generation) {
     throw Errors.paymentRequired("Video generation requires Deluxe entitlement");
@@ -1804,6 +1821,7 @@ async function createGenerationJobForUser(
     profileId: profile.profileKey,
     width: dimensions.width,
     height: dimensions.height,
+    sourceImageAssetId: sourceImageAssetIdDroppedOnFallback ? undefined : requestedSourceImageAssetId,
     consistencyMode: visualProfile ? consistencyMode : undefined,
     visualIdentity: visualProfile
       ? {
@@ -1971,10 +1989,12 @@ export async function createChatImageGenerationJob(payload: ChatImageRequestedPa
       presetIds: [],
       orientation,
       outputCount: payload.controls.outputCount,
-      // edit_last_image routes to the img2img profile; selectGenerationProfile falls back
-      // to the cheapest active profile if "chat-image-edit" is missing/disabled, which lacks
-      // initImage capability, so imageReferenceInputsForGenerationJob's source_image role
-      // (reference-images.ts) is simply not requested there — plain generation, no failure.
+      // edit_last_image routes to the img2img profile; selectGenerationProfile falls back to
+      // the cheapest active profile if "chat-image-edit" is missing/disabled. That fallback's
+      // capabilities are unrelated to img2img (it may even have initImage:true for an
+      // unrelated reason), so createGenerationJobForUser explicitly drops sourceImageAssetId
+      // whenever the resolved profileKey isn't "chat-image-edit" — plain generation, no
+      // mismatched pipeline, no failure.
       model: sourceImageAssetId ? "chat-image-edit" : undefined,
     },
     {
