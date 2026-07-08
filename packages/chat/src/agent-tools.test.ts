@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  AGENT_TOOL_REGISTRY,
   GENERATE_IMAGE_ASYNC_TOOL,
   buildToolPlannerMessages,
+  findAgentTool,
   imageToolCaption,
   parseAgentToolPlan,
   planAgentToolCall,
+  registryChatTools,
+  shouldPlanImageTool,
   type GenerateImageAsyncToolCall,
 } from "./agent-tools.js";
 import type { BuiltContext } from "./context.js";
@@ -113,5 +117,63 @@ describe("agent image tool planning", () => {
     }, "Melissa");
 
     expect(caption).toContain("Melissa");
+  });
+});
+
+describe("agent tool registry", () => {
+  it("contains exactly the generate_image_async tool", () => {
+    expect(AGENT_TOOL_REGISTRY).toHaveLength(1);
+    expect(AGENT_TOOL_REGISTRY[0]?.name).toBe(GENERATE_IMAGE_ASYNC_TOOL);
+  });
+
+  it("finds a registered tool by name and misses unknown names", () => {
+    expect(findAgentTool(GENERATE_IMAGE_ASYNC_TOOL)?.name).toBe(GENERATE_IMAGE_ASYNC_TOOL);
+    expect(findAgentTool("not_a_real_tool")).toBeUndefined();
+  });
+
+  it("produces a valid JSON Schema for the generate_image_async tool", () => {
+    const [chatTool] = registryChatTools();
+    expect(chatTool?.name).toBe(GENERATE_IMAGE_ASYNC_TOOL);
+    expect(chatTool?.parameters).toMatchObject({
+      type: "object",
+      required: ["prompt"],
+    });
+    const properties = (chatTool?.parameters as { properties: Record<string, unknown> }).properties;
+    expect(Object.keys(properties)).toEqual(
+      expect.arrayContaining(["prompt", "caption", "orientation", "outputCount"]),
+    );
+  });
+
+  it("keeps hasVisualRequestIntent semantics unchanged via shouldPlanImageTool (EN keyword pairs)", () => {
+    const withMessage = (content: string): BuiltContext => ({
+      ...context,
+      recentMessages: [{ id: "m1", role: "user", content }],
+    });
+
+    expect(shouldPlanImageTool(withMessage("send me a photo"))).toBe(true);
+    expect(shouldPlanImageTool(withMessage("show me a picture of you"))).toBe(true);
+    expect(shouldPlanImageTool(withMessage("can I get a selfie"))).toBe(true);
+    // requires BOTH a trigger verb/noun AND a visual noun — a lone trigger word is not enough
+    expect(shouldPlanImageTool(withMessage("generate a summary of our chat"))).toBe(false);
+    expect(shouldPlanImageTool(withMessage("how are you today"))).toBe(false);
+  });
+
+  it("keeps hasVisualRequestIntent semantics unchanged via shouldPlanImageTool (ZH regex)", () => {
+    const withMessage = (content: string): BuiltContext => ({
+      ...context,
+      recentMessages: [{ id: "m1", role: "user", content }],
+    });
+
+    expect(shouldPlanImageTool(withMessage("给我一张坐在窗边的照片"))).toBe(true);
+    expect(shouldPlanImageTool(withMessage("发一张自拍给我"))).toBe(true);
+    expect(shouldPlanImageTool(withMessage("生成一张图给我看看"))).toBe(true);
+    expect(shouldPlanImageTool(withMessage("你今天怎么样"))).toBe(false);
+  });
+
+  it("drives the planner prompt's tool listing from the registry", () => {
+    const messages = buildToolPlannerMessages(context);
+    const tool = findAgentTool(GENERATE_IMAGE_ASYNC_TOOL)!;
+    expect(messages[0]?.content).toContain(tool.name);
+    expect(messages[0]?.content).toContain("Available tool");
   });
 });
