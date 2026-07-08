@@ -9,6 +9,10 @@ const buildContextMock = vi.hoisted(() => vi.fn());
 const appendStreamEventMock = vi.hoisted(() => vi.fn(async () => ({ id: "stream-id", event: {} })));
 const appendLineMock = vi.hoisted(() => vi.fn(async () => {}));
 const enqueueMock = vi.hoisted(() => vi.fn(async () => {}));
+// Mutable seam so individual tests can flip the FC-capability flag without
+// re-mocking the whole providers module (mirrors CHAT_MOCK_SUPPORTS_TOOLS on the
+// real MockChatModel, see providers.ts).
+const supportsToolsState = vi.hoisted(() => ({ value: true }));
 
 vi.mock("./db.js", () => ({ chatPrisma: {} }));
 vi.mock("./providers.js", () => ({
@@ -16,13 +20,22 @@ vi.mock("./providers.js", () => ({
     chat: {
       complete: completeMock,
       stream: streamMock,
+      get supportsTools() {
+        return supportsToolsState.value;
+      },
     },
     moderation: {
       check: moderationMock,
     },
   },
 }));
-vi.mock("./context.js", () => ({ buildContext: buildContextMock }));
+vi.mock("./context.js", () => ({
+  buildContext: buildContextMock,
+  identityPromptLine: (persona: { identityPrompt?: string | null }) =>
+    persona.identityPrompt?.trim()
+      ? `Your appearance (keep consistent when sending photos): ${persona.identityPrompt.trim()}`
+      : "",
+}));
 vi.mock("./stream.js", () => ({
   appendStreamEvent: appendStreamEventMock,
   streamKey: (assistantMessageId: string) => `chat:stream:${assistantMessageId}`,
@@ -127,6 +140,7 @@ const context = {
     allowGlobalMemoryWrite: false,
     allowRelationshipPatch: true,
     outputModerationRequired: true,
+    imageToolEnabled: true,
   },
   sessionSummary: null,
   recentMessages: [
@@ -149,9 +163,13 @@ describe("chat generate agent image tool", () => {
     enqueueMock.mockClear();
     buildContextMock.mockResolvedValue(context);
     moderationMock.mockResolvedValue({ status: "passed", confidence: 0.5 });
+    supportsToolsState.value = true;
   });
 
   it("executes the model-selected async image tool by creating a requesting attachment and outbox event", async () => {
+    // FC unavailable on this provider: the regex-gate + planner path is the only
+    // route to an image tool call (behavior contract point 5).
+    supportsToolsState.value = false;
     completeMock.mockResolvedValue({
       content: JSON.stringify({
         tool: {
@@ -224,5 +242,77 @@ describe("chat generate agent image tool", () => {
       "chat:stream:msg_assistant",
       expect.objectContaining({ type: "error", code: "provider_failed", retryable: false }),
     );
+  });
+
+  it("FC path: a legal native tool call coexists with the prose already streamed (text+image same turn)", async () => {
+    streamMock.mockImplementation(async function* fcStream() {
+      yield { delta: "I'd love to share this with you.", done: false };
+      yield {
+        delta: "",
+        done: true,
+        toolCalls: [
+          {
+            id: "call_1",
+            name: "generate_image_async",
+            arguments: JSON.stringify({
+              prompt: "Realistic in-character portrait of Melissa sitting beside a sunlit window, soft afternoon light, 4:5 composition",
+              caption: "Here it comes!",
+              orientation: "4:5",
+              outputCount: 1,
+            }),
+          },
+        ],
+      };
+    });
+    const { prisma, attachmentCreates, outboxCreates, messageUpdates } = fakePrisma();
+
+    const result = await processGenerate(
+      { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+      prisma,
+    );
+
+    expect(result.status).toBe("sent");
+    expect(streamMock).toHaveBeenCalledTimes(1);
+    expect(streamMock.mock.calls[0]?.[0]).toMatchObject({ tools: expect.any(Array) });
+    // Prose was non-empty, so no FC follow-up complete() call was needed.
+    expect(completeMock).not.toHaveBeenCalled();
+    expect(messageUpdates[0]?.data).toMatchObject({
+      status: "sent",
+      content: "I'd love to share this with you.",
+    });
+    expect(attachmentCreates[0]?.data).toMatchObject({
+      messageId: "msg_assistant",
+      kind: "generated_image",
+      status: "requesting",
+      promptHint: expect.stringContaining("sunlit window"),
+    });
+    expect((attachmentCreates[0]?.data.metadata as { trigger: string }).trigger).toBe("agent_fc");
+    const imageOutbox = outboxCreates.find((call) => call.data.eventType === CHAT_TO_MAIN_EVENTS.imageRequested);
+    expect(imageOutbox).toBeTruthy();
+  });
+
+  it("FC path: an illegal tool call (unknown name) is ignored — no attachment, no outbox, plain text, no throw", async () => {
+    streamMock.mockImplementation(async function* fcStream() {
+      yield { delta: "Just chatting, no photo needed.", done: false };
+      yield {
+        delta: "",
+        done: true,
+        toolCalls: [{ id: "call_1", name: "not_a_real_tool", arguments: "{}" }],
+      };
+    });
+    const { prisma, attachmentCreates, outboxCreates, messageUpdates } = fakePrisma();
+
+    const result = await processGenerate(
+      { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+      prisma,
+    );
+
+    expect(result.status).toBe("sent");
+    expect(messageUpdates[0]?.data).toMatchObject({
+      status: "sent",
+      content: "Just chatting, no photo needed.",
+    });
+    expect(attachmentCreates).toHaveLength(0);
+    expect(outboxCreates.some((call) => call.data.eventType === CHAT_TO_MAIN_EVENTS.imageRequested)).toBe(false);
   });
 });

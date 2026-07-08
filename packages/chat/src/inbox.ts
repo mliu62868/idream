@@ -101,6 +101,11 @@ async function applyEffect(event: InboundEvent, prisma: ChatPrismaClient): Promi
     }
     case MAIN_TO_CHAT_EVENTS.chatImageCompleted: {
       const payload = chatImageCompletedPayloadSchema.parse(event.payload);
+      const attachment = await prisma.messageAttachment.findUnique({
+        where: { id: payload.attachmentId },
+        select: { metadata: true },
+      });
+      const metadata = (attachment?.metadata ?? {}) as Record<string, unknown>;
       await prisma.messageAttachment.updateMany({
         where: { id: payload.attachmentId, status: { notIn: ["completed", "canceled"] } },
         data: {
@@ -110,6 +115,9 @@ async function applyEffect(event: InboundEvent, prisma: ChatPrismaClient): Promi
           width: payload.width ?? null,
           height: payload.height ?? null,
           errorCode: null,
+          // P4 Task 5: agent's recollection of "what photo it sent" (generate.ts
+          // buildModelMessages reads this back for the photo-awareness context line).
+          ...(payload.summary ? { metadata: { ...metadata, summary: payload.summary } } : {}),
         },
       });
       return;

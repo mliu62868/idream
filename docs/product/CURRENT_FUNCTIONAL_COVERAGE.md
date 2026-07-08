@@ -8,7 +8,20 @@
 
 当前状态：**本地产品闭环可用，内部 pipeline 6/6 通过；当前目标仍是内部演示/受控 beta，公开上线仍被真实生产依赖阻断**。
 
-## 2026-07-08 P3 角色预生图 + Metric 落地（最新）
+## 2026-07-08 P4 聊天 Agent 生图落地（最新）
+
+`docs/superpowers/specs/2026-07-07-image-generation-redesign-design.md` §7 P4 已完成并合入分支 `feat/image-gen-p4-chat-agent`：
+
+- 聊天 `ChatModel` 增加 `tools` 传参 + 机制无关工具注册表（`AGENT_TOOL_REGISTRY`，当前一项 `generate_image_async`）；原生 function-calling 优先，legacy 正则门+JSON planner 保留为三重兜底（FC 不可用/FC 空结果/FC 异常）。
+- 文本+图片同回合：出图时先流式说话，再挂同一条 assistant 消息的 attachment（去掉此前 text XOR image 的限制）。
+- 护照注入前移：聊天请求即从角色 active VisualPassport 读取身份槽注入 system prompt，`chat.image.requested` outbox payload 携带 `visualProfileId`/`visualProfileVersion`，一致性不再只靠 planner 写好的 prompt 文本。
+- Agent 结果感知：图片 `completed` 携带的 `summary` 回喂下一轮模型上下文（`[You sent a photo: …]`，仅对模型可见，不落库不展示给用户），角色能点评自己发过的照片。
+- Admin per-角色开关：`content/characters/{id}/chat-tools` 可关闭单个角色的聊天内生图工具（`advancedDetails.imageToolEnabled=false`），关闭后 FC 与 planner 两条路径都短路，纯文本正常回复。
+- 验收：`packages/chat/test/web.test.ts` 新增一条端到端用例，全链走 mock seam 覆盖 spec §7 验证标准——"发张自拍"→原生 FC 同回合出文本+attachment（`metadata.trigger=agent_fc`）→outbox 带 `visualProfileId`+护照身份 token 落进模型 system prompt→`consumeInbound` 模拟 accepted/completed(带 summary)→attachment 转 completed→下一轮"换个场景，去雪山"→再次 FC 触发新 attachment，且该轮模型消息上下文已含 `[You sent a photo: …]`；`bun run test`（chat）118/118 通过，`bun run check`（lint+typecheck+build，5 个包）全绿。
+- 真模型 smoke：`bun run launch:probe:chat`（指向本机 oMLX `Qwen3.6-35B-A3B-uncensored-heretic`，`enable_thinking:false`）通过，确认该模型稳定支持 OpenAI `tools`。
+- **部署依赖（USER 步骤，未随本次合并生效）**：`db/sql/2026-07-08-chat-visual-passport-and-tool-flags.sql`（纯 `CREATE OR REPLACE VIEW`，无表结构变更）须应用到 dev/prod，`packages/chat` 随后跑一次 `db:generate`。真服务 live 走查（真 PG + 真 oMLX，通过 chat 服务 HTTP 面驱动一条出图消息）因本地持久 dev DB 尚未应用该 SQL，在建会话时报 `chat_character_view.visual_profile_id` 列不存在而受阻；协议正确性已由上面的 mock 端到端验收覆盖，真服务链路留待该 SQL 应用后复验。
+
+## 2026-07-08 P3 角色预生图 + Metric 落地
 
 `docs/superpowers/specs/2026-07-07-image-generation-redesign-design.md` §7 P3 已完成并合入分支 `feat/image-gen-p3-pregen-metrics`：
 

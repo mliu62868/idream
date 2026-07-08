@@ -48,6 +48,7 @@ import {
   createCharacterPregenBatch,
   listCharacterPregenBatches,
 } from "./characters/pregen";
+import { setCharacterChatTools } from "./characters/chat-tools";
 import {
   approveProductionItem,
   bulkPatchContentAssets,
@@ -617,6 +618,9 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
     }
     if (action && child === "pregen" && method === "POST") {
       return createCharacterPregenBatch(request, action);
+    }
+    if (action && child === "chat-tools" && method === "POST") {
+      return setCharacterChatTools(request, action);
     }
   }
   if (resource === "content" && id === "featured") {
@@ -3839,7 +3843,12 @@ async function getContentCharacter(request: Request, id: string) {
       select: { id: true, mode: true, status: true, createdAt: true },
     }),
   ]);
-  return ok({ character, reports, recentJobs });
+  // 只投影派生布尔，不把整个 advancedDetails 传给前端（见 chat-tools.ts 的写路径）。
+  const chatImageToolEnabled =
+    isRecord(character.advancedDetails) && character.advancedDetails.imageToolEnabled === false
+      ? false
+      : true;
+  return ok({ character, reports, recentJobs, chatImageToolEnabled });
 }
 
 async function setCharacterVisibility(request: Request, id: string) {

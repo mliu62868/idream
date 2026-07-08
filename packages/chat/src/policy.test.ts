@@ -30,6 +30,7 @@ describe("resolvePolicy (SSoT)", () => {
       memoryMultiplier: 1,
       unlimitedMessages: false,
       voiceEnabled: false,
+      imageToolEnabled: true,
     });
     expect(p.model).toBe("model-free");
     expect(p.maxContextMessages).toBe(12);
@@ -51,6 +52,7 @@ describe("resolvePolicy (SSoT)", () => {
       memoryMultiplier: 3,
       unlimitedMessages: true,
       voiceEnabled: true,
+      imageToolEnabled: true,
     });
     expect(p.model).toBe("model-deluxe");
     expect(p.maxContextMessages).toBe(24);
@@ -63,7 +65,7 @@ describe("resolvePolicy (SSoT)", () => {
 
   it("memory disabled (no-memory/incognito) zeroes memories + write gates", () => {
     const p = resolvePolicy(
-      { modelTier: "deluxe", memoryMultiplier: 3, unlimitedMessages: false, voiceEnabled: false },
+      { modelTier: "deluxe", memoryMultiplier: 3, unlimitedMessages: false, voiceEnabled: false, imageToolEnabled: true },
       { memoryEnabled: false },
     );
     expect(p.maxMemories).toBe(0);
@@ -79,6 +81,7 @@ describe("resolvePolicy (SSoT)", () => {
       memoryMultiplier: 1,
       unlimitedMessages: false,
       voiceEnabled: false,
+      imageToolEnabled: true,
     });
   });
 });

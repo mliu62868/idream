@@ -11,16 +11,21 @@ import type { Prisma } from "../generated/client/client.js";
 import type { ChatPrismaClient } from "./db.js";
 import { chatPrisma } from "./db.js";
 import { providers } from "./providers.js";
-import { buildContext, type BuiltContext } from "./context.js";
+import type { ChatToolCall, ModelMessage } from "./providers.js";
+import { buildContext, identityPromptLine, type BuiltContext } from "./context.js";
 import { appendStreamEvent, streamKey } from "./stream.js";
 import { appendLine, chatFsPaths } from "./chat-fs.js";
 import { recordOutbox, scheduleOutboxDelivery } from "./outbox.js";
 import { createId } from "./id.js";
 import { enqueue } from "./queue.js";
 import {
+  findAgentTool,
+  GENERATE_IMAGE_ASYNC_TOOL,
   imageToolCaption,
   planAgentToolCall,
+  registryChatTools,
   shouldPlanImageTool,
+  type GenerateImageAsyncArgs,
   type GenerateImageAsyncToolCall,
 } from "./agent-tools.js";
 import { companionRole } from "@idream/shared";
@@ -82,38 +87,147 @@ export async function processGenerate(
   const chunks: string[] = [];
   let seq = 0;
   let imageToolCall: GenerateImageAsyncToolCall | null = null;
-  if (shouldPlanImageTool(context)) {
+  // metadata.trigger for the attachment (finalize, below): "agent_fc" when the model's
+  // native function call produced it, "agent_tool_call" for the legacy regex+planner path.
+  let toolCallTrigger: "agent_fc" | "agent_tool_call" = "agent_tool_call";
+
+  const fcEnabled = providers.chat.supportsTools === true && context.policy.imageToolEnabled;
+
+  const streamDelta = async (delta: string): Promise<void> => {
+    seq += 1;
+    chunks.push(delta);
+    await appendStreamEvent(key, { type: "delta", attempt: payload.attempt, seq, delta });
+  };
+
+  const streamPlain = async (): Promise<void> => {
+    for await (const part of providers.chat.stream({
+      model: context.policy.model,
+      characterName: context.persona.name,
+      messages: modelMessages,
+    })) {
+      if (part.delta) await streamDelta(part.delta);
+    }
+  };
+
+  const streamCaption = async (toolCall: GenerateImageAsyncToolCall): Promise<void> => {
+    const reply = imageToolCaption(toolCall, context.persona.name);
+    for (const piece of chunk(reply, 96)) await streamDelta(piece);
+  };
+
+  // FC follow-up call (behavior contract point 3): when a legal tool call left no
+  // prose behind, ask the model for a short in-character line to accompany the photo.
+  const streamToolFollowup = async (rawCall: ChatToolCall, toolCall: GenerateImageAsyncToolCall): Promise<void> => {
+    const followupMessages: ModelMessage[] = [
+      ...modelMessages,
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [{ id: rawCall.id, type: "function", function: { name: rawCall.name, arguments: rawCall.arguments } }],
+      },
+      {
+        role: "tool",
+        tool_call_id: rawCall.id,
+        content: JSON.stringify({
+          status: "generating",
+          note: "The photo is being generated and will be delivered shortly. Respond to the user now with a short in-character message accompanying the incoming photo.",
+        }),
+      },
+    ];
+    let reply = "";
     try {
-      const toolPlan = await planAgentToolCall({
-        chat: providers.chat,
+      const completion = await providers.chat.complete({
         model: context.policy.model,
-        context,
+        messages: followupMessages,
+        maxTokens: 300,
       });
+      reply = completion.content.trim();
+    } catch (error) {
+      console.warn("chat agent tool follow-up complete() failed; falling back to caption", error);
+    }
+    if (!reply) reply = toolCall.arguments.caption?.trim() || imageToolCaption(toolCall, context.persona.name);
+    for (const piece of chunk(reply, 96)) await streamDelta(piece);
+  };
+
+  // Legacy regex-gate + planner path (pre-FC behavior), used when FC is unavailable
+  // and as the safety net when FC is available but the model didn't call the tool.
+  const runPlannerFallback = async (): Promise<void> => {
+    // policy.imageToolEnabled off (entitlement or character advancedDetails.imageToolEnabled=false)
+    // suppresses the tool entirely — not just the FC path, so the legacy planner must not run either.
+    if (!context.policy.imageToolEnabled) return;
+    if (!shouldPlanImageTool(context)) return;
+    try {
+      const toolPlan = await planAgentToolCall({ chat: providers.chat, model: context.policy.model, context });
       imageToolCall = toolPlan.toolCall;
+      toolCallTrigger = "agent_tool_call";
     } catch {
       imageToolCall = null;
     }
-  }
+  };
+
+  // Legal-tool-call validation shared by the FC path: unknown tool name or a JSON/schema
+  // failure is dropped silently (contract point 2) — never thrown.
+  const validateToolCall = (rawCall: ChatToolCall): GenerateImageAsyncArgs | null => {
+    const tool = findAgentTool(rawCall.name);
+    if (!tool) {
+      console.warn(`chat agent tool call references unknown tool "${rawCall.name}"; ignoring`);
+      return null;
+    }
+    try {
+      const result = tool.argsSchema.safeParse(JSON.parse(rawCall.arguments));
+      if (!result.success) {
+        console.warn(`chat agent tool call "${rawCall.name}" failed args validation; ignoring`, result.error.flatten());
+        return null;
+      }
+      return result.data as GenerateImageAsyncArgs;
+    } catch (error) {
+      console.warn(`chat agent tool call "${rawCall.name}" has invalid JSON arguments; ignoring`, error);
+      return null;
+    }
+  };
 
   try {
-    if (imageToolCall) {
-      const reply = imageToolCaption(imageToolCall, context.persona.name);
-      for (const piece of chunk(reply, 96)) {
-        seq += 1;
-        chunks.push(piece);
-        await appendStreamEvent(key, { type: "delta", attempt: payload.attempt, seq, delta: piece });
+    if (fcEnabled) {
+      let toolCalls: ChatToolCall[] = [];
+      let fellBackAlready = false;
+      try {
+        for await (const part of providers.chat.stream({
+          model: context.policy.model,
+          characterName: context.persona.name,
+          messages: modelMessages,
+          tools: registryChatTools(),
+        })) {
+          if (part.toolCalls) toolCalls = part.toolCalls;
+          if (part.delta) await streamDelta(part.delta);
+        }
+      } catch (streamError) {
+        if (seq > 0) throw streamError;
+        // The FC-enabled call died before any content streamed: fall back to the
+        // full legacy path (contract point 5) rather than failing the turn.
+        fellBackAlready = true;
+        await runPlannerFallback();
+        if (imageToolCall) await streamCaption(imageToolCall);
+        else await streamPlain();
+      }
+
+      const rawCall = toolCalls[0];
+      if (rawCall) {
+        const parsedArgs = validateToolCall(rawCall);
+        if (parsedArgs) {
+          imageToolCall = { name: GENERATE_IMAGE_ASYNC_TOOL, arguments: parsedArgs };
+          toolCallTrigger = "agent_fc";
+          if (!chunks.join("").trim()) await streamToolFollowup(rawCall, imageToolCall);
+        }
+        // else: illegal call — ignore it, keep whatever prose already streamed, don't throw.
+      } else if (!fellBackAlready) {
+        // FC available but returned no tool call: the regex-gate + planner remains the
+        // safety net so a missed FC call doesn't silently drop the image path.
+        await runPlannerFallback();
+        if (imageToolCall && !chunks.join("").trim()) await streamCaption(imageToolCall);
       }
     } else {
-      for await (const chunk of providers.chat.stream({
-        model: context.policy.model,
-        characterName: context.persona.name,
-        messages: modelMessages,
-      })) {
-        if (!chunk.delta) continue;
-        seq += 1;
-        chunks.push(chunk.delta);
-        await appendStreamEvent(key, { type: "delta", attempt: payload.attempt, seq, delta: chunk.delta });
-      }
+      await runPlannerFallback();
+      if (imageToolCall) await streamCaption(imageToolCall);
+      else await streamPlain();
     }
   } catch (error) {
     await appendStreamEvent(key, {
@@ -156,6 +270,7 @@ export async function processGenerate(
     blocked,
     context,
     imageToolCall,
+    toolCallTrigger,
   });
 
   await appendStreamEvent(key, { type: "done", attempt: payload.attempt, usage });
@@ -205,10 +320,11 @@ interface FinalizeInput {
   blocked: boolean;
   context: BuiltContext;
   imageToolCall: GenerateImageAsyncToolCall | null;
+  toolCallTrigger: "agent_fc" | "agent_tool_call";
 }
 
 async function finalize(input: FinalizeInput): Promise<void> {
-  const { prisma, payload, session, content, model, usage, moderation, blocked, context, imageToolCall } = input;
+  const { prisma, payload, session, content, model, usage, moderation, blocked, context, imageToolCall, toolCallTrigger } = input;
 
   await prisma.$transaction(async (tx) => {
     // Re-read inside the TX for idempotency under concurrency.
@@ -324,7 +440,7 @@ async function finalize(input: FinalizeInput): Promise<void> {
             status: "requesting",
             promptHint: imageToolCall.arguments.prompt,
             metadata: {
-              trigger: "agent_tool_call",
+              trigger: toolCallTrigger,
               toolName: imageToolCall.name,
               sourceUserMessageId: payload.userMessageId,
               assistantCaption: imageToolCall.arguments.caption ?? null,
@@ -348,6 +464,11 @@ async function finalize(input: FinalizeInput): Promise<void> {
             orientation: imageToolCall.arguments.orientation,
             outputCount: imageToolCall.arguments.outputCount,
           },
+          // Visual passport at request time. Read fresh from persona (not stored on the
+          // attachment) so a retry after re-buildContext always carries the CURRENT
+          // active profile rather than a value captured earlier in this turn.
+          visualProfileId: context.persona.visualProfileId ?? undefined,
+          visualProfileVersion: context.persona.visualProfileVersion ?? undefined,
         };
         await recordOutbox(tx, {
           eventType: CHAT_TO_MAIN_EVENTS.imageRequested,
@@ -380,6 +501,7 @@ function buildModelMessages(
     "Stay in persona; honor the user's stated preferences and boundaries; keep continuity.",
     "Do not claim to remember facts not present in the supplied context.",
     persona.systemPrompt ?? persona.description,
+    identityPromptLine(persona),
     context.sessionSummary ? `Session summary: ${context.sessionSummary}` : "",
     relationshipLine(context.relationship),
     context.boundaries.length ? `Boundaries (highest priority):\n${context.boundaries.map((b) => `- ${b}`).join("\n")}` : "",
@@ -390,7 +512,13 @@ function buildModelMessages(
 
   return [
     { role: "system", content: system },
-    ...context.recentMessages.map((m) => ({ role: m.role, content: m.content })),
+    ...context.recentMessages.map((m) => ({
+      role: m.role,
+      // P4 Task 5: photo awareness — reminds the model it already sent this photo,
+      // as a suffix line on the MODEL message only (never stored, never shown to
+      // the user; see context.ts photoSummary derivation).
+      content: m.photoSummary ? `${m.content}\n[You sent a photo: ${m.photoSummary}]` : m.content,
+    })),
   ];
 }
 

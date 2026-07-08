@@ -38,7 +38,7 @@ describe("chat providers", () => {
 
     expect(chunks).toEqual([
       { delta: "Pipeline reply", done: false },
-      { delta: "", done: true },
+      { delta: "", done: true, toolCalls: [] },
     ]);
     expect(fetchMock).toHaveBeenCalledWith(
       new URL("https://pipeline.internal.example.com/v1/chat/completions"),
@@ -53,6 +53,161 @@ describe("chat providers", () => {
     const body = JSON.parse(init.body);
     expect(body.model).toBe("Qwen3.5-14B-MLX-4bit");
     expect(body.max_tokens).toBe(8000);
+  });
+
+  it("sends tools in the request body and reports supportsTools per provider", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', {
+        headers: { "content-type": "text/event-stream" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    process.env = {
+      ...oldEnv,
+      CHAT_MODEL_PROVIDER: "openai",
+      CHAT_MODEL_BASE_URL: "https://openai.internal.example.com/v1",
+      MODERATION_PROVIDER: "mock",
+    };
+
+    const { createProviders } = await import("./providers.js");
+    const providers = createProviders();
+    expect(providers.chat.supportsTools).toBe(true);
+
+    const tools = [
+      { name: "generate_image_async", description: "generate an image", parameters: { type: "object" } },
+    ];
+    for await (const _chunk of providers.chat.stream({
+      messages: [{ role: "user", content: "hello" }],
+      tools,
+    })) {
+      // drain
+    }
+
+    const init = (fetchMock.mock.calls[0] as unknown[])[1] as { body: string };
+    const body = JSON.parse(init.body);
+    expect(body.tools).toEqual([
+      {
+        type: "function",
+        function: { name: "generate_image_async", description: "generate an image", parameters: { type: "object" } },
+      },
+    ]);
+  });
+
+  it("marks the pipeline alias as not supporting tools", async () => {
+    process.env = {
+      ...oldEnv,
+      CHAT_MODEL_PROVIDER: "pipeline",
+      CHAT_MODEL_BASE_URL: "https://pipeline.internal.example.com/v1",
+      MODERATION_PROVIDER: "mock",
+    };
+
+    const { createProviders } = await import("./providers.js");
+    expect(createProviders().chat.supportsTools).toBe(false);
+  });
+
+  it("accumulates streamed tool_calls fragments by index into complete calls", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        [
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"generate_image_async","arguments":""}}]}}]}',
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"scene\\""}}]}}]}',
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\\"beach\\"}"}}]}}]}',
+          "data: [DONE]",
+          "",
+        ].join("\n\n"),
+        { headers: { "content-type": "text/event-stream" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    process.env = {
+      ...oldEnv,
+      CHAT_MODEL_PROVIDER: "openai",
+      CHAT_MODEL_BASE_URL: "https://openai.internal.example.com/v1",
+      MODERATION_PROVIDER: "mock",
+    };
+
+    const { createProviders } = await import("./providers.js");
+    const providers = createProviders();
+    const chunks = [];
+    for await (const chunk of providers.chat.stream({
+      messages: [{ role: "user", content: "hello" }],
+      tools: [{ name: "generate_image_async", description: "generate", parameters: {} }],
+    })) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks.at(-1)).toEqual({
+      delta: "",
+      done: true,
+      toolCalls: [{ id: "call_1", name: "generate_image_async", arguments: '{"scene":"beach"}' }],
+    });
+  });
+
+  it("returns an empty toolCalls array for a plain content-only stream", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response('data: {"choices":[{"delta":{"content":"hi there"}}]}\n\ndata: [DONE]\n\n', {
+        headers: { "content-type": "text/event-stream" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    process.env = {
+      ...oldEnv,
+      CHAT_MODEL_PROVIDER: "openai",
+      CHAT_MODEL_BASE_URL: "https://openai.internal.example.com/v1",
+      MODERATION_PROVIDER: "mock",
+    };
+
+    const { createProviders } = await import("./providers.js");
+    const providers = createProviders();
+    const chunks = [];
+    for await (const chunk of providers.chat.stream({
+      messages: [{ role: "user", content: "hello" }],
+    })) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks.at(-1)).toEqual({ delta: "", done: true, toolCalls: [] });
+  });
+
+  it("MockChatModel returns supportsTools=true and reads CHAT_MOCK_TOOL_CALLS_JSON", async () => {
+    process.env = {
+      ...oldEnv,
+      CHAT_MODEL_PROVIDER: "mock",
+      MODERATION_PROVIDER: "mock",
+      CHAT_MOCK_TOOL_CALLS_JSON:
+        '[{"id":"m1","name":"generate_image_async","arguments":"{\\"prompt\\":\\"selfie at beach, smiling\\"}"}]',
+    };
+
+    const { createProviders } = await import("./providers.js");
+    const providers = createProviders();
+    expect(providers.chat.supportsTools).toBe(true);
+
+    const chunks = [];
+    for await (const chunk of providers.chat.stream({ messages: [{ role: "user", content: "hi" }] })) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks.at(-1)?.toolCalls).toEqual([
+      { id: "m1", name: "generate_image_async", arguments: '{"prompt":"selfie at beach, smiling"}' },
+    ]);
+  });
+
+  it("MockChatModel returns an empty toolCalls array when the env seam is unset", async () => {
+    process.env = {
+      ...oldEnv,
+      CHAT_MODEL_PROVIDER: "mock",
+      MODERATION_PROVIDER: "mock",
+    };
+    delete process.env.CHAT_MOCK_TOOL_CALLS_JSON;
+
+    const { createProviders } = await import("./providers.js");
+    const providers = createProviders();
+    const chunks = [];
+    for await (const chunk of providers.chat.stream({ messages: [{ role: "user", content: "hi" }] })) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks.at(-1)?.toolCalls).toEqual([]);
   });
 
   it("uses OpenAI-compatible non-stream completions for agent tool planning", async () => {

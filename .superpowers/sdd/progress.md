@@ -62,3 +62,23 @@ P3 Task 4: complete (commit a440555, review clean ✅; typecheck+lint pass; conf
 P3 Task 5: complete (commits de0977c + i18n fix 248df3b, review clean after fix ✅; 5 AdminConsoleClient touch points verified; field audit clean)
 P3 Task 6: complete (commit c634c74, review clean ✅; 56/56 tests x3, bun run check green, live API smoke on real server; BONUS real bugfix: batch jobs now route model=workflowKey??pipelineModel matching user path, reviewer-verified)
 P3 final review: Ready to merge (opus; Critical refund-mint bug found+fixed 58c0b82 w/ type-enforced sourceType param + partial-refund site; 85 tests green independent rerun). Minors all deferred. Merging to master.
+
+=== P4 SDD START ===
+Base (before P4 Task 1): 2b1547756a6c3cde4bc26b64938d866e4a540af9
+Plan: docs/superpowers/plans/2026-07-08-image-gen-p4-chat-agent.md
+FC probes: PASS (tools/negative/round-trip/streaming, enable_thinking=false required) — scratchpad p4-fc-probe-results.md
+P4 Task 1: complete (commit 3ab2b52e, review clean ✅; 106/106 chat + typecheck 6/6; supportsTools optional-on-interface + pipeline via ctor arg adjudicated OK)
+- P4 Task 1 minors: id/name merge last-non-empty (defensive tweak possible); createProviders near-dup literals.
+P4 Task 2: complete (commit 206ed957, review clean ✅; 112/112 chat; EN AND-pair folded to dual-lookahead regex verified equivalent; ZH-on-toLowerCase noted, CJK case-invariant)
+P4 Task 3: complete (commit eefb4429, review clean ✅; 114/114 chat; XOR removed on FC path, planner fallback intact, double-trigger mutually exclusive)
+- P4 Task 3 minor: validateToolCall casts to GenerateImageAsyncArgs + hardcoded tool name — flag when adding tool #2.
+P4 Task 4: complete (commit 7074a3bf, review clean ✅; chat 117/117 + main 24/24; SQL idempotent, grants survive REPLACE, defaults TRUE everywhere; chat prisma view-mapping is established mechanism)
+- P4 Task 4 note: pullers must bun run db:generate in packages/chat (generated/ gitignored).
+P4 Task 5: complete (commit a3a039d9, review clean ✅; chat 117/117 + main 24/24; promptHint-first order verified justified; no double-injection/mutation risks)
+- P4 Task 5 minors: inbox read-then-write benign race note; consolidate mock introspection seams if more accumulate.
+P4 Task 6: complete (commit 52f1e11c, review clean ✅; 58/58 admin-console; merge preserves keys; race noted-only)
+P4 Task 7: complete (acceptance e2e added to web.test.ts; chat 118/118, main admin-console+event-consumer+image-generation-service 82/82, bun run check all green; real-model smoke via launch:probe:chat passed against oMLX Qwen3.6-35B-A3B; real-service live walkthrough blocked — local dev DB missing db/sql/2026-07-08-chat-visual-passport-and-tool-flags.sql (USER step, not run by agent per schema-change policy); spec §7/§8.3 + CURRENT_FUNCTIONAL_COVERAGE.md updated)
+- P4 Task 7 note: apply the P4 boundary SQL to dev/prod + packages/chat db:generate before the live walkthrough can be re-run for real.
+P4 Task 7: complete (commit 983633f3, review clean ✅; chat 118/118 + main 82/82 + check green; live real-service walkthrough blocked on user-side dev SQL — documented honestly)
+P4 final review: Ready to merge (opus; zero Critical/Important; all Minors defer). Merging to master.
+P4 COMPLETE.

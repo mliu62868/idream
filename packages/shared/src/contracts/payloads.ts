@@ -157,6 +157,10 @@ export const chatImageRequestedPayloadSchema = z
       })
       .passthrough()
       .default({ orientation: "4:5", outputCount: 1 }),
+    // P4: the character's active CharacterVisualProfile at request time (visual passport).
+    // Optional — older chat builds, or characters with no bootstrapped profile, omit it.
+    visualProfileId: z.string().optional(),
+    visualProfileVersion: z.number().int().optional(),
   })
   .passthrough();
 
@@ -179,6 +183,10 @@ export const chatImageCompletedPayloadSchema = z
     mediaAssetId: z.string(),
     width: z.number().int().min(1).nullable().optional(),
     height: z.number().int().min(1).nullable().optional(),
+    // P4 Task 5: short human-readable description of the delivered photo, so the
+    // chat agent can recall "what it sent" in later turns without re-fetching the
+    // asset. Optional — older main builds omit it.
+    summary: z.string().optional(),
   })
   .passthrough();
 

@@ -554,6 +554,13 @@ export async function confirmImageAttachment(
     orientation?: unknown;
     outputCount?: unknown;
   };
+  // Re-read the persona fresh rather than trusting anything captured at the original
+  // request (attachment.metadata): a retry can land well after the original turn, and
+  // the active visual profile may have been re-cast (new version) since then. Using the
+  // CURRENT active profile here matches main's chat-path fallback semantics (stale/
+  // archived requested ids fall back to active) — a retry should never carry a
+  // passport version that's since been superseded.
+  const persona = await prisma.chatCharacterView.findUnique({ where: { characterId: session.characterId } });
   const payload: ChatImageRequestedPayload = {
     version: 1,
     kind: "chat.image.requested",
@@ -575,6 +582,8 @@ export async function confirmImageAttachment(
       outputCount:
         typeof plannedControls.outputCount === "number" ? plannedControls.outputCount : 1,
     },
+    visualProfileId: persona?.visualProfileId ?? undefined,
+    visualProfileVersion: persona?.visualProfileVersion ?? undefined,
   };
 
   const updated = await prisma.$transaction(async (tx) => {

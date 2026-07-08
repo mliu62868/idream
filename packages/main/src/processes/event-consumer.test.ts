@@ -150,7 +150,69 @@ describe("applyChatEvent", () => {
     const asset = await prisma.mediaAsset.findFirst({ where: { sourceJobId: jobs[0].id } });
     expect(asset?.id).toBeTruthy();
     const completedEventId = `chat_image_completed_${attachmentId}_${jobs[0].id}_${asset?.id}`;
-    expect(await jobQueue.getByDedupeKey("chat.inbound", idempotencyKeys.chatInbox(completedEventId))).toBeTruthy();
+    const completedJob = await jobQueue.getByDedupeKey(
+      "chat.inbound",
+      idempotencyKeys.chatInbox(completedEventId),
+    );
+    expect(completedJob).toBeTruthy();
+    // P4 Task 5: the completed payload carries a summary for chat-side photo awareness.
+    expect(completedJob?.payload).toMatchObject({
+      payload: { summary: expect.stringContaining("send me a photo at sunset") },
+    });
+  });
+
+  it("carries the requested visualProfileId from a chat.image.requested payload onto the generation job", async () => {
+    const userId = `${P}vp-user`;
+    const characterId = `${P}vp-char`;
+    const attachmentId = `${P}vp-att`;
+    await createUser({ id: userId });
+    await createCharacter({ id: characterId, creatorId: userId, visibility: "public", status: "approved" });
+    await grantCoins(userId, 100, "seed");
+    const visualProfile = await prisma.characterVisualProfile.create({
+      data: {
+        id: `${P}vp-cvp`,
+        characterId,
+        version: 1,
+        status: "active",
+        style: "realistic",
+        identityPrompt: "Test Character, adult woman, chestnut hair",
+        faceTraits: {},
+        hairTraits: {},
+        bodyTraits: {},
+        signatureTraits: {},
+        styleTraits: {},
+        anchorAssetIds: [],
+        referenceAssetIds: [],
+        adapterRefs: {},
+        createdFrom: "test",
+      },
+    });
+
+    await applyChatEvent({
+      eventId: `${P}vp-evt`,
+      eventType: CHAT_TO_MAIN_EVENTS.imageRequested,
+      aggregateId: attachmentId,
+      payload: {
+        version: 1,
+        kind: "chat.image.requested",
+        requestId: `${P}vp-req`,
+        attachmentId,
+        sessionId: `${P}vp-sess`,
+        messageId: `${P}vp-msg`,
+        userId,
+        characterId,
+        promptHint: "send me a photo at sunset",
+        conversationContext: "user: send me a photo at sunset",
+        controls: { orientation: "4:5", outputCount: 1 },
+        visualProfileId: visualProfile.id,
+        visualProfileVersion: visualProfile.version,
+      },
+    });
+
+    const job = await prisma.generationJob.findFirstOrThrow({
+      where: { sourceType: "chat_image", sourceId: attachmentId },
+    });
+    expect(job.visualProfileId).toBe(visualProfile.id);
   });
 
   it("reuses approved character chat assets before creating a new generation job", async () => {
