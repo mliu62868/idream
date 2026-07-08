@@ -71,6 +71,7 @@ import {
   overrideAgeVerification,
 } from "./compliance";
 import { profileHealth, profileDryRun } from "./generation-health";
+import { generationMetrics } from "./generation-metrics";
 import {
   getGenerationWorkflow,
   listGenerationBackends,
@@ -523,6 +524,7 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
       if (!action && method === "GET") return listGenerationWorkflows(request);
       if (action && !child && method === "GET") return getGenerationWorkflow(request, action);
     }
+    if (id === "metrics" && !action && method === "GET") return generationMetrics(request);
   }
 
   if (resource === "pricing" && id === "rules") {

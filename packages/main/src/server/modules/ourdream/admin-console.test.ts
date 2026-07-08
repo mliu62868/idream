@@ -3824,3 +3824,73 @@ describe("admin experiments (Phase 4)", () => {
     expect(typeof res.data.note).toBe("string");
   });
 });
+
+describe("admin generation metrics rollup (P3)", () => {
+  it("aggregates generation metrics by profile, recipe, source and placements", async () => {
+    const admin = await setupActor("admin", "generation-metrics");
+    const support = await setupActor("support", "generation-metrics");
+    const profileId = `${P}metrics-profile`;
+    const recipeId = `${P}metrics-recipe`;
+    const base = {
+      userId: admin,
+      mode: "image",
+      controls: {},
+      presetIds: [],
+      profileId,
+      profileVersion: 1,
+      promptTemplateId: recipeId,
+      promptTemplateVersion: 1,
+      sourceType: "content_production_item",
+    } as const;
+    await prisma.generationJob.create({
+      data: {
+        ...base,
+        id: `${P}metrics-job-1`,
+        sourceId: `${P}metrics-src-1`,
+        status: "completed",
+        costDreamcoins: 7,
+        completedAt: new Date(),
+      },
+    });
+    await prisma.generationJob.create({
+      data: {
+        ...base,
+        id: `${P}metrics-job-2`,
+        sourceId: `${P}metrics-src-2`,
+        status: "failed",
+        costDreamcoins: 7,
+      },
+    });
+
+    const forbidden = await api("GET", "admin/generation/metrics", {
+      userId: support,
+      role: "support",
+    });
+    expectError(forbidden, 403);
+
+    const metrics = await api("GET", "admin/generation/metrics", {
+      userId: admin,
+      role: "admin",
+      query: { days: 7 },
+    });
+    expectOk(metrics);
+    const profileRow = metrics.data.profiles.find(
+      (row: { profileId: string }) => row.profileId === profileId,
+    );
+    expect(profileRow).toMatchObject({
+      total: 2,
+      completed: 1,
+      failed: 1,
+      costDreamcoins: 14,
+    });
+    expect(profileRow.avgDurationMs).toBeGreaterThanOrEqual(0);
+    const recipeRow = metrics.data.recipes.find(
+      (row: { recipeId: string }) => row.recipeId === recipeId,
+    );
+    expect(recipeRow).toMatchObject({ total: 2, completed: 1, failed: 1 });
+    const sourceRow = metrics.data.sources.find(
+      (row: { sourceType: string }) => row.sourceType === "content_production_item",
+    );
+    expect(sourceRow.total).toBeGreaterThanOrEqual(2);
+  });
+});
