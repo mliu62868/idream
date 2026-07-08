@@ -25,7 +25,7 @@ import {
   planAgentToolCall,
   registryChatTools,
   shouldPlanImageTool,
-  type GenerateImageAsyncArgs,
+  type AgentToolCallPlan,
   type GenerateImageAsyncToolCall,
 } from "./agent-tools.js";
 import { companionRole } from "@idream/shared";
@@ -166,19 +166,19 @@ export async function processGenerate(
 
   // Legal-tool-call validation shared by the FC path: unknown tool name or a JSON/schema
   // failure is dropped silently (contract point 2) — never thrown.
-  const validateToolCall = (rawCall: ChatToolCall): GenerateImageAsyncArgs | null => {
+  const validateToolCall = (rawCall: ChatToolCall): AgentToolCallPlan | null => {
     const tool = findAgentTool(rawCall.name);
     if (!tool) {
       console.warn(`chat agent tool call references unknown tool "${rawCall.name}"; ignoring`);
       return null;
     }
     try {
-      const result = tool.argsSchema.safeParse(JSON.parse(rawCall.arguments));
-      if (!result.success) {
-        console.warn(`chat agent tool call "${rawCall.name}" failed args validation; ignoring`, result.error.flatten());
+      const plan = tool.parseCall(JSON.parse(rawCall.arguments) as unknown);
+      if (!plan) {
+        console.warn(`chat agent tool call "${rawCall.name}" failed args validation; ignoring`);
         return null;
       }
-      return result.data as GenerateImageAsyncArgs;
+      return plan;
     } catch (error) {
       console.warn(`chat agent tool call "${rawCall.name}" has invalid JSON arguments; ignoring`, error);
       return null;
@@ -211,9 +211,9 @@ export async function processGenerate(
 
       const rawCall = toolCalls[0];
       if (rawCall) {
-        const parsedArgs = validateToolCall(rawCall);
-        if (parsedArgs) {
-          imageToolCall = { name: GENERATE_IMAGE_ASYNC_TOOL, arguments: parsedArgs };
+        const plan = validateToolCall(rawCall);
+        if (plan) {
+          imageToolCall = toolCallFromPlan(plan);
           toolCallTrigger = "agent_fc";
           if (!chunks.join("").trim()) await streamToolFollowup(rawCall, imageToolCall);
         }
@@ -429,7 +429,14 @@ async function finalize(input: FinalizeInput): Promise<void> {
         payload: { sessionId: session.id, delta: 1 },
       });
 
-      if (imageToolCall) {
+      // toolPlan re-derives the discriminated plan from imageToolCall so the outbox
+      // construction below branches on plan.tool (structure Task 2's edit_last_image
+      // arm will extend) rather than assuming generate_image_async.
+      const toolPlan: AgentToolCallPlan | null = imageToolCall
+        ? { tool: imageToolCall.name, args: imageToolCall.arguments }
+        : null;
+      if (toolPlan) {
+        const built = buildImageRequestFromPlan(toolPlan);
         const attachmentId = createId("att");
         await tx.messageAttachment.create({
           data: {
@@ -438,14 +445,14 @@ async function finalize(input: FinalizeInput): Promise<void> {
             messageId: payload.assistantMessageId,
             kind: "generated_image",
             status: "requesting",
-            promptHint: imageToolCall.arguments.prompt,
+            promptHint: built.promptHint,
             metadata: {
               trigger: toolCallTrigger,
-              toolName: imageToolCall.name,
+              toolName: toolPlan.tool,
               sourceUserMessageId: payload.userMessageId,
-              assistantCaption: imageToolCall.arguments.caption ?? null,
-              orientation: imageToolCall.arguments.orientation,
-              outputCount: imageToolCall.arguments.outputCount,
+              assistantCaption: built.assistantCaption,
+              orientation: built.controls.orientation,
+              outputCount: built.controls.outputCount,
             } as Prisma.InputJsonValue,
           },
         });
@@ -458,12 +465,9 @@ async function finalize(input: FinalizeInput): Promise<void> {
           messageId: payload.assistantMessageId,
           userId: session.userId,
           characterId: session.characterId,
-          promptHint: imageToolCall.arguments.prompt,
+          promptHint: built.promptHint,
           conversationContext: buildConversationContext(context, content),
-          controls: {
-            orientation: imageToolCall.arguments.orientation,
-            outputCount: imageToolCall.arguments.outputCount,
-          },
+          controls: built.controls,
           // Visual passport at request time. Read fresh from persona (not stored on the
           // attachment) so a retry after re-buildContext always carries the CURRENT
           // active profile rather than a value captured earlier in this turn.
@@ -558,6 +562,42 @@ function chunk(text: string, size: number): string[] {
   for (let i = 0; i < text.length; i += size) out.push(text.slice(i, i + size));
   return out.length ? out : [""];
 }
+// Converts a validated agent tool call plan into the wire shape generate.ts
+// streams/logs. Single arm today; Task 2 adds edit_last_image as a second case.
+function toolCallFromPlan(plan: AgentToolCallPlan): GenerateImageAsyncToolCall {
+  switch (plan.tool) {
+    case GENERATE_IMAGE_ASYNC_TOOL:
+      return { name: plan.tool, arguments: plan.args };
+    default: {
+      const exhaustive: never = plan.tool;
+      throw new Error(`unhandled agent tool plan: ${String(exhaustive)}`);
+    }
+  }
+}
+
+interface ImageRequestFromPlan {
+  promptHint: string;
+  assistantCaption: string | null;
+  controls: { orientation: string; outputCount: number };
+}
+
+// Shapes the attachment/outbox payload fields per plan.tool. Single arm today;
+// Task 2's edit_last_image arm will add a case with its own field mapping.
+function buildImageRequestFromPlan(plan: AgentToolCallPlan): ImageRequestFromPlan {
+  switch (plan.tool) {
+    case GENERATE_IMAGE_ASYNC_TOOL:
+      return {
+        promptHint: plan.args.prompt,
+        assistantCaption: plan.args.caption ?? null,
+        controls: { orientation: plan.args.orientation, outputCount: plan.args.outputCount },
+      };
+    default: {
+      const exhaustive: never = plan.tool;
+      throw new Error(`unhandled agent tool plan: ${String(exhaustive)}`);
+    }
+  }
+}
+
 function buildConversationContext(context: BuiltContext, assistantContent: string): string {
   return clamp(
     [

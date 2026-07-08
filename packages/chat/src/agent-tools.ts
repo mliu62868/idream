@@ -25,15 +25,23 @@ export interface AgentToolPlan {
   raw: string;
 }
 
+// Task-2 will add the `edit_last_image` arm; this task establishes the shape with
+// its single existing arm so generate.ts can switch on `plan.tool` exhaustively.
+export type AgentToolCallPlan = { tool: typeof GENERATE_IMAGE_ASYNC_TOOL; args: GenerateImageAsyncArgs };
+
 // SPEC: one entry per agent-callable tool. `intentHints` gates the (non-FC)
-// planner path; `toChatTool` is the function-calling wire shape for providers
-// that support native tool calls.
+// planner path; each hint declares whether it matches the lowercased text (EN
+// keyword matching, case-insensitive) or the raw text (CJK patterns, where case
+// folding is a no-op but matching raw keeps intent explicit). `toChatTool` is the
+// function-calling wire shape for providers that support native tool calls.
+// `parseCall` turns a validated raw-args value into this tool's plan arm.
 export type AgentTool = {
   name: string;
   description: string;
-  intentHints: RegExp[];
+  intentHints: Array<{ pattern: RegExp; matchOn: "lower" | "raw" }>;
   argsSchema: z.ZodType<unknown>;
   toChatTool(): ChatToolDefinition;
+  parseCall(rawArgs: unknown): AgentToolCallPlan | null;
 };
 
 const generateImageAsyncTool: AgentTool = {
@@ -44,10 +52,19 @@ const generateImageAsyncTool: AgentTool = {
   // The EN case required BOTH a trigger word and a visual noun; encoded here as one
   // regex with two lookaheads so each array entry stays an independent OR alternative.
   intentHints: [
-    /(?=.*\b(?:photo|picture|image|pic|selfie|portrait|draw|drawing|show me|send me|generate|make)\b)(?=.*\b(?:photo|picture|image|pic|selfie|portrait|drawing)\b)/,
-    /照片|图片|图像|自拍|画像|相片|发.*照|给我.*图|生成.*图/,
+    {
+      pattern:
+        /(?=.*\b(?:photo|picture|image|pic|selfie|portrait|draw|drawing|show me|send me|generate|make)\b)(?=.*\b(?:photo|picture|image|pic|selfie|portrait|drawing)\b)/,
+      matchOn: "lower",
+    },
+    { pattern: /照片|图片|图像|自拍|画像|相片|发.*照|给我.*图|生成.*图/, matchOn: "raw" },
   ],
   argsSchema: generateImageAsyncArgsSchema,
+  parseCall: (rawArgs) => {
+    const result = generateImageAsyncArgsSchema.safeParse(rawArgs);
+    if (!result.success) return null;
+    return { tool: GENERATE_IMAGE_ASYNC_TOOL, args: result.data };
+  },
   toChatTool: () => ({
     name: GENERATE_IMAGE_ASYNC_TOOL,
     description:
@@ -196,7 +213,12 @@ function extractFirstJsonObject(text: string): string | null {
 // SPEC: registry-driven port of the intent gate — a message matches when it hits
 // any hint in any tool's intentHints array (see generateImageAsyncTool.intentHints
 // for how the original AND-of-two-regexes EN gate is preserved as one alternative).
+// EN hints match case-insensitively (lowercased text); CJK hints match the raw
+// text, so a mixed-case EN clause alongside a CJK clause in the same message can't
+// perturb the CJK match.
 function hasVisualRequestIntent(text: string): boolean {
-  const normalized = text.toLowerCase();
-  return AGENT_TOOL_REGISTRY.some((tool) => tool.intentHints.some((hint) => hint.test(normalized)));
+  const lowered = text.toLowerCase();
+  return AGENT_TOOL_REGISTRY.some((tool) =>
+    tool.intentHints.some((hint) => hint.pattern.test(hint.matchOn === "raw" ? text : lowered)),
+  );
 }

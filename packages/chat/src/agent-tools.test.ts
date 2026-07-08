@@ -187,4 +187,38 @@ describe("agent tool registry", () => {
     expect(messages[0]?.content).toContain(tool.name);
     expect(messages[0]?.content).toContain("Available tool");
   });
+
+  it("keeps matching a ZH intent hint when it's mixed with EN text in the same message (raw-text ZH match)", () => {
+    const withMessage = (content: string): BuiltContext => ({
+      ...context,
+      recentMessages: [{ id: "m1", role: "user", content }],
+    });
+
+    expect(shouldPlanImageTool(withMessage("SEND ME 一张自拍 please"))).toBe(true);
+    expect(shouldPlanImageTool(withMessage("Hey, 给我一张坐在窗边的照片 thanks"))).toBe(true);
+  });
+
+  it("parseCall returns a discriminated plan for valid args, and null for invalid args, without throwing", () => {
+    const tool = findAgentTool(GENERATE_IMAGE_ASYNC_TOOL)!;
+
+    const plan = tool.parseCall({
+      prompt: "Realistic photo of Melissa at a sunlit window, soft light, portrait framing",
+      caption: "coming right up",
+      orientation: "4:5",
+      outputCount: 1,
+    });
+    expect(plan).toEqual({
+      tool: GENERATE_IMAGE_ASYNC_TOOL,
+      args: {
+        prompt: "Realistic photo of Melissa at a sunlit window, soft light, portrait framing",
+        caption: "coming right up",
+        orientation: "4:5",
+        outputCount: 1,
+      },
+    });
+
+    expect(tool.parseCall({ prompt: "too short" })).toBeNull();
+    expect(tool.parseCall("not an object")).toBeNull();
+    expect(tool.parseCall(undefined)).toBeNull();
+  });
 });

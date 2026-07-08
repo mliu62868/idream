@@ -143,6 +143,43 @@ describe("chat providers", () => {
     });
   });
 
+  it("keeps the first id/name for a tool_calls index when a later fragment repeats them differently", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        [
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"generate_image_async","arguments":""}}]}}]}',
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_2","function":{"name":"other_tool","arguments":"{}"}}]}}]}',
+          "data: [DONE]",
+          "",
+        ].join("\n\n"),
+        { headers: { "content-type": "text/event-stream" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    process.env = {
+      ...oldEnv,
+      CHAT_MODEL_PROVIDER: "openai",
+      CHAT_MODEL_BASE_URL: "https://openai.internal.example.com/v1",
+      MODERATION_PROVIDER: "mock",
+    };
+
+    const { createProviders } = await import("./providers.js");
+    const providers = createProviders();
+    const chunks = [];
+    for await (const chunk of providers.chat.stream({
+      messages: [{ role: "user", content: "hello" }],
+      tools: [{ name: "generate_image_async", description: "generate", parameters: {} }],
+    })) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks.at(-1)).toEqual({
+      delta: "",
+      done: true,
+      toolCalls: [{ id: "call_1", name: "generate_image_async", arguments: "{}" }],
+    });
+  });
+
   it("returns an empty toolCalls array for a plain content-only stream", async () => {
     const fetchMock = vi.fn(async () =>
       new Response('data: {"choices":[{"delta":{"content":"hi there"}}]}\n\ndata: [DONE]\n\n', {

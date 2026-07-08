@@ -295,6 +295,9 @@ class SafetyGatewayChatModerationProvider implements ModerationProvider {
   }
 }
 
+// INVARIANT: keep-first on id/name — some providers repeat the id/name on every
+// fragment at an index rather than only the first, and a differing repeat must
+// not clobber the value the earlier fragment already established.
 function accumulateToolCalls(
   byIndex: Map<number, { id: string; name: string; arguments: string }>,
   fragments: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }> | undefined,
@@ -303,8 +306,8 @@ function accumulateToolCalls(
   for (const fragment of fragments) {
     const existing = byIndex.get(fragment.index) ?? { id: "", name: "", arguments: "" };
     byIndex.set(fragment.index, {
-      id: fragment.id ?? existing.id,
-      name: fragment.function?.name ?? existing.name,
+      id: existing.id || fragment.id || "",
+      name: existing.name || fragment.function?.name || "",
       arguments: existing.arguments + (fragment.function?.arguments ?? ""),
     });
   }
@@ -389,6 +392,13 @@ function assertProductionChatProvidersReady() {
   }
 }
 
+// "openai" and "pipeline" both target an OpenAI-compatible endpoint (oMLX / LM
+// Studio / OpenAI, or the production gateway alias) and differ only in whether
+// function-calling ("openai") or not ("pipeline", not yet exposed) is supported.
+function createOpenAICompatibleChatModel(supportsTools: boolean): OpenAIChatModel {
+  return new OpenAIChatModel(env.CHAT_MODEL_BASE_URL, env.CHAT_MODEL_NAME, env.CHAT_MODEL_API_KEY, supportsTools);
+}
+
 export function createProviders(): ChatProviders {
   assertProductionChatProvidersReady();
   const moderation = createModerationProvider();
@@ -396,28 +406,10 @@ export function createProviders(): ChatProviders {
   switch (env.CHAT_MODEL_PROVIDER) {
     case "mock":
       return { chat: new MockChatModel(), moderation };
-    // "openai" = any OpenAI-compatible endpoint (oMLX / LM Studio / OpenAI).
-    // "pipeline" is the production gateway alias; it exposes the same endpoint.
     case "openai":
-      return {
-        chat: new OpenAIChatModel(
-          env.CHAT_MODEL_BASE_URL,
-          env.CHAT_MODEL_NAME,
-          env.CHAT_MODEL_API_KEY,
-          true,
-        ),
-        moderation,
-      };
+      return { chat: createOpenAICompatibleChatModel(true), moderation };
     case "pipeline":
-      return {
-        chat: new OpenAIChatModel(
-          env.CHAT_MODEL_BASE_URL,
-          env.CHAT_MODEL_NAME,
-          env.CHAT_MODEL_API_KEY,
-          false,
-        ),
-        moderation,
-      };
+      return { chat: createOpenAICompatibleChatModel(false), moderation };
     default:
       throw new Error(
         `CHAT_MODEL_PROVIDER=${env.CHAT_MODEL_PROVIDER} unsupported (use "mock", "openai", or "pipeline").`,
