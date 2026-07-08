@@ -12,6 +12,7 @@ import {
   jsonBody,
   toInputJson,
   writeAudit,
+  type AdminActor,
 } from "./service";
 import {
   markProductionItemFailed,
@@ -124,7 +125,7 @@ const placementPatchSchema = z.object({
   confirmation: z.string().trim().min(1).max(160),
 });
 
-const productionBatchInclude = {
+export const productionBatchInclude = {
   createdBy: { select: { id: true, email: true, displayName: true, name: true } },
   items: {
     include: {
@@ -181,9 +182,16 @@ export async function listProductionBatches(request: Request) {
   return ok({ items: batches.map(productionBatchDTO) });
 }
 
-export async function createProductionBatch(request: Request) {
-  const actor = await actorWithPermission(request, "content.production.write");
-  const body = productionBatchCreateSchema.parse(await jsonBody(request));
+export type ProductionBatchCreateInput = z.infer<typeof productionBatchCreateSchema>;
+
+// NOTE: takes `request` + full `AdminActor` (not just `actor: {id}`) because writeAudit()
+// below needs actor.role plus request headers (x-request-id/x-forwarded-for/user-agent)
+// for the audit row — callers extracted after actorWithPermission() already have both.
+export async function createProductionBatchCore(
+  request: Request,
+  actor: AdminActor,
+  body: ProductionBatchCreateInput,
+): Promise<Response> {
   const profile = await resolveProductionProfile(body.profileId);
   const recipe = await resolveProductionRecipe(body.recipeId, body.targetType);
   const target = await resolveProductionTarget(body.targetType, body.targetId);
@@ -344,6 +352,12 @@ export async function createProductionBatch(request: Request) {
     },
   });
   return ok({ batch: productionBatchDTO(batch) }, { status: 202 });
+}
+
+export async function createProductionBatch(request: Request) {
+  const actor = await actorWithPermission(request, "content.production.write");
+  const body = productionBatchCreateSchema.parse(await jsonBody(request));
+  return createProductionBatchCore(request, actor, body);
 }
 
 export async function getProductionBatch(request: Request, id: string) {
@@ -1280,7 +1294,7 @@ async function appendProductionJobEvent(
   });
 }
 
-function productionBatchDTO(batch: ProductionBatchWithItems) {
+export function productionBatchDTO(batch: ProductionBatchWithItems) {
   return {
     id: batch.id,
     title: batch.title,

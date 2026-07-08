@@ -45,6 +45,10 @@ import {
   createCharacterVisualProfile,
 } from "./characters/visual-profiles";
 import {
+  createCharacterPregenBatch,
+  listCharacterPregenBatches,
+} from "./characters/pregen";
+import {
   approveProductionItem,
   bulkPatchContentAssets,
   createPlacement,
@@ -605,6 +609,12 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
     }
     if (action && child === "visual-profiles" && method === "POST") {
       return createCharacterVisualProfile(request, action);
+    }
+    if (action && child === "pregen" && method === "GET") {
+      return listCharacterPregenBatches(request, action);
+    }
+    if (action && child === "pregen" && method === "POST") {
+      return createCharacterPregenBatch(request, action);
     }
   }
   if (resource === "content" && id === "featured") {

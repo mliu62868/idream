@@ -1625,6 +1625,106 @@ describe("generation config control plane", () => {
     );
   });
 
+  it("creates per-character pregen packs and lists them", async () => {
+    const admin = await setupActor("admin", "character-pregen");
+    const support = await setupActor("support", "character-pregen");
+    const character = await createCharacter({
+      id: `${P}pregen-character`,
+      creatorId: admin,
+      name: "Pregen Character",
+      visibility: "public",
+      status: "approved",
+    });
+    await prisma.generationModelProfile.create({
+      data: {
+        id: `${P}pregen-profile-v1`,
+        profileKey: `${P}pregen-profile`,
+        label: "Pregen profile",
+        mode: "image",
+        runner: "pipeline",
+        pipelineModel: "mock-image",
+        allowedOrientations: ["4:5"],
+        defaultWidth: 768,
+        defaultHeight: 1024,
+        version: 1,
+        status: "active",
+        dryRunSummary: { sampleCount: 1 },
+        publishedAt: new Date(),
+      },
+    });
+    await prisma.generationPromptTemplate.create({
+      data: {
+        id: `${P}pregen-recipe-v1`,
+        templateKey: `${P}pregen-recipe`,
+        label: "Pregen recipe",
+        mode: "image",
+        useCase: "character",
+        body: "Pregen recipe body.",
+        negativeBase: "low quality",
+        presetOrder: [],
+        safetyHints: {},
+        sampleMatrix: [],
+        version: 1,
+        status: "active",
+        dryRunSummary: { sampleCount: 1 },
+        publishedAt: new Date(),
+      },
+    });
+
+    const forbidden = await api("POST", `admin/content/characters/${character.id}/pregen`, {
+      userId: support,
+      role: "support",
+      body: { pack: "cover", profileId: `${P}pregen-profile` },
+    });
+    expectError(forbidden, 403);
+
+    const badPack = await api("POST", `admin/content/characters/${character.id}/pregen`, {
+      userId: admin,
+      role: "admin",
+      body: { pack: "poster", profileId: `${P}pregen-profile` },
+    });
+    expectError(badPack, 400);
+
+    const cover = await api("POST", `admin/content/characters/${character.id}/pregen`, {
+      userId: admin,
+      role: "admin",
+      body: { pack: "cover", profileId: `${P}pregen-profile`, reason: "pregen cover pack" },
+    });
+    expectOk(cover, 202);
+    expect(cover.data.batch).toMatchObject({
+      purpose: "character_cover",
+      targetType: "character",
+      targetId: character.id,
+      totalItems: 4,
+      status: "queued",
+    });
+    expect(cover.data.batch.estimatedCostDreamcoins).toBeGreaterThan(0);
+
+    const chat = await api("POST", `admin/content/characters/${character.id}/pregen`, {
+      userId: admin,
+      role: "admin",
+      body: { pack: "chat", profileId: `${P}pregen-profile`, count: 2, reason: "pregen chat pack" },
+    });
+    expectOk(chat, 202);
+    expect(chat.data.batch).toMatchObject({ purpose: "character_chat", totalItems: 2 });
+
+    const listed = await api("GET", `admin/content/characters/${character.id}/pregen`, {
+      userId: admin,
+      role: "admin",
+    });
+    expectOk(listed);
+    const batchIds = listed.data.items.map((batch: { id: string }) => batch.id);
+    expect(batchIds).toContain(cover.data.batch.id);
+    expect(batchIds).toContain(chat.data.batch.id);
+
+    const missing = await api("POST", `admin/content/characters/${P}nope/pregen`, {
+      userId: admin,
+      role: "admin",
+      body: { pack: "cover", profileId: `${P}pregen-profile` },
+    });
+    expectError(missing, 400);
+  });
+
   it("keeps model import diagnostics disabled by default", async () => {
     const admin = await setupActor("admin", "model-import-disabled");
     const previousDiagnostics = process.env.ADMIN_MODEL_DIAGNOSTICS_ENABLED;
