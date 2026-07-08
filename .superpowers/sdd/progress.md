@@ -96,3 +96,6 @@ P5 Task 5: complete (commit 817ffb85, review clean ✅; 36/36 + regression 40/40
 P5 Task 6+7: complete (commits ca9e0d8e + 3f7f6aa0 + test fix 510d1b87, review clean after fix ✅; 130/130 + 63/63 x3 stable)
 P5 Task 8: complete (acceptance e2e added to web.test.ts as single continuous it; chat 133/133, main admin-console+event-consumer+image-generation-service+generation-pricing+launch-readiness 156/156, bun run check all green; real-model FC probe passed against oMLX Qwen3.6-35B-A3B for both tools + neutral no-call — probe initially 502'd due to local HTTP_PROXY/misconfigured NO_PROXY intercepting requests containing tool names, bypassed proxy explicitly and reran clean; ComfyUI img2img bonus skipped — avoided co-loading with FC probe model per OOM history; spec §7 + CURRENT_FUNCTIONAL_COVERAGE.md updated)
 P5 final review: pending.
+P5 Task 8: complete (commit 6aa68efe, review clean ✅; chat 133/133 + main 156/156 + check green; real-model 3-scenario FC probe all correct — edit/generate/neutral)
+P5 final review: Ready to merge (opus; edit-loop seam verified end-to-end incl. storageKey hydration unreachable-throw; all Minors defer). Merging to master.
+P5 COMPLETE.
