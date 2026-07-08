@@ -52,14 +52,18 @@ export async function generationMetrics(request: Request): Promise<Response> {
       _count: { _all: true },
     }),
     prisma.$queryRaw<Array<{ profileId: string; avgMs: number | null }>>`
-      SELECT "profileId", AVG(EXTRACT(EPOCH FROM ("completedAt" - "createdAt")) * 1000)::float8 AS "avgMs"
+      SELECT "profileId", GREATEST(0, AVG(EXTRACT(EPOCH FROM ("completedAt" - "createdAt")) * 1000))::float8 AS "avgMs"
       FROM "generation_jobs"
       WHERE "createdAt" >= ${since} AND "completedAt" IS NOT NULL AND "profileId" IS NOT NULL
       GROUP BY "profileId"
     `,
   ]);
-  const byProfile = byProfileRaw.filter((row) => row.profileId !== null);
-  const byRecipe = byRecipeRaw.filter((row) => row.promptTemplateId !== null);
+  const byProfile = byProfileRaw.filter(
+    (row): row is typeof row & { profileId: string } => row.profileId !== null,
+  );
+  const byRecipe = byRecipeRaw.filter(
+    (row): row is typeof row & { promptTemplateId: string } => row.promptTemplateId !== null,
+  );
 
   const avgByProfile = new Map(durations.map((row) => [row.profileId, row.avgMs]));
 
@@ -68,7 +72,7 @@ export async function generationMetrics(request: Request): Promise<Response> {
     StatusBuckets & { profileId: string; profileVersion: number | null; costDreamcoins: number }
   >();
   for (const row of byProfile) {
-    const profileId = row.profileId as string;
+    const profileId = row.profileId;
     const key = `${profileId}@${row.profileVersion ?? 0}`;
     const entry =
       profileMap.get(key) ??
@@ -96,7 +100,7 @@ export async function generationMetrics(request: Request): Promise<Response> {
 
   const recipeMap = new Map<string, StatusBuckets & { recipeId: string; costDreamcoins: number }>();
   for (const row of byRecipe) {
-    const recipeId = row.promptTemplateId as string;
+    const recipeId = row.promptTemplateId;
     const entry =
       recipeMap.get(recipeId) ?? { ...emptyBuckets(), recipeId, costDreamcoins: 0 };
     bucketFor(row.status, entry, row._count._all);

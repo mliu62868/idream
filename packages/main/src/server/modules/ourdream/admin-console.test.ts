@@ -3849,8 +3849,14 @@ describe("admin generation metrics rollup (P3)", () => {
         sourceId: `${P}metrics-src-1`,
         status: "completed",
         costDreamcoins: 7,
-        completedAt: new Date(),
       },
+    });
+    // completedAt is set via a follow-up update (not at create time) so it is
+    // guaranteed to be >= the DB-assigned createdAt (avoids a negative duration
+    // from clock skew between the JS `new Date()` and Postgres's `now()`).
+    await prisma.generationJob.update({
+      where: { id: `${P}metrics-job-1` },
+      data: { completedAt: new Date() },
     });
     await prisma.generationJob.create({
       data: {
