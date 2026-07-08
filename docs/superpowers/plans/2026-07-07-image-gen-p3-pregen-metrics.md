@@ -22,7 +22,9 @@
 | 锚点 | 位置 |
 |------|------|
 | Batch 创建（成本 0 stub） | `packages/main/src/server/modules/admin/content-ops.ts:183-320`（`createProductionBatch`；`estimatedCostDreamcoins: 0` 在 :242，job `costDreamcoins: 0` 在 :274） |
-| item 重生成（同样 0 stub） | `content-ops.ts:460` 附近 `regenerateProductionItem` |
+| item 重生成（同样 0 stub） | `content-ops.ts:460` `regenerateProductionItem`（其 job `costDreamcoins: 0` stub 在 :536） |
+| Metric 按需聚合的现成样板 | `packages/main/src/server/modules/admin/generation-health.ts:27` `profileHealth` —— 已在用 on-read GenerationJob 聚合（成败率/latency p50/p95/日窗口），证明零迁移可行；Task 3 风格向它看齐 |
+| job→MediaAsset finalizer | `packages/main/src/server/ai/local-pipeline.ts` `finalizeGenerationCompleted`（:601-611 把首个 asset 链到 production item→`generated`）；batch 计数统一出自 `content-production-state.ts:8` `refreshContentProductionBatchStats` |
 | 用户侧计价（要抽取的实现） | `packages/main/src/server/modules/ourdream/service.ts:5820` `generationCost(mode, outputCount, multiplier)` |
 | profile/recipe 解析 | `content-ops.ts:889` `resolveProductionProfile`（profileId 必填）、`:904` `resolveProductionRecipe`（recipeId 可选，按 useCase 兜底） |
 | 投放发布→角色头像/主图直写 | `content-ops.ts:1200` `syncPlacementTarget`（character_avatar/hero → `Character.imageAssetId`） |
@@ -772,7 +774,7 @@ Read `packages/main/src/components/admin/VisualPassportPanel.tsx` 全文——**
 1. **Pack 触发行**：三个按钮「生成封面包(×4) / 生成主图包(×4) / 生成 Chat 包(×8)」→ `POST admin/content/characters/{characterId}/pregen`，body `{ pack, reason: "pregen from character panel" }`；成功后刷新列表。请求期间按钮 disabled + spinner。
 2. **Batch 列表**：`GET .../pregen` → 渲染每个 batch：title、purpose、status、`completedItems/totalItems`、`estimatedCostDreamcoins`；展开显示 items（状态 chip：queued/generated/approved/rejected/published/failed）。
 3. **Item 审批**：对 `generated` 状态的 item 提供「通过 / 驳回」按钮 → `POST admin/content/production/items/{item.id}/approve|reject`，body `{ reason: "pregen review", confirmation: "confirm" }`（confirmation 具体要求读 content-ops.ts `approveProductionItem` 实现，若要求特定 token 以代码为准）。
-4. **投放**：对 `approved` 且有 `mediaAssetId` 的 item，按 batch purpose 给出投放按钮（character_cover→slot `character_avatar`，character_hero→slot `character_hero`；chat 包不投放）→ `POST admin/content/placements` body `{ mediaAssetId, slot, targetType: "character", targetId: characterId, reason: "pregen publish" }`，成功后 `PATCH admin/content/placements/{id}` body `{ status: "published", reason: "pregen publish", confirmation: … }`（字段要求以 content-ops.ts `createPlacement`/`patchPlacement` zod schema 为准，先读代码再写调用）。
+4. **投放**：对 `approved` 且有 `mediaAssetId` 的 item，按 batch purpose 给出投放按钮（character_cover→slot `character_avatar`，character_hero→slot `character_hero`；chat 包不投放）→ `POST admin/content/placements` body `{ mediaAssetId, slot, targetType: "character", targetId: characterId, reason: "pregen publish" }`（create 只要 `reason`≥3，无 confirmation，见 content-ops.ts:107 `placementCreateSchema`），成功后 `PATCH admin/content/placements/{id}` body `{ status: "published", reason: "pregen publish", confirmation: placementId }`（patch 要求 `confirmation === placement id`，见 :118 `placementPatchSchema`）。注意 createPlacement 有 `assertApprovedAsset`（:1165）——只有 approved/published 素材可投放，所以必须先 approve 再投放。
 5. **已投放状态行**：用 GET 返回的 `placements` 显示当前 avatar/hero 投放状态。
 
 类型全部手写 interface（响应 DTO 字段与 Task 2 返回一致），no `any`。
@@ -813,8 +815,16 @@ git commit -m "feat(admin): character pregen panel (pack buttons, batch review, 
 
 - [ ] **Step 1: 找齐注册点**
 
-Run: `grep -rn "BackendsView" /Users/kk/code/idream/packages/main/src --include="*.tsx" --include="*.ts"`
-把每个出现处（导航项、路由 switch、图标、权限映射等）记为本 task 的镜像清单。
+`packages/main/src/components/admin/AdminConsoleClient.tsx` 内共 **5 处**（以 ProductionStudioView/BackendsView 为镜像样板，行号会漂移、以 grep 为准）：
+1. 顶部 import 块（:60 附近）；
+2. NAV 数组条目 `{id,label,href,icon,group}`（:631 附近 content/production 条目同格式）；
+3. sectionToContent 映射 `{kind:"selfFetch", view:"…"}`（:1273-1281）；
+4. render switch `section.view === "…"`（:2250 附近）；
+5. section-id 校验白名单（:7229 附近 `if (value === "…") return value`）——**漏掉这处路由不通**。
+
+数据请求用现成 helper：`components/admin/api.ts:15` `apiGet<T>(path)`、`:24` `apiWrite<T>(path, method, body)`。
+
+Run: `grep -rn "BackendsView" /Users/kk/code/idream/packages/main/src --include="*.tsx"` 交叉核对清单无遗漏。
 
 - [ ] **Step 2: 实现视图**
 
@@ -890,6 +900,10 @@ curl -fsS -H "x-idream-user-id: <admin-id>" -H "x-idream-role: admin" \
   "http://localhost:3000/api/admin/content/characters/<char-id>/pregen"
 ```
 Expected: 两端点 200 + envelope 正确；无权限头 → 401/403。（admin API 前缀路径以现有 dispatchAdmin 挂载的真实路由为准，P2 走查用过的 base path 照搬。）
+
+- [ ] **Step 3b: workflowKey 传导核对**
+
+`content-ops.ts` `productionControls`（:986 附近）未把 profile 的 `workflowKey` 放进 job controls——核对 gen worker 侧是否按 `profileId→GenerationModelProfile.workflowKey` 自行解析（P2 的路由方式）。若 worker 只读 controls，则 pregen batch 不会走 P2 workflow 路由，需在 `productionControls` 里补传 `workflowKey`（一行）并加断言到验收测试；若 worker 按 profile 解析则无需改动，在报告里记录结论即可。
 
 - [ ] **Step 4: 文档更新**
 
