@@ -2,6 +2,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import type { Prisma } from "@prisma/client";
+import type { AiFinalizePayload } from "@/server/ai/schemas";
+import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
 import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
 import {
@@ -34,6 +37,10 @@ async function setupActor(
   const id = `${P}${role}-${suffix}`;
   await createUser({ id, role });
   return id;
+}
+
+function asInputJson(value: AiFinalizePayload): Prisma.InputJsonValue {
+  return value as unknown as Prisma.InputJsonValue;
 }
 
 async function writeSafetensorsMetadata(filePath: string, metadata: Record<string, string>) {
@@ -1847,6 +1854,156 @@ describe("generation config control plane", () => {
     await expect(prisma.contentProductionItem.findUnique({ where: { id: item.id } })).resolves.toMatchObject({
       status: "published",
     });
+  });
+
+  it("does not credit the operator's ledger when a production job fails or is blocked", async () => {
+    const admin = await setupActor("admin", "production-refund-guard");
+    const character = await createCharacter({
+      id: `${P}production-refund-character`,
+      creatorId: admin,
+      name: "Production Refund Character",
+      visibility: "public",
+      status: "approved",
+    });
+    await prisma.generationModelProfile.create({
+      data: {
+        id: `${P}production-refund-profile-v1`,
+        profileKey: `${P}production-refund-profile`,
+        label: "Production refund profile",
+        mode: "image",
+        runner: "pipeline",
+        pipelineModel: "mock-image",
+        allowedOrientations: ["4:5"],
+        defaultWidth: 768,
+        defaultHeight: 1024,
+        version: 1,
+        status: "active",
+        dryRunSummary: { sampleCount: 1 },
+        publishedAt: new Date(),
+      },
+    });
+    await prisma.generationPromptTemplate.create({
+      data: {
+        id: `${P}production-refund-recipe-v1`,
+        templateKey: `${P}production-refund-recipe`,
+        label: "Production refund recipe",
+        mode: "image",
+        useCase: "character",
+        body: "Production refund recipe body.",
+        negativeBase: "low quality",
+        presetOrder: [],
+        safetyHints: {},
+        sampleMatrix: [],
+        version: 1,
+        status: "active",
+        dryRunSummary: { sampleCount: 1 },
+        publishedAt: new Date(),
+      },
+    });
+    await prisma.pricingRule.create({
+      data: {
+        id: `${P}production-refund-pricing-v1`,
+        ruleKey: `${P}production_refund_pricing`,
+        label: "Production refund pricing",
+        mode: "image",
+        baseCost: 9,
+        multiplier: 1,
+        status: "active",
+        version: 1,
+        effectiveFrom: new Date(),
+        publishedAt: new Date(),
+      },
+    });
+
+    const created = await api("POST", "admin/content/production/batches", {
+      userId: admin,
+      role: "admin",
+      body: {
+        title: `${P}production-refund-batch`,
+        purpose: "character_chat",
+        targetType: "character",
+        targetId: character.id,
+        profileId: `${P}production-refund-profile`,
+        recipeId: `${P}production-refund-recipe`,
+        orientation: "4:5",
+        count: 2,
+        brief: "Force one failure, one moderation block",
+        reason: "verify ops jobs never credit the ledger on refund",
+      },
+    });
+    expectOk(created, 202);
+    const itemIds = created.data.batch.items.map((item: { id: string }) => item.id);
+    expect(itemIds).toHaveLength(2);
+
+    const jobs = await prisma.generationJob.findMany({
+      where: { sourceType: "content_production_item", sourceId: { in: itemIds } },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(jobs).toHaveLength(2);
+    // Precondition for the regression: ops jobs now carry a real cost even though
+    // batch creation never debits a wallet for them.
+    expect(jobs[0].costDreamcoins).toBeGreaterThan(0);
+    const [failJob, blockJob] = jobs;
+
+    // Never debited on creation: the operator's balance before any failure/finalize.
+    const balanceBefore = await dreamcoinBalance(admin);
+
+    await jobQueue.removeByDedupePrefix(`generation:${failJob.id}`, ["ai.image.generate"]);
+    await jobQueue.enqueue({
+      queue: "app.ai.finalize",
+      payload: asInputJson({
+        version: 1,
+        kind: "generation.failed",
+        requestId: `${P}production-refund-fail`,
+        generationJobId: failJob.id,
+        mode: "image",
+        error: { code: "backend_oom", message: "backend out of memory", retryable: false },
+      }),
+      dedupeKey: `generation-finalize:${failJob.id}:failed`,
+    });
+
+    await jobQueue.removeByDedupePrefix(`generation:${blockJob.id}`, ["ai.image.generate"]);
+    await jobQueue.enqueue({
+      queue: "app.ai.finalize",
+      payload: asInputJson({
+        version: 1,
+        kind: "generation.blocked",
+        requestId: `${P}production-refund-block`,
+        generationJobId: blockJob.id,
+        mode: "image",
+        layer: "input",
+        policyCode: "moderation_blocked",
+        message: "prompt failed moderation",
+      }),
+      dedupeKey: `generation-finalize:${blockJob.id}:blocked`,
+    });
+
+    await drainLocalAiPipeline({
+      queues: ["app.ai.finalize"],
+      limit: 4,
+      workerId: `${P}production-refund-finalizer`,
+    });
+
+    const [finalFailJob, finalBlockJob] = await Promise.all([
+      prisma.generationJob.findUniqueOrThrow({ where: { id: failJob.id } }),
+      prisma.generationJob.findUniqueOrThrow({ where: { id: blockJob.id } }),
+    ]);
+    expect(finalFailJob.status).toBe("failed");
+    expect(finalBlockJob.status).toBe("blocked");
+
+    // The regression: a non-zero costDreamcoins on a never-debited ops job must not
+    // mint a "refund" credit into the operator's ledger.
+    expect(await dreamcoinBalance(admin)).toBe(balanceBefore);
+    expect(
+      await prisma.dreamcoinLedger.count({
+        where: { reason: "refund", sourceId: { in: [failJob.id, blockJob.id] } },
+      }),
+    ).toBe(0);
+
+    const failedItem = await prisma.contentProductionItem.findFirstOrThrow({
+      where: { id: { in: itemIds }, jobId: failJob.id },
+    });
+    expect(failedItem.status).toBe("failed");
   });
 
   it("keeps model import diagnostics disabled by default", async () => {
