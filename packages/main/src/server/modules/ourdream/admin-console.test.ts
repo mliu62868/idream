@@ -1428,6 +1428,20 @@ describe("generation config control plane", () => {
         publishedAt: new Date(),
       },
     });
+    await prisma.pricingRule.create({
+      data: {
+        id: `${P}image-pricing-v1`,
+        ruleKey: `${P}image_pricing`,
+        label: "Image pricing",
+        mode: "image",
+        baseCost: 7,
+        multiplier: 1,
+        status: "active",
+        version: 1,
+        effectiveFrom: new Date(),
+        publishedAt: new Date(),
+      },
+    });
 
     const forbidden = await api("POST", "admin/content/production/batches", {
       userId: support,
@@ -1463,7 +1477,6 @@ describe("generation config control plane", () => {
     expect(created.data.batch).toMatchObject({
       title: `${P}production-batch`,
       totalItems: 2,
-      estimatedCostDreamcoins: 0,
       status: "queued",
     });
     const itemIds = created.data.batch.items.map((item: { id: string }) => item.id);
@@ -1474,9 +1487,15 @@ describe("generation config control plane", () => {
       orderBy: { createdAt: "asc" },
     });
     expect(jobs).toHaveLength(2);
+    // 成本不变式：每个 job 成本>0 且 batch 估价 = 各 item job 成本之和
+    // （不断言精确值：并行测试可能创建更新的 active image PricingRule）
+    expect(jobs[0].costDreamcoins).toBeGreaterThan(0);
+    expect(jobs[1].costDreamcoins).toBe(jobs[0].costDreamcoins);
+    expect(created.data.batch.estimatedCostDreamcoins).toBe(
+      jobs[0].costDreamcoins + jobs[1].costDreamcoins,
+    );
     expect(jobs[0]).toMatchObject({
       userId: admin,
-      costDreamcoins: 0,
       profileId: `${P}production-profile`,
       promptTemplateId: `${P}production-recipe`,
     });

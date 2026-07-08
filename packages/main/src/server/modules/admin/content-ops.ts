@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { dimensionsForImageOrientation } from "@/server/modules/ourdream/generation-dimensions";
+import { generationCostDreamcoins } from "@/server/lib/generation-pricing";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
@@ -222,6 +223,11 @@ export async function createProductionBatch(request: Request) {
     profile,
     presets,
   });
+  const perItemCostDreamcoins = await generationCostDreamcoins(
+    "image",
+    1,
+    profile.costMultiplier ?? 1,
+  );
 
   const batch = await prisma.$transaction(async (tx) => {
     const createdBatch = await tx.contentProductionBatch.create({
@@ -239,7 +245,7 @@ export async function createProductionBatch(request: Request) {
         brief: body.brief ?? null,
         count: body.count,
         totalItems: body.count,
-        estimatedCostDreamcoins: 0,
+        estimatedCostDreamcoins: perItemCostDreamcoins * body.count,
         status: "queued",
         createdById: actor.id,
       },
@@ -271,7 +277,7 @@ export async function createProductionBatch(request: Request) {
           orientation,
           outputCount: 1,
           status: "queued",
-          costDreamcoins: 0,
+          costDreamcoins: perItemCostDreamcoins,
           provider: profile.runner,
           sourceType: "content_production_item",
           sourceId: item.id,
@@ -498,11 +504,20 @@ export async function regenerateProductionItem(request: Request, id: string) {
     presetFragment: presetPromptFragment(presetIds, presets),
     brief: body.brief ?? sourceItem.batch.brief ?? undefined,
   });
+  const perItemCostDreamcoins = await generationCostDreamcoins(
+    "image",
+    1,
+    profile.costMultiplier ?? 1,
+  );
 
   const batch = await prisma.$transaction(async (tx) => {
     await tx.contentProductionItem.update({
       where: { id },
       data: { status: "regenerate_requested", reviewNote: body.reason },
+    });
+    await tx.contentProductionBatch.update({
+      where: { id: sourceItem.batchId },
+      data: { estimatedCostDreamcoins: { increment: perItemCostDreamcoins } },
     });
     const maxIndex = await tx.contentProductionItem.aggregate({
       where: { batchId: sourceItem.batchId },
@@ -533,7 +548,7 @@ export async function regenerateProductionItem(request: Request, id: string) {
         orientation,
         outputCount: 1,
         status: "queued",
-        costDreamcoins: 0,
+        costDreamcoins: perItemCostDreamcoins,
         provider: profile.runner,
         sourceType: "content_production_item",
         sourceId: item.id,
