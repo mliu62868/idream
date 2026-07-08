@@ -245,6 +245,7 @@ const zh: Record<string, string> = {
   "No cohorts in window.": "窗口内暂无 cohort。",
   "No dead-letter jobs": "暂无死信任务",
   "No feature flags.": "暂无功能开关。",
+  "No generation records in window.": "窗口内无生成记录",
   "No LoRA": "无 LoRA",
   "No LoRA models added": "尚未添加 LoRA 模型",
   "No LoRA models added. This model will run without LoRA.": "尚未添加 LoRA。这个模型会以无 LoRA 方式运行。",

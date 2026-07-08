@@ -123,7 +123,7 @@ function SectionShell({ title, isEmpty, t, children }: { title: string; isEmpty:
     <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
       <h3 className="mb-3 text-sm font-semibold">{t(title)}</h3>
       {isEmpty ? (
-        <p className="text-xs text-[rgb(170,170,170)]">{t("窗口内无生成记录")}</p>
+        <p className="text-xs text-[rgb(170,170,170)]">{t("No generation records in window.")}</p>
       ) : (
         children
       )}
