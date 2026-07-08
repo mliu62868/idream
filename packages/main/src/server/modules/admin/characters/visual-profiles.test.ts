@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ZodError } from "zod";
 import { prisma } from "@/server/lib/db";
 import { AppError } from "@/server/lib/errors";
+import { traitsHashOf } from "@/server/modules/ourdream/identity-assembler";
 import { createCharacter, createMedia, createUser, purgeTestData } from "@/server/test/helpers";
 import { createCharacterVisualProfile, listCharacterVisualProfiles } from "./visual-profiles";
 
@@ -175,10 +176,14 @@ describe("Visual Passport (character visual profiles)", () => {
         "consistencyScore",
         "createdFrom",
         "createdAt",
+        "identitySource",
+        "identityStale",
       ].sort(),
     );
     // adapterRefs 有意不在响应里 —— 面板不展示生成模型接线细节（LoRA/adapter）。
     expect(items[0]).not.toHaveProperty("adapterRefs");
+    // seedVisualProfile 写的是恒 {} 的 adapterRefs（无 identity 标记）——视为 manual、恒不 stale。
+    expect(items[0]).toMatchObject({ identitySource: "manual", identityStale: false });
   });
 
   it("404s listing versions for an unknown character", async () => {
@@ -351,5 +356,111 @@ describe("Visual Passport (character visual profiles)", () => {
     );
     expect(result.status).toBe(400);
     expect(result.errorCode).toBe("bad_request");
+  });
+
+  it("explicit identityPrompt is stored as-is and marked manual", async () => {
+    const admin = await seedActor("admin", "manual");
+    const characterId = `${P}char-manual`;
+    await createCharacter({ id: characterId, name: "Manual Target" });
+
+    const result = await call(
+      createCharacterVisualProfile(
+        makeRequest("POST", `/${characterId}/visual-profiles`, {
+          userId: admin,
+          role: "admin",
+          body: {
+            identityPrompt: "hand-authored, never derived",
+            reason: "manual mint",
+            confirmation: confirmationFor(characterId),
+          },
+        }),
+        characterId,
+      ),
+    );
+    expect(result.ok).toBe(true);
+    const item = result.data?.item as { identityPrompt: string; identitySource: string; identityStale: boolean };
+    expect(item.identityPrompt).toBe("hand-authored, never derived");
+    expect(item.identitySource).toBe("manual");
+    expect(item.identityStale).toBe(false);
+  });
+
+  it("omitting identityPrompt derives it from traits and marks the version derived", async () => {
+    const admin = await seedActor("admin", "derived");
+    const characterId = `${P}char-derived`;
+    await createCharacter({ id: characterId, name: "Derived Target" });
+
+    const result = await call(
+      createCharacterVisualProfile(
+        makeRequest("POST", `/${characterId}/visual-profiles`, {
+          userId: admin,
+          role: "admin",
+          body: {
+            faceTraits: { eyes: "green" },
+            hairTraits: { color: "black" },
+            reason: "derive from traits",
+            confirmation: confirmationFor(characterId),
+          },
+        }),
+        characterId,
+      ),
+    );
+    expect(result.ok).toBe(true);
+    const item = result.data?.item as {
+      identityPrompt: string;
+      identitySource: string;
+      identityStale: boolean;
+    };
+    expect(item.identityPrompt).toContain("Appearance face eyes: green");
+    expect(item.identityPrompt).toContain("Appearance hair color: black");
+    expect(item.identitySource).toBe("derived");
+    expect(item.identityStale).toBe(false);
+  });
+
+  it("flags a derived version as stale when its stored traits no longer match its stored hash", async () => {
+    const admin = await seedActor("admin", "stale");
+    const characterId = `${P}char-stale`;
+    await createCharacter({ id: characterId, name: "Stale Target" });
+
+    const staleTraits = {
+      face: { eyes: "blue" },
+      hair: {},
+      body: {},
+      signature: {},
+      style: { style: "realistic", gender: "female", age: "20", name: "Stale Target", description: "" },
+    };
+    await prisma.characterVisualProfile.create({
+      data: {
+        characterId,
+        version: 1,
+        status: "active",
+        style: "realistic",
+        identityPrompt: "stale derived prompt",
+        negativeIdentityPrompt: null,
+        faceTraits: staleTraits.face,
+        hairTraits: staleTraits.hair,
+        bodyTraits: staleTraits.body,
+        signatureTraits: staleTraits.signature,
+        styleTraits: staleTraits.style,
+        anchorAssetIds: [],
+        referenceAssetIds: [],
+        defaultSeed: "seed-stale",
+        // Hash was computed for a DIFFERENT traits snapshot than what's currently stored above —
+        // simulates drift (e.g. an assembler version bump) without needing a real edit path.
+        adapterRefs: {
+          identity: { traitsHash: traitsHashOf({ ...staleTraits, face: { eyes: "green" } }), assemblerVersion: 1, source: "derived" },
+        },
+        createdFrom: "seed",
+      },
+    });
+
+    const result = await call(
+      listCharacterVisualProfiles(
+        makeRequest("GET", `/${characterId}/visual-profiles`, { userId: admin, role: "admin" }),
+        characterId,
+      ),
+    );
+    expect(result.status).toBe(200);
+    const items = result.data?.items as Array<{ identitySource: string; identityStale: boolean }>;
+    expect(items[0]).toMatchObject({ identitySource: "derived", identityStale: true });
   });
 });

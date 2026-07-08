@@ -12,6 +12,12 @@ import type {
 import { imageReferenceInputsForGenerationJob } from "@/server/ai/reference-images";
 import { dispatchAdmin } from "@/server/modules/admin/service";
 import { listActiveTemplates } from "@/server/modules/admin/characters/templates";
+import {
+  IDENTITY_ASSEMBLER_VERSION,
+  assembleIdentityPrompt,
+  toTraitRecord,
+  type IdentityTraits,
+} from "@/server/modules/ourdream/identity-assembler";
 import { isReusablePlatformAssetWhere } from "@/server/modules/ourdream/chat-image-reuse";
 import { proxyChatRequest } from "@/server/bff/chat-proxy";
 import { jobQueue } from "@/server/jobs/queue";
@@ -1539,7 +1545,28 @@ export function characterVisualProfileCreateData(input: {
   referenceAssetIds?: string[];
   createdFrom: string;
 }) {
-  const identityPrompt = buildCharacterIdentityPrompt(input);
+  // traits 是唯一真源：先抽取，再把 identityPrompt/traitsHash 作为版本化派生缓存拼装出来
+  // （见 identity-assembler.ts SPEC）。styleTraits 额外纳入 name/description——原
+  // buildCharacterIdentityPrompt 需要它们拼标题行/details，纳入后 assembler 才是 traits 的纯函数。
+  const faceTraits = extractVisualTraitRecord(input.appearance, "face");
+  const hairTraits = extractVisualTraitRecord(input.appearance, "hair");
+  const bodyTraits = extractVisualTraitRecord(input.appearance, "body");
+  const signatureTraits = extractVisualTraitRecord(input.advancedDetails, "signature");
+  const styleTraits = {
+    style: input.style,
+    gender: input.gender,
+    age: String(input.age),
+    name: input.name,
+    description: input.description,
+  };
+  const traits: IdentityTraits = {
+    face: toTraitRecord(faceTraits),
+    hair: toTraitRecord(hairTraits),
+    body: toTraitRecord(bodyTraits),
+    signature: toTraitRecord(signatureTraits),
+    style: toTraitRecord(styleTraits),
+  };
+  const { identityPrompt, traitsHash } = assembleIdentityPrompt(traits);
   return {
     characterId: input.characterId,
     version: input.version,
@@ -1548,19 +1575,17 @@ export function characterVisualProfileCreateData(input: {
     identityPrompt,
     negativeIdentityPrompt:
       "different face, different hairstyle, different eye color, identity drift, inconsistent age presentation",
-    faceTraits: toInputJson(extractVisualTraitRecord(input.appearance, "face")),
-    hairTraits: toInputJson(extractVisualTraitRecord(input.appearance, "hair")),
-    bodyTraits: toInputJson(extractVisualTraitRecord(input.appearance, "body")),
-    signatureTraits: toInputJson(extractVisualTraitRecord(input.advancedDetails, "signature")),
-    styleTraits: toInputJson({
-      style: input.style,
-      gender: input.gender,
-      age: input.age,
-    }),
+    faceTraits: toInputJson(faceTraits),
+    hairTraits: toInputJson(hairTraits),
+    bodyTraits: toInputJson(bodyTraits),
+    signatureTraits: toInputJson(signatureTraits),
+    styleTraits: toInputJson(styleTraits),
     anchorAssetIds: toInputJson(input.anchorAssetIds),
     referenceAssetIds: toInputJson(input.referenceAssetIds ?? []),
     defaultSeed: `character:${input.characterId}:visual:${input.version}`,
-    adapterRefs: toInputJson({}),
+    adapterRefs: toInputJson({
+      identity: { traitsHash, assemblerVersion: IDENTITY_ASSEMBLER_VERSION, source: "derived" },
+    }),
     createdFrom: input.createdFrom,
   };
 }
@@ -1604,33 +1629,6 @@ export async function createActiveCharacterVisualProfileVersion(
       createdFrom: input.createdFrom,
     }),
   });
-}
-
-function buildCharacterIdentityPrompt(input: {
-  name: string;
-  age: number;
-  description: string;
-  gender: string;
-  style: string;
-  appearance: Prisma.JsonValue;
-  advancedDetails: Prisma.JsonValue;
-}) {
-  const details = [
-    cleanPromptText(input.description, 360),
-    ...promptDetails(input.appearance, "Appearance"),
-    ...promptDetails(input.advancedDetails, "Character detail"),
-  ].filter(Boolean);
-  return clampPrompt(
-    [
-      `${cleanPromptText(input.name, 120)}, adult ${cleanPromptText(input.gender, 80)} companion`,
-      `${input.age} years old`,
-      `${cleanPromptText(input.style, 80)} visual style`,
-      details.length ? details.join("; ") : null,
-    ]
-      .filter(Boolean)
-      .join("; "),
-    900,
-  );
 }
 
 function extractVisualTraitRecord(value: Prisma.JsonValue, preferredKey: string) {
