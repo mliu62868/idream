@@ -615,9 +615,8 @@ describe("launch readiness", () => {
   });
 
   it("fails when a gen-split deploy leaves GEN_FINALIZER_QUEUES unset (dual-drain risk)", () => {
-    const { GEN_FINALIZER_QUEUES: _omit, ...envWithoutFinalizerQueues } = productionEnv;
     const report = assessLaunchReadiness({
-      env: envWithoutFinalizerQueues,
+      env: { ...productionEnv, GEN_FINALIZER_QUEUES: undefined },
       imagePipelineProbe: passingImageProbe(),
       ageVerificationProbe: passingAgeProbe(),
       blobStorageProbe: passingBlobProbe(),
