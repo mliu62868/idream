@@ -8,6 +8,11 @@
 
 当前状态：**本地产品闭环可用，内部 pipeline 6/6 通过；当前目标仍是内部演示/受控 beta，公开上线仍被真实生产依赖阻断**。
 
+## 2026-07-08 P5 Task 6：双排水治理 + legacy inline 路径裁决（最新）
+
+- **inline image path 终审裁决（非缺口）**：main 的 `providers/index.ts` 只构造 `mock|pipeline` 图片适配器，从不构造 `backend`——这是设计内决定，不是待办。inline 路径服务的是本地 DB 排水测试（`runQueuedGenerationJobs`）与 `character.preview`（main-only，无 gen worker 承接）；生产环境的真实生图始终由独立 gen worker（`GEN_IMAGE_PROVIDER=backend`）承担。
+- **双排水风险修复**：pm2 `gen-finalizer` 与专属 `gen-image` worker 会各自消费 BullMQ；在 gen-split 部署（配置了真实生成后端）下，若 finalizer 未收窄队列，会与 gen worker 抢 `ai.image.generate`/`ai.video.generate`，产生不确定的 mock/真实混淆输出。修法：`ecosystem.config.js` 的 `gen-finalizer` env 已收窄为 `GEN_FINALIZER_QUEUES=app.ai.finalize,character.preview`；`launch-readiness.ts` 新增 `gen-finalizer-queue-scope` 探针，在 gen-split 拓扑下若该变量未设或仍包含上述两个队列则 fail。
+
 ## 2026-07-08 P4 聊天 Agent 生图落地（最新）
 
 `docs/superpowers/specs/2026-07-07-image-generation-redesign-design.md` §7 P4 已完成并合入分支 `feat/image-gen-p4-chat-agent`：

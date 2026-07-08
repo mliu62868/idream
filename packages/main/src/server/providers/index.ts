@@ -15,6 +15,13 @@ import { MockVideoModel } from "./video/mock";
 import { MockVoiceModel } from "./voice/mock";
 import { PipelineVoiceModel } from "./voice/pipeline";
 
+// SPEC: main only ever constructs mock|pipeline image adapters — never "backend".
+// INTENT: "backend" (GenBackend/ComfyUI) is deliberately gen-worker-only (see
+// packages/gen/src/providers.ts, GEN_IMAGE_PROVIDER=backend). Main's inline
+// IMAGE_PROVIDER path exists to serve the local DB-backed test drain
+// (`runQueuedGenerationJobs`) and character.preview (main-only, no gen worker
+// owns it) — not production image generation, which is the gen worker's job.
+// This is the verdict, not a gap: do not widen this list to "backend".
 function assertMockProvidersConfigured() {
   const unsupported = [
     unsupportedProvider("CHAT_PROVIDER", env.CHAT_PROVIDER, ["mock", "pipeline"]),
