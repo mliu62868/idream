@@ -20,14 +20,33 @@ export interface GenerateImageAsyncToolCall {
   arguments: GenerateImageAsyncArgs;
 }
 
+export const EDIT_LAST_IMAGE_TOOL = "edit_last_image" as const;
+
+export const editLastImageArgsSchema = z.object({
+  instruction: z.string().trim().min(4).max(1_200),
+  caption: z.string().trim().max(300).optional(),
+});
+
+export type EditLastImageArgs = z.infer<typeof editLastImageArgsSchema>;
+
+export interface EditLastImageToolCall {
+  name: typeof EDIT_LAST_IMAGE_TOOL;
+  arguments: EditLastImageArgs;
+}
+
+// SPEC: the shape generate.ts streams/logs/captions for EITHER tool — both arms
+// are structurally {name, arguments}, so callers that only need those two fields
+// (imageToolCaption, the FC follow-up replay) work unchanged across tools.
+export type ImageAgentToolCall = GenerateImageAsyncToolCall | EditLastImageToolCall;
+
 export interface AgentToolPlan {
-  toolCall: GenerateImageAsyncToolCall | null;
+  toolCall: ImageAgentToolCall | null;
   raw: string;
 }
 
-// Task-2 will add the `edit_last_image` arm; this task establishes the shape with
-// its single existing arm so generate.ts can switch on `plan.tool` exhaustively.
-export type AgentToolCallPlan = { tool: typeof GENERATE_IMAGE_ASYNC_TOOL; args: GenerateImageAsyncArgs };
+export type AgentToolCallPlan =
+  | { tool: typeof GENERATE_IMAGE_ASYNC_TOOL; args: GenerateImageAsyncArgs }
+  | { tool: typeof EDIT_LAST_IMAGE_TOOL; args: EditLastImageArgs };
 
 // SPEC: one entry per agent-callable tool. `intentHints` gates the (non-FC)
 // planner path; each hint declares whether it matches the lowercased text (EN
@@ -82,7 +101,43 @@ const generateImageAsyncTool: AgentTool = {
   }),
 };
 
-export const AGENT_TOOL_REGISTRY: AgentTool[] = [generateImageAsyncTool];
+const editLastImageTool: AgentTool = {
+  name: EDIT_LAST_IMAGE_TOOL,
+  description:
+    "Edit the LAST photo you sent to the user (img2img). Use when the user asks to change or redo that photo — e.g. a different background, outfit, or pose — NOT for a brand new unrelated scene. Keep the person's face and identity consistent with the original photo.",
+  // ZH clause matches raw text (mixed-case-insensitive is a no-op on CJK, but the
+  // trailing latin "p" — ZH slang for "photoshop/edit" — benefits from lowercasing,
+  // which doesn't perturb the CJK characters alongside it).
+  intentHints: [
+    { pattern: /改|换|变成|把.*(?:照片|图)|背景换|重新?p/, matchOn: "lower" },
+    {
+      pattern:
+        /(?=.*\b(?:edit|change|redo|make it|turn it into)\b)(?=.*\b(?:photo|picture|image|background|that)\b)/,
+      matchOn: "lower",
+    },
+  ],
+  argsSchema: editLastImageArgsSchema,
+  parseCall: (rawArgs) => {
+    const result = editLastImageArgsSchema.safeParse(rawArgs);
+    if (!result.success) return null;
+    return { tool: EDIT_LAST_IMAGE_TOOL, args: result.data };
+  },
+  toChatTool: () => ({
+    name: EDIT_LAST_IMAGE_TOOL,
+    description:
+      "Edit the LAST photo you sent to the user (img2img). Use when the user asks to change or redo that photo — e.g. a different background, outfit, or pose — NOT for a brand new unrelated scene. Keep the person's face and identity consistent with the original photo.",
+    parameters: {
+      type: "object",
+      properties: {
+        instruction: { type: "string", description: "Concrete description of the edit to make to the last photo (4-1200 chars)" },
+        caption: { type: "string", description: "Short in-character message to accompany the edited photo" },
+      },
+      required: ["instruction"],
+    },
+  }),
+};
+
+export const AGENT_TOOL_REGISTRY: AgentTool[] = [generateImageAsyncTool, editLastImageTool];
 
 export function findAgentTool(name: string): AgentTool | undefined {
   return AGENT_TOOL_REGISTRY.find((tool) => tool.name === name);
@@ -94,10 +149,10 @@ export function registryChatTools(): ChatToolDefinition[] {
 
 const agentToolPlanSchema = z.object({
   tool: z
-    .object({
-      name: z.literal(GENERATE_IMAGE_ASYNC_TOOL),
-      arguments: generateImageAsyncArgsSchema,
-    })
+    .union([
+      z.object({ name: z.literal(GENERATE_IMAGE_ASYNC_TOOL), arguments: generateImageAsyncArgsSchema }),
+      z.object({ name: z.literal(EDIT_LAST_IMAGE_TOOL), arguments: editLastImageArgsSchema }),
+    ])
     .nullable(),
 });
 
@@ -127,13 +182,14 @@ export function buildToolPlannerMessages(context: BuiltContext): ModelMessage[] 
     context.sessionSummary ? `Session summary: ${context.sessionSummary}` : "",
     context.longTermMemories.length ? `Long-term memories:\n${context.longTermMemories.map((m) => `- ${m}`).join("\n")}` : "",
     [
-      "Available tool:",
+      "Available tools:",
       toolListing,
-      "Call it only when the next assistant turn should create a visual output for the user.",
-      "If calling it, write arguments.prompt as a concrete image-generation prompt grounded in the character, the user's request, and the recent scene.",
-      "The prompt must describe the subject, pose/action, setting, camera/framing, lighting, visual style, and important continuity details.",
+      "Call one only when the next assistant turn should create or edit a visual output for the user.",
+      `Use ${GENERATE_IMAGE_ASYNC_TOOL} for a brand new photo/scene; use ${EDIT_LAST_IMAGE_TOOL} only when the user asks to change or redo the photo you already sent (not a new unrelated scene).`,
+      `For ${GENERATE_IMAGE_ASYNC_TOOL}, write arguments.prompt as a concrete image-generation prompt grounded in the character, the user's request, and the recent scene, describing subject, pose/action, setting, camera/framing, lighting, visual style, and continuity details.`,
+      `For ${EDIT_LAST_IMAGE_TOOL}, write arguments.instruction as a concrete description of the edit to make to the last photo (e.g. "change the background to a snowy mountain").`,
       "arguments.caption is the short in-character assistant text shown in chat while the image is generated.",
-      `Return only JSON: {"tool": null} or {"tool":{"name":"${GENERATE_IMAGE_ASYNC_TOOL}","arguments":{"prompt":"...","caption":"...","orientation":"4:5","outputCount":1}}}.`,
+      `Return only JSON: {"tool": null} or {"tool":{"name":"${GENERATE_IMAGE_ASYNC_TOOL}","arguments":{"prompt":"...","caption":"...","orientation":"4:5","outputCount":1}}} or {"tool":{"name":"${EDIT_LAST_IMAGE_TOOL}","arguments":{"instruction":"...","caption":"..."}}}.`,
     ].join("\n"),
   ]
     .filter(Boolean)
@@ -163,7 +219,7 @@ export function parseAgentToolPlan(raw: string): AgentToolPlan {
   }
 }
 
-export function imageToolCaption(toolCall: GenerateImageAsyncToolCall, characterName: string): string {
+export function imageToolCaption(toolCall: ImageAgentToolCall, characterName: string): string {
   const caption = toolCall.arguments.caption?.trim();
   if (caption) return caption;
   return `${characterName || "I"} will make that image for you now.`;

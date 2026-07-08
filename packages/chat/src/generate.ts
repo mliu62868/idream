@@ -19,6 +19,7 @@ import { recordOutbox, scheduleOutboxDelivery } from "./outbox.js";
 import { createId } from "./id.js";
 import { enqueue } from "./queue.js";
 import {
+  EDIT_LAST_IMAGE_TOOL,
   findAgentTool,
   GENERATE_IMAGE_ASYNC_TOOL,
   imageToolCaption,
@@ -26,7 +27,7 @@ import {
   registryChatTools,
   shouldPlanImageTool,
   type AgentToolCallPlan,
-  type GenerateImageAsyncToolCall,
+  type ImageAgentToolCall,
 } from "./agent-tools.js";
 import { companionRole } from "@idream/shared";
 import {
@@ -86,7 +87,7 @@ export async function processGenerate(
   const modelMessages = buildModelMessages(context);
   const chunks: string[] = [];
   let seq = 0;
-  let imageToolCall: GenerateImageAsyncToolCall | null = null;
+  let imageToolCall: ImageAgentToolCall | null = null;
   // metadata.trigger for the attachment (finalize, below): "agent_fc" when the model's
   // native function call produced it, "agent_tool_call" for the legacy regex+planner path.
   let toolCallTrigger: "agent_fc" | "agent_tool_call" = "agent_tool_call";
@@ -109,14 +110,14 @@ export async function processGenerate(
     }
   };
 
-  const streamCaption = async (toolCall: GenerateImageAsyncToolCall): Promise<void> => {
+  const streamCaption = async (toolCall: ImageAgentToolCall): Promise<void> => {
     const reply = imageToolCaption(toolCall, context.persona.name);
     for (const piece of chunk(reply, 96)) await streamDelta(piece);
   };
 
   // FC follow-up call (behavior contract point 3): when a legal tool call left no
   // prose behind, ask the model for a short in-character line to accompany the photo.
-  const streamToolFollowup = async (rawCall: ChatToolCall, toolCall: GenerateImageAsyncToolCall): Promise<void> => {
+  const streamToolFollowup = async (rawCall: ChatToolCall, toolCall: ImageAgentToolCall): Promise<void> => {
     const followupMessages: ModelMessage[] = [
       ...modelMessages,
       {
@@ -319,7 +320,7 @@ interface FinalizeInput {
   moderation: { status: string; policyCode?: string; confidence: number };
   blocked: boolean;
   context: BuiltContext;
-  imageToolCall: GenerateImageAsyncToolCall | null;
+  imageToolCall: ImageAgentToolCall | null;
   toolCallTrigger: "agent_fc" | "agent_tool_call";
 }
 
@@ -430,13 +431,10 @@ async function finalize(input: FinalizeInput): Promise<void> {
       });
 
       // toolPlan re-derives the discriminated plan from imageToolCall so the outbox
-      // construction below branches on plan.tool (structure Task 2's edit_last_image
-      // arm will extend) rather than assuming generate_image_async.
-      const toolPlan: AgentToolCallPlan | null = imageToolCall
-        ? { tool: imageToolCall.name, args: imageToolCall.arguments }
-        : null;
+      // construction below branches on plan.tool (extended by the edit_last_image arm).
+      const toolPlan: AgentToolCallPlan | null = imageToolCall ? planFromToolCall(imageToolCall) : null;
       if (toolPlan) {
-        const built = buildImageRequestFromPlan(toolPlan);
+        const built = await buildImageRequestFromPlan(toolPlan, tx, session.id);
         const attachmentId = createId("att");
         await tx.messageAttachment.create({
           data: {
@@ -453,6 +451,9 @@ async function finalize(input: FinalizeInput): Promise<void> {
               assistantCaption: built.assistantCaption,
               orientation: built.controls.orientation,
               outputCount: built.controls.outputCount,
+              // P5 Task 2: carried so a later confirm/retry (service.ts confirmImageAttachment,
+              // which re-emits from this metadata) still targets the same source photo.
+              ...(built.controls.sourceImageAssetId ? { editSourceAssetId: built.controls.sourceImageAssetId } : {}),
             } as Prisma.InputJsonValue,
           },
         });
@@ -562,15 +563,35 @@ function chunk(text: string, size: number): string[] {
   for (let i = 0; i < text.length; i += size) out.push(text.slice(i, i + size));
   return out.length ? out : [""];
 }
-// Converts a validated agent tool call plan into the wire shape generate.ts
-// streams/logs. Single arm today; Task 2 adds edit_last_image as a second case.
-function toolCallFromPlan(plan: AgentToolCallPlan): GenerateImageAsyncToolCall {
+// Converts a validated agent tool call plan into the wire shape generate.ts streams/logs.
+function toolCallFromPlan(plan: AgentToolCallPlan): ImageAgentToolCall {
   switch (plan.tool) {
     case GENERATE_IMAGE_ASYNC_TOOL:
       return { name: plan.tool, arguments: plan.args };
+    case EDIT_LAST_IMAGE_TOOL:
+      return { name: plan.tool, arguments: plan.args };
     default: {
-      const exhaustive: never = plan.tool;
-      throw new Error(`unhandled agent tool plan: ${String(exhaustive)}`);
+      const exhaustive: never = plan;
+      throw new Error(`unhandled agent tool plan: ${JSON.stringify(exhaustive)}`);
+    }
+  }
+}
+
+// Inverse of toolCallFromPlan: re-derives the discriminated plan from a resolved
+// ImageAgentToolCall (name+arguments already correlated per tool, since it was built by
+// toolCallFromPlan or by the FC/planner validation paths). Kept as an explicit switch
+// (rather than `{ tool: toolCall.name, args: toolCall.arguments }`) because TS can't
+// correlate a union's discriminant with its payload across two independently-typed
+// property accesses.
+function planFromToolCall(toolCall: ImageAgentToolCall): AgentToolCallPlan {
+  switch (toolCall.name) {
+    case GENERATE_IMAGE_ASYNC_TOOL:
+      return { tool: toolCall.name, args: toolCall.arguments };
+    case EDIT_LAST_IMAGE_TOOL:
+      return { tool: toolCall.name, args: toolCall.arguments };
+    default: {
+      const exhaustive: never = toolCall;
+      throw new Error(`unhandled agent tool call: ${String(exhaustive)}`);
     }
   }
 }
@@ -578,12 +599,19 @@ function toolCallFromPlan(plan: AgentToolCallPlan): GenerateImageAsyncToolCall {
 interface ImageRequestFromPlan {
   promptHint: string;
   assistantCaption: string | null;
-  controls: { orientation: string; outputCount: number };
+  controls: { orientation: string; outputCount: number; sourceImageAssetId?: string };
 }
 
-// Shapes the attachment/outbox payload fields per plan.tool. Single arm today;
-// Task 2's edit_last_image arm will add a case with its own field mapping.
-function buildImageRequestFromPlan(plan: AgentToolCallPlan): ImageRequestFromPlan {
+// Shapes the attachment/outbox payload fields per plan.tool. The edit_last_image arm
+// looks up the session's most recent completed photo (behavior contract point 1) and,
+// when found, carries its mediaAssetId as the img2img source (point 2). No source photo
+// degrades to generate_image_async semantics rather than erroring (point 3) — sending a
+// fresh image beats failing the turn.
+async function buildImageRequestFromPlan(
+  plan: AgentToolCallPlan,
+  tx: Prisma.TransactionClient,
+  sessionId: string,
+): Promise<ImageRequestFromPlan> {
   switch (plan.tool) {
     case GENERATE_IMAGE_ASYNC_TOOL:
       return {
@@ -591,9 +619,30 @@ function buildImageRequestFromPlan(plan: AgentToolCallPlan): ImageRequestFromPla
         assistantCaption: plan.args.caption ?? null,
         controls: { orientation: plan.args.orientation, outputCount: plan.args.outputCount },
       };
+    case EDIT_LAST_IMAGE_TOOL: {
+      const source = await tx.messageAttachment.findFirst({
+        where: { sessionId, kind: "generated_image", status: "completed", mediaAssetId: { not: null } },
+        orderBy: { createdAt: "desc" },
+      });
+      if (!source?.mediaAssetId) {
+        console.warn(
+          `edit_last_image: no completed source photo in session ${sessionId}; falling back to generate_image_async semantics`,
+        );
+        return {
+          promptHint: plan.args.instruction,
+          assistantCaption: plan.args.caption ?? null,
+          controls: { orientation: "4:5", outputCount: 1 },
+        };
+      }
+      return {
+        promptHint: plan.args.instruction,
+        assistantCaption: plan.args.caption ?? null,
+        controls: { orientation: "4:5", outputCount: 1, sourceImageAssetId: source.mediaAssetId },
+      };
+    }
     default: {
-      const exhaustive: never = plan.tool;
-      throw new Error(`unhandled agent tool plan: ${String(exhaustive)}`);
+      const exhaustive: never = plan;
+      throw new Error(`unhandled agent tool plan: ${JSON.stringify(exhaustive)}`);
     }
   }
 }
