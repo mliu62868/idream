@@ -79,3 +79,6 @@ P4 Task 5: complete (commit a3a039d9, review clean ✅; chat 117/117 + main 24/2
 P4 Task 6: complete (commit 52f1e11c, review clean ✅; 58/58 admin-console; merge preserves keys; race noted-only)
 P4 Task 7: complete (acceptance e2e added to web.test.ts; chat 118/118, main admin-console+event-consumer+image-generation-service 82/82, bun run check all green; real-model smoke via launch:probe:chat passed against oMLX Qwen3.6-35B-A3B; real-service live walkthrough blocked — local dev DB missing db/sql/2026-07-08-chat-visual-passport-and-tool-flags.sql (USER step, not run by agent per schema-change policy); spec §7/§8.3 + CURRENT_FUNCTIONAL_COVERAGE.md updated)
 - P4 Task 7 note: apply the P4 boundary SQL to dev/prod + packages/chat db:generate before the live walkthrough can be re-run for real.
+P4 Task 7: complete (commit 983633f3, review clean ✅; chat 118/118 + main 82/82 + check green; live real-service walkthrough blocked on user-side dev SQL — documented honestly)
+P4 final review: Ready to merge (opus; zero Critical/Important; all Minors defer). Merging to master.
+P4 COMPLETE.
