@@ -33,6 +33,8 @@ const EDIT_USER = "u_web_edit";
 const EDIT_FALLBACK_USER = "u_web_edit_fallback";
 const EDIT_RETRY_USER = "u_web_edit_retry";
 const CHAR_EDIT = "c_web_edit";
+const P5_ACCEPT_USER = "u_web_p5_accept";
+const P5_ACCEPT_DEGRADE_USER = "u_web_p5_accept_degrade";
 
 beforeAll(async () => {
   fsRoot = await mkdtemp(path.join(tmpdir(), "chat-web-"));
@@ -104,6 +106,16 @@ beforeAll(async () => {
     `INSERT INTO public.characters (id,name,age,description,visibility,status,style,gender,appearance,"advancedDetails","createdAt","updatedAt")
      VALUES ($1,'WebEdit',23,'d','public','approved','realistic','female','{}','{}',now(),now()) ON CONFLICT (id) DO NOTHING`,
     [CHAR_EDIT],
+  );
+
+  // P5 Task 8 acceptance users (single continuous generate→edit→degrade scenario).
+  await superPool.query(
+    `INSERT INTO public.users (id,email,status,"createdAt","updatedAt") VALUES ($1,$2,'active',now(),now()) ON CONFLICT (id) DO NOTHING`,
+    [P5_ACCEPT_USER, "web-p5-accept@test.dev"],
+  );
+  await superPool.query(
+    `INSERT INTO public.users (id,email,status,"createdAt","updatedAt") VALUES ($1,$2,'active',now(),now()) ON CONFLICT (id) DO NOTHING`,
+    [P5_ACCEPT_DEGRADE_USER, "web-p5-accept-degrade@test.dev"],
   );
 });
 
@@ -764,6 +776,168 @@ describe("dispatchChat router", () => {
       });
       expect(outbox?.payload).toMatchObject({ promptHint: instruction });
       expect((outbox?.payload as { controls: Record<string, unknown> }).controls).not.toHaveProperty(
+        "sourceImageAssetId",
+      );
+    } finally {
+      if (oldToolCalls === undefined) delete process.env.CHAT_MOCK_TOOL_CALLS_JSON;
+      else process.env.CHAT_MOCK_TOOL_CALLS_JSON = oldToolCalls;
+    }
+  });
+
+  it("P5 Task 8 acceptance: generate → completed → edit-in-chat carries sourceImageAssetId, then a fresh session with no prior photo degrades cleanly", async () => {
+    const oldToolCalls = process.env.CHAT_MOCK_TOOL_CALLS_JSON;
+    try {
+      // --- Part A: generate a photo to completed, then edit it in the same session. ---
+      const created = await dispatchChat({
+        method: "POST",
+        path: "/api/v1/chat/sessions",
+        userId: P5_ACCEPT_USER,
+        body: { characterId: CHAR_EDIT },
+      });
+      const sessionId = created.kind === "json" ? (created.body as { id: string }).id : "";
+
+      process.env.CHAT_MOCK_TOOL_CALLS_JSON = JSON.stringify([
+        {
+          id: "call_p5_accept_gen",
+          name: "generate_image_async",
+          arguments: JSON.stringify({
+            prompt: "Realistic in-character selfie of WebEdit in the current chat scene",
+            caption: "Here's a photo!",
+            orientation: "4:5",
+            outputCount: 1,
+          }),
+        },
+      ]);
+      const sent = await dispatchChat({
+        method: "POST",
+        path: `/api/v1/chat/sessions/${sessionId}/messages`,
+        userId: P5_ACCEPT_USER,
+        body: { content: "发张照片" },
+      });
+      expect(sent.kind === "json" && sent.status).toBe(202);
+      await drainGen();
+
+      const afterFirst = await dispatchChat({
+        method: "GET",
+        path: `/api/v1/chat/sessions/${sessionId}`,
+        userId: P5_ACCEPT_USER,
+      });
+      const firstAttachment =
+        afterFirst.kind === "json"
+          ? (afterFirst.body as { messages: Array<{ attachments?: Array<{ id: string }> }> }).messages.flatMap(
+              (m) => m.attachments ?? [],
+            )[0]
+          : undefined;
+      expect(firstAttachment).toBeTruthy();
+
+      await consumeInbound({
+        eventId: `p5_accept_accept_${firstAttachment!.id}`,
+        eventType: MAIN_TO_CHAT_EVENTS.chatImageAccepted,
+        payload: {
+          version: 1,
+          kind: "chat.image.accepted",
+          attachmentId: firstAttachment!.id,
+          generationJobId: "job_p5_accept_1",
+          costDreamcoins: 5,
+        },
+      });
+      await consumeInbound({
+        eventId: `p5_accept_done_${firstAttachment!.id}`,
+        eventType: MAIN_TO_CHAT_EVENTS.chatImageCompleted,
+        payload: {
+          version: 1,
+          kind: "chat.image.completed",
+          attachmentId: firstAttachment!.id,
+          generationJobId: "job_p5_accept_1",
+          mediaAssetId: "media_p5_accept_source_1",
+          width: 512,
+          height: 640,
+          summary: "WebEdit in a photo",
+        },
+      });
+
+      // "把刚才那张改成雪山背景" — the model selects edit_last_image against the
+      // just-completed photo.
+      const editInstruction = "把刚才那张改成雪山背景";
+      process.env.CHAT_MOCK_TOOL_CALLS_JSON = JSON.stringify([
+        {
+          id: "call_p5_accept_edit",
+          name: "edit_last_image",
+          arguments: JSON.stringify({ instruction: editInstruction, caption: "换好了！" }),
+        },
+      ]);
+      const editSent = await dispatchChat({
+        method: "POST",
+        path: `/api/v1/chat/sessions/${sessionId}/messages`,
+        userId: P5_ACCEPT_USER,
+        body: { content: editInstruction },
+      });
+      expect(editSent.kind === "json" && editSent.status).toBe(202);
+      await drainGen();
+
+      const afterEdit = await dispatchChat({
+        method: "GET",
+        path: `/api/v1/chat/sessions/${sessionId}`,
+        userId: P5_ACCEPT_USER,
+      });
+      const editAttachment =
+        afterEdit.kind === "json"
+          ? (afterEdit.body as { messages: Array<{ attachments?: Array<{ id: string }> }> }).messages
+              .flatMap((m) => m.attachments ?? [])
+              .find((a) => a.id !== firstAttachment!.id)
+          : undefined;
+      expect(editAttachment).toBeTruthy();
+
+      const editOutbox = await prisma.chatOutboxEvent.findFirst({
+        where: { aggregateId: editAttachment!.id, eventType: "chat.image.requested" },
+      });
+      expect(editOutbox?.payload).toMatchObject({
+        controls: { sourceImageAssetId: "media_p5_accept_source_1" },
+      });
+
+      // --- Part B: a brand-new session, no prior photo — edit intent degrades cleanly. ---
+      const createdDegrade = await dispatchChat({
+        method: "POST",
+        path: "/api/v1/chat/sessions",
+        userId: P5_ACCEPT_DEGRADE_USER,
+        body: { characterId: CHAR_EDIT },
+      });
+      const degradeSessionId = createdDegrade.kind === "json" ? (createdDegrade.body as { id: string }).id : "";
+
+      process.env.CHAT_MOCK_TOOL_CALLS_JSON = JSON.stringify([
+        {
+          id: "call_p5_accept_degrade",
+          name: "edit_last_image",
+          arguments: JSON.stringify({ instruction: editInstruction }),
+        },
+      ]);
+      const degradeSent = await dispatchChat({
+        method: "POST",
+        path: `/api/v1/chat/sessions/${degradeSessionId}/messages`,
+        userId: P5_ACCEPT_DEGRADE_USER,
+        body: { content: editInstruction },
+      });
+      expect(degradeSent.kind === "json" && degradeSent.status).toBe(202);
+      await drainGen();
+
+      const afterDegrade = await dispatchChat({
+        method: "GET",
+        path: `/api/v1/chat/sessions/${degradeSessionId}`,
+        userId: P5_ACCEPT_DEGRADE_USER,
+      });
+      const degradeAttachment =
+        afterDegrade.kind === "json"
+          ? (afterDegrade.body as { messages: Array<{ attachments?: Array<{ id: string }> }> }).messages.flatMap(
+              (m) => m.attachments ?? [],
+            )[0]
+          : undefined;
+      expect(degradeAttachment).toBeTruthy();
+
+      const degradeOutbox = await prisma.chatOutboxEvent.findFirst({
+        where: { aggregateId: degradeAttachment!.id, eventType: "chat.image.requested" },
+      });
+      expect(degradeOutbox?.payload).toMatchObject({ promptHint: editInstruction });
+      expect((degradeOutbox?.payload as { controls: Record<string, unknown> }).controls).not.toHaveProperty(
         "sourceImageAssetId",
       );
     } finally {

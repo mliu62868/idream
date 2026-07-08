@@ -8,7 +8,19 @@
 
 当前状态：**本地产品闭环可用，内部 pipeline 6/6 通过；当前目标仍是内部演示/受控 beta，公开上线仍被真实生产依赖阻断**。
 
-## 2026-07-08 P5 Task 6：双排水治理 + legacy inline 路径裁决（最新）
+## 2026-07-08 P5 能力深化 + 验收落地（最新）
+
+`docs/superpowers/specs/2026-07-07-image-generation-redesign-design.md` §7 P5 已完成并合入分支 `feat/image-gen-p5-deepening`：
+
+- **`edit_last_image` 聊天工具**：`AGENT_TOOL_REGISTRY` 第二项工具，机制无关 dispatch 从 `if/else` 收敛为判别联合 `AgentToolCallPlan` 的通用分支；模型对上一张已完成图片说"把刚才那张改成雪山背景"会走 img2img 而非重新生成一张不相关场景。chat controls 白名单新增 `sourceImageAssetId`，main 侧据此路由到 `chat-image-edit` profile（`workflowKey qwen-image-edit-img2img`，`initImage:true`）；该 profile 不可用时确定性降级——丢弃源图、按普通生成走（而非报错或用错 pipeline）。会话内无可编辑的已完成图片时同样降级为纯新图生成，不抛异常。
+- **投放位曝光/点击埋点**：campaign 推荐卡片新增 `placement_impression`/`placement_click` 埋点，接入 metrics placements 视图（`impressions`/`clicks`），并按功能存在性裁剪 Remix 维度汇总。范围限定 campaign 卡片，非全站曝光埋点。
+- **traits 作为身份真源**：新增版本化 assembler，从角色 traits 派生 `identityPrompt` 与 `adapterRefs` 内的派生 hash；hash 不一致时角色面板显示 `identityStale` 提示，提醒需要重新生成身份 lock；`identityPrompt` 保留运营手动覆写，不强制重派生。密集角色（trait 数量多）派生逐条描述改为向前追加、每组最多 8 行的裁剪（forward-only per-group cap），避免 prompt 无限增长。
+- **双排水治理收尾**：`GEN_FINALIZER_QUEUES` 按 gen-split 拓扑收敛 + `launch-readiness.ts` 探针（见下方 Task 6 记录）；pricing 单测补齐 + pregen resolver 更名，清偿 P3/P4 终审 defer 项。
+- **验收测试**：`packages/chat/test/web.test.ts` 新增一条单一连续 `it`——生成一张照片到 completed →「把刚才那张改成雪山背景」触发 `edit_last_image` → outbox `chat.image.requested` 的 `controls.sourceImageAssetId` 等于上一张图的 `mediaAssetId`；随后在一个全新会话（无任何历史图片）发送同类改图意图 → outbox 降级、`controls` 不含 `sourceImageAssetId`。`bun run test`（chat）133/133 通过；main 侧 `admin-console.test.ts`/`event-consumer.test.ts`/`image-generation-service.test.ts`/`generation-pricing.test.ts`/`launch-readiness.test.ts` 156/156 通过；`bun run check`（lint+typecheck+build，5 个包）全绿。main 侧的 edit profile 路由与降级由 `event-consumer.test.ts`/`image-generation-service.test.ts` 覆盖，chat e2e 断言到 outbox 为止（既定分工）。
+- **真模型 live 走查**：oMLX `Qwen3.6-35B-A3B-uncensored-heretic-Native-MTP-Preserved-mlx-8Bit`，用 `registryChatTools()` 同款两工具 schema 发起真实 function-calling 请求——「你之前发过一张照片，用户说把刚才的照片换成雪山背景」→ 正确选中 `edit_last_image`；新场景生图请求 → 正确选中 `generate_image_async`；中性寒暄消息 → 不触发任何工具。三例全部命中预期。走查一度受阻：本机 shell 的 `HTTP_PROXY`/`HTTPS_PROXY` 指向 `127.0.0.1:7897`，而 `NO_PROXY` 被误配成一个 URL（而非绕过主机名列表），导致连 `127.0.0.1` 的请求也被本地代理拦截——该代理对包含 `generate_image_async`/`edit_last_image` 等工具名的请求返回空 `502`，对通用工具名（如 `t`）放行，具有明显的关键词特征而非模型/端口故障；显式绕开代理（`env -u HTTP_PROXY -u HTTPS_PROXY` + `NO_PROXY='*'`）后三例复测全部通过。**可选加分项**（ComfyUI `:8188` + gen worker 跑一次真实 img2img）未执行：本机已有大模型常驻，为避免与 FC 探针模型双载触发既往 OOM，选择不冒险叠加另一 50G+ 级模型，非阻塞。
+- **部署依赖**：无新 SQL。`chat-image-edit` profile 由 `packages/main/prisma/seed.ts` 写入，dev/prod 部署前需跑一次 `bun prisma db seed`（或等效 seed 命令）。
+
+## 2026-07-08 P5 Task 6：双排水治理 + legacy inline 路径裁决
 
 - **inline image path 终审裁决（非缺口）**：main 的 `providers/index.ts` 只构造 `mock|pipeline` 图片适配器，从不构造 `backend`——这是设计内决定，不是待办。inline 路径服务的是本地 DB 排水测试（`runQueuedGenerationJobs`）与 `character.preview`（main-only，无 gen worker 承接）；生产环境的真实生图始终由独立 gen worker（`GEN_IMAGE_PROVIDER=backend`）承担。
 - **双排水风险修复**：pm2 `gen-finalizer` 与专属 `gen-image` worker 会各自消费 BullMQ；在 gen-split 部署（配置了真实生成后端）下，若 finalizer 未收窄队列，会与 gen worker 抢 `ai.image.generate`/`ai.video.generate`，产生不确定的 mock/真实混淆输出。修法：`ecosystem.config.js` 的 `gen-finalizer` env 已收窄为 `GEN_FINALIZER_QUEUES=app.ai.finalize,character.preview`；`launch-readiness.ts` 新增 `gen-finalizer-queue-scope` 探针，在 gen-split 拓扑下若该变量未设或仍包含上述两个队列则 fail。
