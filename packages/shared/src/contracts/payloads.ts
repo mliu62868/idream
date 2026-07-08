@@ -157,6 +157,10 @@ export const chatImageRequestedPayloadSchema = z
       })
       .passthrough()
       .default({ orientation: "4:5", outputCount: 1 }),
+    // P4: the character's active CharacterVisualProfile at request time (visual passport).
+    // Optional — older chat builds, or characters with no bootstrapped profile, omit it.
+    visualProfileId: z.string().optional(),
+    visualProfileVersion: z.number().int().optional(),
   })
   .passthrough();
 

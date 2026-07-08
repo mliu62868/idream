@@ -29,17 +29,22 @@ view ChatUserView {
 }
 
 view ChatCharacterView {
-  characterId  String   @unique @map("character_id")
-  creatorId    String?  @map("creator_id")
-  name         String
-  age          Int
-  description  String
-  systemPrompt String?  @map("system_prompt")
-  relationship String?
-  visibility   String
-  status       String
-  voiceId      String?  @map("voice_id")
-  updatedAt    DateTime @map("updated_at")
+  characterId          String   @unique @map("character_id")
+  creatorId            String?  @map("creator_id")
+  name                 String
+  age                  Int
+  description          String
+  systemPrompt         String?  @map("system_prompt")
+  relationship         String?
+  visibility           String
+  status               String
+  voiceId              String?  @map("voice_id")
+  updatedAt            DateTime @map("updated_at")
+  /** Active CharacterVisualProfile id (P4 passport injection); null when none/bootstrapped later. */
+  visualProfileId      String?  @map("visual_profile_id")
+  visualProfileVersion Int?     @map("visual_profile_version")
+  identityPrompt       String?  @map("identity_prompt")
+  imageToolEnabled     Boolean  @map("image_tool_enabled")
 
   @@map("chat_character_view")
   @@schema("core")
@@ -60,6 +65,7 @@ view ChatEntitlementView {
   unlimitedMessages  Boolean  @map("unlimited_messages")
   voiceEnabled       Boolean  @map("voice_enabled")
   updatedAt          DateTime @map("updated_at")
+  imageToolEnabled   Boolean  @map("image_tool_enabled")
 
   @@map("chat_entitlement_view")
   @@schema("billing")

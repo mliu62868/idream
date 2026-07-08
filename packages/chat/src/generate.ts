@@ -12,7 +12,7 @@ import type { ChatPrismaClient } from "./db.js";
 import { chatPrisma } from "./db.js";
 import { providers } from "./providers.js";
 import type { ChatToolCall, ModelMessage } from "./providers.js";
-import { buildContext, type BuiltContext } from "./context.js";
+import { buildContext, identityPromptLine, type BuiltContext } from "./context.js";
 import { appendStreamEvent, streamKey } from "./stream.js";
 import { appendLine, chatFsPaths } from "./chat-fs.js";
 import { recordOutbox, scheduleOutboxDelivery } from "./outbox.js";
@@ -91,9 +91,7 @@ export async function processGenerate(
   // native function call produced it, "agent_tool_call" for the legacy regex+planner path.
   let toolCallTrigger: "agent_fc" | "agent_tool_call" = "agent_tool_call";
 
-  // Task 4 will replace this with policy.imageToolEnabled; placeholder until then.
-  const IMAGE_TOOL_POLICY_PLACEHOLDER = true;
-  const fcEnabled = providers.chat.supportsTools === true && IMAGE_TOOL_POLICY_PLACEHOLDER;
+  const fcEnabled = providers.chat.supportsTools === true && context.policy.imageToolEnabled;
 
   const streamDelta = async (delta: string): Promise<void> => {
     seq += 1;
@@ -153,6 +151,9 @@ export async function processGenerate(
   // Legacy regex-gate + planner path (pre-FC behavior), used when FC is unavailable
   // and as the safety net when FC is available but the model didn't call the tool.
   const runPlannerFallback = async (): Promise<void> => {
+    // policy.imageToolEnabled off (entitlement or character advancedDetails.imageToolEnabled=false)
+    // suppresses the tool entirely — not just the FC path, so the legacy planner must not run either.
+    if (!context.policy.imageToolEnabled) return;
     if (!shouldPlanImageTool(context)) return;
     try {
       const toolPlan = await planAgentToolCall({ chat: providers.chat, model: context.policy.model, context });
@@ -463,6 +464,11 @@ async function finalize(input: FinalizeInput): Promise<void> {
             orientation: imageToolCall.arguments.orientation,
             outputCount: imageToolCall.arguments.outputCount,
           },
+          // Visual passport at request time. Read fresh from persona (not stored on the
+          // attachment) so a retry after re-buildContext always carries the CURRENT
+          // active profile rather than a value captured earlier in this turn.
+          visualProfileId: context.persona.visualProfileId ?? undefined,
+          visualProfileVersion: context.persona.visualProfileVersion ?? undefined,
         };
         await recordOutbox(tx, {
           eventType: CHAT_TO_MAIN_EVENTS.imageRequested,
@@ -495,6 +501,7 @@ function buildModelMessages(
     "Stay in persona; honor the user's stated preferences and boundaries; keep continuity.",
     "Do not claim to remember facts not present in the supplied context.",
     persona.systemPrompt ?? persona.description,
+    identityPromptLine(persona),
     context.sessionSummary ? `Session summary: ${context.sessionSummary}` : "",
     relationshipLine(context.relationship),
     context.boundaries.length ? `Boundaries (highest priority):\n${context.boundaries.map((b) => `- ${b}`).join("\n")}` : "",

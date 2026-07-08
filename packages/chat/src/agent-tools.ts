@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { BuiltContext } from "./context.js";
+import { identityPromptLine } from "./context.js";
 import type { ChatModel, ChatToolDefinition, ModelMessage } from "./providers.js";
 import { companionRole } from "@idream/shared";
 
@@ -105,6 +106,7 @@ export function buildToolPlannerMessages(context: BuiltContext): ModelMessage[] 
     "You are the tool planner for a private AI companion chat.",
     `Character: ${persona.name}, an adult ${companionRole(persona.relationship)}.`,
     persona.systemPrompt ?? persona.description,
+    identityPromptLine(persona),
     context.sessionSummary ? `Session summary: ${context.sessionSummary}` : "",
     context.longTermMemories.length ? `Long-term memories:\n${context.longTermMemories.map((m) => `- ${m}`).join("\n")}` : "",
     [

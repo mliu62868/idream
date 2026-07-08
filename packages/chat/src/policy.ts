@@ -10,6 +10,7 @@ export interface EntitlementSnapshot {
   memoryMultiplier: number;
   unlimitedMessages: boolean;
   voiceEnabled: boolean;
+  imageToolEnabled: boolean;
 }
 
 export interface ChatPolicy {
@@ -26,6 +27,8 @@ export interface ChatPolicy {
   allowGlobalMemoryWrite: boolean;
   allowRelationshipPatch: boolean;
   outputModerationRequired: boolean;
+  /** Entitlement flag AND character flag (image_tool_enabled on both boundary views). */
+  imageToolEnabled: boolean;
 }
 
 const BASE_CONTEXT = 12;
@@ -36,7 +39,7 @@ const BASE_STORED_MEMORIES = 30;
 
 export function resolvePolicy(
   ent: EntitlementSnapshot,
-  opts: { memoryEnabled: boolean } = { memoryEnabled: true },
+  opts: { memoryEnabled: boolean; characterImageToolEnabled?: boolean } = { memoryEnabled: true },
 ): ChatPolicy {
   const tier = ent.modelTier;
   const isPaid = tier === "premium" || tier === "deluxe";
@@ -57,6 +60,7 @@ export function resolvePolicy(
     allowGlobalMemoryWrite: memoryAllowed && isPaid,
     allowRelationshipPatch: memoryAllowed,
     outputModerationRequired: true,
+    imageToolEnabled: ent.imageToolEnabled && (opts.characterImageToolEnabled ?? true),
   };
 }
 
@@ -79,5 +83,6 @@ export function snapshotFromView(row: ChatEntitlementView | null): EntitlementSn
     memoryMultiplier: row?.memoryMultiplier ?? 1,
     unlimitedMessages: row?.unlimitedMessages ?? false,
     voiceEnabled: row?.voiceEnabled ?? false,
+    imageToolEnabled: row?.imageToolEnabled ?? true,
   };
 }

@@ -29,7 +29,13 @@ vi.mock("./providers.js", () => ({
     },
   },
 }));
-vi.mock("./context.js", () => ({ buildContext: buildContextMock }));
+vi.mock("./context.js", () => ({
+  buildContext: buildContextMock,
+  identityPromptLine: (persona: { identityPrompt?: string | null }) =>
+    persona.identityPrompt?.trim()
+      ? `Your appearance (keep consistent when sending photos): ${persona.identityPrompt.trim()}`
+      : "",
+}));
 vi.mock("./stream.js", () => ({
   appendStreamEvent: appendStreamEventMock,
   streamKey: (assistantMessageId: string) => `chat:stream:${assistantMessageId}`,
@@ -134,6 +140,7 @@ const context = {
     allowGlobalMemoryWrite: false,
     allowRelationshipPatch: true,
     outputModerationRequired: true,
+    imageToolEnabled: true,
   },
   sessionSummary: null,
   recentMessages: [

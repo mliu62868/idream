@@ -21,6 +21,12 @@ let fsRoot: string;
 const USER = "u_web";
 const IMG_USER = "u_web_img";
 const CHAR = "c_web";
+const VP_USER = "u_web_vp";
+const CHAR_VP = "c_web_vp";
+const CHAR_VP_PROFILE = "cvp_web_vp";
+const NOTOOL_USER = "u_web_notool";
+const CHAR_NOTOOL = "c_web_notool";
+const IDENTITY_TOKEN = "P4-IDENTITY-TOKEN-abc123";
 
 beforeAll(async () => {
   fsRoot = await mkdtemp(path.join(tmpdir(), "chat-web-"));
@@ -37,6 +43,35 @@ beforeAll(async () => {
     `INSERT INTO public.characters (id,name,age,description,visibility,status,style,gender,appearance,"advancedDetails","createdAt","updatedAt")
      VALUES ($1,'Web',23,'d','public','approved','realistic','female','{}','{}',now(),now()) ON CONFLICT (id) DO NOTHING`,
     [CHAR],
+  );
+
+  // Character with an active visual profile (passport injection).
+  await superPool.query(
+    `INSERT INTO public.users (id,email,status,"createdAt","updatedAt") VALUES ($1,$2,'active',now(),now()) ON CONFLICT (id) DO NOTHING`,
+    [VP_USER, "web-vp@test.dev"],
+  );
+  await superPool.query(
+    `INSERT INTO public.characters (id,name,age,description,visibility,status,style,gender,appearance,"advancedDetails","createdAt","updatedAt")
+     VALUES ($1,'WebVP',23,'d','public','approved','realistic','female','{}','{}',now(),now()) ON CONFLICT (id) DO NOTHING`,
+    [CHAR_VP],
+  );
+  await superPool.query(
+    `INSERT INTO public.character_visual_profiles
+       (id,"characterId",version,status,style,"identityPrompt","faceTraits","hairTraits","bodyTraits","signatureTraits","styleTraits","anchorAssetIds","referenceAssetIds","adapterRefs","createdFrom","createdAt","updatedAt")
+     VALUES ($1,$2,1,'active','realistic',$3,'{}','{}','{}','{}','{}','[]','[]','{}','test',now(),now())
+     ON CONFLICT (id) DO NOTHING`,
+    [CHAR_VP_PROFILE, CHAR_VP, `WebVP, adult woman, ${IDENTITY_TOKEN}`],
+  );
+
+  // Character with the image tool disabled (advancedDetails.imageToolEnabled=false).
+  await superPool.query(
+    `INSERT INTO public.users (id,email,status,"createdAt","updatedAt") VALUES ($1,$2,'active',now(),now()) ON CONFLICT (id) DO NOTHING`,
+    [NOTOOL_USER, "web-notool@test.dev"],
+  );
+  await superPool.query(
+    `INSERT INTO public.characters (id,name,age,description,visibility,status,style,gender,appearance,"advancedDetails","createdAt","updatedAt")
+     VALUES ($1,'WebNoTool',23,'d','public','approved','realistic','female','{}',$2,now(),now()) ON CONFLICT (id) DO NOTHING`,
+    [CHAR_NOTOOL, JSON.stringify({ imageToolEnabled: false })],
   );
 });
 
@@ -217,6 +252,131 @@ describe("dispatchChat router", () => {
         status: "completed",
         mediaAssetId: "media_img_1",
       });
+    } finally {
+      if (oldMockPlan === undefined) delete process.env.CHAT_MOCK_TOOL_PLAN_JSON;
+      else process.env.CHAT_MOCK_TOOL_PLAN_JSON = oldMockPlan;
+    }
+  });
+
+  it("carries the visual passport (visualProfileId/version + identity prompt) through an agent-triggered image", async () => {
+    const oldMockPlan = process.env.CHAT_MOCK_TOOL_PLAN_JSON;
+    process.env.CHAT_MOCK_TOOL_PLAN_JSON = JSON.stringify({
+      tool: {
+        name: "generate_image_async",
+        arguments: {
+          prompt: "Realistic in-character photo of WebVP sharing a quiet moment in the current chat scene",
+          caption: "Sure, one moment.",
+          orientation: "4:5",
+          outputCount: 1,
+        },
+      },
+    });
+    try {
+      const created = await dispatchChat({
+        method: "POST",
+        path: "/api/v1/chat/sessions",
+        userId: VP_USER,
+        body: { characterId: CHAR_VP },
+      });
+      const sessionId = created.kind === "json" ? (created.body as { id: string }).id : "";
+
+      const sent = await dispatchChat({
+        method: "POST",
+        path: `/api/v1/chat/sessions/${sessionId}/messages`,
+        userId: VP_USER,
+        body: { content: "send me a photo from this moment please" },
+      });
+      const assistantMessageId =
+        sent.kind === "json" ? (sent.body as { assistantMessageId: string }).assistantMessageId : "";
+      await drainGen();
+
+      const read = await dispatchChat({
+        method: "GET",
+        path: `/api/v1/chat/sessions/${sessionId}`,
+        userId: VP_USER,
+      });
+      expect(read.kind).toBe("json");
+      if (read.kind !== "json") return;
+      const messages = (read.body as {
+        messages: Array<{ attachments?: Array<{ id: string }> }>;
+      }).messages;
+      const attachment = messages.flatMap((message) => message.attachments ?? [])[0];
+      expect(attachment).toBeTruthy();
+
+      const outbox = await prisma.chatOutboxEvent.findFirst({
+        where: { aggregateId: attachment.id, eventType: "chat.image.requested" },
+      });
+      expect(outbox?.payload).toMatchObject({
+        attachmentId: attachment.id,
+        visualProfileId: CHAR_VP_PROFILE,
+        visualProfileVersion: 1,
+      });
+
+      // System prompt reached the model with the identity line (asserted via the
+      // agent trace jsonl, since the web dispatch surface doesn't expose it directly).
+      const log = await readFile(path.join(fsRoot, "sessions", VP_USER, `${sessionId}.jsonl`), "utf8");
+      const lastLine = log.trim().split("\n").pop() ?? "";
+      const trace = JSON.parse(lastLine) as { system?: string; assistantMessageId?: string };
+      expect(trace.assistantMessageId).toBe(assistantMessageId);
+      expect(trace.system).toContain(IDENTITY_TOKEN);
+    } finally {
+      if (oldMockPlan === undefined) delete process.env.CHAT_MOCK_TOOL_PLAN_JSON;
+      else process.env.CHAT_MOCK_TOOL_PLAN_JSON = oldMockPlan;
+    }
+  });
+
+  it("advancedDetails.imageToolEnabled=false suppresses the image tool entirely (no attachment/outbox, text still replies)", async () => {
+    const oldMockPlan = process.env.CHAT_MOCK_TOOL_PLAN_JSON;
+    // Even if the (legacy) planner WOULD call the tool, policy.imageToolEnabled=false
+    // must short-circuit before the planner ever runs.
+    process.env.CHAT_MOCK_TOOL_PLAN_JSON = JSON.stringify({
+      tool: {
+        name: "generate_image_async",
+        arguments: {
+          prompt: "Realistic in-character photo of WebNoTool sharing a quiet moment",
+          orientation: "4:5",
+          outputCount: 1,
+        },
+      },
+    });
+    try {
+      const created = await dispatchChat({
+        method: "POST",
+        path: "/api/v1/chat/sessions",
+        userId: NOTOOL_USER,
+        body: { characterId: CHAR_NOTOOL },
+      });
+      const sessionId = created.kind === "json" ? (created.body as { id: string }).id : "";
+
+      const sent = await dispatchChat({
+        method: "POST",
+        path: `/api/v1/chat/sessions/${sessionId}/messages`,
+        userId: NOTOOL_USER,
+        body: { content: "send me a photo from this moment please" },
+      });
+      const assistantMessageId =
+        sent.kind === "json" ? (sent.body as { assistantMessageId: string }).assistantMessageId : "";
+      await drainGen();
+
+      const read = await dispatchChat({
+        method: "GET",
+        path: `/api/v1/chat/sessions/${sessionId}`,
+        userId: NOTOOL_USER,
+      });
+      expect(read.kind).toBe("json");
+      if (read.kind !== "json") return;
+      const messages = (read.body as {
+        messages: Array<{ id: string; status: string; content: string; attachments?: unknown[] }>;
+      }).messages;
+      const assistant = messages.find((m) => m.id === assistantMessageId);
+      expect(assistant?.status).toBe("sent");
+      expect(assistant?.content?.length).toBeGreaterThan(0);
+      expect(assistant?.attachments ?? []).toHaveLength(0);
+
+      const outbox = await prisma.chatOutboxEvent.findFirst({
+        where: { eventType: "chat.image.requested", payload: { path: ["sessionId"], equals: sessionId } },
+      });
+      expect(outbox).toBeNull();
     } finally {
       if (oldMockPlan === undefined) delete process.env.CHAT_MOCK_TOOL_PLAN_JSON;
       else process.env.CHAT_MOCK_TOOL_PLAN_JSON = oldMockPlan;

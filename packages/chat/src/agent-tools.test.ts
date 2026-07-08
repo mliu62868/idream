@@ -27,6 +27,10 @@ const context = {
     status: "approved",
     voiceId: null,
     updatedAt: new Date("2026-01-01T00:00:00Z"),
+    visualProfileId: "cvp_1",
+    visualProfileVersion: 1,
+    identityPrompt: "Melissa, adult woman, auburn hair, hazel eyes",
+    imageToolEnabled: true,
   },
   policy: {
     model: "local-model",
@@ -40,6 +44,7 @@ const context = {
     allowGlobalMemoryWrite: false,
     allowRelationshipPatch: true,
     outputModerationRequired: true,
+    imageToolEnabled: true,
   },
   sessionSummary: null,
   recentMessages: [
@@ -104,6 +109,12 @@ describe("agent image tool planning", () => {
     const messages = buildToolPlannerMessages(context);
     expect(messages[0]?.content).toContain("Available tool");
     expect(messages[0]?.content).not.toContain("regex");
+  });
+
+  it("injects the visual passport identity line into the planner prompt", () => {
+    const messages = buildToolPlannerMessages(context);
+    expect(messages[0]?.content).toContain("Your appearance (keep consistent when sending photos):");
+    expect(messages[0]?.content).toContain(context.persona.identityPrompt);
   });
 
   it("falls back to a caption when the tool call omits one", () => {

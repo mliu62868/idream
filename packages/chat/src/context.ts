@@ -61,7 +61,10 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
       ? anchorUserMessage
       : null;
 
-  const policy = resolvePolicy(snapshotFromView(entitlementRow), { memoryEnabled });
+  const policy = resolvePolicy(snapshotFromView(entitlementRow), {
+    memoryEnabled,
+    characterImageToolEnabled: persona.imageToolEnabled,
+  });
 
   const recent = await prisma.message.findMany({
     where: {
@@ -126,6 +129,17 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
     relationship,
     canUpdateSessionSummary: memoryEnabled && anchoredToLatestTurn,
   };
+}
+
+const IDENTITY_PROMPT_MAX = 400;
+
+/** Shared by generate.ts (assistant system prompt) and agent-tools.ts (tool planner
+ * prompt) so the visual passport line — when present — reads identically in both. */
+export function identityPromptLine(persona: { identityPrompt?: string | null }): string {
+  const identity = persona.identityPrompt?.trim();
+  if (!identity) return "";
+  const truncated = identity.length > IDENTITY_PROMPT_MAX ? `${identity.slice(0, IDENTITY_PROMPT_MAX - 1)}…` : identity;
+  return `Your appearance (keep consistent when sending photos): ${truncated}`;
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {

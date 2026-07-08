@@ -1673,19 +1673,32 @@ function isUniqueConstraintError(error: unknown): boolean {
 async function resolveGenerationVisualProfile(
   character: GenerationPromptCharacter,
   requestedProfileId?: string,
+  opts: { fallbackToActiveOnStale?: boolean } = {},
 ): Promise<GenerationVisualProfile | null> {
   if (requestedProfileId) {
     const profile = await prisma.characterVisualProfile.findFirst({
       where: { id: requestedProfileId, characterId: character.id },
       orderBy: { version: "desc" },
     });
-    if (!profile) throw Errors.notFound("Character visual profile not found");
+    if (!profile) {
+      // Chat path (fallbackToActiveOnStale): async fire-and-forget, so a stale/unknown
+      // passport id must never fail the image — fall back to whatever is active now.
+      if (opts.fallbackToActiveOnStale) return resolveActiveVisualProfile(character);
+      throw Errors.notFound("Character visual profile not found");
+    }
     if (profile.status === "archived") {
+      if (opts.fallbackToActiveOnStale) return resolveActiveVisualProfile(character);
       throw Errors.badRequest("Character visual profile is archived", { visualProfileId: requestedProfileId });
     }
     return profile;
   }
 
+  return resolveActiveVisualProfile(character);
+}
+
+async function resolveActiveVisualProfile(
+  character: GenerationPromptCharacter,
+): Promise<GenerationVisualProfile | null> {
   const active = await prisma.characterVisualProfile.findFirst({
     where: { characterId: character.id, status: "active" },
     orderBy: { version: "desc" },
@@ -1726,7 +1739,11 @@ async function bootstrapCharacterVisualProfile(
 async function createGenerationJobForUser(
   userId: string,
   body: GenerationCreateBody,
-  options: { idempotencyKey?: string | null; source?: GenerationSource } = {},
+  options: {
+    idempotencyKey?: string | null;
+    source?: GenerationSource;
+    fallbackToActiveOnStaleVisualProfile?: boolean;
+  } = {},
 ) {
   const preexisting = await findExistingGenerationJob(userId, options);
   if (preexisting) return preexisting;
@@ -1736,7 +1753,9 @@ async function createGenerationJobForUser(
   const consistencyMode = body.consistencyMode ?? "balanced";
   const visualProfile =
     body.mode === "image" && character
-      ? await resolveGenerationVisualProfile(character, body.visualProfileId)
+      ? await resolveGenerationVisualProfile(character, body.visualProfileId, {
+          fallbackToActiveOnStale: options.fallbackToActiveOnStaleVisualProfile,
+        })
       : null;
   const selectedModel = body.model ?? body.controls.model;
   const profile = await selectGenerationProfile(body.mode, selectedModel);
@@ -1941,6 +1960,7 @@ export async function createChatImageGenerationJob(payload: ChatImageRequestedPa
       freeplay: false,
       consistencyMode: "balanced",
       prompt,
+      visualProfileId: payload.visualProfileId,
       controls: {
         orientation,
       },
@@ -1960,6 +1980,10 @@ export async function createChatImageGenerationJob(payload: ChatImageRequestedPa
           conversationContext: payload.conversationContext,
         }),
       },
+      // Chat is async/fire-and-forget: a passport version that went stale (archived)
+      // or vanished between chat's request and main's processing must never fail the
+      // image — fall back to whatever profile is active now.
+      fallbackToActiveOnStaleVisualProfile: true,
     },
   );
 }
