@@ -4248,4 +4248,48 @@ describe("admin generation metrics rollup (P3)", () => {
     );
     expect(sourceRow.total).toBeGreaterThanOrEqual(2);
   });
+
+  it("rolls up placement impression/click events and remix count", async () => {
+    const admin = await setupActor("admin", "generation-metrics-engagement");
+    const placementId = `${P}placement-1`;
+    await prisma.analyticsEvent.create({
+      data: {
+        id: `${P}impression-1`,
+        name: "placement_impression",
+        props: { placementId, slot: "campaign" },
+      },
+    });
+    await prisma.analyticsEvent.create({
+      data: {
+        id: `${P}impression-2`,
+        name: "placement_impression",
+        props: { placementId, slot: "campaign" },
+      },
+    });
+    await prisma.analyticsEvent.create({
+      data: {
+        id: `${P}click-1`,
+        name: "placement_click",
+        props: { placementId, slot: "campaign" },
+      },
+    });
+    await prisma.analyticsEvent.create({
+      data: { id: `${P}remix-1`, name: "feed_item_remixed", props: {} },
+    });
+    await prisma.analyticsEvent.create({
+      data: { id: `${P}remix-2`, name: "feed_item_remixed", props: {} },
+    });
+
+    const metrics = await api("GET", "admin/generation/metrics", {
+      userId: admin,
+      role: "admin",
+      query: { days: 7 },
+    });
+    expectOk(metrics);
+    const engagementRow = metrics.data.placementEngagement.find(
+      (row: { placementId: string | null }) => row.placementId === placementId,
+    );
+    expect(engagementRow).toMatchObject({ slot: "campaign", impressions: 2, clicks: 1 });
+    expect(metrics.data.remix.total).toBeGreaterThanOrEqual(2);
+  });
 });

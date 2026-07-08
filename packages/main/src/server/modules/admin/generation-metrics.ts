@@ -27,7 +27,15 @@ export async function generationMetrics(request: Request): Promise<Response> {
   const windowDays = clampInt(url.searchParams.get("days"), 1, 90, 7);
   const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000);
 
-  const [byProfileRaw, byRecipeRaw, bySource, placementRows, durations] = await Promise.all([
+  const [
+    byProfileRaw,
+    byRecipeRaw,
+    bySource,
+    placementRows,
+    durations,
+    placementEngagementRaw,
+    remixRows,
+  ] = await Promise.all([
     prisma.generationJob.groupBy({
       by: ["profileId", "profileVersion", "status"],
       where: { createdAt: { gte: since } },
@@ -57,6 +65,17 @@ export async function generationMetrics(request: Request): Promise<Response> {
       WHERE "createdAt" >= ${since} AND "completedAt" IS NOT NULL AND "profileId" IS NOT NULL
       GROUP BY "profileId"
     `,
+    prisma.$queryRaw<
+      Array<{ slot: string; placementId: string | null; impressions: number; clicks: number }>
+    >`
+      SELECT props->>'slot' AS slot, props->>'placementId' AS "placementId",
+             count(*) FILTER (WHERE name='placement_impression')::int AS impressions,
+             count(*) FILTER (WHERE name='placement_click')::int AS clicks
+      FROM "analytics_events"
+      WHERE name IN ('placement_impression','placement_click') AND "createdAt" >= ${since}
+      GROUP BY 1,2
+    `,
+    prisma.analyticsEvent.count({ where: { name: "feed_item_remixed", createdAt: { gte: since } } }),
   ]);
   const byProfile = byProfileRaw.filter(
     (row): row is typeof row & { profileId: string } => row.profileId !== null,
@@ -135,5 +154,7 @@ export async function generationMetrics(request: Request): Promise<Response> {
       status: row.status,
       count: row._count._all,
     })),
+    placementEngagement: placementEngagementRaw,
+    remix: { total: remixRows },
   });
 }
