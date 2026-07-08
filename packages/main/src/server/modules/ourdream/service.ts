@@ -1952,6 +1952,7 @@ export async function createChatImageGenerationJob(payload: ChatImageRequestedPa
   }
   const prompt = buildChatImagePrompt(payload);
   const orientation = normalizeImageOrientation(payload.controls.orientation, "4:5");
+  const sourceImageAssetId = payload.controls.sourceImageAssetId;
   return createGenerationJobForUser(
     payload.userId,
     {
@@ -1961,12 +1962,20 @@ export async function createChatImageGenerationJob(payload: ChatImageRequestedPa
       consistencyMode: "balanced",
       prompt,
       visualProfileId: payload.visualProfileId,
+      // Explicit whitelist — never blind-spread payload.controls, it's an untrusted
+      // passthrough bag from chat and could otherwise leak arbitrary keys into the job.
       controls: {
         orientation,
+        ...(sourceImageAssetId ? { sourceImageAssetId } : {}),
       },
       presetIds: [],
       orientation,
       outputCount: payload.controls.outputCount,
+      // edit_last_image routes to the img2img profile; selectGenerationProfile falls back
+      // to the cheapest active profile if "chat-image-edit" is missing/disabled, which lacks
+      // initImage capability, so imageReferenceInputsForGenerationJob's source_image role
+      // (reference-images.ts) is simply not requested there — plain generation, no failure.
+      model: sourceImageAssetId ? "chat-image-edit" : undefined,
     },
     {
       idempotencyKey: idempotencyKeys.chatImage(payload.attachmentId),
