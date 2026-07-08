@@ -82,3 +82,20 @@ P4 Task 7: complete (acceptance e2e added to web.test.ts; chat 118/118, main adm
 P4 Task 7: complete (commit 983633f3, review clean ✅; chat 118/118 + main 82/82 + check green; live real-service walkthrough blocked on user-side dev SQL — documented honestly)
 P4 final review: Ready to merge (opus; zero Critical/Important; all Minors defer). Merging to master.
 P4 COMPLETE.
+
+=== P5 SDD START ===
+Base (before P5 Task 1): faf0b38d8d3cdd667571a6b132d3dcf76b10938d
+Plan: docs/superpowers/plans/2026-07-08-image-gen-p5-deepening.md
+P5 Task 1: complete (commit 11e22cfa, review clean ✅; 121/121 chat; finalize re-derivation compile-guarded no drift risk)
+- P5 Task 1 minors: console.warn lost zod flatten; consider assertNever helper if 3rd exhaustive switch appears.
+P5 Task 2: complete (commits d77d80ee + fix eab593a3, review clean after fix ✅; 132/132 chat; retry-carry now tested via real confirm route; degraded edit metadata honest; bonus: exhaustiveness idiom bug fixed)
+P5 Task 3: complete (commits a4a33351 + fix 875e8853, review clean after fix ✅; 26/26; deterministic degrade guard — fallback profile would otherwise mis-forward source image to sd_cpp)
+P5 Task 4: complete (commit ac5411df, review clean ✅; 59/59; campaign-only instrumentation, raw SQL parameterized)
+- P5 Task 4 minors: NULL-placementId grouping untested; RemixSection skips SectionShell (cosmetic).
+P5 Task 5: complete (commit 817ffb85, review clean ✅; 36/36 + regression 40/40; hash sorted-key stable; per-group 8-line cap is forward-only prompt change for dense characters — noted for rollup doc)
+P5 Task 6+7: complete (commits ca9e0d8e + 3f7f6aa0 + test fix 510d1b87, review clean after fix ✅; 130/130 + 63/63 x3 stable)
+P5 Task 8: complete (acceptance e2e added to web.test.ts as single continuous it; chat 133/133, main admin-console+event-consumer+image-generation-service+generation-pricing+launch-readiness 156/156, bun run check all green; real-model FC probe passed against oMLX Qwen3.6-35B-A3B for both tools + neutral no-call — probe initially 502'd due to local HTTP_PROXY/misconfigured NO_PROXY intercepting requests containing tool names, bypassed proxy explicitly and reran clean; ComfyUI img2img bonus skipped — avoided co-loading with FC probe model per OOM history; spec §7 + CURRENT_FUNCTIONAL_COVERAGE.md updated)
+P5 final review: pending.
+P5 Task 8: complete (commit 6aa68efe, review clean ✅; chat 133/133 + main 156/156 + check green; real-model 3-scenario FC probe all correct — edit/generate/neutral)
+P5 final review: Ready to merge (opus; edit-loop seam verified end-to-end incl. storageKey hydration unreachable-throw; all Minors defer). Merging to master.
+P5 COMPLETE.

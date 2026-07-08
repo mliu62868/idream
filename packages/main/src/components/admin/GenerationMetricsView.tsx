@@ -28,12 +28,21 @@ type SourceMetric = StatusBuckets & { sourceType: string; costDreamcoins: number
 
 type PlacementMetric = { slot: string; status: string; count: number };
 
+type PlacementEngagementMetric = {
+  slot: string;
+  placementId: string | null;
+  impressions: number;
+  clicks: number;
+};
+
 type MetricsResponse = {
   windowDays: number;
   profiles: ProfileMetric[];
   recipes: RecipeMetric[];
   sources: SourceMetric[];
   placements: PlacementMetric[];
+  placementEngagement: PlacementEngagementMetric[];
+  remix: { total: number };
 };
 
 const WINDOW_OPTIONS = [7, 30] as const;
@@ -112,6 +121,8 @@ export function GenerationMetricsView() {
       <RecipesTable recipes={metrics?.recipes ?? []} t={t} />
       <SourcesTable sources={metrics?.sources ?? []} t={t} />
       <PlacementsTable placements={metrics?.placements ?? []} t={t} />
+      <PlacementEngagementTable engagement={metrics?.placementEngagement ?? []} t={t} />
+      <RemixSection total={metrics?.remix.total ?? 0} t={t} />
     </div>
   );
 }
@@ -271,5 +282,51 @@ function PlacementsTable({ placements, t }: { placements: PlacementMetric[]; t: 
         </table>
       </div>
     </SectionShell>
+  );
+}
+
+function PlacementEngagementTable({
+  engagement,
+  t,
+}: {
+  engagement: PlacementEngagementMetric[];
+  t: Translate;
+}) {
+  return (
+    <SectionShell isEmpty={engagement.length === 0} t={t} title="Placement Engagement">
+      <div className="overflow-x-auto">
+        <table className="w-full text-left text-xs">
+          <thead>
+            <tr className="text-[rgb(170,170,170)]">
+              <th className="pb-2 pr-4">{t("Slot")}</th>
+              <th className="pb-2 pr-4">{t("Placement")}</th>
+              <th className="pb-2 pr-4">{t("Impressions")}</th>
+              <th className="pb-2">{t("Clicks")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {engagement.map((row) => (
+              <tr className="border-t border-white/5" key={`${row.slot}:${row.placementId}`}>
+                <td className="py-2 pr-4 font-mono">{row.slot}</td>
+                <td className="py-2 pr-4 font-mono">{row.placementId ?? "–"}</td>
+                <td className="py-2 pr-4">{row.impressions}</td>
+                <td className="py-2">{row.clicks}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </SectionShell>
+  );
+}
+
+function RemixSection({ total, t }: { total: number; t: Translate }) {
+  return (
+    <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+      <h3 className="mb-3 text-sm font-semibold">{t("Remix")}</h3>
+      <p className="text-xs">
+        {t("Total")}: <span className="font-mono">{total}</span>
+      </p>
+    </section>
   );
 }

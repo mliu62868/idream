@@ -29,7 +29,9 @@ const pregenCreateSchema = z.object({
   reason: z.string().trim().max(2_000).optional(),
 });
 
-async function requireOfficialCharacter(characterId: string) {
+// Accepts any non-deleted character (official or user-created) — same authz
+// scope as Production Studio, not restricted to admin-managed "official" ones.
+async function requirePregenTargetCharacter(characterId: string) {
   const character = await prisma.character.findFirst({
     where: { id: characterId, deletedAt: null },
     select: { id: true, name: true },
@@ -50,7 +52,7 @@ async function resolveDefaultProfileKey() {
 export async function createCharacterPregenBatch(request: Request, characterId: string) {
   const actor = await actorWithPermission(request, "content.production.write");
   const body = pregenCreateSchema.parse(await jsonBody(request));
-  const character = await requireOfficialCharacter(characterId);
+  const character = await requirePregenTargetCharacter(characterId);
   const pack = PREGEN_PACKS[body.pack];
   const input: ProductionBatchCreateInput = {
     title: `${character.name} ${body.pack} pack`,
@@ -70,7 +72,7 @@ export async function createCharacterPregenBatch(request: Request, characterId: 
 
 export async function listCharacterPregenBatches(request: Request, characterId: string) {
   await actorWithPermission(request, "content.asset.read");
-  const character = await requireOfficialCharacter(characterId);
+  const character = await requirePregenTargetCharacter(characterId);
   const [batches, placements] = await Promise.all([
     prisma.contentProductionBatch.findMany({
       where: { targetType: "character", targetId: character.id },

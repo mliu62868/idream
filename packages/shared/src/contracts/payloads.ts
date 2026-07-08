@@ -154,6 +154,10 @@ export const chatImageRequestedPayloadSchema = z
       .object({
         orientation: z.string().default("4:5"),
         outputCount: z.number().int().min(1).max(4).default(1),
+        // P5 Task 2: img2img source for edit_last_image — the media asset of the
+        // last completed photo in the session. Absent for generate_image_async
+        // (and for edit_last_image's no-source-photo fallback).
+        sourceImageAssetId: z.string().optional(),
       })
       .passthrough()
       .default({ orientation: "4:5", outputCount: 1 }),

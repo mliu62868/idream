@@ -553,6 +553,9 @@ export async function confirmImageAttachment(
   const plannedControls = (attachment.metadata ?? {}) as {
     orientation?: unknown;
     outputCount?: unknown;
+    // P5 Task 2: the img2img source recorded by generate.ts for edit_last_image;
+    // carried through a retry so the resend still targets the same photo.
+    editSourceAssetId?: unknown;
   };
   // Re-read the persona fresh rather than trusting anything captured at the original
   // request (attachment.metadata): a retry can land well after the original turn, and
@@ -581,6 +584,9 @@ export async function confirmImageAttachment(
         typeof plannedControls.orientation === "string" ? plannedControls.orientation : "4:5",
       outputCount:
         typeof plannedControls.outputCount === "number" ? plannedControls.outputCount : 1,
+      ...(typeof plannedControls.editSourceAssetId === "string"
+        ? { sourceImageAssetId: plannedControls.editSourceAssetId }
+        : {}),
     },
     visualProfileId: persona?.visualProfileId ?? undefined,
     visualProfileVersion: persona?.visualProfileVersion ?? undefined,

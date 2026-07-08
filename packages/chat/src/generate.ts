@@ -19,14 +19,15 @@ import { recordOutbox, scheduleOutboxDelivery } from "./outbox.js";
 import { createId } from "./id.js";
 import { enqueue } from "./queue.js";
 import {
+  EDIT_LAST_IMAGE_TOOL,
   findAgentTool,
   GENERATE_IMAGE_ASYNC_TOOL,
   imageToolCaption,
   planAgentToolCall,
   registryChatTools,
   shouldPlanImageTool,
-  type GenerateImageAsyncArgs,
-  type GenerateImageAsyncToolCall,
+  type AgentToolCallPlan,
+  type ImageAgentToolCall,
 } from "./agent-tools.js";
 import { companionRole } from "@idream/shared";
 import {
@@ -86,7 +87,7 @@ export async function processGenerate(
   const modelMessages = buildModelMessages(context);
   const chunks: string[] = [];
   let seq = 0;
-  let imageToolCall: GenerateImageAsyncToolCall | null = null;
+  let imageToolCall: ImageAgentToolCall | null = null;
   // metadata.trigger for the attachment (finalize, below): "agent_fc" when the model's
   // native function call produced it, "agent_tool_call" for the legacy regex+planner path.
   let toolCallTrigger: "agent_fc" | "agent_tool_call" = "agent_tool_call";
@@ -109,14 +110,14 @@ export async function processGenerate(
     }
   };
 
-  const streamCaption = async (toolCall: GenerateImageAsyncToolCall): Promise<void> => {
+  const streamCaption = async (toolCall: ImageAgentToolCall): Promise<void> => {
     const reply = imageToolCaption(toolCall, context.persona.name);
     for (const piece of chunk(reply, 96)) await streamDelta(piece);
   };
 
   // FC follow-up call (behavior contract point 3): when a legal tool call left no
   // prose behind, ask the model for a short in-character line to accompany the photo.
-  const streamToolFollowup = async (rawCall: ChatToolCall, toolCall: GenerateImageAsyncToolCall): Promise<void> => {
+  const streamToolFollowup = async (rawCall: ChatToolCall, toolCall: ImageAgentToolCall): Promise<void> => {
     const followupMessages: ModelMessage[] = [
       ...modelMessages,
       {
@@ -166,19 +167,19 @@ export async function processGenerate(
 
   // Legal-tool-call validation shared by the FC path: unknown tool name or a JSON/schema
   // failure is dropped silently (contract point 2) — never thrown.
-  const validateToolCall = (rawCall: ChatToolCall): GenerateImageAsyncArgs | null => {
+  const validateToolCall = (rawCall: ChatToolCall): AgentToolCallPlan | null => {
     const tool = findAgentTool(rawCall.name);
     if (!tool) {
       console.warn(`chat agent tool call references unknown tool "${rawCall.name}"; ignoring`);
       return null;
     }
     try {
-      const result = tool.argsSchema.safeParse(JSON.parse(rawCall.arguments));
-      if (!result.success) {
-        console.warn(`chat agent tool call "${rawCall.name}" failed args validation; ignoring`, result.error.flatten());
+      const plan = tool.parseCall(JSON.parse(rawCall.arguments) as unknown);
+      if (!plan) {
+        console.warn(`chat agent tool call "${rawCall.name}" failed args validation; ignoring`);
         return null;
       }
-      return result.data as GenerateImageAsyncArgs;
+      return plan;
     } catch (error) {
       console.warn(`chat agent tool call "${rawCall.name}" has invalid JSON arguments; ignoring`, error);
       return null;
@@ -211,9 +212,9 @@ export async function processGenerate(
 
       const rawCall = toolCalls[0];
       if (rawCall) {
-        const parsedArgs = validateToolCall(rawCall);
-        if (parsedArgs) {
-          imageToolCall = { name: GENERATE_IMAGE_ASYNC_TOOL, arguments: parsedArgs };
+        const plan = validateToolCall(rawCall);
+        if (plan) {
+          imageToolCall = toolCallFromPlan(plan);
           toolCallTrigger = "agent_fc";
           if (!chunks.join("").trim()) await streamToolFollowup(rawCall, imageToolCall);
         }
@@ -319,7 +320,7 @@ interface FinalizeInput {
   moderation: { status: string; policyCode?: string; confidence: number };
   blocked: boolean;
   context: BuiltContext;
-  imageToolCall: GenerateImageAsyncToolCall | null;
+  imageToolCall: ImageAgentToolCall | null;
   toolCallTrigger: "agent_fc" | "agent_tool_call";
 }
 
@@ -429,7 +430,11 @@ async function finalize(input: FinalizeInput): Promise<void> {
         payload: { sessionId: session.id, delta: 1 },
       });
 
-      if (imageToolCall) {
+      // toolPlan re-derives the discriminated plan from imageToolCall so the outbox
+      // construction below branches on plan.tool (extended by the edit_last_image arm).
+      const toolPlan: AgentToolCallPlan | null = imageToolCall ? planFromToolCall(imageToolCall) : null;
+      if (toolPlan) {
+        const built = await buildImageRequestFromPlan(toolPlan, tx, session.id);
         const attachmentId = createId("att");
         await tx.messageAttachment.create({
           data: {
@@ -438,14 +443,17 @@ async function finalize(input: FinalizeInput): Promise<void> {
             messageId: payload.assistantMessageId,
             kind: "generated_image",
             status: "requesting",
-            promptHint: imageToolCall.arguments.prompt,
+            promptHint: built.promptHint,
             metadata: {
               trigger: toolCallTrigger,
-              toolName: imageToolCall.name,
+              toolName: built.toolName,
               sourceUserMessageId: payload.userMessageId,
-              assistantCaption: imageToolCall.arguments.caption ?? null,
-              orientation: imageToolCall.arguments.orientation,
-              outputCount: imageToolCall.arguments.outputCount,
+              assistantCaption: built.assistantCaption,
+              orientation: built.controls.orientation,
+              outputCount: built.controls.outputCount,
+              // P5 Task 2: carried so a later confirm/retry (service.ts confirmImageAttachment,
+              // which re-emits from this metadata) still targets the same source photo.
+              ...(built.controls.sourceImageAssetId ? { editSourceAssetId: built.controls.sourceImageAssetId } : {}),
             } as Prisma.InputJsonValue,
           },
         });
@@ -458,12 +466,9 @@ async function finalize(input: FinalizeInput): Promise<void> {
           messageId: payload.assistantMessageId,
           userId: session.userId,
           characterId: session.characterId,
-          promptHint: imageToolCall.arguments.prompt,
+          promptHint: built.promptHint,
           conversationContext: buildConversationContext(context, content),
-          controls: {
-            orientation: imageToolCall.arguments.orientation,
-            outputCount: imageToolCall.arguments.outputCount,
-          },
+          controls: built.controls,
           // Visual passport at request time. Read fresh from persona (not stored on the
           // attachment) so a retry after re-buildContext always carries the CURRENT
           // active profile rather than a value captured earlier in this turn.
@@ -558,6 +563,98 @@ function chunk(text: string, size: number): string[] {
   for (let i = 0; i < text.length; i += size) out.push(text.slice(i, i + size));
   return out.length ? out : [""];
 }
+// Converts a validated agent tool call plan into the wire shape generate.ts streams/logs.
+function toolCallFromPlan(plan: AgentToolCallPlan): ImageAgentToolCall {
+  switch (plan.tool) {
+    case GENERATE_IMAGE_ASYNC_TOOL:
+      return { name: plan.tool, arguments: plan.args };
+    case EDIT_LAST_IMAGE_TOOL:
+      return { name: plan.tool, arguments: plan.args };
+    default: {
+      const exhaustive: never = plan;
+      throw new Error(`unhandled agent tool plan: ${JSON.stringify(exhaustive)}`);
+    }
+  }
+}
+
+// Inverse of toolCallFromPlan: re-derives the discriminated plan from a resolved
+// ImageAgentToolCall (name+arguments already correlated per tool, since it was built by
+// toolCallFromPlan or by the FC/planner validation paths). Kept as an explicit switch
+// (rather than `{ tool: toolCall.name, args: toolCall.arguments }`) because TS can't
+// correlate a union's discriminant with its payload across two independently-typed
+// property accesses.
+function planFromToolCall(toolCall: ImageAgentToolCall): AgentToolCallPlan {
+  switch (toolCall.name) {
+    case GENERATE_IMAGE_ASYNC_TOOL:
+      return { tool: toolCall.name, args: toolCall.arguments };
+    case EDIT_LAST_IMAGE_TOOL:
+      return { tool: toolCall.name, args: toolCall.arguments };
+    default: {
+      const exhaustive: never = toolCall;
+      throw new Error(`unhandled agent tool call: ${String(exhaustive)}`);
+    }
+  }
+}
+
+interface ImageRequestFromPlan {
+  promptHint: string;
+  assistantCaption: string | null;
+  controls: { orientation: string; outputCount: number; sourceImageAssetId?: string };
+  // The tool this request actually ended up as — distinct from plan.tool when
+  // edit_last_image degrades to a fresh generate (no source photo). Recorded on the
+  // attachment as metadata.toolName so the trail reflects what actually happened,
+  // never a stale "edit_last_image" tag on what is, in fact, a plain generate.
+  toolName: typeof GENERATE_IMAGE_ASYNC_TOOL | typeof EDIT_LAST_IMAGE_TOOL;
+}
+
+// Shapes the attachment/outbox payload fields per plan.tool. The edit_last_image arm
+// looks up the session's most recent completed photo (behavior contract point 1) and,
+// when found, carries its mediaAssetId as the img2img source (point 2). No source photo
+// degrades to generate_image_async semantics rather than erroring (point 3) — sending a
+// fresh image beats failing the turn.
+async function buildImageRequestFromPlan(
+  plan: AgentToolCallPlan,
+  tx: Prisma.TransactionClient,
+  sessionId: string,
+): Promise<ImageRequestFromPlan> {
+  switch (plan.tool) {
+    case GENERATE_IMAGE_ASYNC_TOOL:
+      return {
+        promptHint: plan.args.prompt,
+        assistantCaption: plan.args.caption ?? null,
+        controls: { orientation: plan.args.orientation, outputCount: plan.args.outputCount },
+        toolName: GENERATE_IMAGE_ASYNC_TOOL,
+      };
+    case EDIT_LAST_IMAGE_TOOL: {
+      const source = await tx.messageAttachment.findFirst({
+        where: { sessionId, kind: "generated_image", status: "completed", mediaAssetId: { not: null } },
+        orderBy: { createdAt: "desc" },
+      });
+      if (!source?.mediaAssetId) {
+        console.warn(
+          `edit_last_image: no completed source photo in session ${sessionId}; falling back to generate_image_async semantics`,
+        );
+        return {
+          promptHint: plan.args.instruction,
+          assistantCaption: plan.args.caption ?? null,
+          controls: { orientation: "4:5", outputCount: 1 },
+          toolName: GENERATE_IMAGE_ASYNC_TOOL,
+        };
+      }
+      return {
+        promptHint: plan.args.instruction,
+        assistantCaption: plan.args.caption ?? null,
+        controls: { orientation: "4:5", outputCount: 1, sourceImageAssetId: source.mediaAssetId },
+        toolName: EDIT_LAST_IMAGE_TOOL,
+      };
+    }
+    default: {
+      const exhaustive: never = plan;
+      throw new Error(`unhandled agent tool plan: ${JSON.stringify(exhaustive)}`);
+    }
+  }
+}
+
 function buildConversationContext(context: BuiltContext, assistantContent: string): string {
   return clamp(
     [

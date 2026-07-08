@@ -34,6 +34,8 @@ type VisualProfileItem = {
   consistencyScore: number | null;
   createdFrom: string;
   createdAt: string;
+  identitySource: "derived" | "manual";
+  identityStale: boolean;
 };
 
 const STYLES = ["realistic", "anime", "hybrid", "other"] as const;
@@ -161,8 +163,23 @@ export function VisualPassportPanel({ characterId }: { characterId: string }) {
 
       {active ? (
         <div className="mt-4">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-[rgb(170,170,170)]">
+          <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[rgb(170,170,170)]">
             {t("Active version traits (read-only)")}
+            <span
+              className={cn(
+                "inline-flex items-center px-2 py-0.5 normal-case tracking-normal",
+                active.identitySource === "derived"
+                  ? "bg-sky-500/15 text-sky-300"
+                  : "bg-white/10 text-[rgb(200,200,200)]",
+              )}
+            >
+              {active.identitySource === "derived" ? t("Derived from traits") : t("Hand-authored")}
+            </span>
+            {active.identityStale ? (
+              <span className="inline-flex items-center px-2 py-0.5 normal-case tracking-normal bg-amber-500/15 text-amber-200">
+                {t("Stale — traits changed since this was derived")}
+              </span>
+            ) : null}
           </h3>
           <div className="mt-2 grid gap-2 md:grid-cols-3">
             <TraitBlock label={t("Face")} value={active.faceTraits} />
@@ -225,7 +242,8 @@ function MintVersionForm({
     setSubmitError(null);
     try {
       await apiWrite(`/api/v1/admin/content/characters/${characterId}/visual-profiles`, "POST", {
-        identityPrompt: identityPrompt.trim(),
+        // 留空 → 后端由当前 traits 派生（source: "derived"）；填写 → 原样存 + manual。
+        identityPrompt: identityPrompt.trim() || undefined,
         negativeIdentityPrompt: negativeIdentityPrompt.trim() || undefined,
         style,
         defaultSeed: defaultSeed.trim() || undefined,
@@ -242,7 +260,6 @@ function MintVersionForm({
 
   const canSubmit =
     !submitting &&
-    identityPrompt.trim().length > 0 &&
     reason.trim().length >= 3 &&
     confirmation.trim() === confirmationToken(characterId);
 
@@ -255,7 +272,7 @@ function MintVersionForm({
         <textarea
           className={textareaClass}
           onChange={(event) => setIdentityPrompt(event.target.value)}
-          placeholder={t("Identity prompt")}
+          placeholder={t("Identity prompt (leave blank to derive from traits)")}
           value={identityPrompt}
         />
         <textarea

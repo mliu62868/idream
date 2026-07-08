@@ -215,6 +215,146 @@ describe("applyChatEvent", () => {
     expect(job.visualProfileId).toBe(visualProfile.id);
   });
 
+  it("routes a chat.image.requested payload carrying controls.sourceImageAssetId to the chat-image-edit profile", async () => {
+    const suffix = `${Date.now()}`;
+    const userId = `${P}edit-user-${suffix}`;
+    const characterId = `${P}edit-char-${suffix}`;
+    const attachmentId = `${P}edit-att-${suffix}`;
+    await createUser({ id: userId });
+    await createCharacter({ id: characterId, creatorId: userId, visibility: "public", status: "approved" });
+    await grantCoins(userId, 100, "seed");
+
+    await prisma.generationModelProfile.create({
+      data: {
+        id: `${P}edit-profile-${suffix}`,
+        profileKey: "chat-image-edit",
+        label: "Chat Image Edit (Qwen-Edit)",
+        mode: "image",
+        runner: "comfyui",
+        pipelineModel: "qwen-image-edit",
+        workflowKey: "qwen-image-edit-img2img",
+        runnerConfig: {
+          capabilities: { textToImage: false, stableSeed: true, referenceImages: false, initImage: true, lora: false },
+        },
+        defaultWidth: 832,
+        defaultHeight: 1216,
+        allowedOrientations: ["4:5"],
+        costMultiplier: 1.5,
+        status: "active",
+        enabled: true,
+        version: 1,
+      },
+    });
+    const sourceAsset = await prisma.mediaAsset.create({
+      data: {
+        id: `${P}edit-source-asset-${suffix}`,
+        ownerId: userId,
+        characterId,
+        type: "image",
+        url: "/images/ourdream/card-sarah-mercer.webp",
+        width: 512,
+        height: 640,
+        visibility: "private",
+        safetyStatus: "passed",
+        metadata: {},
+      },
+    });
+
+    await applyChatEvent({
+      eventId: `${P}edit-evt-${suffix}`,
+      eventType: CHAT_TO_MAIN_EVENTS.imageRequested,
+      aggregateId: attachmentId,
+      payload: {
+        version: 1,
+        kind: "chat.image.requested",
+        requestId: `${P}edit-req-${suffix}`,
+        attachmentId,
+        sessionId: `${P}edit-sess-${suffix}`,
+        messageId: `${P}edit-msg-${suffix}`,
+        userId,
+        characterId,
+        promptHint: "make it sunset",
+        conversationContext: "user: make it sunset",
+        controls: { orientation: "4:5", outputCount: 1, sourceImageAssetId: sourceAsset.id },
+      },
+    });
+
+    const job = await prisma.generationJob.findFirstOrThrow({
+      where: { sourceType: "chat_image", sourceId: attachmentId },
+    });
+    expect(job.profileId).toBe("chat-image-edit");
+    expect(job.model).toBe("qwen-image-edit-img2img");
+    expect(job.controls).toMatchObject({ sourceImageAssetId: sourceAsset.id });
+  });
+
+  it("drops sourceImageAssetId when the chat-image-edit profile is unavailable and falls back to a different pipeline", async () => {
+    const suffix = `${Date.now()}`;
+    const userId = `${P}fallback-user-${suffix}`;
+    const characterId = `${P}fallback-char-${suffix}`;
+    const attachmentId = `${P}fallback-att-${suffix}`;
+    await createUser({ id: userId });
+    await createCharacter({ id: characterId, creatorId: userId, visibility: "public", status: "approved" });
+    await grantCoins(userId, 100, "seed");
+
+    const sourceAsset = await prisma.mediaAsset.create({
+      data: {
+        id: `${P}fallback-source-asset-${suffix}`,
+        ownerId: userId,
+        characterId,
+        type: "image",
+        url: "/images/ourdream/card-sarah-mercer.webp",
+        width: 512,
+        height: 640,
+        visibility: "private",
+        safetyStatus: "passed",
+        metadata: {},
+      },
+    });
+
+    // seed.ts always seeds "chat-image-edit" as active — simulate it being unavailable
+    // (missing/disabled) by disabling it just for this test, restoring it afterward so
+    // other tests in this sequential (fileParallelism: false) run are unaffected. Only
+    // the globally-seeded default active image profile (profile_image_default_v1,
+    // costMultiplier 1, initImage:true) remains, so selectGenerationProfile must fall
+    // back to it.
+    await prisma.generationModelProfile.updateMany({
+      where: { profileKey: "chat-image-edit" },
+      data: { enabled: false },
+    });
+    try {
+      await applyChatEvent({
+        eventId: `${P}fallback-evt-${suffix}`,
+        eventType: CHAT_TO_MAIN_EVENTS.imageRequested,
+        aggregateId: attachmentId,
+        payload: {
+          version: 1,
+          kind: "chat.image.requested",
+          requestId: `${P}fallback-req-${suffix}`,
+          attachmentId,
+          sessionId: `${P}fallback-sess-${suffix}`,
+          messageId: `${P}fallback-msg-${suffix}`,
+          userId,
+          characterId,
+          promptHint: "make it sunset",
+          conversationContext: "user: make it sunset",
+          controls: { orientation: "4:5", outputCount: 1, sourceImageAssetId: sourceAsset.id },
+        },
+      });
+
+      const job = await prisma.generationJob.findFirstOrThrow({
+        where: { sourceType: "chat_image", sourceId: attachmentId },
+      });
+      expect(job.profileId).not.toBe("chat-image-edit");
+      expect(job.profileId).toBe("profile_image_default_v1");
+      expect(job.controls).not.toHaveProperty("sourceImageAssetId");
+    } finally {
+      await prisma.generationModelProfile.updateMany({
+        where: { profileKey: "chat-image-edit" },
+        data: { enabled: true },
+      });
+    }
+  });
+
   it("reuses approved character chat assets before creating a new generation job", async () => {
     const suffix = `${Date.now()}`;
     const userId = `${P}reuse-user-${suffix}`;

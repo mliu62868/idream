@@ -50,13 +50,23 @@ const { processGenerate } = await import("./generate.js");
 
 type CreateCall = { data: Record<string, unknown> };
 
-function fakePrisma() {
+// `completedSourceAttachment` seeds the edit_last_image lookup (generate.ts's
+// buildImageRequestFromPlan queries tx.messageAttachment.findFirst); undefined
+// exercises the no-source-photo fallback (behavior contract point 3).
+function fakePrisma(completedSourceAttachment?: { mediaAssetId: string }) {
   const attachmentCreates: CreateCall[] = [];
   const outboxCreates: CreateCall[] = [];
   const messageUpdates: CreateCall[] = [];
   const rootMessageUpdates: CreateCall[] = [];
 
   const tx = {
+    messageAttachment: {
+      create: async (call: CreateCall) => {
+        attachmentCreates.push(call);
+        return {};
+      },
+      findFirst: async () => completedSourceAttachment ?? null,
+    },
     message: {
       findUnique: async () => ({ id: "msg_assistant", status: "generating", attempt: 1 }),
       updateMany: async (call: CreateCall) => {
@@ -80,12 +90,6 @@ function fakePrisma() {
     chatOutboxEvent: {
       create: async (call: CreateCall) => {
         outboxCreates.push(call);
-        return {};
-      },
-    },
-    messageAttachment: {
-      create: async (call: CreateCall) => {
-        attachmentCreates.push(call);
         return {};
       },
     },
@@ -314,5 +318,85 @@ describe("chat generate agent image tool", () => {
     });
     expect(attachmentCreates).toHaveLength(0);
     expect(outboxCreates.some((call) => call.data.eventType === CHAT_TO_MAIN_EVENTS.imageRequested)).toBe(false);
+  });
+
+  it("FC path: edit_last_image dispatches to the second registry arm — controls carry sourceImageAssetId", async () => {
+    streamMock.mockImplementation(async function* fcStream() {
+      yield {
+        delta: "",
+        done: true,
+        toolCalls: [
+          {
+            id: "call_edit_1",
+            name: "edit_last_image",
+            arguments: JSON.stringify({
+              instruction: "change the background to snowy mountains",
+              caption: "one sec, redoing it!",
+            }),
+          },
+        ],
+      };
+    });
+    const { prisma, attachmentCreates, outboxCreates } = fakePrisma({ mediaAssetId: "media_source_1" });
+
+    const result = await processGenerate(
+      { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+      prisma,
+    );
+
+    expect(result.status).toBe("sent");
+    expect(attachmentCreates[0]?.data).toMatchObject({
+      messageId: "msg_assistant",
+      kind: "generated_image",
+      status: "requesting",
+      promptHint: "change the background to snowy mountains",
+    });
+    const metadata = attachmentCreates[0]?.data.metadata as { editSourceAssetId?: string; toolName?: string };
+    expect(metadata.editSourceAssetId).toBe("media_source_1");
+    expect(metadata.toolName).toBe("edit_last_image");
+    const imageOutbox = outboxCreates.find((call) => call.data.eventType === CHAT_TO_MAIN_EVENTS.imageRequested);
+    expect(imageOutbox?.data.payload).toMatchObject({
+      kind: "chat.image.requested",
+      promptHint: "change the background to snowy mountains",
+      controls: { sourceImageAssetId: "media_source_1" },
+    });
+  });
+
+  it("FC path: edit_last_image with no completed source photo in the session degrades to generate_image_async semantics (no throw)", async () => {
+    streamMock.mockImplementation(async function* fcStream() {
+      yield {
+        delta: "",
+        done: true,
+        toolCalls: [
+          {
+            id: "call_edit_2",
+            name: "edit_last_image",
+            arguments: JSON.stringify({ instruction: "change the background to snowy mountains" }),
+          },
+        ],
+      };
+    });
+    const { prisma, attachmentCreates, outboxCreates } = fakePrisma(); // no completed source attachment
+
+    const result = await processGenerate(
+      { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+      prisma,
+    );
+
+    expect(result.status).toBe("sent");
+    expect(attachmentCreates[0]?.data).toMatchObject({
+      status: "requesting",
+      promptHint: "change the background to snowy mountains",
+    });
+    const metadata = attachmentCreates[0]?.data.metadata as { editSourceAssetId?: string; toolName?: string };
+    expect(metadata.editSourceAssetId).toBeUndefined();
+    // Degraded attachment must be tagged with the tool it actually became — not a stale
+    // "edit_last_image" — so a later retry (which reads metadata.editSourceAssetId, absent
+    // here) can never resurrect a sourceImageAssetId that was never resolved.
+    expect(metadata.toolName).toBe("generate_image_async");
+    const imageOutbox = outboxCreates.find((call) => call.data.eventType === CHAT_TO_MAIN_EVENTS.imageRequested);
+    expect((imageOutbox?.data.payload as { controls: Record<string, unknown> }).controls).not.toHaveProperty(
+      "sourceImageAssetId",
+    );
   });
 });

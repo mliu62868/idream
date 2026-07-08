@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   AGENT_TOOL_REGISTRY,
+  EDIT_LAST_IMAGE_TOOL,
   GENERATE_IMAGE_ASYNC_TOOL,
   buildToolPlannerMessages,
   findAgentTool,
@@ -70,8 +71,11 @@ describe("agent image tool planning", () => {
       },
     }));
 
-    expect(plan.toolCall?.arguments.prompt).toContain("sunlit window");
-    expect(plan.toolCall?.arguments.caption).toBe("我给你准备一张靠窗的照片。");
+    const toolCall = plan.toolCall;
+    expect(toolCall?.name).toBe(GENERATE_IMAGE_ASYNC_TOOL);
+    if (toolCall?.name !== GENERATE_IMAGE_ASYNC_TOOL) throw new Error("expected generate_image_async");
+    expect(toolCall.arguments.prompt).toContain("sunlit window");
+    expect(toolCall.arguments.caption).toBe("我给你准备一张靠窗的照片。");
   });
 
   it("returns no tool when the model selects none or emits invalid JSON", () => {
@@ -132,9 +136,12 @@ describe("agent image tool planning", () => {
 });
 
 describe("agent tool registry", () => {
-  it("contains exactly the generate_image_async tool", () => {
-    expect(AGENT_TOOL_REGISTRY).toHaveLength(1);
-    expect(AGENT_TOOL_REGISTRY[0]?.name).toBe(GENERATE_IMAGE_ASYNC_TOOL);
+  it("contains generate_image_async and edit_last_image", () => {
+    expect(AGENT_TOOL_REGISTRY).toHaveLength(2);
+    expect(AGENT_TOOL_REGISTRY.map((tool) => tool.name)).toEqual([
+      GENERATE_IMAGE_ASYNC_TOOL,
+      EDIT_LAST_IMAGE_TOOL,
+    ]);
   });
 
   it("finds a registered tool by name and misses unknown names", () => {
@@ -186,5 +193,113 @@ describe("agent tool registry", () => {
     const tool = findAgentTool(GENERATE_IMAGE_ASYNC_TOOL)!;
     expect(messages[0]?.content).toContain(tool.name);
     expect(messages[0]?.content).toContain("Available tool");
+  });
+
+  it("keeps matching a ZH intent hint when it's mixed with EN text in the same message (raw-text ZH match)", () => {
+    const withMessage = (content: string): BuiltContext => ({
+      ...context,
+      recentMessages: [{ id: "m1", role: "user", content }],
+    });
+
+    expect(shouldPlanImageTool(withMessage("SEND ME 一张自拍 please"))).toBe(true);
+    expect(shouldPlanImageTool(withMessage("Hey, 给我一张坐在窗边的照片 thanks"))).toBe(true);
+  });
+
+  it("parseCall returns a discriminated plan for valid args, and null for invalid args, without throwing", () => {
+    const tool = findAgentTool(GENERATE_IMAGE_ASYNC_TOOL)!;
+
+    const plan = tool.parseCall({
+      prompt: "Realistic photo of Melissa at a sunlit window, soft light, portrait framing",
+      caption: "coming right up",
+      orientation: "4:5",
+      outputCount: 1,
+    });
+    expect(plan).toEqual({
+      tool: GENERATE_IMAGE_ASYNC_TOOL,
+      args: {
+        prompt: "Realistic photo of Melissa at a sunlit window, soft light, portrait framing",
+        caption: "coming right up",
+        orientation: "4:5",
+        outputCount: 1,
+      },
+    });
+
+    expect(tool.parseCall({ prompt: "too short" })).toBeNull();
+    expect(tool.parseCall("not an object")).toBeNull();
+    expect(tool.parseCall(undefined)).toBeNull();
+  });
+});
+
+describe("edit_last_image tool", () => {
+  it("produces a valid JSON Schema requiring instruction only", () => {
+    const tool = findAgentTool(EDIT_LAST_IMAGE_TOOL)!;
+    const chatTool = tool.toChatTool();
+    expect(chatTool.name).toBe(EDIT_LAST_IMAGE_TOOL);
+    expect(chatTool.description).toContain("identity");
+    expect(chatTool.parameters).toMatchObject({ type: "object", required: ["instruction"] });
+    const properties = (chatTool.parameters as { properties: Record<string, unknown> }).properties;
+    expect(Object.keys(properties)).toEqual(expect.arrayContaining(["instruction", "caption"]));
+  });
+
+  it("parseCall validates instruction length and returns a discriminated plan", () => {
+    const tool = findAgentTool(EDIT_LAST_IMAGE_TOOL)!;
+
+    const plan = tool.parseCall({
+      instruction: "change the background to snowy mountains",
+      caption: "one sec!",
+    });
+    expect(plan).toEqual({
+      tool: EDIT_LAST_IMAGE_TOOL,
+      args: { instruction: "change the background to snowy mountains", caption: "one sec!" },
+    });
+
+    expect(tool.parseCall({ instruction: "hi" })).toBeNull(); // below min(4)
+    expect(tool.parseCall({})).toBeNull();
+    expect(tool.parseCall("not an object")).toBeNull();
+  });
+
+  it("matches ZH edit-intent phrasing (改/换/变成/把...照片/背景换/重P)", () => {
+    const withMessage = (content: string): BuiltContext => ({
+      ...context,
+      recentMessages: [{ id: "m1", role: "user", content }],
+    });
+
+    expect(shouldPlanImageTool(withMessage("把刚才那张照片改成雪山背景"))).toBe(true);
+    expect(shouldPlanImageTool(withMessage("换个背景"))).toBe(true);
+    expect(shouldPlanImageTool(withMessage("背景换成沙滩"))).toBe(true);
+    expect(shouldPlanImageTool(withMessage("重新P一下这张图"))).toBe(true);
+  });
+
+  it("matches EN edit-intent phrasing (edit/change/redo/make it/turn it into + photo/picture/image/background/that)", () => {
+    const withMessage = (content: string): BuiltContext => ({
+      ...context,
+      recentMessages: [{ id: "m1", role: "user", content }],
+    });
+
+    expect(shouldPlanImageTool(withMessage("can you change the background in that photo"))).toBe(true);
+    expect(shouldPlanImageTool(withMessage("edit that picture please"))).toBe(true);
+    expect(shouldPlanImageTool(withMessage("turn that photo into a snowy scene"))).toBe(true);
+    expect(shouldPlanImageTool(withMessage("how are you today"))).toBe(false);
+  });
+
+  it("planner path: parseAgentToolPlan resolves an edit_last_image tool call via the registry", () => {
+    const plan = parseAgentToolPlan(JSON.stringify({
+      tool: {
+        name: EDIT_LAST_IMAGE_TOOL,
+        arguments: { instruction: "change the background to snowy mountains", caption: "coming right up" },
+      },
+    }));
+
+    const toolCall = plan.toolCall;
+    expect(toolCall?.name).toBe(EDIT_LAST_IMAGE_TOOL);
+    if (toolCall?.name !== EDIT_LAST_IMAGE_TOOL) throw new Error("expected edit_last_image");
+    expect(toolCall.arguments.instruction).toContain("snowy mountains");
+    expect(toolCall.arguments.caption).toBe("coming right up");
+  });
+
+  it("buildToolPlannerMessages lists edit_last_image and its arguments.instruction guidance", () => {
+    const messages = buildToolPlannerMessages(context);
+    expect(messages[0]?.content).toContain(EDIT_LAST_IMAGE_TOOL);
+    expect(messages[0]?.content).toContain("arguments.instruction");
   });
 });

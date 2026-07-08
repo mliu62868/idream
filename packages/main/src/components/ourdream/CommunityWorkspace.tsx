@@ -4,8 +4,28 @@ import Image from "next/image";
 import Link from "next/link";
 import { ChevronDown, ChevronLeft, ChevronRight, Flag, HeartHandshake, Users } from "lucide-react";
 import type { ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { authHrefForTarget } from "./authRedirect";
+
+// SPEC: campaign 投放位曝光/点击埋点，经既有 POST /api/v1/events/track。
+// INTENT: 只覆盖有公开渲染面的 campaign 槽位；feed_card/homepage_strip 等无渲染面槽位不造埋点（诚实数据）。
+export const PLACEMENT_IMPRESSION_EVENT = "placement_impression";
+export const PLACEMENT_CLICK_EVENT = "placement_click";
+
+function trackPlacementEvent(name: string, placementId: string, slot: string) {
+  if (typeof window === "undefined") return;
+  const payload = JSON.stringify({ name, props: { placementId, slot } });
+  if (typeof navigator.sendBeacon === "function") {
+    navigator.sendBeacon("/api/v1/events/track", new Blob([payload], { type: "application/json" }));
+    return;
+  }
+  void fetch("/api/v1/events/track", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: payload,
+    keepalive: true,
+  }).catch(() => {});
+}
 
 type CommunityCharacter = {
   id: string;
@@ -134,6 +154,38 @@ export function CommunityWorkspace() {
   );
   const normalizedCampaignIndex = campaignIndex % visibleCampaigns.length;
   const activeCampaign = visibleCampaigns[normalizedCampaignIndex] ?? fallbackCampaign;
+
+  const heroRef = useRef<HTMLDivElement | null>(null);
+  const impressedCampaignIds = useRef<Set<string>>(new Set());
+  const isHeroVisibleRef = useRef(false);
+  const activeCampaignIdRef = useRef(activeCampaign.id);
+
+  function recordCampaignImpression(placementId: string) {
+    if (impressedCampaignIds.current.has(placementId)) return;
+    impressedCampaignIds.current.add(placementId);
+    trackPlacementEvent(PLACEMENT_IMPRESSION_EVENT, placementId, "campaign");
+  }
+
+  // SPEC: 曝光按 threshold 0.5 触发，每张卡（activeCampaign.id）每次挂载只发一次。
+  useEffect(() => {
+    const node = heroRef.current;
+    if (!node || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        isHeroVisibleRef.current = entry.isIntersecting;
+        if (entry.isIntersecting) recordCampaignImpression(activeCampaignIdRef.current);
+      },
+      { threshold: 0.5 },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  // SPEC: 走马灯切换到新 campaign 时，若英雄区当前仍可见，视为新卡曝光。
+  useEffect(() => {
+    activeCampaignIdRef.current = activeCampaign.id;
+    if (isHeroVisibleRef.current) recordCampaignImpression(activeCampaign.id);
+  }, [activeCampaign.id]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -272,6 +324,7 @@ export function CommunityWorkspace() {
         <div
           className="relative overflow-hidden rounded-[16px] bg-[rgb(18,18,18)]"
           data-testid="community-campaign-hero"
+          ref={heroRef}
         >
           <Image
             alt=""
@@ -292,6 +345,7 @@ export function CommunityWorkspace() {
               <CampaignLink
                 className="mt-5 inline-flex h-10 items-center justify-center rounded-full bg-white px-4 text-[13px] font-black text-[rgb(13,13,13)]"
                 href={activeCampaign.href}
+                onClick={() => trackPlacementEvent(PLACEMENT_CLICK_EVENT, activeCampaign.id, "campaign")}
               >
                 {activeCampaign.ctaLabel}
               </CampaignLink>
@@ -610,16 +664,22 @@ function CampaignLink({
   children,
   className,
   href,
-}: Readonly<{ children: ReactNode; className: string; href: string }>) {
+  onClick,
+}: Readonly<{
+  children: ReactNode;
+  className: string;
+  href: string;
+  onClick?: () => void;
+}>) {
   if (/^https?:\/\//i.test(href)) {
     return (
-      <a className={className} href={href} rel="noreferrer" target="_blank">
+      <a className={className} href={href} onClick={onClick} rel="noreferrer" target="_blank">
         {children}
       </a>
     );
   }
   return (
-    <Link className={className} href={href}>
+    <Link className={className} href={href} onClick={onClick}>
       {children}
     </Link>
   );
