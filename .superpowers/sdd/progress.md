@@ -48,3 +48,15 @@ P2 Task 9: pending
 P2 impl (Tasks 1-8) COMPLETE. Task 9 = check + live walkthrough (needs dev SQL) + docs.
 
 P2 COMPLETE: all 8 tasks + I-1/I-2 fixes reviewed; whole-branch review 'Ready to merge'; gates green (gen 81, shared 34, typecheck 6/6, lint 2/2, admin ops-loop integration 66/66 on real test DB). Merging to master. Remaining USER steps: apply db/sql/2026-07-07-...workflowKey.sql to dev/prod before deploy; optional browser walkthrough.
+
+=== P3 SDD START ===
+Base (before P3 Task 1): 9fe6273619ee7ef87eb487e218f85def6d04c5fa
+Plan: docs/superpowers/plans/2026-07-07-image-gen-p3-pregen-metrics.md
+P3 Task 1: complete (commit c815bc1, review clean ✅; 53/53 tests, typecheck 6/6)
+- P3 Task 1 minors: per-call DB lookup at both ops call sites (fine at admin volume); no isolated unit test for generation-pricing.ts helper (covered via integration).
+P3 Task 2: complete (commit ff27ef0, review clean ✅; 54/54 tests; core sig deviation (request,actor,body) pre-authorized for audit needs)
+- P3 Task 2 minor: resolveDefaultProfileKey vs resolveProductionProfile conceptual parallel (not true dup; consolidate only if defaulting logic multiplies).
+P3 Task 3: complete (commits a18fa3b + fix 9813e92, review clean after fix ✅; Critical negative-avgDurationMs fixture/clock bug caught by reviewer 5/5-rerun-verified fixed)
+- P3 Task 3 note: test helper api() splits segments from raw path — never inline "?x=" in path, use query option.
+P3 Task 4: complete (commit a440555, review clean ✅; typecheck+lint pass; confirmation===item.id & draft→publish two-step both verified-correct deviations)
+P3 Task 5: complete (commits de0977c + i18n fix 248df3b, review clean after fix ✅; 5 AdminConsoleClient touch points verified; field audit clean)

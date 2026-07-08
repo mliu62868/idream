@@ -1725,6 +1725,130 @@ describe("generation config control plane", () => {
     expectError(missing, 400);
   });
 
+  it("pregen cover pack publishes to character avatar end to end (P3 acceptance)", async () => {
+    const admin = await setupActor("admin", "pregen-e2e");
+    const character = await createCharacter({
+      id: `${P}pregen-e2e-character`,
+      creatorId: admin,
+      name: "Pregen E2E Character",
+      visibility: "public",
+      status: "approved",
+    });
+    await prisma.generationModelProfile.create({
+      data: {
+        id: `${P}pregen-e2e-profile-v1`,
+        profileKey: `${P}pregen-e2e-profile`,
+        label: "Pregen e2e profile",
+        mode: "image",
+        runner: "pipeline",
+        pipelineModel: "mock-image",
+        // A distinct workflowKey lets us assert the job actually carries it (Step 3b).
+        workflowKey: "redcraft-krea2-txt2img",
+        allowedOrientations: ["4:5"],
+        defaultWidth: 768,
+        defaultHeight: 1024,
+        version: 1,
+        status: "active",
+        dryRunSummary: { sampleCount: 1 },
+        publishedAt: new Date(),
+      },
+    });
+    await prisma.generationPromptTemplate.create({
+      data: {
+        id: `${P}pregen-e2e-recipe-v1`,
+        templateKey: `${P}pregen-e2e-recipe`,
+        label: "Pregen e2e recipe",
+        mode: "image",
+        useCase: "character",
+        body: "Pregen e2e recipe body.",
+        negativeBase: "low quality",
+        presetOrder: [],
+        safetyHints: {},
+        sampleMatrix: [],
+        version: 1,
+        status: "active",
+        dryRunSummary: { sampleCount: 1 },
+        publishedAt: new Date(),
+      },
+    });
+
+    const cover = await api("POST", `admin/content/characters/${character.id}/pregen`, {
+      userId: admin,
+      role: "admin",
+      body: {
+        pack: "cover",
+        profileId: `${P}pregen-e2e-profile`,
+        recipeId: `${P}pregen-e2e-recipe`,
+        count: 1,
+        reason: "pregen e2e cover pack",
+      },
+    });
+    expectOk(cover, 202);
+    expect(cover.data.batch).toMatchObject({ purpose: "character_cover", totalItems: 1 });
+    const batchId = cover.data.batch.id as string;
+    const itemIds = cover.data.batch.items.map((item: { id: string }) => item.id);
+
+    // Step 3b: production batch jobs must route through the profile's workflowKey
+    // (dual-indexed in gen's registry), same as the P2 generator path — not the raw
+    // pipelineModel, which would bypass the intended workflow.
+    const jobs = await prisma.generationJob.findMany({
+      where: { sourceType: "content_production_item", sourceId: { in: itemIds } },
+    });
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].model).toBe("redcraft-krea2-txt2img");
+
+    // A generous limit: earlier tests in this file enqueue jobs of their own without
+    // draining them, so this drain call also flushes that backlog before reaching ours.
+    await runQueuedGenerationJobs(40);
+
+    const listed = await api("GET", `admin/content/characters/${character.id}/pregen`, {
+      userId: admin,
+      role: "admin",
+    });
+    expectOk(listed);
+    const batch = listed.data.items.find((entry: { id: string }) => entry.id === batchId);
+    expect(batch.status).toBe("reviewing");
+    const item = batch.items[0];
+    expect(item.status).toBe("generated");
+    const mediaAssetId = item.asset.id as string;
+
+    const approve = await api("POST", `admin/content/production/items/${item.id}/approve`, {
+      userId: admin,
+      role: "admin",
+      body: { reason: "approve pregen cover", confirmation: item.id },
+    });
+    expectOk(approve);
+
+    const placementCreate = await api("POST", "admin/content/placements", {
+      userId: admin,
+      role: "admin",
+      body: {
+        mediaAssetId,
+        slot: "character_avatar",
+        targetType: "character",
+        targetId: character.id,
+        status: "draft",
+        reason: "stage pregen cover for publish",
+      },
+    });
+    expectOk(placementCreate);
+    const placementId = placementCreate.data.placement.id as string;
+
+    const publish = await api("PATCH", `admin/content/placements/${placementId}`, {
+      userId: admin,
+      role: "admin",
+      body: { status: "published", reason: "publish pregen cover", confirmation: placementId },
+    });
+    expectOk(publish);
+
+    await expect(prisma.character.findUnique({ where: { id: character.id } })).resolves.toMatchObject({
+      imageAssetId: mediaAssetId,
+    });
+    await expect(prisma.contentProductionItem.findUnique({ where: { id: item.id } })).resolves.toMatchObject({
+      status: "published",
+    });
+  });
+
   it("keeps model import diagnostics disabled by default", async () => {
     const admin = await setupActor("admin", "model-import-disabled");
     const previousDiagnostics = process.env.ADMIN_MODEL_DIAGNOSTICS_ENABLED;
