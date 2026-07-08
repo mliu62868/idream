@@ -24,8 +24,13 @@ export type ChatToolDefinition = {
 export type ChatToolCall = { id: string; name: string; arguments: string };
 
 export interface ModelMessage {
-  role: "system" | "user" | "assistant";
+  role: "system" | "user" | "assistant" | "tool";
   content: string;
+  // INVARIANT: only meaningful on an "assistant" message that is replaying a
+  // function-calling turn back to the model (the FC follow-up call, task P4-3).
+  tool_calls?: Array<{ id: string; type: "function"; function: { name: string; arguments: string } }>;
+  // INVARIANT: only meaningful on a "tool" message — must echo the tool_calls[].id above.
+  tool_call_id?: string;
 }
 
 export interface ChatCompletion {
@@ -61,7 +66,11 @@ export interface ModerationProvider {
 }
 
 class MockChatModel implements ChatModel {
-  readonly supportsTools = true;
+  // SPEC: dev/test seam so P4 tests can exercise the "FC unavailable" fallback
+  // path (planner) against a mock provider without a real pipeline model.
+  get supportsTools(): boolean {
+    return process.env.CHAT_MOCK_SUPPORTS_TOOLS !== "false";
+  }
 
   async *stream(input: Parameters<ChatModel["stream"]>[0]): AsyncIterable<ChatChunk> {
     const lastUser =
