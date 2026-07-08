@@ -44,6 +44,7 @@ import {
 import { cn } from "@/lib/utils";
 import { apiDelete, apiForm, apiGet, apiWrite, formatApiError, type ApiEnvelope } from "@/components/admin/api";
 import { BackendsView } from "@/components/admin/BackendsView";
+import { GenerationMetricsView } from "@/components/admin/GenerationMetricsView";
 import { WorkflowsView } from "@/components/admin/WorkflowsView";
 import { OfficialCharactersView } from "@/components/admin/OfficialCharactersView";
 import { TemplatesView } from "@/components/admin/TemplatesView";
@@ -232,7 +233,8 @@ type SectionData =
         | "announcements"
         | "experiments"
         | "backends"
-        | "workflows";
+        | "workflows"
+        | "generation-metrics";
     }
   | {
       kind: "chatops";
@@ -628,6 +630,7 @@ const navItems = [
   { id: "ops/providers", label: "Provider Health", href: "/admin/ops/providers", icon: Server, group: "Generation Ops" },
   { id: "generation/backends", label: "Backends", href: "/admin/generation/backends", icon: Server, group: "Generation Ops" },
   { id: "generation/workflows", label: "Workflows", href: "/admin/generation/workflows", icon: Workflow, group: "Generation Ops" },
+  { id: "generation/metrics", label: "Metrics", href: "/admin/generation/metrics", icon: BarChart3, group: "Generation Ops" },
   { id: "content/production", label: "Production Studio", href: "/admin/content/production", icon: Play, group: "Content Ops" },
   { id: "content/assets", label: "Asset Library", href: "/admin/content/assets", icon: ImageIcon, group: "Content Ops" },
   { id: "content/placements", label: "Placements", href: "/admin/content/placements", icon: Bookmark, group: "Content Ops" },
@@ -1284,6 +1287,7 @@ async function fetchSection(
   if (sectionId === "experiments") return { kind: "selfFetch", view: "experiments" };
   if (sectionId === "generation/backends") return { kind: "selfFetch", view: "backends" };
   if (sectionId === "generation/workflows") return { kind: "selfFetch", view: "workflows" };
+  if (sectionId === "generation/metrics") return { kind: "selfFetch", view: "generation-metrics" };
   if (sectionId === "promo") {
     const [codes, referrals] = await Promise.all([
       apiGet<{ items: Row[] }>("/api/v1/admin/promo/redeem-codes"),
@@ -2260,6 +2264,7 @@ function renderSection(
     if (section.view === "experiments") return <ExperimentsView />;
     if (section.view === "backends") return <BackendsView />;
     if (section.view === "workflows") return <WorkflowsView />;
+    if (section.view === "generation-metrics") return <GenerationMetricsView />;
     return <ReviewQueueView />;
   }
   if (section.kind === "chatops") {
@@ -7225,6 +7230,7 @@ function normalizeSection(value: string) {
   if (value === "ops/providers") return value;
   if (value === "generation/backends") return value;
   if (value === "generation/workflows") return value;
+  if (value === "generation/metrics") return value;
   if (value === "content") return value;
   if (value === "content/production") return value;
   if (value === "content/assets") return value;
