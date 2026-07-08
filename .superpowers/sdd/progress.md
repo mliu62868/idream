@@ -62,3 +62,15 @@ P3 Task 4: complete (commit a440555, review clean ✅; typecheck+lint pass; conf
 P3 Task 5: complete (commits de0977c + i18n fix 248df3b, review clean after fix ✅; 5 AdminConsoleClient touch points verified; field audit clean)
 P3 Task 6: complete (commit c634c74, review clean ✅; 56/56 tests x3, bun run check green, live API smoke on real server; BONUS real bugfix: batch jobs now route model=workflowKey??pipelineModel matching user path, reviewer-verified)
 P3 final review: Ready to merge (opus; Critical refund-mint bug found+fixed 58c0b82 w/ type-enforced sourceType param + partial-refund site; 85 tests green independent rerun). Minors all deferred. Merging to master.
+
+=== P4 SDD START ===
+Base (before P4 Task 1): 2b1547756a6c3cde4bc26b64938d866e4a540af9
+Plan: docs/superpowers/plans/2026-07-08-image-gen-p4-chat-agent.md
+FC probes: PASS (tools/negative/round-trip/streaming, enable_thinking=false required) — scratchpad p4-fc-probe-results.md
+P4 Task 1: complete (commit 3ab2b52e, review clean ✅; 106/106 chat + typecheck 6/6; supportsTools optional-on-interface + pipeline via ctor arg adjudicated OK)
+- P4 Task 1 minors: id/name merge last-non-empty (defensive tweak possible); createProviders near-dup literals.
+P4 Task 2: complete (commit 206ed957, review clean ✅; 112/112 chat; EN AND-pair folded to dual-lookahead regex verified equivalent; ZH-on-toLowerCase noted, CJK case-invariant)
+P4 Task 3: complete (commit eefb4429, review clean ✅; 114/114 chat; XOR removed on FC path, planner fallback intact, double-trigger mutually exclusive)
+- P4 Task 3 minor: validateToolCall casts to GenerateImageAsyncArgs + hardcoded tool name — flag when adding tool #2.
+P4 Task 4: complete (commit 7074a3bf, review clean ✅; chat 117/117 + main 24/24; SQL idempotent, grants survive REPLACE, defaults TRUE everywhere; chat prisma view-mapping is established mechanism)
+- P4 Task 4 note: pullers must bun run db:generate in packages/chat (generated/ gitignored).

@@ -512,7 +512,13 @@ function buildModelMessages(
 
   return [
     { role: "system", content: system },
-    ...context.recentMessages.map((m) => ({ role: m.role, content: m.content })),
+    ...context.recentMessages.map((m) => ({
+      role: m.role,
+      // P4 Task 5: photo awareness — reminds the model it already sent this photo,
+      // as a suffix line on the MODEL message only (never stored, never shown to
+      // the user; see context.ts photoSummary derivation).
+      content: m.photoSummary ? `${m.content}\n[You sent a photo: ${m.photoSummary}]` : m.content,
+    })),
   ];
 }
 

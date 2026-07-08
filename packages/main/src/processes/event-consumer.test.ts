@@ -150,7 +150,15 @@ describe("applyChatEvent", () => {
     const asset = await prisma.mediaAsset.findFirst({ where: { sourceJobId: jobs[0].id } });
     expect(asset?.id).toBeTruthy();
     const completedEventId = `chat_image_completed_${attachmentId}_${jobs[0].id}_${asset?.id}`;
-    expect(await jobQueue.getByDedupeKey("chat.inbound", idempotencyKeys.chatInbox(completedEventId))).toBeTruthy();
+    const completedJob = await jobQueue.getByDedupeKey(
+      "chat.inbound",
+      idempotencyKeys.chatInbox(completedEventId),
+    );
+    expect(completedJob).toBeTruthy();
+    // P4 Task 5: the completed payload carries a summary for chat-side photo awareness.
+    expect(completedJob?.payload).toMatchObject({
+      payload: { summary: expect.stringContaining("send me a photo at sunset") },
+    });
   });
 
   it("carries the requested visualProfileId from a chat.image.requested payload onto the generation job", async () => {

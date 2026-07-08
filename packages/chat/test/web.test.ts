@@ -13,6 +13,7 @@ import { processMemoryExtract } from "../src/memory.js";
 import { consumeInbound } from "../src/inbox.js";
 import { drainQueue } from "../src/queue.js";
 import { setNoMemory } from "../src/service.js";
+import { getLastMockStreamMessages } from "../src/providers.js";
 import { CHAT_QUEUES, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 
 const superPool = new Pool({ connectionString: process.env.CHAT_TEST_SUPER_URL });
@@ -225,6 +226,7 @@ describe("dispatchChat router", () => {
           costDreamcoins: 5,
         },
       });
+      const photoSummary = "Web smiling by a sunlit window";
       await consumeInbound({
         eventId: `img_done_${attachment.id}`,
         eventType: MAIN_TO_CHAT_EVENTS.chatImageCompleted,
@@ -236,6 +238,7 @@ describe("dispatchChat router", () => {
           mediaAssetId: "media_img_1",
           width: 512,
           height: 640,
+          summary: photoSummary,
         },
       });
 
@@ -252,6 +255,27 @@ describe("dispatchChat router", () => {
         status: "completed",
         mediaAssetId: "media_img_1",
       });
+
+      // P4 Task 5: the next turn's model context recalls the delivered photo.
+      const oldMockPlanForNextTurn = process.env.CHAT_MOCK_TOOL_PLAN_JSON;
+      process.env.CHAT_MOCK_TOOL_PLAN_JSON = JSON.stringify({ tool: null });
+      const followUp = await dispatchChat({
+        method: "POST",
+        path: `/api/v1/chat/sessions/${sessionId}/messages`,
+        userId: IMG_USER,
+        body: { content: "did you like that moment?" },
+      });
+      expect(followUp.kind === "json" && followUp.status).toBe(202);
+      await drainGen();
+      if (oldMockPlanForNextTurn === undefined) delete process.env.CHAT_MOCK_TOOL_PLAN_JSON;
+      else process.env.CHAT_MOCK_TOOL_PLAN_JSON = oldMockPlanForNextTurn;
+
+      const modelMessages = getLastMockStreamMessages() ?? [];
+      expect(
+        modelMessages.some(
+          (m) => m.role === "assistant" && m.content.includes(`[You sent a photo: ${photoSummary}]`),
+        ),
+      ).toBe(true);
     } finally {
       if (oldMockPlan === undefined) delete process.env.CHAT_MOCK_TOOL_PLAN_JSON;
       else process.env.CHAT_MOCK_TOOL_PLAN_JSON = oldMockPlan;

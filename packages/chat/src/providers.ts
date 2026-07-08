@@ -65,6 +65,14 @@ export interface ModerationProvider {
   check(input: { targetType: "text"; content: string }): Promise<ModerationResult>;
 }
 
+// SPEC: dev/test seam — the last messages array MockChatModel.stream received,
+// so integration tests can assert what generate.ts actually sent to the model
+// (e.g. the P4 Task 5 photo-awareness context line) without a real provider.
+let lastMockStreamMessages: ModelMessage[] | null = null;
+export function getLastMockStreamMessages(): ModelMessage[] | null {
+  return lastMockStreamMessages;
+}
+
 class MockChatModel implements ChatModel {
   // SPEC: dev/test seam so P4 tests can exercise the "FC unavailable" fallback
   // path (planner) against a mock provider without a real pipeline model.
@@ -73,6 +81,7 @@ class MockChatModel implements ChatModel {
   }
 
   async *stream(input: Parameters<ChatModel["stream"]>[0]): AsyncIterable<ChatChunk> {
+    lastMockStreamMessages = input.messages;
     const lastUser =
       [...input.messages].reverse().find((m) => m.role === "user")?.content ?? "";
     const reply = `Mock ${input.characterName ?? "character"} reply: ${lastUser}`.trim();

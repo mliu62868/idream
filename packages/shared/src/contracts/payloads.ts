@@ -183,6 +183,10 @@ export const chatImageCompletedPayloadSchema = z
     mediaAssetId: z.string(),
     width: z.number().int().min(1).nullable().optional(),
     height: z.number().int().min(1).nullable().optional(),
+    // P4 Task 5: short human-readable description of the delivered photo, so the
+    // chat agent can recall "what it sent" in later turns without re-fetching the
+    // asset. Optional — older main builds omit it.
+    summary: z.string().optional(),
   })
   .passthrough();
 

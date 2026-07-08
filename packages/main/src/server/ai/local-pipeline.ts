@@ -702,10 +702,31 @@ async function enqueueChatImageCompleted(jobId: string) {
         mediaAssetId: asset.id,
         width: asset.width,
         height: asset.height,
+        summary: chatImageCompletedSummary(job),
       },
     } as Prisma.InputJsonValue,
     dedupeKey: idempotencyKeys.chatInbox(eventId),
   });
+}
+
+// P4 Task 5: what the chat agent should recall having sent. sourceMeta.promptHint
+// (the raw human-facing request, set on chat.image.requested — see service.ts
+// buildChatImagePrompt) is preferred: job.prompt is the fully-composed generation
+// prompt (character description + style directives), which at a 200-char clip
+// would truncate away the actual request. job.prompt is the fallback for the rare
+// case a job carries no hint. No extra query — job is already loaded.
+function chatImageCompletedSummary(job: {
+  prompt: string | null;
+  sourceMeta: Prisma.JsonValue | null;
+}): string | undefined {
+  const sourceMeta =
+    job.sourceMeta && typeof job.sourceMeta === "object" && !Array.isArray(job.sourceMeta)
+      ? (job.sourceMeta as Record<string, unknown>)
+      : {};
+  const promptHint = typeof sourceMeta.promptHint === "string" ? sourceMeta.promptHint : null;
+  const raw = promptHint?.trim() || job.prompt?.trim();
+  if (!raw) return undefined;
+  return raw.length <= 200 ? raw : `${raw.slice(0, 199)}…`;
 }
 
 async function enqueueChatImageFailed(

@@ -11,11 +11,21 @@ import { getRelationshipState } from "./relationship.js";
 
 const MEMORY_READ_TIMEOUT_MS = 250;
 
+const PHOTO_AWARENESS_MESSAGE_WINDOW = 6;
+
 export interface BuiltContext {
   persona: ChatCharacterView;
   policy: ChatPolicy;
   sessionSummary: string | null;
-  recentMessages: Array<{ id: string; role: "user" | "assistant"; content: string }>;
+  recentMessages: Array<{
+    id: string;
+    role: "user" | "assistant";
+    content: string;
+    /** P4 Task 5: set when this assistant message delivered a completed photo — the
+     * agent's own recollection of what it sent, injected as a context line by
+     * generate.ts's buildModelMessages (not stored, not user-visible). */
+    photoSummary?: string;
+  }>;
   boundaries: string[];
   longTermMemories: string[];
   /** Qualitative companion bond for tone/continuity (P1-B). Null when none/incognito. */
@@ -77,9 +87,35 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
     orderBy: { createdAt: "desc" },
     take: policy.maxContextMessages,
   });
-  const recentMessages = recent
+  const recentMessages: BuiltContext["recentMessages"] = recent
     .reverse()
     .map((m) => ({ id: m.id, role: m.role as "user" | "assistant", content: m.content }));
+
+  // P4 Task 5: photo awareness. Only the most recent window of assistant turns is
+  // worth reminding the model about — older deliveries are already summarized away
+  // by the rolling session summary.
+  const photoAwareMessageIds = recentMessages
+    .slice(-PHOTO_AWARENESS_MESSAGE_WINDOW)
+    .filter((m) => m.role === "assistant")
+    .map((m) => m.id);
+  if (photoAwareMessageIds.length > 0) {
+    const attachments = await prisma.messageAttachment.findMany({
+      where: { messageId: { in: photoAwareMessageIds }, kind: "generated_image", status: "completed" },
+      select: { messageId: true, promptHint: true, metadata: true },
+      orderBy: { createdAt: "asc" },
+    });
+    const summaryByMessageId = new Map<string, string>();
+    for (const attachment of attachments) {
+      if (summaryByMessageId.has(attachment.messageId)) continue;
+      const metadata = (attachment.metadata ?? {}) as Record<string, unknown>;
+      const summary = typeof metadata.summary === "string" ? metadata.summary : attachment.promptHint;
+      if (summary) summaryByMessageId.set(attachment.messageId, summary);
+    }
+    for (const message of recentMessages) {
+      const summary = summaryByMessageId.get(message.id);
+      if (summary) message.photoSummary = summary;
+    }
+  }
 
   // File-layer retrieval (design §3 step 8 / P0-G). Boundaries and normal memories
   // are read SEPARATELY with different reliability contracts:
