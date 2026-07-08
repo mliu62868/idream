@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { dimensionsForImageOrientation } from "@/server/modules/ourdream/generation-dimensions";
+import { generationCostDreamcoins } from "@/server/lib/generation-pricing";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
@@ -11,6 +12,7 @@ import {
   jsonBody,
   toInputJson,
   writeAudit,
+  type AdminActor,
 } from "./service";
 import {
   markProductionItemFailed,
@@ -123,7 +125,7 @@ const placementPatchSchema = z.object({
   confirmation: z.string().trim().min(1).max(160),
 });
 
-const productionBatchInclude = {
+export const productionBatchInclude = {
   createdBy: { select: { id: true, email: true, displayName: true, name: true } },
   items: {
     include: {
@@ -180,9 +182,16 @@ export async function listProductionBatches(request: Request) {
   return ok({ items: batches.map(productionBatchDTO) });
 }
 
-export async function createProductionBatch(request: Request) {
-  const actor = await actorWithPermission(request, "content.production.write");
-  const body = productionBatchCreateSchema.parse(await jsonBody(request));
+export type ProductionBatchCreateInput = z.infer<typeof productionBatchCreateSchema>;
+
+// NOTE: takes `request` + full `AdminActor` (not just `actor: {id}`) because writeAudit()
+// below needs actor.role plus request headers (x-request-id/x-forwarded-for/user-agent)
+// for the audit row — callers extracted after actorWithPermission() already have both.
+export async function createProductionBatchCore(
+  request: Request,
+  actor: AdminActor,
+  body: ProductionBatchCreateInput,
+): Promise<Response> {
   const profile = await resolveProductionProfile(body.profileId);
   const recipe = await resolveProductionRecipe(body.recipeId, body.targetType);
   const target = await resolveProductionTarget(body.targetType, body.targetId);
@@ -222,6 +231,11 @@ export async function createProductionBatch(request: Request) {
     profile,
     presets,
   });
+  const perItemCostDreamcoins = await generationCostDreamcoins(
+    "image",
+    1,
+    profile.costMultiplier ?? 1,
+  );
 
   const batch = await prisma.$transaction(async (tx) => {
     const createdBatch = await tx.contentProductionBatch.create({
@@ -239,7 +253,7 @@ export async function createProductionBatch(request: Request) {
         brief: body.brief ?? null,
         count: body.count,
         totalItems: body.count,
-        estimatedCostDreamcoins: 0,
+        estimatedCostDreamcoins: perItemCostDreamcoins * body.count,
         status: "queued",
         createdById: actor.id,
       },
@@ -263,7 +277,7 @@ export async function createProductionBatch(request: Request) {
           negativePrompt: recipe.negativeBase,
           controls: toInputJson(controls),
           presetIds: toInputJson(body.presetIds),
-          model: profile.pipelineModel,
+          model: profile.workflowKey ?? profile.pipelineModel,
           profileId: profile.profileKey,
           profileVersion: profile.version,
           promptTemplateId: recipe.templateKey,
@@ -271,7 +285,7 @@ export async function createProductionBatch(request: Request) {
           orientation,
           outputCount: 1,
           status: "queued",
-          costDreamcoins: 0,
+          costDreamcoins: perItemCostDreamcoins,
           provider: profile.runner,
           sourceType: "content_production_item",
           sourceId: item.id,
@@ -338,6 +352,12 @@ export async function createProductionBatch(request: Request) {
     },
   });
   return ok({ batch: productionBatchDTO(batch) }, { status: 202 });
+}
+
+export async function createProductionBatch(request: Request) {
+  const actor = await actorWithPermission(request, "content.production.write");
+  const body = productionBatchCreateSchema.parse(await jsonBody(request));
+  return createProductionBatchCore(request, actor, body);
 }
 
 export async function getProductionBatch(request: Request, id: string) {
@@ -498,11 +518,20 @@ export async function regenerateProductionItem(request: Request, id: string) {
     presetFragment: presetPromptFragment(presetIds, presets),
     brief: body.brief ?? sourceItem.batch.brief ?? undefined,
   });
+  const perItemCostDreamcoins = await generationCostDreamcoins(
+    "image",
+    1,
+    profile.costMultiplier ?? 1,
+  );
 
   const batch = await prisma.$transaction(async (tx) => {
     await tx.contentProductionItem.update({
       where: { id },
       data: { status: "regenerate_requested", reviewNote: body.reason },
+    });
+    await tx.contentProductionBatch.update({
+      where: { id: sourceItem.batchId },
+      data: { estimatedCostDreamcoins: { increment: perItemCostDreamcoins } },
     });
     const maxIndex = await tx.contentProductionItem.aggregate({
       where: { batchId: sourceItem.batchId },
@@ -525,7 +554,7 @@ export async function regenerateProductionItem(request: Request, id: string) {
         negativePrompt: recipe.negativeBase,
         controls: toInputJson(controls),
         presetIds: toInputJson(presetIds),
-        model: profile.pipelineModel,
+        model: profile.workflowKey ?? profile.pipelineModel,
         profileId: profile.profileKey,
         profileVersion: profile.version,
         promptTemplateId: recipe.templateKey,
@@ -533,7 +562,7 @@ export async function regenerateProductionItem(request: Request, id: string) {
         orientation,
         outputCount: 1,
         status: "queued",
-        costDreamcoins: 0,
+        costDreamcoins: perItemCostDreamcoins,
         provider: profile.runner,
         sourceType: "content_production_item",
         sourceId: item.id,
@@ -1265,7 +1294,7 @@ async function appendProductionJobEvent(
   });
 }
 
-function productionBatchDTO(batch: ProductionBatchWithItems) {
+export function productionBatchDTO(batch: ProductionBatchWithItems) {
   return {
     id: batch.id,
     title: batch.title,

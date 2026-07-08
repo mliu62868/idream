@@ -45,6 +45,10 @@ import {
   createCharacterVisualProfile,
 } from "./characters/visual-profiles";
 import {
+  createCharacterPregenBatch,
+  listCharacterPregenBatches,
+} from "./characters/pregen";
+import {
   approveProductionItem,
   bulkPatchContentAssets,
   createPlacement,
@@ -67,6 +71,7 @@ import {
   overrideAgeVerification,
 } from "./compliance";
 import { profileHealth, profileDryRun } from "./generation-health";
+import { generationMetrics } from "./generation-metrics";
 import {
   getGenerationWorkflow,
   listGenerationBackends,
@@ -519,6 +524,7 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
       if (!action && method === "GET") return listGenerationWorkflows(request);
       if (action && !child && method === "GET") return getGenerationWorkflow(request, action);
     }
+    if (id === "metrics" && !action && method === "GET") return generationMetrics(request);
   }
 
   if (resource === "pricing" && id === "rules") {
@@ -605,6 +611,12 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
     }
     if (action && child === "visual-profiles" && method === "POST") {
       return createCharacterVisualProfile(request, action);
+    }
+    if (action && child === "pregen" && method === "GET") {
+      return listCharacterPregenBatches(request, action);
+    }
+    if (action && child === "pregen" && method === "POST") {
+      return createCharacterPregenBatch(request, action);
     }
   }
   if (resource === "content" && id === "featured") {

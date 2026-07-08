@@ -8,6 +8,16 @@
 
 当前状态：**本地产品闭环可用，内部 pipeline 6/6 通过；当前目标仍是内部演示/受控 beta，公开上线仍被真实生产依赖阻断**。
 
+## 2026-07-08 P3 角色预生图 + Metric 落地（最新）
+
+`docs/superpowers/specs/2026-07-07-image-generation-redesign-design.md` §7 P3 已完成并合入分支 `feat/image-gen-p3-pregen-metrics`：
+
+- Admin `POST/GET admin/content/characters/{id}/pregen`：为官方角色一键出 cover(×4)/hero(×4)/chat(×8) pack，内部委托既有 `createProductionBatchCore`（Production Studio 同一条 Batch→Job→Asset→Placement 链路，零新增生成路径）。
+- Admin `GET admin/generation/metrics`：按需聚合 `GenerationJob`（量/成败/成本/时长/投放状态），零 DDL——不建物化 rollup 表；点击/转化/Remix 维度因无真实事件源暂不做（YAGNI，避免假数据）。
+- Production batch 成本估算改为 `PricingRule` 驱动的真值（`estimatedCostDreamcoins`/`costDreamcoins` 不再是占位常量）。
+- 修复：production batch job 的 `model` 字段此前直接写 `profile.pipelineModel`，绕过了 P2 落地的 `profile.workflowKey ?? profile.pipelineModel` 双索引路由（gen 侧 `registry.resolveForModel` 靠这个字段选 workflow）；已在 `content-ops.ts` 的 batch 创建与 regenerate 两处补齐，与主生成路径一致。
+- 验收：`admin-console.test.ts` 新增集成用例覆盖 pregen cover pack → 排队 → 生成 → 审核通过 → 建 placement(draft) → PATCH 发布 → 断言角色 `imageAssetId` 与 item 状态双写成功，并断言 job.model 携带 workflowKey；`bunx vitest run admin-console.test.ts` 56/56 通过，`bun run check`（lint+typecheck+build，5 个包）全绿。
+
 ## 2026-07-04 launch/probe 复验（最新）
 
 2026-07-04 继续复跑公开 launch gate 与 payment/blob/age/web-surface/catalog 探针，结论保持一致：本地受控 beta surface 可用，公开生产上线仍 no-go。

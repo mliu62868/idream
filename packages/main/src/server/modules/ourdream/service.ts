@@ -34,6 +34,7 @@ import {
 } from "@/server/lib/auth";
 import { prisma } from "@/server/lib/db";
 import { nameMatch } from "@/server/lib/db/search";
+import { generationCostDreamcoins } from "@/server/lib/generation-pricing";
 import { env } from "@/server/lib/env";
 import { AppError, Errors } from "@/server/lib/errors";
 import { empty, fail, ok } from "@/server/lib/http";
@@ -5818,12 +5819,7 @@ function signedUrlTtlSeconds() {
 }
 
 async function generationCost(mode: "image" | "video", outputCount: number, multiplier = 1) {
-  const pricing = await prisma.pricingRule.findFirst({
-    where: { mode, status: "active" },
-    orderBy: [{ effectiveFrom: "desc" }, { version: "desc" }],
-  });
-  const base = pricing?.baseCost ?? (mode === "video" ? 100 : 5);
-  return Math.ceil(base * outputCount * multiplier);
+  return generationCostDreamcoins(mode, outputCount, multiplier);
 }
 
 async function selectGenerationProfile(mode: "image" | "video", requested?: string) {

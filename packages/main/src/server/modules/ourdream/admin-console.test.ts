@@ -2,6 +2,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import type { Prisma } from "@prisma/client";
+import type { AiFinalizePayload } from "@/server/ai/schemas";
+import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
 import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
 import {
@@ -34,6 +37,10 @@ async function setupActor(
   const id = `${P}${role}-${suffix}`;
   await createUser({ id, role });
   return id;
+}
+
+function asInputJson(value: AiFinalizePayload): Prisma.InputJsonValue {
+  return value as unknown as Prisma.InputJsonValue;
 }
 
 async function writeSafetensorsMetadata(filePath: string, metadata: Record<string, string>) {
@@ -1428,6 +1435,20 @@ describe("generation config control plane", () => {
         publishedAt: new Date(),
       },
     });
+    await prisma.pricingRule.create({
+      data: {
+        id: `${P}image-pricing-v1`,
+        ruleKey: `${P}image_pricing`,
+        label: "Image pricing",
+        mode: "image",
+        baseCost: 7,
+        multiplier: 1,
+        status: "active",
+        version: 1,
+        effectiveFrom: new Date(),
+        publishedAt: new Date(),
+      },
+    });
 
     const forbidden = await api("POST", "admin/content/production/batches", {
       userId: support,
@@ -1463,7 +1484,6 @@ describe("generation config control plane", () => {
     expect(created.data.batch).toMatchObject({
       title: `${P}production-batch`,
       totalItems: 2,
-      estimatedCostDreamcoins: 0,
       status: "queued",
     });
     const itemIds = created.data.batch.items.map((item: { id: string }) => item.id);
@@ -1474,9 +1494,15 @@ describe("generation config control plane", () => {
       orderBy: { createdAt: "asc" },
     });
     expect(jobs).toHaveLength(2);
+    // 成本不变式：每个 job 成本>0 且 batch 估价 = 各 item job 成本之和
+    // （不断言精确值：并行测试可能创建更新的 active image PricingRule）
+    expect(jobs[0].costDreamcoins).toBeGreaterThan(0);
+    expect(jobs[1].costDreamcoins).toBe(jobs[0].costDreamcoins);
+    expect(created.data.batch.estimatedCostDreamcoins).toBe(
+      jobs[0].costDreamcoins + jobs[1].costDreamcoins,
+    );
     expect(jobs[0]).toMatchObject({
       userId: admin,
-      costDreamcoins: 0,
       profileId: `${P}production-profile`,
       promptTemplateId: `${P}production-recipe`,
     });
@@ -1604,6 +1630,380 @@ describe("generation config control plane", () => {
         "content.placement.publish",
       ]),
     );
+  });
+
+  it("creates per-character pregen packs and lists them", async () => {
+    const admin = await setupActor("admin", "character-pregen");
+    const support = await setupActor("support", "character-pregen");
+    const character = await createCharacter({
+      id: `${P}pregen-character`,
+      creatorId: admin,
+      name: "Pregen Character",
+      visibility: "public",
+      status: "approved",
+    });
+    await prisma.generationModelProfile.create({
+      data: {
+        id: `${P}pregen-profile-v1`,
+        profileKey: `${P}pregen-profile`,
+        label: "Pregen profile",
+        mode: "image",
+        runner: "pipeline",
+        pipelineModel: "mock-image",
+        allowedOrientations: ["4:5"],
+        defaultWidth: 768,
+        defaultHeight: 1024,
+        version: 1,
+        status: "active",
+        dryRunSummary: { sampleCount: 1 },
+        publishedAt: new Date(),
+      },
+    });
+    await prisma.generationPromptTemplate.create({
+      data: {
+        id: `${P}pregen-recipe-v1`,
+        templateKey: `${P}pregen-recipe`,
+        label: "Pregen recipe",
+        mode: "image",
+        useCase: "character",
+        body: "Pregen recipe body.",
+        negativeBase: "low quality",
+        presetOrder: [],
+        safetyHints: {},
+        sampleMatrix: [],
+        version: 1,
+        status: "active",
+        dryRunSummary: { sampleCount: 1 },
+        publishedAt: new Date(),
+      },
+    });
+
+    const forbidden = await api("POST", `admin/content/characters/${character.id}/pregen`, {
+      userId: support,
+      role: "support",
+      body: { pack: "cover", profileId: `${P}pregen-profile` },
+    });
+    expectError(forbidden, 403);
+
+    const badPack = await api("POST", `admin/content/characters/${character.id}/pregen`, {
+      userId: admin,
+      role: "admin",
+      body: { pack: "poster", profileId: `${P}pregen-profile` },
+    });
+    expectError(badPack, 400);
+
+    const cover = await api("POST", `admin/content/characters/${character.id}/pregen`, {
+      userId: admin,
+      role: "admin",
+      body: { pack: "cover", profileId: `${P}pregen-profile`, reason: "pregen cover pack" },
+    });
+    expectOk(cover, 202);
+    expect(cover.data.batch).toMatchObject({
+      purpose: "character_cover",
+      targetType: "character",
+      targetId: character.id,
+      totalItems: 4,
+      status: "queued",
+    });
+    expect(cover.data.batch.estimatedCostDreamcoins).toBeGreaterThan(0);
+
+    const chat = await api("POST", `admin/content/characters/${character.id}/pregen`, {
+      userId: admin,
+      role: "admin",
+      body: { pack: "chat", profileId: `${P}pregen-profile`, count: 2, reason: "pregen chat pack" },
+    });
+    expectOk(chat, 202);
+    expect(chat.data.batch).toMatchObject({ purpose: "character_chat", totalItems: 2 });
+
+    const listed = await api("GET", `admin/content/characters/${character.id}/pregen`, {
+      userId: admin,
+      role: "admin",
+    });
+    expectOk(listed);
+    const batchIds = listed.data.items.map((batch: { id: string }) => batch.id);
+    expect(batchIds).toContain(cover.data.batch.id);
+    expect(batchIds).toContain(chat.data.batch.id);
+
+    const missing = await api("POST", `admin/content/characters/${P}nope/pregen`, {
+      userId: admin,
+      role: "admin",
+      body: { pack: "cover", profileId: `${P}pregen-profile` },
+    });
+    expectError(missing, 400);
+  });
+
+  it("pregen cover pack publishes to character avatar end to end (P3 acceptance)", async () => {
+    const admin = await setupActor("admin", "pregen-e2e");
+    const character = await createCharacter({
+      id: `${P}pregen-e2e-character`,
+      creatorId: admin,
+      name: "Pregen E2E Character",
+      visibility: "public",
+      status: "approved",
+    });
+    await prisma.generationModelProfile.create({
+      data: {
+        id: `${P}pregen-e2e-profile-v1`,
+        profileKey: `${P}pregen-e2e-profile`,
+        label: "Pregen e2e profile",
+        mode: "image",
+        runner: "pipeline",
+        pipelineModel: "mock-image",
+        // A distinct workflowKey lets us assert the job actually carries it (Step 3b).
+        workflowKey: "redcraft-krea2-txt2img",
+        allowedOrientations: ["4:5"],
+        defaultWidth: 768,
+        defaultHeight: 1024,
+        version: 1,
+        status: "active",
+        dryRunSummary: { sampleCount: 1 },
+        publishedAt: new Date(),
+      },
+    });
+    await prisma.generationPromptTemplate.create({
+      data: {
+        id: `${P}pregen-e2e-recipe-v1`,
+        templateKey: `${P}pregen-e2e-recipe`,
+        label: "Pregen e2e recipe",
+        mode: "image",
+        useCase: "character",
+        body: "Pregen e2e recipe body.",
+        negativeBase: "low quality",
+        presetOrder: [],
+        safetyHints: {},
+        sampleMatrix: [],
+        version: 1,
+        status: "active",
+        dryRunSummary: { sampleCount: 1 },
+        publishedAt: new Date(),
+      },
+    });
+
+    const cover = await api("POST", `admin/content/characters/${character.id}/pregen`, {
+      userId: admin,
+      role: "admin",
+      body: {
+        pack: "cover",
+        profileId: `${P}pregen-e2e-profile`,
+        recipeId: `${P}pregen-e2e-recipe`,
+        count: 1,
+        reason: "pregen e2e cover pack",
+      },
+    });
+    expectOk(cover, 202);
+    expect(cover.data.batch).toMatchObject({ purpose: "character_cover", totalItems: 1 });
+    const batchId = cover.data.batch.id as string;
+    const itemIds = cover.data.batch.items.map((item: { id: string }) => item.id);
+
+    // Step 3b: production batch jobs must route through the profile's workflowKey
+    // (dual-indexed in gen's registry), same as the P2 generator path — not the raw
+    // pipelineModel, which would bypass the intended workflow.
+    const jobs = await prisma.generationJob.findMany({
+      where: { sourceType: "content_production_item", sourceId: { in: itemIds } },
+    });
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].model).toBe("redcraft-krea2-txt2img");
+
+    // A generous limit: earlier tests in this file enqueue jobs of their own without
+    // draining them, so this drain call also flushes that backlog before reaching ours.
+    await runQueuedGenerationJobs(40);
+
+    const listed = await api("GET", `admin/content/characters/${character.id}/pregen`, {
+      userId: admin,
+      role: "admin",
+    });
+    expectOk(listed);
+    const batch = listed.data.items.find((entry: { id: string }) => entry.id === batchId);
+    expect(batch.status).toBe("reviewing");
+    const item = batch.items[0];
+    expect(item.status).toBe("generated");
+    const mediaAssetId = item.asset.id as string;
+
+    const approve = await api("POST", `admin/content/production/items/${item.id}/approve`, {
+      userId: admin,
+      role: "admin",
+      body: { reason: "approve pregen cover", confirmation: item.id },
+    });
+    expectOk(approve);
+
+    const placementCreate = await api("POST", "admin/content/placements", {
+      userId: admin,
+      role: "admin",
+      body: {
+        mediaAssetId,
+        slot: "character_avatar",
+        targetType: "character",
+        targetId: character.id,
+        status: "draft",
+        reason: "stage pregen cover for publish",
+      },
+    });
+    expectOk(placementCreate);
+    const placementId = placementCreate.data.placement.id as string;
+
+    const publish = await api("PATCH", `admin/content/placements/${placementId}`, {
+      userId: admin,
+      role: "admin",
+      body: { status: "published", reason: "publish pregen cover", confirmation: placementId },
+    });
+    expectOk(publish);
+
+    await expect(prisma.character.findUnique({ where: { id: character.id } })).resolves.toMatchObject({
+      imageAssetId: mediaAssetId,
+    });
+    await expect(prisma.contentProductionItem.findUnique({ where: { id: item.id } })).resolves.toMatchObject({
+      status: "published",
+    });
+  });
+
+  it("does not credit the operator's ledger when a production job fails or is blocked", async () => {
+    const admin = await setupActor("admin", "production-refund-guard");
+    const character = await createCharacter({
+      id: `${P}production-refund-character`,
+      creatorId: admin,
+      name: "Production Refund Character",
+      visibility: "public",
+      status: "approved",
+    });
+    await prisma.generationModelProfile.create({
+      data: {
+        id: `${P}production-refund-profile-v1`,
+        profileKey: `${P}production-refund-profile`,
+        label: "Production refund profile",
+        mode: "image",
+        runner: "pipeline",
+        pipelineModel: "mock-image",
+        allowedOrientations: ["4:5"],
+        defaultWidth: 768,
+        defaultHeight: 1024,
+        version: 1,
+        status: "active",
+        dryRunSummary: { sampleCount: 1 },
+        publishedAt: new Date(),
+      },
+    });
+    await prisma.generationPromptTemplate.create({
+      data: {
+        id: `${P}production-refund-recipe-v1`,
+        templateKey: `${P}production-refund-recipe`,
+        label: "Production refund recipe",
+        mode: "image",
+        useCase: "character",
+        body: "Production refund recipe body.",
+        negativeBase: "low quality",
+        presetOrder: [],
+        safetyHints: {},
+        sampleMatrix: [],
+        version: 1,
+        status: "active",
+        dryRunSummary: { sampleCount: 1 },
+        publishedAt: new Date(),
+      },
+    });
+    await prisma.pricingRule.create({
+      data: {
+        id: `${P}production-refund-pricing-v1`,
+        ruleKey: `${P}production_refund_pricing`,
+        label: "Production refund pricing",
+        mode: "image",
+        baseCost: 9,
+        multiplier: 1,
+        status: "active",
+        version: 1,
+        effectiveFrom: new Date(),
+        publishedAt: new Date(),
+      },
+    });
+
+    const created = await api("POST", "admin/content/production/batches", {
+      userId: admin,
+      role: "admin",
+      body: {
+        title: `${P}production-refund-batch`,
+        purpose: "character_chat",
+        targetType: "character",
+        targetId: character.id,
+        profileId: `${P}production-refund-profile`,
+        recipeId: `${P}production-refund-recipe`,
+        orientation: "4:5",
+        count: 2,
+        brief: "Force one failure, one moderation block",
+        reason: "verify ops jobs never credit the ledger on refund",
+      },
+    });
+    expectOk(created, 202);
+    const itemIds = created.data.batch.items.map((item: { id: string }) => item.id);
+    expect(itemIds).toHaveLength(2);
+
+    const jobs = await prisma.generationJob.findMany({
+      where: { sourceType: "content_production_item", sourceId: { in: itemIds } },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(jobs).toHaveLength(2);
+    // Precondition for the regression: ops jobs now carry a real cost even though
+    // batch creation never debits a wallet for them.
+    expect(jobs[0].costDreamcoins).toBeGreaterThan(0);
+    const [failJob, blockJob] = jobs;
+
+    // Never debited on creation: the operator's balance before any failure/finalize.
+    const balanceBefore = await dreamcoinBalance(admin);
+
+    await jobQueue.removeByDedupePrefix(`generation:${failJob.id}`, ["ai.image.generate"]);
+    await jobQueue.enqueue({
+      queue: "app.ai.finalize",
+      payload: asInputJson({
+        version: 1,
+        kind: "generation.failed",
+        requestId: `${P}production-refund-fail`,
+        generationJobId: failJob.id,
+        mode: "image",
+        error: { code: "backend_oom", message: "backend out of memory", retryable: false },
+      }),
+      dedupeKey: `generation-finalize:${failJob.id}:failed`,
+    });
+
+    await jobQueue.removeByDedupePrefix(`generation:${blockJob.id}`, ["ai.image.generate"]);
+    await jobQueue.enqueue({
+      queue: "app.ai.finalize",
+      payload: asInputJson({
+        version: 1,
+        kind: "generation.blocked",
+        requestId: `${P}production-refund-block`,
+        generationJobId: blockJob.id,
+        mode: "image",
+        layer: "input",
+        policyCode: "moderation_blocked",
+        message: "prompt failed moderation",
+      }),
+      dedupeKey: `generation-finalize:${blockJob.id}:blocked`,
+    });
+
+    await drainLocalAiPipeline({
+      queues: ["app.ai.finalize"],
+      limit: 4,
+      workerId: `${P}production-refund-finalizer`,
+    });
+
+    const [finalFailJob, finalBlockJob] = await Promise.all([
+      prisma.generationJob.findUniqueOrThrow({ where: { id: failJob.id } }),
+      prisma.generationJob.findUniqueOrThrow({ where: { id: blockJob.id } }),
+    ]);
+    expect(finalFailJob.status).toBe("failed");
+    expect(finalBlockJob.status).toBe("blocked");
+
+    // The regression: a non-zero costDreamcoins on a never-debited ops job must not
+    // mint a "refund" credit into the operator's ledger.
+    expect(await dreamcoinBalance(admin)).toBe(balanceBefore);
+    expect(
+      await prisma.dreamcoinLedger.count({
+        where: { reason: "refund", sourceId: { in: [failJob.id, blockJob.id] } },
+      }),
+    ).toBe(0);
+
+    const failedItem = await prisma.contentProductionItem.findFirstOrThrow({
+      where: { id: { in: itemIds }, jobId: failJob.id },
+    });
+    expect(failedItem.status).toBe("failed");
   });
 
   it("keeps model import diagnostics disabled by default", async () => {
@@ -3703,5 +4103,81 @@ describe("admin experiments (Phase 4)", () => {
     expectOk(res);
     expect(Array.isArray(res.data.items)).toBe(true);
     expect(typeof res.data.note).toBe("string");
+  });
+});
+
+describe("admin generation metrics rollup (P3)", () => {
+  it("aggregates generation metrics by profile, recipe, source and placements", async () => {
+    const admin = await setupActor("admin", "generation-metrics");
+    const support = await setupActor("support", "generation-metrics");
+    const profileId = `${P}metrics-profile`;
+    const recipeId = `${P}metrics-recipe`;
+    const base = {
+      userId: admin,
+      mode: "image",
+      controls: {},
+      presetIds: [],
+      profileId,
+      profileVersion: 1,
+      promptTemplateId: recipeId,
+      promptTemplateVersion: 1,
+      sourceType: "content_production_item",
+    } as const;
+    await prisma.generationJob.create({
+      data: {
+        ...base,
+        id: `${P}metrics-job-1`,
+        sourceId: `${P}metrics-src-1`,
+        status: "completed",
+        costDreamcoins: 7,
+      },
+    });
+    // completedAt is set via a follow-up update (not at create time) so it is
+    // guaranteed to be >= the DB-assigned createdAt (avoids a negative duration
+    // from clock skew between the JS `new Date()` and Postgres's `now()`).
+    await prisma.generationJob.update({
+      where: { id: `${P}metrics-job-1` },
+      data: { completedAt: new Date() },
+    });
+    await prisma.generationJob.create({
+      data: {
+        ...base,
+        id: `${P}metrics-job-2`,
+        sourceId: `${P}metrics-src-2`,
+        status: "failed",
+        costDreamcoins: 7,
+      },
+    });
+
+    const forbidden = await api("GET", "admin/generation/metrics", {
+      userId: support,
+      role: "support",
+    });
+    expectError(forbidden, 403);
+
+    const metrics = await api("GET", "admin/generation/metrics", {
+      userId: admin,
+      role: "admin",
+      query: { days: 7 },
+    });
+    expectOk(metrics);
+    const profileRow = metrics.data.profiles.find(
+      (row: { profileId: string }) => row.profileId === profileId,
+    );
+    expect(profileRow).toMatchObject({
+      total: 2,
+      completed: 1,
+      failed: 1,
+      costDreamcoins: 14,
+    });
+    expect(profileRow.avgDurationMs).toBeGreaterThanOrEqual(0);
+    const recipeRow = metrics.data.recipes.find(
+      (row: { recipeId: string }) => row.recipeId === recipeId,
+    );
+    expect(recipeRow).toMatchObject({ total: 2, completed: 1, failed: 1 });
+    const sourceRow = metrics.data.sources.find(
+      (row: { sourceType: string }) => row.sourceType === "content_production_item",
+    );
+    expect(sourceRow.total).toBeGreaterThanOrEqual(2);
   });
 });

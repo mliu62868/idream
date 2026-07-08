@@ -508,7 +508,14 @@ async function finalizeGenerationCompleted(
     "output",
   );
   if (outputModeration.status === "blocked") {
-    await refundGeneration(job.userId, job.id, job.costDreamcoins, "blocked", "output_blocked");
+    await refundGeneration(
+      job.userId,
+      job.id,
+      job.costDreamcoins,
+      "blocked",
+      "output_blocked",
+      job.sourceType,
+    );
     await enqueueChatImageFailed(job.id, "blocked", "output_blocked");
     return;
   }
@@ -569,8 +576,10 @@ async function finalizeGenerationCompleted(
       assets: payload.assets.length,
     });
 
+    // INVARIANT: content_production jobs are never debited, so they must never be
+    // credited on refund — their costDreamcoins is record-keeping only.
     const missingOutputs = Math.max(0, job.outputCount - payload.assets.length);
-    if (missingOutputs > 0 && job.costDreamcoins > 0) {
+    if (missingOutputs > 0 && job.costDreamcoins > 0 && job.sourceType !== "content_production_item") {
       const refundAmount = Math.ceil((job.costDreamcoins * missingOutputs) / job.outputCount);
       await appendLedger(
         tx,
@@ -624,7 +633,14 @@ async function finalizeGenerationFailed(
   if (!job) return;
   await removeGenerationWorkQueueJob(job.id, job.mode);
   if (["completed", "blocked", "refunded"].includes(job.status)) return;
-  await refundGeneration(job.userId, job.id, job.costDreamcoins, "failed", payload.error.code);
+  await refundGeneration(
+    job.userId,
+    job.id,
+    job.costDreamcoins,
+    "failed",
+    payload.error.code,
+    job.sourceType,
+  );
   await enqueueChatImageFailed(job.id, "failed", payload.error.code);
 }
 
@@ -648,7 +664,14 @@ async function finalizeGenerationBlocked(
       details: toInputJson({ message: payload.message }),
     },
   });
-  await refundGeneration(job.userId, job.id, job.costDreamcoins, "blocked", payload.policyCode);
+  await refundGeneration(
+    job.userId,
+    job.id,
+    job.costDreamcoins,
+    "blocked",
+    payload.policyCode,
+    job.sourceType,
+  );
   await enqueueChatImageFailed(job.id, "blocked", payload.policyCode);
 }
 
@@ -840,9 +863,14 @@ async function refundGeneration(
   cost: number,
   status: "failed" | "blocked",
   errorCode: string,
+  sourceType: string,
 ) {
+  // INVARIANT: content_production jobs are never debited, so they must never be
+  // credited on refund — their costDreamcoins is record-keeping only (ops batches
+  // don't charge a wallet on creation).
+  const isDebitedJob = sourceType !== "content_production_item";
   await prisma.$transaction(async (tx) => {
-    if (cost > 0) {
+    if (cost > 0 && isDebitedJob) {
       await appendLedger(
         tx,
         userId,
