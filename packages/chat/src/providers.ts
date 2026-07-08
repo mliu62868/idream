@@ -7,7 +7,21 @@ import { env } from "./env.js";
 export interface ChatChunk {
   delta: string;
   done: boolean;
+  /** Accumulated tool calls, present on the final (done) chunk once the SSE stream closes. */
+  toolCalls?: ChatToolCall[];
 }
+
+// SPEC: a function-calling tool description passed to the model, JSON-Schema
+// parameters sourced from the (later task's) tool registry's zod schemas.
+export type ChatToolDefinition = {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+};
+
+// INVARIANT: arguments is the raw JSON string as streamed by the model —
+// callers parse/validate it, providers.ts never interprets tool semantics.
+export type ChatToolCall = { id: string; name: string; arguments: string };
 
 export interface ModelMessage {
   role: "system" | "user" | "assistant";
@@ -19,11 +33,14 @@ export interface ChatCompletion {
 }
 
 export interface ChatModel {
+  /** Capability flag: can this provider accept `tools` and stream tool_calls? */
+  readonly supportsTools?: boolean;
   stream(input: {
     /** Real provider model resolved from the entitlement tier (policy.modelForTier). */
     model?: string;
     messages: ModelMessage[];
     characterName?: string;
+    tools?: ChatToolDefinition[];
   }): AsyncIterable<ChatChunk>;
   complete(input: {
     /** Real provider model resolved from the entitlement tier (policy.modelForTier). */
@@ -44,17 +61,34 @@ export interface ModerationProvider {
 }
 
 class MockChatModel implements ChatModel {
+  readonly supportsTools = true;
+
   async *stream(input: Parameters<ChatModel["stream"]>[0]): AsyncIterable<ChatChunk> {
     const lastUser =
       [...input.messages].reverse().find((m) => m.role === "user")?.content ?? "";
     const reply = `Mock ${input.characterName ?? "character"} reply: ${lastUser}`.trim();
     // chunk into a few deltas so SSE/seq logic is exercised
     for (const piece of chunk(reply, 24)) yield { delta: piece, done: false };
-    yield { delta: "", done: true };
+    yield { delta: "", done: true, toolCalls: readMockToolCalls() };
   }
 
   async complete(): Promise<ChatCompletion> {
     return { content: process.env.CHAT_MOCK_TOOL_PLAN_JSON ?? "{\"tool\":null}" };
+  }
+}
+
+// SPEC: dev/test seam for exercising the P4 agent's function-calling path
+// without a real model. INTENT: same shape as the OpenAI-compatible provider's
+// accumulated tool_calls, so callers don't branch on provider.
+function readMockToolCalls(): ChatToolCall[] {
+  const raw = process.env.CHAT_MOCK_TOOL_CALLS_JSON;
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as ChatToolCall[]) : [];
+  } catch (error) {
+    console.warn("CHAT_MOCK_TOOL_CALLS_JSON is not valid JSON; ignoring", error);
+    return [];
   }
 }
 
@@ -68,6 +102,9 @@ class OpenAIChatModel implements ChatModel {
     private readonly baseUrl: string,
     private readonly model: string,
     private readonly apiKey: string,
+    // "pipeline" is the production gateway alias and does not (yet) expose
+    // function-calling; "openai" targets oMLX/LM Studio directly, which does.
+    readonly supportsTools: boolean = true,
   ) {}
 
   async *stream(input: Parameters<ChatModel["stream"]>[0]): AsyncIterable<ChatChunk> {
@@ -103,6 +140,14 @@ class OpenAIChatModel implements ChatModel {
           stream: true,
           max_tokens: env.CHAT_MODEL_MAX_TOKENS,
           chat_template_kwargs: { enable_thinking: false },
+          ...(input.tools && input.tools.length > 0
+            ? {
+                tools: input.tools.map((t) => ({
+                  type: "function",
+                  function: { name: t.name, description: t.description, parameters: t.parameters },
+                })),
+              }
+            : {}),
         }),
       });
       if (!res.ok || !res.body) {
@@ -111,6 +156,10 @@ class OpenAIChatModel implements ChatModel {
 
       const decoder = new TextDecoder();
       let buffer = "";
+      // INVARIANT: tool_calls stream as fragments keyed by `index` — the first
+      // fragment for a slot carries id+name, later ones only append to
+      // `arguments`. Accumulate by index and flatten once the stream ends.
+      const toolCallsByIndex = new Map<number, { id: string; name: string; arguments: string }>();
       for await (const bytes of res.body as unknown as AsyncIterable<Uint8Array>) {
         // Reset the idle timer: progress was made, so the stream is alive.
         clearTimeout(timeout);
@@ -124,14 +173,22 @@ class OpenAIChatModel implements ChatModel {
           if (!line.startsWith("data:")) continue;
           const payload = line.slice(5).trim();
           if (payload === "[DONE]") {
-            yield { delta: "", done: true };
+            yield { delta: "", done: true, toolCalls: flattenToolCalls(toolCallsByIndex) };
             return;
           }
-          const delta = (JSON.parse(payload).choices?.[0]?.delta?.content ?? "") as string;
-          if (delta) yield { delta, done: false };
+          const delta = (JSON.parse(payload).choices?.[0]?.delta ?? {}) as {
+            content?: string;
+            tool_calls?: Array<{
+              index: number;
+              id?: string;
+              function?: { name?: string; arguments?: string };
+            }>;
+          };
+          accumulateToolCalls(toolCallsByIndex, delta.tool_calls);
+          if (delta.content) yield { delta: delta.content, done: false };
         }
       }
-      yield { delta: "", done: true };
+      yield { delta: "", done: true, toolCalls: flattenToolCalls(toolCallsByIndex) };
     } catch (error) {
       if (controller.signal.aborted) {
         throw new Error(`Chat model request timed out after ${timeoutMs}ms`);
@@ -220,6 +277,29 @@ class SafetyGatewayChatModerationProvider implements ModerationProvider {
   }
 }
 
+function accumulateToolCalls(
+  byIndex: Map<number, { id: string; name: string; arguments: string }>,
+  fragments: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }> | undefined,
+): void {
+  if (!fragments) return;
+  for (const fragment of fragments) {
+    const existing = byIndex.get(fragment.index) ?? { id: "", name: "", arguments: "" };
+    byIndex.set(fragment.index, {
+      id: fragment.id ?? existing.id,
+      name: fragment.function?.name ?? existing.name,
+      arguments: existing.arguments + (fragment.function?.arguments ?? ""),
+    });
+  }
+}
+
+function flattenToolCalls(
+  byIndex: Map<number, { id: string; name: string; arguments: string }>,
+): ChatToolCall[] {
+  return [...byIndex.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([, call]) => call);
+}
+
 function chunk(text: string, size: number): string[] {
   if (!text) return [""];
   const out: string[] = [];
@@ -301,12 +381,22 @@ export function createProviders(): ChatProviders {
     // "openai" = any OpenAI-compatible endpoint (oMLX / LM Studio / OpenAI).
     // "pipeline" is the production gateway alias; it exposes the same endpoint.
     case "openai":
+      return {
+        chat: new OpenAIChatModel(
+          env.CHAT_MODEL_BASE_URL,
+          env.CHAT_MODEL_NAME,
+          env.CHAT_MODEL_API_KEY,
+          true,
+        ),
+        moderation,
+      };
     case "pipeline":
       return {
         chat: new OpenAIChatModel(
           env.CHAT_MODEL_BASE_URL,
           env.CHAT_MODEL_NAME,
           env.CHAT_MODEL_API_KEY,
+          false,
         ),
         moderation,
       };
