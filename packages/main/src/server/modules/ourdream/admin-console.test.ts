@@ -3323,6 +3323,74 @@ describe("admin content/character governance (F2)", () => {
   });
 });
 
+describe("admin content/character chat image tool toggle (P4 Task 6)", () => {
+  it("gates on content.production.write, merges advancedDetails immutably, and audits", async () => {
+    const admin = await setupActor("admin", "chattool");
+    const support = await setupActor("support", "chattool");
+    const charId = `${P}chat-tool-char`;
+    await createCharacter({ id: charId, name: "Chat Tool Char" });
+    await prisma.character.update({
+      where: { id: charId },
+      data: { advancedDetails: { personality: "shy", hobbies: ["reading"] } },
+    });
+
+    const forbidden = await api("POST", `admin/content/characters/${charId}/chat-tools`, {
+      userId: support,
+      role: "support",
+      body: { imageToolEnabled: false, reason: "toggle chat image tool" },
+    });
+    expectError(forbidden, 403);
+
+    const badBody = await api("POST", `admin/content/characters/${charId}/chat-tools`, {
+      userId: admin,
+      role: "admin",
+      body: { imageToolEnabled: false },
+    });
+    expectError(badBody, 400);
+
+    const disable = await api("POST", `admin/content/characters/${charId}/chat-tools`, {
+      userId: admin,
+      role: "admin",
+      body: { imageToolEnabled: false, reason: "toggle chat image tool" },
+    });
+    expectOk(disable);
+
+    const afterDisable = await prisma.character.findUniqueOrThrow({ where: { id: charId } });
+    expect(afterDisable.advancedDetails).toMatchObject({
+      imageToolEnabled: false,
+      personality: "shy",
+      hobbies: ["reading"],
+    });
+
+    const enable = await api("POST", `admin/content/characters/${charId}/chat-tools`, {
+      userId: admin,
+      role: "admin",
+      body: { imageToolEnabled: true, reason: "toggle chat image tool" },
+    });
+    expectOk(enable);
+
+    const afterEnable = await prisma.character.findUniqueOrThrow({ where: { id: charId } });
+    expect(afterEnable.advancedDetails).toMatchObject({
+      imageToolEnabled: true,
+      personality: "shy",
+      hobbies: ["reading"],
+    });
+
+    const audit = await prisma.adminAuditLog.findFirst({
+      where: { action: "content.chat-tools.write", targetId: charId },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(audit).not.toBeNull();
+
+    const missing = await api("POST", `admin/content/characters/${P}nope/chat-tools`, {
+      userId: admin,
+      role: "admin",
+      body: { imageToolEnabled: false, reason: "toggle chat image tool" },
+    });
+    expectError(missing, 404);
+  });
+});
+
 describe("admin featured curation (F3)", () => {
   afterAll(async () => {
     await prisma.appSetting.deleteMany({ where: { key: "feed.featured" } });
