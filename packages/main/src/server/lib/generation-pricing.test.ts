@@ -50,21 +50,38 @@ describe("generationCostDreamcoins", () => {
     expect(await generationCostDreamcoins(mode as "image", 2, 1)).toBe(14);
   });
 
-  it("matches ceil(activeBaseCost-or-fallback * count * multiplier) for a shared mode", async () => {
-    // "video" is a real mode other tests/seed data may also touch, so we cannot
-    // assert an exact literal here (parallel-unsafe). Instead mirror the SSoT
-    // query ourselves and assert the function's result is consistent with it —
-    // this covers both "active rule wins" and "no active rule falls back to
-    // the built-in base cost" without assuming DB isolation.
-    const activeRule = await prisma.pricingRule.findFirst({
-      where: { mode: "video", status: "active" },
-      orderBy: [{ effectiveFrom: "desc" }, { version: "desc" }],
+  it("wins the ordering on the real 'video' mode via a far-future effectiveFrom + high version", async () => {
+    // "video" is a real, shared mode — other concurrent tests (e.g.
+    // admin-console.test.ts's video-pricing publish/rollback case) may create
+    // and mutate their own active video rules at the same time. Rather than
+    // read-then-assert against whatever happens to be active (a TOCTOU race:
+    // the effective rule can change between our read and the call under
+    // test), we seed a rule that is guaranteed to sort first — a far-future
+    // effectiveFrom and a version no concurrent test would plausibly use —
+    // so the assertion is deterministic regardless of what else is active.
+    // We only ever delete our own P-prefixed row, so this can't disturb the
+    // concurrent admin-console rule it created.
+    const ruleId = `${P}rule-video-wins`;
+    await prisma.pricingRule.create({
+      data: {
+        id: ruleId,
+        ruleKey: `${P}rule-video-wins`,
+        label: "Deterministically-newest video rule",
+        mode: "video",
+        baseCost: 42,
+        multiplier: 1,
+        status: "active",
+        version: 999_999,
+        effectiveFrom: new Date("2099-01-01T00:00:00.000Z"),
+        publishedAt: new Date(),
+      },
     });
-    const expectedBase = activeRule?.baseCost ?? 100;
 
-    expect(await generationCostDreamcoins("video", 2, 1)).toBe(
-      Math.ceil(expectedBase * 2 * 1),
-    );
+    try {
+      expect(await generationCostDreamcoins("video", 2, 1)).toBe(84);
+    } finally {
+      await prisma.pricingRule.delete({ where: { id: ruleId } });
+    }
   });
 
   it("scales linearly with the multiplier (cost2x = 2 * cost1x)", async () => {
