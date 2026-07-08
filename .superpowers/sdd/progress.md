@@ -60,3 +60,5 @@ P3 Task 3: complete (commits a18fa3b + fix 9813e92, review clean after fix ✅; 
 - P3 Task 3 note: test helper api() splits segments from raw path — never inline "?x=" in path, use query option.
 P3 Task 4: complete (commit a440555, review clean ✅; typecheck+lint pass; confirmation===item.id & draft→publish two-step both verified-correct deviations)
 P3 Task 5: complete (commits de0977c + i18n fix 248df3b, review clean after fix ✅; 5 AdminConsoleClient touch points verified; field audit clean)
+P3 Task 6: complete (commit c634c74, review clean ✅; 56/56 tests x3, bun run check green, live API smoke on real server; BONUS real bugfix: batch jobs now route model=workflowKey??pipelineModel matching user path, reviewer-verified)
+P3 final review: Ready to merge (opus; Critical refund-mint bug found+fixed 58c0b82 w/ type-enforced sourceType param + partial-refund site; 85 tests green independent rerun). Minors all deferred. Merging to master.
