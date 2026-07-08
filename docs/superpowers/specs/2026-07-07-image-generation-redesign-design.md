@@ -276,9 +276,9 @@ chat→main→gen→finalizer→chat 的 outbox/inbox 事件链（`chat.image.re
 | **P1 底座抽象** ✅ | `GenBackend` 接口 + ComfyUI/Sdcpp 两实现；删两个 OpenAI shim；Workflow 描述符 + 声明式槽绑定；gen worker 直调。已合入 master（2026-07-07）。 | 现有 image 生成 e2e 绿；真实 smoke 832×1216 |
 | **P2 运营配置** ✅ | workflow 描述符上移 `@idream/shared/gen-workflow`；registry 双键(modelId+workflowKey)；ComfyUIBackend 参考图上传+image 槽；qwen-image-edit 描述符+编辑 smoke(70s 走抽象层保脸)；admin `generation/backends`+`generation/workflows` API+页；Profile.workflowKey 路由(SQL 交用户)；Visual Passport 编辑器。分支 `feat/image-gen-p2-ops-console`，Tasks 1-8 双审全绿。 | typecheck 6/6 + lint 全绿；Chrome 全链走查(待 dev SQL) |
 | **P3 角色预生图 + Metric** ✅ | per-character 预生图面板 → Batch（`admin/content/characters/{id}/pregen`，pack cover/hero/chat）；Metric 聚合端点+视图（零 DDL，按需聚合替代物化表）；Batch 成本接 PricingRule 真值；production batch job 补 workflowKey 路由（与 P2 一致）。分支 `feat/image-gen-p3-pregen-metrics`。 | 一键为官方角色出封面/chat 包并投放；验收集成用例覆盖 pregen→审→投放→角色头像更新闭环，lint/typecheck/build 全绿 |
-| **P4 聊天 Agent** | 工具注册表；原生 function-calling；文本+图同回合；护照注入；运营开关。 | 聊天内"发张自拍/换个场景"端到端 + 一致性 |
+| **P4 聊天 Agent** ✅ | 工具注册表（`AGENT_TOOL_REGISTRY`）；原生 function-calling 优先 + planner 兜底（三重安全网：FC 不可用/空结果/异常）；文本+图同回合；护照注入前移（system prompt 身份槽 + payload 携 visualProfileId/version）；结果感知（完成后回喂"[You sent a photo: …]"）；per-角色运营开关（`advancedDetails.imageToolEnabled`，admin 可切）。分支 `feat/image-gen-p4-chat-agent`。 | web.test.ts 单条验收用例走通全链 mock seam："发张自拍"→FC 同回合出文本+attachment→outbox 带护照槽→完成后下一轮"换个场景，去雪山"→新 FC 出图 + 模型上下文含已发照片简述；真模型 smoke（oMLX Qwen3.6-35B-A3B, `launch:probe:chat`）通过；真服务 live 走查因 dev DB 未应用 P4 边界 SQL 而受阻（见附记），协议正确性已由 mock 验收覆盖 |
 
----
+**P4 部署依赖（USER 步骤，未合并到本次交付）**：`db/sql/2026-07-08-chat-visual-passport-and-tool-flags.sql`（`core.chat_character_view` + `billing.chat_entitlement_view`，纯 `CREATE OR REPLACE VIEW`，无表结构变更）须在部署前应用到 dev/prod；`packages/chat` 需随后跑一次 `db:generate`。测试库（`test/provision.mjs`）已自动带上，不受影响；本地持久 dev DB 尚未应用，因此 P4 Task 7 的真服务 live 走查在 session 创建时报 `visual_profile_id` 列缺失——按既定规则（模式变更 SQL 只由用户执行）未由本次会话代跑，已作为已知障碍记录。
 
 ## 8. 待你确认的开放决策
 
@@ -289,7 +289,7 @@ chat→main→gen→finalizer→chat 的 outbox/inbox 事件链（`chat.image.re
    - **不用 MCP**：热路径上多进程+发现+延迟、零收益，且不替代 FC。唯一回头场景 = 以后把"生图能力"作平台边界暴露给外部/第三方 agent 共享，那时用 MCP server 封装。
    - **不用 skill 机制**：其价值以"注册表工具 description/intentHints/few-shot + 角色 system prompt 指引"的提示词形态交付。
    - 原生 FC 额外收益：一次调用 in-band、结构上解锁"文本+图片同回合"。
-   - **P0 需验证**：本机 oMLX uncensored 模型（Qwen3.6-35B-A3B）是否稳定支持 OpenAI `tools`；不稳则回退 planner。
+   - **✅ P0 探测已过（P4 Task 7 live 验证）**：本机 oMLX（Qwen3.6-35B-A3B-uncensored-heretic, `enable_thinking:false`）稳定支持 OpenAI `tools`；`bun run launch:probe:chat` 真模型 smoke 通过。原生 FC 已作为 P4 上线主路径落地，planner 仍是三重兜底（FC 不可用/空结果/异常）。
 4. **提交策略**：本文档尚未 commit（你不在时不擅自提交/改代码）。你点头后我再 commit 并进入 writing-plans 拆实现计划。
 5. **fp8×MPS 落地**：**✅ 已定：方案 A —— fp16/bf16**（2026-07-07 用户确认）。本地运行时把 fp8 权重转 fp16 供 MPS 全速；prod CUDA 仍用原 fp8。优先现成 fp16 版，无则一次性 dequant 脚本（需按 scaled-fp8 语义处理 scale 张量）。
 

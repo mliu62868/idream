@@ -74,3 +74,8 @@ P4 Task 3: complete (commit eefb4429, review clean ✅; 114/114 chat; XOR remove
 - P4 Task 3 minor: validateToolCall casts to GenerateImageAsyncArgs + hardcoded tool name — flag when adding tool #2.
 P4 Task 4: complete (commit 7074a3bf, review clean ✅; chat 117/117 + main 24/24; SQL idempotent, grants survive REPLACE, defaults TRUE everywhere; chat prisma view-mapping is established mechanism)
 - P4 Task 4 note: pullers must bun run db:generate in packages/chat (generated/ gitignored).
+P4 Task 5: complete (commit a3a039d9, review clean ✅; chat 117/117 + main 24/24; promptHint-first order verified justified; no double-injection/mutation risks)
+- P4 Task 5 minors: inbox read-then-write benign race note; consolidate mock introspection seams if more accumulate.
+P4 Task 6: complete (commit 52f1e11c, review clean ✅; 58/58 admin-console; merge preserves keys; race noted-only)
+P4 Task 7: complete (acceptance e2e added to web.test.ts; chat 118/118, main admin-console+event-consumer+image-generation-service 82/82, bun run check all green; real-model smoke via launch:probe:chat passed against oMLX Qwen3.6-35B-A3B; real-service live walkthrough blocked — local dev DB missing db/sql/2026-07-08-chat-visual-passport-and-tool-flags.sql (USER step, not run by agent per schema-change policy); spec §7/§8.3 + CURRENT_FUNCTIONAL_COVERAGE.md updated)
+- P4 Task 7 note: apply the P4 boundary SQL to dev/prod + packages/chat db:generate before the live walkthrough can be re-run for real.
