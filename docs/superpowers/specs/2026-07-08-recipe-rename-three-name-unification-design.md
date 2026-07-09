@@ -5,9 +5,10 @@
 - 关联：`docs/product/...` §9 延后项之一；承接上一期后台 IA 重构（UI 已落地「提示词配方 / Prompt Recipes」）
 - 状态：设计已确认，待写实现计划
 
-## 已确认的两个决策（2026-07-08）
+## 已确认的决策（2026-07-08）
 - **(a) API 路由一起改**：`/api/v1/admin/generation/prompt-templates` → `/generation/recipes`（端到端一致）。
 - **(b) key 的字符串值保持不动**：只改列名 `templateKey → recipeKey`，`"template_image_character_default"` 等**值原样保留**（值是数据、被 job 按字符串引用；改值=数据迁移+破坏引用，风险不成比例）。
+- **(c) 迁移由本代理执行（用户指令覆盖默认规则）**：本代理在**本地 dev 库**（`idream` @ localhost:5433，public schema）执行 `ALTER … RENAME` **并协调本地 pm2 切换**（见 §4）。**prod 生产库不碰**——代理无 prod 凭据；prod 那条 SQL 产出成文件（`db/sql/2026-07-08-recipe-rename.sql`）供用户部署时执行。
 
 ---
 
@@ -44,27 +45,36 @@ grep 确认：**chat 服务零引用**（跨服务安全），无 `prisma/migrat
 - **chat 服务不动**（零引用）。
 - §9 其它三项（`MediaAsset.characterId`、negative prompt 三源、`CharacterTemplate↔官方角色`）**不碰**。
 
-## 4. 迁移机制（关键，防丢数据）
+## 4. 迁移机制（关键，防丢数据 + 不打断本地服务）
 
-**绝不 `prisma db push`** —— 它对 rename 会 DROP 旧列 + CREATE 新列 = **丢数据**。迁移一律走**手写 `ALTER TABLE … RENAME`**（元数据操作，保留全部数据），由**用户在 dev/prod 各执行一次**。
+**绝不 `prisma db push`** —— 它对 rename 会 DROP 旧列 + CREATE 新列 = **丢数据**（dev 库现有 4 条 recipe + 43 条 job 引用会没）。迁移一律走**手写 `ALTER TABLE … RENAME`**（元数据操作，保留全部数据）。
 
-产出文件：`db/sql/2026-07-08-recipe-rename.sql`，核心语句：
+**最终 SQL**（索引名已按 dev 库实测确认，schema 限定 `public`，避免误伤并存的 `codex_admin_console_*` 残留 schema）：
 
 ```sql
+-- db/sql/2026-07-08-recipe-rename.sql  —— 只跑一次。dev 由代理执行；prod 由用户部署时执行。
 BEGIN;
--- 实体：表 + 业务键列（值不变，仅列名）
-ALTER TABLE "generation_prompt_templates" RENAME TO "generation_recipes";
-ALTER TABLE "generation_recipes" RENAME COLUMN "templateKey" TO "recipeKey";
--- GenerationJob 引用列
-ALTER TABLE "generation_jobs" RENAME COLUMN "promptTemplateId" TO "recipeId";
-ALTER TABLE "generation_jobs" RENAME COLUMN "promptTemplateVersion" TO "recipeVersion";
+ALTER TABLE public.generation_prompt_templates RENAME TO generation_recipes;
+ALTER TABLE public.generation_recipes RENAME COLUMN "templateKey" TO "recipeKey";
+ALTER INDEX public.generation_prompt_templates_templateKey_status_idx
+  RENAME TO generation_recipes_recipeKey_status_idx;
+ALTER TABLE public.generation_jobs RENAME COLUMN "promptTemplateId" TO "recipeId";
+ALTER TABLE public.generation_jobs RENAME COLUMN "promptTemplateVersion" TO "recipeVersion";
+ALTER INDEX public.generation_jobs_promptTemplateId_promptTemplateVersion_idx
+  RENAME TO generation_jobs_recipeId_recipeVersion_idx;
 -- ContentProductionBatch 已是 recipeId/recipeVersion，无需改
 COMMIT;
 ```
 
-- **索引名对齐**：RENAME 后旧索引仍可用，但索引**名字**还带旧前缀（如 `generation_prompt_templates_templateKey_status_idx`）。为让将来 `db push`/introspection 不误判，SQL 里追加 `ALTER INDEX … RENAME TO …` 对齐 Prisma 默认命名（`generation_recipes_recipeKey_status_idx`、`generation_jobs_recipeId_recipeVersion_idx`）。**实现阶段需先 `\d` 查实际索引名**再定稿 SQL（名字由历史 `db push` 生成，以实际为准）。
-- **顺序**：DEV → 你先跑 SQL、再切新代码（新代码查 `recipeId`，此时列已改好）；PROD → 部署前先跑 SQL，再上新代码。
-- **测试 DB 你无需手动**：vitest `global-setup` 每次从 `schema.prisma` **全新建 public schema**（直接就是 recipe 列名），因此测试自动验证"代码 ↔ schema 一致"，不依赖任何手工 SQL。
+**本地 dev 切换顺序（代理执行，防止运行中的 pm2 旧代码打在改名后的库上报错）**——本机 pm2 全栈在线（main-web/admin-web/gen-image/gen-finalizer/main-event-consumer 都连 dev 库）：
+1. 代码 + schema 改完，先 `bun run build`（含 `prisma generate`；只产出 `.next`/新 client，不影响运行中的进程）。
+2. 紧接着 **跑上面的 SQL**（psql 连 dev 库 public）。
+3. **立即 `pm2 restart`** 受影响进程（main-web / admin-web / gen-image / gen-finalizer / main-event-consumer；chat 是独立库，不受影响），让它们加载新构建 + 新 client，与改名后的库一致。
+4. 健康检查（pm2 online、`/health`、开一遍 admin 生成/配方页无报错）。
+- SQL→restart 之间有几秒窗口，dev 无真实流量 → 实际零影响；build 在前保证 restart 能秒起新码。
+- **PROD**：同一条 SQL 交付成文件；用户部署时"先跑 SQL、再上新码"（非零停机需加兼容层，本项目按 dev 阶段处理）。
+
+**测试 DB 全自动**：vitest `global-setup` 每次从 `schema.prisma` **全新建 public schema**（直接就是 recipe 列名），所以代码 + 测试的正确性验证**不依赖也不触碰 dev 库**——先在测试库把代码跑绿，再对 dev 库做上面的切换。
 
 ## 5. 验证 / 验收
 - [ ] `schema.prisma` 里再无 `GenerationPromptTemplate` / `promptTemplateId` / `templateKey`；`prisma generate` 后 client 全 recipe 名。
@@ -72,12 +82,14 @@ COMMIT;
 - [ ] `bun run typecheck` + `bun run lint` 通过（TS strict + Prisma 生成类型兜底改名）。
 - [ ] `admin-console.test.ts`（已覆盖 production / recipe / metrics / pregen 路径）改完全绿；vitest 从新 schema 建库跑通。
 - [ ] admin API：旧 `/generation/prompt-templates` 已改为 `/generation/recipes`，前端调用端同步；相关 e2e/集成断言更新。
-- [ ] 交付 `db/sql/2026-07-08-recipe-rename.sql`（含索引名对齐），文档写清 DEV/PROD 执行顺序。
+- [ ] 交付 `db/sql/2026-07-08-recipe-rename.sql`（含索引名对齐），文档写清 DEV=代理执行 / PROD=用户部署执行。
+- [ ] **dev 切换完成（代理）**：dev 库已跑 RENAME —— `to_regclass('public.generation_recipes')` 非空、`generation_prompt_templates` 为空；4 条 recipe / 43 条 job 引用**数据无损**；`bun run build` 已出新码，`pm2 restart` 后受影响进程全 **online**、admin 配方/生成页 + 生成链路可用无报错。
 
 ## 6. 风险 / 回滚
 - **数据风险低**：RENAME 是元数据操作，数据不动；反向 `ALTER … RENAME` 即回滚。
 - **主要风险 = 漏改引用** → typecheck + 现有集成测试兜底；API 路由 URL 是字符串（typecheck 不兜），靠命中该端点的测试覆盖。
-- **部署窗口**：代码与 DB 列名必须一致——严格"SQL 先行、代码后动"。非零停机滚动部署下需先加兼容层；本项目 dev 阶段"跑 SQL→重启"即可，无需兼容层。
+- **一致性窗口**：代码与 DB 列名必须一致。dev 由代理按 §4 顺序 build→SQL→`pm2 restart` 一气呵成（几秒窗口、dev 无流量）；prod 由用户"先 SQL 后上码"。非零停机滚动部署才需兼容层，本项目 dev 阶段不需。
+- **代理不碰 prod**：仅操作本地 dev 库与本地 pm2；prod SQL 交付成文件。
 
 ## 7. 后续（本次不做）
 - §9 其它三项各自单独立项：`MediaAsset.characterId` 权威收敛、negative prompt 三源归一、`CharacterTemplate↔官方角色` 合并（后者是产品决策）。
