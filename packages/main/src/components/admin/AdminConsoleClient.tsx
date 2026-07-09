@@ -32,6 +32,7 @@ import {
   UploadCloud,
   Workflow,
   X,
+  type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { apiDelete, apiForm, apiGet, apiWrite, formatApiError, type ApiEnvelope } from "@/components/admin/api";
@@ -2335,30 +2336,102 @@ function renderSection(
   return <AuditView rows={section.rows} />;
 }
 
+// SPEC: guided Dashboard — three stacked sections, top to bottom: attention (what needs
+//       you), task launcher (what you probably want to do), health (the old metrics grid).
+// INTENT: replace the cold metrics dump with a landing that answers "what needs me / what do
+//         I want to do" first; health stays available but de-emphasized. Zero new API — the
+//         2 counts DashboardData doesn't carry (pending submissions, open tickets) are fetched
+//         client-side from list endpoints that already exist and are used elsewhere.
+// INVARIANTS: fetch failure/empty never blocks the panel — null counts render "—", the two
+//             DashboardData-sourced attention tiles always show regardless of fetch state.
 function DashboardView({ data }: { data: DashboardData }) {
   const { t } = useAdminI18n();
+  const [pending, setPending] = useState<{ submissions: number | null; tickets: number | null }>({
+    submissions: null,
+    tickets: null,
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [rq, sup] = await Promise.all([
+          apiGet<{ items: unknown[] }>("/api/v1/admin/content/review-queue?status=pending"),
+          apiGet<{ items: unknown[] }>("/api/v1/admin/support/requests?status=active"),
+        ]);
+        if (!cancelled) setPending({ submissions: rq.items.length, tickets: sup.items.length });
+      } catch {
+        if (!cancelled) setPending({ submissions: null, tickets: null });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
-    <div className="space-y-5">
-      <div className="grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-4">
-        <Metric
-          label="Users"
-          value={data.metrics.users.active}
-          meta={t("{count} suspended", { count: data.metrics.users.suspended })}
+    <div className="space-y-6">
+      <section className="space-y-3">
+        <h2 className="text-sm font-semibold text-white">{t("需要你处理的")}</h2>
+        <div className="grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-4">
+          <Metric
+            href="/admin/generation/jobs"
+            label="失败/blocked 任务"
+            meta="去处理"
+            value={data.metrics.generation.failed + data.metrics.generation.blocked}
+          />
+          <Metric
+            href="/admin/moderation"
+            label="待处理举报"
+            meta="去处理"
+            value={data.metrics.moderation.openReports}
+          />
+          <Metric
+            href="/admin/content/review-queue"
+            label="待审提交"
+            meta="去处理"
+            value={pending.submissions === null ? "—" : pending.submissions}
+          />
+          <Metric
+            href="/admin/support"
+            label="待处理工单"
+            meta="去处理"
+            value={pending.tickets === null ? "—" : pending.tickets}
+          />
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="text-sm font-semibold text-white">{t("常用任务")}</h2>
+        <div className="grid gap-3 md:grid-cols-3">
+          <TaskCard href="/admin/content/official" icon={ShieldCheck} label="上架新角色" />
+          <TaskCard href="/admin/content/production" icon={Play} label="生产一批图" />
+          <TaskCard href="/admin/content/review-queue" icon={ClipboardCheck} label="去审核" />
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="text-xs font-semibold uppercase text-[rgb(170,170,170)]">{t("健康概览")}</h2>
+        <div className="grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-4">
+          <Metric
+            label="Users"
+            value={data.metrics.users.active}
+            meta={t("{count} suspended", { count: data.metrics.users.suspended })}
+          />
+          <Metric
+            label="Generation"
+            value={`${data.metrics.generation.successRate}%`}
+            meta={t("{count} queued", { count: data.metrics.generation.queued })}
+          />
+          <Metric label="Moderation" value={data.metrics.moderation.openReports} meta="open reports" />
+          <Metric label="Billing" value={data.metrics.billing.activeSubscriptions} meta="active subscriptions" />
+        </div>
+        <DataTable
+          columns={["key", "enabled", "rolloutPercent", "version"]}
+          rows={data.featureFlags}
+          title="Feature Flags"
         />
-        <Metric
-          label="Generation"
-          value={`${data.metrics.generation.successRate}%`}
-          meta={t("{count} queued", { count: data.metrics.generation.queued })}
-        />
-        <Metric label="Moderation" value={data.metrics.moderation.openReports} meta="open reports" />
-        <Metric label="Billing" value={data.metrics.billing.activeSubscriptions} meta="active subscriptions" />
-      </div>
-      <DataTable
-        columns={["key", "enabled", "rolloutPercent", "version"]}
-        rows={data.featureFlags}
-        title="Feature Flags"
-      />
+      </section>
     </div>
   );
 }
@@ -7099,15 +7172,55 @@ function DataTable({
   );
 }
 
-function Metric({ label, value, meta }: { label: string; value: string | number; meta: string }) {
+// SPEC: a single stat cell. Plain <div> by default (health grid); when `href` is given,
+//       renders as a clickable <Link> with a hover state — the Dashboard attention row reuses
+//       this exact component instead of forking a second stat-tile design.
+function Metric({
+  href,
+  label,
+  value,
+  meta,
+}: {
+  href?: string;
+  label: string;
+  value: string | number;
+  meta: string;
+}) {
   const { t } = useAdminI18n();
-
-  return (
-    <div className="bg-[rgb(18,18,18)] p-4">
+  const body = (
+    <>
       <p className="text-xs font-medium text-[rgb(170,170,170)]">{t(label)}</p>
       <p className="mt-2 text-2xl font-semibold">{value}</p>
       <p className="mt-1 text-xs text-[rgb(114,113,112)]">{t(meta)}</p>
-    </div>
+    </>
+  );
+
+  if (href) {
+    return (
+      <Link className="block bg-[rgb(18,18,18)] p-4 transition-colors hover:bg-white/[0.07]" href={href}>
+        {body}
+      </Link>
+    );
+  }
+
+  return <div className="bg-[rgb(18,18,18)] p-4">{body}</div>;
+}
+
+// SPEC: Dashboard "常用任务" launcher card — icon + label + a chevron "go" affordance.
+function TaskCard({ href, icon: Icon, label }: { href: string; icon: LucideIcon; label: string }) {
+  const { t } = useAdminI18n();
+
+  return (
+    <Link
+      className="group flex items-center gap-3 border border-white/10 bg-[rgb(18,18,18)] p-4 transition-colors hover:border-white/20 hover:bg-white/[0.07]"
+      href={href}
+    >
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center bg-white/10 text-white">
+        <Icon className="h-4 w-4" />
+      </span>
+      <span className="flex-1 text-sm font-medium text-white">{t(label)}</span>
+      <ChevronRight className="h-4 w-4 shrink-0 text-[rgb(114,113,112)] transition-transform group-hover:translate-x-0.5 group-hover:text-white" />
+    </Link>
   );
 }
 
