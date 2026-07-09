@@ -3358,7 +3358,7 @@ function disableProfileAction(id: string): PendingAction {
 
 function publishRecipeAction(id: string): PendingAction {
   return {
-    title: `Publish template ${id}`,
+    title: `Publish recipe ${id}`,
     endpoint: `/api/v1/admin/generation/recipes/${id}/publish`,
     method: "POST",
     confirmText: id,
@@ -3373,7 +3373,7 @@ function publishRecipeAction(id: string): PendingAction {
 
 function rollbackRecipeAction(id: string): PendingAction {
   return {
-    title: `Rollback template ${id}`,
+    title: `Rollback recipe ${id}`,
     endpoint: `/api/v1/admin/generation/recipes/${id}/rollback`,
     method: "POST",
     confirmText: id,
