@@ -631,21 +631,18 @@ const zh: Record<string, string> = {
   "Visual Identity": "视觉身份",
   // settings tab subtitle (Presets moved out of Settings in Task 2)
   "Feature flags": "功能开关",
-  // guided Dashboard — attention panel + task launcher cards (task 3). These display
-  // strings are authored Chinese-native (no English source copy was specified), so the
-  // key IS the display string; self-mapped here so hasAdminZh() proves intentional
-  // coverage rather than relying on the (identical) key-fallback for locale="en".
-  "需要你处理的": "需要你处理的",
-  "常用任务": "常用任务",
-  "健康概览": "健康概览",
-  "失败/blocked 任务": "失败/blocked 任务",
-  "待处理举报": "待处理举报",
-  "待审提交": "待审提交",
-  "待处理工单": "待处理工单",
-  "上架新角色": "上架新角色",
-  "生产一批图": "生产一批图",
-  "去审核": "去审核",
-  "去处理": "去处理",
+  // guided Dashboard — attention panel + task launcher cards (task 3).
+  "Needs your attention": "需要你处理的",
+  "Common tasks": "常用任务",
+  "Health overview": "健康概览",
+  "Failed/blocked jobs": "失败/blocked 任务",
+  "Open reports": "待处理举报",
+  // "Pending submissions" reuses the existing key defined above (line ~280).
+  "Open tickets": "待处理工单",
+  "Add official character": "上架新角色",
+  "Batch generate images": "生产一批图",
+  "Go to review queue": "去审核",
+  "Handle": "去处理",
 };
 
 const zhColumns: Record<string, string> = {

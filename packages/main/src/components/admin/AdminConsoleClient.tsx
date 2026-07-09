@@ -2372,46 +2372,46 @@ function DashboardView({ data }: { data: DashboardData }) {
   return (
     <div className="space-y-6">
       <section className="space-y-3">
-        <h2 className="text-sm font-semibold text-white">{t("需要你处理的")}</h2>
+        <h2 className="text-sm font-semibold text-white">{t("Needs your attention")}</h2>
         <div className="grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-4">
           <Metric
             href="/admin/generation/jobs"
-            label="失败/blocked 任务"
-            meta="去处理"
+            label="Failed/blocked jobs"
+            meta="Handle"
             value={data.metrics.generation.failed + data.metrics.generation.blocked}
           />
           <Metric
             href="/admin/moderation"
-            label="待处理举报"
-            meta="去处理"
+            label="Open reports"
+            meta="Handle"
             value={data.metrics.moderation.openReports}
           />
           <Metric
             href="/admin/content/review-queue"
-            label="待审提交"
-            meta="去处理"
+            label="Pending submissions"
+            meta="Handle"
             value={pending.submissions === null ? "—" : pending.submissions}
           />
           <Metric
             href="/admin/support"
-            label="待处理工单"
-            meta="去处理"
+            label="Open tickets"
+            meta="Handle"
             value={pending.tickets === null ? "—" : pending.tickets}
           />
         </div>
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-sm font-semibold text-white">{t("常用任务")}</h2>
+        <h2 className="text-sm font-semibold text-white">{t("Common tasks")}</h2>
         <div className="grid gap-3 md:grid-cols-3">
-          <TaskCard href="/admin/content/official" icon={ShieldCheck} label="上架新角色" />
-          <TaskCard href="/admin/content/production" icon={Play} label="生产一批图" />
-          <TaskCard href="/admin/content/review-queue" icon={ClipboardCheck} label="去审核" />
+          <TaskCard href="/admin/content/official" icon={ShieldCheck} label="Add official character" />
+          <TaskCard href="/admin/content/production" icon={Play} label="Batch generate images" />
+          <TaskCard href="/admin/content/review-queue" icon={ClipboardCheck} label="Go to review queue" />
         </div>
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-xs font-semibold uppercase text-[rgb(170,170,170)]">{t("健康概览")}</h2>
+        <h2 className="text-xs font-semibold uppercase text-[rgb(170,170,170)]">{t("Health overview")}</h2>
         <div className="grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-4">
           <Metric
             label="Users"
