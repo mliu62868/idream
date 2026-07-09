@@ -89,7 +89,7 @@ export function VisualPassportPanel({ characterId }: { characterId: string }) {
     <section className="mt-4 border border-white/10 bg-[rgb(18,18,18)] p-4">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold">{t("Visual Passport")}</h2>
+          <h2 className="text-sm font-semibold">{t("Visual Identity")}</h2>
           <p className="mt-1 text-xs text-[rgb(170,170,170)]">
             {t("Version history and identity prompt editing for this character's visual profile.")}
           </p>

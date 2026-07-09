@@ -2927,7 +2927,7 @@ function ConfigTabNav({
   const items: Array<{ id: ConfigTab; label: string; meta: string }> = [
     { id: "drafts", label: "Drafts", meta: "Test and publish" },
     { id: "published", label: "Published", meta: "Active and archived" },
-    { id: "settings", label: "Settings", meta: "Presets and flags" },
+    { id: "settings", label: "Settings", meta: "Feature flags" },
   ];
 
   return (

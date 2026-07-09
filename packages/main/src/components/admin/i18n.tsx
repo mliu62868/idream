@@ -599,6 +599,30 @@ const zh: Record<string, string> = {
   "title": "标题",
   "user": "用户",
   "yes": "是",
+  // redesigned admin nav — group headers
+  "Characters": "角色",
+  "Media": "图片",
+  // redesigned admin nav — item labels
+  "Character Starters": "角色起始模板",
+  "Character Review": "角色审核队列",
+  "Prompt Recipes": "提示词配方",
+  "Presets": "预设",
+  "Workflows": "工作流",
+  "Backends": "后端",
+  "Jobs & Incidents": "任务与事故",
+  "Metrics": "指标",
+  "Image Production": "图片生产",
+  "Image Library": "图片库",
+  "Placements": "铺位",
+  "Featured": "精选",
+  // image production tabs
+  "Batch production": "通用批量",
+  "Generate for character": "为角色生成",
+  "Character": "角色",
+  // character visual identity (was "Visual Passport")
+  "Visual Identity": "视觉身份",
+  // settings tab subtitle (Presets moved out of Settings in Task 2)
+  "Feature flags": "功能开关",
 };
 
 const zhColumns: Record<string, string> = {
@@ -828,6 +852,12 @@ export function storeAdminLocale(locale: AdminLocale) {
 export function translateAdmin(locale: AdminLocale, key: string, values?: TranslationValues) {
   const template = locale === "zh" ? zh[key] ?? key : key;
   return interpolate(template, values);
+}
+
+// SPEC: does the zh dict have a real translation for `key` (vs. falling back to English)?
+// Used by tests to lock that a given nav/label key is actually translated, not just rendered.
+export function hasAdminZh(key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(zh, key);
 }
 
 export function adminColumnLabel(locale: AdminLocale, key: string) {

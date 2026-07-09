@@ -307,7 +307,7 @@ export function ProductionStudioView() {
     <div className="space-y-5">
       <ViewHeader
         action={<RefreshButton busy={loading} onClick={load} />}
-        eyebrow="Content Ops"
+        eyebrow="Media"
         icon={<Play className="h-5 w-5" />}
         title="Production Studio"
       />
@@ -578,7 +578,7 @@ export function AssetLibraryView() {
     <div className="space-y-5">
       <ViewHeader
         action={<RefreshButton busy={loading} onClick={load} />}
-        eyebrow="Content Ops"
+        eyebrow="Media"
         icon={<ImageIcon className="h-5 w-5" />}
         title="Asset Library"
       />
@@ -798,7 +798,7 @@ export function PlacementsView() {
     <div className="space-y-5">
       <ViewHeader
         action={<RefreshButton busy={loading} onClick={load} />}
-        eyebrow="Content Ops"
+        eyebrow="Media"
         icon={<Send className="h-5 w-5" />}
         title="Placements"
       />
