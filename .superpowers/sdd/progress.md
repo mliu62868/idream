@@ -99,3 +99,27 @@ P5 final review: pending.
 P5 Task 8: complete (commit 6aa68efe, review clean ✅; chat 133/133 + main 156/156 + check green; real-model 3-scenario FC probe all correct — edit/generate/neutral)
 P5 final review: Ready to merge (opus; edit-loop seam verified end-to-end incl. storageKey hydration unreachable-throw; all Minors defer). Merging to master.
 P5 COMPLETE.
+
+=== ADMIN CONSOLE IA REDESIGN SDD START ===
+Base (before Task 1): ff0fd484a1773475ad150cdd72d7241a142575f7
+Branch: admin-console-ia-redesign
+Plan: docs/superpowers/plans/2026-07-08-admin-console-ia-redesign.md
+Scope: presentation-layer only (zero DB / zero API). 5 tasks. Confirmed: 模型配置 (not 档案); Visual Passport→视觉身份 in Task 4.
+Task 1: complete (commit 94f329e7, review clean ✅; nav-config.ts SSoT, normalizeSection behavior-equivalence verified id-by-id, 8 icons pruned, 6/6 tests).
+Task 2: complete (commit 0009de56, review clean ✅ opus; four-place sync verified for generation/recipes+presets, ConfigTab trim consistent, migration loses nothing, 11/11 + live Playwright smoke).
+- Task 2 Minor (FOLD INTO TASK 4 copy pass): ConfigTabNav settings entry meta "Presets and flags" → should be "Feature flags" (presets moved out).
+- Task 2 Minor (FOLD INTO TASK 4 copy pass): ContentOpsViews.tsx eyebrow="Content Ops" on ProductionStudio/AssetLibrary/Placements now under Media/角色 groups — relabel to match new IA (i18n).
+Task 3: complete (commit 229dcd1e, review clean ✅ sonnet; ImageProductionView 2 tabs, reused components untouched, official embed intact, typecheck+lint+live Playwright smoke).
+- Task 3 Minor (defer to final): ImageProductionView shows t("Loading…") on zero-results too (empty vs loading state); spec-inherited from brief verbatim code.
+Task 4: complete (commit 7c601563, review clean ✅ sonnet; zh for all 3 pipeline groups incl 5 pre-existing gaps, Visual Passport→视觉身份 label-only, fixes A(meta) + B(eyebrows) applied, hasAdminZh, 14/14).
+- Task 4 Minor (report only, no code defect): report self-review mis-cited eyebrow render site (real: ContentOpsViews ViewHeader; functional claim correct).
+- Task 4 Minor (cleanup, optional): orphaned zh entry "Presets and flags":"预设和开关" kept per no-removal constraint (meta now "Feature flags").
+Task 5: complete (commit 7a359f14, spec→已实现; grep clean, lint+typecheck clean, vitest 14/14, drift guard OK no schema/api/server, live click-through 18 nav items 0 console errors, 视觉身份 confirmed). Task-2 minors both RESOLVED in Task 4.
+ALL 5 TASKS COMPLETE. Open minors for final-review triage: (1) ImageProductionView "Loading…" shows on zero-results too (empty vs loading); (2) orphaned zh entry "Presets and flags":"预设和开关".
+Final whole-branch review (opus): Needs fixes — copy-only §8 leaks on renamed pages. Structure/sync/types all PASS.
+  IMPORTANT (fixing): AdminConsoleClient ConfigOverviewHeader eyebrow t("Profiles & Rollout") → "Model Profiles" (renders on Model Profiles page, no zh so English both locales); +lower-vis refs ~:3491 sentence, ~:3998 "Open Profiles & Rollout" button. TemplatesView h2 t("Templates") → "Character Starters" (§8's forbidden 角色「Templates」).
+  MINOR (fixing): ConfigTabNav grid md:grid-cols-4 → 3 (only 3 tabs post-carve). Delete orphan i18n "Presets and flags":"预设和开关".
+  DEFER (fast-follow): ImageProductionView empty-vs-loading + swallowed fetch error; ConfigOverviewHeader "Prompt Recipes" metric fed by data.templates (cross-domain, harmless); pre-existing orphan zh "Prompt Templates".
+Fix wave: commit b41039be (§8 copy: eyebrow→Model Profiles, h2→Character Starters, +2 lower-vis refs, grid-cols-4→3, delete orphan "Presets and flags"; gates green, grep clean). Fixer discovered admin-web.e2e.ts asserted OLD headings → commit f72ee82c (synced 14 heading assertions to 6 renamed labels; typecheck clean, stale-heading grep empty).
+Consolidated §8 verification (controller): no t("Profiles & Rollout"/"Production Studio"/"Asset Library") render calls; "Profiles & Rollout" gone from admin+e2e; role h2=Character Starters, config eyebrow=Model Profiles; typecheck green. §8 MET. Full opus re-review NOT re-dispatched — fixes were grep-verifiable copy/test-string edits directly resolving named findings.
+BRANCH READY (7 commits since master: 2 docs + 5 impl + 2 fix... = 3164fbb1,ff0fd484 docs / 94f329e7,0009de56,229dcd1e,7c601563,7a359f14 impl / b41039be,f72ee82c fix). → finishing-a-development-branch.
