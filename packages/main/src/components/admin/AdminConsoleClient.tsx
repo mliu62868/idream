@@ -780,12 +780,15 @@ export function AdminConsoleClient({
   // above), so a returning user with expanded groups can't cause a hydration mismatch.
   const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set());
   useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(NAV_GROUPS_STORAGE_KEY);
-      if (raw) setOpenGroups(new Set(JSON.parse(raw) as string[]));
-    } catch {
-      /* ignore */
-    }
+    const frame = window.requestAnimationFrame(() => {
+      try {
+        const raw = window.localStorage.getItem(NAV_GROUPS_STORAGE_KEY);
+        if (raw) setOpenGroups(new Set(JSON.parse(raw) as string[]));
+      } catch {
+        /* ignore */
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, []);
   const toggleGroup = useCallback((group: string) => {
     setOpenGroups((prev) => {
