@@ -143,19 +143,19 @@ test("admin web loads all control-plane sections and filters users", async ({ pa
   const sections = [
     { path: "/admin", heading: "Dashboard", evidence: "Feature Flags" },
     { path: "/admin/generation/jobs", heading: "Jobs & Incidents", evidence: "status" },
-    { path: "/admin/generation/models", heading: "Profiles & Rollout", evidence: "Built-in profiles, test, publish, monitor" },
-    { path: "/admin/generation/config", heading: "Profiles & Rollout", evidence: "Built-in profiles, test, publish, monitor" },
+    { path: "/admin/generation/models", heading: "Model Profiles", evidence: "Built-in profiles, test, publish, monitor" },
+    { path: "/admin/generation/config", heading: "Model Profiles", evidence: "Built-in profiles, test, publish, monitor" },
     { path: "/admin/generation/dead-letter", heading: "Dead-letter", evidence: "Dead-letter Queue" },
     { path: "/admin/ops/providers", heading: "Provider Health", evidence: "Provider health & cost" },
     { path: "/admin/moderation", heading: "Moderation", evidence: "Reports" },
-    { path: "/admin/content", heading: "Content", evidence: "Featured curation" },
-    { path: "/admin/content/production", heading: "Production Studio", evidence: "Create production batch" },
-    { path: "/admin/content/assets", heading: "Asset Library", evidence: "Purpose" },
+    { path: "/admin/content", heading: "Featured", evidence: "Featured curation" },
+    { path: "/admin/content/production", heading: "Image Production", evidence: "Create production batch" },
+    { path: "/admin/content/assets", heading: "Image Library", evidence: "Purpose" },
     { path: "/admin/content/placements", heading: "Placements", evidence: "Slot" },
     { path: "/admin/content/official", heading: "Official Characters", evidence: "Create official character" },
-    { path: "/admin/content/templates", heading: "Templates", evidence: "Create character template" },
+    { path: "/admin/content/templates", heading: "Character Starters", evidence: "Create character template" },
     { path: "/admin/content/tags", heading: "Tags", evidence: "Merge tags" },
-    { path: "/admin/content/review-queue", heading: "Review Queue", evidence: "Pending submissions" },
+    { path: "/admin/content/review-queue", heading: "Character Review", evidence: "Pending submissions" },
     { path: "/admin/cms", heading: "CMS / SEO", evidence: "Create / overwrite page" },
     { path: "/admin/chat", heading: "Chat Ops", evidence: "CHAT_SERVICE_URL" },
     { path: "/admin/support", heading: "Support Requests", evidence: "Support Requests" },
@@ -351,7 +351,7 @@ test("admin content ops requires confirmation for public placement and archive w
     });
 
     await page.goto(`${adminURL}/admin/content/assets`);
-    await expectAdminShellReady(page, "Asset Library");
+    await expectAdminShellReady(page, "Image Library");
     const archiveCard = page.locator("article").filter({ hasText: archiveBatchTitle });
     await expect(archiveCard).toBeVisible({ timeout: 10_000 });
     await archiveCard.getByRole("button", { name: "Archive" }).click();
@@ -618,7 +618,7 @@ test("admin feature flag toggle requires target-state confirmation", async ({ pa
 
     const adminURL = adminBaseURL();
     await page.goto(`${adminURL}/admin/generation/config?tab=settings`);
-    await expectAdminShellReady(page, "Profiles & Rollout");
+    await expectAdminShellReady(page, "Model Profiles");
     await page.getByRole("textbox", { name: "Filter" }).fill(flagKey);
     const flagRow = page.getByRole("row").filter({ hasText: flagKey });
     await expect(flagRow).toHaveCount(1, { timeout: 10_000 });
@@ -1141,7 +1141,7 @@ test("admin review queue saves and applies moderation views", async ({ page }) =
 
     const adminURL = adminBaseURL();
     await page.goto(`${adminURL}/admin/content/review-queue`);
-    await expectAdminShellReady(page, "Review Queue");
+    await expectAdminShellReady(page, "Character Review");
     await expect(page.getByRole("row").filter({ hasText: reportedName })).toHaveCount(1, {
       timeout: 10_000,
     });
@@ -1156,7 +1156,7 @@ test("admin review queue saves and applies moderation views", async ({ page }) =
     });
 
     await page.reload();
-    await expectAdminShellReady(page, "Review Queue");
+    await expectAdminShellReady(page, "Character Review");
     await page.getByRole("button", { name: viewLabel, exact: true }).click();
     await expect(page.getByRole("row").filter({ hasText: reportedName })).toHaveCount(1);
     await expect(page.getByRole("row").filter({ hasText: cleanName })).toHaveCount(0);
@@ -1230,7 +1230,7 @@ test("admin review queue approves a pending character submission", async ({ page
 
     const adminURL = adminBaseURL();
     await page.goto(`${adminURL}/admin/content/review-queue`);
-    await expectAdminShellReady(page, "Review Queue");
+    await expectAdminShellReady(page, "Character Review");
     await page.getByRole("textbox", { name: "Search review queue" }).fill(characterName);
     const row = page.getByRole("row").filter({ hasText: characterName });
     await expect(row).toHaveCount(1, { timeout: 10_000 });
@@ -1393,7 +1393,7 @@ test("admin official characters and templates require inline confirmation for pu
     ).resolves.toEqual({ status: "approved" });
 
     await page.goto(`${adminURL}/admin/content/templates`);
-    await expectAdminShellReady(page, "Templates");
+    await expectAdminShellReady(page, "Character Starters");
     await page.getByPlaceholder("Name (≥1)").fill(templateName);
     await page.getByPlaceholder("Summary (≤200)").fill("Template confirmation test");
     await page.getByPlaceholder("Reason (≥3)").fill("E2E template confirmation create");
@@ -1696,7 +1696,7 @@ test("admin featured curation requires typed target confirmation", async ({ page
     });
 
     await page.goto(`${adminURL}/admin/content`);
-    await expectAdminShellReady(page, "Content");
+    await expectAdminShellReady(page, "Featured");
     await page.getByPlaceholder("char_a, char_b").fill(`${featuredId}, ${secondId}`);
     await page.getByPlaceholder("Reason (≥3 chars)").fill("E2E featured curation confirmation");
     const saveFeatured = page.getByRole("button", { name: "Save featured" });
