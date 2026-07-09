@@ -486,6 +486,9 @@ const zh: Record<string, string> = {
   "Paying": "付费",
   "Policy code": "策略代码",
   "Signups": "注册",
+  // pre-existing gap surfaced by the guided-nav i18n test (task 2): "support" is
+  // one of the 7 pinned daily items and its label was never translated.
+  "Support Requests": "支持工单",
   "Support category": "支持分类",
   "Support saved view label": "支持视图名称",
   "Support search": "支持搜索",
@@ -600,6 +603,13 @@ const zh: Record<string, string> = {
   // redesigned admin nav — group headers
   "Characters": "角色",
   "Media": "图片",
+  // guided nav — daily section header + folded group headers (task 2)
+  "Daily": "常用",
+  "CharacterConfig": "角色配置",
+  "GenerationConfig": "生成配置",
+  "Business": "业务",
+  "Engineering": "工程诊断",
+  "System": "系统",
   // redesigned admin nav — item labels
   "Character Starters": "角色起始模板",
   "Character Review": "角色审核队列",

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Fragment, type FormEvent, type ReactNode, type WheelEvent } from "react";
+import { type FormEvent, type ReactNode, type WheelEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
@@ -62,7 +62,15 @@ import {
   type AdminLocale,
   useAdminI18n,
 } from "@/components/admin/i18n";
-import { navItems, normalizeSection, configSliceForSection, type ConfigSlice } from "@/components/admin/nav-config";
+import {
+  navItems,
+  normalizeSection,
+  configSliceForSection,
+  NAV_DAILY,
+  NAV_FOLDED_GROUPS,
+  type ConfigSlice,
+  type NavItem,
+} from "@/components/admin/nav-config";
 
 type Actor = {
   id: string;
@@ -615,6 +623,9 @@ const schedulerOptions = [
   { value: "logit_normal", label: "Logit Normal", aliases: ["logit normal", "logit_normal"] },
 ];
 
+// SPEC: localStorage key for which folded sidebar nav groups the operator last expanded.
+const NAV_GROUPS_STORAGE_KEY = "idream.admin.openNavGroups";
+
 export function AdminConsoleClient({
   actor,
   initialSection,
@@ -759,6 +770,36 @@ export function AdminConsoleClient({
     }
   }
 
+  // SPEC: which folded nav groups are expanded; default all-collapsed (progressive
+  // disclosure), persisted so an operator's expanded groups survive a reload.
+  // INTENT: a group holding the active item is auto-revealed at render time
+  // (see sidebar JSX below) without mutating this persisted set.
+  const [openGroups, setOpenGroups] = useState<Set<string>>(() => {
+    if (typeof window === "undefined") return new Set();
+    try {
+      const raw = window.localStorage.getItem(NAV_GROUPS_STORAGE_KEY);
+      return new Set(raw ? (JSON.parse(raw) as string[]) : []);
+    } catch {
+      return new Set();
+    }
+  });
+  const toggleGroup = useCallback((group: string) => {
+    setOpenGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(group)) {
+        next.delete(group);
+      } else {
+        next.add(group);
+      }
+      try {
+        window.localStorage.setItem(NAV_GROUPS_STORAGE_KEY, JSON.stringify([...next]));
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }, []);
+
   const handleSidebarWheel = useCallback((event: WheelEvent<HTMLElement>) => {
     if (event.ctrlKey) return;
 
@@ -816,31 +857,39 @@ export function AdminConsoleClient({
             </div>
           </div>
           <nav ref={sidebarNavRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
-            {navItems.map((item, index) => {
-              const Icon = item.icon;
-              const active = item.id === sectionId;
-              const showGroup = index === 0 || item.group !== navItems[index - 1]?.group;
-              return (
-                <Fragment key={item.id}>
-                  {showGroup ? (
-                    <p className="px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-normal text-[rgb(114,113,112)] first:pt-0">
-                      {t(item.group)}
-                    </p>
-                  ) : null}
-                  <Link
-                    className={cn(
-                      "mb-1 flex h-10 items-center gap-3 rounded-md px-3 text-[13px] font-medium text-[rgb(170,170,170)] transition-colors hover:bg-white/10 hover:text-white",
-                      active && "bg-white/10 text-white",
-                    )}
-                    href={item.href}
-                  >
-                    <Icon className="h-4 w-4" />
-                    <span>{t(item.label)}</span>
-                    {active ? <ChevronRight className="ml-auto h-4 w-4" /> : null}
-                  </Link>
-                </Fragment>
-              );
-            })}
+            <p className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-normal text-[rgb(114,113,112)]">
+              {t("Daily")}
+            </p>
+            {NAV_DAILY.map((item) => (
+              <NavLink active={item.id === sectionId} item={item} key={item.id} />
+            ))}
+            <div className="mt-3 border-t border-white/10 pt-3">
+              {NAV_FOLDED_GROUPS.map(({ group, items }) => {
+                // Progressive disclosure: collapsed unless the operator opened it, or
+                // it holds the active item (auto-revealed without persisting the toggle).
+                const open = openGroups.has(group) || activeItem.group === group;
+                return (
+                  <div key={group}>
+                    <button
+                      aria-expanded={open}
+                      className="flex h-9 w-full items-center justify-between gap-2 rounded-md px-3 text-[10px] font-semibold uppercase tracking-normal text-[rgb(114,113,112)] transition-colors hover:bg-white/10 hover:text-white"
+                      onClick={() => toggleGroup(group)}
+                      type="button"
+                    >
+                      <span>{t(group)}</span>
+                      <ChevronRight
+                        className={cn("h-3.5 w-3.5 shrink-0 transition-transform", open && "rotate-90")}
+                      />
+                    </button>
+                    {open
+                      ? items.map((item) => (
+                          <NavLink active={item.id === sectionId} item={item} key={item.id} />
+                        ))
+                      : null}
+                  </div>
+                );
+              })}
+            </div>
           </nav>
         </aside>
 
@@ -1130,6 +1179,27 @@ export function AdminConsoleClient({
       ) : null}
     </main>
     </AdminI18nProvider>
+  );
+}
+
+// SPEC: shared sidebar link markup for both the pinned daily section and the
+// folded groups, so the two render paths (and any future ones) can't drift apart.
+function NavLink({ active, item }: { active: boolean; item: NavItem }) {
+  const { t } = useAdminI18n();
+  const Icon = item.icon;
+
+  return (
+    <Link
+      className={cn(
+        "mb-1 flex h-10 items-center gap-3 rounded-md px-3 text-[13px] font-medium text-[rgb(170,170,170)] transition-colors hover:bg-white/10 hover:text-white",
+        active && "bg-white/10 text-white",
+      )}
+      href={item.href}
+    >
+      <Icon className="h-4 w-4" />
+      <span>{t(item.label)}</span>
+      {active ? <ChevronRight className="ml-auto h-4 w-4" /> : null}
+    </Link>
   );
 }
 
