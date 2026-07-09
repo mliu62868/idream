@@ -2897,7 +2897,7 @@ function ConfigOverviewHeader({
     <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <p className="text-xs font-semibold uppercase text-[rgb(170,170,170)]">{t("Profiles & Rollout")}</p>
+          <p className="text-xs font-semibold uppercase text-[rgb(170,170,170)]">{t("Model Profiles")}</p>
           <h2 className="mt-1 text-lg font-semibold">{t("Built-in profiles, test, publish, monitor")}</h2>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-[rgb(170,170,170)]">
             {t("Operate seeded generation profiles here; model files and runner templates stay in engineering-owned config.")}
@@ -2931,7 +2931,7 @@ function ConfigTabNav({
   ];
 
   return (
-    <div className="grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-4">
+    <div className="grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-3">
       {items.map((item) => {
         const selected = active === item.id;
         return (
@@ -3488,7 +3488,7 @@ function ModelManagementView() {
             </p>
             <h2 className="mt-1 text-lg font-semibold">{t("Model diagnostics library")}</h2>
             <p className="mt-2 max-w-3xl text-sm leading-6 text-[rgb(170,170,170)]">
-              {t("Engineering-only model diagnostics. Operators use seeded profiles in Profiles & Rollout.")}
+              {t("Engineering-only model diagnostics. Operators use seeded profiles in Model Profiles.")}
             </p>
           </div>
           <button
@@ -3995,7 +3995,7 @@ function ModelProfileDraftForm({
                 href="/admin/generation/config"
               >
                 <Library className="h-4 w-4" />
-                {t("Open Profiles & Rollout")}
+                {t("Open Model Profiles")}
               </Link>
             </div>
             {importError ? (
