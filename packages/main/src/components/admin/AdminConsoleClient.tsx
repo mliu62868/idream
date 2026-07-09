@@ -50,8 +50,8 @@ import { ExperimentsView } from "@/components/admin/ExperimentsView";
 import {
   AssetLibraryView,
   PlacementsView,
-  ProductionStudioView,
 } from "@/components/admin/ContentOpsViews";
+import { ImageProductionView } from "@/components/admin/ImageProductionView";
 import {
   AdminI18nProvider,
   adminDateLocale,
@@ -2222,7 +2222,7 @@ function renderSection(
     return <ApprovalsView rows={section.rows} openAction={ctx.openAction} />;
   }
   if (section.kind === "selfFetch") {
-    if (section.view === "production") return <ProductionStudioView />;
+    if (section.view === "production") return <ImageProductionView />;
     if (section.view === "assets") return <AssetLibraryView />;
     if (section.view === "placements") return <PlacementsView />;
     if (section.view === "official") return <OfficialCharactersView />;
