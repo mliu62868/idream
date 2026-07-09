@@ -867,13 +867,21 @@ export function AdminConsoleClient({
               {NAV_FOLDED_GROUPS.map(({ group, items }) => {
                 // Progressive disclosure: collapsed unless the operator opened it, or
                 // it holds the active item (auto-revealed without persisting the toggle).
-                const open = openGroups.has(group) || activeItem.group === group;
+                // The group holding the active item is force-open; its header is inert —
+                // a real toggle there only mutates persisted openGroups without visibly
+                // collapsing (open stays true), silently corrupting the saved state.
+                const forcedOpen = activeItem.group === group;
+                const open = openGroups.has(group) || forcedOpen;
                 return (
                   <div key={group}>
                     <button
+                      aria-disabled={forcedOpen}
                       aria-expanded={open}
-                      className="flex h-9 w-full items-center justify-between gap-2 rounded-md px-3 text-[10px] font-semibold uppercase tracking-normal text-[rgb(114,113,112)] transition-colors hover:bg-white/10 hover:text-white"
-                      onClick={() => toggleGroup(group)}
+                      className={cn(
+                        "flex h-9 w-full items-center justify-between gap-2 rounded-md px-3 text-[10px] font-semibold uppercase tracking-normal text-[rgb(114,113,112)] transition-colors hover:bg-white/10 hover:text-white",
+                        forcedOpen && "cursor-default hover:bg-transparent hover:text-[rgb(114,113,112)]",
+                      )}
+                      onClick={forcedOpen ? undefined : () => toggleGroup(group)}
                       type="button"
                     >
                       <span>{t(group)}</span>
