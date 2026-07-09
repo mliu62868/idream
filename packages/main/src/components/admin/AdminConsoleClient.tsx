@@ -8,17 +8,13 @@ import {
   AlertTriangle,
   BadgeDollarSign,
   Ban,
-  BarChart3,
   Bookmark,
   Check,
   ChevronRight,
   ClipboardCheck,
-  Coins,
   ExternalLink,
   FileText,
   Flag,
-  Gauge,
-  History,
   ImageIcon,
   Inbox,
   Languages,
@@ -30,14 +26,10 @@ import {
   RefreshCcw,
   RotateCcw,
   Search,
-  Server,
-  ShieldAlert,
   ShieldCheck,
   SlidersHorizontal,
-  Ticket,
   Trash2,
   UploadCloud,
-  Users,
   Workflow,
   X,
 } from "lucide-react";
@@ -70,6 +62,7 @@ import {
   type AdminLocale,
   useAdminI18n,
 } from "@/components/admin/i18n";
+import { navItems, normalizeSection } from "@/components/admin/nav-config";
 
 type Actor = {
   id: string;
@@ -620,41 +613,6 @@ const schedulerOptions = [
   { value: "bong_tangent", label: "Bong Tangent", aliases: ["bong tangent", "bong_tangent"] },
   { value: "ltx2", label: "LTX2", aliases: ["ltx2"] },
   { value: "logit_normal", label: "Logit Normal", aliases: ["logit normal", "logit_normal"] },
-];
-
-const navItems = [
-  { id: "dashboard", label: "Dashboard", href: "/admin", icon: Gauge, group: "Overview" },
-  { id: "generation/jobs", label: "Jobs & Incidents", href: "/admin/generation/jobs", icon: Activity, group: "Generation Ops" },
-  { id: "generation/config", label: "Profiles & Rollout", href: "/admin/generation/config", icon: SlidersHorizontal, group: "Generation Ops" },
-  { id: "generation/dead-letter", label: "Dead-letter", href: "/admin/generation/dead-letter", icon: Inbox, group: "Generation Ops" },
-  { id: "ops/providers", label: "Provider Health", href: "/admin/ops/providers", icon: Server, group: "Generation Ops" },
-  { id: "generation/backends", label: "Backends", href: "/admin/generation/backends", icon: Server, group: "Generation Ops" },
-  { id: "generation/workflows", label: "Workflows", href: "/admin/generation/workflows", icon: Workflow, group: "Generation Ops" },
-  { id: "generation/metrics", label: "Metrics", href: "/admin/generation/metrics", icon: BarChart3, group: "Generation Ops" },
-  { id: "content/production", label: "Production Studio", href: "/admin/content/production", icon: Play, group: "Content Ops" },
-  { id: "content/assets", label: "Asset Library", href: "/admin/content/assets", icon: ImageIcon, group: "Content Ops" },
-  { id: "content/placements", label: "Placements", href: "/admin/content/placements", icon: Bookmark, group: "Content Ops" },
-  { id: "content", label: "Content", href: "/admin/content", icon: Library, group: "Content Ops" },
-  { id: "content/official", label: "Official Characters", href: "/admin/content/official", icon: ShieldCheck, group: "Content Ops" },
-  { id: "content/templates", label: "Templates", href: "/admin/content/templates", icon: SlidersHorizontal, group: "Content Ops" },
-  { id: "content/tags", label: "Tags", href: "/admin/content/tags", icon: Flag, group: "Content Ops" },
-  { id: "content/review-queue", label: "Review Queue", href: "/admin/content/review-queue", icon: ClipboardCheck, group: "Content Ops" },
-  { id: "cms", label: "CMS / SEO", href: "/admin/cms", icon: FileText, group: "Content Ops" },
-  { id: "moderation", label: "Moderation", href: "/admin/moderation", icon: ShieldAlert, group: "Trust Ops" },
-  { id: "chat", label: "Chat Ops", href: "/admin/chat", icon: MessageSquare, group: "Trust Ops" },
-  { id: "support", label: "Support Requests", href: "/admin/support", icon: Ticket, group: "Trust Ops" },
-  { id: "users", label: "Users", href: "/admin/users", icon: Users, group: "Business Ops" },
-  { id: "billing", label: "Billing", href: "/admin/billing", icon: BadgeDollarSign, group: "Business Ops" },
-  { id: "pricing", label: "Pricing", href: "/admin/pricing", icon: Coins, group: "Business Ops" },
-  { id: "promo", label: "Promo", href: "/admin/promo", icon: Ticket, group: "Business Ops" },
-  { id: "announcements", label: "Announcements", href: "/admin/announcements", icon: MessageSquare, group: "Business Ops" },
-  { id: "analytics", label: "Analytics", href: "/admin/analytics", icon: BarChart3, group: "Insights" },
-  { id: "insights", label: "Insights", href: "/admin/insights", icon: BarChart3, group: "Insights" },
-  { id: "experiments", label: "Experiments", href: "/admin/experiments", icon: Flag, group: "Insights" },
-  { id: "risk", label: "Risk & Abuse", href: "/admin/risk", icon: AlertTriangle, group: "Insights" },
-  { id: "compliance", label: "Compliance", href: "/admin/compliance", icon: ShieldAlert, group: "System" },
-  { id: "approvals", label: "Approvals", href: "/admin/approvals", icon: ClipboardCheck, group: "System" },
-  { id: "audit-log", label: "Audit Log", href: "/admin/audit-log", icon: History, group: "System" },
 ];
 
 export function AdminConsoleClient({
@@ -7214,42 +7172,6 @@ function Status({
       {adminValueLabel(locale, value)}
     </span>
   );
-}
-
-function normalizeSection(value: string) {
-  if (value === "generation/jobs") return value;
-  if (value === "generation/models") return "generation/config";
-  if (value === "generation/config") return value;
-  if (value === "moderation") return value;
-  if (value === "users") return value;
-  if (value === "billing") return value;
-  if (value === "pricing") return value;
-  if (value === "analytics") return value;
-  if (value === "risk") return value;
-  if (value === "generation/dead-letter") return value;
-  if (value === "ops/providers") return value;
-  if (value === "generation/backends") return value;
-  if (value === "generation/workflows") return value;
-  if (value === "generation/metrics") return value;
-  if (value === "content") return value;
-  if (value === "content/production") return value;
-  if (value === "content/assets") return value;
-  if (value === "content/placements") return value;
-  if (value === "content/official") return value;
-  if (value === "content/templates") return value;
-  if (value === "content/tags") return value;
-  if (value === "content/review-queue") return value;
-  if (value === "cms") return value;
-  if (value === "chat") return value;
-  if (value === "support") return value;
-  if (value === "promo") return value;
-  if (value === "approvals") return value;
-  if (value === "compliance") return value;
-  if (value === "insights") return value;
-  if (value === "announcements") return value;
-  if (value === "experiments") return value;
-  if (value === "audit-log") return value;
-  return "dashboard";
 }
 
 function selectedGenerationProfile(profiles: Row[], selectedId: string | null) {
