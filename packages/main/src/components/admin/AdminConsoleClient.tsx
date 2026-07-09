@@ -775,15 +775,18 @@ export function AdminConsoleClient({
   // disclosure), persisted so an operator's expanded groups survive a reload.
   // INTENT: a group holding the active item is auto-revealed at render time
   // (see sidebar JSX below) without mutating this persisted set.
-  const [openGroups, setOpenGroups] = useState<Set<string>>(() => {
-    if (typeof window === "undefined") return new Set();
+  // SSR-safe: server + first client hydrate render all-collapsed (empty set); the saved
+  // expansion is read from localStorage only after mount (mirrors the `locale` pattern
+  // above), so a returning user with expanded groups can't cause a hydration mismatch.
+  const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
     try {
       const raw = window.localStorage.getItem(NAV_GROUPS_STORAGE_KEY);
-      return new Set(raw ? (JSON.parse(raw) as string[]) : []);
+      if (raw) setOpenGroups(new Set(JSON.parse(raw) as string[]));
     } catch {
-      return new Set();
+      /* ignore */
     }
-  });
+  }, []);
   const toggleGroup = useCallback((group: string) => {
     setOpenGroups((prev) => {
       const next = new Set(prev);
