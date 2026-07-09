@@ -30,7 +30,7 @@ describe("nav-config (baseline SSoT)", () => {
 
   it("NAV_GROUP_ORDER lists each group once, in first-seen order", () => {
     expect(new Set(NAV_GROUP_ORDER).size).toBe(NAV_GROUP_ORDER.length);
-    expect(NAV_GROUP_ORDER[0]).toBe("Overview");
+    expect(NAV_GROUP_ORDER[0]).toBe("Daily");
   });
 });
 
@@ -57,29 +57,27 @@ describe("nav-config (redesigned IA)", () => {
     for (const id of ORIGINAL_IDS) expect(ids.has(id)).toBe(true);
   });
 
-  it("orders groups as the three pipeline groups between Overview and Trust Ops", () => {
+  it("orders groups as Daily followed by the 7 folded groups (guided nav re-tier)", () => {
     expect(NAV_GROUP_ORDER).toEqual([
-      "Overview", "Characters", "Generation", "Media",
-      "Trust Ops", "Business Ops", "Insights", "System",
+      "Daily", "CharacterConfig", "GenerationConfig", "Media",
+      "Business", "Insights", "Engineering", "System",
     ]);
   });
 
   it("puts each concept in exactly one declared home", () => {
-    expect(idsInGroup("Characters")).toEqual([
-      "content/official", "content/templates", "content/review-queue", "content/tags",
+    expect(idsInGroup("CharacterConfig")).toEqual([
+      "content/templates", "content/tags",
     ]);
-    expect(idsInGroup("Generation")).toEqual([
+    expect(idsInGroup("GenerationConfig")).toEqual([
       "generation/config", "generation/recipes", "generation/presets",
-      "generation/workflows", "generation/backends", "ops/providers",
-      "generation/jobs", "generation/dead-letter", "generation/metrics",
     ]);
     expect(idsInGroup("Media")).toEqual([
-      "content/production", "content/assets", "content/placements", "content", "cms",
+      "content/assets", "content/placements", "cms",
     ]);
   });
 
   it("uses distinct icons within each pipeline group", () => {
-    for (const group of ["Characters", "Generation", "Media"]) {
+    for (const group of ["CharacterConfig", "GenerationConfig", "Media"]) {
       const icons = navItems.filter((i) => i.group === group).map((i) => i.icon);
       expect(new Set(icons).size).toBe(icons.length);
     }
@@ -90,5 +88,30 @@ describe("nav-config (redesigned IA)", () => {
     expect(configSliceForSection("generation/recipes")).toBe("recipes");
     expect(configSliceForSection("generation/presets")).toBe("presets");
     expect(configSliceForSection("content/tags")).toBeNull();
+  });
+});
+
+import { NAV_DAILY, NAV_FOLDED_GROUPS } from "./nav-config";
+
+describe("nav-config tiers (guided nav)", () => {
+  it("pins exactly the 7 daily items in order", () => {
+    expect(NAV_DAILY.map((i) => i.id)).toEqual([
+      "dashboard", "content/review-queue", "moderation",
+      "content/official", "content/production", "content", "support",
+    ]);
+  });
+  it("every daily item has tier daily; every folded item has tier folded", () => {
+    for (const i of NAV_DAILY) expect(i.tier).toBe("daily");
+    for (const g of NAV_FOLDED_GROUPS) for (const i of g.items) expect(i.tier).toBe("folded");
+  });
+  it("loses nothing — daily + folded covers all 34 nav ids exactly once", () => {
+    const ids = [...NAV_DAILY, ...NAV_FOLDED_GROUPS.flatMap((g) => g.items)].map((i) => i.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids.length).toBe(navItems.length);
+    expect(new Set(ids)).toEqual(new Set(navItems.map((i) => i.id)));
+  });
+  it("orders folded groups with Engineering + System last", () => {
+    const names = NAV_FOLDED_GROUPS.map((g) => g.group);
+    expect(names).toEqual(["CharacterConfig","GenerationConfig","Media","Business","Insights","Engineering","System"]);
   });
 });

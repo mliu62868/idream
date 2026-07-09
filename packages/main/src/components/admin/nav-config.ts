@@ -34,57 +34,79 @@ export type NavItem = {
   href: string;
   icon: LucideIcon;
   group: string;
+  tier: "daily" | "folded";
 };
 
+// SPEC: guided nav — a small pinned daily set + the rest folded behind group headers.
+// Tier map is the SSoT (docs/superpowers/plans/2026-07-09-admin-guided-nav.md).
+// INVARIANT: every id/label/href/icon is unchanged from the pre-tier list; only
+// group + tier move. daily + folded groups must cover all ids exactly once (tested).
 export const navItems: NavItem[] = [
-  { id: "dashboard", label: "Dashboard", href: "/admin", icon: Gauge, group: "Overview" },
+  // Daily — pinned, always visible (7)
+  { id: "dashboard", label: "Dashboard", href: "/admin", icon: Gauge, group: "Daily", tier: "daily" },
+  { id: "content/review-queue", label: "Character Review", href: "/admin/content/review-queue", icon: ClipboardCheck, group: "Daily", tier: "daily" },
+  { id: "moderation", label: "Moderation", href: "/admin/moderation", icon: ShieldAlert, group: "Daily", tier: "daily" },
+  { id: "content/official", label: "Official Characters", href: "/admin/content/official", icon: ShieldCheck, group: "Daily", tier: "daily" },
+  { id: "content/production", label: "Image Production", href: "/admin/content/production", icon: Play, group: "Daily", tier: "daily" },
+  { id: "content", label: "Featured", href: "/admin/content", icon: Library, group: "Daily", tier: "daily" },
+  { id: "support", label: "Support Requests", href: "/admin/support", icon: Ticket, group: "Daily", tier: "daily" },
 
-  // ① 角色 Characters
-  { id: "content/official", label: "Official Characters", href: "/admin/content/official", icon: ShieldCheck, group: "Characters" },
-  { id: "content/templates", label: "Character Starters", href: "/admin/content/templates", icon: Sparkles, group: "Characters" },
-  { id: "content/review-queue", label: "Character Review", href: "/admin/content/review-queue", icon: ClipboardCheck, group: "Characters" },
-  { id: "content/tags", label: "Tags", href: "/admin/content/tags", icon: Flag, group: "Characters" },
+  // Folded — CharacterConfig (2)
+  { id: "content/templates", label: "Character Starters", href: "/admin/content/templates", icon: Sparkles, group: "CharacterConfig", tier: "folded" },
+  { id: "content/tags", label: "Tags", href: "/admin/content/tags", icon: Flag, group: "CharacterConfig", tier: "folded" },
 
-  // ② 生成 Generation
-  { id: "generation/config", label: "Model Profiles", href: "/admin/generation/config", icon: SlidersHorizontal, group: "Generation" },
-  { id: "generation/recipes", label: "Prompt Recipes", href: "/admin/generation/recipes", icon: ScrollText, group: "Generation" },
-  { id: "generation/presets", label: "Presets", href: "/admin/generation/presets", icon: Layers, group: "Generation" },
-  { id: "generation/workflows", label: "Workflows", href: "/admin/generation/workflows", icon: Workflow, group: "Generation" },
-  { id: "generation/backends", label: "Backends", href: "/admin/generation/backends", icon: Server, group: "Generation" },
-  { id: "ops/providers", label: "Provider Health", href: "/admin/ops/providers", icon: Gauge, group: "Generation" },
-  { id: "generation/jobs", label: "Jobs & Incidents", href: "/admin/generation/jobs", icon: Activity, group: "Generation" },
-  { id: "generation/dead-letter", label: "Dead-letter", href: "/admin/generation/dead-letter", icon: Inbox, group: "Generation" },
-  { id: "generation/metrics", label: "Metrics", href: "/admin/generation/metrics", icon: BarChart3, group: "Generation" },
+  // Folded — GenerationConfig (3)
+  { id: "generation/config", label: "Model Profiles", href: "/admin/generation/config", icon: SlidersHorizontal, group: "GenerationConfig", tier: "folded" },
+  { id: "generation/recipes", label: "Prompt Recipes", href: "/admin/generation/recipes", icon: ScrollText, group: "GenerationConfig", tier: "folded" },
+  { id: "generation/presets", label: "Presets", href: "/admin/generation/presets", icon: Layers, group: "GenerationConfig", tier: "folded" },
 
-  // ③ 图片 Media
-  { id: "content/production", label: "Image Production", href: "/admin/content/production", icon: Play, group: "Media" },
-  { id: "content/assets", label: "Image Library", href: "/admin/content/assets", icon: ImageIcon, group: "Media" },
-  { id: "content/placements", label: "Placements", href: "/admin/content/placements", icon: Bookmark, group: "Media" },
-  { id: "content", label: "Featured", href: "/admin/content", icon: Library, group: "Media" },
-  { id: "cms", label: "CMS / SEO", href: "/admin/cms", icon: FileText, group: "Media" },
+  // Folded — Media (3)
+  { id: "content/assets", label: "Image Library", href: "/admin/content/assets", icon: ImageIcon, group: "Media", tier: "folded" },
+  { id: "content/placements", label: "Placements", href: "/admin/content/placements", icon: Bookmark, group: "Media", tier: "folded" },
+  { id: "cms", label: "CMS / SEO", href: "/admin/cms", icon: FileText, group: "Media", tier: "folded" },
 
-  // untouched groups (verbatim)
-  { id: "moderation", label: "Moderation", href: "/admin/moderation", icon: ShieldAlert, group: "Trust Ops" },
-  { id: "chat", label: "Chat Ops", href: "/admin/chat", icon: MessageSquare, group: "Trust Ops" },
-  { id: "support", label: "Support Requests", href: "/admin/support", icon: Ticket, group: "Trust Ops" },
-  { id: "users", label: "Users", href: "/admin/users", icon: Users, group: "Business Ops" },
-  { id: "billing", label: "Billing", href: "/admin/billing", icon: BadgeDollarSign, group: "Business Ops" },
-  { id: "pricing", label: "Pricing", href: "/admin/pricing", icon: Coins, group: "Business Ops" },
-  { id: "promo", label: "Promo", href: "/admin/promo", icon: Ticket, group: "Business Ops" },
-  { id: "announcements", label: "Announcements", href: "/admin/announcements", icon: MessageSquare, group: "Business Ops" },
-  { id: "analytics", label: "Analytics", href: "/admin/analytics", icon: BarChart3, group: "Insights" },
-  { id: "insights", label: "Insights", href: "/admin/insights", icon: BarChart3, group: "Insights" },
-  { id: "experiments", label: "Experiments", href: "/admin/experiments", icon: Flag, group: "Insights" },
-  { id: "risk", label: "Risk & Abuse", href: "/admin/risk", icon: AlertTriangle, group: "Insights" },
-  { id: "compliance", label: "Compliance", href: "/admin/compliance", icon: ShieldAlert, group: "System" },
-  { id: "approvals", label: "Approvals", href: "/admin/approvals", icon: ClipboardCheck, group: "System" },
-  { id: "audit-log", label: "Audit Log", href: "/admin/audit-log", icon: History, group: "System" },
+  // Folded — Business (5)
+  { id: "users", label: "Users", href: "/admin/users", icon: Users, group: "Business", tier: "folded" },
+  { id: "billing", label: "Billing", href: "/admin/billing", icon: BadgeDollarSign, group: "Business", tier: "folded" },
+  { id: "pricing", label: "Pricing", href: "/admin/pricing", icon: Coins, group: "Business", tier: "folded" },
+  { id: "promo", label: "Promo", href: "/admin/promo", icon: Ticket, group: "Business", tier: "folded" },
+  { id: "announcements", label: "Announcements", href: "/admin/announcements", icon: MessageSquare, group: "Business", tier: "folded" },
+
+  // Folded — Insights (4)
+  { id: "analytics", label: "Analytics", href: "/admin/analytics", icon: BarChart3, group: "Insights", tier: "folded" },
+  { id: "insights", label: "Insights", href: "/admin/insights", icon: BarChart3, group: "Insights", tier: "folded" },
+  { id: "experiments", label: "Experiments", href: "/admin/experiments", icon: Flag, group: "Insights", tier: "folded" },
+  { id: "risk", label: "Risk & Abuse", href: "/admin/risk", icon: AlertTriangle, group: "Insights", tier: "folded" },
+
+  // Folded — Engineering (6, hidden-by-default diagnostics per ADMIN_CONSOLE_PLAN.md)
+  { id: "generation/workflows", label: "Workflows", href: "/admin/generation/workflows", icon: Workflow, group: "Engineering", tier: "folded" },
+  { id: "generation/backends", label: "Backends", href: "/admin/generation/backends", icon: Server, group: "Engineering", tier: "folded" },
+  { id: "ops/providers", label: "Provider Health", href: "/admin/ops/providers", icon: Gauge, group: "Engineering", tier: "folded" },
+  { id: "generation/jobs", label: "Jobs & Incidents", href: "/admin/generation/jobs", icon: Activity, group: "Engineering", tier: "folded" },
+  { id: "generation/dead-letter", label: "Dead-letter", href: "/admin/generation/dead-letter", icon: Inbox, group: "Engineering", tier: "folded" },
+  { id: "generation/metrics", label: "Metrics", href: "/admin/generation/metrics", icon: BarChart3, group: "Engineering", tier: "folded" },
+
+  // Folded — System (4)
+  { id: "chat", label: "Chat Ops", href: "/admin/chat", icon: MessageSquare, group: "System", tier: "folded" },
+  { id: "compliance", label: "Compliance", href: "/admin/compliance", icon: ShieldAlert, group: "System", tier: "folded" },
+  { id: "approvals", label: "Approvals", href: "/admin/approvals", icon: ClipboardCheck, group: "System", tier: "folded" },
+  { id: "audit-log", label: "Audit Log", href: "/admin/audit-log", icon: History, group: "System", tier: "folded" },
 ];
 
 export const NAV_GROUP_ORDER: string[] = navItems.reduce<string[]>((groups, item) => {
   if (!groups.includes(item.group)) groups.push(item.group);
   return groups;
 }, []);
+
+export const NAV_DAILY: NavItem[] = navItems.filter((i) => i.tier === "daily");
+
+const FOLDED_GROUP_ORDER = [
+  "CharacterConfig", "GenerationConfig", "Media", "Business", "Insights", "Engineering", "System",
+] as const;
+
+export const NAV_FOLDED_GROUPS: { group: string; items: NavItem[] }[] = FOLDED_GROUP_ORDER.map(
+  (group) => ({ group, items: navItems.filter((i) => i.tier === "folded" && i.group === group) }),
+);
 
 const KNOWN_SECTION_IDS = new Set(navItems.map((item) => item.id));
 
