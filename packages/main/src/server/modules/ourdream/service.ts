@@ -1326,12 +1326,12 @@ async function generationConfig(request: Request) {
   requireAgeVerified(ctx);
   const entitlements = ctx.userId ? await entitlementMap(ctx.userId) : {};
   const balance = ctx.userId ? await dreamcoinBalance(ctx.userId) : 0;
-  const [profiles, templates, presets, videoEnabled, imageBaseCost, videoBaseCost] = await Promise.all([
+  const [profiles, recipes, presets, videoEnabled, imageBaseCost, videoBaseCost] = await Promise.all([
     prisma.generationModelProfile.findMany({
       where: { status: "active", enabled: true },
       orderBy: [{ mode: "asc" }, { costMultiplier: "asc" }, { label: "asc" }],
     }),
-    prisma.generationPromptTemplate.findMany({
+    prisma.generationRecipe.findMany({
       where: { status: "active" },
       orderBy: [{ mode: "asc" }, { useCase: "asc" }, { version: "desc" }],
     }),
@@ -1373,17 +1373,17 @@ async function generationConfig(request: Request) {
         ? jsonStringArray(defaultImageProfile?.allowedOrientations)
         : ["1:1", "4:5", "3:4", "9:16", "16:9"],
       models: imageProfiles.map(profileConfigDTO),
-      promptTemplates: templates
-        .filter((template) => template.mode === "image")
-        .map(templateConfigDTO),
+      recipes: recipes
+        .filter((recipe) => recipe.mode === "image")
+        .map(recipeConfigDTO),
     },
     video: {
       enabled: videoEnabled,
       requiredEntitlement: "video_generation",
       models: videoEnabled ? videoProfiles.map(profileConfigDTO) : [],
-      promptTemplates: templates
-        .filter((template) => template.mode === "video")
-        .map(templateConfigDTO),
+      recipes: recipes
+        .filter((recipe) => recipe.mode === "video")
+        .map(recipeConfigDTO),
     },
     presets: presets.map((preset) => ({
       id: preset.id,
@@ -1796,7 +1796,7 @@ async function createGenerationJobForUser(
     });
   }
 
-  const promptTemplate = await selectPromptTemplate(body.mode, body.characterId ? "character" : "freeplay");
+  const recipe = await selectRecipe(body.mode, body.characterId ? "character" : "freeplay");
   const orientation =
     body.orientation ??
     body.controls.orientation ??
@@ -1846,7 +1846,7 @@ async function createGenerationJobForUser(
   const negativePrompt =
     body.mode === "image"
       ? imageNegativePrompt(
-          body.negativePrompt ?? defaultImageNegativePrompt(promptTemplate.negativeBase, options.source?.sourceType),
+          body.negativePrompt ?? defaultImageNegativePrompt(recipe.negativeBase, options.source?.sourceType),
           visualProfile,
         )
       : (body.negativePrompt ?? null);
@@ -1897,8 +1897,8 @@ async function createGenerationJobForUser(
         model: profile.workflowKey ?? profile.pipelineModel,
         profileId: profile.profileKey,
         profileVersion: profile.version,
-        promptTemplateId: promptTemplate.templateKey,
-        promptTemplateVersion: promptTemplate.version,
+        recipeId: recipe.recipeKey,
+        recipeVersion: recipe.version,
         orientation,
         outputCount: body.outputCount,
         status: "queued",
@@ -1912,7 +1912,7 @@ async function createGenerationJobForUser(
     await appendGenerationEvent(tx, created.id, "created", "Generation job accepted", {
       mode: created.mode,
       profileId: created.profileId,
-      promptTemplateId: created.promptTemplateId,
+      recipeId: created.recipeId,
       visualProfileId: created.visualProfileId,
       visualProfileVersion: created.visualProfileVersion,
       consistencyMode: created.consistencyMode,
@@ -2513,8 +2513,8 @@ async function retryGenerationJob(request: Request, id: string) {
         model: profile.workflowKey ?? profile.pipelineModel,
         profileId: profile.profileKey,
         profileVersion: profile.version,
-        promptTemplateId: job.promptTemplateId,
-        promptTemplateVersion: job.promptTemplateVersion,
+        recipeId: job.recipeId,
+        recipeVersion: job.recipeVersion,
         orientation: job.orientation,
         outputCount: job.outputCount,
         status: "queued",
@@ -5074,8 +5074,8 @@ function generationJobDTO(job: GenerationJobWithRelations) {
     model: job.model,
     profileId: job.profileId,
     profileVersion: job.profileVersion,
-    promptTemplateId: job.promptTemplateId,
-    promptTemplateVersion: job.promptTemplateVersion,
+    recipeId: job.recipeId,
+    recipeVersion: job.recipeVersion,
     orientation: job.orientation,
     outputCount: job.outputCount,
     status: job.status,
@@ -5900,15 +5900,15 @@ async function selectGenerationProfile(mode: "image" | "video", requested?: stri
   return fallbackProfile;
 }
 
-async function selectPromptTemplate(mode: "image" | "video", useCase: "character" | "freeplay") {
-  const template = await prisma.generationPromptTemplate.findFirst({
+async function selectRecipe(mode: "image" | "video", useCase: "character" | "freeplay") {
+  const recipe = await prisma.generationRecipe.findFirst({
     where: { mode, useCase, status: "active" },
     orderBy: { version: "desc" },
   });
-  if (!template) {
+  if (!recipe) {
     throw Errors.internal("No active generation prompt template is configured", { mode, useCase });
   }
-  return template;
+  return recipe;
 }
 
 async function featureFlagEnabled(key: string) {
@@ -5947,21 +5947,21 @@ function profileConfigDTO(profile: {
   };
 }
 
-function templateConfigDTO(template: {
+function recipeConfigDTO(recipe: {
   id: string;
-  templateKey: string;
+  recipeKey: string;
   label: string;
   mode: string;
   useCase: string;
   version: number;
 }) {
   return {
-    id: template.templateKey,
-    rowId: template.id,
-    label: template.label,
-    mode: template.mode,
-    useCase: template.useCase,
-    version: template.version,
+    id: recipe.recipeKey,
+    rowId: recipe.id,
+    label: recipe.label,
+    mode: recipe.mode,
+    useCase: recipe.useCase,
+    version: recipe.version,
   };
 }
 

@@ -20,8 +20,8 @@ type PregenJob = {
   errorCode: string | null;
   profileId: string;
   profileVersion: number;
-  promptTemplateId: string | null;
-  promptTemplateVersion: number | null;
+  recipeId: string | null;
+  recipeVersion: number | null;
   createdAt: string;
   completedAt: string | null;
 } | null;

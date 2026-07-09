@@ -645,10 +645,10 @@ async function seedAdminControlPlane() {
     },
   });
 
-  await prisma.generationPromptTemplate.upsert({
+  await prisma.generationRecipe.upsert({
     where: { id: "seed-template-image-character-v1" },
     update: {
-      templateKey: "template_image_character_default",
+      recipeKey: "template_image_character_default",
       label: "Image character default",
       mode: "image",
       useCase: "character",
@@ -664,7 +664,7 @@ async function seedAdminControlPlane() {
     },
     create: {
       id: "seed-template-image-character-v1",
-      templateKey: "template_image_character_default",
+      recipeKey: "template_image_character_default",
       label: "Image character default",
       mode: "image",
       useCase: "character",
@@ -680,10 +680,10 @@ async function seedAdminControlPlane() {
     },
   });
 
-  await prisma.generationPromptTemplate.upsert({
+  await prisma.generationRecipe.upsert({
     where: { id: "seed-template-image-freeplay-v1" },
     update: {
-      templateKey: "template_image_freeplay_default",
+      recipeKey: "template_image_freeplay_default",
       label: "Image freeplay default",
       mode: "image",
       useCase: "freeplay",
@@ -699,7 +699,7 @@ async function seedAdminControlPlane() {
     },
     create: {
       id: "seed-template-image-freeplay-v1",
-      templateKey: "template_image_freeplay_default",
+      recipeKey: "template_image_freeplay_default",
       label: "Image freeplay default",
       mode: "image",
       useCase: "freeplay",
@@ -715,10 +715,10 @@ async function seedAdminControlPlane() {
     },
   });
 
-  await prisma.generationPromptTemplate.upsert({
+  await prisma.generationRecipe.upsert({
     where: { id: "seed-template-video-character-v1" },
     update: {
-      templateKey: "template_video_character_default",
+      recipeKey: "template_video_character_default",
       label: "Video character beta",
       mode: "video",
       useCase: "character",
@@ -734,7 +734,7 @@ async function seedAdminControlPlane() {
     },
     create: {
       id: "seed-template-video-character-v1",
-      templateKey: "template_video_character_default",
+      recipeKey: "template_video_character_default",
       label: "Video character beta",
       mode: "video",
       useCase: "character",

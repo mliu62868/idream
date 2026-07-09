@@ -246,7 +246,7 @@ export async function createProductionBatchCore(
         targetId: body.targetId ?? null,
         profileId: profile.profileKey,
         profileVersion: profile.version,
-        recipeId: recipe.templateKey,
+        recipeId: recipe.recipeKey,
         recipeVersion: recipe.version,
         presetIds: toInputJson(body.presetIds),
         orientation,
@@ -280,8 +280,8 @@ export async function createProductionBatchCore(
           model: profile.workflowKey ?? profile.pipelineModel,
           profileId: profile.profileKey,
           profileVersion: profile.version,
-          promptTemplateId: recipe.templateKey,
-          promptTemplateVersion: recipe.version,
+          recipeId: recipe.recipeKey,
+          recipeVersion: recipe.version,
           orientation,
           outputCount: 1,
           status: "queued",
@@ -557,8 +557,8 @@ export async function regenerateProductionItem(request: Request, id: string) {
         model: profile.workflowKey ?? profile.pipelineModel,
         profileId: profile.profileKey,
         profileVersion: profile.version,
-        promptTemplateId: recipe.templateKey,
-        promptTemplateVersion: recipe.version,
+        recipeId: recipe.recipeKey,
+        recipeVersion: recipe.version,
         orientation,
         outputCount: 1,
         status: "queued",
@@ -936,13 +936,13 @@ async function resolveProductionRecipe(
   version?: number,
 ) {
   const useCase = targetType === "character" ? "character" : "freeplay";
-  const recipe = await prisma.generationPromptTemplate.findFirst({
+  const recipe = await prisma.generationRecipe.findFirst({
     where: recipeId
       ? {
           mode: "image",
           status: "active",
           version,
-          OR: [{ id: recipeId }, { templateKey: recipeId }],
+          OR: [{ id: recipeId }, { recipeKey: recipeId }],
         }
       : {
           mode: "image",
@@ -1350,8 +1350,8 @@ function productionItemDTO(
           errorCode: item.job.errorCode,
           profileId: item.job.profileId,
           profileVersion: item.job.profileVersion,
-          promptTemplateId: item.job.promptTemplateId,
-          promptTemplateVersion: item.job.promptTemplateVersion,
+          recipeId: item.job.recipeId,
+          recipeVersion: item.job.recipeVersion,
           createdAt: item.job.createdAt,
           completedAt: item.job.completedAt,
         }
@@ -1378,8 +1378,8 @@ function contentAssetDTO(asset: ContentAssetWithRelations) {
           status: asset.sourceJob.status,
           profileId: asset.sourceJob.profileId,
           profileVersion: asset.sourceJob.profileVersion,
-          promptTemplateId: asset.sourceJob.promptTemplateId,
-          promptTemplateVersion: asset.sourceJob.promptTemplateVersion,
+          recipeId: asset.sourceJob.recipeId,
+          recipeVersion: asset.sourceJob.recipeVersion,
           sourceType: asset.sourceJob.sourceType,
           sourceId: asset.sourceJob.sourceId,
           sourceMeta: asset.sourceJob.sourceMeta,

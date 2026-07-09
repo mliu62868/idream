@@ -43,7 +43,7 @@ export async function generationMetrics(request: Request): Promise<Response> {
       _sum: { costDreamcoins: true },
     }),
     prisma.generationJob.groupBy({
-      by: ["promptTemplateId", "status"],
+      by: ["recipeId", "status"],
       where: { createdAt: { gte: since } },
       _count: { _all: true },
       _sum: { costDreamcoins: true },
@@ -81,7 +81,7 @@ export async function generationMetrics(request: Request): Promise<Response> {
     (row): row is typeof row & { profileId: string } => row.profileId !== null,
   );
   const byRecipe = byRecipeRaw.filter(
-    (row): row is typeof row & { promptTemplateId: string } => row.promptTemplateId !== null,
+    (row): row is typeof row & { recipeId: string } => row.recipeId !== null,
   );
 
   const avgByProfile = new Map(durations.map((row) => [row.profileId, row.avgMs]));
@@ -119,7 +119,7 @@ export async function generationMetrics(request: Request): Promise<Response> {
 
   const recipeMap = new Map<string, StatusBuckets & { recipeId: string; costDreamcoins: number }>();
   for (const row of byRecipe) {
-    const recipeId = row.promptTemplateId;
+    const recipeId = row.recipeId;
     const entry =
       recipeMap.get(recipeId) ?? { ...emptyBuckets(), recipeId, costDreamcoins: 0 };
     bucketFor(row.status, entry, row._count._all);

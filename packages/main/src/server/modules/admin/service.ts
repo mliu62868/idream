@@ -309,8 +309,8 @@ const sdcppRunnerConfigSchema = z
   })
   .passthrough();
 
-const promptTemplateSchema = z.object({
-  templateKey: z.string().trim().min(1).max(120),
+const recipeSchema = z.object({
+  recipeKey: z.string().trim().min(1).max(120),
   label: z.string().trim().min(1).max(120),
   mode: z.enum(["image", "video", "negative"]).default("image"),
   useCase: z.enum(["character", "freeplay", "negative"]).default("character"),
@@ -322,7 +322,7 @@ const promptTemplateSchema = z.object({
   dryRunSummary: z.record(z.string(), z.unknown()).optional(),
 });
 
-const promptTemplatePatchSchema = promptTemplateSchema.partial();
+const recipePatchSchema = recipeSchema.partial();
 
 const publishSchema = z.object({
   reason: z.string().trim().min(3).max(2_000),
@@ -497,15 +497,15 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
       if (action === "register" && method === "POST") return registerModelImport(request);
       if (action === "upload" && method === "POST") return uploadModelImport(request);
     }
-    if (id === "prompt-templates") {
-      if (!action && method === "GET") return listPromptTemplates(request);
-      if (!action && method === "POST") return createPromptTemplate(request);
-      if (action && !child && method === "PATCH") return patchPromptTemplate(request, action);
+    if (id === "recipes") {
+      if (!action && method === "GET") return listRecipes(request);
+      if (!action && method === "POST") return createRecipe(request);
+      if (action && !child && method === "PATCH") return patchRecipe(request, action);
       if (action && child === "publish" && method === "POST") {
-        return publishPromptTemplate(request, action);
+        return publishRecipe(request, action);
       }
       if (action && child === "rollback" && method === "POST") {
-        return rollbackPromptTemplate(request, action);
+        return rollbackRecipe(request, action);
       }
     }
     if (id === "presets") {
@@ -2525,25 +2525,25 @@ function pruneUndefined(value: Record<string, unknown>) {
   return Object.fromEntries(Object.entries(value).filter(([, child]) => child !== undefined));
 }
 
-async function listPromptTemplates(request: Request) {
+async function listRecipes(request: Request) {
   await actorWithPermission(request, "generation.config.read");
   const url = new URL(request.url);
   const mode = url.searchParams.get("mode") ?? undefined;
-  const templates = await prisma.generationPromptTemplate.findMany({
+  const templates = await prisma.generationRecipe.findMany({
     where: { mode },
-    orderBy: [{ templateKey: "asc" }, { version: "desc" }],
+    orderBy: [{ recipeKey: "asc" }, { version: "desc" }],
   });
   return ok({ items: templates });
 }
 
-async function createPromptTemplate(request: Request) {
+async function createRecipe(request: Request) {
   const actor = await actorWithPermission(request, "generation.config.write");
-  const body = promptTemplateSchema.parse(await jsonBody(request));
-  const latest = await prisma.generationPromptTemplate.findFirst({
-    where: { templateKey: body.templateKey },
+  const body = recipeSchema.parse(await jsonBody(request));
+  const latest = await prisma.generationRecipe.findFirst({
+    where: { recipeKey: body.recipeKey },
     orderBy: { version: "desc" },
   });
-  const template = await prisma.generationPromptTemplate.create({
+  const template = await prisma.generationRecipe.create({
     data: {
       ...body,
       negativeBase: body.negativeBase ?? null,
@@ -2559,21 +2559,21 @@ async function createPromptTemplate(request: Request) {
     action: "generation.prompt_template.create",
     targetType: "generation_prompt_template",
     targetId: template.id,
-    after: templateAuditSnapshot(template),
+    after: recipeAuditSnapshot(template),
   });
   return ok({ template });
 }
 
-async function patchPromptTemplate(request: Request, id: string) {
+async function patchRecipe(request: Request, id: string) {
   const actor = await actorWithPermission(request, "generation.config.write");
-  const body = promptTemplatePatchSchema.parse(await jsonBody(request));
-  const before = await prisma.generationPromptTemplate.findUnique({ where: { id } });
+  const body = recipePatchSchema.parse(await jsonBody(request));
+  const before = await prisma.generationRecipe.findUnique({ where: { id } });
   if (!before) throw Errors.notFound("Prompt template not found");
   if (before.status !== "draft") throw Errors.badRequest("Only draft templates can be edited");
-  const updated = await prisma.generationPromptTemplate.update({
+  const updated = await prisma.generationRecipe.update({
     where: { id },
     data: {
-      templateKey: body.templateKey,
+      recipeKey: body.recipeKey,
       label: body.label,
       mode: body.mode,
       useCase: body.useCase,
@@ -2589,16 +2589,16 @@ async function patchPromptTemplate(request: Request, id: string) {
     action: "generation.prompt_template.update",
     targetType: "generation_prompt_template",
     targetId: id,
-    before: templateAuditSnapshot(before),
-    after: templateAuditSnapshot(updated),
+    before: recipeAuditSnapshot(before),
+    after: recipeAuditSnapshot(updated),
   });
   return ok({ template: updated });
 }
 
-async function publishPromptTemplate(request: Request, id: string) {
+async function publishRecipe(request: Request, id: string) {
   const actor = await actorWithPermission(request, "generation.config.write");
   const body = publishSchema.parse(await jsonBody(request));
-  const template = await prisma.generationPromptTemplate.findUnique({ where: { id } });
+  const template = await prisma.generationRecipe.findUnique({ where: { id } });
   if (!template) throw Errors.notFound("Prompt template not found");
   assertTargetConfirmation(body.confirmation, template.id);
   if (template.status !== "draft") throw Errors.badRequest("Only draft templates can be published");
@@ -2606,15 +2606,15 @@ async function publishPromptTemplate(request: Request, id: string) {
     ? toInputJson(body.dryRunSummary)
     : template.dryRunSummary;
   if (!dryRunSummary) throw Errors.badRequest("Publish requires dry-run summary");
-  const previous = await prisma.generationPromptTemplate.findFirst({
-    where: { templateKey: template.templateKey, status: "active" },
+  const previous = await prisma.generationRecipe.findFirst({
+    where: { recipeKey: template.recipeKey, status: "active" },
   });
   const published = await prisma.$transaction(async (tx) => {
-    await tx.generationPromptTemplate.updateMany({
-      where: { templateKey: template.templateKey, status: "active" },
+    await tx.generationRecipe.updateMany({
+      where: { recipeKey: template.recipeKey, status: "active" },
       data: { status: "archived", archivedAt: new Date() },
     });
-    return tx.generationPromptTemplate.update({
+    return tx.generationRecipe.update({
       where: { id },
       data: { status: "active", dryRunSummary, publishedAt: new Date(), archivedAt: null },
     });
@@ -2624,21 +2624,21 @@ async function publishPromptTemplate(request: Request, id: string) {
     targetType: "generation_prompt_template",
     targetId: id,
     reason: body.reason,
-    before: previous ? templateAuditSnapshot(previous) : null,
-    after: templateAuditSnapshot(published),
+    before: previous ? recipeAuditSnapshot(previous) : null,
+    after: recipeAuditSnapshot(published),
   });
   return ok({ template: published, previousActiveId: previous?.id ?? null });
 }
 
-async function rollbackPromptTemplate(request: Request, id: string) {
+async function rollbackRecipe(request: Request, id: string) {
   const actor = await actorWithPermission(request, "generation.config.write");
   const body = rollbackSchema.parse(await jsonBody(request));
-  const current = await prisma.generationPromptTemplate.findUnique({ where: { id } });
+  const current = await prisma.generationRecipe.findUnique({ where: { id } });
   if (!current) throw Errors.notFound("Prompt template not found");
   assertTargetConfirmation(body.confirmation, current.id);
-  const previous = await prisma.generationPromptTemplate.findFirst({
+  const previous = await prisma.generationRecipe.findFirst({
     where: {
-      templateKey: current.templateKey,
+      recipeKey: current.recipeKey,
       status: "archived",
       version: { lt: current.version },
     },
@@ -2646,11 +2646,11 @@ async function rollbackPromptTemplate(request: Request, id: string) {
   });
   if (!previous) throw Errors.notFound("No previous template version to roll back to");
   const restored = await prisma.$transaction(async (tx) => {
-    await tx.generationPromptTemplate.updateMany({
-      where: { templateKey: current.templateKey, status: "active" },
+    await tx.generationRecipe.updateMany({
+      where: { recipeKey: current.recipeKey, status: "active" },
       data: { status: "archived", archivedAt: new Date() },
     });
-    return tx.generationPromptTemplate.update({
+    return tx.generationRecipe.update({
       where: { id: previous.id },
       data: { status: "active", publishedAt: new Date(), archivedAt: null },
     });
@@ -2660,8 +2660,8 @@ async function rollbackPromptTemplate(request: Request, id: string) {
     targetType: "generation_prompt_template",
     targetId: current.id,
     reason: body.reason,
-    before: templateAuditSnapshot(current),
-    after: templateAuditSnapshot(restored),
+    before: recipeAuditSnapshot(current),
+    after: recipeAuditSnapshot(restored),
   });
   return ok({ template: restored, fromVersion: current.version, toVersion: restored.version });
 }
@@ -4360,8 +4360,8 @@ function redactJob(job: {
   model: string | null;
   profileId: string | null;
   profileVersion: number | null;
-  promptTemplateId: string | null;
-  promptTemplateVersion: number | null;
+  recipeId: string | null;
+  recipeVersion: number | null;
   orientation: string | null;
   outputCount: number;
   status: string;
@@ -4389,8 +4389,8 @@ function redactJob(job: {
     model: job.model,
     profileId: job.profileId,
     profileVersion: job.profileVersion,
-    promptTemplateId: job.promptTemplateId,
-    promptTemplateVersion: job.promptTemplateVersion,
+    recipeId: job.recipeId,
+    recipeVersion: job.recipeVersion,
     presetIds: job.presetIds,
     orientation: job.orientation,
     outputCount: job.outputCount,
@@ -4491,15 +4491,15 @@ function profileAuditSnapshot(profile: {
   };
 }
 
-function templateAuditSnapshot(template: {
-  templateKey: string;
+function recipeAuditSnapshot(template: {
+  recipeKey: string;
   mode: string;
   useCase: string;
   version: number;
   status: string;
 }) {
   return {
-    templateKey: template.templateKey,
+    recipeKey: template.recipeKey,
     mode: template.mode,
     useCase: template.useCase,
     version: template.version,

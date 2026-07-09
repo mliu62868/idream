@@ -381,8 +381,8 @@ describe("generation config control plane", () => {
       status: "queued",
       profileId: "profile_image_default_v1",
       profileVersion: 1,
-      promptTemplateId: "template_image_character_default",
-      promptTemplateVersion: 1,
+      recipeId: "template_image_character_default",
+      recipeVersion: 1,
     });
     await runQueuedGenerationJobs(8);
   });
@@ -1417,10 +1417,10 @@ describe("generation config control plane", () => {
         publishedAt: new Date(),
       },
     });
-    await prisma.generationPromptTemplate.create({
+    await prisma.generationRecipe.create({
       data: {
         id: `${P}production-recipe-v1`,
-        templateKey: `${P}production-recipe`,
+        recipeKey: `${P}production-recipe`,
         label: "Production recipe",
         mode: "image",
         useCase: "character",
@@ -1504,7 +1504,7 @@ describe("generation config control plane", () => {
     expect(jobs[0]).toMatchObject({
       userId: admin,
       profileId: `${P}production-profile`,
-      promptTemplateId: `${P}production-recipe`,
+      recipeId: `${P}production-recipe`,
     });
     expect(jobs[0]?.sourceMeta).toMatchObject({
       batchId: created.data.batch.id,
@@ -1659,10 +1659,10 @@ describe("generation config control plane", () => {
         publishedAt: new Date(),
       },
     });
-    await prisma.generationPromptTemplate.create({
+    await prisma.generationRecipe.create({
       data: {
         id: `${P}pregen-recipe-v1`,
-        templateKey: `${P}pregen-recipe`,
+        recipeKey: `${P}pregen-recipe`,
         label: "Pregen recipe",
         mode: "image",
         useCase: "character",
@@ -1760,10 +1760,10 @@ describe("generation config control plane", () => {
         publishedAt: new Date(),
       },
     });
-    await prisma.generationPromptTemplate.create({
+    await prisma.generationRecipe.create({
       data: {
         id: `${P}pregen-e2e-recipe-v1`,
-        templateKey: `${P}pregen-e2e-recipe`,
+        recipeKey: `${P}pregen-e2e-recipe`,
         label: "Pregen e2e recipe",
         mode: "image",
         useCase: "character",
@@ -1882,10 +1882,10 @@ describe("generation config control plane", () => {
         publishedAt: new Date(),
       },
     });
-    await prisma.generationPromptTemplate.create({
+    await prisma.generationRecipe.create({
       data: {
         id: `${P}production-refund-recipe-v1`,
-        templateKey: `${P}production-refund-recipe`,
+        recipeKey: `${P}production-refund-recipe`,
         label: "Production refund recipe",
         mode: "image",
         useCase: "character",
@@ -2206,10 +2206,10 @@ describe("generation config control plane", () => {
 
   it("publishes prompt templates with dry-run evidence and archives the previous active version", async () => {
     const admin = await setupActor("admin", "prompt");
-    await prisma.generationPromptTemplate.create({
+    await prisma.generationRecipe.create({
       data: {
         id: `${P}template-v1`,
-        templateKey: `${P}template`,
+        recipeKey: `${P}template`,
         label: "Template v1",
         mode: "image",
         useCase: "character",
@@ -2224,11 +2224,11 @@ describe("generation config control plane", () => {
       },
     });
 
-    const draft = await api("POST", "admin/generation/prompt-templates", {
+    const draft = await api("POST", "admin/generation/recipes", {
       userId: admin,
       role: "admin",
       body: {
-        templateKey: `${P}template`,
+        recipeKey: `${P}template`,
         label: "Template v2",
         mode: "image",
         useCase: "character",
@@ -2241,21 +2241,21 @@ describe("generation config control plane", () => {
     });
     expectOk(draft);
 
-    const publish = await api("POST", `admin/generation/prompt-templates/${draft.data.template.id}/publish`, {
+    const publish = await api("POST", `admin/generation/recipes/${draft.data.template.id}/publish`, {
       userId: admin,
       role: "admin",
       body: { reason: "sample matrix passed", confirmation: "PUBLISH" },
     });
     expectError(publish, 400, "bad_request");
 
-    const exactPublish = await api("POST", `admin/generation/prompt-templates/${draft.data.template.id}/publish`, {
+    const exactPublish = await api("POST", `admin/generation/recipes/${draft.data.template.id}/publish`, {
       userId: admin,
       role: "admin",
       body: { reason: "sample matrix passed", confirmation: draft.data.template.id },
     });
     expectOk(exactPublish);
     expect(exactPublish.data.template).toMatchObject({ status: "active", version: 2 });
-    expect(await prisma.generationPromptTemplate.findUnique({ where: { id: `${P}template-v1` } })).toMatchObject({
+    expect(await prisma.generationRecipe.findUnique({ where: { id: `${P}template-v1` } })).toMatchObject({
       status: "archived",
     });
   });
@@ -4187,8 +4187,8 @@ describe("admin generation metrics rollup (P3)", () => {
       presetIds: [],
       profileId,
       profileVersion: 1,
-      promptTemplateId: recipeId,
-      promptTemplateVersion: 1,
+      recipeId,
+      recipeVersion: 1,
       sourceType: "content_production_item",
     } as const;
     await prisma.generationJob.create({

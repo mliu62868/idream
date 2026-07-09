@@ -403,8 +403,8 @@ model GenerationJob {
   model                 String?
   profileId             String?
   profileVersion        Int?
-  promptTemplateId      String?
-  promptTemplateVersion Int?
+  recipeId              String?
+  recipeVersion         Int?
   orientation           String?
   outputCount           Int                  @default(1)
   status                String               @default("queued") // enum: queued | moderating_input | running | moderating_output | completed | failed | blocked | refunded
@@ -433,7 +433,7 @@ model GenerationJob {
   @@index([sourceType])
   @@index([visualProfileId, visualProfileVersion])
   @@index([profileId, profileVersion])
-  @@index([promptTemplateId, promptTemplateVersion])
+  @@index([recipeId, recipeVersion])
   @@map("generation_jobs")
 }
 
@@ -1029,9 +1029,9 @@ model GenerationModelProfile {
   @@map("generation_model_profiles")
 }
 
-model GenerationPromptTemplate {
+model GenerationRecipe {
   id            String    @id @default(cuid())
-  templateKey   String
+  recipeKey     String
   label         String
   mode          String    @default("image") // enum: image | video | negative
   useCase       String    @default("character") // enum: character | freeplay | negative
@@ -1048,9 +1048,9 @@ model GenerationPromptTemplate {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
-  @@index([templateKey, status])
+  @@index([recipeKey, status])
   @@index([mode, useCase, status])
-  @@map("generation_prompt_templates")
+  @@map("generation_recipes")
 }
 
 model GenerationProviderRoute {

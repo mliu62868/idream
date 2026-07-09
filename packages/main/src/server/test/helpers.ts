@@ -348,8 +348,8 @@ export async function purgeTestData(prefix: string) {
     where: { OR: [{ id: sw }, { targetId: sw }, { createdById: sw }, { title: sw }] },
   });
   await prisma.generationModelProfile.deleteMany({ where: { OR: [{ id: sw }, { profileKey: sw }] } });
-  await prisma.generationPromptTemplate.deleteMany({
-    where: { OR: [{ id: sw }, { templateKey: sw }] },
+  await prisma.generationRecipe.deleteMany({
+    where: { OR: [{ id: sw }, { recipeKey: sw }] },
   });
   await prisma.generationProviderRoute.deleteMany({
     where: { OR: [{ id: sw }, { profileKey: sw }] },

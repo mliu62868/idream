@@ -123,3 +123,11 @@ Final whole-branch review (opus): Needs fixes — copy-only §8 leaks on renamed
 Fix wave: commit b41039be (§8 copy: eyebrow→Model Profiles, h2→Character Starters, +2 lower-vis refs, grid-cols-4→3, delete orphan "Presets and flags"; gates green, grep clean). Fixer discovered admin-web.e2e.ts asserted OLD headings → commit f72ee82c (synced 14 heading assertions to 6 renamed labels; typecheck clean, stale-heading grep empty).
 Consolidated §8 verification (controller): no t("Profiles & Rollout"/"Production Studio"/"Asset Library") render calls; "Profiles & Rollout" gone from admin+e2e; role h2=Character Starters, config eyebrow=Model Profiles; typecheck green. §8 MET. Full opus re-review NOT re-dispatched — fixes were grep-verifiable copy/test-string edits directly resolving named findings.
 BRANCH READY (7 commits since master: 2 docs + 5 impl + 2 fix... = 3164fbb1,ff0fd484 docs / 94f329e7,0009de56,229dcd1e,7c601563,7a359f14 impl / b41039be,f72ee82c fix). → finishing-a-development-branch.
+ADMIN IA REDESIGN: MERGED to master (2aaf4d54, FF), branch deleted, green. Zero user action (presentation-layer).
+
+=== RECIPE RENAME (§9-②) SDD START ===
+Base (before Task 1): 96d6b292f91eccf943554be02464e9ca946a264e
+Branch: recipe-rename-unification
+Plan: docs/superpowers/plans/2026-07-08-recipe-rename-unification.md
+Scope: GenerationPromptTemplate → recipe end-to-end (schema+code+UI+API route). Decisions: (a) rename API route too; (b) keep key VALUES; (c) USER OVERRIDE — agent runs dev migration SQL + pm2 cutover (prod SQL = file for user).
+Task 1 = code rename (validated vs fresh test DB, no dev-DB touch). Task 2 = orchestrator dev cutover (build→SQL→pm2 restart). Dev DB idream@5433 has 4 recipes + 43 job refs; index names verified. pm2 full stack live (14h uptime).

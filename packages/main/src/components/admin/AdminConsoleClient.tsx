@@ -141,7 +141,7 @@ type DashboardData = {
 
 type ConfigData = {
   profiles: Row[];
-  templates: Row[];
+  recipes: Row[];
   presets: Row[];
   flags: Row[];
   recentJobs: Row[];
@@ -359,8 +359,8 @@ type LoraDraft = {
   enabled: boolean;
 };
 
-type TemplateDraft = {
-  templateKey: string;
+type RecipeDraft = {
+  recipeKey: string;
   label: string;
   mode: "image" | "video" | "negative";
   useCase: "character" | "freeplay" | "negative";
@@ -479,8 +479,8 @@ const modelProfileTemplates: Array<{
 ];
 const fallbackModelProfileTemplate = modelProfileTemplates[0]!;
 
-const defaultTemplateDraft: TemplateDraft = {
-  templateKey: "template_image_character_v2",
+const defaultRecipeDraft: RecipeDraft = {
+  recipeKey: "template_image_character_v2",
   label: "Image character v2",
   mode: "image",
   useCase: "character",
@@ -641,8 +641,8 @@ export function AdminConsoleClient({
   const [actionBusy, setActionBusy] = useState(false);
   const [adjustment, setAdjustment] = useState({ userId: "", delta: "" });
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
-  const [templateDraft, setTemplateDraft] = useState<TemplateDraft>(defaultTemplateDraft);
-  const [configBusy, setConfigBusy] = useState<"template" | null>(null);
+  const [recipeDraft, setRecipeDraft] = useState<RecipeDraft>(defaultRecipeDraft);
+  const [configBusy, setConfigBusy] = useState<"recipe" | null>(null);
   const [pricingDraft, setPricingDraft] = useState<PricingDraft>(defaultPricingDraft);
   const [pricingBusy, setPricingBusy] = useState(false);
   const [permissionForm, setPermissionForm] = useState<PermissionForm>(defaultPermissionForm);
@@ -728,14 +728,14 @@ export function AdminConsoleClient({
     }
   }
 
-  async function createPromptTemplate() {
-    setConfigBusy("template");
+  async function createRecipe() {
+    setConfigBusy("recipe");
     setError(null);
     try {
       await apiWrite(
-        "/api/v1/admin/generation/prompt-templates",
+        "/api/v1/admin/generation/recipes",
         "POST",
-        templateDraftPayload(templateDraft),
+        recipeDraftPayload(recipeDraft),
       );
       await load();
     } catch (createError) {
@@ -958,10 +958,10 @@ export function AdminConsoleClient({
                 setAdjustment,
                 selectedProfileId,
                 setSelectedProfileId,
-                templateDraft,
-                setTemplateDraft,
+                recipeDraft,
+                setRecipeDraft,
                 configBusy,
-                createPromptTemplate,
+                createRecipe,
                 pricingDraft,
                 setPricingDraft,
                 pricingBusy,
@@ -1134,16 +1134,16 @@ export function AdminConsoleClient({
 }
 
 async function fetchGenerationConfig(): Promise<ConfigData> {
-  const [profiles, templates, presets, flags, jobs] = await Promise.all([
+  const [profiles, recipes, presets, flags, jobs] = await Promise.all([
     apiGet<{ items: Row[] }>("/api/v1/admin/generation/model-profiles"),
-    apiGet<{ items: Row[] }>("/api/v1/admin/generation/prompt-templates"),
+    apiGet<{ items: Row[] }>("/api/v1/admin/generation/recipes"),
     apiGet<{ items: Row[] }>("/api/v1/admin/generation/presets"),
     apiGet<{ items: Row[] }>("/api/v1/admin/feature-flags"),
     apiGet<{ items: Row[] }>("/api/v1/admin/generation/jobs?mode=image&limit=12"),
   ]);
   return {
     profiles: profiles.items,
-    templates: templates.items,
+    recipes: recipes.items,
     presets: presets.items,
     flags: flags.items,
     recentJobs: jobs.items,
@@ -1365,9 +1365,9 @@ function runnerConfigForProfileTemplate(template: ModelProfileTemplateId) {
   return {};
 }
 
-function templateDraftPayload(draft: TemplateDraft): Record<string, unknown> {
+function recipeDraftPayload(draft: RecipeDraft): Record<string, unknown> {
   return {
-    templateKey: draft.templateKey.trim(),
+    recipeKey: draft.recipeKey.trim(),
     label: draft.label.trim(),
     mode: draft.mode,
     useCase: draft.useCase,
@@ -2099,10 +2099,10 @@ function renderSection(
     setAdjustment: (value: { userId: string; delta: string }) => void;
     selectedProfileId: string | null;
     setSelectedProfileId: (value: string | null) => void;
-    templateDraft: TemplateDraft;
-    setTemplateDraft: (value: TemplateDraft) => void;
-    configBusy: "template" | null;
-    createPromptTemplate: () => void;
+    recipeDraft: RecipeDraft;
+    setRecipeDraft: (value: RecipeDraft) => void;
+    configBusy: "recipe" | null;
+    createRecipe: () => void;
     pricingDraft: PricingDraft;
     setPricingDraft: (value: PricingDraft) => void;
     pricingBusy: boolean;
@@ -2123,11 +2123,11 @@ function renderSection(
       return (
         <PromptRecipesView
           configBusy={ctx.configBusy}
-          createPromptTemplate={ctx.createPromptTemplate}
+          createRecipe={ctx.createRecipe}
           data={section.data}
           openAction={ctx.openAction}
-          setTemplateDraft={ctx.setTemplateDraft}
-          templateDraft={ctx.templateDraft}
+          setRecipeDraft={ctx.setRecipeDraft}
+          recipeDraft={ctx.recipeDraft}
         />
       );
     }
@@ -2882,11 +2882,11 @@ function ProfileReleaseWorkbench({
 function ConfigOverviewHeader({
   jobs,
   profiles,
-  templates,
+  recipes,
 }: {
   jobs: Row[];
   profiles: Row[];
-  templates: Row[];
+  recipes: Row[];
 }) {
   const { t } = useAdminI18n();
   const draftCount = profiles.filter((profile) => stringValue(profile.status) === "draft").length;
@@ -2908,7 +2908,7 @@ function ConfigOverviewHeader({
         <Metric label="Drafts" value={draftCount} meta="ready to test" />
         <Metric label="Published" value={activeCount} meta="status = active" />
         <Metric label="Test jobs" value={jobs.length} meta={`${completedJobs} completed`} />
-        <Metric label="Prompt Recipes" value={templates.length} meta="recipe records" />
+        <Metric label="Prompt Recipes" value={recipes.length} meta="recipe records" />
       </div>
     </section>
   );
@@ -3114,7 +3114,7 @@ function ConfigView({
 
   return (
     <div className="space-y-6">
-      <ConfigOverviewHeader jobs={data.recentJobs} profiles={data.profiles} templates={data.templates} />
+      <ConfigOverviewHeader jobs={data.recentJobs} profiles={data.profiles} recipes={data.recipes} />
       <ConfigTabNav active={configTab} counts={tabCounts} onChange={setConfigTab} />
 
       {configTab === "drafts" && (
@@ -3163,31 +3163,31 @@ function ConfigView({
 
 function PromptRecipesView({
   configBusy,
-  createPromptTemplate,
+  createRecipe,
   data,
   openAction,
-  setTemplateDraft,
-  templateDraft,
+  setRecipeDraft,
+  recipeDraft,
 }: {
-  configBusy: "template" | null;
-  createPromptTemplate: () => void;
+  configBusy: "recipe" | null;
+  createRecipe: () => void;
   data: ConfigData;
   openAction: (action: PendingAction) => void;
-  setTemplateDraft: (value: TemplateDraft) => void;
-  templateDraft: TemplateDraft;
+  setRecipeDraft: (value: RecipeDraft) => void;
+  recipeDraft: RecipeDraft;
 }) {
   return (
     <div className="space-y-6">
-      <PromptTemplateDraftForm
-        busy={configBusy === "template"}
-        draft={templateDraft}
-        onCreate={createPromptTemplate}
-        onDraftChange={setTemplateDraft}
+      <RecipeDraftForm
+        busy={configBusy === "recipe"}
+        draft={recipeDraft}
+        onCreate={createRecipe}
+        onDraftChange={setRecipeDraft}
       />
       <DataTable
-        actions={(row) => templateTableActions(row, openAction)}
-        columns={["id", "templateKey", "label", "mode", "useCase", "status", "version"]}
-        rows={data.templates}
+        actions={(row) => recipeTableActions(row, openAction)}
+        columns={["id", "recipeKey", "label", "mode", "useCase", "status", "version"]}
+        rows={data.recipes}
         title="Prompt Recipes"
       />
     </div>
@@ -3256,7 +3256,7 @@ function profileTableActions(
   );
 }
 
-function templateTableActions(row: Row, openAction: (action: PendingAction) => void) {
+function recipeTableActions(row: Row, openAction: (action: PendingAction) => void) {
   const id = stringValue(row.id);
   if (!id) return null;
   const status = stringValue(row.status);
@@ -3267,14 +3267,14 @@ function templateTableActions(row: Row, openAction: (action: PendingAction) => v
         <IconAction
           icon={<UploadCloud className="h-4 w-4" />}
           label="Publish"
-          onClick={() => openAction(publishTemplateAction(id))}
+          onClick={() => openAction(publishRecipeAction(id))}
         />
       ) : null}
       {status === "active" ? (
         <IconAction
           icon={<RotateCcw className="h-4 w-4" />}
           label="Rollback"
-          onClick={() => openAction(rollbackTemplateAction(id))}
+          onClick={() => openAction(rollbackRecipeAction(id))}
         />
       ) : null}
     </div>
@@ -3356,10 +3356,10 @@ function disableProfileAction(id: string): PendingAction {
   };
 }
 
-function publishTemplateAction(id: string): PendingAction {
+function publishRecipeAction(id: string): PendingAction {
   return {
     title: `Publish template ${id}`,
-    endpoint: `/api/v1/admin/generation/prompt-templates/${id}/publish`,
+    endpoint: `/api/v1/admin/generation/recipes/${id}/publish`,
     method: "POST",
     confirmText: id,
     reasonRequired: true,
@@ -3371,10 +3371,10 @@ function publishTemplateAction(id: string): PendingAction {
   };
 }
 
-function rollbackTemplateAction(id: string): PendingAction {
+function rollbackRecipeAction(id: string): PendingAction {
   return {
     title: `Rollback template ${id}`,
-    endpoint: `/api/v1/admin/generation/prompt-templates/${id}/rollback`,
+    endpoint: `/api/v1/admin/generation/recipes/${id}/rollback`,
     method: "POST",
     confirmText: id,
     reasonRequired: true,
@@ -4755,26 +4755,26 @@ function pathFileName(value: string) {
   return trimmed.split("/").filter(Boolean).pop() ?? trimmed;
 }
 
-function PromptTemplateDraftForm({
+function RecipeDraftForm({
   busy,
   draft,
   onCreate,
   onDraftChange,
 }: {
   busy: boolean;
-  draft: TemplateDraft;
+  draft: RecipeDraft;
   onCreate: () => void;
-  onDraftChange: (value: TemplateDraft) => void;
+  onDraftChange: (value: RecipeDraft) => void;
 }) {
   const { t } = useAdminI18n();
 
   return (
     <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold">{t("Create Prompt Template Draft")}</h2>
+        <h2 className="text-sm font-semibold">{t("Create Prompt Recipe Draft")}</h2>
         <button
           className="inline-flex h-9 items-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
-          disabled={busy || !draft.templateKey.trim() || !draft.label.trim() || !draft.body.trim()}
+          disabled={busy || !draft.recipeKey.trim() || !draft.label.trim() || !draft.body.trim()}
           onClick={onCreate}
           type="button"
         >
@@ -4784,9 +4784,9 @@ function PromptTemplateDraftForm({
       </div>
       <div className="grid gap-3 md:grid-cols-4">
         <FormField
-          label="Template Key"
-          onChange={(value) => onDraftChange({ ...draft, templateKey: value })}
-          value={draft.templateKey}
+          label="Recipe Key"
+          onChange={(value) => onDraftChange({ ...draft, recipeKey: value })}
+          value={draft.recipeKey}
         />
         <FormField
           label="Label"
@@ -4795,13 +4795,13 @@ function PromptTemplateDraftForm({
         />
         <FormSelect
           label="Mode"
-          onChange={(value) => onDraftChange({ ...draft, mode: value as TemplateDraft["mode"] })}
+          onChange={(value) => onDraftChange({ ...draft, mode: value as RecipeDraft["mode"] })}
           options={["image", "video", "negative"]}
           value={draft.mode}
         />
         <FormSelect
           label="Use Case"
-          onChange={(value) => onDraftChange({ ...draft, useCase: value as TemplateDraft["useCase"] })}
+          onChange={(value) => onDraftChange({ ...draft, useCase: value as RecipeDraft["useCase"] })}
           options={["character", "freeplay", "negative"]}
           value={draft.useCase}
         />
@@ -7091,7 +7091,7 @@ function filterSectionData(section: SectionData | null, query: string): SectionD
       ...section,
       data: {
         profiles: filterRows(section.data.profiles),
-        templates: filterRows(section.data.templates),
+        recipes: filterRows(section.data.recipes),
         presets: filterRows(section.data.presets),
         flags: filterRows(section.data.flags),
         recentJobs: filterRows(section.data.recentJobs),

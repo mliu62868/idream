@@ -28,7 +28,7 @@ type Profile = {
 
 type Recipe = {
   id: string;
-  templateKey: string;
+  recipeKey: string;
   label: string;
   status: string;
   version: number;
@@ -107,8 +107,8 @@ type ContentAsset = AssetSummary & {
     status: string;
     profileId: string | null;
     profileVersion: number | null;
-    promptTemplateId: string | null;
-    promptTemplateVersion: number | null;
+    recipeId: string | null;
+    recipeVersion: number | null;
   } | null;
   sourceBatch: {
     id: string;
@@ -209,7 +209,7 @@ export function ProductionStudioView() {
     try {
       const [profileData, recipeData, presetData, characterData, batchData] = await Promise.all([
         apiGet<{ items: Profile[] }>("/api/v1/admin/generation/model-profiles?mode=image"),
-        apiGet<{ items: Recipe[] }>("/api/v1/admin/generation/prompt-templates?mode=image"),
+        apiGet<{ items: Recipe[] }>("/api/v1/admin/generation/recipes?mode=image"),
         apiGet<{ items: Preset[] }>("/api/v1/admin/generation/presets"),
         apiGet<{ items: CharacterOption[] }>("/api/v1/admin/content/characters?limit=100"),
         apiGet<{ items: ProductionBatch[] }>("/api/v1/admin/content/production/batches?limit=24"),
@@ -224,7 +224,7 @@ export function ProductionStudioView() {
       setForm((current) => ({
         ...current,
         profileId: current.profileId || activeProfiles[0]?.profileKey || activeProfiles[0]?.id || "",
-        recipeId: current.recipeId || activeRecipes[0]?.templateKey || activeRecipes[0]?.id || "",
+        recipeId: current.recipeId || activeRecipes[0]?.recipeKey || activeRecipes[0]?.id || "",
         targetId: current.targetId || characterData.items[0]?.id || "",
       }));
       if (!selectedBatchId && batchData.items[0]) setSelectedBatchId(batchData.items[0].id);
@@ -393,7 +393,7 @@ export function ProductionStudioView() {
                 value={form.recipeId}
               >
                 {recipes.map((recipe) => (
-                  <option key={recipe.id} value={recipe.templateKey || recipe.id}>
+                  <option key={recipe.id} value={recipe.recipeKey || recipe.id}>
                     {recipe.label} · {value(recipe.useCase)} · v{recipe.version}
                   </option>
                 ))}

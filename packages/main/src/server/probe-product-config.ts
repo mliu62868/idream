@@ -76,20 +76,20 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
       prisma.generationModelProfile.count({
         where: { mode: "image", status: "active", enabled: true },
       }),
-      prisma.generationPromptTemplate.count({
+      prisma.generationRecipe.count({
         where: { mode: "image", useCase: "character", status: "active" },
       }),
-      prisma.generationPromptTemplate.count({
+      prisma.generationRecipe.count({
         where: { mode: "image", useCase: "freeplay", status: "active" },
       }),
       prisma.pricingRule.count({ where: { mode: "image", status: "active" } }),
       prisma.generationModelProfile.count({
         where: { mode: "video", status: "active", enabled: true },
       }),
-      prisma.generationPromptTemplate.count({
+      prisma.generationRecipe.count({
         where: { mode: "video", useCase: "character", status: "active" },
       }),
-      prisma.generationPromptTemplate.count({
+      prisma.generationRecipe.count({
         where: { mode: "video", useCase: "freeplay", status: "active" },
       }),
       prisma.pricingRule.count({ where: { mode: "video", status: "active" } }),
