@@ -62,7 +62,7 @@ import {
   type AdminLocale,
   useAdminI18n,
 } from "@/components/admin/i18n";
-import { navItems, normalizeSection } from "@/components/admin/nav-config";
+import { navItems, normalizeSection, configSliceForSection, type ConfigSlice } from "@/components/admin/nav-config";
 
 type Actor = {
   id: string;
@@ -147,7 +147,7 @@ type ConfigData = {
   recentJobs: Row[];
 };
 
-type ConfigTab = "drafts" | "published" | "templates" | "settings";
+type ConfigTab = "drafts" | "published" | "settings";
 
 type ReconciliationData = {
   window: { from: string; to: string };
@@ -196,7 +196,7 @@ type ChatOpsFilters = {
 type SectionData =
   | { kind: "dashboard"; data: DashboardData }
   | { kind: "jobs"; rows: Row[] }
-  | { kind: "config"; data: ConfigData }
+  | { kind: "config"; data: ConfigData; slice: ConfigSlice }
   | { kind: "moderation"; reports: Row[]; blockedMedia: Row[]; appeals: Row[] }
   | { kind: "users"; rows: Row[] }
   | { kind: "billing"; rows: Row[]; subscriptions: Row[]; reconciliation: ReconciliationData }
@@ -1133,6 +1133,23 @@ export function AdminConsoleClient({
   );
 }
 
+async function fetchGenerationConfig(): Promise<ConfigData> {
+  const [profiles, templates, presets, flags, jobs] = await Promise.all([
+    apiGet<{ items: Row[] }>("/api/v1/admin/generation/model-profiles"),
+    apiGet<{ items: Row[] }>("/api/v1/admin/generation/prompt-templates"),
+    apiGet<{ items: Row[] }>("/api/v1/admin/generation/presets"),
+    apiGet<{ items: Row[] }>("/api/v1/admin/feature-flags"),
+    apiGet<{ items: Row[] }>("/api/v1/admin/generation/jobs?mode=image&limit=12"),
+  ]);
+  return {
+    profiles: profiles.items,
+    templates: templates.items,
+    presets: presets.items,
+    flags: flags.items,
+    recentJobs: jobs.items,
+  };
+}
+
 async function fetchSection(
   sectionId: string,
   options: { chatOps?: ChatOpsFilters } = {},
@@ -1152,24 +1169,9 @@ async function fetchSection(
     const payload = await apiGet<ProviderOpsData>("/api/v1/admin/ops/providers");
     return { kind: "providers", data: payload };
   }
-  if (sectionId === "generation/config") {
-    const [profiles, templates, presets, flags, jobs] = await Promise.all([
-      apiGet<{ items: Row[] }>("/api/v1/admin/generation/model-profiles"),
-      apiGet<{ items: Row[] }>("/api/v1/admin/generation/prompt-templates"),
-      apiGet<{ items: Row[] }>("/api/v1/admin/generation/presets"),
-      apiGet<{ items: Row[] }>("/api/v1/admin/feature-flags"),
-      apiGet<{ items: Row[] }>("/api/v1/admin/generation/jobs?mode=image&limit=12"),
-    ]);
-    return {
-      kind: "config",
-      data: {
-        profiles: profiles.items,
-        templates: templates.items,
-        presets: presets.items,
-        flags: flags.items,
-        recentJobs: jobs.items,
-      },
-    };
+  const configSlice = configSliceForSection(sectionId);
+  if (configSlice) {
+    return { kind: "config", data: await fetchGenerationConfig(), slice: configSlice };
   }
   if (sectionId === "moderation") {
     const payload = await apiGet<{ reports: Row[]; blockedMedia: Row[]; appeals: Row[] }>(
@@ -2117,17 +2119,28 @@ function renderSection(
   if (section.kind === "dashboard") return <DashboardView data={section.data} />;
   if (section.kind === "jobs") return <JobsView rows={section.rows} openAction={ctx.openAction} />;
   if (section.kind === "config") {
+    if (section.slice === "recipes") {
+      return (
+        <PromptRecipesView
+          configBusy={ctx.configBusy}
+          createPromptTemplate={ctx.createPromptTemplate}
+          data={section.data}
+          openAction={ctx.openAction}
+          setTemplateDraft={ctx.setTemplateDraft}
+          templateDraft={ctx.templateDraft}
+        />
+      );
+    }
+    if (section.slice === "presets") {
+      return <GenerationPresetsView data={section.data} />;
+    }
     return (
       <ConfigView
-        configBusy={ctx.configBusy}
-        createPromptTemplate={ctx.createPromptTemplate}
         data={section.data}
         openAction={ctx.openAction}
         reload={ctx.reload}
         selectedProfileId={ctx.selectedProfileId}
         setSelectedProfileId={ctx.setSelectedProfileId}
-        setTemplateDraft={ctx.setTemplateDraft}
-        templateDraft={ctx.templateDraft}
       />
     );
   }
@@ -2914,7 +2927,6 @@ function ConfigTabNav({
   const items: Array<{ id: ConfigTab; label: string; meta: string }> = [
     { id: "drafts", label: "Drafts", meta: "Test and publish" },
     { id: "published", label: "Published", meta: "Active and archived" },
-    { id: "templates", label: "Prompt Recipes", meta: "Prompt drafts" },
     { id: "settings", label: "Settings", meta: "Presets and flags" },
   ];
 
@@ -3059,25 +3071,17 @@ function ProfileDraftManager({
 }
 
 function ConfigView({
-  configBusy,
-  createPromptTemplate,
   data,
   openAction,
   reload,
   selectedProfileId,
   setSelectedProfileId,
-  setTemplateDraft,
-  templateDraft,
 }: {
-  configBusy: "template" | null;
-  createPromptTemplate: () => void;
   data: ConfigData;
   openAction: (action: PendingAction) => void;
   reload: () => void | Promise<void>;
   selectedProfileId: string | null;
   setSelectedProfileId: (value: string | null) => void;
-  setTemplateDraft: (value: TemplateDraft) => void;
-  templateDraft: TemplateDraft;
 }) {
   const [initialUrlState] = useState(() => readConfigUrlState());
   const [configTab, setConfigTab] = useState<ConfigTab>(() => initialUrlState.tab ?? "drafts");
@@ -3097,10 +3101,9 @@ function ConfigView({
     () => ({
       drafts: draftProfiles.length,
       published: publishedProfiles.length,
-      templates: data.templates.length,
-      settings: data.presets.length + data.flags.length,
+      settings: data.flags.length,
     }),
-    [data.flags.length, data.presets.length, data.templates.length, draftProfiles.length, publishedProfiles.length],
+    [data.flags.length, draftProfiles.length, publishedProfiles.length],
   );
 
   useEffect(() => {
@@ -3138,57 +3141,67 @@ function ConfigView({
         <DataTable
           actions={(row) => profileTableActions(row, openAction, setSelectedProfileId)}
           columns={[
-            "id",
-            "profileKey",
-            "label",
-            "mode",
-            "runner",
-            "pipelineModel",
-            "status",
-            "version",
-            "enabled",
-            "rolloutPercent",
-            "requiredEntitlement",
-            "dryRunSummary",
+            "id", "profileKey", "label", "mode", "runner", "pipelineModel",
+            "status", "version", "enabled", "rolloutPercent", "requiredEntitlement", "dryRunSummary",
           ]}
           rows={publishedProfiles}
           title="Published profiles"
         />
       )}
 
-      {configTab === "templates" && (
-        <>
-          <PromptTemplateDraftForm
-            busy={configBusy === "template"}
-            draft={templateDraft}
-            onCreate={createPromptTemplate}
-            onDraftChange={setTemplateDraft}
-          />
-          <DataTable
-            actions={(row) => templateTableActions(row, openAction)}
-            columns={["id", "templateKey", "label", "mode", "useCase", "status", "version"]}
-            rows={data.templates}
-            title="Prompt Recipes"
-          />
-        </>
-      )}
-
       {configTab === "settings" && (
-        <>
-          <DataTable
-            columns={["id", "type", "category", "label", "visibility", "status"]}
-            rows={data.presets}
-            title="Built-in Presets"
-          />
-
-          <DataTable
-            actions={(row) => featureFlagActions(row, openAction)}
-            columns={["key", "enabled", "rolloutPercent", "version", "hardPolicy"]}
-            rows={data.flags}
-            title="Feature Flags"
-          />
-        </>
+        <DataTable
+          actions={(row) => featureFlagActions(row, openAction)}
+          columns={["key", "enabled", "rolloutPercent", "version", "hardPolicy"]}
+          rows={data.flags}
+          title="Feature Flags"
+        />
       )}
+    </div>
+  );
+}
+
+function PromptRecipesView({
+  configBusy,
+  createPromptTemplate,
+  data,
+  openAction,
+  setTemplateDraft,
+  templateDraft,
+}: {
+  configBusy: "template" | null;
+  createPromptTemplate: () => void;
+  data: ConfigData;
+  openAction: (action: PendingAction) => void;
+  setTemplateDraft: (value: TemplateDraft) => void;
+  templateDraft: TemplateDraft;
+}) {
+  return (
+    <div className="space-y-6">
+      <PromptTemplateDraftForm
+        busy={configBusy === "template"}
+        draft={templateDraft}
+        onCreate={createPromptTemplate}
+        onDraftChange={setTemplateDraft}
+      />
+      <DataTable
+        actions={(row) => templateTableActions(row, openAction)}
+        columns={["id", "templateKey", "label", "mode", "useCase", "status", "version"]}
+        rows={data.templates}
+        title="Prompt Recipes"
+      />
+    </div>
+  );
+}
+
+function GenerationPresetsView({ data }: { data: ConfigData }) {
+  return (
+    <div className="space-y-6">
+      <DataTable
+        columns={["id", "type", "category", "label", "visibility", "status"]}
+        rows={data.presets}
+        title="Built-in Presets"
+      />
     </div>
   );
 }
@@ -7114,7 +7127,7 @@ function readConfigUrlState(): { tab: ConfigTab | null; assetPath: string } {
 
 function configTabValue(value: string | null): ConfigTab | null {
   if (value === "create") return "drafts";
-  if (value === "drafts" || value === "published" || value === "templates" || value === "settings") {
+  if (value === "drafts" || value === "published" || value === "settings") {
     return value;
   }
   return null;

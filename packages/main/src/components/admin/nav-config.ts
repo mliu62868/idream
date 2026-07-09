@@ -12,13 +12,16 @@ import {
   History,
   ImageIcon,
   Inbox,
+  Layers,
   Library,
   MessageSquare,
   Play,
+  ScrollText,
   Server,
   ShieldAlert,
   ShieldCheck,
   SlidersHorizontal,
+  Sparkles,
   Ticket,
   Users,
   Workflow,
@@ -35,22 +38,32 @@ export type NavItem = {
 
 export const navItems: NavItem[] = [
   { id: "dashboard", label: "Dashboard", href: "/admin", icon: Gauge, group: "Overview" },
-  { id: "generation/jobs", label: "Jobs & Incidents", href: "/admin/generation/jobs", icon: Activity, group: "Generation Ops" },
-  { id: "generation/config", label: "Profiles & Rollout", href: "/admin/generation/config", icon: SlidersHorizontal, group: "Generation Ops" },
-  { id: "generation/dead-letter", label: "Dead-letter", href: "/admin/generation/dead-letter", icon: Inbox, group: "Generation Ops" },
-  { id: "ops/providers", label: "Provider Health", href: "/admin/ops/providers", icon: Server, group: "Generation Ops" },
-  { id: "generation/backends", label: "Backends", href: "/admin/generation/backends", icon: Server, group: "Generation Ops" },
-  { id: "generation/workflows", label: "Workflows", href: "/admin/generation/workflows", icon: Workflow, group: "Generation Ops" },
-  { id: "generation/metrics", label: "Metrics", href: "/admin/generation/metrics", icon: BarChart3, group: "Generation Ops" },
-  { id: "content/production", label: "Production Studio", href: "/admin/content/production", icon: Play, group: "Content Ops" },
-  { id: "content/assets", label: "Asset Library", href: "/admin/content/assets", icon: ImageIcon, group: "Content Ops" },
-  { id: "content/placements", label: "Placements", href: "/admin/content/placements", icon: Bookmark, group: "Content Ops" },
-  { id: "content", label: "Content", href: "/admin/content", icon: Library, group: "Content Ops" },
-  { id: "content/official", label: "Official Characters", href: "/admin/content/official", icon: ShieldCheck, group: "Content Ops" },
-  { id: "content/templates", label: "Templates", href: "/admin/content/templates", icon: SlidersHorizontal, group: "Content Ops" },
-  { id: "content/tags", label: "Tags", href: "/admin/content/tags", icon: Flag, group: "Content Ops" },
-  { id: "content/review-queue", label: "Review Queue", href: "/admin/content/review-queue", icon: ClipboardCheck, group: "Content Ops" },
-  { id: "cms", label: "CMS / SEO", href: "/admin/cms", icon: FileText, group: "Content Ops" },
+
+  // ① 角色 Characters
+  { id: "content/official", label: "Official Characters", href: "/admin/content/official", icon: ShieldCheck, group: "Characters" },
+  { id: "content/templates", label: "Character Starters", href: "/admin/content/templates", icon: Sparkles, group: "Characters" },
+  { id: "content/review-queue", label: "Character Review", href: "/admin/content/review-queue", icon: ClipboardCheck, group: "Characters" },
+  { id: "content/tags", label: "Tags", href: "/admin/content/tags", icon: Flag, group: "Characters" },
+
+  // ② 生成 Generation
+  { id: "generation/config", label: "Model Profiles", href: "/admin/generation/config", icon: SlidersHorizontal, group: "Generation" },
+  { id: "generation/recipes", label: "Prompt Recipes", href: "/admin/generation/recipes", icon: ScrollText, group: "Generation" },
+  { id: "generation/presets", label: "Presets", href: "/admin/generation/presets", icon: Layers, group: "Generation" },
+  { id: "generation/workflows", label: "Workflows", href: "/admin/generation/workflows", icon: Workflow, group: "Generation" },
+  { id: "generation/backends", label: "Backends", href: "/admin/generation/backends", icon: Server, group: "Generation" },
+  { id: "ops/providers", label: "Provider Health", href: "/admin/ops/providers", icon: Gauge, group: "Generation" },
+  { id: "generation/jobs", label: "Jobs & Incidents", href: "/admin/generation/jobs", icon: Activity, group: "Generation" },
+  { id: "generation/dead-letter", label: "Dead-letter", href: "/admin/generation/dead-letter", icon: Inbox, group: "Generation" },
+  { id: "generation/metrics", label: "Metrics", href: "/admin/generation/metrics", icon: BarChart3, group: "Generation" },
+
+  // ③ 图片 Media
+  { id: "content/production", label: "Image Production", href: "/admin/content/production", icon: Play, group: "Media" },
+  { id: "content/assets", label: "Image Library", href: "/admin/content/assets", icon: ImageIcon, group: "Media" },
+  { id: "content/placements", label: "Placements", href: "/admin/content/placements", icon: Bookmark, group: "Media" },
+  { id: "content", label: "Featured", href: "/admin/content", icon: Library, group: "Media" },
+  { id: "cms", label: "CMS / SEO", href: "/admin/cms", icon: FileText, group: "Media" },
+
+  // untouched groups (verbatim)
   { id: "moderation", label: "Moderation", href: "/admin/moderation", icon: ShieldAlert, group: "Trust Ops" },
   { id: "chat", label: "Chat Ops", href: "/admin/chat", icon: MessageSquare, group: "Trust Ops" },
   { id: "support", label: "Support Requests", href: "/admin/support", icon: Ticket, group: "Trust Ops" },
@@ -84,4 +97,15 @@ const SECTION_ALIASES: Record<string, string> = {
 export function normalizeSection(value: string): string {
   const mapped = SECTION_ALIASES[value] ?? value;
   return KNOWN_SECTION_IDS.has(mapped) ? mapped : "dashboard";
+}
+
+export type ConfigSlice = "profiles" | "recipes" | "presets";
+
+// SPEC: which slice of the generation-config data a section renders.
+// generation/config → model profiles; /recipes → prompt recipes; /presets → presets.
+export function configSliceForSection(sectionId: string): ConfigSlice | null {
+  if (sectionId === "generation/config") return "profiles";
+  if (sectionId === "generation/recipes") return "recipes";
+  if (sectionId === "generation/presets") return "presets";
+  return null;
 }
