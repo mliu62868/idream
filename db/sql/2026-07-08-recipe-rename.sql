@@ -3,10 +3,12 @@
 BEGIN;
 ALTER TABLE public.generation_prompt_templates RENAME TO generation_recipes;
 ALTER TABLE public.generation_recipes RENAME COLUMN "templateKey" TO "recipeKey";
-ALTER INDEX public.generation_prompt_templates_templateKey_status_idx
-  RENAME TO generation_recipes_recipeKey_status_idx;
+-- NOTE: index names are camelCase, created quoted by Prisma → MUST double-quote here
+-- (unquoted, Postgres folds to lowercase and the ALTER fails with "does not exist").
+ALTER INDEX public."generation_prompt_templates_templateKey_status_idx"
+  RENAME TO "generation_recipes_recipeKey_status_idx";
 ALTER TABLE public.generation_jobs RENAME COLUMN "promptTemplateId" TO "recipeId";
 ALTER TABLE public.generation_jobs RENAME COLUMN "promptTemplateVersion" TO "recipeVersion";
-ALTER INDEX public.generation_jobs_promptTemplateId_promptTemplateVersion_idx
-  RENAME TO generation_jobs_recipeId_recipeVersion_idx;
+ALTER INDEX public."generation_jobs_promptTemplateId_promptTemplateVersion_idx"
+  RENAME TO "generation_jobs_recipeId_recipeVersion_idx";
 COMMIT;
