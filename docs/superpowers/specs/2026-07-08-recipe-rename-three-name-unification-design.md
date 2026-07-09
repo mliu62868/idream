@@ -56,15 +56,18 @@ grep 确认：**chat 服务零引用**（跨服务安全），无 `prisma/migrat
 BEGIN;
 ALTER TABLE public.generation_prompt_templates RENAME TO generation_recipes;
 ALTER TABLE public.generation_recipes RENAME COLUMN "templateKey" TO "recipeKey";
-ALTER INDEX public.generation_prompt_templates_templateKey_status_idx
-  RENAME TO generation_recipes_recipeKey_status_idx;
+-- 索引名是 camelCase、Prisma 建时加了引号 → 这里必须双引号；不加引号 Postgres 会折叠成小写而报 "does not exist"
+ALTER INDEX public."generation_prompt_templates_templateKey_status_idx"
+  RENAME TO "generation_recipes_recipeKey_status_idx";
 ALTER TABLE public.generation_jobs RENAME COLUMN "promptTemplateId" TO "recipeId";
 ALTER TABLE public.generation_jobs RENAME COLUMN "promptTemplateVersion" TO "recipeVersion";
-ALTER INDEX public.generation_jobs_promptTemplateId_promptTemplateVersion_idx
-  RENAME TO generation_jobs_recipeId_recipeVersion_idx;
+ALTER INDEX public."generation_jobs_promptTemplateId_promptTemplateVersion_idx"
+  RENAME TO "generation_jobs_recipeId_recipeVersion_idx";
 -- ContentProductionBatch 已是 recipeId/recipeVersion，无需改
 COMMIT;
 ```
+
+> 迁移执行记录（dev，2026-07-08）：首跑因索引名未加引号失败并**整事务回滚**（零数据损失），加引号后重跑成功；`generation_recipes` + `recipeKey` + 对齐索引就位，4 条 recipe / 43 条 job 引用无损；build→SQL→`pm2 restart main-web/admin-web/gen-finalizer/main-event-consumer` 完成，全栈 online、无列错误。**PROD 用户执行时请直接用本（已加引号）版本。**
 
 **本地 dev 切换顺序（代理执行，防止运行中的 pm2 旧代码打在改名后的库上报错）**——本机 pm2 全栈在线（main-web/admin-web/gen-image/gen-finalizer/main-event-consumer 都连 dev 库）：
 1. 代码 + schema 改完，先 `bun run build`（含 `prisma generate`；只产出 `.next`/新 client，不影响运行中的进程）。
