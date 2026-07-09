@@ -180,7 +180,6 @@ const modelProfileSchema = z.object({
   sampler: z.string().trim().min(1).max(80).default("euler"),
   scheduler: z.string().trim().min(1).max(80).default("model_default"),
   cfgScale: z.number().min(1).max(30).default(1),
-  negativeTemplateId: z.string().trim().max(160).optional(),
   costMultiplier: z.number().min(0.1).max(20).default(1),
   requiredEntitlement: z.string().trim().max(120).nullable().optional(),
   maxCount: z.number().int().min(1).max(8).default(4),
@@ -208,7 +207,6 @@ const modelProfilePatchSchema = z.object({
   sampler: z.string().trim().min(1).max(80).optional(),
   scheduler: z.string().trim().min(1).max(80).optional(),
   cfgScale: z.number().min(1).max(30).optional(),
-  negativeTemplateId: z.string().trim().max(160).optional(),
   costMultiplier: z.number().min(0.1).max(20).optional(),
   requiredEntitlement: z.string().trim().max(120).nullable().optional(),
   maxCount: z.number().int().min(1).max(8).optional(),
@@ -1952,7 +1950,6 @@ async function patchModelProfile(request: Request, id: string) {
       sampler: body.sampler,
       scheduler: body.scheduler,
       cfgScale: body.cfgScale,
-      negativeTemplateId: body.negativeTemplateId,
       costMultiplier: body.costMultiplier,
       requiredEntitlement:
         body.requiredEntitlement === undefined ? undefined : body.requiredEntitlement,

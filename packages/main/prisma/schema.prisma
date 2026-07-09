@@ -1011,7 +1011,6 @@ model GenerationModelProfile {
   sampler             String    @default("dpm++2m")
   scheduler           String    @default("model_default")
   cfgScale            Float     @default(7)
-  negativeTemplateId  String?
   costMultiplier      Float     @default(1)
   requiredEntitlement String?
   maxCount            Int       @default(4)
