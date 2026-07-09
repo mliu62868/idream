@@ -177,6 +177,7 @@ model Character {
   submissions    CharacterSubmission[]
   recentChats    RecentChat[]
   generationJobs GenerationJob[]
+  mediaAssets    MediaAsset[]          @relation("CharacterAssets")
   visualProfiles CharacterVisualProfile[]
   likes          CharacterLike[]
 
@@ -474,6 +475,7 @@ model MediaAsset {
   deletedAt        DateTime?
   owner            User                  @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   sourceJob        GenerationJob?        @relation(fields: [sourceJobId], references: [id], onDelete: SetNull)
+  character        Character?            @relation("CharacterAssets", fields: [characterId], references: [id], onDelete: SetNull)
   likes            MediaLike[]
   collections      MediaCollectionItem[]
   productionItems  ContentProductionItem[]
