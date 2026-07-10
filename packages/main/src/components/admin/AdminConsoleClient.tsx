@@ -5641,7 +5641,7 @@ function DeadLetterView({
   rows: Row[];
   openAction: (action: PendingAction) => void;
 }) {
-  const { column: columnLabel, locale, t } = useAdminI18n();
+  const { locale, t } = useAdminI18n();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const rowIds = rows.map((row) => stringValue(row.id)).filter(Boolean);
   const selectedIds = rowIds.filter((id) => selected.has(id));
@@ -5661,12 +5661,120 @@ function DeadLetterView({
     setSelected(allSelected ? new Set() : new Set(rowIds));
   }
 
-  const columns = ["id", "userId", "mode", "status", "errorCode", "ledgerState", "costDreamcoins", "updatedAt"];
+  // SPEC: read-mostly dead-letter triage on ReadonlyOpsView — plain-language failure reason folds
+  //       errorCode away; raw job id never sits as a bare column (only inside selection/controls,
+  //       same rule JobsView (T10) established).
+  // INTENT: keep ALL three existing actions verbatim — per-row Requeue/Discard (openAction, in the
+  //         "actions" column render) AND bulk Requeue-selected/Discard-selected (wrapper bar above
+  //         the table, same endpoints/bodies). Selection state (Set<string>) still lives here in the
+  //         wrapper; ReadonlyOpsView has no header-render slot, so the "select all" toggle that used
+  //         to live in the <thead> checkbox moves into the bar next to "{count} selected".
+  const columns: OpsColumn[] = [
+    {
+      key: "select",
+      label: "",
+      render: (row) => {
+        const id = stringValue(row.id);
+        return (
+          <input
+            aria-label={id ? `Select dead-letter job ${id}` : "Select dead-letter job"}
+            checked={selected.has(id)}
+            onChange={() => toggle(id)}
+            type="checkbox"
+          />
+        );
+      },
+    },
+    {
+      key: "userId",
+      label: "User",
+      render: (row) => <span className="font-mono text-xs">{shortId(stringValue(row.userId))}</span>,
+    },
+    { key: "mode", label: "Mode" },
+    { key: "status", label: "Status" },
+    {
+      key: "failure",
+      label: "Failure reason",
+      render: (row) => {
+        const status = stringValue(row.status);
+        return status === "failed" || status === "blocked" ? (
+          <FailureReason code={stringValue(row.errorCode)} />
+        ) : (
+          <span className="text-[rgb(170,170,170)]">—</span>
+        );
+      },
+    },
+    { key: "ledgerState", label: "Ledger" },
+    { key: "costDreamcoins", label: "Cost" },
+    {
+      key: "updatedAt",
+      label: "Updated",
+      render: (row) => compactDate(stringValue(row.updatedAt), locale),
+    },
+    {
+      key: "actions",
+      label: "Actions",
+      render: (row) => {
+        const id = stringValue(row.id);
+        const status = stringValue(row.status);
+        return (
+          <div className="flex flex-wrap gap-1">
+            {status === "failed" ? (
+              <IconAction
+                icon={<RefreshCcw className="h-4 w-4" />}
+                label="Requeue"
+                onClick={() =>
+                  openAction({
+                    title: `Requeue ${id}`,
+                    endpoint: `/api/v1/admin/generation/jobs/${id}/requeue`,
+                    method: "POST",
+                    confirmText: id,
+                    reasonRequired: false,
+                    body: (actionReason, actionConfirmation) => ({
+                      reason: actionReason || undefined,
+                      confirmation: actionConfirmation,
+                    }),
+                  })
+                }
+              />
+            ) : null}
+            {status === "failed" || status === "blocked" ? (
+              <IconAction
+                icon={<Trash2 className="h-4 w-4" />}
+                label="Discard"
+                onClick={() =>
+                  openAction({
+                    title: `Discard ${id}`,
+                    endpoint: `/api/v1/admin/generation/jobs/${id}/discard`,
+                    method: "POST",
+                    confirmText: id,
+                    reasonRequired: true,
+                    body: (actionReason, actionConfirmation) => ({
+                      reason: actionReason,
+                      confirmation: actionConfirmation,
+                    }),
+                  })
+                }
+              />
+            ) : null}
+          </div>
+        );
+      },
+    },
+  ];
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3 border border-white/10 bg-[rgb(18,18,18)] px-4 py-3">
-        <span className="text-sm font-semibold">{t("Dead-letter Queue")}</span>
+        <label className="flex items-center gap-2 text-xs text-[rgb(170,170,170)]">
+          <input
+            aria-label="Select all dead-letter jobs"
+            checked={allSelected}
+            onChange={toggleAll}
+            type="checkbox"
+          />
+          {t("Select all")}
+        </label>
         <span className="text-xs text-[rgb(170,170,170)]">
           {t("{count} selected", { count: selectedIds.length })}
         </span>
@@ -5718,102 +5826,12 @@ function DeadLetterView({
         </div>
       </div>
 
-      <section className="overflow-hidden border border-white/10 bg-[rgb(18,18,18)]">
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[920px] border-collapse text-left text-sm">
-            <thead className="bg-black/20 text-[11px] uppercase text-[rgb(170,170,170)]">
-              <tr>
-                <th className="border-b border-white/10 px-3 py-2">
-                  <input
-                    aria-label="Select all dead-letter jobs"
-                    checked={allSelected}
-                    onChange={toggleAll}
-                    type="checkbox"
-                  />
-                </th>
-                {columns.map((column) => (
-                  <th key={column} className="border-b border-white/10 px-3 py-2 font-semibold">
-                    {columnLabel(column)}
-                  </th>
-                ))}
-                <th className="border-b border-white/10 px-3 py-2 font-semibold">{t("Actions")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, index) => {
-                const id = stringValue(row.id);
-                const status = stringValue(row.status);
-                return (
-                  <tr key={`${id || "dl"}-${index}`} className="border-b border-white/5 last:border-0">
-                    <td className="px-3 py-2 align-top">
-                      <input
-                        aria-label={`Select dead-letter job ${id || index + 1}`}
-                        checked={selected.has(id)}
-                        onChange={() => toggle(id)}
-                        type="checkbox"
-                      />
-                    </td>
-                    {columns.map((column) => (
-                      <td key={column} className="max-w-[260px] px-3 py-2 align-top text-[rgb(230,230,230)]">
-                        {renderCell(row[column], locale)}
-                      </td>
-                    ))}
-                    <td className="px-3 py-2 align-top">
-                      <div className="flex flex-wrap gap-1">
-                        {status === "failed" ? (
-                          <IconAction
-                            icon={<RefreshCcw className="h-4 w-4" />}
-                            label={t("Requeue")}
-                            onClick={() =>
-                              openAction({
-                                title: `Requeue ${id}`,
-                                endpoint: `/api/v1/admin/generation/jobs/${id}/requeue`,
-                                method: "POST",
-                                confirmText: id,
-                                reasonRequired: false,
-                                body: (actionReason, actionConfirmation) => ({
-                                  reason: actionReason || undefined,
-                                  confirmation: actionConfirmation,
-                                }),
-                              })
-                            }
-                          />
-                        ) : null}
-                        {status === "failed" || status === "blocked" ? (
-                          <IconAction
-                            icon={<Trash2 className="h-4 w-4" />}
-                            label={t("Discard")}
-                            onClick={() =>
-                              openAction({
-                                title: `Discard ${id}`,
-                                endpoint: `/api/v1/admin/generation/jobs/${id}/discard`,
-                                method: "POST",
-                                confirmText: id,
-                                reasonRequired: true,
-                                body: (actionReason, actionConfirmation) => ({
-                                  reason: actionReason,
-                                  confirmation: actionConfirmation,
-                                }),
-                              })
-                            }
-                          />
-                        ) : null}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-              {rows.length === 0 ? (
-                <tr>
-                  <td className="px-3 py-8 text-center text-sm text-[rgb(170,170,170)]" colSpan={columns.length + 2}>
-                    {t("No dead-letter jobs")}
-                  </td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
-      </section>
+      <ReadonlyOpsView
+        columns={columns}
+        rows={rows}
+        title="Dead-letter Queue"
+        empty={t("No dead-letter jobs")}
+      />
     </div>
   );
 }
