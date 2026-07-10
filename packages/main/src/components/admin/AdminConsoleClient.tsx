@@ -12,6 +12,7 @@ import {
   Check,
   ChevronRight,
   ClipboardCheck,
+  ExternalLink,
   FileText,
   Flag,
   Inbox,
@@ -28,6 +29,7 @@ import {
   SlidersHorizontal,
   Trash2,
   UploadCloud,
+  Workflow,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -2223,6 +2225,7 @@ function renderSection(
       <ConfigView
         data={section.data}
         openAction={ctx.openAction}
+        reload={ctx.reload}
         selectedProfileId={ctx.selectedProfileId}
         setSelectedProfileId={ctx.setSelectedProfileId}
       />
@@ -2744,19 +2747,145 @@ function profileBlockCode(verification: ProfileVerificationSummary): string {
   return verification.status;
 }
 
-// SPEC: selected profile detail — status-driven action rail + plain-language block reason + folded engineering ids.
-// INVARIANTS: action set matches the former profileTableActions (draft -> dry-run/publish; active -> rollback;
-//             enabled -> disable), all via openAction (confirm+reason modal); publish is disabled while blocked.
+type ProfileWorkflowSlot = { type: string; default?: string | number | null };
+type ProfileWorkflowOption = { workflowKey: string; backendKind: string; inputs?: ProfileWorkflowSlot[] };
+
+// I-1 (P2 final review): edit workflows (e.g. qwen-image-edit-img2img) declare a REQUIRED image
+// slot — type "image" with no default — that a plain text-to-image test/publish job cannot fill,
+// so the picker lists but disables them for standard profiles.
+function requiresReferenceImage(workflow: ProfileWorkflowOption): boolean {
+  return Array.isArray(workflow.inputs)
+    ? workflow.inputs.some((slot) => slot.type === "image" && (slot.default === undefined || slot.default === null))
+    : false;
+}
+
+// SPEC: selected profile detail — status action rail (incl. the pre-publish "generate test image"),
+//       plain-language block reason, latest test-image preview, and folded engineering config.
+// INVARIANTS: dry-run/publish/rollback/disable go via openAction (confirm+reason modal), publish is
+//             disabled while blocked; test-image reuses the existing test-job endpoint verbatim
+//             (direct apiWrite, same body); the workflow-key editor is engineering config, folded away.
 function ProfileDetail({
   jobs,
   onOpenAction,
+  onReload,
   profile,
 }: {
   jobs: Row[];
   onOpenAction: (action: PendingAction) => void;
+  onReload: () => void | Promise<void>;
   profile: Row | null;
 }) {
   const { locale, t, value } = useAdminI18n();
+  const [testPrompt, setTestPrompt] = useState("cinematic portrait, natural skin texture, soft studio lighting");
+  const [testBusy, setTestBusy] = useState(false);
+  const [testNotice, setTestNotice] = useState<string | null>(null);
+  const [testError, setTestError] = useState<string | null>(null);
+  const [watchJobId, setWatchJobId] = useState<string | null>(null);
+  const [workflowOptions, setWorkflowOptions] = useState<ProfileWorkflowOption[]>([]);
+  const [workflowDraft, setWorkflowDraft] = useState(() => stringValue(profile?.workflowKey));
+  const [syncedProfileId, setSyncedProfileId] = useState(() => stringValue(profile?.id));
+  const [workflowSaveBusy, setWorkflowSaveBusy] = useState(false);
+  const [workflowSaveNotice, setWorkflowSaveNotice] = useState<string | null>(null);
+  const [workflowSaveError, setWorkflowSaveError] = useState<string | null>(null);
+
+  const id = stringValue(profile?.id);
+  const status = stringValue(profile?.status);
+  const mode = stringValue(profile?.mode);
+  const enabled = Boolean(profile?.enabled);
+  const orientation = firstString(jsonStringArrayValue(profile?.allowedOrientations), "1:1");
+  const workflowKey = stringValue(profile?.workflowKey);
+
+  // Adjust the workflow draft during render when the selected profile changes (adjust-state-on-
+  // prop-change pattern) so a background job-status reload never clobbers an unsaved dropdown edit.
+  if (id !== syncedProfileId) {
+    setSyncedProfileId(id);
+    setWorkflowDraft(workflowKey);
+    setWorkflowSaveNotice(null);
+    setWorkflowSaveError(null);
+  }
+
+  const verification = profileVerificationSummary(profile);
+  const publishBlocked = Boolean(verification.blockedReason);
+  const dryRun = dryRunSummary(profile?.dryRunSummary);
+  const relatedJobs = useMemo(() => profileRelatedJobs(jobs, profile), [jobs, profile]);
+  const latestJob = relatedJobs[0] ?? null;
+  const latestAsset = latestImageAsset(relatedJobs);
+  const watchedJob = watchJobId ? jobs.find((job) => stringValue(job.id) === watchJobId) ?? null : null;
+  const canTest = Boolean(profile && mode === "image" && status !== "archived");
+
+  // Poll job status while a queued test image is still rendering; stop once terminal.
+  useEffect(() => {
+    if (!watchJobId) return;
+    if (watchedJob && isTerminalJobStatus(stringValue(watchedJob.status))) {
+      const timer = window.setTimeout(() => setWatchJobId(null), 0);
+      return () => window.clearTimeout(timer);
+    }
+    const timer = window.setInterval(() => {
+      void onReload();
+    }, 2_000);
+    return () => window.clearInterval(timer);
+  }, [onReload, watchedJob, watchJobId]);
+
+  // Populate the workflow dropdown once from the read-only workflows catalog.
+  useEffect(() => {
+    let cancelled = false;
+    void apiGet<{ items: ProfileWorkflowOption[] }>("/api/v1/admin/generation/workflows")
+      .then((data) => {
+        if (!cancelled) setWorkflowOptions(data.items);
+      })
+      .catch(() => {
+        // Non-fatal: the select falls back to "(use pipelineModel)" only.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function createTestImage() {
+    if (!id || !canTest) return;
+    setTestBusy(true);
+    setTestNotice(null);
+    setTestError(null);
+    try {
+      const result = await apiWrite<{ job: Row }>(
+        `/api/v1/admin/generation/model-profiles/${id}/test-job`,
+        "POST",
+        {
+          prompt: testPrompt.trim() || undefined,
+          orientation,
+          outputCount: 1,
+          reason: "Admin image test from Generation Config",
+          confirmation: id,
+        },
+      );
+      const jobId = stringValue(result.job.id);
+      setWatchJobId(jobId || null);
+      setTestNotice(jobId ? t("Test image queued: {id}", { id: shortId(jobId) }) : t("Test image queued"));
+      await onReload();
+    } catch (error) {
+      setTestError(error instanceof Error ? error.message : t("Test image failed"));
+    } finally {
+      setTestBusy(false);
+    }
+  }
+
+  async function saveWorkflowKey() {
+    if (!id) return;
+    setWorkflowSaveBusy(true);
+    setWorkflowSaveNotice(null);
+    setWorkflowSaveError(null);
+    try {
+      await apiWrite(`/api/v1/admin/generation/model-profiles/${id}`, "PATCH", {
+        workflowKey: workflowDraft || null,
+      });
+      setWorkflowSaveNotice(t("Workflow saved"));
+      await onReload();
+    } catch (error) {
+      setWorkflowSaveError(error instanceof Error ? error.message : t("Workflow save failed"));
+    } finally {
+      setWorkflowSaveBusy(false);
+    }
+  }
 
   if (!profile) {
     return (
@@ -2766,39 +2895,58 @@ function ProfileDetail({
     );
   }
 
-  const id = stringValue(profile.id);
-  const status = stringValue(profile.status);
-  const mode = stringValue(profile.mode);
-  const enabled = Boolean(profile.enabled);
-  const verification = profileVerificationSummary(profile);
-  const publishBlocked = Boolean(verification.blockedReason);
-  const dryRun = dryRunSummary(profile.dryRunSummary);
-  const latestJob = profileRelatedJobs(jobs, profile)[0] ?? null;
   const source = profileSourceLabel(profile);
 
   return (
     <section className="min-w-0 space-y-4 border border-white/10 bg-[rgb(18,18,18)] p-4">
-      <div className="min-w-0">
-        <h2 className="truncate text-lg font-semibold">{profileDisplayName(profile, locale)}</h2>
-        <p className="mt-1 text-sm text-[rgb(170,170,170)]">{t(profileStateLabelKey(profile, verification))}</p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="truncate text-lg font-semibold">{profileDisplayName(profile, locale)}</h2>
+          <p className="mt-1 text-sm text-[rgb(170,170,170)]">{t(profileStateLabelKey(profile, verification))}</p>
+        </div>
+        <div className="flex shrink-0 flex-wrap gap-2">
+          <Link
+            className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs text-[rgb(230,230,230)] hover:bg-white/10"
+            href="/admin/generation/jobs"
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+            {t("Open jobs")}
+          </Link>
+          <button
+            className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs text-[rgb(230,230,230)] hover:bg-white/10"
+            onClick={() => void onReload()}
+            type="button"
+          >
+            <RefreshCcw className="h-3.5 w-3.5" />
+            {t("Refresh")}
+          </button>
+        </div>
       </div>
 
       {id ? (
         <div className="flex flex-wrap gap-2">
           {status === "draft" ? (
-            <>
-              <IconAction
-                icon={<Activity className="h-4 w-4" />}
-                label="Dry Run"
-                onClick={() => onOpenAction(dryRunProfileAction(id))}
-              />
-              <IconAction
-                disabled={publishBlocked}
-                icon={<UploadCloud className="h-4 w-4" />}
-                label="Publish"
-                onClick={() => onOpenAction(publishProfileAction(id, mode, profile))}
-              />
-            </>
+            <IconAction
+              icon={<Activity className="h-4 w-4" />}
+              label="Dry Run"
+              onClick={() => onOpenAction(dryRunProfileAction(id))}
+            />
+          ) : null}
+          {canTest ? (
+            <IconAction
+              disabled={testBusy}
+              icon={testBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              label="Generate test image"
+              onClick={() => void createTestImage()}
+            />
+          ) : null}
+          {status === "draft" ? (
+            <IconAction
+              disabled={publishBlocked}
+              icon={<UploadCloud className="h-4 w-4" />}
+              label="Publish"
+              onClick={() => onOpenAction(publishProfileAction(id, mode, profile))}
+            />
           ) : null}
           {status === "active" ? (
             <IconAction
@@ -2823,33 +2971,130 @@ function ProfileDetail({
         </div>
       ) : null}
 
-      <EngineeringDetails summary={t("Model & workflow details")}>
-        <div className="space-y-1">
-          <div>{t("Profile ID")}: {id || "-"}</div>
-          <div>{t("Profile key")}: {stringValue(profile.profileKey) || "-"}</div>
-          <div>{t("Version")}: v{numberValue(profile.version) || "-"}</div>
-          <div>{t("Runner")}: {stringValue(profile.runner) || "-"}</div>
-          <div>{t("Mode")}: {mode || "-"}</div>
-          <div>{t("Pipeline model")}: {stringValue(profile.pipelineModel) || "-"}</div>
-          <div>{t("Model file")}: {source || "-"}</div>
-          <div>{t("Workflow")}: {stringValue(profile.workflowKey) || t("(use pipelineModel)")}</div>
-          <div>
-            {t("Output size")}: {numberValue(profile.defaultWidth) || "-"}x{numberValue(profile.defaultHeight) || "-"}
-          </div>
-          <div>
-            {t("Dry Run")}: {value(dryRun.status)} · {dryRun.meta}
-          </div>
-          <div>{t("Verification status")}: {verification.status}</div>
-          <div>{t("Rollout")}: {numberValue(profile.rolloutPercent) || 0}%</div>
-          <div>{t("Required entitlement")}: {stringValue(profile.requiredEntitlement) || "-"}</div>
-          <div>
-            {t("Latest job")}:{" "}
-            {latestJob
-              ? `${shortId(stringValue(latestJob.id))} · ${value(stringValue(latestJob.status))}`
-              : t("No test jobs")}
+      {canTest ? (
+        <div className="grid min-w-0 gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,300px)]">
+          <label className="block min-w-0">
+            <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">{t("Test prompt")}</span>
+            <textarea
+              className="min-h-24 w-full resize-y border border-white/10 bg-black/30 px-3 py-2 text-sm leading-6 outline-none focus:border-white/30"
+              onChange={(event) => setTestPrompt(event.target.value)}
+              value={testPrompt}
+            />
+            {testNotice ? (
+              <div className="mt-2 border border-emerald-400/30 bg-emerald-950/20 px-3 py-2 text-sm text-emerald-100">
+                {testNotice}
+              </div>
+            ) : null}
+            {testError ? (
+              <div className="mt-2 border border-red-400/30 bg-red-950/30 px-3 py-2 text-sm text-red-100">
+                {testError}
+              </div>
+            ) : null}
+          </label>
+          <div className="min-w-0">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-sm font-semibold">{t("Latest test image")}</h3>
+              {latestJob ? (
+                <span className="text-xs text-[rgb(170,170,170)]">
+                  {compactDate(stringValue(latestJob.createdAt), locale)}
+                </span>
+              ) : null}
+            </div>
+            <div className="mt-2 aspect-[4/5] overflow-hidden border border-white/10 bg-black/30">
+              {latestAsset ? (
+                <a href={latestAsset.url} rel="noreferrer" target="_blank">
+                  <SafeImagePreview alt={t("Latest test image")} src={latestAsset.thumbnailUrl || latestAsset.url} />
+                </a>
+              ) : (
+                <div className="flex h-full items-center justify-center px-6 text-center text-sm text-[rgb(170,170,170)]">
+                  {latestJob
+                    ? isTerminalJobStatus(stringValue(latestJob.status))
+                      ? t("No image generated: {status}", { status: value(stringValue(latestJob.status)) })
+                      : t("Waiting for generated asset")
+                    : t("No test image yet")}
+                </div>
+              )}
+            </div>
           </div>
         </div>
-        <ProfileVerificationPanel summary={verification} />
+      ) : null}
+
+      <EngineeringDetails summary={t("Model & workflow details")}>
+        <div className="space-y-3">
+          <label className="block">
+            <span className="mb-1 flex items-center gap-1 font-medium text-[rgb(170,170,170)]">
+              <Workflow className="h-3.5 w-3.5" />
+              {t("Workflow")}
+            </span>
+            <div className="flex gap-2">
+              <select
+                className="h-9 w-full border border-white/10 bg-black/30 px-2 text-xs outline-none focus:border-white/30 disabled:opacity-50"
+                disabled={status !== "draft"}
+                onChange={(event) => setWorkflowDraft(event.target.value)}
+                value={workflowDraft}
+              >
+                <option value="">{t("(use pipelineModel)")}</option>
+                {workflowOptions.map((workflow) => {
+                  const needsReferenceImage = requiresReferenceImage(workflow);
+                  return (
+                    <option disabled={needsReferenceImage} key={workflow.workflowKey} value={workflow.workflowKey}>
+                      {needsReferenceImage
+                        ? `${workflow.workflowKey} (${workflow.backendKind}) ${t("(needs reference image — not for standard profiles)")}`
+                        : `${workflow.workflowKey} (${workflow.backendKind})`}
+                    </option>
+                  );
+                })}
+              </select>
+              <button
+                className="inline-flex h-9 shrink-0 items-center gap-2 border border-white/10 px-3 text-xs text-[rgb(230,230,230)] hover:bg-white/10 disabled:opacity-50"
+                disabled={status !== "draft" || workflowSaveBusy || workflowDraft === workflowKey}
+                onClick={() => void saveWorkflowKey()}
+                type="button"
+              >
+                {workflowSaveBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : t("Save")}
+              </button>
+            </div>
+            {status !== "draft" ? (
+              <span className="mt-1 block text-[rgb(170,170,170)]">
+                {t("Only draft profiles can change workflow routing.")}
+              </span>
+            ) : null}
+          </label>
+          {workflowSaveNotice ? (
+            <div className="border border-emerald-400/30 bg-emerald-950/20 px-3 py-2 text-emerald-100">
+              {workflowSaveNotice}
+            </div>
+          ) : null}
+          {workflowSaveError ? (
+            <div className="border border-red-400/30 bg-red-950/30 px-3 py-2 text-red-100">{workflowSaveError}</div>
+          ) : null}
+          <div className="space-y-1">
+            <div>{t("Profile ID")}: {id || "-"}</div>
+            <div>{t("Profile key")}: {stringValue(profile.profileKey) || "-"}</div>
+            <div>{t("Version")}: v{numberValue(profile.version) || "-"}</div>
+            <div>{t("Runner")}: {stringValue(profile.runner) || "-"}</div>
+            <div>{t("Mode")}: {mode || "-"}</div>
+            <div>{t("Pipeline model")}: {stringValue(profile.pipelineModel) || "-"}</div>
+            <div>{t("Model file")}: {source || "-"}</div>
+            <div>{t("Active workflow")}: {workflowKey || t("(use pipelineModel)")}</div>
+            <div>
+              {t("Output size")}: {numberValue(profile.defaultWidth) || "-"}x{numberValue(profile.defaultHeight) || "-"}
+            </div>
+            <div>
+              {t("Dry Run")}: {value(dryRun.status)} · {dryRun.meta}
+            </div>
+            <div>{t("Verification status")}: {verification.status}</div>
+            <div>{t("Rollout")}: {numberValue(profile.rolloutPercent) || 0}%</div>
+            <div>{t("Required entitlement")}: {stringValue(profile.requiredEntitlement) || "-"}</div>
+            <div>
+              {t("Latest job")}:{" "}
+              {latestJob
+                ? `${shortId(stringValue(latestJob.id))} · ${value(stringValue(latestJob.status))}`
+                : t("No test jobs")}
+            </div>
+          </div>
+          <ProfileVerificationPanel summary={verification} />
+        </div>
       </EngineeringDetails>
     </section>
   );
@@ -2858,11 +3103,13 @@ function ProfileDetail({
 function ConfigView({
   data,
   openAction,
+  reload,
   selectedProfileId,
   setSelectedProfileId,
 }: {
   data: ConfigData;
   openAction: (action: PendingAction) => void;
+  reload: () => void | Promise<void>;
   selectedProfileId: string | null;
   setSelectedProfileId: (value: string | null) => void;
 }) {
@@ -2916,7 +3163,7 @@ function ConfigView({
 
       {configTab === "profiles" && (
         <OperatorFlow
-          detail={<ProfileDetail jobs={data.recentJobs} onOpenAction={openAction} profile={selectedProfile} />}
+          detail={<ProfileDetail jobs={data.recentJobs} onOpenAction={openAction} onReload={reload} profile={selectedProfile} />}
           empty={t("No built-in generation profiles are seeded yet.")}
           items={profileItems}
           onSelect={setSelectedProfileId}
@@ -7188,6 +7435,37 @@ function actionReviewCount(value: string) {
 
 function formatPercent(value: number | undefined) {
   return value === undefined ? "-" : `${Math.round(value * 100)}%`;
+}
+
+function latestImageAsset(jobs: Row[]) {
+  for (const job of jobs) {
+    const asset = jobAssets(job).find((item) => item.type === "image");
+    if (asset) return asset;
+  }
+  return null;
+}
+
+function jobAssets(job: Row) {
+  return Array.isArray(job.assets)
+    ? job.assets
+        .map((asset): { id: string; type: string; url: string; thumbnailUrl: string; safetyStatus: string } | null => {
+          if (!isRecord(asset)) return null;
+          const url = stringValue(asset.url);
+          if (!url) return null;
+          return {
+            id: stringValue(asset.id),
+            type: stringValue(asset.type),
+            url,
+            thumbnailUrl: stringValue(asset.thumbnailUrl) || url,
+            safetyStatus: stringValue(asset.safetyStatus),
+          };
+        })
+        .filter((asset): asset is { id: string; type: string; url: string; thumbnailUrl: string; safetyStatus: string } => asset !== null)
+    : [];
+}
+
+function isTerminalJobStatus(status: string) {
+  return ["completed", "failed", "blocked", "refunded"].includes(status);
 }
 
 function firstString(values: string[], fallback: string) {
