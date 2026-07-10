@@ -49,6 +49,19 @@ export const PRESETS_KEYS = [
 // 注意：枚举词 background/pose/outfit/mode（type）与 public/private/unlisted（visibility）与
 // active/archived（status，StatusPill 缺省走 value()）都走 value()/zhValues 通道，不进这张表。
 
+export const ASSETS_KEYS = [
+  "All", "Approve", "Archive", "Asset details", "Asset not found.", "Assets have no name — type the first 8 characters of the ID to confirm.",
+  "Back to image library", "Basic info", "Batch", "Browse and curate generated image assets.",
+  "Description", "Description & tags", "Generation job", "Image Library", "Loading…",
+  "Media asset", "Missing", "Missing asset", "No platform assets match these filters.",
+  "Profile", "Purpose", "Reject", "Request failed", "Save", "Search by tag, description, or asset ID",
+  "Size", "Source", "Status", "Tags", "Tags and descriptions make assets searchable for chat reuse.",
+  "Target ID", "Target type",
+];
+// 注意：状态词 generated/approved/rejected/published/archived（status）、targetType 枚举
+// （character/route_page/campaign/template/none）与 productionPurposeSchema 枚举
+// （character_cover/…/model_eval）都走 value()/zhValues 通道，不进这张表。
+
 describe("admin i18n — trio pages have zh", () => {
   it("official characters trio", () => {
     for (const key of OFFICIAL_KEYS) expect(hasAdminZh(key)).toBe(true);
@@ -64,5 +77,9 @@ describe("admin i18n — trio pages have zh", () => {
 
   it("generation presets trio", () => {
     for (const key of PRESETS_KEYS) expect(hasAdminZh(key)).toBe(true);
+  });
+
+  it("image library grid + detail", () => {
+    for (const key of ASSETS_KEYS) expect(hasAdminZh(key)).toBe(true);
   });
 });

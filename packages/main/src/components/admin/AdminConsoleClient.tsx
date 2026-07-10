@@ -42,6 +42,7 @@ import { OfficialSection } from "@/components/admin/official/OfficialSection";
 import { StartersSection } from "@/components/admin/starters/StartersSection";
 import { RecipesSection } from "@/components/admin/recipes/RecipesSection";
 import { PresetsSection } from "@/components/admin/presets/PresetsSection";
+import { AssetsSection } from "@/components/admin/assets/AssetsSection";
 import { TagsView } from "@/components/admin/TagsView";
 import { ReviewQueueView } from "@/components/admin/ReviewQueueView";
 import { CmsView } from "@/components/admin/CmsView";
@@ -49,10 +50,7 @@ import { ComplianceView } from "@/components/admin/ComplianceView";
 import { InsightsView } from "@/components/admin/InsightsView";
 import { AnnouncementsView } from "@/components/admin/AnnouncementsView";
 import { ExperimentsView } from "@/components/admin/ExperimentsView";
-import {
-  AssetLibraryView,
-  PlacementsView,
-} from "@/components/admin/ContentOpsViews";
+import { PlacementsView } from "@/components/admin/ContentOpsViews";
 import { ImageProductionView } from "@/components/admin/ImageProductionView";
 import { OperatorFlow, type OperatorFlowItem } from "@/components/admin/generation/OperatorFlow";
 import { FailureReason } from "@/components/admin/generation/FailureReason";
@@ -2229,7 +2227,7 @@ function renderSection(
   }
   if (section.kind === "selfFetch") {
     if (section.view === "production") return <ImageProductionView />;
-    if (section.view === "assets") return <AssetLibraryView />;
+    if (section.view === "assets") return <AssetsSection view={subview} />;
     if (section.view === "placements") return <PlacementsView />;
     if (section.view === "official") return <OfficialSection view={subview} />;
     if (section.view === "templates") return <StartersSection view={subview} />;

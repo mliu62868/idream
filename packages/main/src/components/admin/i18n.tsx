@@ -794,6 +794,23 @@ const zh: Record<string, string> = {
   "Type": "类型",
   "Visibility": "可见性",
   "Create preset": "创建预设",
+  // Image library grid + detail — AssetsListPage/AssetsDetailPage (task 16). "Image Library"/
+  // "Status"/"All"/"Loading…"/"Request failed"/"Basic info"/"Description & tags"/"Target type"/
+  // "Target ID"/"Size"/"Generation job"/"Profile"/"Media asset"/"Tags"/"Description"/"Approve"/
+  // "Save"/"Reject"/"Archive"/"Source" already exist above; not duplicated here.
+  "Browse and curate generated image assets.": "浏览与治理生成图片资产。",
+  "Search by tag, description, or asset ID": "按标签、描述或资产 ID 搜索",
+  "Purpose": "用途",
+  "No platform assets match these filters.": "没有符合筛选条件的平台资产。",
+  "Back to image library": "返回图片库",
+  "Asset not found.": "未找到该资产。",
+  "Assets have no name — type the first 8 characters of the ID to confirm.": "资产没有名称——请输入资产 ID 前 8 位以确认。",
+  "Tags and descriptions make assets searchable for chat reuse.": "标签与描述让资产可以被检索并在聊天中复用。",
+  "Asset details": "资产详情",
+  "Batch": "批次",
+  // AssetImage primitive (ui/AssetImage.tsx, task 16) — failed-thumbnail fallback copy.
+  "Missing": "缺失",
+  "Missing asset": "资产缺失",
 };
 
 const zhColumns: Record<string, string> = {
@@ -1003,6 +1020,23 @@ const zhValues: Record<string, string> = {
   moderating_input: "输入审核中",
   moderating_output: "输出审核中",
   reserved: "已预留",
+  // Image library grid + detail (task 16) — MediaAsset.platformStatus "generated" (approved/
+  // rejected/published/archived/draft already exist above), ContentProductionBatch.targetType
+  // enum beyond "character" (already exists), and productionPurposeSchema (asset "purpose" +
+  // list filter, ProductionStudioView's own local purposeOptions shares these same values).
+  generated: "已生成",
+  none: "无",
+  route_page: "页面",
+  template: "模板",
+  campaign: "活动",
+  character_cover: "角色封面",
+  character_hero: "角色大图",
+  character_chat: "角色聊天",
+  feed: "信息流",
+  homepage: "首页",
+  seo: "SEO",
+  template_cover: "模板封面",
+  model_eval: "模型评测",
 };
 
 type TranslationValues = Record<string, string | number>;

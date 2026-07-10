@@ -1,11 +1,9 @@
 "use client";
 
-import Image from "next/image";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Archive,
   Check,
-  ImageIcon,
   Loader2,
   Play,
   RefreshCcw,
@@ -15,6 +13,7 @@ import {
 } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { AssetImage } from "@/components/admin/ui/AssetImage";
 import { cn } from "@/lib/utils";
 
 type Profile = {
@@ -176,13 +175,6 @@ function defaultProductionForm() {
     count: "4",
     brief: "",
   };
-}
-
-function splitTags(value: string): string[] {
-  return value
-    .split(",")
-    .map((tag) => tag.trim())
-    .filter(Boolean);
 }
 
 export function ProductionStudioView() {
@@ -472,213 +464,6 @@ export function ProductionStudioView() {
           )}
         </div>
       </section>
-    </div>
-  );
-}
-
-export function AssetLibraryView() {
-  const { t, value } = useAdminI18n();
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [status, setStatus] = useState("all");
-  const [purpose, setPurpose] = useState("all");
-  const [assets, setAssets] = useState<ContentAsset[]>([]);
-  const [assetDrafts, setAssetDrafts] = useState<Record<string, { tags: string; description: string }>>({});
-  const [assetConfirmKey, setAssetConfirmKey] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    setNotice(null);
-    setAssetConfirmKey(null);
-    try {
-      const params = new URLSearchParams();
-      if (status !== "all") params.set("status", status);
-      if (purpose !== "all") params.set("purpose", purpose);
-      const data = await apiGet<{ items: ContentAsset[] }>(
-        `/api/v1/admin/content/assets${params.size ? `?${params.toString()}` : ""}`,
-      );
-      setAssets(data.items);
-      setAssetDrafts((current) => {
-        const next = { ...current };
-        for (const asset of data.items) {
-          next[asset.id] = next[asset.id] ?? {
-            tags: asset.tags.join(", "),
-            description: asset.description ?? "",
-          };
-        }
-        return next;
-      });
-    } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Failed to load assets");
-    } finally {
-      setLoading(false);
-    }
-  }, [purpose, status]);
-
-  useEffect(() => {
-    return runAfterEffect(() => {
-      void load();
-    });
-  }, [load]);
-
-  async function patchAsset(asset: ContentAsset, nextStatus: "approved" | "rejected" | "archived") {
-    const confirmKey = `asset:${asset.id}:${nextStatus}`;
-    if (nextStatus === "archived" && assetConfirmKey !== confirmKey) {
-      setError(null);
-      setNotice("Press Confirm archive asset to archive this asset.");
-      setAssetConfirmKey(confirmKey);
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    setNotice(null);
-    try {
-      const draft = assetDrafts[asset.id] ?? { tags: asset.tags.join(", "), description: asset.description ?? "" };
-      await apiWrite(`/api/v1/admin/content/assets/${asset.id}`, "PATCH", {
-        status: nextStatus,
-        tags: splitTags(draft.tags),
-        description: draft.description.trim() || undefined,
-        reason: `${nextStatus} from Asset Library`,
-        confirmation: asset.id,
-      });
-      await load();
-    } catch (patchError) {
-      setError(patchError instanceof Error ? patchError.message : "Asset update failed");
-      setAssetConfirmKey(null);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function saveAssetMetadata(asset: ContentAsset) {
-    setBusy(true);
-    setError(null);
-    try {
-      const draft = assetDrafts[asset.id] ?? { tags: asset.tags.join(", "), description: asset.description ?? "" };
-      await apiWrite(`/api/v1/admin/content/assets/${asset.id}`, "PATCH", {
-        tags: splitTags(draft.tags),
-        description: draft.description.trim() || undefined,
-        reason: "Updated asset search metadata",
-        confirmation: asset.id,
-      });
-      await load();
-    } catch (patchError) {
-      setError(patchError instanceof Error ? patchError.message : "Asset metadata update failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  if (loading) return <AdminLoading label="Asset Library" />;
-
-  return (
-    <div className="space-y-5">
-      <ViewHeader
-        action={<RefreshButton busy={loading} onClick={load} />}
-        eyebrow="Media"
-        icon={<ImageIcon className="h-5 w-5" />}
-        title="Asset Library"
-      />
-      <InlineError message={error} />
-      <InlineNotice message={notice} />
-      <section className="rounded-lg flex flex-wrap gap-3 border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-        <Field label="Status">
-          <select className="admin-input min-w-44" onChange={(event) => setStatus(event.target.value)} value={status}>
-            {["all", "generated", "approved", "rejected", "published", "archived"].map((item) => (
-              <option key={item} value={item}>
-                {value(item)}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field label="Purpose">
-          <select className="admin-input min-w-44" onChange={(event) => setPurpose(event.target.value)} value={purpose}>
-            {["all", ...purposeOptions].map((item) => (
-              <option key={item} value={item}>
-                {value(item)}
-              </option>
-            ))}
-          </select>
-        </Field>
-      </section>
-      {assets.length ? (
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          {assets.map((asset, index) => (
-            <article className="rounded-lg overflow-hidden border border-[var(--ad-border)] bg-[var(--ad-surface)]" key={asset.id}>
-              <AssetImage asset={asset} eager={index < 4} />
-              <div className="space-y-3 p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <StatusBadge value={asset.platformStatus} />
-                  <span className="font-mono text-[11px] text-[var(--ad-text-muted)]">{asset.width ?? "-"}x{asset.height ?? "-"}</span>
-                </div>
-                <div className="text-xs text-[var(--ad-text-muted)]">
-                  <p className="truncate"><span className="text-[var(--ad-ink)]">{t("Source job")}</span> {asset.sourceJob?.id ?? "-"}</p>
-                  <p className="truncate"><span className="text-[var(--ad-ink)]">{t("Batch")}</span> {asset.sourceBatch?.title ?? "-"}</p>
-                  <p className="truncate"><span className="text-[var(--ad-ink)]">{t("Profile")}</span> {asset.sourceJob?.profileId ?? "-"}</p>
-                </div>
-                <div className="grid gap-2">
-                  <input
-                    className="admin-input h-9 text-xs"
-                    onChange={(event) =>
-                      setAssetDrafts((current) => ({
-                        ...current,
-                        [asset.id]: {
-                          tags: event.target.value,
-                          description: current[asset.id]?.description ?? asset.description ?? "",
-                        },
-                      }))
-                    }
-                    placeholder={t("Tags for retrieval")}
-                    value={assetDrafts[asset.id]?.tags ?? asset.tags.join(", ")}
-                  />
-                  <textarea
-                    className="admin-input min-h-20 resize-y py-2 text-xs"
-                    onChange={(event) =>
-                      setAssetDrafts((current) => ({
-                        ...current,
-                        [asset.id]: {
-                          tags: current[asset.id]?.tags ?? asset.tags.join(", "),
-                          description: event.target.value,
-                        },
-                      }))
-                    }
-                    placeholder={t("Description for chat reuse")}
-                    value={assetDrafts[asset.id]?.description ?? asset.description ?? ""}
-                  />
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <SmallButton disabled={busy} icon={<Check className="h-3.5 w-3.5" />} onClick={() => void patchAsset(asset, "approved")}>
-                    Approve
-                  </SmallButton>
-                  <SmallButton disabled={busy} icon={<Send className="h-3.5 w-3.5" />} onClick={() => void saveAssetMetadata(asset)}>
-                    Save
-                  </SmallButton>
-                  <SmallButton disabled={busy} icon={<X className="h-3.5 w-3.5" />} onClick={() => void patchAsset(asset, "rejected")}>
-                    Reject
-                  </SmallButton>
-                  <SmallButton
-                    ariaLabel={
-                      assetConfirmKey === `asset:${asset.id}:archived`
-                        ? `Confirm archive asset ${asset.id}`
-                        : `Archive asset ${asset.id}`
-                    }
-                    disabled={busy}
-                    icon={<Archive className="h-3.5 w-3.5" />}
-                    onClick={() => void patchAsset(asset, "archived")}
-                  >
-                    {assetConfirmKey === `asset:${asset.id}:archived` ? "Confirm archive" : "Archive"}
-                  </SmallButton>
-                </div>
-              </div>
-            </article>
-          ))}
-        </div>
-      ) : (
-        <EmptyState label="No platform assets match these filters." />
-      )}
     </div>
   );
 }
@@ -1093,44 +878,6 @@ function PresetPicker({
           </select>
         ))}
       </div>
-    </div>
-  );
-}
-
-function AssetImage({
-  asset,
-  compact = false,
-  eager = false,
-}: {
-  asset: AssetSummary;
-  compact?: boolean;
-  eager?: boolean;
-}) {
-  const imageSrc = asset.thumbnailUrl || asset.url;
-  const [failedSrc, setFailedSrc] = useState<string | null>(null);
-  const hasFailed = failedSrc === imageSrc;
-
-  return (
-    <div className={cn("relative overflow-hidden bg-black/[0.03]", compact ? "h-24 w-24" : "aspect-[4/5]")}>
-      {hasFailed ? (
-        <div className="grid h-full w-full place-items-center gap-2 p-3 text-center text-xs text-[var(--ad-text-muted)]">
-          <div>
-            <ImageIcon className="mx-auto mb-2 h-5 w-5" />
-            {compact ? "Missing" : "Missing asset"}
-          </div>
-        </div>
-      ) : (
-        <Image
-          alt=""
-          fill
-          className="h-full w-full object-cover"
-          loading={eager ? "eager" : undefined}
-          onError={() => setFailedSrc(imageSrc)}
-          sizes={compact ? "96px" : "(min-width: 1280px) 25vw, (min-width: 768px) 50vw, 100vw"}
-          src={imageSrc}
-          unoptimized
-        />
-      )}
     </div>
   );
 }
