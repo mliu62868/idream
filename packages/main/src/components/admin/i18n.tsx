@@ -607,6 +607,8 @@ const zh: Record<string, string> = {
   "Daily": "常用",
   "CharacterConfig": "角色配置",
   "GenerationConfig": "生成配置",
+  "Operations": "运营",
+  "GenerationOps": "运维",
   "Business": "业务",
   "Engineering": "工程诊断",
   "System": "系统",

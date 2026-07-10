@@ -59,8 +59,7 @@ describe("nav-config (redesigned IA)", () => {
 
   it("orders groups as Daily followed by the 7 folded groups (guided nav re-tier)", () => {
     expect(NAV_GROUP_ORDER).toEqual([
-      "Daily", "CharacterConfig", "GenerationConfig", "Media",
-      "Business", "Insights", "Engineering", "System",
+      "Daily", "CharacterConfig", "Operations", "Media", "Business", "Insights", "GenerationOps", "Engineering", "System",
     ]);
   });
 
@@ -68,16 +67,18 @@ describe("nav-config (redesigned IA)", () => {
     expect(idsInGroup("CharacterConfig")).toEqual([
       "content/templates", "content/tags",
     ]);
-    expect(idsInGroup("GenerationConfig")).toEqual([
-      "generation/config", "generation/recipes", "generation/presets",
+    expect(idsInGroup("Operations")).toEqual(["generation/config", "generation/recipes", "generation/presets"]);
+    expect(idsInGroup("GenerationOps")).toEqual([
+      "generation/jobs", "generation/dead-letter", "generation/backends", "ops/providers",
     ]);
+    expect(idsInGroup("Engineering")).toEqual(["generation/workflows", "generation/metrics"]);
     expect(idsInGroup("Media")).toEqual([
       "content/assets", "content/placements", "cms",
     ]);
   });
 
   it("uses distinct icons within each pipeline group", () => {
-    for (const group of ["CharacterConfig", "GenerationConfig", "Media"]) {
+    for (const group of ["CharacterConfig", "Operations", "Media"]) {
       const icons = navItems.filter((i) => i.group === group).map((i) => i.icon);
       expect(new Set(icons).size).toBe(icons.length);
     }
@@ -112,6 +113,8 @@ describe("nav-config tiers (guided nav)", () => {
   });
   it("orders folded groups with Engineering + System last", () => {
     const names = NAV_FOLDED_GROUPS.map((g) => g.group);
-    expect(names).toEqual(["CharacterConfig","GenerationConfig","Media","Business","Insights","Engineering","System"]);
+    expect(names).toEqual([
+      "CharacterConfig", "Operations", "Media", "Business", "Insights", "GenerationOps", "Engineering", "System",
+    ]);
   });
 });

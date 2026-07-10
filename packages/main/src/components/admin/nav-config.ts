@@ -55,10 +55,10 @@ export const navItems: NavItem[] = [
   { id: "content/templates", label: "Character Starters", href: "/admin/content/templates", icon: Sparkles, group: "CharacterConfig", tier: "folded" },
   { id: "content/tags", label: "Tags", href: "/admin/content/tags", icon: Flag, group: "CharacterConfig", tier: "folded" },
 
-  // Folded — GenerationConfig (3)
-  { id: "generation/config", label: "Model Profiles", href: "/admin/generation/config", icon: SlidersHorizontal, group: "GenerationConfig", tier: "folded" },
-  { id: "generation/recipes", label: "Prompt Recipes", href: "/admin/generation/recipes", icon: ScrollText, group: "GenerationConfig", tier: "folded" },
-  { id: "generation/presets", label: "Presets", href: "/admin/generation/presets", icon: Layers, group: "GenerationConfig", tier: "folded" },
+  // Folded — Operations (3)
+  { id: "generation/config", label: "Model Profiles", href: "/admin/generation/config", icon: SlidersHorizontal, group: "Operations", tier: "folded" },
+  { id: "generation/recipes", label: "Prompt Recipes", href: "/admin/generation/recipes", icon: ScrollText, group: "Operations", tier: "folded" },
+  { id: "generation/presets", label: "Presets", href: "/admin/generation/presets", icon: Layers, group: "Operations", tier: "folded" },
 
   // Folded — Media (3)
   { id: "content/assets", label: "Image Library", href: "/admin/content/assets", icon: ImageIcon, group: "Media", tier: "folded" },
@@ -78,12 +78,14 @@ export const navItems: NavItem[] = [
   { id: "experiments", label: "Experiments", href: "/admin/experiments", icon: Flag, group: "Insights", tier: "folded" },
   { id: "risk", label: "Risk & Abuse", href: "/admin/risk", icon: AlertTriangle, group: "Insights", tier: "folded" },
 
-  // Folded — Engineering (6, hidden-by-default diagnostics per ADMIN_CONSOLE_PLAN.md)
+  // Folded — GenerationOps (4, carved out of Engineering: day-to-day ops surfaces)
+  { id: "generation/jobs", label: "Jobs & Incidents", href: "/admin/generation/jobs", icon: Activity, group: "GenerationOps", tier: "folded" },
+  { id: "generation/dead-letter", label: "Dead-letter", href: "/admin/generation/dead-letter", icon: Inbox, group: "GenerationOps", tier: "folded" },
+  { id: "generation/backends", label: "Backends", href: "/admin/generation/backends", icon: Server, group: "GenerationOps", tier: "folded" },
+  { id: "ops/providers", label: "Provider Health", href: "/admin/ops/providers", icon: Gauge, group: "GenerationOps", tier: "folded" },
+
+  // Folded — Engineering (2, hidden-by-default diagnostics per ADMIN_CONSOLE_PLAN.md)
   { id: "generation/workflows", label: "Workflows", href: "/admin/generation/workflows", icon: Workflow, group: "Engineering", tier: "folded" },
-  { id: "generation/backends", label: "Backends", href: "/admin/generation/backends", icon: Server, group: "Engineering", tier: "folded" },
-  { id: "ops/providers", label: "Provider Health", href: "/admin/ops/providers", icon: Gauge, group: "Engineering", tier: "folded" },
-  { id: "generation/jobs", label: "Jobs & Incidents", href: "/admin/generation/jobs", icon: Activity, group: "Engineering", tier: "folded" },
-  { id: "generation/dead-letter", label: "Dead-letter", href: "/admin/generation/dead-letter", icon: Inbox, group: "Engineering", tier: "folded" },
   { id: "generation/metrics", label: "Metrics", href: "/admin/generation/metrics", icon: BarChart3, group: "Engineering", tier: "folded" },
 
   // Folded — System (4)
@@ -101,7 +103,7 @@ export const NAV_GROUP_ORDER: string[] = navItems.reduce<string[]>((groups, item
 export const NAV_DAILY: NavItem[] = navItems.filter((i) => i.tier === "daily");
 
 const FOLDED_GROUP_ORDER = [
-  "CharacterConfig", "GenerationConfig", "Media", "Business", "Insights", "Engineering", "System",
+  "CharacterConfig", "Operations", "Media", "Business", "Insights", "GenerationOps", "Engineering", "System",
 ] as const;
 
 export const NAV_FOLDED_GROUPS: { group: string; items: NavItem[] }[] = FOLDED_GROUP_ORDER.map(
