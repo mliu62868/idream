@@ -3198,6 +3198,38 @@ function PromptRecipesView({
   setRecipeDraft: (value: RecipeDraft) => void;
   recipeDraft: RecipeDraft;
 }) {
+  const { locale, t, value } = useAdminI18n();
+  // Seed selection from the first recipe at mount (lazy initializer, not an effect) so the
+  // detail rail isn't blank on first paint; later reloads leave an existing pick untouched.
+  const [selectedRecipeId, setSelectedRecipeId] = useState<string | null>(() => {
+    const first = data.recipes.find((recipe) => stringValue(recipe.id));
+    return first ? stringValue(first.id) : null;
+  });
+
+  const recipeItems = useMemo<OperatorFlowItem[]>(
+    () =>
+      data.recipes
+        .filter((recipe) => stringValue(recipe.id))
+        .map((recipe) => {
+          const status = stringValue(recipe.status);
+          const useCase = stringValue(recipe.useCase);
+          return {
+            id: stringValue(recipe.id),
+            primary: stringValue(recipe.label) || t("Untitled recipe"),
+            secondary: [useCase ? value(useCase) : null, t(recipeStateLabelKey(recipe))]
+              .filter(Boolean)
+              .join(" · "),
+            badge: <Status locale={locale} tone={status === "active" ? "good" : "warn"} value={status || "draft"} />,
+          };
+        }),
+    [data.recipes, locale, t, value],
+  );
+
+  const selectedRecipe = useMemo(
+    () => data.recipes.find((recipe) => stringValue(recipe.id) === selectedRecipeId) ?? null,
+    [data.recipes, selectedRecipeId],
+  );
+
   return (
     <div className="space-y-6">
       <RecipeDraftForm
@@ -3206,13 +3238,71 @@ function PromptRecipesView({
         onCreate={createRecipe}
         onDraftChange={setRecipeDraft}
       />
-      <DataTable
-        actions={(row) => recipeTableActions(row, openAction)}
-        columns={["id", "recipeKey", "label", "mode", "useCase", "status", "version"]}
-        rows={data.recipes}
-        title="Prompt Recipes"
+      <OperatorFlow
+        detail={<RecipeDetail onOpenAction={openAction} recipe={selectedRecipe} />}
+        empty={t("No prompt recipes yet.")}
+        items={recipeItems}
+        onSelect={setSelectedRecipeId}
+        selectedId={selectedRecipeId}
       />
     </div>
+  );
+}
+
+// SPEC: operator-facing state phrase for a prompt recipe (mirrors profileStateLabelKey).
+// INTENT: fold the raw draft/active/archived status into a plain sentence for the list
+// subtitle and detail header; never show the machine status word outside the badge.
+function recipeStateLabelKey(recipe: Row): string {
+  const status = stringValue(recipe.status);
+  if (status === "active") return "Published";
+  if (status === "archived") return "Archived";
+  if (status === "draft") return "Ready to publish";
+  return status || "draft";
+}
+
+// SPEC: detail rail for the recipe selected in OperatorFlow — human header + Publish/Rollback
+// action row (reusing recipeTableActions/openAction unchanged) + raw fields folded away.
+function RecipeDetail({
+  onOpenAction,
+  recipe,
+}: {
+  onOpenAction: (action: PendingAction) => void;
+  recipe: Row | null;
+}) {
+  const { t, value } = useAdminI18n();
+
+  if (!recipe) {
+    return (
+      <section className="border border-white/10 bg-[rgb(18,18,18)] p-6 text-sm text-[rgb(170,170,170)]">
+        {t("Select a recipe to review and publish it.")}
+      </section>
+    );
+  }
+
+  const id = stringValue(recipe.id);
+  const useCase = stringValue(recipe.useCase);
+  const label = stringValue(recipe.label) || t("Untitled recipe");
+
+  return (
+    <section className="min-w-0 space-y-4 border border-white/10 bg-[rgb(18,18,18)] p-4">
+      <div className="min-w-0">
+        <h2 className="truncate text-lg font-semibold">{label}</h2>
+        <p className="mt-1 text-sm text-[rgb(170,170,170)]">
+          {[useCase ? value(useCase) : null, t(recipeStateLabelKey(recipe))].filter(Boolean).join(" · ")}
+        </p>
+      </div>
+
+      {recipeTableActions(recipe, onOpenAction)}
+
+      <EngineeringDetails summary={t("Recipe details")}>
+        <div className="space-y-1">
+          <div>{t("Recipe ID")}: {id || "-"}</div>
+          <div>{t("Recipe key")}: {stringValue(recipe.recipeKey) || "-"}</div>
+          <div>{t("Mode")}: {stringValue(recipe.mode) || "-"}</div>
+          <div>{t("Version")}: v{numberValue(recipe.version) || "-"}</div>
+        </div>
+      </EngineeringDetails>
+    </section>
   );
 }
 
