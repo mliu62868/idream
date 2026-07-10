@@ -32,7 +32,7 @@ export function ReadonlyOpsView({
           <thead className="border-b border-white/10 text-xs text-[rgb(170,170,170)]">
             <tr>
               {columns.map((c) => (
-                <th key={c.key} className="px-3 py-2 font-medium">
+                <th key={c.key} className="whitespace-nowrap px-3 py-2 font-medium">
                   {t(c.label)}
                 </th>
               ))}
@@ -49,7 +49,7 @@ export function ReadonlyOpsView({
               rows.map((row, index) => (
                 <tr key={index} className="border-b border-white/5 align-top">
                   {columns.map((c) => (
-                    <td key={c.key} className="px-3 py-2">
+                    <td key={c.key} className={c.render ? "px-3 py-2" : "whitespace-nowrap px-3 py-2"}>
                       {c.render ? c.render(row) : String(row[c.key] ?? "—")}
                     </td>
                   ))}
