@@ -17,7 +17,7 @@ import {
 // SPEC: 官方角色列表页 —— 搜索/筛选 + 卡片网格（头像、名字、风格·年龄、参考图数、状态）。
 // INTENT: 浏览页只浏览；创建在 /new，详情在 /<id>（spec §7 列表页）。
 export function OfficialListPage() {
-  const { t } = useAdminI18n();
+  const { t, value } = useAdminI18n();
   const [rows, setRows] = useState<OfficialRow[]>([]);
   const [thumbs, setThumbs] = useState<Map<string, string>>(new Map());
   const [loading, setLoading] = useState(true);
@@ -50,8 +50,10 @@ export function OfficialListPage() {
   }, [t]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void reload();
+    const timer = window.setTimeout(() => {
+      void reload();
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [reload]);
 
   const filtered = useMemo(
@@ -86,14 +88,14 @@ export function OfficialListPage() {
         searchPlaceholder={t("Search by name")}
         selects={[
           { name: t("Gender"), value: gender, onChange: setGender,
-            options: [allOption, ...GENDERS.map((g) => ({ value: g, label: t(g) }))] },
+            options: [allOption, ...GENDERS.map((g) => ({ value: g, label: value(g) }))] },
           { name: t("Style"), value: style, onChange: setStyle,
-            options: [allOption, ...STYLES.map((s) => ({ value: s, label: t(s) }))] },
+            options: [allOption, ...STYLES.map((s) => ({ value: s, label: value(s) }))] },
           { name: t("Status"), value: status, onChange: setStatus,
             options: [allOption,
-              { value: "approved", label: t("approved") },
-              { value: "draft", label: t("draft") },
-              { value: "archived", label: t("archived") }] },
+              { value: "approved", label: value("approved") },
+              { value: "draft", label: value("draft") },
+              { value: "archived", label: value("archived") }] },
         ]}
       />
       {error ? <p className="mb-4 text-sm text-[var(--ad-red-text)]">{error}</p> : null}
@@ -120,7 +122,7 @@ export function OfficialListPage() {
               key={row.id}
               meta={
                 <span>
-                  {t(row.style)} · {row.age} · {visualReferenceCount(row)} {t("reference images")}
+                  {value(row.style)} · {row.age} · {visualReferenceCount(row)} {t("reference images")}
                 </span>
               }
               status={row.status}
