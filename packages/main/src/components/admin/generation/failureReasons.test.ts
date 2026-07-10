@@ -6,6 +6,7 @@ describe("resolveFailureReason", () => {
     const r = resolveFailureReason("timeout");
     expect(r.severity).toBe("retry");
     expect(r.title).toBe("Generation timed out");
+    expect(r.hint).toBe("Safe to retry");
     expect(r.code).toBe("timeout");
   });
   it("is case- and whitespace-insensitive on the lookup key", () => {
@@ -20,5 +21,13 @@ describe("resolveFailureReason", () => {
   it("handles null/undefined without throwing", () => {
     expect(resolveFailureReason(null).title).toBe("Unknown error");
     expect(resolveFailureReason(undefined).code).toBe("");
+  });
+  it("does not leak the prototype chain for special keys", () => {
+    for (const key of ["constructor", "__proto__", "hasOwnProperty", "toString"]) {
+      const reason = resolveFailureReason(key);
+      expect(reason.title).toBe("Unknown error");
+      expect(reason.severity).toBe("engineering");
+      expect(reason.code).toBe(key);
+    }
   });
 });

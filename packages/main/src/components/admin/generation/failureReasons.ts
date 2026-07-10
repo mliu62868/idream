@@ -41,6 +41,6 @@ const FALLBACK: Omit<FailureReason, "code"> = {
 
 export function resolveFailureReason(code: string | null | undefined): FailureReason {
   const key = (code ?? "").trim().toLowerCase();
-  const hit = key ? TABLE[key] : undefined;
+  const hit = key && Object.hasOwn(TABLE, key) ? TABLE[key] : undefined;
   return { code: code ?? "", ...(hit ?? FALLBACK) };
 }
