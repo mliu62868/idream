@@ -275,9 +275,8 @@ export function OfficialDetailPage({ id }: { id: string }) {
             </div>
           </DetailSection>
 
-          <DetailSection title={t("Visual Identity")}>
-            <VisualPassportPanel characterId={row.id} />
-          </DetailSection>
+          {/* VisualPassportPanel 自带标题与卡片外框，不再套 DetailSection 以免双层嵌套。 */}
+          <VisualPassportPanel characterId={row.id} />
 
           <DetailSection title={t("Stats")}>
             <InfoGrid
@@ -295,8 +294,8 @@ export function OfficialDetailPage({ id }: { id: string }) {
             </Link>
           </DetailSection>
 
-          <EngineeringDetails summary={`character.id = ${row.id}`}>
-            <div>id: {row.id}</div>
+          <EngineeringDetails summary={t("Engineering details")}>
+            <div>character.id = {row.id}</div>
             <pre className="mt-2 whitespace-pre-wrap">{JSON.stringify(row.visualProfile, null, 2)}</pre>
           </EngineeringDetails>
         </>
