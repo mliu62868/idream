@@ -1,6 +1,6 @@
 "use client";
 
-// SPEC: 角色预生图面板（P3 Task 4）—— 挂载于 OfficialCharactersView 编辑区，VisualPassportPanel 之后。
+// SPEC: 角色预生图面板（P3 Task 4）—— 挂载于 ImageProductionView 的「为角色生成」tab。
 //       Pack 触发行（cover×4 / hero×4 / chat×8）→ POST pregen；批次列表含 item 审批（approve/reject）；
 //       approved 且带 mediaAssetId 的 item 一键投放（create draft placement → patch 发布），
 //       character_avatar/hero 发布会由服务端 syncPlacementTarget 直写角色头像/主图。

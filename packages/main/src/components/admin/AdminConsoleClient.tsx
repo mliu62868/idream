@@ -38,7 +38,7 @@ import { apiDelete, apiForm, apiGet, apiWrite, formatApiError, type ApiEnvelope 
 import { BackendsView } from "@/components/admin/BackendsView";
 import { GenerationMetricsView } from "@/components/admin/GenerationMetricsView";
 import { WorkflowsView } from "@/components/admin/WorkflowsView";
-import { OfficialCharactersView } from "@/components/admin/OfficialCharactersView";
+import { OfficialSection } from "@/components/admin/official/OfficialSection";
 import { TemplatesView } from "@/components/admin/TemplatesView";
 import { TagsView } from "@/components/admin/TagsView";
 import { ReviewQueueView } from "@/components/admin/ReviewQueueView";
@@ -2311,7 +2311,7 @@ function renderSection(
     if (section.view === "production") return <ImageProductionView />;
     if (section.view === "assets") return <AssetLibraryView />;
     if (section.view === "placements") return <PlacementsView />;
-    if (section.view === "official") return <OfficialCharactersView />;
+    if (section.view === "official") return <OfficialSection view={subview} />;
     if (section.view === "templates") return <TemplatesView />;
     if (section.view === "tags") return <TagsView />;
     if (section.view === "cms") return <CmsView />;

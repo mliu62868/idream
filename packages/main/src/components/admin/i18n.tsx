@@ -733,6 +733,24 @@ const zh: Record<string, string> = {
   "Preset ID": "预设 ID",
   "Preset type": "预设类型",
   "No built-in generation profiles are seeded yet.": "暂无内置生成配置。",
+  // Official characters trio — OfficialListPage/OfficialDetailPage/OfficialNewPage (task 10-12).
+  // "No official characters yet." already existed above (line ~259); not duplicated here.
+  "New official character": "新建官方角色",
+  "Manage official character profiles and publishing.": "管理平台官方角色的资料与上下线。",
+  "Search by name": "按名字搜索",
+  "reference images": "张参考图",
+  "Create the first official character to get started.": "创建第一个官方角色，从这里开始。",
+  "Back to official characters": "返回官方角色",
+  "AI assist": "AI 辅助",
+  "One-line inspiration — AI fills description and tags.": "一句话灵感——AI 自动填充描述与标签。",
+  "Inspiration": "灵感",
+  "Basic info": "基本信息",
+  "Appearance & style": "外貌与风格",
+  "Description & tags": "描述与标签",
+  "Create character": "创建角色",
+  "Character not found.": "未找到该角色。",
+  "Edit profile": "编辑资料",
+  "Save changes": "保存修改",
 };
 
 const zhColumns: Record<string, string> = {

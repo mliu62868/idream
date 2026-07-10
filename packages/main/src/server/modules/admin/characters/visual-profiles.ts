@@ -1,5 +1,5 @@
 // SPEC: Visual Passport 编辑器（P2 Task 8）—— 角色视觉身份档案（CharacterVisualProfile）的
-//       版本列表 + 铸造新 active 版本，供 OfficialCharactersView 内嵌的 VisualPassportPanel 使用。
+//       版本列表 + 铸造新 active 版本，供 OfficialDetailPage 内嵌的 VisualPassportPanel 使用。
 // INTENT: 不复用 ourdream/service.ts 的 createActiveCharacterVisualProfileVersion /
 //         characterVisualProfileCreateData 作为创建入口 —— 二者都通过 buildCharacterIdentityPrompt
 //         从角色的 name/age/description/gender/style/appearance/advancedDetails 重新派生
@@ -11,7 +11,7 @@
 // INVARIANTS:
 //   - 读用 content.read（与同一 content/characters 资源下的 getContentCharacter 一致）；
 //     写用 content.official.write（与 official.ts 编辑角色视觉身份用的是同一把权限，
-//     且本面板挂载于全程以 content.official.write 门控的 OfficialCharactersView 内，保持一致）。
+//     且本面板挂载于全程以 content.official.write 门控的 OfficialDetailPage 内，保持一致）。
 //   - POST 要求 reason.trim().length>=3（zod）且 confirmation===`${characterId}:visual-profile`。
 //   - 锚点/参考图池（anchorAssetIds/referenceAssetIds）本编辑器只读继承自当前 active（或角色
 //     imageAssetId 兜底），不在这里编辑 —— 池编辑属 P3 素材联动范畴。

@@ -1,6 +1,6 @@
 "use client";
 
-// SPEC: Visual Passport 编辑器面板（P2 Task 8）—— 挂载于 OfficialCharactersView 的角色编辑区，
+// SPEC: Visual Passport 编辑器面板（P2 Task 8）—— 挂载于 OfficialDetailPage 的角色详情区，
 //       展示该角色 CharacterVisualProfile 的版本历史 + 当前 active 版本的 traits 只读视图，
 //       并提供 identityPrompt/negativeIdentityPrompt/defaultSeed/style 编辑表单铸造新 active 版本。
 // INTENT: 自取数（挂载/characterId 变化时拉 list），写操作走 /visual-profiles POST，成功后 refetch。
