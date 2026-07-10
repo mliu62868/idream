@@ -10,11 +10,14 @@ export type ConfirmSpec = {
   summary?: ReactNode;
   /** 破坏性操作：要求输入实体名称（不再敲内部 ID —— spec §7）。 */
   destructive?: { expectedName: string };
+  /** 后端写操作是否收 reason（默认 true）。false 时不显示 reason 输入、不拿它门槛提交，
+   * onSubmit 收到 ""——后端契约无 reason 字段的操作不该让运营填一个会被丢弃的原因（T14 评审规则）。 */
+  requireReason?: boolean;
   submitLabel: string;
   onSubmit: (reason: string) => Promise<void>;
 };
 
-// SPEC: 全后台写操作统一确认框。reason ≥3 必填（后端审计契约）；
+// SPEC: 全后台写操作统一确认框。reason ≥3 必填（后端审计契约），除非 requireReason===false；
 // destructive 时额外要求名称打对。onSubmit 抛错则就地显示，不关框。
 export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: () => void }) {
   const { t } = useAdminI18n();
@@ -23,14 +26,16 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const requireReason = spec.requireReason ?? true;
   const nameOk = !spec.destructive || nameInput.trim() === spec.destructive.expectedName;
-  const canSubmit = !busy && reason.trim().length >= 3 && nameOk;
+  const reasonOk = !requireReason || reason.trim().length >= 3;
+  const canSubmit = !busy && reasonOk && nameOk;
 
   async function submit() {
     setBusy(true);
     setError(null);
     try {
-      await spec.onSubmit(reason.trim());
+      await spec.onSubmit(requireReason ? reason.trim() : "");
       onClose();
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : t("Request failed"));
@@ -47,13 +52,15 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
           <div className="mt-2 text-sm text-[var(--ad-text-muted)]">{spec.summary}</div>
         ) : null}
         <div className="mt-4 space-y-3">
-          <input
-            aria-label={t("Reason (≥3)")}
-            className={INPUT_CLASS}
-            onChange={(event) => setReason(event.target.value)}
-            placeholder={t("Reason (≥3)")}
-            value={reason}
-          />
+          {requireReason ? (
+            <input
+              aria-label={t("Reason (≥3)")}
+              className={INPUT_CLASS}
+              onChange={(event) => setReason(event.target.value)}
+              placeholder={t("Reason (≥3)")}
+              value={reason}
+            />
+          ) : null}
           {spec.destructive ? (
             <input
               aria-label={t("Type the name to confirm")}

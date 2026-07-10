@@ -688,12 +688,11 @@ const zh: Record<string, string> = {
   "Pick a profile to check readiness, then publish it. Model files and runner setup stay in engineering-owned config.":
     "选择一个配置检查就绪度，然后发布；模型文件与运行器设置归工程配置管理。",
   "Profiles": "配置",
-  // profileStateLabelKey / recipeStateLabelKey / presetStateLabelKey (tasks 7-9) — operator-facing
-  // state phrases; "draft"/"Active" are the raw-status fallback branches.
+  // profileStateLabelKey / recipeStateLabelKey (tasks 7-8) — operator-facing state phrases;
+  // "draft" is the raw-status fallback branch.
   "Blocked — needs engineering": "已阻止，需工程处理",
   "Needs testing": "待测试",
   "Ready to publish": "可发布",
-  "Active": "启用",
   "draft": "草稿",
   // ProfileDetail (task 7).
   "Select a profile to review its readiness and publish it.": "选择一个配置查看就绪度并发布。",
@@ -726,10 +725,10 @@ const zh: Record<string, string> = {
   "No prompt recipes yet.": "暂无提示词配方。",
   "Recipe details": "配方详情",
   "Recipe ID": "配方 ID",
-  // GenerationPresetsView / PresetDetail (task 9).
-  "Untitled preset": "未命名预设",
+  // Preset details/ID/type reused by the presets trio (task 15); "Untitled preset"/"Select a
+  // preset to review it." were the old GenerationPresetsView/PresetDetail-only copy (task 9),
+  // now dead — removed with that view (task 15 slimming).
   "No built-in presets are seeded yet.": "暂无内置预设。",
-  "Select a preset to review it.": "选择一个预设查看详情。",
   "Preset details": "预设详情",
   "Preset ID": "预设 ID",
   "Preset type": "预设类型",
@@ -781,6 +780,20 @@ const zh: Record<string, string> = {
   "Only draft recipes can be edited.": "只有草稿状态可编辑。",
   "Publish recipe": "发布配方",
   "Rollback recipe": "回滚配方",
+  // Generation presets trio — PresetsListPage/PresetsDetailPage/PresetsNewPage (task 15).
+  // "Basic info"/"Label"/"Category"/"Search by name"/"All"/"Status"/"Loading…"/"Request failed"/
+  // "Cancel"/"Save changes"/"Edit profile"/"Restore"/"Presets"/"No built-in presets are seeded
+  // yet."/"Preset details"/"Preset ID"/"Preset type" already exist above; not duplicated here.
+  "New preset": "新建预设",
+  "Manage built-in generation presets.": "管理内置生成预设。",
+  "Back to presets": "返回预设",
+  "Create the first preset to get started.": "创建第一个预设，从这里开始。",
+  "Preset not found.": "未找到该预设。",
+  "Archive preset": "归档预设",
+  "Controls (JSON)": "控制参数（JSON）",
+  "Type": "类型",
+  "Visibility": "可见性",
+  "Create preset": "创建预设",
 };
 
 const zhColumns: Record<string, string> = {
@@ -975,7 +988,7 @@ const zhValues: Record<string, string> = {
   warning: "警告",
   waiting_on_user: "等待用户",
   // generation-group redesign (task 13 zh backfill) — GenerationPreset.type / .visibility enums,
-  // surfaced by presetSecondaryLine + PresetDetail (task 9).
+  // surfaced via value() by the presets trio (task 15).
   background: "背景",
   pose: "姿势",
   outfit: "服装",

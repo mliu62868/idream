@@ -152,13 +152,11 @@ export function normalizeSection(value: string): string {
   return parseAdminPath(value).sectionId;
 }
 
-export type ConfigSlice = "profiles" | "presets";
+export type ConfigSlice = "profiles";
 
 // SPEC: which slice of the generation-config data a section renders.
-// generation/config → model profiles; /presets → presets. generation/recipes moved to its
-// own selfFetch trio (Task 14) — no longer a config slice.
+// generation/config → model profiles. generation/recipes (Task 14) and generation/presets
+// (Task 15) moved to their own selfFetch trios — no longer config slices.
 export function configSliceForSection(sectionId: string): ConfigSlice | null {
-  if (sectionId === "generation/config") return "profiles";
-  if (sectionId === "generation/presets") return "presets";
-  return null;
+  return sectionId === "generation/config" ? "profiles" : null;
 }

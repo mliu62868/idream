@@ -38,6 +38,17 @@ export const RECIPES_KEYS = [
 // 注意：状态词 draft/active/archived 走 recipeStateLabelKey → "Ready to publish"/"Published"/
 // "Archived"（已有 zh），不进这张表；同理 mode/useCase 枚举值走 value()/zhValues 通道。
 
+export const PRESETS_KEYS = [
+  "All", "Archive preset", "Back to presets", "Basic info", "Cancel", "Category",
+  "Controls (JSON)", "Create preset", "Create the first preset to get started.",
+  "Edit profile", "Label", "Loading…", "Manage built-in generation presets.", "New preset",
+  "No built-in presets are seeded yet.", "Preset details", "Preset ID", "Preset not found.",
+  "Preset type", "Presets", "Request failed", "Restore", "Save changes", "Search by name",
+  "Status", "Type", "Visibility",
+];
+// 注意：枚举词 background/pose/outfit/mode（type）与 public/private/unlisted（visibility）与
+// active/archived（status，StatusPill 缺省走 value()）都走 value()/zhValues 通道，不进这张表。
+
 describe("admin i18n — trio pages have zh", () => {
   it("official characters trio", () => {
     for (const key of OFFICIAL_KEYS) expect(hasAdminZh(key)).toBe(true);
@@ -49,5 +60,9 @@ describe("admin i18n — trio pages have zh", () => {
 
   it("prompt recipes trio", () => {
     for (const key of RECIPES_KEYS) expect(hasAdminZh(key)).toBe(true);
+  });
+
+  it("generation presets trio", () => {
+    for (const key of PRESETS_KEYS) expect(hasAdminZh(key)).toBe(true);
   });
 });
