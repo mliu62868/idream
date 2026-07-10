@@ -2,16 +2,41 @@ import { describe, expect, it } from "vitest";
 import { hasAdminZh } from "./i18n";
 
 // SPEC: 三件套页面自有文案必须有 zh（运营面不漏英文）。每落一个三件套，扩这张表。
+// 注意：本数组由 task 18 中文覆盖终检机器扫全量重生成（原列表只覆盖 T11 落地时的一部分，
+// OfficialDetailPage 后续新增的 Stats/Image production 联动块从未补进来过）。
 export const OFFICIAL_KEYS = [
-  "New official character", "Manage official character profiles and publishing.",
-  "Search by name", "reference images", "Create the first official character to get started.",
-  "No official characters yet.", "Back to official characters", "AI assist",
-  "One-line inspiration — AI fills description and tags.", "Inspiration",
-  "Basic info", "Appearance & style", "Description & tags", "Create character",
-  "Character not found.", "Edit profile", "Save changes", "Age", "Description",
+  "Age", "AI assist", "All", "Appearance & style", "Back to official characters", "Basic info",
+  "Cancel", "Character not found.", "Chats", "Create character",
+  "Create the first official character to get started.", "Created", "Description",
+  "Description & tags", "Edit profile", "Engineering details", "Gender", "Generate with AI",
+  "Image production", "Inspiration", "Likes", "Loading…",
+  "Manage official character profiles and publishing.", "Name", "Name (≥1)",
+  "New official character", "No official characters yet.", "Official Characters",
+  "One-line inspiration — AI fills description and tags.", "Open image production", "Profile",
+  "Publish", "Publish character", "Reason (≥3)", "reference images", "Request failed",
+  "Save changes", "Search by name", "Stats", "Status", "Style", "Tags (comma-sep)",
+  "Tags (comma-separated, ≤12)", "Unpublish", "Unpublish character", "Views", "Visibility",
 ];
 // 注意：枚举/状态词（approved/draft/archived/female/…/realistic/…）不进 zh 表——
 // 它们走 value()/zhValues 通道（已覆盖，加进 zh 表反而重复破坏 SSoT）。
+
+// SPEC: VisualPassportPanel 挂载于 OfficialDetailPage，独立组件自有一套文案，机器扫单独列出
+// （task 18）。trait block 标签 Face/Hair/Body/Signature 特意加了 "traits" 后缀，避免与其他页面
+// 已有的同名 key（如 recipes/announcements 的 "Body" = 正文）语义碰撞——同一 zh 表是全局 key→value
+// 映射，裸词复用会导致这个面板显示错语境的翻译。
+export const VISUAL_PASSPORT_KEYS = [
+  "Active version traits (read-only)", "Body traits", "Created at", "Created from",
+  "Default seed", "Derived from traits", "Face traits", "Hair traits", "Hand-authored",
+  "Identity prompt (leave blank to derive from traits)", "Loading…", "Mint new version",
+  "Negative identity prompt",
+  "No visual profile versions yet — minting below creates version 1.",
+  "Reason (≥3, for audit)", "Refresh", "Signature traits",
+  "Stale — traits changed since this was derived", "Status", "Style traits",
+  "Type {token} to confirm", "Version", "Version history",
+  "Version history and identity prompt editing for this character's visual profile.",
+  "Visual Identity", "Visual profile confirmation",
+];
+// 注意：identitySource/style 等枚举词走 value()/zhValues 通道，不进这张表。
 
 export const STARTERS_KEYS = [
   "{count} tags", "AI assist", "All", "Back to starter templates", "Basic info",
@@ -89,6 +114,10 @@ export const TAGS_KEYS = [
 describe("admin i18n — trio pages have zh", () => {
   it("official characters trio", () => {
     for (const key of OFFICIAL_KEYS) expect(hasAdminZh(key)).toBe(true);
+  });
+
+  it("visual passport panel (embedded in official detail)", () => {
+    for (const key of VISUAL_PASSPORT_KEYS) expect(hasAdminZh(key)).toBe(true);
   });
 
   it("starter templates trio", () => {

@@ -182,10 +182,10 @@ export function VisualPassportPanel({ characterId }: { characterId: string }) {
             ) : null}
           </h3>
           <div className="mt-2 grid gap-2 md:grid-cols-3">
-            <TraitBlock label={t("Face")} value={active.faceTraits} />
-            <TraitBlock label={t("Hair")} value={active.hairTraits} />
-            <TraitBlock label={t("Body")} value={active.bodyTraits} />
-            <TraitBlock label={t("Signature")} value={active.signatureTraits} />
+            <TraitBlock label={t("Face traits")} value={active.faceTraits} />
+            <TraitBlock label={t("Hair traits")} value={active.hairTraits} />
+            <TraitBlock label={t("Body traits")} value={active.bodyTraits} />
+            <TraitBlock label={t("Signature traits")} value={active.signatureTraits} />
             <TraitBlock label={t("Style traits")} value={active.styleTraits} />
           </div>
         </div>

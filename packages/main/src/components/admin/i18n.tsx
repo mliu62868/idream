@@ -839,6 +839,42 @@ const zh: Record<string, string> = {
     "将 source 标签下的角色全部迁移到 target 标签，然后删除 source 标签。",
   "Moves every character from {source} to {target}, then deletes {source}.":
     "会把 {source} 下的角色迁移到 {target}，随后删除 {source}。",
+  // Official detail page — Stats/Image production linkout block (task 18 zh coverage sweep).
+  // "Chats" already exists above (shared with dashboard "聊天数"); "Visibility" already exists
+  // above (shared with presets). Rest of OFFICIAL_KEYS already covered by shared primitives.
+  "Image production": "图片生产",
+  "Likes": "点赞数",
+  "Open image production": "打开图片生产",
+  "Publish character": "发布角色",
+  "Stats": "数据统计",
+  "Unpublish character": "取消发布角色",
+  "Views": "浏览数",
+  // VisualPassportPanel (task 18 zh coverage sweep) — embedded in OfficialDetailPage, never had
+  // full zh coverage since it was built. "Loading…"/"Reason (≥3, for audit)"/"Refresh"/"Status"/
+  // "Type {token} to confirm"/"Version"/"Visual Identity" already exist above; not duplicated
+  // here. Face/Hair/Body/Signature trait labels use a "traits" suffix (see VISUAL_PASSPORT_KEYS
+  // comment) to avoid colliding with unrelated existing keys of the same bare word.
+  "Active version traits (read-only)": "当前版本特征（只读）",
+  "Body traits": "身体特征",
+  "Created at": "创建时间",
+  "Created from": "创建来源",
+  "Default seed": "默认种子",
+  "Derived from traits": "由特征推导",
+  "Face traits": "面部特征",
+  "Hair traits": "毛发特征",
+  "Hand-authored": "人工填写",
+  "Identity prompt (leave blank to derive from traits)": "身份提示词（留空则由特征自动推导）",
+  "Mint new version": "铸造新版本",
+  "Negative identity prompt": "负向身份提示词",
+  "No visual profile versions yet — minting below creates version 1.":
+    "尚无视觉身份版本——在下方铸造将创建第 1 版。",
+  "Signature traits": "标志性特征",
+  "Stale — traits changed since this was derived": "已过期——特征在推导后发生变化",
+  "Style traits": "风格特征",
+  "Version history": "版本历史",
+  "Version history and identity prompt editing for this character's visual profile.":
+    "该角色视觉身份的版本历史与身份提示词编辑。",
+  "Visual profile confirmation": "视觉身份确认",
 };
 
 const zhColumns: Record<string, string> = {
