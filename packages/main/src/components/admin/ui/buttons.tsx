@@ -35,7 +35,7 @@ export function DangerButton({ className, ...props }: ButtonHTMLAttributes<HTMLB
       type="button"
       className={cn(
         BASE,
-        "border border-[var(--ad-red-text)]/20 bg-[var(--ad-red-bg)] text-[var(--ad-red-text)] hover:bg-[#f9dfe1]",
+        "border border-[var(--ad-red-text)]/20 bg-[var(--ad-red-bg)] text-[var(--ad-red-text)] hover:bg-[var(--ad-red-hover)]",
         className,
       )}
       {...props}
