@@ -1,5 +1,5 @@
 // SPEC: 官方角色三件套的共享契约 —— 类型/端点/payload 构造（SSoT，三页共用）。
-// INVARIANTS: payload 字段与旧 OfficialCharactersView 的 POST/PATCH body 完全一致（后端不变）。
+// INVARIANTS: payload 字段与旧官方角色单页视图的 POST/PATCH body 完全一致（后端不变）。
 
 export type OfficialStats = {
   chatsCount: number;

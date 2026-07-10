@@ -8,7 +8,7 @@ export const OFFICIAL_KEYS = [
   "No official characters yet.", "Back to official characters", "AI assist",
   "One-line inspiration — AI fills description and tags.", "Inspiration",
   "Basic info", "Appearance & style", "Description & tags", "Create character",
-  "Character not found.", "Edit profile", "Save changes",
+  "Character not found.", "Edit profile", "Save changes", "Age", "Description",
 ];
 // 注意：枚举/状态词（approved/draft/archived/female/…/realistic/…）不进 zh 表——
 // 它们走 value()/zhValues 通道（已覆盖，加进 zh 表反而重复破坏 SSoT）。
