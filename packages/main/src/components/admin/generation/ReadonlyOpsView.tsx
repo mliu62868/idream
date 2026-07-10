@@ -1,0 +1,64 @@
+"use client";
+// SPEC: 运维只读视图——表格展示 rows；失败行由调用方用 FailureReason 渲染 render() 出人话；无写操作。
+// INVARIANTS: 纯展示；表格外层 overflow-x-auto，窄屏横滚不挤压。
+import type { ReactNode } from "react";
+import { useAdminI18n } from "@/components/admin/i18n";
+
+export type OpsColumn = {
+  key: string;
+  label: string;
+  render?: (row: Record<string, unknown>) => ReactNode;
+};
+
+export function ReadonlyOpsView({
+  title,
+  columns,
+  rows,
+  empty,
+}: {
+  title: string;
+  columns: OpsColumn[];
+  rows: Record<string, unknown>[];
+  empty?: ReactNode;
+}) {
+  const { t } = useAdminI18n();
+  return (
+    <section className="space-y-3">
+      <h2 className="text-sm font-semibold">
+        {t(title)} ({rows.length})
+      </h2>
+      <div className="overflow-x-auto border border-white/10">
+        <table className="w-full text-left text-sm">
+          <thead className="border-b border-white/10 text-xs text-[rgb(170,170,170)]">
+            <tr>
+              {columns.map((c) => (
+                <th key={c.key} className="px-3 py-2 font-medium">
+                  {t(c.label)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 ? (
+              <tr>
+                <td colSpan={columns.length} className="px-3 py-6 text-center text-xs text-[rgb(170,170,170)]">
+                  {empty ?? t("Empty")}
+                </td>
+              </tr>
+            ) : (
+              rows.map((row, index) => (
+                <tr key={index} className="border-b border-white/5 align-top">
+                  {columns.map((c) => (
+                    <td key={c.key} className="px-3 py-2">
+                      {c.render ? c.render(row) : String(row[c.key] ?? "—")}
+                    </td>
+                  ))}
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
