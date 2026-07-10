@@ -720,13 +720,12 @@ const zh: Record<string, string> = {
   "No local model verification required · No component status recorded": "无需本地模型验证 · 无组件状态记录",
   "Verification status missing · No component status recorded": "验证状态缺失 · 无组件状态记录",
   "Model verification passed · No component status recorded": "模型验证已通过 · 无组件状态记录",
-  // PromptRecipesView / RecipeDetail (task 8).
-  "Untitled recipe": "未命名配方",
+  // Recipe details/ID reused by the recipes trio (task 14); "Untitled recipe"/"Select a
+  // recipe…"/"Recipe key" (lowercase) were task-8 PromptRecipesView-only copy, now dead —
+  // removed with that view (task 14 slimming).
   "No prompt recipes yet.": "暂无提示词配方。",
-  "Select a recipe to review and publish it.": "选择一个配方查看并发布。",
   "Recipe details": "配方详情",
   "Recipe ID": "配方 ID",
-  "Recipe key": "配方键",
   // GenerationPresetsView / PresetDetail (task 9).
   "Untitled preset": "未命名预设",
   "No built-in presets are seeded yet.": "暂无内置预设。",
@@ -768,6 +767,20 @@ const zh: Record<string, string> = {
   "Scope": "范围",
   "Category": "分类",
   "{count} tags": "{count} 个标签",
+  // Prompt recipes trio — RecipesListPage/RecipesDetailPage/RecipesNewPage (task 14).
+  // "Basic info"/"Recipe Key"/"Label"/"Mode"/"Use Case"/"Body"/"Negative Base"/"Version"/
+  // "Recipe details"/"Recipe ID"/"Prompt Recipes"/"Search by name"/"All"/"Status"/"Loading…"/
+  // "Request failed"/"Cancel"/"Save changes"/"Edit profile"/"Publish"/"Rollback"/"Create Draft"/
+  // "No prompt recipes yet."/"Ready to publish"/"Published"/"Archived" already exist above; not
+  // duplicated here.
+  "New prompt recipe": "新建提示词配方",
+  "Manage prompt recipes for image generation.": "管理生图提示词配方。",
+  "Back to prompt recipes": "返回提示词配方",
+  "Create the first prompt recipe to get started.": "创建第一个提示词配方，从这里开始。",
+  "Recipe not found.": "未找到该配方。",
+  "Only draft recipes can be edited.": "只有草稿状态可编辑。",
+  "Publish recipe": "发布配方",
+  "Rollback recipe": "回滚配方",
 };
 
 const zhColumns: Record<string, string> = {

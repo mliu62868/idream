@@ -40,6 +40,7 @@ import { GenerationMetricsView } from "@/components/admin/GenerationMetricsView"
 import { WorkflowsView } from "@/components/admin/WorkflowsView";
 import { OfficialSection } from "@/components/admin/official/OfficialSection";
 import { StartersSection } from "@/components/admin/starters/StartersSection";
+import { RecipesSection } from "@/components/admin/recipes/RecipesSection";
 import { TagsView } from "@/components/admin/TagsView";
 import { ReviewQueueView } from "@/components/admin/ReviewQueueView";
 import { CmsView } from "@/components/admin/CmsView";
@@ -231,6 +232,7 @@ type SectionData =
         | "assets"
         | "placements"
         | "templates"
+        | "recipes"
         | "tags"
         | "review-queue"
         | "cms"
@@ -372,15 +374,6 @@ type LoraDraft = {
   enabled: boolean;
 };
 
-type RecipeDraft = {
-  recipeKey: string;
-  label: string;
-  mode: "image" | "video" | "negative";
-  useCase: "character" | "freeplay" | "negative";
-  body: string;
-  negativeBase: string;
-};
-
 type PricingDraft = {
   ruleKey: string;
   label: string;
@@ -491,15 +484,6 @@ const modelProfileTemplates: Array<{
   },
 ];
 const fallbackModelProfileTemplate = modelProfileTemplates[0]!;
-
-const defaultRecipeDraft: RecipeDraft = {
-  recipeKey: "template_image_character_v2",
-  label: "Image character v2",
-  mode: "image",
-  useCase: "character",
-  body: "Character image generation template with appearance, pose, outfit, background, style, and quality blocks.",
-  negativeBase: "low quality, distorted anatomy, extra fingers, watermark, text",
-};
 
 const defaultPricingDraft: PricingDraft = {
   ruleKey: "generation_image_default",
@@ -657,8 +641,6 @@ export function AdminConsoleClient({
   const [actionBusy, setActionBusy] = useState(false);
   const [adjustment, setAdjustment] = useState({ userId: "", delta: "" });
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
-  const [recipeDraft, setRecipeDraft] = useState<RecipeDraft>(defaultRecipeDraft);
-  const [configBusy, setConfigBusy] = useState<"recipe" | null>(null);
   const [pricingDraft, setPricingDraft] = useState<PricingDraft>(defaultPricingDraft);
   const [pricingBusy, setPricingBusy] = useState(false);
   const [permissionForm, setPermissionForm] = useState<PermissionForm>(defaultPermissionForm);
@@ -741,23 +723,6 @@ export function AdminConsoleClient({
       setError(actionError instanceof Error ? actionError.message : "Admin action failed");
     } finally {
       setActionBusy(false);
-    }
-  }
-
-  async function createRecipe() {
-    setConfigBusy("recipe");
-    setError(null);
-    try {
-      await apiWrite(
-        "/api/v1/admin/generation/recipes",
-        "POST",
-        recipeDraftPayload(recipeDraft),
-      );
-      await load();
-    } catch (createError) {
-      setError(createError instanceof Error ? createError.message : "Prompt template create failed");
-    } finally {
-      setConfigBusy(null);
     }
   }
 
@@ -1022,10 +987,6 @@ export function AdminConsoleClient({
                 setAdjustment,
                 selectedProfileId,
                 setSelectedProfileId,
-                recipeDraft,
-                setRecipeDraft,
-                configBusy,
-                createRecipe,
                 pricingDraft,
                 setPricingDraft,
                 pricingBusy,
@@ -1254,6 +1215,7 @@ async function fetchSection(
     const payload = await apiGet<ProviderOpsData>("/api/v1/admin/ops/providers");
     return { kind: "providers", data: payload };
   }
+  if (sectionId === "generation/recipes") return { kind: "selfFetch", view: "recipes" };
   const configSlice = configSliceForSection(sectionId);
   if (configSlice) {
     return { kind: "config", data: await fetchGenerationConfig(), slice: configSlice };
@@ -1450,21 +1412,6 @@ function runnerConfigForProfileTemplate(template: ModelProfileTemplateId) {
   return {};
 }
 
-function recipeDraftPayload(draft: RecipeDraft): Record<string, unknown> {
-  return {
-    recipeKey: draft.recipeKey.trim(),
-    label: draft.label.trim(),
-    mode: draft.mode,
-    useCase: draft.useCase,
-    body: draft.body.trim(),
-    negativeBase: nullableText(draft.negativeBase),
-    presetOrder: [],
-    safetyHints: { source: "admin_console" },
-    sampleMatrix: [],
-    dryRunSummary: { source: "admin_console", status: "draft_created" },
-  };
-}
-
 function canCreatePricingRule(draft: PricingDraft) {
   const ruleKey = draft.ruleKey.trim();
   return Boolean(
@@ -1486,11 +1433,6 @@ function pricingDraftPayload(draft: PricingDraft): Record<string, unknown> {
     reason: draft.reason.trim(),
     confirmation: draft.confirmation.trim(),
   };
-}
-
-function nullableText(value: string) {
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
 }
 
 function parseCsv(value: string) {
@@ -2185,10 +2127,6 @@ function renderSection(
     setAdjustment: (value: { userId: string; delta: string }) => void;
     selectedProfileId: string | null;
     setSelectedProfileId: (value: string | null) => void;
-    recipeDraft: RecipeDraft;
-    setRecipeDraft: (value: RecipeDraft) => void;
-    configBusy: "recipe" | null;
-    createRecipe: () => void;
     pricingDraft: PricingDraft;
     setPricingDraft: (value: PricingDraft) => void;
     pricingBusy: boolean;
@@ -2205,18 +2143,6 @@ function renderSection(
   if (section.kind === "dashboard") return <DashboardView data={section.data} />;
   if (section.kind === "jobs") return <JobsView rows={section.rows} openAction={ctx.openAction} />;
   if (section.kind === "config") {
-    if (section.slice === "recipes") {
-      return (
-        <PromptRecipesView
-          configBusy={ctx.configBusy}
-          createRecipe={ctx.createRecipe}
-          data={section.data}
-          openAction={ctx.openAction}
-          setRecipeDraft={ctx.setRecipeDraft}
-          recipeDraft={ctx.recipeDraft}
-        />
-      );
-    }
     if (section.slice === "presets") {
       return <GenerationPresetsView data={section.data} />;
     }
@@ -2313,6 +2239,7 @@ function renderSection(
     if (section.view === "placements") return <PlacementsView />;
     if (section.view === "official") return <OfficialSection view={subview} />;
     if (section.view === "templates") return <StartersSection view={subview} />;
+    if (section.view === "recipes") return <RecipesSection view={subview} />;
     if (section.view === "tags") return <TagsView />;
     if (section.view === "cms") return <CmsView />;
     if (section.view === "compliance") return <ComplianceView />;
@@ -3209,129 +3136,6 @@ function ConfigView({
   );
 }
 
-function PromptRecipesView({
-  configBusy,
-  createRecipe,
-  data,
-  openAction,
-  setRecipeDraft,
-  recipeDraft,
-}: {
-  configBusy: "recipe" | null;
-  createRecipe: () => void;
-  data: ConfigData;
-  openAction: (action: PendingAction) => void;
-  setRecipeDraft: (value: RecipeDraft) => void;
-  recipeDraft: RecipeDraft;
-}) {
-  const { locale, t, value } = useAdminI18n();
-  // Seed selection from the first recipe at mount (lazy initializer, not an effect) so the
-  // detail rail isn't blank on first paint; later reloads leave an existing pick untouched.
-  const [selectedRecipeId, setSelectedRecipeId] = useState<string | null>(() => {
-    const first = data.recipes.find((recipe) => stringValue(recipe.id));
-    return first ? stringValue(first.id) : null;
-  });
-
-  const recipeItems = useMemo<OperatorFlowItem[]>(
-    () =>
-      data.recipes
-        .filter((recipe) => stringValue(recipe.id))
-        .map((recipe) => {
-          const status = stringValue(recipe.status);
-          const useCase = stringValue(recipe.useCase);
-          return {
-            id: stringValue(recipe.id),
-            primary: stringValue(recipe.label) || t("Untitled recipe"),
-            secondary: [useCase ? value(useCase) : null, t(recipeStateLabelKey(recipe))]
-              .filter(Boolean)
-              .join(" · "),
-            badge: <Status locale={locale} tone={status === "active" ? "good" : "warn"} value={status || "draft"} />,
-          };
-        }),
-    [data.recipes, locale, t, value],
-  );
-
-  const selectedRecipe = useMemo(
-    () => data.recipes.find((recipe) => stringValue(recipe.id) === selectedRecipeId) ?? null,
-    [data.recipes, selectedRecipeId],
-  );
-
-  return (
-    <div className="space-y-6">
-      <RecipeDraftForm
-        busy={configBusy === "recipe"}
-        draft={recipeDraft}
-        onCreate={createRecipe}
-        onDraftChange={setRecipeDraft}
-      />
-      <OperatorFlow
-        detail={<RecipeDetail onOpenAction={openAction} recipe={selectedRecipe} />}
-        empty={t("No prompt recipes yet.")}
-        items={recipeItems}
-        onSelect={setSelectedRecipeId}
-        selectedId={selectedRecipeId}
-      />
-    </div>
-  );
-}
-
-// SPEC: operator-facing state phrase for a prompt recipe (mirrors profileStateLabelKey).
-// INTENT: fold the raw draft/active/archived status into a plain sentence for the list
-// subtitle and detail header; never show the machine status word outside the badge.
-function recipeStateLabelKey(recipe: Row): string {
-  const status = stringValue(recipe.status);
-  if (status === "active") return "Published";
-  if (status === "archived") return "Archived";
-  if (status === "draft") return "Ready to publish";
-  return status || "draft";
-}
-
-// SPEC: detail rail for the recipe selected in OperatorFlow — human header + Publish/Rollback
-// action row (reusing recipeTableActions/openAction unchanged) + raw fields folded away.
-function RecipeDetail({
-  onOpenAction,
-  recipe,
-}: {
-  onOpenAction: (action: PendingAction) => void;
-  recipe: Row | null;
-}) {
-  const { t, value } = useAdminI18n();
-
-  if (!recipe) {
-    return (
-      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6 text-sm text-[var(--ad-text-muted)]">
-        {t("Select a recipe to review and publish it.")}
-      </section>
-    );
-  }
-
-  const id = stringValue(recipe.id);
-  const useCase = stringValue(recipe.useCase);
-  const label = stringValue(recipe.label) || t("Untitled recipe");
-
-  return (
-    <section className="rounded-lg min-w-0 space-y-4 border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-      <div className="min-w-0">
-        <h2 className="truncate text-lg font-semibold">{label}</h2>
-        <p className="mt-1 text-sm text-[var(--ad-text-muted)]">
-          {[useCase ? value(useCase) : null, t(recipeStateLabelKey(recipe))].filter(Boolean).join(" · ")}
-        </p>
-      </div>
-
-      {recipeTableActions(recipe, onOpenAction)}
-
-      <EngineeringDetails summary={t("Recipe details")}>
-        <div className="space-y-1">
-          <div>{t("Recipe ID")}: {id || "-"}</div>
-          <div>{t("Recipe key")}: {stringValue(recipe.recipeKey) || "-"}</div>
-          <div>{t("Mode")}: {stringValue(recipe.mode) || "-"}</div>
-          <div>{t("Version")}: v{numberValue(recipe.version) || "-"}</div>
-        </div>
-      </EngineeringDetails>
-    </section>
-  );
-}
-
 function GenerationPresetsView({ data }: { data: ConfigData }) {
   const { locale, t, value } = useAdminI18n();
   // Seed selection from the first preset at mount (lazy initializer, not an effect) so the
@@ -3430,31 +3234,6 @@ function PresetDetail({ preset }: { preset: Row | null }) {
   );
 }
 
-function recipeTableActions(row: Row, openAction: (action: PendingAction) => void) {
-  const id = stringValue(row.id);
-  if (!id) return null;
-  const status = stringValue(row.status);
-
-  return (
-    <div className="flex flex-wrap gap-1">
-      {status === "draft" ? (
-        <IconAction
-          icon={<UploadCloud className="h-4 w-4" />}
-          label="Publish"
-          onClick={() => openAction(publishRecipeAction(id))}
-        />
-      ) : null}
-      {status === "active" ? (
-        <IconAction
-          icon={<RotateCcw className="h-4 w-4" />}
-          label="Rollback"
-          onClick={() => openAction(rollbackRecipeAction(id))}
-        />
-      ) : null}
-    </div>
-  );
-}
-
 function featureFlagActions(row: Row, openAction: (action: PendingAction) => void) {
   const key = stringValue(row.key);
   if (!key) return null;
@@ -3524,35 +3303,6 @@ function disableProfileAction(id: string): PendingAction {
     reasonRequired: true,
     body: (actionReason, actionConfirmation) => ({
       enabled: false,
-      reason: actionReason,
-      confirmation: actionConfirmation,
-    }),
-  };
-}
-
-function publishRecipeAction(id: string): PendingAction {
-  return {
-    title: `Publish recipe ${id}`,
-    endpoint: `/api/v1/admin/generation/recipes/${id}/publish`,
-    method: "POST",
-    confirmText: id,
-    reasonRequired: true,
-    body: (actionReason, actionConfirmation) => ({
-      reason: actionReason,
-      confirmation: actionConfirmation,
-      dryRunSummary: { source: "admin_console" },
-    }),
-  };
-}
-
-function rollbackRecipeAction(id: string): PendingAction {
-  return {
-    title: `Rollback recipe ${id}`,
-    endpoint: `/api/v1/admin/generation/recipes/${id}/rollback`,
-    method: "POST",
-    confirmText: id,
-    reasonRequired: true,
-    body: (actionReason, actionConfirmation) => ({
       reason: actionReason,
       confirmation: actionConfirmation,
     }),
@@ -4927,81 +4677,6 @@ function pathFileName(value: string) {
   const trimmed = value.trim();
   if (!trimmed) return "";
   return trimmed.split("/").filter(Boolean).pop() ?? trimmed;
-}
-
-function RecipeDraftForm({
-  busy,
-  draft,
-  onCreate,
-  onDraftChange,
-}: {
-  busy: boolean;
-  draft: RecipeDraft;
-  onCreate: () => void;
-  onDraftChange: (value: RecipeDraft) => void;
-}) {
-  const { t } = useAdminI18n();
-
-  return (
-    <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold">{t("Create Prompt Recipe Draft")}</h2>
-        <button
-          className="inline-flex h-9 items-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
-          disabled={busy || !draft.recipeKey.trim() || !draft.label.trim() || !draft.body.trim()}
-          onClick={onCreate}
-          type="button"
-        >
-          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-          {t("Create Draft")}
-        </button>
-      </div>
-      <div className="grid gap-3 md:grid-cols-4">
-        <FormField
-          label="Recipe Key"
-          onChange={(value) => onDraftChange({ ...draft, recipeKey: value })}
-          value={draft.recipeKey}
-        />
-        <FormField
-          label="Label"
-          onChange={(value) => onDraftChange({ ...draft, label: value })}
-          value={draft.label}
-        />
-        <FormSelect
-          label="Mode"
-          onChange={(value) => onDraftChange({ ...draft, mode: value as RecipeDraft["mode"] })}
-          options={["image", "video", "negative"]}
-          value={draft.mode}
-        />
-        <FormSelect
-          label="Use Case"
-          onChange={(value) => onDraftChange({ ...draft, useCase: value as RecipeDraft["useCase"] })}
-          options={["character", "freeplay", "negative"]}
-          value={draft.useCase}
-        />
-      </div>
-      <div className="mt-3 grid gap-3 md:grid-cols-2">
-        <label className="block">
-          <span className="mb-1 block text-xs font-medium text-[var(--ad-text-muted)]">{t("Body")}</span>
-          <textarea
-            className="rounded-md min-h-24 w-full resize-y border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 text-sm outline-none focus:border-[var(--ad-ink)]"
-            onChange={(event) => onDraftChange({ ...draft, body: event.target.value })}
-            value={draft.body}
-          />
-        </label>
-        <label className="block">
-          <span className="mb-1 block text-xs font-medium text-[var(--ad-text-muted)]">
-            {t("Negative Base")}
-          </span>
-          <textarea
-            className="rounded-md min-h-24 w-full resize-y border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 text-sm outline-none focus:border-[var(--ad-ink)]"
-            onChange={(event) => onDraftChange({ ...draft, negativeBase: event.target.value })}
-            value={draft.negativeBase}
-          />
-        </label>
-      </div>
-    </section>
-  );
 }
 
 function FormField({

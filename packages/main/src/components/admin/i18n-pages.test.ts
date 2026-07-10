@@ -25,6 +25,19 @@ export const STARTERS_KEYS = [
   "Tags (comma-separated, ≤12)",
 ];
 
+export const RECIPES_KEYS = [
+  "All", "Back to prompt recipes", "Basic info", "Body", "Cancel",
+  "Create Draft", "Create the first prompt recipe to get started.", "Edit profile",
+  "Label", "Loading…", "Manage prompt recipes for image generation.", "Mode",
+  "Name", "Negative Base", "New prompt recipe", "No prompt recipes yet.",
+  "Only draft recipes can be edited.", "Prompt Recipes", "Publish", "Publish recipe",
+  "Recipe details", "Recipe ID", "Recipe Key", "Recipe not found.", "Request failed",
+  "Rollback", "Rollback recipe", "Save changes", "Search by name", "Status", "Updated",
+  "Use Case", "Version",
+];
+// 注意：状态词 draft/active/archived 走 recipeStateLabelKey → "Ready to publish"/"Published"/
+// "Archived"（已有 zh），不进这张表；同理 mode/useCase 枚举值走 value()/zhValues 通道。
+
 describe("admin i18n — trio pages have zh", () => {
   it("official characters trio", () => {
     for (const key of OFFICIAL_KEYS) expect(hasAdminZh(key)).toBe(true);
@@ -32,5 +45,9 @@ describe("admin i18n — trio pages have zh", () => {
 
   it("starter templates trio", () => {
     for (const key of STARTERS_KEYS) expect(hasAdminZh(key)).toBe(true);
+  });
+
+  it("prompt recipes trio", () => {
+    for (const key of RECIPES_KEYS) expect(hasAdminZh(key)).toBe(true);
   });
 });

@@ -86,7 +86,7 @@ describe("nav-config (redesigned IA)", () => {
 
   it("maps generation config sections to slices", () => {
     expect(configSliceForSection("generation/config")).toBe("profiles");
-    expect(configSliceForSection("generation/recipes")).toBe("recipes");
+    expect(configSliceForSection("generation/recipes")).toBeNull();
     expect(configSliceForSection("generation/presets")).toBe("presets");
     expect(configSliceForSection("content/tags")).toBeNull();
   });
