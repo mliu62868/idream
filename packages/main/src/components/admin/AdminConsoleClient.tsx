@@ -12,10 +12,8 @@ import {
   Check,
   ChevronRight,
   ClipboardCheck,
-  ExternalLink,
   FileText,
   Flag,
-  ImageIcon,
   Inbox,
   Languages,
   Library,
@@ -30,7 +28,6 @@ import {
   SlidersHorizontal,
   Trash2,
   UploadCloud,
-  Workflow,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -53,6 +50,9 @@ import {
   PlacementsView,
 } from "@/components/admin/ContentOpsViews";
 import { ImageProductionView } from "@/components/admin/ImageProductionView";
+import { OperatorFlow, type OperatorFlowItem } from "@/components/admin/generation/OperatorFlow";
+import { FailureReason } from "@/components/admin/generation/FailureReason";
+import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
 import {
   AdminI18nProvider,
   adminDateLocale,
@@ -156,7 +156,7 @@ type ConfigData = {
   recentJobs: Row[];
 };
 
-type ConfigTab = "drafts" | "published" | "settings";
+type ConfigTab = "profiles" | "settings";
 
 type ReconciliationData = {
   window: { from: string; to: string };
@@ -2223,7 +2223,6 @@ function renderSection(
       <ConfigView
         data={section.data}
         openAction={ctx.openAction}
-        reload={ctx.reload}
         selectedProfileId={ctx.selectedProfileId}
         setSelectedProfileId={ctx.setSelectedProfileId}
       />
@@ -2657,416 +2656,16 @@ function GenerationJobInspector({
   );
 }
 
-type ProfileWorkflowSlot = { type: string; default?: string | number | null };
-type ProfileWorkflowOption = { workflowKey: string; backendKind: string; inputs?: ProfileWorkflowSlot[] };
-
-// I-1 (P2 final review): edit workflows (e.g. qwen-image-edit-img2img) declare a REQUIRED
-// image slot — type "image" with no default — that gen's bindComfySlots must fill. Binding
-// one to a standard GenerationModelProfile means every plain text-to-image test/publish job
-// (which supplies no reference image) throws "missing required slot" and fails. Edit
-// workflows are driven by the P4 chat/edit reference-image path instead, so the picker below
-// disables (but still lists) them.
-function requiresReferenceImage(workflow: ProfileWorkflowOption): boolean {
-  return Array.isArray(workflow.inputs)
-    ? workflow.inputs.some((slot) => slot.type === "image" && (slot.default === undefined || slot.default === null))
-    : false;
-}
-
-function ProfileReleaseWorkbench({
-  jobs,
-  onOpenAction,
-  onReload,
-  onSelectProfile,
-  profiles,
-  selectedProfile,
-}: {
-  jobs: Row[];
-  onOpenAction: (action: PendingAction) => void;
-  onReload: () => void | Promise<void>;
-  onSelectProfile: (value: string | null) => void;
-  profiles: Row[];
-  selectedProfile: Row | null;
-}) {
-  const { locale, t, value } = useAdminI18n();
-  const [testPrompt, setTestPrompt] = useState("cinematic portrait, natural skin texture, soft studio lighting");
-  const [testBusy, setTestBusy] = useState(false);
-  const [testNotice, setTestNotice] = useState<string | null>(null);
-  const [testError, setTestError] = useState<string | null>(null);
-  const [watchJobId, setWatchJobId] = useState<string | null>(null);
-  const [workflowOptions, setWorkflowOptions] = useState<ProfileWorkflowOption[]>([]);
-  const [workflowDraft, setWorkflowDraft] = useState(() => stringValue(selectedProfile?.workflowKey));
-  const [syncedProfileId, setSyncedProfileId] = useState(() => stringValue(selectedProfile?.id));
-  const [workflowSaveBusy, setWorkflowSaveBusy] = useState(false);
-  const [workflowSaveNotice, setWorkflowSaveNotice] = useState<string | null>(null);
-  const [workflowSaveError, setWorkflowSaveError] = useState<string | null>(null);
-
-  const selectedId = stringValue(selectedProfile?.id);
-  const selectedKey = stringValue(selectedProfile?.profileKey);
-  const selectedStatus = stringValue(selectedProfile?.status);
-  const selectedMode = stringValue(selectedProfile?.mode);
-  const selectedVersion = numberValue(selectedProfile?.version);
-  const selectedOrientation = firstString(jsonStringArrayValue(selectedProfile?.allowedOrientations), "1:1");
-  const selectedWorkflowKey = stringValue(selectedProfile?.workflowKey);
-
-  // Adjust the workflow draft during render (React's "adjusting state when a prop changes"
-  // pattern) rather than in an Effect: resets only when the *selected profile* changes, so a
-  // background reload (e.g. the job-status poll below) that refreshes the same profile's data
-  // never clobbers an in-progress, unsaved dropdown edit.
-  if (selectedId !== syncedProfileId) {
-    setSyncedProfileId(selectedId);
-    setWorkflowDraft(selectedWorkflowKey);
-    setWorkflowSaveNotice(null);
-    setWorkflowSaveError(null);
-  }
-
-  const relatedJobs = useMemo(
-    () => profileRelatedJobs(jobs, selectedProfile),
-    [jobs, selectedProfile],
-  );
-  const latestJob = relatedJobs[0] ?? null;
-  const latestAsset = latestImageAsset(relatedJobs);
-  const watchedJob = watchJobId ? jobs.find((job) => stringValue(job.id) === watchJobId) ?? null : null;
-  const dryRun = dryRunSummary(selectedProfile?.dryRunSummary);
-  const verification = profileVerificationSummary(selectedProfile);
-  const canTest = Boolean(selectedProfile && selectedMode === "image" && selectedStatus !== "archived");
-  const canPublish = Boolean(selectedProfile && selectedStatus === "draft");
-  const publishBlocked = Boolean(verification.blockedReason);
-
-  useEffect(() => {
-    if (!watchJobId) return;
-    if (watchedJob && isTerminalJobStatus(stringValue(watchedJob.status))) {
-      const timer = window.setTimeout(() => setWatchJobId(null), 0);
-      return () => window.clearTimeout(timer);
-    }
-    const timer = window.setInterval(() => {
-      void onReload();
-    }, 2_000);
-    return () => window.clearInterval(timer);
-  }, [onReload, watchedJob, watchJobId]);
-
-  async function createTestImage() {
-    if (!selectedId || !canTest) return;
-    setTestBusy(true);
-    setTestNotice(null);
-    setTestError(null);
-    try {
-      const result = await apiWrite<{ job: Row }>(
-        `/api/v1/admin/generation/model-profiles/${selectedId}/test-job`,
-        "POST",
-        {
-          prompt: testPrompt.trim() || undefined,
-          orientation: selectedOrientation,
-          outputCount: 1,
-          reason: "Admin image test from Generation Config",
-          confirmation: selectedId,
-        },
-      );
-      const jobId = stringValue(result.job.id);
-      setWatchJobId(jobId || null);
-      setTestNotice(jobId ? t("Test image queued: {id}", { id: shortId(jobId) }) : t("Test image queued"));
-      await onReload();
-    } catch (error) {
-      setTestError(error instanceof Error ? error.message : t("Test image failed"));
-    } finally {
-      setTestBusy(false);
-    }
-  }
-
-  // Populate the workflow dropdown once from the same read-only catalog WorkflowsView
-  // uses; the descriptor list is engineering-seeded and rarely changes within a session.
-  useEffect(() => {
-    let cancelled = false;
-    void apiGet<{ items: ProfileWorkflowOption[] }>("/api/v1/admin/generation/workflows")
-      .then((data) => {
-        if (!cancelled) setWorkflowOptions(data.items);
-      })
-      .catch(() => {
-        // Non-fatal: the select just falls back to "(use pipelineModel)" only.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  async function saveWorkflowKey() {
-    if (!selectedId) return;
-    setWorkflowSaveBusy(true);
-    setWorkflowSaveNotice(null);
-    setWorkflowSaveError(null);
-    try {
-      await apiWrite(`/api/v1/admin/generation/model-profiles/${selectedId}`, "PATCH", {
-        workflowKey: workflowDraft || null,
-      });
-      setWorkflowSaveNotice(t("Workflow saved"));
-      await onReload();
-    } catch (error) {
-      setWorkflowSaveError(error instanceof Error ? error.message : t("Workflow save failed"));
-    } finally {
-      setWorkflowSaveBusy(false);
-    }
-  }
-
-  if (!selectedProfile) {
-    return (
-      <section className="min-w-0 border border-white/10 bg-[rgb(18,18,18)] p-4">
-        <div className="flex items-center gap-2 text-sm text-[rgb(170,170,170)]">
-          <ImageIcon className="h-4 w-4" />
-          {t("No built-in generation profiles are seeded yet.")}
-        </div>
-      </section>
-    );
-  }
-
-  return (
-    <section className="min-w-0 border border-white/10 bg-[rgb(18,18,18)]">
-      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-white/10 p-4">
-        <div className="min-w-0">
-          <p className="text-xs font-semibold uppercase text-[rgb(170,170,170)]">
-            {t("Publish test workspace")}
-          </p>
-          <h2 className="mt-1 truncate text-lg font-semibold">{adminValueLabel(locale, stringValue(selectedProfile.label) || selectedKey)}</h2>
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[rgb(170,170,170)]">
-            <Status locale={locale} value={selectedStatus} tone={selectedStatus === "active" ? "good" : "warn"} />
-            <span className="max-w-full break-all font-mono">{selectedKey}</span>
-            <span>v{selectedVersion || "-"}</span>
-            <span>{value(selectedMode)}</span>
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Link
-            className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm text-[rgb(230,230,230)] hover:bg-white/10"
-            href="/admin/generation/jobs"
-          >
-            <ExternalLink className="h-4 w-4" />
-            {t("Open jobs")}
-          </Link>
-          <button
-            className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm text-[rgb(230,230,230)] hover:bg-white/10"
-            onClick={() => void onReload()}
-            type="button"
-          >
-            <RefreshCcw className="h-4 w-4" />
-            {t("Refresh")}
-          </button>
-        </div>
-      </div>
-
-      <div className="grid min-w-0 gap-px bg-white/10 lg:grid-cols-[minmax(0,1fr)_380px]">
-        <div className="min-w-0 space-y-4 bg-[rgb(18,18,18)] p-4">
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">
-              {t("Selected profile")}
-            </span>
-            <select
-              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
-              onChange={(event) => onSelectProfile(event.target.value || null)}
-              value={selectedId}
-            >
-              {profileOptions(profiles).map((profile) => (
-                <option key={stringValue(profile.id)} value={stringValue(profile.id)}>
-                  {profileOptionLabel(profile)}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="block">
-            <span className="mb-1 flex items-center gap-1 text-xs font-medium text-[rgb(170,170,170)]">
-              <Workflow className="h-3.5 w-3.5" />
-              {t("Workflow")}
-            </span>
-            <div className="flex gap-2">
-              <select
-                className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30 disabled:opacity-50"
-                disabled={selectedStatus !== "draft"}
-                onChange={(event) => setWorkflowDraft(event.target.value)}
-                value={workflowDraft}
-              >
-                <option value="">{t("(use pipelineModel)")}</option>
-                {workflowOptions.map((workflow) => {
-                  const needsReferenceImage = requiresReferenceImage(workflow);
-                  return (
-                    <option
-                      key={workflow.workflowKey}
-                      value={workflow.workflowKey}
-                      disabled={needsReferenceImage}
-                    >
-                      {needsReferenceImage
-                        ? `${workflow.workflowKey} (${workflow.backendKind}) ${t("(needs reference image — not for standard profiles)")}`
-                        : `${workflow.workflowKey} (${workflow.backendKind})`}
-                    </option>
-                  );
-                })}
-              </select>
-              <button
-                className="inline-flex h-10 shrink-0 items-center gap-2 border border-white/10 px-3 text-sm text-[rgb(230,230,230)] hover:bg-white/10 disabled:opacity-50"
-                disabled={selectedStatus !== "draft" || workflowSaveBusy || workflowDraft === selectedWorkflowKey}
-                onClick={() => void saveWorkflowKey()}
-                type="button"
-              >
-                {workflowSaveBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : t("Save")}
-              </button>
-            </div>
-            {selectedStatus !== "draft" ? (
-              <span className="mt-1 block text-xs text-[rgb(170,170,170)]">
-                {t("Only draft profiles can change workflow routing.")}
-              </span>
-            ) : null}
-          </label>
-          {workflowSaveNotice ? (
-            <div className="border border-emerald-400/30 bg-emerald-950/20 px-3 py-2 text-sm text-emerald-100">
-              {workflowSaveNotice}
-            </div>
-          ) : null}
-          {workflowSaveError ? (
-            <div className="border border-red-400/30 bg-red-950/30 px-3 py-2 text-sm text-red-100">
-              {workflowSaveError}
-            </div>
-          ) : null}
-
-          <div className="grid min-w-0 gap-3 md:grid-cols-4">
-            <Metric label="Dry Run" value={value(dryRun.status)} meta={dryRun.meta} />
-            <Metric label="Verification" value={value(verification.status)} meta={verification.meta} />
-            <Metric label="Latest job" value={latestJob ? value(stringValue(latestJob.status)) : "-"} meta={latestJob ? shortId(stringValue(latestJob.id)) : t("No test jobs")} />
-            <Metric
-              label="Output size"
-              value={`${numberValue(selectedProfile.defaultWidth) || "-"}x${numberValue(selectedProfile.defaultHeight) || "-"}`}
-              meta={selectedOrientation}
-            />
-          </div>
-          <ProfileVerificationPanel summary={verification} />
-
-          <div className="flex flex-wrap gap-2">
-            <button
-              className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm text-[rgb(230,230,230)] hover:bg-white/10"
-              onClick={() =>
-                onOpenAction({
-                  title: `Dry run profile ${selectedId}`,
-                  endpoint: `/api/v1/admin/generation/model-profiles/${selectedId}/dry-run`,
-                  method: "POST",
-                  confirmText: selectedId,
-                  reasonRequired: true,
-                  body: (actionReason, actionConfirmation) => ({
-                    reason: actionReason,
-                    confirmation: actionConfirmation,
-                  }),
-                })
-              }
-              type="button"
-            >
-              <Activity className="h-4 w-4" />
-              {t("Dry Run")}
-            </button>
-            <button
-              className="inline-flex h-9 items-center gap-2 bg-white px-3 text-sm font-semibold text-black hover:bg-[rgb(230,230,230)] disabled:opacity-50"
-              disabled={!canTest || testBusy}
-              onClick={() => void createTestImage()}
-              type="button"
-            >
-              {testBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-              {t("Test Image")}
-            </button>
-            <button
-              className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm text-[rgb(230,230,230)] hover:bg-white/10 disabled:opacity-50"
-              disabled={!canPublish || publishBlocked}
-              onClick={() => onOpenAction(publishProfileAction(selectedId, selectedMode, selectedProfile))}
-              type="button"
-            >
-              <UploadCloud className="h-4 w-4" />
-              {t("Publish")}
-            </button>
-          </div>
-
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">
-              {t("Test prompt")}
-            </span>
-            <textarea
-              className="min-h-24 w-full resize-y border border-white/10 bg-black/30 px-3 py-2 text-sm leading-6 outline-none focus:border-white/30"
-              onChange={(event) => setTestPrompt(event.target.value)}
-              value={testPrompt}
-            />
-          </label>
-
-          {testNotice ? (
-            <div className="border border-emerald-400/30 bg-emerald-950/20 px-3 py-2 text-sm text-emerald-100">
-              {testNotice}
-            </div>
-          ) : null}
-          {testError ? (
-            <div className="border border-red-400/30 bg-red-950/30 px-3 py-2 text-sm text-red-100">
-              {testError}
-            </div>
-          ) : null}
-        </div>
-
-        <div className="min-w-0 bg-[rgb(18,18,18)] p-4">
-          <div className="flex items-center justify-between gap-3">
-            <h3 className="text-sm font-semibold">{t("Latest test image")}</h3>
-            {latestJob ? (
-              <span className="text-xs text-[rgb(170,170,170)]">{compactDate(stringValue(latestJob.createdAt), locale)}</span>
-            ) : null}
-          </div>
-          <div className="mt-3 aspect-[4/5] overflow-hidden border border-white/10 bg-black/30">
-            {latestAsset ? (
-              <a href={latestAsset.url} rel="noreferrer" target="_blank">
-                <SafeImagePreview alt={t("Latest test image")} src={latestAsset.thumbnailUrl || latestAsset.url} />
-              </a>
-            ) : (
-              <div className="flex h-full items-center justify-center px-6 text-center text-sm text-[rgb(170,170,170)]">
-                {latestJob
-                  ? isTerminalJobStatus(stringValue(latestJob.status))
-                    ? t("No image generated: {status}", { status: value(stringValue(latestJob.status)) })
-                    : t("Waiting for generated asset")
-                  : t("No test image yet")}
-              </div>
-            )}
-          </div>
-          <div className="mt-3 space-y-2 text-xs text-[rgb(170,170,170)]">
-            {relatedJobs.slice(0, 4).map((job) => (
-              <div key={stringValue(job.id)} className="flex items-center justify-between gap-2 border border-white/10 px-2 py-1">
-                <span className="font-mono">{shortId(stringValue(job.id))}</span>
-                <span>{value(stringValue(job.status))}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function ConfigOverviewHeader({
-  jobs,
-  profiles,
-  recipes,
-}: {
-  jobs: Row[];
-  profiles: Row[];
-  recipes: Row[];
-}) {
+function ConfigOverviewHeader() {
   const { t } = useAdminI18n();
-  const draftCount = profiles.filter((profile) => stringValue(profile.status) === "draft").length;
-  const activeCount = profiles.filter((profile) => stringValue(profile.status) === "active").length;
-  const completedJobs = jobs.filter((job) => stringValue(job.status) === "completed").length;
 
   return (
     <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <p className="text-xs font-semibold uppercase text-[rgb(170,170,170)]">{t("Model Profiles")}</p>
-          <h2 className="mt-1 text-lg font-semibold">{t("Built-in profiles, test, publish, monitor")}</h2>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-[rgb(170,170,170)]">
-            {t("Operate seeded generation profiles here; model files and runner templates stay in engineering-owned config.")}
-          </p>
-        </div>
-      </div>
-      <div className="mt-4 grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-4">
-        <Metric label="Drafts" value={draftCount} meta="ready to test" />
-        <Metric label="Published" value={activeCount} meta="status = active" />
-        <Metric label="Test jobs" value={jobs.length} meta={`${completedJobs} completed`} />
-        <Metric label="Prompt Recipes" value={recipes.length} meta="recipe records" />
-      </div>
+      <p className="text-xs font-semibold uppercase text-[rgb(170,170,170)]">{t("Model Profiles")}</p>
+      <h2 className="mt-1 text-lg font-semibold">{t("Test and publish generation profiles")}</h2>
+      <p className="mt-2 max-w-3xl text-sm leading-6 text-[rgb(170,170,170)]">
+        {t("Pick a profile to check readiness, then publish it. Model files and runner setup stay in engineering-owned config.")}
+      </p>
     </section>
   );
 }
@@ -3082,13 +2681,12 @@ function ConfigTabNav({
 }) {
   const { t } = useAdminI18n();
   const items: Array<{ id: ConfigTab; label: string; meta: string }> = [
-    { id: "drafts", label: "Drafts", meta: "Test and publish" },
-    { id: "published", label: "Published", meta: "Active and archived" },
+    { id: "profiles", label: "Profiles", meta: "Test and publish" },
     { id: "settings", label: "Settings", meta: "Feature flags" },
   ];
 
   return (
-    <div className="grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-3">
+    <div className="grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-2">
       {items.map((item) => {
         const selected = active === item.id;
         return (
@@ -3123,106 +2721,136 @@ function ConfigTabNav({
   );
 }
 
-function ProfileDraftManager({
-  drafts,
+// SPEC: operator-facing state phrase (returns an i18n key) shared by the list subtitle and detail header.
+// INTENT: never leak machine codes; blocked -> needs engineering; active -> published;
+//         draft without a dry run -> needs testing, otherwise -> ready to publish.
+function profileStateLabelKey(profile: Row, verification: ProfileVerificationSummary): string {
+  if (verification.blockedReason) return "Blocked — needs engineering";
+  const status = stringValue(profile.status);
+  if (status === "active") return "Published";
+  if (status === "archived") return "Archived";
+  if (status === "draft") {
+    return dryRunSummary(profile.dryRunSummary).status === "missing" ? "Needs testing" : "Ready to publish";
+  }
+  return status || "draft";
+}
+
+// SPEC: pick the most specific machine code for FailureReason (plain-language title first, raw code folded away).
+// failureMode wins (e.g. missing_flux2_klein_reference_runtime_components -> "Model files not ready");
+// else a bad component -> missing_runtime_components; else fall back to the raw verificationStatus.
+function profileBlockCode(verification: ProfileVerificationSummary): string {
+  if (verification.failureMode) return verification.failureMode;
+  if (verification.components.some((component) => component.tone === "bad")) return "missing_runtime_components";
+  return verification.status;
+}
+
+// SPEC: selected profile detail — status-driven action rail + plain-language block reason + folded engineering ids.
+// INVARIANTS: action set matches the former profileTableActions (draft -> dry-run/publish; active -> rollback;
+//             enabled -> disable), all via openAction (confirm+reason modal); publish is disabled while blocked.
+function ProfileDetail({
   jobs,
   onOpenAction,
-  onSelectProfile,
-  selectedProfileId,
+  profile,
 }: {
-  drafts: Row[];
   jobs: Row[];
   onOpenAction: (action: PendingAction) => void;
-  onSelectProfile: (value: string | null) => void;
-  selectedProfileId: string | null;
+  profile: Row | null;
 }) {
   const { locale, t, value } = useAdminI18n();
-  const sortedDrafts = profileOptions(drafts);
+
+  if (!profile) {
+    return (
+      <section className="border border-white/10 bg-[rgb(18,18,18)] p-6 text-sm text-[rgb(170,170,170)]">
+        {t("Select a profile to review its readiness and publish it.")}
+      </section>
+    );
+  }
+
+  const id = stringValue(profile.id);
+  const status = stringValue(profile.status);
+  const mode = stringValue(profile.mode);
+  const enabled = Boolean(profile.enabled);
+  const verification = profileVerificationSummary(profile);
+  const publishBlocked = Boolean(verification.blockedReason);
+  const dryRun = dryRunSummary(profile.dryRunSummary);
+  const latestJob = profileRelatedJobs(jobs, profile)[0] ?? null;
+  const source = profileSourceLabel(profile);
 
   return (
-    <section className="min-w-0 border border-white/10 bg-[rgb(18,18,18)]">
-      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-white/10 p-4">
-        <div className="min-w-0">
-          <h2 className="text-sm font-semibold">{t("Draft manager")}</h2>
-          <p className="mt-1 text-xs leading-5 text-[rgb(170,170,170)]">
-            {t("Drafts are seeded from built-in profiles so operators can test readiness without managing model files.")}
-          </p>
+    <section className="min-w-0 space-y-4 border border-white/10 bg-[rgb(18,18,18)] p-4">
+      <div className="min-w-0">
+        <h2 className="truncate text-lg font-semibold">{profileDisplayName(profile, locale)}</h2>
+        <p className="mt-1 text-sm text-[rgb(170,170,170)]">{t(profileStateLabelKey(profile, verification))}</p>
+      </div>
+
+      {id ? (
+        <div className="flex flex-wrap gap-2">
+          {status === "draft" ? (
+            <>
+              <IconAction
+                icon={<Activity className="h-4 w-4" />}
+                label="Dry Run"
+                onClick={() => onOpenAction(dryRunProfileAction(id))}
+              />
+              <IconAction
+                disabled={publishBlocked}
+                icon={<UploadCloud className="h-4 w-4" />}
+                label="Publish"
+                onClick={() => onOpenAction(publishProfileAction(id, mode, profile))}
+              />
+            </>
+          ) : null}
+          {status === "active" ? (
+            <IconAction
+              icon={<RotateCcw className="h-4 w-4" />}
+              label="Rollback"
+              onClick={() => onOpenAction(rollbackProfileAction(id))}
+            />
+          ) : null}
+          {enabled ? (
+            <IconAction
+              icon={<Ban className="h-4 w-4" />}
+              label="Disable"
+              onClick={() => onOpenAction(disableProfileAction(id))}
+            />
+          ) : null}
         </div>
-      </div>
+      ) : null}
 
-      <div className="min-w-0 divide-y divide-white/10">
-        {sortedDrafts.map((profile) => {
-          const id = stringValue(profile.id);
-          const selected = selectedProfileId === id;
-          const dryRun = dryRunSummary(profile.dryRunSummary);
-          const verification = profileVerificationSummary(profile);
-          const publishBlocked = Boolean(verification.blockedReason);
-          const latestJob = profileRelatedJobs(jobs, profile)[0] ?? null;
-          const source = profileSourceLabel(profile);
-          return (
-            <article
-              className={cn(
-                "min-w-0 p-4",
-                selected && "bg-white/[0.06]",
-              )}
-              key={id || stringValue(profile.profileKey)}
-            >
-              <div className="flex min-w-0 items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <h3 className="truncate text-sm font-semibold">
-                    {profileDisplayName(profile, locale)}
-                  </h3>
-                  <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-xs text-[rgb(170,170,170)]">
-                    <span className="max-w-full break-all font-mono">{stringValue(profile.profileKey) || id}</span>
-                    <span>v{numberValue(profile.version) || "-"}</span>
-                    <span>{value(stringValue(profile.runner))}</span>
-                  </div>
-                </div>
-                <Status locale={locale} value="draft" tone="warn" />
-              </div>
+      {publishBlocked ? (
+        <div className="border border-red-400/30 bg-red-950/20 p-3">
+          <FailureReason code={profileBlockCode(verification)} detail={verification.meta} />
+        </div>
+      ) : null}
 
-              <div className="mt-3 grid min-w-0 gap-2 text-xs sm:grid-cols-2">
-                <SummaryRow label="Source" value={source || "-"} />
-                <SummaryRow
-                  label="Size"
-                  value={`${numberValue(profile.defaultWidth) || "-"} x ${numberValue(profile.defaultHeight) || "-"}`}
-                />
-                <SummaryRow label="Dry Run" value={`${value(dryRun.status)} (${dryRun.meta})`} />
-                <SummaryRow label="Verification" value={`${value(verification.status)} (${verification.meta})`} />
-                <SummaryRow
-                  label="Latest job"
-                  value={latestJob ? `${shortId(stringValue(latestJob.id))} ${value(stringValue(latestJob.status))}` : t("No test jobs")}
-                />
-              </div>
-              <ProfileVerificationPanel compact summary={verification} />
-
-              <div className="mt-3 flex flex-wrap gap-2">
-                <IconAction
-                  icon={<Check className="h-4 w-4" />}
-                  label="Select"
-                  onClick={() => onSelectProfile(id || null)}
-                />
-                <IconAction
-                  icon={<Activity className="h-4 w-4" />}
-                  label="Dry Run"
-                  onClick={() => onOpenAction(dryRunProfileAction(id))}
-                />
-                <IconAction
-                  icon={<UploadCloud className="h-4 w-4" />}
-                  label="Publish"
-                  disabled={publishBlocked}
-                  onClick={() => onOpenAction(publishProfileAction(id, stringValue(profile.mode), profile))}
-                />
-              </div>
-            </article>
-          );
-        })}
-        {sortedDrafts.length === 0 ? (
-          <div className="p-6 text-sm text-[rgb(170,170,170)]">
-            <p>{t("No built-in draft profiles are seeded yet.")}</p>
+      <EngineeringDetails summary={t("Model & workflow details")}>
+        <div className="space-y-1">
+          <div>{t("Profile ID")}: {id || "-"}</div>
+          <div>{t("Profile key")}: {stringValue(profile.profileKey) || "-"}</div>
+          <div>{t("Version")}: v{numberValue(profile.version) || "-"}</div>
+          <div>{t("Runner")}: {stringValue(profile.runner) || "-"}</div>
+          <div>{t("Mode")}: {mode || "-"}</div>
+          <div>{t("Pipeline model")}: {stringValue(profile.pipelineModel) || "-"}</div>
+          <div>{t("Model file")}: {source || "-"}</div>
+          <div>{t("Workflow")}: {stringValue(profile.workflowKey) || t("(use pipelineModel)")}</div>
+          <div>
+            {t("Output size")}: {numberValue(profile.defaultWidth) || "-"}x{numberValue(profile.defaultHeight) || "-"}
           </div>
-        ) : null}
-      </div>
+          <div>
+            {t("Dry Run")}: {value(dryRun.status)} · {dryRun.meta}
+          </div>
+          <div>{t("Verification status")}: {verification.status}</div>
+          <div>{t("Rollout")}: {numberValue(profile.rolloutPercent) || 0}%</div>
+          <div>{t("Required entitlement")}: {stringValue(profile.requiredEntitlement) || "-"}</div>
+          <div>
+            {t("Latest job")}:{" "}
+            {latestJob
+              ? `${shortId(stringValue(latestJob.id))} · ${value(stringValue(latestJob.status))}`
+              : t("No test jobs")}
+          </div>
+        </div>
+        <ProfileVerificationPanel summary={verification} />
+      </EngineeringDetails>
     </section>
   );
 }
@@ -3230,37 +2858,49 @@ function ProfileDraftManager({
 function ConfigView({
   data,
   openAction,
-  reload,
   selectedProfileId,
   setSelectedProfileId,
 }: {
   data: ConfigData;
   openAction: (action: PendingAction) => void;
-  reload: () => void | Promise<void>;
   selectedProfileId: string | null;
   setSelectedProfileId: (value: string | null) => void;
 }) {
+  const { locale, t } = useAdminI18n();
   const [initialUrlState] = useState(() => readConfigUrlState());
-  const [configTab, setConfigTab] = useState<ConfigTab>(() => initialUrlState.tab ?? "drafts");
+  const [configTab, setConfigTab] = useState<ConfigTab>(() => initialUrlState.tab ?? "profiles");
   const selectedProfile = useMemo(
     () => selectedGenerationProfile(data.profiles, selectedProfileId),
     [data.profiles, selectedProfileId],
   );
-  const draftProfiles = useMemo(
-    () => data.profiles.filter((profile) => stringValue(profile.status) === "draft"),
-    [data.profiles],
-  );
-  const publishedProfiles = useMemo(
-    () => data.profiles.filter((profile) => stringValue(profile.status) !== "draft"),
-    [data.profiles],
-  );
+  const orderedProfiles = useMemo(() => profileOptions(data.profiles), [data.profiles]);
   const tabCounts = useMemo<Record<ConfigTab, number | string>>(
     () => ({
-      drafts: draftProfiles.length,
-      published: publishedProfiles.length,
+      profiles: data.profiles.length,
       settings: data.flags.length,
     }),
-    [data.flags.length, draftProfiles.length, publishedProfiles.length],
+    [data.flags.length, data.profiles.length],
+  );
+  const profileItems = useMemo<OperatorFlowItem[]>(
+    () =>
+      orderedProfiles
+        .filter((profile) => stringValue(profile.id))
+        .map((profile) => {
+          const verification = profileVerificationSummary(profile);
+          const status = stringValue(profile.status);
+          const tone: "good" | "bad" | "warn" = verification.blockedReason
+            ? "bad"
+            : status === "active"
+              ? "good"
+              : "warn";
+          return {
+            id: stringValue(profile.id),
+            primary: profileDisplayName(profile, locale),
+            secondary: t(profileStateLabelKey(profile, verification)),
+            badge: <Status locale={locale} tone={tone} value={status || "draft"} />,
+          };
+        }),
+    [locale, orderedProfiles, t],
   );
 
   useEffect(() => {
@@ -3271,38 +2911,16 @@ function ConfigView({
 
   return (
     <div className="space-y-6">
-      <ConfigOverviewHeader jobs={data.recentJobs} profiles={data.profiles} recipes={data.recipes} />
+      <ConfigOverviewHeader />
       <ConfigTabNav active={configTab} counts={tabCounts} onChange={setConfigTab} />
 
-      {configTab === "drafts" && (
-        <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(360px,440px)_minmax(0,1fr)]">
-          <ProfileDraftManager
-            drafts={draftProfiles}
-            jobs={data.recentJobs}
-            onOpenAction={openAction}
-            onSelectProfile={setSelectedProfileId}
-            selectedProfileId={selectedProfileId}
-          />
-          <ProfileReleaseWorkbench
-            jobs={data.recentJobs}
-            onOpenAction={openAction}
-            onReload={reload}
-            onSelectProfile={setSelectedProfileId}
-            profiles={data.profiles}
-            selectedProfile={selectedProfile}
-          />
-        </div>
-      )}
-
-      {configTab === "published" && (
-        <DataTable
-          actions={(row) => profileTableActions(row, openAction, setSelectedProfileId)}
-          columns={[
-            "id", "profileKey", "label", "mode", "runner", "pipelineModel",
-            "status", "version", "enabled", "rolloutPercent", "requiredEntitlement", "dryRunSummary",
-          ]}
-          rows={publishedProfiles}
-          title="Published profiles"
+      {configTab === "profiles" && (
+        <OperatorFlow
+          detail={<ProfileDetail jobs={data.recentJobs} onOpenAction={openAction} profile={selectedProfile} />}
+          empty={t("No built-in generation profiles are seeded yet.")}
+          items={profileItems}
+          onSelect={setSelectedProfileId}
+          selectedId={selectedProfileId}
         />
       )}
 
@@ -3359,56 +2977,6 @@ function GenerationPresetsView({ data }: { data: ConfigData }) {
         rows={data.presets}
         title="Built-in Presets"
       />
-    </div>
-  );
-}
-
-function profileTableActions(
-  row: Row,
-  openAction: (action: PendingAction) => void,
-  setSelectedProfileId: (value: string | null) => void,
-) {
-  const id = stringValue(row.id);
-  if (!id) return null;
-  const status = stringValue(row.status);
-  const enabled = Boolean(row.enabled);
-
-  return (
-    <div className="flex flex-wrap gap-1">
-      <IconAction
-        icon={<Check className="h-4 w-4" />}
-        label="Select"
-        onClick={() => setSelectedProfileId(id)}
-      />
-      {status === "draft" ? (
-        <>
-          <IconAction
-            icon={<Activity className="h-4 w-4" />}
-            label="Dry Run"
-            onClick={() => openAction(dryRunProfileAction(id))}
-          />
-          <IconAction
-            icon={<UploadCloud className="h-4 w-4" />}
-            label="Publish"
-            disabled={Boolean(profileVerificationSummary(row).blockedReason)}
-            onClick={() => openAction(publishProfileAction(id, stringValue(row.mode), row))}
-          />
-        </>
-      ) : null}
-      {status === "active" ? (
-        <IconAction
-          icon={<RotateCcw className="h-4 w-4" />}
-          label="Rollback"
-          onClick={() => openAction(rollbackProfileAction(id))}
-        />
-      ) : null}
-      {enabled ? (
-        <IconAction
-          icon={<Ban className="h-4 w-4" />}
-          label="Disable"
-          onClick={() => openAction(disableProfileAction(id))}
-        />
-      ) : null}
     </div>
   );
 }
@@ -7308,7 +6876,7 @@ function filterSectionData(section: SectionData | null, query: string): SectionD
 }
 
 function modelAssetConfigureHref(item: ModelImportAsset) {
-  const params = new URLSearchParams({ tab: "drafts", asset: item.path });
+  const params = new URLSearchParams({ tab: "profiles", asset: item.path });
   return `/admin/generation/config?${params.toString()}`;
 }
 
@@ -7323,9 +6891,9 @@ function readConfigUrlState(): { tab: ConfigTab | null; assetPath: string } {
 }
 
 function configTabValue(value: string | null): ConfigTab | null {
-  if (value === "create") return "drafts";
-  if (value === "drafts" || value === "published" || value === "settings") {
-    return value;
+  if (value === "settings") return "settings";
+  if (value === "profiles" || value === "drafts" || value === "published" || value === "create") {
+    return "profiles";
   }
   return null;
 }
@@ -7408,13 +6976,6 @@ function profileStatusRank(profile: Row) {
   if (status === "draft") return 0;
   if (status === "active") return 1;
   return 2;
-}
-
-function profileOptionLabel(profile: Row) {
-  const label = stringValue(profile.label) || stringValue(profile.profileKey) || stringValue(profile.id);
-  const status = stringValue(profile.status) || "unknown";
-  const version = numberValue(profile.version) || "-";
-  return `${label} · ${status} · v${version}`;
 }
 
 function profileDisplayName(profile: Row, locale: AdminLocale) {
@@ -7562,33 +7123,6 @@ function profileRelatedJobs(jobs: Row[], profile: Row | null) {
     .sort((a, b) => rowTimestamp(b) - rowTimestamp(a));
 }
 
-function latestImageAsset(jobs: Row[]) {
-  for (const job of jobs) {
-    const asset = jobAssets(job).find((item) => item.type === "image");
-    if (asset) return asset;
-  }
-  return null;
-}
-
-function jobAssets(job: Row) {
-  return Array.isArray(job.assets)
-    ? job.assets
-        .map((asset): { id: string; type: string; url: string; thumbnailUrl: string; safetyStatus: string } | null => {
-          if (!isRecord(asset)) return null;
-          const url = stringValue(asset.url);
-          if (!url) return null;
-          return {
-            id: stringValue(asset.id),
-            type: stringValue(asset.type),
-            url,
-            thumbnailUrl: stringValue(asset.thumbnailUrl) || url,
-            safetyStatus: stringValue(asset.safetyStatus),
-          };
-        })
-        .filter((asset): asset is { id: string; type: string; url: string; thumbnailUrl: string; safetyStatus: string } => asset !== null)
-    : [];
-}
-
 function dryRunSummary(value: unknown) {
   const record = isRecord(value) ? value : null;
   if (!record) return { status: "missing", meta: "Run Dry Run before publish" };
@@ -7654,10 +7188,6 @@ function actionReviewCount(value: string) {
 
 function formatPercent(value: number | undefined) {
   return value === undefined ? "-" : `${Math.round(value * 100)}%`;
-}
-
-function isTerminalJobStatus(status: string) {
-  return ["completed", "failed", "blocked", "refunded"].includes(status);
 }
 
 function firstString(values: string[], fallback: string) {
