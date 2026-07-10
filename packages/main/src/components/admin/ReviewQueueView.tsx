@@ -285,7 +285,7 @@ export function ReviewQueueView() {
             </thead>
             <tbody>
               {visibleItems.map((item) => (
-                <tr key={item.submissionId} className="rounded-lg border-b border-[var(--ad-border)] last:border-0">
+                <tr key={item.submissionId} className="border-b border-[var(--ad-border)] last:border-0">
                   <td className="px-3 py-2 align-top text-[var(--ad-text)]">{item.character.name}</td>
                   <td className="px-3 py-2 align-top text-[var(--ad-text)]">{valueLabel(item.character.gender)}</td>
                   <td className="px-3 py-2 align-top text-[var(--ad-text)]">{valueLabel(item.character.style)}</td>

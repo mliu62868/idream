@@ -2663,7 +2663,7 @@ function GenerationJobInspector({
               </div>
               <div className="rounded-lg mt-3 max-h-72 overflow-y-auto border border-[var(--ad-border)]">
                 {timeline.map((event, index) => (
-                  <div className="rounded-lg border-b border-[var(--ad-border)] p-3 text-xs last:border-0" key={`${event.at}-${event.type}-${index}`}>
+                  <div className="border-b border-[var(--ad-border)] p-3 text-xs last:border-0" key={`${event.at}-${event.type}-${index}`}>
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <span className="font-semibold text-[var(--ad-text)]">{value(event.type)}</span>
                       <span className="text-[var(--ad-text-muted)]">{compactDate(event.at, locale)}</span>
@@ -3844,7 +3844,7 @@ function ModelAssetLibraryTable({ items }: { items: ModelImportAsset[] }) {
           </thead>
           <tbody>
             {items.map((item) => (
-              <tr key={`${item.kind}-${item.path}`} className="rounded-lg border-b border-[var(--ad-border)] last:border-0">
+              <tr key={`${item.kind}-${item.path}`} className="border-b border-[var(--ad-border)] last:border-0">
                 <td className="px-3 py-2 align-top">
                   <span className="rounded-lg border border-[var(--ad-border)] px-2 py-1 text-[11px] text-[var(--ad-text)]">
                     {item.kind}
@@ -4549,7 +4549,7 @@ function ModelProfileDraftForm({
               <div className="max-h-52 overflow-y-auto">
                 {loraItems.map((item, index) => (
                   <div
-                    className="rounded-lg grid gap-2 border-b border-[var(--ad-border)] p-2 text-xs last:border-0 md:grid-cols-[1fr_1.5fr_84px_84px]"
+                    className="grid gap-2 border-b border-[var(--ad-border)] p-2 text-xs last:border-0 md:grid-cols-[1fr_1.5fr_84px_84px]"
                     key={`${item.path || item.key}-${index}`}
                   >
                     <input
@@ -7186,7 +7186,7 @@ function DataTable({
           </thead>
           <tbody>
             {rows.map((row, index) => (
-              <tr key={`${stringValue(row.id) || stringValue(row.key) || title}-${index}`} className="rounded-lg border-b border-[var(--ad-border)] last:border-0">
+              <tr key={`${stringValue(row.id) || stringValue(row.key) || title}-${index}`} className="border-b border-[var(--ad-border)] last:border-0">
                 {columns.map((column) => (
                   <td key={column} className="max-w-[260px] px-3 py-2 align-top text-[var(--ad-text)]">
                     {renderCell(row[column], locale)}
