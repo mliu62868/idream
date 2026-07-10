@@ -323,6 +323,7 @@ const zh: Record<string, string> = {
   "Register Path": "登记路径",
   "Retention cohorts (D1 / D7)": "留存 cohort（D1 / D7）",
   "Reconciliation by reason": "对账按原因",
+  "Request failed": "请求失败",
   "Requeue": "重新入队",
   "Requeue selected": "重新入队已选",
   "Review note (optional, shown to creator)": "审核备注（可选，展示给创建者）",
