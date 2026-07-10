@@ -1,15 +1,19 @@
 "use client";
 
 // SPEC: 只读展示 generation backends（comfyui + sdcpp）目录 —— kind、endpoint/cliPath、
-//       健康探测结果（ok + latencyMs，或 fail + detail）。
-// INTENT: 零 props、自取数，样式镜像 TagsView.tsx。这是工程/运维排查视图，纯展示 + 手动
-//         刷新，无写操作。
+//       健康探测结果（ok + latencyMs，或 fail + detail）。用 ReadonlyOpsView 表格渲染，
+//       与 jobs/dead-letter 运维页一致；不健康行用 FailureReason 出人话，endpoint/cliPath
+//       折进 EngineeringDetails，不裸露成表格列。
+// INTENT: 零 props、自取数，纯展示 + 手动刷新，无写操作。
 // INVARIANTS: 健康探测由后端每次请求时实时探测（无客户端缓存/轮询）；只有手动点击
 //             Refresh 才会重新拉取。
 
 import { useEffect, useState } from "react";
 import { CircleCheck, CircleX, Loader2, RefreshCcw } from "lucide-react";
 import { apiGet } from "@/components/admin/api";
+import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
+import { FailureReason } from "@/components/admin/generation/FailureReason";
+import { ReadonlyOpsView, type OpsColumn } from "@/components/admin/generation/ReadonlyOpsView";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { cn } from "@/lib/utils";
 
@@ -22,6 +26,13 @@ type BackendItem = {
   cliPath?: string;
   health: BackendHealth;
 };
+
+// Rows handed to ReadonlyOpsView are always this component's own `backends` state (cast at the
+// call site below, since Record<string, unknown>[] has no structural relation to BackendItem[]).
+// Narrow back to BackendItem here for typed access inside cell renders.
+function asBackend(row: Record<string, unknown>): BackendItem {
+  return row as unknown as BackendItem;
+}
 
 export function BackendsView() {
   const { t } = useAdminI18n();
@@ -49,12 +60,69 @@ export function BackendsView() {
     return () => window.clearTimeout(timer);
   }, []);
 
+  const columns: OpsColumn[] = [
+    {
+      key: "id",
+      label: "Backend",
+      render: (row) => {
+        const backend = asBackend(row);
+        const hasConfig = Boolean(backend.endpoint || backend.cliPath);
+        return (
+          <div className="space-y-1.5">
+            <span className="font-mono text-sm font-semibold">{backend.id}</span>
+            {hasConfig ? (
+              <EngineeringDetails summary={t("Connection details")}>
+                <div className="space-y-1">
+                  {backend.endpoint ? (
+                    <div>
+                      {t("Endpoint")}: {backend.endpoint}
+                    </div>
+                  ) : null}
+                  {backend.cliPath ? (
+                    <div>
+                      {t("CLI Path")}: {backend.cliPath}
+                    </div>
+                  ) : null}
+                </div>
+              </EngineeringDetails>
+            ) : null}
+          </div>
+        );
+      },
+    },
+    { key: "kind", label: "Kind" },
+    {
+      key: "health",
+      label: "Health",
+      render: (row) => {
+        const backend = asBackend(row);
+        return (
+          <div className="flex items-center gap-2">
+            <HealthBadge health={backend.health} />
+            {typeof backend.health.latencyMs === "number" ? (
+              <span className="font-mono text-xs text-[rgb(170,170,170)]">{backend.health.latencyMs}ms</span>
+            ) : null}
+          </div>
+        );
+      },
+    },
+    {
+      key: "failure",
+      label: "Failure reason",
+      render: (row) => {
+        const backend = asBackend(row);
+        return !backend.health.ok ? (
+          <FailureReason code="backend_unreachable" detail={backend.health.detail} />
+        ) : (
+          <span className="text-[rgb(170,170,170)]">—</span>
+        );
+      },
+    },
+  ];
+
   return (
     <div className="space-y-5">
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold">
-          {t("Backends")} ({backends.length})
-        </h2>
+      <div className="flex items-center justify-end">
         <button
           className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm disabled:opacity-50"
           disabled={loading}
@@ -67,50 +135,13 @@ export function BackendsView() {
       </div>
       {error ? <p className="text-xs text-red-300">{error}</p> : null}
 
-      <div className="grid gap-4 md:grid-cols-2">
-        {backends.map((backend) => (
-          <BackendCard backend={backend} key={backend.id} />
-        ))}
-        {backends.length === 0 && !loading ? (
-          <p className="text-xs text-[rgb(170,170,170)]">{t("No backends.")}</p>
-        ) : null}
-      </div>
+      <ReadonlyOpsView
+        columns={columns}
+        empty={loading ? t("Loading…") : t("No backends.")}
+        rows={backends as unknown as Record<string, unknown>[]}
+        title="Backends"
+      />
     </div>
-  );
-}
-
-function BackendCard({ backend }: { backend: BackendItem }) {
-  const { t } = useAdminI18n();
-  const { health } = backend;
-
-  return (
-    <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
-      <div className="flex items-center justify-between">
-        <h3 className="font-mono text-sm font-semibold">{backend.id}</h3>
-        <KindBadge kind={backend.kind} />
-      </div>
-      <dl className="mt-3 space-y-1.5 text-xs">
-        {backend.endpoint ? (
-          <div className="flex items-baseline gap-2">
-            <dt className="shrink-0 text-[rgb(170,170,170)]">{t("Endpoint")}</dt>
-            <dd className="truncate font-mono text-[rgb(230,230,230)]">{backend.endpoint}</dd>
-          </div>
-        ) : null}
-        {backend.cliPath ? (
-          <div className="flex items-baseline gap-2">
-            <dt className="shrink-0 text-[rgb(170,170,170)]">{t("CLI Path")}</dt>
-            <dd className="truncate font-mono text-[rgb(230,230,230)]">{backend.cliPath}</dd>
-          </div>
-        ) : null}
-      </dl>
-      <div className="mt-3 flex items-center gap-2">
-        <HealthBadge health={health} />
-        {typeof health.latencyMs === "number" ? (
-          <span className="font-mono text-xs text-[rgb(170,170,170)]">{health.latencyMs}ms</span>
-        ) : null}
-      </div>
-      {!health.ok && health.detail ? <p className="mt-2 text-xs text-red-300">{health.detail}</p> : null}
-    </section>
   );
 }
 
@@ -126,14 +157,6 @@ function HealthBadge({ health }: { health: BackendHealth }) {
     >
       {health.ok ? <CircleCheck className="h-3.5 w-3.5" /> : <CircleX className="h-3.5 w-3.5" />}
       {health.ok ? t("ok") : t("fail")}
-    </span>
-  );
-}
-
-function KindBadge({ kind }: { kind: string }) {
-  return (
-    <span className="inline-flex items-center rounded border border-white/10 px-2 py-0.5 text-xs font-medium text-[rgb(230,230,230)]">
-      {kind}
     </span>
   );
 }
