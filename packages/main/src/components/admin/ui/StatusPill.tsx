@@ -11,9 +11,9 @@ const TONE_CLASSES: Record<StatusTone, string> = {
   neutral: "bg-black/[0.05] text-[var(--ad-text-muted)]",
 };
 
-// SPEC: pastel 状态 pill。label 缺省时用 t(status) 翻译状态词本身。
+// SPEC: pastel 状态 pill。label 缺省时用 value(status)（zhValues 枚举通道）翻译状态词本身。
 export function StatusPill({ status, label }: { status: string; label?: string }) {
-  const { t } = useAdminI18n();
+  const { value } = useAdminI18n();
   return (
     <span
       className={cn(
@@ -21,7 +21,7 @@ export function StatusPill({ status, label }: { status: string; label?: string }
         TONE_CLASSES[statusTone(status)],
       )}
     >
-      {label ?? t(status)}
+      {label ?? value(status)}
     </span>
   );
 }
