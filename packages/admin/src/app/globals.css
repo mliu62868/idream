@@ -1,3 +1,28 @@
 @source "../../../main/src/components/admin";
 @source "../../../main/src/lib";
 @import "../../../main/src/app/globals.css";
+
+/* SPEC: admin 浅色编辑部风 design tokens（SSoT）。全后台颜色只许引用这些变量。
+   INVARIANTS: 不定义暗色变体——admin 只有亮色一种主题。 */
+:root {
+  --ad-canvas: #f7f6f3;
+  --ad-surface: #ffffff;
+  --ad-ink: #111111;
+  --ad-text: #2f3437;
+  --ad-text-muted: #787774;
+  --ad-border: #eaeaea;
+  --ad-green-bg: #edf3ec;
+  --ad-green-text: #346538;
+  --ad-yellow-bg: #fbf3db;
+  --ad-yellow-text: #956400;
+  --ad-red-bg: #fdebec;
+  --ad-red-text: #9f2f2d;
+  --ad-blue-bg: #e1f3fe;
+  --ad-blue-text: #1f6c9f;
+  --ad-shadow-hover: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+body {
+  background: var(--ad-canvas);
+  color: var(--ad-text);
+}
