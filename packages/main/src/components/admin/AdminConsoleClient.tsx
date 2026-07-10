@@ -3307,14 +3307,100 @@ function RecipeDetail({
 }
 
 function GenerationPresetsView({ data }: { data: ConfigData }) {
+  const { locale, t, value } = useAdminI18n();
+  // Seed selection from the first preset at mount (lazy initializer, not an effect) so the
+  // detail rail isn't blank on first paint; later reloads leave an existing pick untouched.
+  const [selectedPresetId, setSelectedPresetId] = useState<string | null>(() => {
+    const first = data.presets.find((preset) => stringValue(preset.id));
+    return first ? stringValue(first.id) : null;
+  });
+
+  const presetItems = useMemo<OperatorFlowItem[]>(
+    () =>
+      data.presets
+        .filter((preset) => stringValue(preset.id))
+        .map((preset) => {
+          const status = stringValue(preset.status);
+          return {
+            id: stringValue(preset.id),
+            primary: stringValue(preset.label) || t("Untitled preset"),
+            secondary: presetSecondaryLine(preset, t, value),
+            badge: <Status locale={locale} tone={status === "active" ? "good" : "warn"} value={status || "active"} />,
+          };
+        }),
+    [data.presets, locale, t, value],
+  );
+
+  const selectedPreset = useMemo(
+    () => data.presets.find((preset) => stringValue(preset.id) === selectedPresetId) ?? null,
+    [data.presets, selectedPresetId],
+  );
+
   return (
     <div className="space-y-6">
-      <DataTable
-        columns={["id", "type", "category", "label", "visibility", "status"]}
-        rows={data.presets}
-        title="Built-in Presets"
+      <OperatorFlow
+        detail={<PresetDetail preset={selectedPreset} />}
+        empty={t("No built-in presets are seeded yet.")}
+        items={presetItems}
+        onSelect={setSelectedPresetId}
+        selectedId={selectedPresetId}
       />
     </div>
+  );
+}
+
+// SPEC: operator-facing state phrase for a built-in preset (mirrors recipeStateLabelKey).
+// INTENT: presets have no publish workflow — just in-rotation vs retired — so "active"/"archived"
+// are already the plain-language words; still routed through t() for consistency + future i18n.
+function presetStateLabelKey(preset: Row): string {
+  const status = stringValue(preset.status);
+  if (status === "active") return "Active";
+  if (status === "archived") return "Archived";
+  return status || "Active";
+}
+
+// SPEC: shared "category · visibility · state" subtitle for both the OperatorFlow list row and
+// the detail header. category is free-text (folded out if unset); visibility/state are fixed
+// vocab routed through value()/t() so zh backfill (T13) only has to add dictionary entries.
+function presetSecondaryLine(preset: Row, t: (key: string) => string, value: (key: string) => string): string {
+  const category = stringValue(preset.category);
+  const visibility = stringValue(preset.visibility);
+  return [category || null, visibility ? value(visibility) : null, t(presetStateLabelKey(preset))]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+// SPEC: detail rail for the preset selected in OperatorFlow — human header only, no action rail
+// (presets are read-only in this console); raw id/type folded into EngineeringDetails.
+function PresetDetail({ preset }: { preset: Row | null }) {
+  const { t, value } = useAdminI18n();
+
+  if (!preset) {
+    return (
+      <section className="border border-white/10 bg-[rgb(18,18,18)] p-6 text-sm text-[rgb(170,170,170)]">
+        {t("Select a preset to review it.")}
+      </section>
+    );
+  }
+
+  const id = stringValue(preset.id);
+  const type = stringValue(preset.type);
+  const label = stringValue(preset.label) || t("Untitled preset");
+
+  return (
+    <section className="min-w-0 space-y-4 border border-white/10 bg-[rgb(18,18,18)] p-4">
+      <div className="min-w-0">
+        <h2 className="truncate text-lg font-semibold">{label}</h2>
+        <p className="mt-1 text-sm text-[rgb(170,170,170)]">{presetSecondaryLine(preset, t, value)}</p>
+      </div>
+
+      <EngineeringDetails summary={t("Preset details")}>
+        <div className="space-y-1">
+          <div>{t("Preset ID")}: {id || "-"}</div>
+          <div>{t("Preset type")}: {type ? value(type) : "-"}</div>
+        </div>
+      </EngineeringDetails>
+    </section>
   );
 }
 
