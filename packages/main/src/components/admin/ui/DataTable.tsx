@@ -30,8 +30,13 @@ export function DataTable({
         <tbody>
           {rows.map((row) => (
             <tr
-              className="border-b border-[var(--ad-border)] transition-colors last:border-b-0 hover:bg-black/[0.02]"
+              className={
+                row.href
+                  ? "cursor-pointer border-b border-[var(--ad-border)] transition-colors last:border-b-0 hover:bg-black/[0.02]"
+                  : "border-b border-[var(--ad-border)] transition-colors last:border-b-0"
+              }
               key={row.id}
+              onClick={row.href ? () => window.location.assign(row.href as string) : undefined}
             >
               {row.cells.map((cell, index) => (
                 <td className="px-4 py-3 align-middle" key={index}>
