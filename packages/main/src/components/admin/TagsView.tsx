@@ -1,14 +1,20 @@
 "use client";
 
 // SPEC: 标签分类法治理面板（Character Management §C）—— 列表/编辑标签元数据 + 合并标签。
-// INTENT: 自取数、无 props；样式模仿 PromoView（边框分区 + 暗色输入 + 白底按钮）。
+// INTENT: 自取数、无 props；spec §6.2 例外——2 字段实体不拆三件套，保持单页，只换 PageHeader +
+// ConfirmDialog 皮（列表/行内改名/合并三块能力原样保留）。
 //         接缝（在 AdminConsoleClient 注册此 View）由编排者接线。
-// INVARIANTS: 写后 refetch；编辑/合并都要求 reason≥3；合并需 confirmation===`${sourceId}:${targetId}`。
+// INVARIANTS: 写后 refetch；patchTagSchema/mergeTagsSchema（characters/tags.ts:19-42）都要求
+// reason≥3——改名走 ConfirmDialog（非破坏性，confirmation 自动填充为 tag.slug，不是运营手敲）；
+// 合并是破坏性操作（source 标签会被删除），走 ConfirmDialog 的 destructive.expectedName=目标标签
+// label，confirmation 仍自动填充为 `${sourceId}:${targetId}`（mergeTags 要求的精确格式）。
 
 import { useEffect, useState } from "react";
 import { GitMerge, Loader2, Pencil, RefreshCcw, Save, X } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { cn } from "@/lib/utils";
 
 type TagRow = {
@@ -26,8 +32,6 @@ type EditDraft = {
   category: string;
   isSensitive: boolean;
   isMutedByDefault: boolean;
-  reason: string;
-  confirmation: string;
 };
 
 const inputClass =
@@ -38,6 +42,9 @@ export function TagsView() {
   const [tags, setTags] = useState<TagRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState<EditDraft>(emptyDraft());
+  const [renaming, setRenaming] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -59,25 +66,58 @@ export function TagsView() {
     return () => window.clearTimeout(timer);
   }, []);
 
+  function startEdit(tag: TagRow) {
+    setEditingId(tag.id);
+    setDraft(toDraft(tag));
+  }
+
+  const editingTag = tags.find((tag) => tag.id === editingId) ?? null;
+
+  const renameSpec: ConfirmSpec | null =
+    renaming && editingTag
+      ? {
+          title: t("Save changes"),
+          submitLabel: t("Save changes"),
+          onSubmit: async (reason) => {
+            await apiWrite(`/api/v1/admin/content/tags/${editingTag.id}`, "PATCH", {
+              label: draft.label.trim(),
+              category: draft.category.trim() ? draft.category.trim() : null,
+              isSensitive: draft.isSensitive,
+              isMutedByDefault: draft.isMutedByDefault,
+              reason,
+              confirmation: editingTag.slug,
+            });
+            setEditingId(null);
+            await load();
+          },
+        }
+      : null;
+
   return (
     <div className="space-y-5">
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold">{t("Tag taxonomy")} ({tags.length})</h2>
-        <button
-          className="rounded-md inline-flex h-9 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm disabled:opacity-50"
-          disabled={loading}
-          onClick={() => void load()}
-          type="button"
-        >
-          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-          {t("Refresh")}
-        </button>
-      </div>
+      <PageHeader
+        action={
+          <button
+            className="rounded-md inline-flex h-9 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm disabled:opacity-50"
+            disabled={loading}
+            onClick={() => void load()}
+            type="button"
+          >
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+            {t("Refresh")}
+          </button>
+        }
+        purpose={t("Manage the tag vocabulary for characters.")}
+        title={t("Tags")}
+      />
       {error ? <p className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
 
-      <MergeSection tags={tags} reload={load} />
+      <MergeSection reload={load} tags={tags} />
 
       <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
+        <div className="border-b border-[var(--ad-border)] px-3 py-2">
+          <h2 className="text-sm font-semibold">{t("Tag taxonomy")} ({tags.length})</h2>
+        </div>
         <table className="w-full text-left text-sm">
           <thead className="border-b border-[var(--ad-border)] text-xs text-[var(--ad-text-muted)]">
             <tr>
@@ -92,7 +132,15 @@ export function TagsView() {
           </thead>
           <tbody>
             {tags.map((tag) => (
-              <TagRowItem key={tag.id} reload={load} tag={tag} />
+              <TagRowItem
+                draft={editingId === tag.id ? draft : null}
+                key={tag.id}
+                onCancel={() => setEditingId(null)}
+                onChangeDraft={setDraft}
+                onSave={() => setRenaming(true)}
+                onStartEdit={() => startEdit(tag)}
+                tag={tag}
+              />
             ))}
             {tags.length === 0 && !loading ? (
               <tr>
@@ -104,45 +152,30 @@ export function TagsView() {
           </tbody>
         </table>
       </section>
+
+      {renameSpec ? <ConfirmDialog onClose={() => setRenaming(false)} spec={renameSpec} /> : null}
     </div>
   );
 }
 
-function TagRowItem({ tag, reload }: { tag: TagRow; reload: () => void }) {
+function TagRowItem({
+  draft,
+  onCancel,
+  onChangeDraft,
+  onSave,
+  onStartEdit,
+  tag,
+}: {
+  draft: EditDraft | null;
+  onCancel: () => void;
+  onChangeDraft: (draft: EditDraft) => void;
+  onSave: () => void;
+  onStartEdit: () => void;
+  tag: TagRow;
+}) {
   const { t } = useAdminI18n();
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState<EditDraft>(() => toDraft(tag));
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
 
-  function startEdit() {
-    setDraft(toDraft(tag));
-    setErr(null);
-    setEditing(true);
-  }
-
-  async function save() {
-    setBusy(true);
-    setErr(null);
-    try {
-      await apiWrite(`/api/v1/admin/content/tags/${tag.id}`, "PATCH", {
-        label: draft.label.trim(),
-        category: draft.category.trim() ? draft.category.trim() : null,
-        isSensitive: draft.isSensitive,
-        isMutedByDefault: draft.isMutedByDefault,
-        reason: draft.reason.trim(),
-        confirmation: draft.confirmation.trim(),
-      });
-      setEditing(false);
-      reload();
-    } catch (error) {
-      setErr(error instanceof Error ? error.message : "Save failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  if (!editing) {
+  if (!draft) {
     return (
       <tr className="border-b border-[var(--ad-border)]">
         <td className="px-3 py-2 font-mono text-xs">{tag.slug}</td>
@@ -154,7 +187,7 @@ function TagRowItem({ tag, reload }: { tag: TagRow; reload: () => void }) {
         <td className="px-3 py-2 text-right">
           <button
             className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
-            onClick={startEdit}
+            onClick={onStartEdit}
             type="button"
           >
             <Pencil className="h-3.5 w-3.5" />
@@ -165,11 +198,7 @@ function TagRowItem({ tag, reload }: { tag: TagRow; reload: () => void }) {
     );
   }
 
-  const canSave =
-    !busy &&
-    draft.label.trim().length >= 1 &&
-    draft.reason.trim().length >= 3 &&
-    draft.confirmation.trim() === tag.slug;
+  const canSave = draft.label.trim().length >= 1;
 
   return (
     <tr className="border-b border-[var(--ad-border)] bg-black/[0.03] align-top">
@@ -177,7 +206,7 @@ function TagRowItem({ tag, reload }: { tag: TagRow; reload: () => void }) {
       <td className="px-3 py-2">
         <input
           className={inputClass}
-          onChange={(event) => setDraft({ ...draft, label: event.target.value })}
+          onChange={(event) => onChangeDraft({ ...draft, label: event.target.value })}
           placeholder={t("Label")}
           value={draft.label}
         />
@@ -185,7 +214,7 @@ function TagRowItem({ tag, reload }: { tag: TagRow; reload: () => void }) {
       <td className="px-3 py-2">
         <input
           className={inputClass}
-          onChange={(event) => setDraft({ ...draft, category: event.target.value })}
+          onChange={(event) => onChangeDraft({ ...draft, category: event.target.value })}
           placeholder={t("Category (blank=none)")}
           value={draft.category}
         />
@@ -194,51 +223,34 @@ function TagRowItem({ tag, reload }: { tag: TagRow; reload: () => void }) {
       <td className="px-3 py-2">
         <ToggleButton
           active={draft.isSensitive}
-          onClick={() => setDraft({ ...draft, isSensitive: !draft.isSensitive })}
+          onClick={() => onChangeDraft({ ...draft, isSensitive: !draft.isSensitive })}
         />
       </td>
       <td className="px-3 py-2">
         <ToggleButton
           active={draft.isMutedByDefault}
-          onClick={() => setDraft({ ...draft, isMutedByDefault: !draft.isMutedByDefault })}
+          onClick={() => onChangeDraft({ ...draft, isMutedByDefault: !draft.isMutedByDefault })}
         />
       </td>
       <td className="px-3 py-2">
-        <div className="flex flex-col items-stretch gap-2">
-          <input
-            className={inputClass}
-            onChange={(event) => setDraft({ ...draft, reason: event.target.value })}
-            placeholder={t("Reason (≥3)")}
-            value={draft.reason}
-          />
-          <input
-            aria-label={t("Tag edit confirmation")}
-            className={cn(inputClass, "font-mono")}
-            onChange={(event) => setDraft({ ...draft, confirmation: event.target.value })}
-            placeholder={t("Type {token} to confirm", { token: tag.slug })}
-            value={draft.confirmation}
-          />
-          <div className="flex justify-end gap-2">
-            <button
-              className="inline-flex h-8 items-center gap-1 bg-[var(--ad-ink)] px-2 text-xs font-semibold text-white disabled:opacity-50"
-              disabled={!canSave}
-              onClick={() => void save()}
-              type="button"
-            >
-              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-              {t("Confirm save")}
-            </button>
-            <button
-              className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
-              disabled={busy}
-              onClick={() => setEditing(false)}
-              type="button"
-            >
-              <X className="h-3.5 w-3.5" />
-              {t("Cancel")}
-            </button>
-          </div>
-          {err ? <p className="text-xs text-[var(--ad-red-text)]">{err}</p> : null}
+        <div className="flex justify-end gap-2">
+          <button
+            className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
+            onClick={onCancel}
+            type="button"
+          >
+            <X className="h-3.5 w-3.5" />
+            {t("Cancel")}
+          </button>
+          <button
+            className="inline-flex h-8 items-center gap-1 bg-[var(--ad-ink)] px-2 text-xs font-semibold text-white disabled:opacity-50"
+            disabled={!canSave}
+            onClick={onSave}
+            type="button"
+          >
+            <Save className="h-3.5 w-3.5" />
+            {t("Save changes")}
+          </button>
         </div>
       </td>
     </tr>
@@ -249,55 +261,44 @@ function MergeSection({ tags, reload }: { tags: TagRow[]; reload: () => void }) 
   const { t } = useAdminI18n();
   const [sourceId, setSourceId] = useState("");
   const [targetId, setTargetId] = useState("");
-  const [reason, setReason] = useState("");
-  const [confirmation, setConfirmation] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
   const [result, setResult] = useState<string | null>(null);
 
-  async function merge() {
-    setBusy(true);
-    setErr(null);
-    setResult(null);
-    try {
-      const data = await apiWrite<{ merged: boolean; movedCount: number }>(
-        "/api/v1/admin/content/tags/merge",
-        "POST",
-        {
-          sourceId,
-          targetId,
-          reason: reason.trim(),
-          confirmation: confirmation.trim(),
-        },
-      );
-      setResult(`Merged — moved ${data.movedCount} character link(s).`);
-      setSourceId("");
-      setTargetId("");
-      setReason("");
-      setConfirmation("");
-      reload();
-    } catch (error) {
-      setErr(error instanceof Error ? error.message : "Merge failed");
-    } finally {
-      setBusy(false);
-    }
-  }
+  const sourceTag = tags.find((tag) => tag.id === sourceId) ?? null;
+  const targetTag = tags.find((tag) => tag.id === targetId) ?? null;
+  const canOpen = sourceId.length > 0 && targetId.length > 0 && sourceId !== targetId;
 
-  const canMerge =
-    !busy &&
-    sourceId.length > 0 &&
-    targetId.length > 0 &&
-    sourceId !== targetId &&
-    reason.trim().length >= 3 &&
-    confirmation.trim() === `${sourceId}:${targetId}`;
+  const confirmSpec: ConfirmSpec | null =
+    confirming && sourceTag && targetTag
+      ? {
+          title: t("Merge tags"),
+          summary: t("Moves every character from {source} to {target}, then deletes {source}.", {
+            source: sourceTag.slug,
+            target: targetTag.slug,
+          }),
+          destructive: { expectedName: targetTag.label },
+          submitLabel: t("Merge"),
+          onSubmit: async (reason) => {
+            const data = await apiWrite<{ merged: boolean; movedCount: number }>(
+              "/api/v1/admin/content/tags/merge",
+              "POST",
+              { sourceId, targetId, reason, confirmation: `${sourceId}:${targetId}` },
+            );
+            setResult(t("Merged — moved {count} character link(s).", { count: data.movedCount }));
+            setSourceId("");
+            setTargetId("");
+            await reload();
+          },
+        }
+      : null;
 
   return (
     <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <h2 className="text-sm font-semibold">{t("Merge tags")}</h2>
       <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-        把 source 标签的角色全部迁到 target，并删除 source。输入 source:target ID 以确认。
+        {t("Move every character from the source tag to the target tag, then delete the source tag.")}
       </p>
-      <div className="mt-3 grid gap-3 md:grid-cols-5">
+      <div className="mt-3 grid gap-3 md:grid-cols-3">
         <select
           aria-label={t("Source tag")}
           className={cn(inputClass, "appearance-none")}
@@ -324,33 +325,21 @@ function MergeSection({ tags, reload }: { tags: TagRow[]; reload: () => void }) 
             </option>
           ))}
         </select>
-        <input
-          className={inputClass}
-          onChange={(event) => setReason(event.target.value)}
-          placeholder={t("Reason (≥3)")}
-          value={reason}
-        />
-        <input
-          className={cn(inputClass, "font-mono")}
-          onChange={(event) => setConfirmation(event.target.value)}
-          placeholder={t("Type source:target IDs")}
-          value={confirmation}
-        />
         <button
-          className="inline-flex h-10 items-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
-          disabled={!canMerge}
-          onClick={() => void merge()}
+          className="inline-flex h-10 items-center justify-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
+          disabled={!canOpen}
+          onClick={() => setConfirming(true)}
           type="button"
         >
-          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <GitMerge className="h-4 w-4" />}
+          <GitMerge className="h-4 w-4" />
           {t("Merge")}
         </button>
       </div>
       {sourceId && sourceId === targetId ? (
         <p className="mt-2 text-xs text-[var(--ad-red-text)]">{t("Source and target must differ.")}</p>
       ) : null}
-      {err ? <p className="mt-2 text-xs text-[var(--ad-red-text)]">{err}</p> : null}
       {result ? <p className="mt-2 text-xs text-[var(--ad-green-text)]">{result}</p> : null}
+      {confirmSpec ? <ConfirmDialog onClose={() => setConfirming(false)} spec={confirmSpec} /> : null}
     </section>
   );
 }
@@ -372,13 +361,15 @@ function ToggleButton({ active, onClick }: { active: boolean; onClick: () => voi
   );
 }
 
+function emptyDraft(): EditDraft {
+  return { label: "", category: "", isSensitive: false, isMutedByDefault: false };
+}
+
 function toDraft(tag: TagRow): EditDraft {
   return {
     label: tag.label,
     category: tag.category ?? "",
     isSensitive: tag.isSensitive,
     isMutedByDefault: tag.isMutedByDefault,
-    reason: "",
-    confirmation: "",
   };
 }

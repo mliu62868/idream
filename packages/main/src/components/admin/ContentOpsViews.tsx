@@ -2,13 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Archive,
   Check,
   Loader2,
   Play,
   RefreshCcw,
   RotateCcw,
-  Send,
   X,
 } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
@@ -94,47 +92,6 @@ type AssetSummary = {
   createdAt: string;
 };
 
-type ContentAsset = AssetSummary & {
-  platformStatus: string;
-  purpose: string | null;
-  targetType: string | null;
-  targetId: string | null;
-  tags: string[];
-  description: string | null;
-  sourceJob: {
-    id: string;
-    status: string;
-    profileId: string | null;
-    profileVersion: number | null;
-    recipeId: string | null;
-    recipeVersion: number | null;
-  } | null;
-  sourceBatch: {
-    id: string;
-    title: string;
-    purpose: string;
-    status: string;
-  } | null;
-  placements: Array<{
-    id: string;
-    slot: string;
-    targetType: string;
-    targetId: string;
-    status: string;
-  }>;
-};
-
-type Placement = {
-  id: string;
-  mediaAssetId: string;
-  slot: string;
-  targetType: string;
-  targetId: string;
-  status: string;
-  publishedAt: string | null;
-  asset: AssetSummary;
-};
-
 function runAfterEffect(callback: () => void): () => void {
   const timeout = window.setTimeout(callback, 0);
   return () => window.clearTimeout(timeout);
@@ -150,16 +107,6 @@ const purposeOptions = [
   "template_cover",
   "campaign",
   "model_eval",
-] as const;
-
-const slotOptions = [
-  "character_avatar",
-  "character_hero",
-  "feed_card",
-  "homepage_strip",
-  "seo_article",
-  "template_cover",
-  "campaign",
 ] as const;
 
 function defaultProductionForm() {
@@ -468,285 +415,6 @@ export function ProductionStudioView() {
   );
 }
 
-export function PlacementsView() {
-  const { t, value } = useAdminI18n();
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [placementConfirmKey, setPlacementConfirmKey] = useState<string | null>(null);
-  const [assets, setAssets] = useState<ContentAsset[]>([]);
-  const [placements, setPlacements] = useState<Placement[]>([]);
-  const [form, setForm] = useState({
-    mediaAssetId: "",
-    slot: "character_avatar",
-    targetType: "character",
-    targetId: "",
-    status: "published",
-  });
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    setNotice(null);
-    setPlacementConfirmKey(null);
-    try {
-      const [assetData, placementData] = await Promise.all([
-        apiGet<{ items: ContentAsset[] }>("/api/v1/admin/content/assets?status=approved&limit=100"),
-        apiGet<{ items: Placement[] }>("/api/v1/admin/content/placements?limit=100"),
-      ]);
-      setAssets(assetData.items);
-      setPlacements(placementData.items);
-      setForm((current) => ({
-        ...current,
-        mediaAssetId: current.mediaAssetId || assetData.items[0]?.id || "",
-        targetId: current.targetId || assetData.items[0]?.targetId || "",
-      }));
-    } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Failed to load placements");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    return runAfterEffect(() => {
-      void load();
-    });
-  }, [load]);
-
-  function updateForm(next: typeof form) {
-    setPlacementConfirmKey(null);
-    setNotice(null);
-    setForm(next);
-  }
-
-  async function create() {
-    const confirmKey = `placement:create:${form.mediaAssetId}:${form.slot}:${form.targetType}:${form.targetId}:${form.status}`;
-    if (form.status === "published" && placementConfirmKey !== confirmKey) {
-      setError(null);
-      setNotice("Press Confirm create placement to publish this placement.");
-      setPlacementConfirmKey(confirmKey);
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    setNotice(null);
-    try {
-      await apiWrite("/api/v1/admin/content/placements", "POST", {
-        mediaAssetId: form.mediaAssetId,
-        slot: form.slot,
-        targetType: form.targetType,
-        targetId: form.targetId,
-        status: form.status,
-        reason: "Created from Placements",
-      });
-      await load();
-    } catch (createError) {
-      setError(createError instanceof Error ? createError.message : "Placement create failed");
-      setPlacementConfirmKey(null);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function patchPlacement(id: string, nextStatus: "published" | "paused" | "archived") {
-    const confirmKey = `placement:${id}:${nextStatus}`;
-    if (placementConfirmKey !== confirmKey) {
-      const action = placementActionLabel(nextStatus).toLowerCase();
-      setError(null);
-      setNotice(`Press Confirm ${action} placement to update this placement.`);
-      setPlacementConfirmKey(confirmKey);
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    setNotice(null);
-    try {
-      await apiWrite(`/api/v1/admin/content/placements/${id}`, "PATCH", {
-        status: nextStatus,
-        reason: `${nextStatus} from Placements`,
-        confirmation: id,
-      });
-      await load();
-    } catch (patchError) {
-      setError(patchError instanceof Error ? patchError.message : "Placement update failed");
-      setPlacementConfirmKey(null);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  if (loading) return <AdminLoading label="Placements" />;
-
-  return (
-    <div className="space-y-5">
-      <ViewHeader
-        action={<RefreshButton busy={loading} onClick={load} />}
-        eyebrow="Media"
-        icon={<Send className="h-5 w-5" />}
-        title="Placements"
-      />
-      <InlineError message={error} />
-      <InlineNotice message={notice} />
-      <section className="grid gap-4 xl:grid-cols-[minmax(340px,420px)_minmax(0,1fr)]">
-        <div className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-          <h2 className="text-sm font-semibold">{t("Create placement")}</h2>
-          <div className="mt-4 grid gap-3">
-            <Field label="Asset">
-              <select
-                className="admin-input"
-                onChange={(event) => {
-                  const asset = assets.find((item) => item.id === event.target.value);
-                  updateForm({
-                    ...form,
-                    mediaAssetId: event.target.value,
-                    targetId: asset?.targetId ?? form.targetId,
-                  });
-                }}
-                value={form.mediaAssetId}
-              >
-                {assets.map((asset) => (
-                  <option key={asset.id} value={asset.id}>
-                    {asset.id} · {asset.purpose ?? "asset"}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Slot">
-              <select
-                className="admin-input"
-                onChange={(event) => updateForm({ ...form, slot: event.target.value })}
-                value={form.slot}
-              >
-                {slotOptions.map((slot) => (
-                  <option key={slot} value={slot}>
-                    {value(slot)}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="Target type">
-                <select
-                  className="admin-input"
-                  onChange={(event) => updateForm({ ...form, targetType: event.target.value })}
-                  value={form.targetType}
-                >
-                  {["character", "template", "route_page", "campaign"].map((targetType) => (
-                    <option key={targetType} value={targetType}>
-                      {value(targetType)}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Target ID">
-                <input
-                  className="admin-input"
-                  onChange={(event) => updateForm({ ...form, targetId: event.target.value })}
-                  value={form.targetId}
-                />
-              </Field>
-            </div>
-            <Field label="Status">
-              <select
-                className="admin-input"
-                onChange={(event) => updateForm({ ...form, status: event.target.value })}
-                value={form.status}
-              >
-                {["draft", "scheduled", "published"].map((statusValue) => (
-                  <option key={statusValue} value={statusValue}>
-                    {value(statusValue)}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <button
-              aria-label={
-                placementConfirmKey ===
-                `placement:create:${form.mediaAssetId}:${form.slot}:${form.targetType}:${form.targetId}:${form.status}`
-                  ? "Confirm create placement"
-                  : "Create placement"
-              }
-              className="inline-flex h-10 items-center justify-center gap-2 bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white hover:bg-[#333333] disabled:opacity-50"
-              disabled={busy || !form.mediaAssetId || !form.targetId}
-              onClick={() => void create()}
-              type="button"
-            >
-              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-              {placementConfirmKey ===
-              `placement:create:${form.mediaAssetId}:${form.slot}:${form.targetType}:${form.targetId}:${form.status}`
-                ? t("Confirm create placement")
-                : t("Create placement")}
-            </button>
-          </div>
-        </div>
-        <div className="rounded-lg min-w-0 border border-[var(--ad-border)] bg-[var(--ad-surface)]">
-          <div className="border-b border-[var(--ad-border)] p-4">
-            <h2 className="text-sm font-semibold">{t("Placement history")}</h2>
-          </div>
-          <div className="divide-y divide-[var(--ad-border)]">
-            {placements.map((placement, index) => (
-              <article className="grid gap-3 p-4 md:grid-cols-[96px_minmax(0,1fr)_auto]" key={placement.id}>
-                <AssetImage asset={placement.asset} compact eager={index < 6} />
-                <div className="min-w-0 text-sm">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-semibold">{t("Slot")}: {value(placement.slot)}</span>
-                    <StatusBadge value={placement.status} />
-                  </div>
-                  <p className="mt-1 truncate text-xs text-[var(--ad-text-muted)]">
-                    {placement.targetType} · {placement.targetId}
-                  </p>
-                  <p className="mt-1 truncate font-mono text-[11px] text-[var(--ad-text-muted)]">{placement.mediaAssetId}</p>
-                </div>
-                <div className="flex flex-wrap gap-2 md:justify-end">
-                  <SmallButton
-                    ariaLabel={
-                      placementConfirmKey === `placement:${placement.id}:published`
-                        ? `Confirm publish placement ${placement.id}`
-                        : `Publish placement ${placement.id}`
-                    }
-                    disabled={busy}
-                    icon={<Send className="h-3.5 w-3.5" />}
-                    onClick={() => void patchPlacement(placement.id, "published")}
-                  >
-                    {placementConfirmKey === `placement:${placement.id}:published` ? "Confirm publish" : "Publish"}
-                  </SmallButton>
-                  <SmallButton
-                    ariaLabel={
-                      placementConfirmKey === `placement:${placement.id}:paused`
-                        ? `Confirm pause placement ${placement.id}`
-                        : `Pause placement ${placement.id}`
-                    }
-                    disabled={busy}
-                    icon={<X className="h-3.5 w-3.5" />}
-                    onClick={() => void patchPlacement(placement.id, "paused")}
-                  >
-                    {placementConfirmKey === `placement:${placement.id}:paused` ? "Confirm pause" : "Pause"}
-                  </SmallButton>
-                  <SmallButton
-                    ariaLabel={
-                      placementConfirmKey === `placement:${placement.id}:archived`
-                        ? `Confirm archive placement ${placement.id}`
-                        : `Archive placement ${placement.id}`
-                    }
-                    disabled={busy}
-                    icon={<Archive className="h-3.5 w-3.5" />}
-                    onClick={() => void patchPlacement(placement.id, "archived")}
-                  >
-                    {placementConfirmKey === `placement:${placement.id}:archived` ? "Confirm archive" : "Archive"}
-                  </SmallButton>
-                </div>
-              </article>
-            ))}
-            {placements.length === 0 ? <EmptyState label="No placements yet." /> : null}
-          </div>
-        </div>
-      </section>
-    </div>
-  );
-}
-
 function ReviewGrid({
   batch,
   busy,
@@ -962,12 +630,6 @@ function StatusBadge({ value }: { value: string }) {
   );
 }
 
-function placementActionLabel(status: "published" | "paused" | "archived") {
-  if (status === "published") return "publish";
-  if (status === "paused") return "pause";
-  return "archive";
-}
-
 function SmallButton({
   ariaLabel,
   children,
@@ -992,15 +654,6 @@ function SmallButton({
       {icon}
       {children}
     </button>
-  );
-}
-
-function InlineNotice({ message }: { message: string | null }) {
-  if (!message) return null;
-  return (
-    <div className="rounded-lg border border-[var(--ad-yellow-text)]/20 bg-[var(--ad-yellow-bg)] px-4 py-3 text-sm text-[var(--ad-yellow-text)]">
-      {message}
-    </div>
   );
 }
 

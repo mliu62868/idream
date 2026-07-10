@@ -62,6 +62,30 @@ export const ASSETS_KEYS = [
 // （character/route_page/campaign/template/none）与 productionPurposeSchema 枚举
 // （character_cover/…/model_eval）都走 value()/zhValues 通道，不进这张表。
 
+export const PLACEMENTS_KEYS = [
+  "All", "Archive", "Asset", "Back to placements", "Basic info", "Create placement",
+  "Create the first placement to get started.", "Loading…",
+  "Manage where approved images are surfaced across the platform.", "Media asset",
+  "New placement", "No placements yet.", "Pause", "Placement details", "Placement ID",
+  "Placement not found.", "Placements", "Publish", "Published", "Reason (≥3)",
+  "Request failed", "Search by slot, target, or asset ID", "Slot", "Status",
+  "Target ID", "Target type", "Target",
+];
+// 注意：状态词 draft/scheduled/published/paused/archived（status）、slot 枚举
+// （character_avatar/character_hero/feed_card/homepage_strip/seo_article/template_cover/campaign）
+// 与 targetType 枚举（character/template/route_page/campaign）都走 value()/zhValues 通道，不进这张表。
+
+export const TAGS_KEYS = [
+  "Cancel", "Category (blank=none)", "category", "characters", "Edit", "label", "Label",
+  "Manage the tag vocabulary for characters.", "Merge tags", "Merge",
+  "Merged — moved {count} character link(s).",
+  "Move every character from the source tag to the target tag, then delete the source tag.",
+  "Moves every character from {source} to {target}, then deletes {source}.",
+  "muted", "No tags.", "no", "Refresh", "Save changes", "sensitive", "slug",
+  "Source and target must differ.", "Source tag", "Source tag…", "Tag taxonomy", "Tags",
+  "Target tag", "Target tag…", "yes",
+];
+
 describe("admin i18n — trio pages have zh", () => {
   it("official characters trio", () => {
     for (const key of OFFICIAL_KEYS) expect(hasAdminZh(key)).toBe(true);
@@ -81,5 +105,13 @@ describe("admin i18n — trio pages have zh", () => {
 
   it("image library grid + detail", () => {
     for (const key of ASSETS_KEYS) expect(hasAdminZh(key)).toBe(true);
+  });
+
+  it("placements trio", () => {
+    for (const key of PLACEMENTS_KEYS) expect(hasAdminZh(key)).toBe(true);
+  });
+
+  it("tags page", () => {
+    for (const key of TAGS_KEYS) expect(hasAdminZh(key)).toBe(true);
   });
 });

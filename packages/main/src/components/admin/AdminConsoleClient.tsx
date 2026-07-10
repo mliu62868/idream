@@ -50,7 +50,7 @@ import { ComplianceView } from "@/components/admin/ComplianceView";
 import { InsightsView } from "@/components/admin/InsightsView";
 import { AnnouncementsView } from "@/components/admin/AnnouncementsView";
 import { ExperimentsView } from "@/components/admin/ExperimentsView";
-import { PlacementsView } from "@/components/admin/ContentOpsViews";
+import { PlacementsSection } from "@/components/admin/placements/PlacementsSection";
 import { ImageProductionView } from "@/components/admin/ImageProductionView";
 import { OperatorFlow, type OperatorFlowItem } from "@/components/admin/generation/OperatorFlow";
 import { FailureReason } from "@/components/admin/generation/FailureReason";
@@ -2228,7 +2228,7 @@ function renderSection(
   if (section.kind === "selfFetch") {
     if (section.view === "production") return <ImageProductionView />;
     if (section.view === "assets") return <AssetsSection view={subview} />;
-    if (section.view === "placements") return <PlacementsView />;
+    if (section.view === "placements") return <PlacementsSection view={subview} />;
     if (section.view === "official") return <OfficialSection view={subview} />;
     if (section.view === "templates") return <StartersSection view={subview} />;
     if (section.view === "recipes") return <RecipesSection view={subview} />;

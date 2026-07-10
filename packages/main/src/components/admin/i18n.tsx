@@ -811,6 +811,34 @@ const zh: Record<string, string> = {
   // AssetImage primitive (ui/AssetImage.tsx, task 16) — failed-thumbnail fallback copy.
   "Missing": "缺失",
   "Missing asset": "资产缺失",
+  // Placements trio — PlacementsListPage/PlacementsDetailPage/PlacementsNewPage (task 17).
+  // "All"/"Archive"/"Basic info"/"Loading…"/"Publish"/"Published"/"Reason (≥3)"/"Request failed"/
+  // "Status"/"Target ID"/"Target type"/"Media asset"/"Placements" already exist above; not
+  // duplicated here.
+  "Asset": "资产",
+  "Back to placements": "返回铺位",
+  "Create placement": "创建铺位",
+  "Create the first placement to get started.": "创建第一个铺位，从这里开始。",
+  "Manage where approved images are surfaced across the platform.": "管理已通过图片在平台各处的展示位置。",
+  "New placement": "新建铺位",
+  "No placements yet.": "暂无铺位。",
+  "Pause": "暂停",
+  "Placement details": "铺位详情",
+  "Placement ID": "铺位 ID",
+  "Placement not found.": "未找到该铺位。",
+  "Search by slot, target, or asset ID": "按位置、目标或资产 ID 搜索",
+  "Slot": "位置",
+  "Target": "目标",
+  // Tags page — TagsView.tsx retrofit (task 17). "Cancel"/"Category (blank=none)"/"category"/
+  // "characters"/"Edit"/"label"/"Label"/"Merge tags"/"Merge"/"muted"/"No tags."/"no"/"Refresh"/
+  // "Save changes"/"sensitive"/"slug"/"Source and target must differ."/"Source tag"/"Source tag…"/
+  // "Tag taxonomy"/"Tags"/"Target tag"/"Target tag…"/"yes" already exist above; not duplicated here.
+  "Manage the tag vocabulary for characters.": "管理角色标签词表。",
+  "Merged — moved {count} character link(s).": "已合并——迁移了 {count} 个角色关联。",
+  "Move every character from the source tag to the target tag, then delete the source tag.":
+    "将 source 标签下的角色全部迁移到 target 标签，然后删除 source 标签。",
+  "Moves every character from {source} to {target}, then deletes {source}.":
+    "会把 {source} 下的角色迁移到 {target}，随后删除 {source}。",
 };
 
 const zhColumns: Record<string, string> = {
@@ -1037,6 +1065,15 @@ const zhValues: Record<string, string> = {
   seo: "SEO",
   template_cover: "模板封面",
   model_eval: "模型评测",
+  // Placements trio (task 17) — placementSlotSchema slot values beyond the ones already covered
+  // above (character_avatar/character_hero share the character_* purpose values; template_cover/
+  // campaign are shared with productionPurposeSchema/targetType), plus placementStatusSchema's
+  // "scheduled" (draft/published/paused/archived already exist above).
+  character_avatar: "角色头像",
+  feed_card: "信息流卡片",
+  homepage_strip: "首页横条",
+  seo_article: "SEO 文章",
+  scheduled: "已排期",
 };
 
 type TranslationValues = Record<string, string | number>;
