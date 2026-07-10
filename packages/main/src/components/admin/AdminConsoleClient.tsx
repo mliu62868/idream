@@ -855,26 +855,26 @@ export function AdminConsoleClient({
 
   return (
     <AdminI18nProvider locale={locale}>
-    <main className="min-h-screen bg-[rgb(13,13,13)] text-white">
+    <main className="min-h-screen bg-[var(--ad-canvas)] text-[var(--ad-ink)]">
       <div className="flex min-h-screen">
         <aside
-          className="sticky top-0 hidden h-screen w-[248px] shrink-0 overflow-hidden border-r border-white/10 bg-[rgb(18,18,18)] lg:flex lg:flex-col"
+          className="sticky top-0 hidden h-screen w-[248px] shrink-0 overflow-hidden border-r border-[var(--ad-border)] bg-[var(--ad-surface)] lg:flex lg:flex-col"
           onWheel={handleSidebarWheel}
         >
-          <div className="flex h-14 shrink-0 items-center border-b border-white/10 px-5">
+          <div className="flex h-14 shrink-0 items-center border-b border-[var(--ad-border)] px-5">
             <div>
               <p className="text-sm font-semibold">iDream Admin</p>
-              <p className="text-[11px] text-[rgb(170,170,170)]">{actor.role}</p>
+              <p className="text-[11px] text-[var(--ad-text-muted)]">{actor.role}</p>
             </div>
           </div>
           <nav ref={sidebarNavRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
-            <p className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-normal text-[rgb(114,113,112)]">
+            <p className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-normal text-[var(--ad-text-muted)]">
               {t("Daily")}
             </p>
             {NAV_DAILY.map((item) => (
               <NavLink active={item.id === sectionId} item={item} key={item.id} />
             ))}
-            <div className="mt-3 border-t border-white/10 pt-3">
+            <div className="mt-3 border-t border-[var(--ad-border)] pt-3">
               {NAV_FOLDED_GROUPS.map(({ group, items }) => {
                 // Progressive disclosure: collapsed unless the operator opened it, or
                 // it holds the active item (auto-revealed without persisting the toggle).
@@ -889,8 +889,8 @@ export function AdminConsoleClient({
                       aria-disabled={forcedOpen}
                       aria-expanded={open}
                       className={cn(
-                        "flex h-9 w-full items-center justify-between gap-2 rounded-md px-3 text-[10px] font-semibold uppercase tracking-normal text-[rgb(114,113,112)] transition-colors hover:bg-white/10 hover:text-white",
-                        forcedOpen && "cursor-default hover:bg-transparent hover:text-[rgb(114,113,112)]",
+                        "flex h-9 w-full items-center justify-between gap-2 rounded-md px-3 text-[10px] font-semibold uppercase tracking-normal text-[var(--ad-text-muted)] transition-colors hover:bg-black/[0.04] hover:text-[var(--ad-ink)]",
+                        forcedOpen && "cursor-default hover:bg-transparent hover:text-[var(--ad-text-muted)]",
                       )}
                       onClick={forcedOpen ? undefined : () => toggleGroup(group)}
                       type="button"
@@ -913,18 +913,18 @@ export function AdminConsoleClient({
         </aside>
 
         <section className="min-w-0 flex-1">
-          <header className="sticky top-0 z-20 border-b border-white/10 bg-[rgba(13,13,13,0.92)] backdrop-blur">
+          <header className="sticky top-0 z-20 border-b border-[var(--ad-border)] bg-[rgba(247,246,243,0.92)] backdrop-blur">
             <div className="grid gap-3 px-4 py-3 md:px-6 lg:flex lg:min-h-14 lg:items-center">
               <div className="min-w-0">
                 <h1 className="text-base font-semibold md:text-lg">{t(activeItem.label)}</h1>
-                <p className="truncate text-[11px] text-[rgb(170,170,170)]">{actor.id}</p>
+                <p className="truncate text-[11px] text-[var(--ad-text-muted)]">{actor.id}</p>
               </div>
               <div className="grid gap-2 sm:grid-cols-[1fr_auto] lg:ml-auto lg:flex lg:items-center">
-                <div className="flex h-9 min-w-0 items-center gap-2 border border-white/10 bg-[rgb(18,18,18)] px-3 lg:w-[260px]">
-                  <Search className="h-4 w-4 shrink-0 text-[rgb(170,170,170)]" />
+                <div className="flex h-9 min-w-0 items-center gap-2 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 lg:w-[260px]">
+                  <Search className="h-4 w-4 shrink-0 text-[var(--ad-text-muted)]" />
                   <input
                     aria-label={t("Filter")}
-                    className="h-full min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-[rgb(114,113,112)]"
+                    className="h-full min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-[var(--ad-text-muted)]"
                     name="admin-filter"
                     onChange={(event) => setQuery(event.target.value)}
                     placeholder={t("Filter")}
@@ -932,8 +932,8 @@ export function AdminConsoleClient({
                   />
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <label className="inline-flex h-9 items-center gap-2 border border-white/10 bg-[rgb(18,18,18)] px-3 text-sm text-[rgb(230,230,230)]">
-                    <Languages className="h-4 w-4 text-[rgb(170,170,170)]" />
+                  <label className="inline-flex h-9 items-center gap-2 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)]">
+                    <Languages className="h-4 w-4 text-[var(--ad-text-muted)]" />
                     <span className="sr-only">{t("Language")}</span>
                     <select
                       aria-label={t("Language")}
@@ -942,16 +942,12 @@ export function AdminConsoleClient({
                       onChange={(event) => setLocale(event.target.value as AdminLocale)}
                       value={locale}
                     >
-                      <option className="bg-[rgb(18,18,18)] text-white" value="en">
-                        English
-                      </option>
-                      <option className="bg-[rgb(18,18,18)] text-white" value="zh">
-                        中文
-                      </option>
+                      <option value="en">English</option>
+                      <option value="zh">中文</option>
                     </select>
                   </label>
                   <button
-                    className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm text-[rgb(230,230,230)] hover:bg-white/10"
+                    className="inline-flex h-9 items-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-sm text-[var(--ad-text)] hover:bg-black/[0.04]"
                     onClick={() => void load()}
                     type="button"
                   >
@@ -960,7 +956,7 @@ export function AdminConsoleClient({
                   </button>
                   {devLogout ? (
                     <button
-                      className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm text-[rgb(170,170,170)] hover:bg-white/10"
+                      className="inline-flex h-9 items-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-sm text-[var(--ad-text-muted)] hover:bg-black/[0.04]"
                       onClick={async () => {
                         await fetch("/api/admin-auth/logout", { method: "POST" });
                         window.location.reload();
@@ -973,15 +969,15 @@ export function AdminConsoleClient({
                 </div>
               </div>
             </div>
-            <nav className="flex gap-2 overflow-x-auto border-t border-white/10 px-4 py-2 md:px-6 lg:hidden">
+            <nav className="flex gap-2 overflow-x-auto border-t border-[var(--ad-border)] px-4 py-2 md:px-6 lg:hidden">
               {navItems.map((item) => {
                 const Icon = item.icon;
                 const active = item.id === sectionId;
                 return (
                   <Link
                     className={cn(
-                      "inline-flex h-9 shrink-0 items-center gap-2 border border-white/10 px-3 text-xs font-medium text-[rgb(170,170,170)]",
-                      active && "bg-white text-black",
+                      "inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-xs font-medium text-[var(--ad-text-muted)]",
+                      active && "bg-[var(--ad-ink)] text-white",
                     )}
                     href={item.href}
                     key={item.id}
@@ -998,7 +994,7 @@ export function AdminConsoleClient({
             {error ? (
               <div
                 aria-live="assertive"
-                className="mb-4 border border-red-400/30 bg-red-950/30 px-4 py-3 text-sm text-red-100"
+                className="mb-4 rounded-lg border border-[var(--ad-red-text)]/20 bg-[var(--ad-red-bg)] px-4 py-3 text-sm text-[var(--ad-red-text)]"
                 role="alert"
               >
                 {error}
@@ -1007,7 +1003,7 @@ export function AdminConsoleClient({
             {actionStatus ? (
               <div
                 aria-live="polite"
-                className="mb-4 border border-emerald-400/30 bg-emerald-950/30 px-4 py-3 text-sm text-emerald-100"
+                className="mb-4 rounded-lg border border-[var(--ad-green-text)]/20 bg-[var(--ad-green-bg)] px-4 py-3 text-sm text-[var(--ad-green-text)]"
                 data-testid="admin-action-status"
                 role="status"
               >
@@ -1015,7 +1011,7 @@ export function AdminConsoleClient({
               </div>
             ) : null}
             {loading && !filteredData ? (
-              <div className="flex h-48 items-center justify-center text-[rgb(170,170,170)]">
+              <div className="flex h-48 items-center justify-center text-[var(--ad-text-muted)]">
                 <Loader2 className="mr-2 h-5 w-5 animate-spin" />
                 {t("Loading")}
               </div>
@@ -1051,12 +1047,12 @@ export function AdminConsoleClient({
 
       {pendingAction ? (
         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-4">
-          <div className="w-full max-w-md border border-white/10 bg-[rgb(18,18,18)] p-5 shadow-2xl">
+          <div className="w-full max-w-md rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5 shadow-2xl">
             <div className="flex items-center justify-between gap-3">
               <h2 className="text-base font-semibold">{pendingAction.title}</h2>
               <button
                 aria-label="Close"
-                className="grid h-8 w-8 place-items-center rounded-md hover:bg-white/10"
+                className="grid h-8 w-8 place-items-center rounded-md hover:bg-black/[0.04]"
                 onClick={() => setPendingAction(null)}
                 type="button"
               >
@@ -1065,18 +1061,18 @@ export function AdminConsoleClient({
             </div>
             <div className="mt-4 space-y-3">
               <label className="block">
-                <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">{t("Reason")}</span>
+                <span className="mb-1 block text-xs font-medium text-[var(--ad-text-muted)]">{t("Reason")}</span>
                 <textarea
-                  className="min-h-20 w-full resize-y border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-white/30"
+                  className="min-h-20 w-full resize-y rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
                   onChange={(event) => setReason(event.target.value)}
                   value={reason}
                 />
               </label>
               {pendingAction.review === "image_consistency" ? (
-                <div className="border border-white/10 bg-black/20 p-3">
+                <div className="rounded-lg border border-[var(--ad-border)] bg-black/[0.03] p-3">
                   <div className="mb-3">
                     <h3 className="text-sm font-semibold">{t("Image consistency review")}</h3>
-                    <p className="mt-1 text-xs leading-5 text-[rgb(170,170,170)]">
+                    <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
                       {t("Publish needs at least 20 reviewed image samples and 80% identity consistency.")}
                     </p>
                   </div>
@@ -1099,16 +1095,16 @@ export function AdminConsoleClient({
                       value={actionReview.reviewUrl}
                     />
                     <label className="block">
-                      <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">
+                      <span className="mb-1 block text-xs font-medium text-[var(--ad-text-muted)]">
                         {t("Review notes")}
                       </span>
                       <textarea
-                        className="min-h-16 w-full resize-y border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-white/30"
+                        className="min-h-16 w-full resize-y rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
                         onChange={(event) => setActionReview({ ...actionReview, notes: event.target.value })}
                         value={actionReview.notes}
                       />
                     </label>
-                    <p className="text-xs text-[rgb(170,170,170)]">
+                    <p className="text-xs text-[var(--ad-text-muted)]">
                       {t("Consistency rate")}: {formatPercent(consistencyRateFromReview(actionReview))}
                     </p>
                   </div>
@@ -1117,26 +1113,26 @@ export function AdminConsoleClient({
               {pendingVerification ? (
                 <div
                   className={cn(
-                    "border p-3",
+                    "rounded-lg border p-3",
                     pendingVerificationBlocked
-                      ? "border-red-400/30 bg-red-950/20"
-                      : "border-white/10 bg-black/20",
+                      ? "border-[var(--ad-red-text)]/20 bg-[var(--ad-red-bg)]"
+                      : "border-[var(--ad-border)] bg-black/[0.03]",
                   )}
                 >
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <h3 className="text-sm font-semibold">{t("Model verification")}</h3>
                     <Status locale={locale} value={pendingVerification.status} tone={pendingVerification.tone} />
                   </div>
-                  <p className="mt-2 text-xs leading-5 text-[rgb(170,170,170)]">
+                  <p className="mt-2 text-xs leading-5 text-[var(--ad-text-muted)]">
                     {t(pendingVerification.meta)}
                   </p>
                   {pendingVerification.failureMode ? (
-                    <p className="mt-2 break-all text-xs leading-5 text-red-100">
+                    <p className="mt-2 break-all text-xs leading-5 text-[var(--ad-red-text)]">
                       {t("Failure mode")}: {pendingVerification.failureMode}
                     </p>
                   ) : null}
                   {pendingVerification.blockedReason ? (
-                    <p className="mt-2 text-xs leading-5 text-red-100">
+                    <p className="mt-2 text-xs leading-5 text-[var(--ad-red-text)]">
                       {t(pendingVerification.blockedReason)}
                     </p>
                   ) : null}
@@ -1147,7 +1143,7 @@ export function AdminConsoleClient({
                           className="flex min-w-0 items-center justify-between gap-2 text-xs"
                           key={component.key}
                         >
-                          <span className="min-w-0 truncate text-[rgb(170,170,170)]">{component.key}</span>
+                          <span className="min-w-0 truncate text-[var(--ad-text-muted)]">{component.key}</span>
                           <Status locale={locale} value={component.status} tone={component.tone} />
                         </div>
                       ))}
@@ -1156,29 +1152,29 @@ export function AdminConsoleClient({
                 </div>
               ) : null}
               <label className="block">
-                <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">
+                <span className="mb-1 block text-xs font-medium text-[var(--ad-text-muted)]">
                   {t("Confirmation")}
                 </span>
                 <input
-                  className="h-10 w-full border border-white/10 bg-black/30 px-3 font-mono text-sm outline-none focus:border-white/30"
+                  className="h-10 w-full rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 font-mono text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
                   onChange={(event) => setConfirmation(event.target.value)}
                   value={confirmation}
                 />
               </label>
-              <div className="border border-white/10 bg-black/20 px-3 py-2 font-mono text-xs text-[rgb(230,230,230)]">
+              <div className="rounded-lg border border-[var(--ad-border)] bg-black/[0.03] px-3 py-2 font-mono text-xs text-[var(--ad-text)]">
                 {pendingAction.confirmText}
               </div>
             </div>
             <div className="mt-5 flex justify-end gap-2">
               <button
-                className="h-9 border border-white/10 px-3 text-sm text-[rgb(230,230,230)] hover:bg-white/10"
+                className="h-9 rounded-md border border-[var(--ad-border)] px-3 text-sm text-[var(--ad-text)] hover:bg-black/[0.04]"
                 onClick={() => setPendingAction(null)}
                 type="button"
               >
                 {t("Cancel")}
               </button>
               <button
-                className="inline-flex h-9 items-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+                className="inline-flex h-9 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
                 disabled={
                   actionBusy ||
                   confirmation !== pendingAction.confirmText ||
@@ -1210,8 +1206,8 @@ function NavLink({ active, item }: { active: boolean; item: NavItem }) {
   return (
     <Link
       className={cn(
-        "mb-1 flex h-10 items-center gap-3 rounded-md px-3 text-[13px] font-medium text-[rgb(170,170,170)] transition-colors hover:bg-white/10 hover:text-white",
-        active && "bg-white/10 text-white",
+        "mb-1 flex h-10 items-center gap-3 rounded-md px-3 text-[13px] font-medium text-[var(--ad-text-muted)] transition-colors hover:bg-black/[0.04] hover:text-[var(--ad-ink)]",
+        active && "bg-black/[0.05] text-[var(--ad-ink)]",
       )}
       href={item.href}
     >
