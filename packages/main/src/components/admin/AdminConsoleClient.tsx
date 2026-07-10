@@ -2452,7 +2452,7 @@ function JobsView({
   rows: Row[];
   openAction: (action: PendingAction) => void;
 }) {
-  const { locale, t } = useAdminI18n();
+  const { locale, t, value } = useAdminI18n();
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [detail, setDetail] = useState<GenerationJobDetail | null>(null);
   const [detailBusy, setDetailBusy] = useState(false);
@@ -2487,7 +2487,7 @@ function JobsView({
       label: "Created",
       render: (row) => compactDate(stringValue(row.createdAt), locale),
     },
-    { key: "status", label: "Status" },
+    { key: "status", label: "Status", render: (row) => value(stringValue(row.status)) },
     {
       key: "failure",
       label: "Failure reason",
@@ -5641,7 +5641,7 @@ function DeadLetterView({
   rows: Row[];
   openAction: (action: PendingAction) => void;
 }) {
-  const { locale, t } = useAdminI18n();
+  const { locale, t, value } = useAdminI18n();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const rowIds = rows.map((row) => stringValue(row.id)).filter(Boolean);
   const selectedIds = rowIds.filter((id) => selected.has(id));
@@ -5677,7 +5677,7 @@ function DeadLetterView({
         const id = stringValue(row.id);
         return (
           <input
-            aria-label={id ? `Select dead-letter job ${id}` : "Select dead-letter job"}
+            aria-label={id ? t("Select dead-letter job {id}", { id }) : t("Select dead-letter job")}
             checked={selected.has(id)}
             onChange={() => toggle(id)}
             type="checkbox"
@@ -5690,8 +5690,8 @@ function DeadLetterView({
       label: "User",
       render: (row) => <span className="font-mono text-xs">{shortId(stringValue(row.userId))}</span>,
     },
-    { key: "mode", label: "Mode" },
-    { key: "status", label: "Status" },
+    { key: "mode", label: "Mode", render: (row) => value(stringValue(row.mode)) },
+    { key: "status", label: "Status", render: (row) => value(stringValue(row.status)) },
     {
       key: "failure",
       label: "Failure reason",
@@ -5704,7 +5704,7 @@ function DeadLetterView({
         );
       },
     },
-    { key: "ledgerState", label: "Ledger" },
+    { key: "ledgerState", label: "Ledger", render: (row) => value(stringValue(row.ledgerState)) },
     { key: "costDreamcoins", label: "Cost" },
     {
       key: "updatedAt",
@@ -5768,7 +5768,7 @@ function DeadLetterView({
       <div className="flex flex-wrap items-center gap-3 border border-white/10 bg-[rgb(18,18,18)] px-4 py-3">
         <label className="flex items-center gap-2 text-xs text-[rgb(170,170,170)]">
           <input
-            aria-label="Select all dead-letter jobs"
+            aria-label={t("Select all dead-letter jobs")}
             checked={allSelected}
             onChange={toggleAll}
             type="checkbox"

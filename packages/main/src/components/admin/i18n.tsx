@@ -673,6 +673,10 @@ const zh: Record<string, string> = {
   "Created": "创建时间",
   "Cost": "费用",
   "Select all": "全选",
+  // DeadLetterView screen-reader aria-labels (fix wave 1, #5).
+  "Select dead-letter job {id}": "选择死信任务 {id}",
+  "Select dead-letter job": "选择死信任务",
+  "Select all dead-letter jobs": "全选死信任务",
   // GenerationJobInspector — pre-existing detail drawer, now opened from the redesigned JobsView.
   "Timeline": "时间线",
   // ConfigOverviewHeader / ConfigTabNav (task 7).
@@ -710,7 +714,7 @@ const zh: Record<string, string> = {
   // only the fully-static status+componentMeta combinations are matchable (dynamic "N/M component
   // issues" counts can't be, by construction, keyed in a static dictionary).
   "No local model verification required · No component status recorded": "无需本地模型验证 · 无组件状态记录",
-  "Verification status missing · No component status recorded": "校验状态缺失 · 无组件状态记录",
+  "Verification status missing · No component status recorded": "验证状态缺失 · 无组件状态记录",
   "Model verification passed · No component status recorded": "模型验证已通过 · 无组件状态记录",
   // PromptRecipesView / RecipeDetail (task 8).
   "Untitled recipe": "未命名配方",
@@ -929,6 +933,13 @@ const zhValues: Record<string, string> = {
   private: "私密",
   public: "公开",
   unlisted: "不公开列出",
+  // fix wave 1 (#1): GenerationJob.status + .ledgerState enum cells now render via value() on the
+  // jobs/dead-letter ReadonlyOpsView tables. queued/completed/failed/blocked/refunded/image/video
+  // already exist above; these are the remaining reachable values.
+  running: "运行中",
+  moderating_input: "输入审核中",
+  moderating_output: "输出审核中",
+  reserved: "已预留",
 };
 
 type TranslationValues = Record<string, string | number>;
