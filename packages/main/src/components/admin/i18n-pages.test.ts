@@ -111,6 +111,14 @@ export const TAGS_KEYS = [
   "Target tag", "Target tag…", "yes",
 ];
 
+// SPEC: ui/ 共享原语（ConfirmDialog/AssetImage 等）自有文案的锁（task 18 评审 follow-up）。
+// 这些 key 被多个三件套详情页复用（如 ConfirmDialog 的破坏性确认流程），任何一条从 zh 表
+// 消失都会同时在所有 trio 页面漏英文——单独锁一份，不依赖各页面 KEYS 数组恰好也列了它。
+export const UI_KEYS = [
+  "Cancel", "Missing", "Missing asset", "Reason (≥3)", "Request failed",
+  "Type the name to confirm",
+];
+
 describe("admin i18n — trio pages have zh", () => {
   it("official characters trio", () => {
     for (const key of OFFICIAL_KEYS) expect(hasAdminZh(key)).toBe(true);
@@ -142,5 +150,9 @@ describe("admin i18n — trio pages have zh", () => {
 
   it("tags page", () => {
     for (const key of TAGS_KEYS) expect(hasAdminZh(key)).toBe(true);
+  });
+
+  it("shared ui primitives", () => {
+    for (const key of UI_KEYS) expect(hasAdminZh(key)).toBe(true);
   });
 });
