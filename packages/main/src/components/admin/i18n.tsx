@@ -513,6 +513,7 @@ const zh: Record<string, string> = {
   "Type target ID": "输入目标 ID",
   "Type code to confirm": "输入兑换码确认",
   "Type CLEAR": "输入 CLEAR",
+  "Type the name to confirm": "输入名称以确认",
   "Type title to confirm": "输入标题确认",
   "Type profile ID": "输入 profile ID",
   "Type user ID": "输入用户 ID",
