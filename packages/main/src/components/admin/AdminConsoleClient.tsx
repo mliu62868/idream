@@ -39,7 +39,7 @@ import { BackendsView } from "@/components/admin/BackendsView";
 import { GenerationMetricsView } from "@/components/admin/GenerationMetricsView";
 import { WorkflowsView } from "@/components/admin/WorkflowsView";
 import { OfficialSection } from "@/components/admin/official/OfficialSection";
-import { TemplatesView } from "@/components/admin/TemplatesView";
+import { StartersSection } from "@/components/admin/starters/StartersSection";
 import { TagsView } from "@/components/admin/TagsView";
 import { ReviewQueueView } from "@/components/admin/ReviewQueueView";
 import { CmsView } from "@/components/admin/CmsView";
@@ -2312,7 +2312,7 @@ function renderSection(
     if (section.view === "assets") return <AssetLibraryView />;
     if (section.view === "placements") return <PlacementsView />;
     if (section.view === "official") return <OfficialSection view={subview} />;
-    if (section.view === "templates") return <TemplatesView />;
+    if (section.view === "templates") return <StartersSection view={subview} />;
     if (section.view === "tags") return <TagsView />;
     if (section.view === "cms") return <CmsView />;
     if (section.view === "compliance") return <ComplianceView />;

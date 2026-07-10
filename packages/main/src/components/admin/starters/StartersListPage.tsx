@@ -78,7 +78,7 @@ export function StartersListPage() {
             options: [allOption, ...SCOPES.map((s) => ({ value: s, label: value(s) }))] },
           { name: t("Status"), value: status, onChange: setStatus,
             options: [allOption,
-              { value: "active", label: t("Active") },
+              { value: "active", label: t("Published") },
               { value: "disabled", label: t("Inactive") }] },
         ]}
       />
@@ -110,7 +110,7 @@ export function StartersListPage() {
                 </span>
               }
               status={row.isActive ? "active" : "disabled"}
-              statusLabel={row.isActive ? t("Active") : t("Inactive")}
+              statusLabel={row.isActive ? t("Published") : t("Inactive")}
               title={row.name}
             />
           ))}

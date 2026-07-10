@@ -753,6 +753,21 @@ const zh: Record<string, string> = {
   "Character not found.": "未找到该角色。",
   "Edit profile": "编辑资料",
   "Save changes": "保存修改",
+  // Starter templates trio — StartersListPage/StartersDetailPage/StartersNewPage (task 13).
+  // "AI assist"/"Basic info"/"Description & tags"/"Save changes"/"Edit profile"/"Search by name"/
+  // "Loading…"/"Request failed"/"Cancel"/"Publish"/"Offline"/"Character not found."/"All"/"Status"/
+  // "Reason (≥3)"/"Name (≥1)"/"Gender"/"Style"/"Summary (≤200)"/"Tags (comma-separated, ≤12)"/
+  // "Generate with AI"/"Inspiration"/"Sort order"/"One-line inspiration…"/"Create character template"
+  // already exist above (shared trio/generic copy); not duplicated here.
+  "New starter template": "新建角色模板",
+  "Manage starter templates for user character creation.": "管理用户建角时的起步模板。",
+  "Back to starter templates": "返回角色模板",
+  "No starter templates yet.": "还没有角色模板。",
+  "Create the first starter template to get started.": "创建第一个角色模板，从这里开始。",
+  "Inactive": "未上线",
+  "Scope": "范围",
+  "Category": "分类",
+  "{count} tags": "{count} 个标签",
 };
 
 const zhColumns: Record<string, string> = {

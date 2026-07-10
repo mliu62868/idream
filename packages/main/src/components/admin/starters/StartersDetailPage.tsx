@@ -171,7 +171,7 @@ export function StartersDetailPage({ id }: { id: string }) {
       backHref="/admin/content/templates"
       backLabel={t("Back to starter templates")}
       status={row.isActive ? "active" : "disabled"}
-      statusLabel={row.isActive ? t("Active") : t("Inactive")}
+      statusLabel={row.isActive ? t("Published") : t("Inactive")}
       title={row.name}
     >
       {error ? <p className="text-sm text-[var(--ad-red-text)]">{error}</p> : null}
