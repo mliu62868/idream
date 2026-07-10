@@ -645,6 +645,88 @@ const zh: Record<string, string> = {
   "Batch generate images": "生产一批图",
   "Go to review queue": "去审核",
   "Handle": "去处理",
+  // generation-group redesign (task 13 zh backfill) — FailureReason/EngineeringDetails/
+  // OperatorFlow/ReadonlyOpsView primitives + failureReasons.ts titles/hints.
+  "Technical detail": "技术详情",
+  "Engineering details": "工程详情",
+  "Nothing here yet.": "暂无内容",
+  "Model files not ready": "模型文件未就绪",
+  "Missing runtime components — needs engineering": "缺运行组件，需工程处理",
+  "Generation timed out": "生成超时",
+  "Safe to retry": "可重试",
+  "Backend unreachable": "后端不可达",
+  "Check backend health — needs engineering": "检查后端健康，需工程处理",
+  "Unknown error": "未知错误",
+  "Share the error code with engineering": "请把错误代码给工程",
+  // BackendsView.tsx (task 12) — connection details fold + ReadonlyOpsView columns.
+  "Connection details": "连接详情",
+  "Endpoint": "端点",
+  "CLI Path": "CLI 路径",
+  "No backends.": "暂无后端。",
+  "ok": "正常",
+  "fail": "异常",
+  "Backend": "后端",
+  "Kind": "类型",
+  // shared ReadonlyOpsView column labels — Jobs (task 10) / Dead-letter (task 11) / Backends (task 12).
+  "Failure reason": "失败原因",
+  "User": "用户",
+  "Created": "创建时间",
+  "Cost": "费用",
+  "Select all": "全选",
+  // GenerationJobInspector — pre-existing detail drawer, now opened from the redesigned JobsView.
+  "Timeline": "时间线",
+  // ConfigOverviewHeader / ConfigTabNav (task 7).
+  "Test and publish generation profiles": "测试并发布生成配置",
+  "Pick a profile to check readiness, then publish it. Model files and runner setup stay in engineering-owned config.":
+    "选择一个配置检查就绪度，然后发布；模型文件与运行器设置归工程配置管理。",
+  "Profiles": "配置",
+  // profileStateLabelKey / recipeStateLabelKey / presetStateLabelKey (tasks 7-9) — operator-facing
+  // state phrases; "draft"/"Active" are the raw-status fallback branches.
+  "Blocked — needs engineering": "已阻止，需工程处理",
+  "Needs testing": "待测试",
+  "Ready to publish": "可发布",
+  "Active": "启用",
+  "draft": "草稿",
+  // ProfileDetail (task 7).
+  "Select a profile to review its readiness and publish it.": "选择一个配置查看就绪度并发布。",
+  "Generate test image": "生成测试图",
+  "Model & workflow details": "模型与工作流详情",
+  "Workflow": "工作流",
+  "(use pipelineModel)": "（使用 pipelineModel）",
+  "(needs reference image — not for standard profiles)": "（需要参考图，标准配置不适用）",
+  "Only draft profiles can change workflow routing.": "只有草稿配置可以修改工作流路由。",
+  "Workflow saved": "工作流已保存",
+  "Workflow save failed": "工作流保存失败",
+  "Profile ID": "配置 ID",
+  "Profile key": "配置键",
+  "Version": "版本",
+  "Pipeline model": "流水线模型",
+  "Model file": "模型文件",
+  "Active workflow": "当前工作流",
+  "Verification status": "验证状态",
+  "Rollout": "放量",
+  "Required entitlement": "所需权益",
+  // ProfileVerificationPanel — pre-existing, now folded inside ProfileDetail's EngineeringDetails;
+  // only the fully-static status+componentMeta combinations are matchable (dynamic "N/M component
+  // issues" counts can't be, by construction, keyed in a static dictionary).
+  "No local model verification required · No component status recorded": "无需本地模型验证 · 无组件状态记录",
+  "Verification status missing · No component status recorded": "校验状态缺失 · 无组件状态记录",
+  "Model verification passed · No component status recorded": "模型验证已通过 · 无组件状态记录",
+  // PromptRecipesView / RecipeDetail (task 8).
+  "Untitled recipe": "未命名配方",
+  "No prompt recipes yet.": "暂无提示词配方。",
+  "Select a recipe to review and publish it.": "选择一个配方查看并发布。",
+  "Recipe details": "配方详情",
+  "Recipe ID": "配方 ID",
+  "Recipe key": "配方键",
+  // GenerationPresetsView / PresetDetail (task 9).
+  "Untitled preset": "未命名预设",
+  "No built-in presets are seeded yet.": "暂无内置预设。",
+  "Select a preset to review it.": "选择一个预设查看详情。",
+  "Preset details": "预设详情",
+  "Preset ID": "预设 ID",
+  "Preset type": "预设类型",
+  "No built-in generation profiles are seeded yet.": "暂无内置生成配置。",
 };
 
 const zhColumns: Record<string, string> = {
@@ -838,6 +920,15 @@ const zhValues: Record<string, string> = {
   voice: "语音",
   warning: "警告",
   waiting_on_user: "等待用户",
+  // generation-group redesign (task 13 zh backfill) — GenerationPreset.type / .visibility enums,
+  // surfaced by presetSecondaryLine + PresetDetail (task 9).
+  background: "背景",
+  pose: "姿势",
+  outfit: "服装",
+  mode: "模式",
+  private: "私密",
+  public: "公开",
+  unlisted: "不公开列出",
 };
 
 type TranslationValues = Record<string, string | number>;
