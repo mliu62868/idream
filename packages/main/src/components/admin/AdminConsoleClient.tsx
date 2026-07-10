@@ -155,7 +155,6 @@ type DashboardData = {
 
 type ConfigData = {
   profiles: Row[];
-  recipes: Row[];
   presets: Row[];
   flags: Row[];
   recentJobs: Row[];
@@ -1180,16 +1179,14 @@ function NavLink({ active, item }: { active: boolean; item: NavItem }) {
 }
 
 async function fetchGenerationConfig(): Promise<ConfigData> {
-  const [profiles, recipes, presets, flags, jobs] = await Promise.all([
+  const [profiles, presets, flags, jobs] = await Promise.all([
     apiGet<{ items: Row[] }>("/api/v1/admin/generation/model-profiles"),
-    apiGet<{ items: Row[] }>("/api/v1/admin/generation/recipes"),
     apiGet<{ items: Row[] }>("/api/v1/admin/generation/presets"),
     apiGet<{ items: Row[] }>("/api/v1/admin/feature-flags"),
     apiGet<{ items: Row[] }>("/api/v1/admin/generation/jobs?mode=image&limit=12"),
   ]);
   return {
     profiles: profiles.items,
-    recipes: recipes.items,
     presets: presets.items,
     flags: flags.items,
     recentJobs: jobs.items,
@@ -6998,7 +6995,6 @@ function filterSectionData(section: SectionData | null, query: string): SectionD
       ...section,
       data: {
         profiles: filterRows(section.data.profiles),
-        recipes: filterRows(section.data.recipes),
         presets: filterRows(section.data.presets),
         flags: filterRows(section.data.flags),
         recentJobs: filterRows(section.data.recentJobs),

@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Loader2 } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { DetailPage, DetailSection } from "@/components/admin/ui/DetailPage";
@@ -20,10 +21,11 @@ import {
 } from "./recipes-api";
 
 // SPEC: 提示词配方详情页 —— 查看 + 就地编辑（仅 draft）+ 发布/回滚（spec §7 详情页）。
-// INTENT: 无单条 GET，复用列表接口按 id 过滤；PATCH 无 reason 字段（后端契约），Save 仍走
-// 统一 ConfirmDialog 采集 reason，但不随 payload 提交（recipeDraftPayload 无 reason）。
+// INTENT: 无单条 GET，复用列表接口按 id 过滤。PATCH 无 reason 字段且后端审计不记 reason
+// （recipePatchSchema 契约），Save 直接 PATCH——不弹 ConfirmDialog 采集一个去不了后端的
+// reason。发布/回滚的后端确实收 reason，保留 ConfirmDialog。
 type Mode = "view" | "edit";
-type PendingAction = "save" | "publish" | "rollback" | null;
+type PendingAction = "publish" | "rollback" | null;
 
 function draftFromRow(row: Recipe): RecipeDraft {
   const modes: readonly string[] = MODES;
@@ -59,6 +61,7 @@ export function RecipesDetailPage({ id }: { id: string }) {
   const [mode, setMode] = useState<Mode>("view");
   const [draft, setDraft] = useState<RecipeDraft | null>(null);
   const [pending, setPending] = useState<PendingAction>(null);
+  const [saving, setSaving] = useState(false);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -97,21 +100,26 @@ export function RecipesDetailPage({ id }: { id: string }) {
     setDraft((prev) => (prev ? { ...prev, [key]: next } : prev));
   }
 
+  // Save 直接 PATCH：后端 PATCH 契约无 reason，可写门槛已由 status==="draft" 把住；
+  // 失败就地显示在页面 error 条，不关编辑态。
+  async function save() {
+    if (!draft) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await apiWrite(`${RECIPES_LIST}/${id}`, "PATCH", recipeDraftPayload(draft));
+      await reload();
+      setMode("view");
+      setDraft(null);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : t("Request failed"));
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const confirmSpec: ConfirmSpec | null = useMemo(() => {
     if (!row || !pending) return null;
-    if (pending === "save") {
-      if (!draft) return null;
-      return {
-        title: t("Save changes"),
-        submitLabel: t("Save changes"),
-        onSubmit: async () => {
-          await apiWrite(`${RECIPES_LIST}/${id}`, "PATCH", recipeDraftPayload(draft));
-          await reload();
-          setMode("view");
-          setDraft(null);
-        },
-      };
-    }
     if (pending === "publish") {
       return {
         title: t("Publish recipe"),
@@ -135,7 +143,7 @@ export function RecipesDetailPage({ id }: { id: string }) {
         await reload();
       },
     };
-  }, [pending, draft, row, id, t, reload]);
+  }, [pending, row, id, t, reload]);
 
   if (loading) {
     return <p className="text-sm text-[var(--ad-text-muted)]">{t("Loading…")}</p>;
@@ -166,8 +174,11 @@ export function RecipesDetailPage({ id }: { id: string }) {
   const actions =
     mode === "edit" ? (
       <>
-        <GhostButton onClick={cancelEdit}>{t("Cancel")}</GhostButton>
-        <PrimaryButton onClick={() => setPending("save")}>{t("Save changes")}</PrimaryButton>
+        <GhostButton disabled={saving} onClick={cancelEdit}>{t("Cancel")}</GhostButton>
+        <PrimaryButton disabled={saving} onClick={() => void save()}>
+          {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+          {t("Save changes")}
+        </PrimaryButton>
       </>
     ) : (
       <>
