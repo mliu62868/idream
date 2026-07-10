@@ -116,11 +116,40 @@ const SECTION_ALIASES: Record<string, string> = {
   "generation/models": "generation/config",
 };
 
-// SPEC: normalize an incoming route section to a known nav id; unknown → dashboard.
-// INVARIANT: the known-id set is derived from navItems, so navItems is the SSoT.
-export function normalizeSection(value: string): string {
+export type AdminSubview =
+  | { kind: "list" }
+  | { kind: "new" }
+  | { kind: "detail"; id: string };
+
+export type AdminPath = { sectionId: string; view: AdminSubview };
+
+// SPEC: 支持 /new 与 /<id> 子视图的三件套 section（spec §6.1/§6.2）。
+const SUBVIEW_SECTIONS = new Set([
+  "content/official", "content/templates", "generation/recipes",
+  "generation/presets", "content/assets", "content/placements",
+]);
+
+// SPEC: 路由解析 —— 已知 id → list；<三件套 id>/new → new；<三件套 id>/<id> → detail；
+// 其余一律回 dashboard（沿用旧不变式）。"new" 是保留字，不能作实体 id。
+export function parseAdminPath(value: string): AdminPath {
   const mapped = SECTION_ALIASES[value] ?? value;
-  return KNOWN_SECTION_IDS.has(mapped) ? mapped : "dashboard";
+  if (KNOWN_SECTION_IDS.has(mapped)) return { sectionId: mapped, view: { kind: "list" } };
+  const segments = mapped.split("/").filter(Boolean);
+  if (segments.length >= 2) {
+    const last = segments[segments.length - 1];
+    const prefixRaw = segments.slice(0, -1).join("/");
+    const prefix = SECTION_ALIASES[prefixRaw] ?? prefixRaw;
+    if (SUBVIEW_SECTIONS.has(prefix) && KNOWN_SECTION_IDS.has(prefix) && last.length > 0) {
+      if (last === "new") return { sectionId: prefix, view: { kind: "new" } };
+      return { sectionId: prefix, view: { kind: "detail", id: last } };
+    }
+  }
+  return { sectionId: "dashboard", view: { kind: "list" } };
+}
+
+// SPEC: 兼容旧签名；navItems 仍是已知 id 的 SSoT。
+export function normalizeSection(value: string): string {
+  return parseAdminPath(value).sectionId;
 }
 
 export type ConfigSlice = "profiles" | "recipes" | "presets";

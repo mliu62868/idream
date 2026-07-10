@@ -68,10 +68,11 @@ import {
 } from "@/components/admin/i18n";
 import {
   navItems,
-  normalizeSection,
+  parseAdminPath,
   configSliceForSection,
   NAV_DAILY,
   NAV_FOLDED_GROUPS,
+  type AdminSubview,
   type ConfigSlice,
   type NavItem,
 } from "@/components/admin/nav-config";
@@ -637,7 +638,7 @@ export function AdminConsoleClient({
   devLogout = false,
 }: AdminConsoleClientProps) {
   const sidebarNavRef = useRef<HTMLElement | null>(null);
-  const sectionId = normalizeSection(initialSection);
+  const { sectionId, view: subview } = parseAdminPath(initialSection);
   const activeItem = navItems.find((item) => item.id === sectionId) ?? navItems[0];
   const [data, setData] = useState<SectionData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1019,7 +1020,7 @@ export function AdminConsoleClient({
                 {t("Loading")}
               </div>
             ) : (
-              renderSection(filteredData, {
+              renderSection(filteredData, subview, {
                 openAction,
                 adjustment,
                 setAdjustment,
@@ -2181,6 +2182,7 @@ function pruneUndefined(value: Record<string, unknown>) {
 
 function renderSection(
   section: SectionData | null,
+  subview: AdminSubview,
   ctx: {
     openAction: (action: PendingAction) => void;
     adjustment: { userId: string; delta: string };

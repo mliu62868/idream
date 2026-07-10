@@ -118,3 +118,48 @@ describe("nav-config tiers (guided nav)", () => {
     ]);
   });
 });
+
+import { parseAdminPath } from "./nav-config";
+
+describe("parseAdminPath (list/new/detail subviews)", () => {
+  const SUBVIEW_IDS = [
+    "content/official", "content/templates", "generation/recipes",
+    "generation/presets", "content/assets", "content/placements",
+  ];
+
+  it("known section ids resolve to list view", () => {
+    for (const item of navItems) {
+      expect(parseAdminPath(item.id)).toEqual({ sectionId: item.id, view: { kind: "list" } });
+    }
+  });
+
+  it("<section>/new resolves to new view for every subview section", () => {
+    for (const id of SUBVIEW_IDS) {
+      expect(parseAdminPath(`${id}/new`)).toEqual({ sectionId: id, view: { kind: "new" } });
+    }
+  });
+
+  it("<section>/<id> resolves to detail view with the id", () => {
+    for (const id of SUBVIEW_IDS) {
+      expect(parseAdminPath(`${id}/abc123`)).toEqual({
+        sectionId: id,
+        view: { kind: "detail", id: "abc123" },
+      });
+    }
+  });
+
+  it("extra segments on non-subview sections fall back to dashboard", () => {
+    expect(parseAdminPath("users/abc")).toEqual({
+      sectionId: "dashboard",
+      view: { kind: "list" },
+    });
+    expect(parseAdminPath("nope/nope/nope")).toEqual({
+      sectionId: "dashboard",
+      view: { kind: "list" },
+    });
+  });
+
+  it("keeps the generation/models alias working", () => {
+    expect(parseAdminPath("generation/models").sectionId).toBe("generation/config");
+  });
+});
