@@ -25,7 +25,7 @@ type AnnouncementActionDraft = {
 };
 
 const inputClass =
-  "h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30";
+  "rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]";
 
 async function apiDelete(path: string, body: Record<string, unknown>): Promise<void> {
   const response = await fetch(path, {
@@ -98,7 +98,7 @@ export function AnnouncementsView() {
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold">{t("Announcements")} ({items.length})</h2>
         <button
-          className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm disabled:opacity-50"
+          className="rounded-md inline-flex h-9 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm disabled:opacity-50"
           disabled={loading}
           onClick={() => void load()}
           type="button"
@@ -107,13 +107,13 @@ export function AnnouncementsView() {
           {t("Refresh")}
         </button>
       </div>
-      {error ? <p className="text-xs text-red-300">{error}</p> : null}
+      {error ? <p className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
 
       <CreateAnnouncementForm reload={load} />
 
       {actionDraft ? (
-        <section className="border border-amber-300/30 bg-amber-950/20 p-3">
-          <p className="text-xs font-semibold text-amber-100">
+        <section className="rounded-lg border border-[var(--ad-yellow-text)]/20 bg-[var(--ad-yellow-bg)] p-3">
+          <p className="text-xs font-semibold text-[var(--ad-yellow-text)]">
             {actionDraft.kind === "delete"
               ? t("Confirm announcement delete")
               : actionDraft.item.active
@@ -121,7 +121,7 @@ export function AnnouncementsView() {
                 : t("Confirm announcement activation")}{" "}
             <span className="font-mono">{actionDraft.item.id}</span>
           </p>
-          <p className="mt-1 text-xs text-[rgb(170,170,170)]">{actionDraft.item.title}</p>
+          <p className="mt-1 text-xs text-[var(--ad-text-muted)]">{actionDraft.item.title}</p>
           <div className="mt-3 grid gap-3 md:grid-cols-[1fr_260px_auto_auto]">
             <input
               aria-label={t("Announcement action reason")}
@@ -138,14 +138,14 @@ export function AnnouncementsView() {
               value={actionDraft.confirmation}
             />
             <button
-              className="inline-flex h-10 items-center justify-center border border-white/10 px-3 text-sm"
+              className="rounded-md inline-flex h-10 items-center justify-center border border-[var(--ad-border)] px-3 text-sm"
               onClick={() => setActionDraft(null)}
               type="button"
             >
               {t("Cancel")}
             </button>
             <button
-              className="inline-flex h-10 items-center justify-center bg-amber-200 px-3 text-sm font-semibold text-amber-950 disabled:opacity-50"
+              className="inline-flex h-10 items-center justify-center bg-[var(--ad-yellow-bg)] px-3 text-sm font-semibold text-[var(--ad-yellow-text)] disabled:opacity-50"
               disabled={actionBusy || !canConfirmAnnouncementAction(actionDraft)}
               onClick={() => void submitAction()}
               type="button"
@@ -157,9 +157,9 @@ export function AnnouncementsView() {
         </section>
       ) : null}
 
-      <section className="border border-white/10 bg-[rgb(18,18,18)]">
+      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
         <table className="w-full text-left text-sm">
-          <thead className="border-b border-white/10 text-xs text-[rgb(170,170,170)]">
+          <thead className="border-b border-[var(--ad-border)] text-xs text-[var(--ad-text-muted)]">
             <tr>
               <th className="px-3 py-2 font-medium">{t("title")}</th>
               <th className="px-3 py-2 font-medium">{t("level")}</th>
@@ -169,14 +169,14 @@ export function AnnouncementsView() {
           </thead>
           <tbody>
             {items.map((item) => (
-              <tr key={item.id} className="border-b border-white/5">
+              <tr key={item.id} className="border-b border-[var(--ad-border)]">
                 <td className="px-3 py-2">{item.title}</td>
-                <td className="px-3 py-2 text-[rgb(170,170,170)]">{valueLabel(item.level)}</td>
+                <td className="px-3 py-2 text-[var(--ad-text-muted)]">{valueLabel(item.level)}</td>
                 <td className="px-3 py-2">{item.active ? t("yes") : t("no")}</td>
                 <td className="px-3 py-2 text-right">
                   <div className="flex justify-end gap-2">
                     <button
-                      className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs"
+                      className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
                       disabled={actionBusy}
                       onClick={() => startAction("toggle", item)}
                       type="button"
@@ -185,7 +185,7 @@ export function AnnouncementsView() {
                     </button>
                     <button
                       aria-label={t("Delete announcement")}
-                      className="inline-flex h-8 items-center gap-1 border border-red-400/30 px-2 text-xs text-red-200"
+                      className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-red-text)]/20 px-2 text-xs text-[var(--ad-red-text)]"
                       disabled={actionBusy}
                       onClick={() => startAction("delete", item)}
                       type="button"
@@ -198,7 +198,7 @@ export function AnnouncementsView() {
             ))}
             {items.length === 0 && !loading ? (
               <tr>
-                <td className="px-3 py-6 text-center text-xs text-[rgb(170,170,170)]" colSpan={4}>
+                <td className="px-3 py-6 text-center text-xs text-[var(--ad-text-muted)]" colSpan={4}>
                   {t("No announcements.")}
                 </td>
               </tr>
@@ -262,9 +262,9 @@ function CreateAnnouncementForm({ reload }: { reload: () => void }) {
     confirmation.trim() === trimmedTitle;
 
   return (
-    <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+    <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <h2 className="text-sm font-semibold">{t("Create announcement")}</h2>
-      <p className="mt-1 text-xs text-[rgb(170,170,170)]">站内 banner（即站内广播渠道）。active 即对全站可见。</p>
+      <p className="mt-1 text-xs text-[var(--ad-text-muted)]">站内 banner（即站内广播渠道）。active 即对全站可见。</p>
       <div className="mt-3 grid gap-3 md:grid-cols-2">
         <input className={inputClass} onChange={(e) => setTitle(e.target.value)} placeholder={t("Title")} value={title} />
         <input className={inputClass} onChange={(e) => setBody(e.target.value)} placeholder={t("Body")} value={body} />
@@ -284,7 +284,7 @@ function CreateAnnouncementForm({ reload }: { reload: () => void }) {
           <option value="promo">{valueLabel("promo")}</option>
           <option value="warning">{valueLabel("warning")}</option>
         </select>
-        <label className="flex items-center gap-2 text-sm text-[rgb(170,170,170)]">
+        <label className="flex items-center gap-2 text-sm text-[var(--ad-text-muted)]">
           <input checked={active} onChange={(e) => setActive(e.target.checked)} type="checkbox" />
           {t("Active immediately")}
         </label>
@@ -302,7 +302,7 @@ function CreateAnnouncementForm({ reload }: { reload: () => void }) {
           value={confirmation}
         />
         <button
-          className="inline-flex h-10 items-center justify-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+          className="inline-flex h-10 items-center justify-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
           disabled={!canCreate}
           onClick={() => void create()}
           type="button"
@@ -311,7 +311,7 @@ function CreateAnnouncementForm({ reload }: { reload: () => void }) {
           {t("Create")}
         </button>
       </div>
-      {err ? <p className="mt-2 text-xs text-red-300">{err}</p> : null}
+      {err ? <p className="mt-2 text-xs text-[var(--ad-red-text)]">{err}</p> : null}
     </section>
   );
 }

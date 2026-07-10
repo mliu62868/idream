@@ -100,7 +100,7 @@ export function BackendsView() {
           <div className="flex items-center gap-2">
             <HealthBadge health={backend.health} />
             {typeof backend.health.latencyMs === "number" ? (
-              <span className="font-mono text-xs text-[rgb(170,170,170)]">{backend.health.latencyMs}ms</span>
+              <span className="font-mono text-xs text-[var(--ad-text-muted)]">{backend.health.latencyMs}ms</span>
             ) : null}
           </div>
         );
@@ -114,7 +114,7 @@ export function BackendsView() {
         return !backend.health.ok ? (
           <FailureReason code="backend_unreachable" detail={backend.health.detail} />
         ) : (
-          <span className="text-[rgb(170,170,170)]">—</span>
+          <span className="text-[var(--ad-text-muted)]">—</span>
         );
       },
     },
@@ -124,7 +124,7 @@ export function BackendsView() {
     <div className="space-y-5">
       <div className="flex items-center justify-end">
         <button
-          className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm disabled:opacity-50"
+          className="rounded-md inline-flex h-9 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm disabled:opacity-50"
           disabled={loading}
           onClick={() => void load()}
           type="button"
@@ -133,7 +133,7 @@ export function BackendsView() {
           {t("Refresh")}
         </button>
       </div>
-      {error ? <p className="text-xs text-red-300">{error}</p> : null}
+      {error ? <p className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
 
       <ReadonlyOpsView
         columns={columns}
@@ -152,7 +152,7 @@ function HealthBadge({ health }: { health: BackendHealth }) {
     <span
       className={cn(
         "inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium",
-        health.ok ? "bg-emerald-400/10 text-emerald-300" : "bg-red-400/10 text-red-300",
+        health.ok ? "bg-[var(--ad-green-bg)] text-[var(--ad-green-text)]" : "bg-[var(--ad-red-bg)] text-[var(--ad-red-text)]",
       )}
     >
       {health.ok ? <CircleCheck className="h-3.5 w-3.5" /> : <CircleX className="h-3.5 w-3.5" />}

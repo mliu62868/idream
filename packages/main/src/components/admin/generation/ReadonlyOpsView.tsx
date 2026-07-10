@@ -29,9 +29,9 @@ export function ReadonlyOpsView({
       <h2 className="text-sm font-semibold">
         {t(title)} ({rows.length})
       </h2>
-      <div className="overflow-x-auto border border-white/10">
+      <div className="rounded-lg overflow-x-auto border border-[var(--ad-border)]">
         <table className="w-full text-left text-sm">
-          <thead className="border-b border-white/10 text-xs text-[rgb(170,170,170)]">
+          <thead className="border-b border-[var(--ad-border)] text-xs text-[var(--ad-text-muted)]">
             <tr>
               {columns.map((c) => (
                 <th key={c.key} className="whitespace-nowrap px-3 py-2 font-medium">
@@ -43,13 +43,13 @@ export function ReadonlyOpsView({
           <tbody>
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={columns.length} className="px-3 py-6 text-center text-xs text-[rgb(170,170,170)]">
+                <td colSpan={columns.length} className="px-3 py-6 text-center text-xs text-[var(--ad-text-muted)]">
                   {empty ?? t("Empty")}
                 </td>
               </tr>
             ) : (
               rows.map((row, index) => (
-                <tr key={index} className="border-b border-white/5 align-top">
+                <tr key={index} className="border-b border-[var(--ad-border)] align-top">
                   {columns.map((c) => (
                     <td key={c.key} className={c.render ? "px-3 py-2" : "whitespace-nowrap px-3 py-2"}>
                       {c.render ? c.render(row) : String(row[c.key] ?? "—")}

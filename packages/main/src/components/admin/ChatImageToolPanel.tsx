@@ -55,26 +55,26 @@ export function ChatImageToolPanel({ characterId }: { characterId: string }) {
   }
 
   return (
-    <section className="mt-4 flex items-center justify-between gap-3 border border-white/10 bg-[rgb(18,18,18)] p-4">
+    <section className="rounded-lg mt-4 flex items-center justify-between gap-3 border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <div className="flex items-center gap-2">
-        <Wand2 className="h-4 w-4 text-[rgb(170,170,170)]" />
+        <Wand2 className="h-4 w-4 text-[var(--ad-text-muted)]" />
         <div>
           <h2 className="text-sm font-semibold">{t("Chat image tool")}</h2>
-          <p className="mt-0.5 text-xs text-[rgb(170,170,170)]">
+          <p className="mt-0.5 text-xs text-[var(--ad-text-muted)]">
             {t("Whether this character's chat agent may call the image generation tool.")}
           </p>
         </div>
       </div>
       <div className="flex items-center gap-3">
         {loading ? (
-          <Loader2 className="h-4 w-4 animate-spin text-[rgb(170,170,170)]" />
+          <Loader2 className="h-4 w-4 animate-spin text-[var(--ad-text-muted)]" />
         ) : (
-          <span className="text-xs font-medium text-[rgb(220,220,220)]">
+          <span className="text-xs font-medium text-[var(--ad-text)]">
             {enabled ? t("Enabled") : t("Disabled")}
           </span>
         )}
         <button
-          className="inline-flex h-9 items-center gap-2 border border-white/20 px-3 text-xs font-semibold disabled:opacity-50"
+          className="rounded-md inline-flex h-9 items-center gap-2 border border-[var(--ad-border)] px-3 text-xs font-semibold disabled:opacity-50"
           disabled={loading || toggling}
           onClick={() => void toggle()}
           type="button"
@@ -83,7 +83,7 @@ export function ChatImageToolPanel({ characterId }: { characterId: string }) {
           {enabled ? t("Disable") : t("Enable")}
         </button>
       </div>
-      {error ? <p className="text-xs text-red-300">{error}</p> : null}
+      {error ? <p className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
     </section>
   );
 }

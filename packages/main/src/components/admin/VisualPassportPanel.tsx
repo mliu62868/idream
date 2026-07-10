@@ -41,18 +41,18 @@ type VisualProfileItem = {
 const STYLES = ["realistic", "anime", "hybrid", "other"] as const;
 
 const inputClass =
-  "h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30";
+  "rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]";
 const textareaClass =
-  "min-h-20 w-full border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-white/30";
+  "rounded-md min-h-20 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 text-sm outline-none focus:border-[var(--ad-ink)]";
 
 function confirmationToken(characterId: string): string {
   return `${characterId}:visual-profile`;
 }
 
 function statusBadgeClass(status: string): string {
-  if (status === "active") return "bg-emerald-500/15 text-emerald-300";
-  if (status === "archived") return "bg-white/10 text-[rgb(180,180,180)]";
-  return "bg-amber-500/15 text-amber-200";
+  if (status === "active") return "bg-[var(--ad-green-bg)] text-[var(--ad-green-text)]";
+  if (status === "archived") return "bg-black/[0.05] text-[var(--ad-text-muted)]";
+  return "bg-[var(--ad-yellow-bg)] text-[var(--ad-yellow-text)]";
 }
 
 export function VisualPassportPanel({ characterId }: { characterId: string }) {
@@ -86,16 +86,16 @@ export function VisualPassportPanel({ characterId }: { characterId: string }) {
   const active = items.find((item) => item.status === "active") ?? null;
 
   return (
-    <section className="mt-4 border border-white/10 bg-[rgb(18,18,18)] p-4">
+    <section className="rounded-lg mt-4 border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <div className="flex items-center justify-between gap-3">
         <div>
           <h2 className="text-sm font-semibold">{t("Visual Identity")}</h2>
-          <p className="mt-1 text-xs text-[rgb(170,170,170)]">
+          <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
             {t("Version history and identity prompt editing for this character's visual profile.")}
           </p>
         </div>
         <button
-          className="inline-flex h-9 shrink-0 items-center gap-2 border border-white/10 px-3 text-xs font-medium text-[rgb(220,220,220)] hover:border-white/30 disabled:opacity-50"
+          className="rounded-md inline-flex h-9 shrink-0 items-center gap-2 border border-[var(--ad-border)] px-3 text-xs font-medium text-[var(--ad-text)] hover:border-[var(--ad-ink)] disabled:opacity-50"
           disabled={loading}
           onClick={() => void load()}
           type="button"
@@ -109,26 +109,26 @@ export function VisualPassportPanel({ characterId }: { characterId: string }) {
         </button>
       </div>
 
-      {listError ? <p className="mt-3 text-xs text-red-300">{listError}</p> : null}
+      {listError ? <p className="mt-3 text-xs text-[var(--ad-red-text)]">{listError}</p> : null}
 
       <div className="mt-4">
-        <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-[rgb(170,170,170)]">
+        <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">
           <History className="h-3.5 w-3.5" />
           {t("Version history")}
         </h3>
         {loading ? (
-          <div className="mt-2 flex items-center gap-2 text-xs text-[rgb(170,170,170)]">
+          <div className="mt-2 flex items-center gap-2 text-xs text-[var(--ad-text-muted)]">
             <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t("Loading…")}
           </div>
         ) : items.length === 0 ? (
-          <p className="mt-2 text-xs text-[rgb(170,170,170)]">
+          <p className="mt-2 text-xs text-[var(--ad-text-muted)]">
             {t("No visual profile versions yet — minting below creates version 1.")}
           </p>
         ) : (
           <div className="mt-2 overflow-x-auto">
             <table className="w-full text-left text-xs">
-              <thead className="text-[rgb(140,140,140)]">
-                <tr className="border-b border-white/10">
+              <thead className="text-[var(--ad-text-muted)]">
+                <tr className="border-b border-[var(--ad-border)]">
                   <th className="py-1.5 pr-3 font-medium">{t("Version")}</th>
                   <th className="py-1.5 pr-3 font-medium">{t("Status")}</th>
                   <th className="py-1.5 pr-3 font-medium">{t("Created from")}</th>
@@ -137,7 +137,7 @@ export function VisualPassportPanel({ characterId }: { characterId: string }) {
               </thead>
               <tbody>
                 {items.map((item) => (
-                  <tr className="border-b border-white/5" key={item.id}>
+                  <tr className="border-b border-[var(--ad-border)]" key={item.id}>
                     <td className="py-1.5 pr-3">v{item.version}</td>
                     <td className="py-1.5 pr-3">
                       <span
@@ -149,8 +149,8 @@ export function VisualPassportPanel({ characterId }: { characterId: string }) {
                         {valueLabel(item.status)}
                       </span>
                     </td>
-                    <td className="py-1.5 pr-3 text-[rgb(170,170,170)]">{item.createdFrom}</td>
-                    <td className="py-1.5 pr-3 text-[rgb(170,170,170)]">
+                    <td className="py-1.5 pr-3 text-[var(--ad-text-muted)]">{item.createdFrom}</td>
+                    <td className="py-1.5 pr-3 text-[var(--ad-text-muted)]">
                       {new Date(item.createdAt).toLocaleString()}
                     </td>
                   </tr>
@@ -163,20 +163,20 @@ export function VisualPassportPanel({ characterId }: { characterId: string }) {
 
       {active ? (
         <div className="mt-4">
-          <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[rgb(170,170,170)]">
+          <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">
             {t("Active version traits (read-only)")}
             <span
               className={cn(
                 "inline-flex items-center px-2 py-0.5 normal-case tracking-normal",
                 active.identitySource === "derived"
                   ? "bg-sky-500/15 text-sky-300"
-                  : "bg-white/10 text-[rgb(200,200,200)]",
+                  : "bg-black/[0.05] text-[var(--ad-text)]",
               )}
             >
               {active.identitySource === "derived" ? t("Derived from traits") : t("Hand-authored")}
             </span>
             {active.identityStale ? (
-              <span className="inline-flex items-center px-2 py-0.5 normal-case tracking-normal bg-amber-500/15 text-amber-200">
+              <span className="inline-flex items-center px-2 py-0.5 normal-case tracking-normal bg-[var(--ad-yellow-bg)] text-[var(--ad-yellow-text)]">
                 {t("Stale — traits changed since this was derived")}
               </span>
             ) : null}
@@ -203,11 +203,11 @@ export function VisualPassportPanel({ characterId }: { characterId: string }) {
 
 function TraitBlock({ label, value }: { label: string; value: unknown }) {
   return (
-    <div className="border border-white/10 bg-black/20 p-2">
-      <div className="text-[10px] font-semibold uppercase tracking-wide text-[rgb(140,140,140)]">
+    <div className="rounded-lg border border-[var(--ad-border)] bg-black/[0.03] p-2">
+      <div className="text-[10px] font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">
         {label}
       </div>
-      <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words text-[11px] text-[rgb(200,200,200)]">
+      <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words text-[11px] text-[var(--ad-text)]">
         {JSON.stringify(value, null, 2)}
       </pre>
     </div>
@@ -264,8 +264,8 @@ function MintVersionForm({
     confirmation.trim() === confirmationToken(characterId);
 
   return (
-    <div className="mt-4 border-t border-white/10 pt-4">
-      <h3 className="text-xs font-semibold uppercase tracking-wide text-[rgb(170,170,170)]">
+    <div className="mt-4 border-t border-[var(--ad-border)] pt-4">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">
         {t("Mint new version")}
       </h3>
       <div className="mt-2 grid gap-3 md:grid-cols-2">
@@ -316,7 +316,7 @@ function MintVersionForm({
       </div>
       <div className="mt-3 flex items-center gap-3">
         <button
-          className="inline-flex h-10 items-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+          className="inline-flex h-10 items-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
           disabled={!canSubmit}
           onClick={() => void mintVersion()}
           type="button"
@@ -324,7 +324,7 @@ function MintVersionForm({
           {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
           {t("Mint new version")}
         </button>
-        {submitError ? <p className="text-xs text-red-300">{submitError}</p> : null}
+        {submitError ? <p className="text-xs text-[var(--ad-red-text)]">{submitError}</p> : null}
       </div>
     </div>
   );

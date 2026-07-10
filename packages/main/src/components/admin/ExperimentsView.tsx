@@ -49,7 +49,7 @@ export function ExperimentsView() {
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold">{t("Experiments")} ({items.length})</h2>
         <button
-          className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm disabled:opacity-50"
+          className="rounded-md inline-flex h-9 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm disabled:opacity-50"
           disabled={loading}
           onClick={() => void load()}
           type="button"
@@ -58,12 +58,12 @@ export function ExperimentsView() {
           {t("Refresh")}
         </button>
       </div>
-      {note ? <p className="text-xs text-[rgb(170,170,170)]">{note}</p> : null}
-      {error ? <p className="text-xs text-red-300">{error}</p> : null}
+      {note ? <p className="text-xs text-[var(--ad-text-muted)]">{note}</p> : null}
+      {error ? <p className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
 
-      <section className="border border-white/10 bg-[rgb(18,18,18)]">
+      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
         <table className="w-full text-left text-sm">
-          <thead className="border-b border-white/10 text-xs text-[rgb(170,170,170)]">
+          <thead className="border-b border-[var(--ad-border)] text-xs text-[var(--ad-text-muted)]">
             <tr>
               <th className="px-3 py-2 font-medium">{t("flag")}</th>
               <th className="px-3 py-2 font-medium">{t("enabled")}</th>
@@ -75,7 +75,7 @@ export function ExperimentsView() {
           </thead>
           <tbody>
             {items.map((row) => (
-              <tr key={row.key} className="border-b border-white/5">
+              <tr key={row.key} className="border-b border-[var(--ad-border)]">
                 <td className="px-3 py-2 font-mono text-xs">{row.key}</td>
                 <td className="px-3 py-2">{row.enabled ? t("yes") : t("no")}</td>
                 <td className="px-3 py-2">{row.rolloutPercent}%</td>
@@ -86,7 +86,7 @@ export function ExperimentsView() {
             ))}
             {items.length === 0 && !loading ? (
               <tr>
-                <td className="px-3 py-6 text-center text-xs text-[rgb(170,170,170)]" colSpan={6}>
+                <td className="px-3 py-6 text-center text-xs text-[var(--ad-text-muted)]" colSpan={6}>
                   {t("No feature flags.")}
                 </td>
               </tr>

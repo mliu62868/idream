@@ -152,19 +152,19 @@ export function ReviewQueueView() {
 
   return (
     <div className="space-y-4">
-      <p className="text-xs text-[rgb(170,170,170)]">
+      <p className="text-xs text-[var(--ad-text-muted)]">
         角色人审队列：仅展示 status=pending 的提交。Approve 将角色置为 approved，Reject 置为 rejected，均需理由并审计。
       </p>
 
-      {error ? <p className="text-xs text-red-300">{error}</p> : null}
+      {error ? <p className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
 
-      <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
           <label className="flex min-w-0 flex-1 flex-col gap-1">
-            <span className="text-xs font-semibold text-[rgb(170,170,170)]">{t("Search")}</span>
+            <span className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Search")}</span>
             <input
               aria-label={t("Search review queue")}
-              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm text-[rgb(230,230,230)] outline-none focus:border-white/30"
+              className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
               name="review-queue-search"
               onChange={(event) => setFilters((current) => ({ ...current, query: event.target.value }))}
               placeholder={t("Name, description, or ID")}
@@ -172,17 +172,17 @@ export function ReviewQueueView() {
             />
           </label>
           <div className="flex flex-col gap-1">
-            <span className="text-xs font-semibold text-[rgb(170,170,170)]">{t("Report filter")}</span>
+            <span className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Report filter")}</span>
             <div
               aria-label={t("Report filter")}
-              className="inline-flex h-10 border border-white/10"
+              className="rounded-md inline-flex h-10 border border-[var(--ad-border)]"
               role="group"
             >
               {REPORT_FILTER_OPTIONS.map((option) => (
                 <button
                   className={cn(
-                    "min-w-20 border-r border-white/10 px-3 text-xs text-[rgb(170,170,170)] last:border-r-0 hover:text-white",
-                    filters.reportFilter === option.value && "bg-white text-black hover:text-black",
+                    "min-w-20 border-r border-[var(--ad-border)] px-3 text-xs text-[var(--ad-text-muted)] last:border-r-0 hover:text-[var(--ad-ink)]",
+                    filters.reportFilter === option.value && "bg-[var(--ad-ink)] text-white hover:text-white",
                   )}
                   key={option.value}
                   onClick={() => setFilters((current) => ({ ...current, reportFilter: option.value }))}
@@ -200,18 +200,18 @@ export function ReviewQueueView() {
               void saveCurrentView();
             }}
           >
-            <span className="text-xs font-semibold text-[rgb(170,170,170)]">{t("Saved view")}</span>
+            <span className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Saved view")}</span>
             <div className="flex gap-2">
               <input
                 aria-label={t("Saved view label")}
-                className="h-10 min-w-0 flex-1 border border-white/10 bg-black/30 px-3 text-sm text-[rgb(230,230,230)] outline-none focus:border-white/30"
+                className="rounded-md h-10 min-w-0 flex-1 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
                 name="review-queue-saved-view-label"
                 onChange={(event) => setSavedViewLabel(event.target.value)}
                 placeholder={t("Saved view label")}
                 value={savedViewLabel}
               />
               <button
-                className="inline-flex h-10 shrink-0 items-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+                className="inline-flex h-10 shrink-0 items-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
                 disabled={!savedViewLabel.trim() || savingView}
                 type="submit"
               >
@@ -223,14 +223,14 @@ export function ReviewQueueView() {
         </div>
 
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          <span className="inline-flex items-center gap-2 text-xs font-semibold text-[rgb(170,170,170)]">
+          <span className="inline-flex items-center gap-2 text-xs font-semibold text-[var(--ad-text-muted)]">
             <Filter className="h-4 w-4" />
             {t("Saved views")}
           </span>
           {savedViews.map((view) => (
-            <span className="inline-flex h-8 items-center border border-white/10" key={view.id}>
+            <span className="rounded-md inline-flex h-8 items-center border border-[var(--ad-border)]" key={view.id}>
               <button
-                className="h-full px-3 text-xs text-[rgb(230,230,230)] hover:bg-white/10"
+                className="h-full px-3 text-xs text-[var(--ad-text)] hover:bg-black/[0.04]"
                 onClick={() => applySavedView(view)}
                 type="button"
               >
@@ -238,7 +238,7 @@ export function ReviewQueueView() {
               </button>
               <button
                 aria-label={t("Delete saved view {label}", { label: view.label })}
-                className="flex h-full w-8 items-center justify-center border-l border-white/10 text-[rgb(170,170,170)] hover:text-white"
+                className="flex h-full w-8 items-center justify-center border-l border-[var(--ad-border)] text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]"
                 onClick={() => void deleteSavedView(view)}
                 title={t("Delete saved view {label}", { label: view.label })}
                 type="button"
@@ -248,14 +248,14 @@ export function ReviewQueueView() {
             </span>
           ))}
           {savedViewsLoading ? (
-            <span className="text-xs text-[rgb(170,170,170)]">{t("Loading…")}</span>
+            <span className="text-xs text-[var(--ad-text-muted)]">{t("Loading…")}</span>
           ) : null}
           {!savedViewsLoading && savedViews.length === 0 ? (
-            <span className="text-xs text-[rgb(110,110,110)]">{t("No saved views.")}</span>
+            <span className="text-xs text-[var(--ad-text-muted)]">{t("No saved views.")}</span>
           ) : null}
           {activeFilterCount > 0 ? (
             <button
-              className="h-8 border border-white/10 px-3 text-xs text-[rgb(230,230,230)] hover:border-white/30"
+              className="rounded-lg h-8 border border-[var(--ad-border)] px-3 text-xs text-[var(--ad-text)] hover:border-[var(--ad-ink)]"
               onClick={() => setFilters(DEFAULT_FILTERS)}
               type="button"
             >
@@ -263,43 +263,43 @@ export function ReviewQueueView() {
             </button>
           ) : null}
         </div>
-        {savedViewError ? <p className="mt-2 text-xs text-red-300">{savedViewError}</p> : null}
+        {savedViewError ? <p className="mt-2 text-xs text-[var(--ad-red-text)]">{savedViewError}</p> : null}
       </section>
 
-      <section className="overflow-hidden border border-white/10 bg-[rgb(18,18,18)]">
-        <div className="flex h-11 items-center justify-between border-b border-white/10 px-4">
+      <section className="rounded-lg overflow-hidden border border-[var(--ad-border)] bg-[var(--ad-surface)]">
+        <div className="flex h-11 items-center justify-between border-b border-[var(--ad-border)] px-4">
           <h2 className="text-sm font-semibold">{t("Pending submissions")}</h2>
-          <span className="text-xs text-[rgb(170,170,170)]">{queueCount}</span>
+          <span className="text-xs text-[var(--ad-text-muted)]">{queueCount}</span>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[860px] border-collapse text-left text-sm">
-            <thead className="bg-black/20 text-[11px] uppercase text-[rgb(170,170,170)]">
+            <thead className="bg-black/[0.03] text-[11px] uppercase text-[var(--ad-text-muted)]">
               <tr>
                 {["name", "gender", "style", "description", "reports", "submittedAt"].map((column) => (
-                  <th key={column} className="border-b border-white/10 px-3 py-2 font-semibold">
+                  <th key={column} className="border-b border-[var(--ad-border)] px-3 py-2 font-semibold">
                     {t(column)}
                   </th>
                 ))}
-                <th className="border-b border-white/10 px-3 py-2 font-semibold">{t("Actions")}</th>
+                <th className="border-b border-[var(--ad-border)] px-3 py-2 font-semibold">{t("Actions")}</th>
               </tr>
             </thead>
             <tbody>
               {visibleItems.map((item) => (
-                <tr key={item.submissionId} className="border-b border-white/5 last:border-0">
-                  <td className="px-3 py-2 align-top text-[rgb(230,230,230)]">{item.character.name}</td>
-                  <td className="px-3 py-2 align-top text-[rgb(230,230,230)]">{valueLabel(item.character.gender)}</td>
-                  <td className="px-3 py-2 align-top text-[rgb(230,230,230)]">{valueLabel(item.character.style)}</td>
-                  <td className="max-w-[260px] px-3 py-2 align-top text-[rgb(230,230,230)]">
+                <tr key={item.submissionId} className="rounded-lg border-b border-[var(--ad-border)] last:border-0">
+                  <td className="px-3 py-2 align-top text-[var(--ad-text)]">{item.character.name}</td>
+                  <td className="px-3 py-2 align-top text-[var(--ad-text)]">{valueLabel(item.character.gender)}</td>
+                  <td className="px-3 py-2 align-top text-[var(--ad-text)]">{valueLabel(item.character.style)}</td>
+                  <td className="max-w-[260px] px-3 py-2 align-top text-[var(--ad-text)]">
                     {truncate(item.character.description, 120)}
                   </td>
-                  <td className="px-3 py-2 align-top text-[rgb(230,230,230)]">
-                    <span className={cn(item.reportCount > 0 && "text-amber-300")}>{item.reportCount}</span>
+                  <td className="px-3 py-2 align-top text-[var(--ad-text)]">
+                    <span className={cn(item.reportCount > 0 && "text-[var(--ad-yellow-text)]")}>{item.reportCount}</span>
                   </td>
-                  <td className="px-3 py-2 align-top text-[rgb(170,170,170)]">{formatDate(item.submittedAt)}</td>
+                  <td className="px-3 py-2 align-top text-[var(--ad-text-muted)]">{formatDate(item.submittedAt)}</td>
                   <td className="px-3 py-2 align-top">
                     <div className="flex gap-1">
                       <button
-                        className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs text-[rgb(230,230,230)] hover:border-white/30"
+                        className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs text-[var(--ad-text)] hover:border-[var(--ad-ink)]"
                         onClick={() => setPending({ item, decision: "approve" })}
                         title={t("Approve")}
                         type="button"
@@ -308,7 +308,7 @@ export function ReviewQueueView() {
                         {t("Approve")}
                       </button>
                       <button
-                        className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs text-[rgb(230,230,230)] hover:border-white/30"
+                        className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs text-[var(--ad-text)] hover:border-[var(--ad-ink)]"
                         onClick={() => setPending({ item, decision: "reject" })}
                         title={t("Reject")}
                         type="button"
@@ -322,7 +322,7 @@ export function ReviewQueueView() {
               ))}
               {visibleItems.length === 0 ? (
                 <tr>
-                  <td className="px-3 py-8 text-center text-sm text-[rgb(170,170,170)]" colSpan={7}>
+                  <td className="px-3 py-8 text-center text-sm text-[var(--ad-text-muted)]" colSpan={7}>
                     {loading
                       ? t("Loading…")
                       : activeFilterCount > 0
@@ -394,49 +394,49 @@ function DecisionDialog({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
       <div
-        className="w-full max-w-md border border-white/10 bg-[rgb(18,18,18)] p-5"
+        className="rounded-lg w-full max-w-md border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5"
         onClick={(event) => event.stopPropagation()}
       >
         <h3 className="text-sm font-semibold">
           {decision === "approve" ? t("Approve") : t("Reject")} {item.character.name}
         </h3>
-        <p className="mt-1 text-xs text-[rgb(170,170,170)]">
+        <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
           确认提交后角色将被置为 {decision === "approve" ? valueLabel("approved") : valueLabel("rejected")}。
         </p>
         <div className="mt-4 space-y-3">
           <textarea
-            className="min-h-16 w-full border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-white/30"
+            className="rounded-md min-h-16 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 text-sm outline-none focus:border-[var(--ad-ink)]"
             name="review-note"
             onChange={(event) => setReviewReason(event.target.value)}
             placeholder={t("Review note (optional, shown to creator)")}
             value={reviewReason}
           />
           <input
-            className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
             name="audit-reason"
             onChange={(event) => setReason(event.target.value)}
             placeholder={t("Audit reason (≥3)")}
             value={reason}
           />
           <input
-            className="h-10 w-full border border-white/10 bg-black/30 px-3 font-mono text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 font-mono text-sm outline-none focus:border-[var(--ad-ink)]"
             name="approval-confirmation"
             onChange={(event) => setConfirmation(event.target.value)}
             placeholder={t("Type {token} to confirm", { token: item.submissionId })}
             value={confirmation}
           />
-          {error ? <p className="text-xs text-red-300">{error}</p> : null}
+          {error ? <p className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
         </div>
         <div className="mt-4 flex justify-end gap-2">
           <button
-            className="inline-flex h-10 items-center border border-white/10 px-3 text-sm text-[rgb(230,230,230)]"
+            className="rounded-md inline-flex h-10 items-center border border-[var(--ad-border)] px-3 text-sm text-[var(--ad-text)]"
             onClick={onClose}
             type="button"
           >
             {t("Cancel")}
           </button>
           <button
-            className="inline-flex h-10 items-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+            className="inline-flex h-10 items-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
             disabled={!canSubmit}
             onClick={() => void submit()}
             type="button"

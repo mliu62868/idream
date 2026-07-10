@@ -31,7 +31,7 @@ type EditDraft = {
 };
 
 const inputClass =
-  "h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30";
+  "rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]";
 
 export function TagsView() {
   const { t } = useAdminI18n();
@@ -64,7 +64,7 @@ export function TagsView() {
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold">{t("Tag taxonomy")} ({tags.length})</h2>
         <button
-          className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm disabled:opacity-50"
+          className="rounded-md inline-flex h-9 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm disabled:opacity-50"
           disabled={loading}
           onClick={() => void load()}
           type="button"
@@ -73,13 +73,13 @@ export function TagsView() {
           {t("Refresh")}
         </button>
       </div>
-      {error ? <p className="text-xs text-red-300">{error}</p> : null}
+      {error ? <p className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
 
       <MergeSection tags={tags} reload={load} />
 
-      <section className="border border-white/10 bg-[rgb(18,18,18)]">
+      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
         <table className="w-full text-left text-sm">
-          <thead className="border-b border-white/10 text-xs text-[rgb(170,170,170)]">
+          <thead className="border-b border-[var(--ad-border)] text-xs text-[var(--ad-text-muted)]">
             <tr>
               <th className="px-3 py-2 font-medium">{t("slug")}</th>
               <th className="px-3 py-2 font-medium">{t("label")}</th>
@@ -96,7 +96,7 @@ export function TagsView() {
             ))}
             {tags.length === 0 && !loading ? (
               <tr>
-                <td className="px-3 py-6 text-center text-xs text-[rgb(170,170,170)]" colSpan={7}>
+                <td className="px-3 py-6 text-center text-xs text-[var(--ad-text-muted)]" colSpan={7}>
                   {t("No tags.")}
                 </td>
               </tr>
@@ -144,16 +144,16 @@ function TagRowItem({ tag, reload }: { tag: TagRow; reload: () => void }) {
 
   if (!editing) {
     return (
-      <tr className="border-b border-white/5">
+      <tr className="border-b border-[var(--ad-border)]">
         <td className="px-3 py-2 font-mono text-xs">{tag.slug}</td>
         <td className="px-3 py-2">{tag.label}</td>
-        <td className="px-3 py-2 text-[rgb(170,170,170)]">{tag.category ?? "—"}</td>
+        <td className="px-3 py-2 text-[var(--ad-text-muted)]">{tag.category ?? "—"}</td>
         <td className="px-3 py-2">{tag.characterCount}</td>
         <td className="px-3 py-2">{tag.isSensitive ? t("yes") : t("no")}</td>
         <td className="px-3 py-2">{tag.isMutedByDefault ? t("yes") : t("no")}</td>
         <td className="px-3 py-2 text-right">
           <button
-            className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs"
+            className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
             onClick={startEdit}
             type="button"
           >
@@ -172,7 +172,7 @@ function TagRowItem({ tag, reload }: { tag: TagRow; reload: () => void }) {
     draft.confirmation.trim() === tag.slug;
 
   return (
-    <tr className="border-b border-white/5 bg-black/20 align-top">
+    <tr className="border-b border-[var(--ad-border)] bg-black/[0.03] align-top">
       <td className="px-3 py-2 font-mono text-xs">{tag.slug}</td>
       <td className="px-3 py-2">
         <input
@@ -220,7 +220,7 @@ function TagRowItem({ tag, reload }: { tag: TagRow; reload: () => void }) {
           />
           <div className="flex justify-end gap-2">
             <button
-              className="inline-flex h-8 items-center gap-1 bg-white px-2 text-xs font-semibold text-black disabled:opacity-50"
+              className="inline-flex h-8 items-center gap-1 bg-[var(--ad-ink)] px-2 text-xs font-semibold text-white disabled:opacity-50"
               disabled={!canSave}
               onClick={() => void save()}
               type="button"
@@ -229,7 +229,7 @@ function TagRowItem({ tag, reload }: { tag: TagRow; reload: () => void }) {
               {t("Confirm save")}
             </button>
             <button
-              className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs"
+              className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
               disabled={busy}
               onClick={() => setEditing(false)}
               type="button"
@@ -238,7 +238,7 @@ function TagRowItem({ tag, reload }: { tag: TagRow; reload: () => void }) {
               {t("Cancel")}
             </button>
           </div>
-          {err ? <p className="text-xs text-red-300">{err}</p> : null}
+          {err ? <p className="text-xs text-[var(--ad-red-text)]">{err}</p> : null}
         </div>
       </td>
     </tr>
@@ -292,9 +292,9 @@ function MergeSection({ tags, reload }: { tags: TagRow[]; reload: () => void }) 
     confirmation.trim() === `${sourceId}:${targetId}`;
 
   return (
-    <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+    <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <h2 className="text-sm font-semibold">{t("Merge tags")}</h2>
-      <p className="mt-1 text-xs text-[rgb(170,170,170)]">
+      <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
         把 source 标签的角色全部迁到 target，并删除 source。输入 source:target ID 以确认。
       </p>
       <div className="mt-3 grid gap-3 md:grid-cols-5">
@@ -337,7 +337,7 @@ function MergeSection({ tags, reload }: { tags: TagRow[]; reload: () => void }) 
           value={confirmation}
         />
         <button
-          className="inline-flex h-10 items-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+          className="inline-flex h-10 items-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
           disabled={!canMerge}
           onClick={() => void merge()}
           type="button"
@@ -347,10 +347,10 @@ function MergeSection({ tags, reload }: { tags: TagRow[]; reload: () => void }) 
         </button>
       </div>
       {sourceId && sourceId === targetId ? (
-        <p className="mt-2 text-xs text-red-300">{t("Source and target must differ.")}</p>
+        <p className="mt-2 text-xs text-[var(--ad-red-text)]">{t("Source and target must differ.")}</p>
       ) : null}
-      {err ? <p className="mt-2 text-xs text-red-300">{err}</p> : null}
-      {result ? <p className="mt-2 text-xs text-emerald-300">{result}</p> : null}
+      {err ? <p className="mt-2 text-xs text-[var(--ad-red-text)]">{err}</p> : null}
+      {result ? <p className="mt-2 text-xs text-[var(--ad-green-text)]">{result}</p> : null}
     </section>
   );
 }
@@ -361,8 +361,8 @@ function ToggleButton({ active, onClick }: { active: boolean; onClick: () => voi
   return (
     <button
       className={cn(
-        "inline-flex h-8 min-w-[3rem] items-center justify-center border px-2 text-xs",
-        active ? "border-white/30 bg-white text-black" : "border-white/10 text-[rgb(170,170,170)]",
+        "rounded-md inline-flex h-8 min-w-[3rem] items-center justify-center border px-2 text-xs",
+        active ? "border-[var(--ad-ink)] bg-[var(--ad-ink)] text-white" : "border-[var(--ad-border)] text-[var(--ad-text-muted)]",
       )}
       onClick={onClick}
       type="button"

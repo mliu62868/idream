@@ -44,7 +44,7 @@ export function ImageProductionView() {
 
   return (
     <div className="space-y-5">
-      <div className="flex gap-2 border-b border-white/10">
+      <div className="flex gap-2 border-b border-[var(--ad-border)]">
         <TabButton active={tab === "batch"} label={t("Batch production")} onClick={() => setTab("batch")} />
         <TabButton
           active={tab === "character"}
@@ -58,15 +58,15 @@ export function ImageProductionView() {
       ) : (
         <div className="space-y-4">
           <label className="flex max-w-md flex-col gap-1 text-sm">
-            <span className="text-[rgb(170,170,170)]">{t("Character")}</span>
+            <span className="text-[var(--ad-text-muted)]">{t("Character")}</span>
             <select
-              className="h-9 border border-white/10 bg-[rgb(18,18,18)] px-3 text-sm outline-none"
+              className="rounded-md h-9 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none"
               onChange={(event) => setSelectedId(event.target.value)}
               value={selectedId}
             >
               {characters.length === 0 ? <option value="">{t("Loading…")}</option> : null}
               {characters.map((character) => (
-                <option className="bg-[rgb(18,18,18)]" key={character.id} value={character.id}>
+                <option className="bg-[var(--ad-surface)]" key={character.id} value={character.id}>
                   {character.name}
                 </option>
               ))}
@@ -93,8 +93,8 @@ function TabButton({
       className={cn(
         "h-9 border-b-2 px-3 text-sm font-medium transition-colors",
         active
-          ? "border-white text-white"
-          : "border-transparent text-[rgb(170,170,170)] hover:text-white",
+          ? "border-[var(--ad-ink)] text-[var(--ad-ink)]"
+          : "border-transparent text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]",
       )}
       onClick={onClick}
       type="button"

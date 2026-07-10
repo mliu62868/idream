@@ -31,7 +31,7 @@ export function OperatorFlow({
     <div className="grid gap-4 lg:grid-cols-[minmax(260px,340px)_1fr]">
       <ul className="space-y-1">
         {items.length === 0 ? (
-          <li className="border border-white/10 px-3 py-6 text-center text-xs text-[rgb(170,170,170)]">
+          <li className="rounded-lg border border-[var(--ad-border)] px-3 py-6 text-center text-xs text-[var(--ad-text-muted)]">
             {empty ?? t("Nothing here yet.")}
           </li>
         ) : (
@@ -41,16 +41,16 @@ export function OperatorFlow({
                 type="button"
                 onClick={() => onSelect(item.id)}
                 className={cn(
-                  "flex w-full items-start justify-between gap-2 border px-3 py-2 text-left text-sm",
+                  "rounded-lg flex w-full items-start justify-between gap-2 border px-3 py-2 text-left text-sm",
                   item.id === selectedId
-                    ? "border-white/40 bg-white/10"
-                    : "border-white/10 hover:bg-white/5",
+                    ? "border-[var(--ad-ink)] bg-black/[0.04]"
+                    : "border-[var(--ad-border)] hover:bg-black/[0.04]",
                 )}
               >
                 <span className="min-w-0">
                   <span className="block truncate">{item.primary}</span>
                   {item.secondary ? (
-                    <span className="block truncate text-xs text-[rgb(170,170,170)]">{item.secondary}</span>
+                    <span className="block truncate text-xs text-[var(--ad-text-muted)]">{item.secondary}</span>
                   ) : null}
                 </span>
                 {item.badge ? <span className="shrink-0">{item.badge}</span> : null}

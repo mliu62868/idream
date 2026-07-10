@@ -314,7 +314,7 @@ export function ProductionStudioView() {
       <InlineError message={error} />
 
       <section className="grid gap-4 xl:grid-cols-[minmax(360px,430px)_minmax(0,1fr)]">
-        <div className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+        <div className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
           <h2 className="text-sm font-semibold">{t("Create production batch")}</h2>
           <div className="mt-4 grid gap-3">
             <Field label="Purpose">
@@ -436,13 +436,13 @@ export function ProductionStudioView() {
                 value={form.brief}
               />
             </Field>
-            <div className="grid gap-px overflow-hidden border border-white/10 bg-white/10 sm:grid-cols-3">
+            <div className="rounded-lg grid gap-px overflow-hidden border border-[var(--ad-border)] bg-black/[0.05] sm:grid-cols-3">
               <MiniMetric label="Jobs" value={form.count || "0"} />
               <MiniMetric label="Dreamcoins" value="0" />
               <MiniMetric label="Mode" value="image" />
             </div>
             <button
-              className="inline-flex h-10 items-center justify-center gap-2 bg-white px-4 text-sm font-semibold text-black hover:bg-[rgb(230,230,230)] disabled:opacity-50"
+              className="inline-flex h-10 items-center justify-center gap-2 bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white hover:bg-[#333333] disabled:opacity-50"
               disabled={busy || !form.profileId || !form.recipeId}
               onClick={() => void createBatch()}
               type="button"
@@ -454,7 +454,7 @@ export function ProductionStudioView() {
         </div>
 
         <div className="min-w-0 space-y-4">
-          <div className="grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-4">
+          <div className="rounded-lg grid gap-px overflow-hidden border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
             <MiniMetric label="Batches" value={batches.length} />
             <MiniMetric label="Generated" value={selectedBatch?.completedItems ?? 0} />
             <MiniMetric label="Approved" value={selectedBatch?.approvedItems ?? 0} />
@@ -584,7 +584,7 @@ export function AssetLibraryView() {
       />
       <InlineError message={error} />
       <InlineNotice message={notice} />
-      <section className="flex flex-wrap gap-3 border border-white/10 bg-[rgb(18,18,18)] p-4">
+      <section className="rounded-lg flex flex-wrap gap-3 border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <Field label="Status">
           <select className="admin-input min-w-44" onChange={(event) => setStatus(event.target.value)} value={status}>
             {["all", "generated", "approved", "rejected", "published", "archived"].map((item) => (
@@ -607,17 +607,17 @@ export function AssetLibraryView() {
       {assets.length ? (
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           {assets.map((asset, index) => (
-            <article className="overflow-hidden border border-white/10 bg-[rgb(18,18,18)]" key={asset.id}>
+            <article className="rounded-lg overflow-hidden border border-[var(--ad-border)] bg-[var(--ad-surface)]" key={asset.id}>
               <AssetImage asset={asset} eager={index < 4} />
               <div className="space-y-3 p-3">
                 <div className="flex items-center justify-between gap-2">
                   <StatusBadge value={asset.platformStatus} />
-                  <span className="font-mono text-[11px] text-[rgb(170,170,170)]">{asset.width ?? "-"}x{asset.height ?? "-"}</span>
+                  <span className="font-mono text-[11px] text-[var(--ad-text-muted)]">{asset.width ?? "-"}x{asset.height ?? "-"}</span>
                 </div>
-                <div className="text-xs text-[rgb(170,170,170)]">
-                  <p className="truncate"><span className="text-white">{t("Source job")}</span> {asset.sourceJob?.id ?? "-"}</p>
-                  <p className="truncate"><span className="text-white">{t("Batch")}</span> {asset.sourceBatch?.title ?? "-"}</p>
-                  <p className="truncate"><span className="text-white">{t("Profile")}</span> {asset.sourceJob?.profileId ?? "-"}</p>
+                <div className="text-xs text-[var(--ad-text-muted)]">
+                  <p className="truncate"><span className="text-[var(--ad-ink)]">{t("Source job")}</span> {asset.sourceJob?.id ?? "-"}</p>
+                  <p className="truncate"><span className="text-[var(--ad-ink)]">{t("Batch")}</span> {asset.sourceBatch?.title ?? "-"}</p>
+                  <p className="truncate"><span className="text-[var(--ad-ink)]">{t("Profile")}</span> {asset.sourceJob?.profileId ?? "-"}</p>
                 </div>
                 <div className="grid gap-2">
                   <input
@@ -805,7 +805,7 @@ export function PlacementsView() {
       <InlineError message={error} />
       <InlineNotice message={notice} />
       <section className="grid gap-4 xl:grid-cols-[minmax(340px,420px)_minmax(0,1fr)]">
-        <div className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+        <div className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
           <h2 className="text-sm font-semibold">{t("Create placement")}</h2>
           <div className="mt-4 grid gap-3">
             <Field label="Asset">
@@ -883,7 +883,7 @@ export function PlacementsView() {
                   ? "Confirm create placement"
                   : "Create placement"
               }
-              className="inline-flex h-10 items-center justify-center gap-2 bg-white px-4 text-sm font-semibold text-black hover:bg-[rgb(230,230,230)] disabled:opacity-50"
+              className="inline-flex h-10 items-center justify-center gap-2 bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white hover:bg-[#333333] disabled:opacity-50"
               disabled={busy || !form.mediaAssetId || !form.targetId}
               onClick={() => void create()}
               type="button"
@@ -896,11 +896,11 @@ export function PlacementsView() {
             </button>
           </div>
         </div>
-        <div className="min-w-0 border border-white/10 bg-[rgb(18,18,18)]">
-          <div className="border-b border-white/10 p-4">
+        <div className="rounded-lg min-w-0 border border-[var(--ad-border)] bg-[var(--ad-surface)]">
+          <div className="border-b border-[var(--ad-border)] p-4">
             <h2 className="text-sm font-semibold">{t("Placement history")}</h2>
           </div>
-          <div className="divide-y divide-white/10">
+          <div className="divide-y divide-[var(--ad-border)]">
             {placements.map((placement, index) => (
               <article className="grid gap-3 p-4 md:grid-cols-[96px_minmax(0,1fr)_auto]" key={placement.id}>
                 <AssetImage asset={placement.asset} compact eager={index < 6} />
@@ -909,10 +909,10 @@ export function PlacementsView() {
                     <span className="font-semibold">{t("Slot")}: {value(placement.slot)}</span>
                     <StatusBadge value={placement.status} />
                   </div>
-                  <p className="mt-1 truncate text-xs text-[rgb(170,170,170)]">
+                  <p className="mt-1 truncate text-xs text-[var(--ad-text-muted)]">
                     {placement.targetType} · {placement.targetId}
                   </p>
-                  <p className="mt-1 truncate font-mono text-[11px] text-[rgb(114,113,112)]">{placement.mediaAssetId}</p>
+                  <p className="mt-1 truncate font-mono text-[11px] text-[var(--ad-text-muted)]">{placement.mediaAssetId}</p>
                 </div>
                 <div className="flex flex-wrap gap-2 md:justify-end">
                   <SmallButton
@@ -973,11 +973,11 @@ function ReviewGrid({
 }) {
   const { t, value } = useAdminI18n();
   return (
-    <section className="border border-white/10 bg-[rgb(18,18,18)]">
-      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-white/10 p-4">
+    <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[var(--ad-border)] p-4">
         <div>
           <h2 className="text-sm font-semibold">{batch.title}</h2>
-          <p className="mt-1 text-xs text-[rgb(170,170,170)]">
+          <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
             {value(batch.purpose)} · {batch.completedItems}/{batch.totalItems}
           </p>
         </div>
@@ -985,11 +985,11 @@ function ReviewGrid({
       </div>
       <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-4">
         {batch.items.map((item, index) => (
-          <article className="overflow-hidden border border-white/10 bg-black/20" key={item.id}>
+          <article className="rounded-lg overflow-hidden border border-[var(--ad-border)] bg-black/[0.03]" key={item.id}>
             {item.asset ? (
               <AssetImage asset={item.asset} eager={index < 4} />
             ) : (
-              <div className="grid aspect-[4/5] place-items-center bg-white/[0.04] text-center text-xs text-[rgb(170,170,170)]">
+              <div className="grid aspect-[4/5] place-items-center bg-black/[0.03] text-center text-xs text-[var(--ad-text-muted)]">
                 <div>
                   <Loader2 className="mx-auto mb-2 h-5 w-5" />
                   {item.job?.status ?? item.status}
@@ -999,9 +999,9 @@ function ReviewGrid({
             <div className="space-y-3 p-3">
               <div className="flex items-center justify-between gap-2">
                 <StatusBadge value={item.status} />
-                <span className="font-mono text-[11px] text-[rgb(170,170,170)]">#{item.itemIndex + 1}</span>
+                <span className="font-mono text-[11px] text-[var(--ad-text-muted)]">#{item.itemIndex + 1}</span>
               </div>
-              <p className="truncate text-[11px] text-[rgb(170,170,170)]">
+              <p className="truncate text-[11px] text-[var(--ad-text-muted)]">
                 {t("Job")} {item.jobId ?? "-"} {item.job?.errorCode ? `· ${item.job.errorCode}` : ""}
               </p>
               <div className="flex flex-wrap gap-2">
@@ -1039,15 +1039,15 @@ function BatchSelector({
       {batches.map((batch) => (
         <button
           className={cn(
-            "min-w-52 border border-white/10 bg-[rgb(18,18,18)] p-3 text-left hover:bg-white/[0.06]",
-            selectedId === batch.id && "border-white bg-white text-black hover:bg-white",
+            "rounded-lg min-w-52 border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 text-left hover:bg-black/[0.04]",
+            selectedId === batch.id && "border-[var(--ad-ink)] bg-[var(--ad-ink)] text-white hover:bg-[var(--ad-ink)]",
           )}
           key={batch.id}
           onClick={() => onSelect(batch.id)}
           type="button"
         >
           <span className="block truncate text-sm font-semibold">{batch.title}</span>
-          <span className={cn("mt-1 block text-xs", selectedId === batch.id ? "text-black/60" : "text-[rgb(170,170,170)]")}>
+          <span className={cn("mt-1 block text-xs", selectedId === batch.id ? "text-white/60" : "text-[var(--ad-text-muted)]")}>
             {value(batch.status)} · {batch.completedItems}/{batch.totalItems}
           </span>
         </button>
@@ -1072,7 +1072,7 @@ function PresetPicker({
   }));
   return (
     <div className="grid gap-2">
-      <span className="text-xs font-medium text-[rgb(170,170,170)]">{t("Presets")}</span>
+      <span className="text-xs font-medium text-[var(--ad-text-muted)]">{t("Presets")}</span>
       <div className="grid gap-2 sm:grid-cols-2">
         {grouped.map((group) => (
           <select
@@ -1111,9 +1111,9 @@ function AssetImage({
   const hasFailed = failedSrc === imageSrc;
 
   return (
-    <div className={cn("relative overflow-hidden bg-white/[0.04]", compact ? "h-24 w-24" : "aspect-[4/5]")}>
+    <div className={cn("relative overflow-hidden bg-black/[0.03]", compact ? "h-24 w-24" : "aspect-[4/5]")}>
       {hasFailed ? (
-        <div className="grid h-full w-full place-items-center gap-2 p-3 text-center text-xs text-[rgb(170,170,170)]">
+        <div className="grid h-full w-full place-items-center gap-2 p-3 text-center text-xs text-[var(--ad-text-muted)]">
           <div>
             <ImageIcon className="mx-auto mb-2 h-5 w-5" />
             {compact ? "Missing" : "Missing asset"}
@@ -1148,13 +1148,13 @@ function ViewHeader({
 }) {
   const { t } = useAdminI18n();
   return (
-    <section className="flex flex-wrap items-start justify-between gap-4 border border-white/10 bg-[rgb(18,18,18)] p-4">
+    <section className="rounded-lg flex flex-wrap items-start justify-between gap-4 border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <div className="flex items-center gap-3">
-        <div className="grid h-10 w-10 place-items-center border border-white/10 bg-white/[0.04] text-white">
+        <div className="rounded-lg grid h-10 w-10 place-items-center border border-[var(--ad-border)] bg-black/[0.03] text-[var(--ad-ink)]">
           {icon}
         </div>
         <div>
-          <p className="text-xs font-semibold uppercase text-[rgb(170,170,170)]">{t(eyebrow)}</p>
+          <p className="text-xs font-semibold uppercase text-[var(--ad-text-muted)]">{t(eyebrow)}</p>
           <h2 className="mt-1 text-lg font-semibold">{t(title)}</h2>
         </div>
       </div>
@@ -1167,7 +1167,7 @@ function RefreshButton({ busy, onClick }: { busy: boolean; onClick: () => void |
   const { t } = useAdminI18n();
   return (
     <button
-      className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm text-[rgb(230,230,230)] hover:bg-white/10"
+      className="rounded-md inline-flex h-9 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm text-[var(--ad-text)] hover:bg-black/[0.04]"
       onClick={() => void onClick()}
       type="button"
     >
@@ -1180,7 +1180,7 @@ function RefreshButton({ busy, onClick }: { busy: boolean; onClick: () => void |
 function Field({ children, label }: { children: React.ReactNode; label: string }) {
   const { t } = useAdminI18n();
   return (
-    <label className="grid min-w-0 gap-1 text-xs font-medium text-[rgb(170,170,170)]">
+    <label className="grid min-w-0 gap-1 text-xs font-medium text-[var(--ad-text-muted)]">
       {t(label)}
       {children}
     </label>
@@ -1190,9 +1190,9 @@ function Field({ children, label }: { children: React.ReactNode; label: string }
 function MiniMetric({ label, value }: { label: string; value: string | number }) {
   const { t } = useAdminI18n();
   return (
-    <div className="bg-[rgb(18,18,18)] p-3">
-      <p className="text-[11px] font-semibold uppercase text-[rgb(170,170,170)]">{t(label)}</p>
-      <p className="mt-1 font-mono text-xl font-semibold text-white">{value}</p>
+    <div className="bg-[var(--ad-surface)] p-3">
+      <p className="text-[11px] font-semibold uppercase text-[var(--ad-text-muted)]">{t(label)}</p>
+      <p className="mt-1 font-mono text-xl font-semibold text-[var(--ad-ink)]">{value}</p>
     </div>
   );
 }
@@ -1205,9 +1205,9 @@ function StatusBadge({ value }: { value: string }) {
     <span
       className={cn(
         "inline-flex rounded px-2 py-0.5 text-xs font-medium",
-        good && "bg-emerald-400/10 text-emerald-300",
-        bad && "bg-red-400/10 text-red-300",
-        !good && !bad && "bg-amber-400/10 text-amber-200",
+        good && "bg-[var(--ad-green-bg)] text-[var(--ad-green-text)]",
+        bad && "bg-[var(--ad-red-bg)] text-[var(--ad-red-text)]",
+        !good && !bad && "bg-[var(--ad-yellow-bg)] text-[var(--ad-yellow-text)]",
       )}
     >
       {label(value)}
@@ -1237,7 +1237,7 @@ function SmallButton({
   return (
     <button
       aria-label={ariaLabel}
-      className="inline-flex h-8 items-center gap-1.5 border border-white/10 px-2.5 text-xs text-[rgb(230,230,230)] hover:bg-white/10 disabled:opacity-50"
+      className="rounded-md inline-flex h-8 items-center gap-1.5 border border-[var(--ad-border)] px-2.5 text-xs text-[var(--ad-text)] hover:bg-black/[0.04] disabled:opacity-50"
       disabled={disabled}
       onClick={() => void onClick()}
       type="button"
@@ -1251,7 +1251,7 @@ function SmallButton({
 function InlineNotice({ message }: { message: string | null }) {
   if (!message) return null;
   return (
-    <div className="border border-amber-400/30 bg-amber-950/20 px-4 py-3 text-sm text-amber-100">
+    <div className="rounded-lg border border-[var(--ad-yellow-text)]/20 bg-[var(--ad-yellow-bg)] px-4 py-3 text-sm text-[var(--ad-yellow-text)]">
       {message}
     </div>
   );
@@ -1260,7 +1260,7 @@ function InlineNotice({ message }: { message: string | null }) {
 function InlineError({ message }: { message: string | null }) {
   if (!message) return null;
   return (
-    <div className="border border-red-400/30 bg-red-950/30 px-4 py-3 text-sm text-red-100">
+    <div className="rounded-lg border border-[var(--ad-red-text)]/20 bg-[var(--ad-red-bg)] px-4 py-3 text-sm text-[var(--ad-red-text)]">
       {message}
     </div>
   );
@@ -1269,7 +1269,7 @@ function InlineError({ message }: { message: string | null }) {
 function EmptyState({ label }: { label: string }) {
   const { t } = useAdminI18n();
   return (
-    <div className="border border-white/10 bg-[rgb(18,18,18)] p-6 text-sm text-[rgb(170,170,170)]">
+    <div className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6 text-sm text-[var(--ad-text-muted)]">
       {t(label)}
     </div>
   );
@@ -1278,7 +1278,7 @@ function EmptyState({ label }: { label: string }) {
 function AdminLoading({ label }: { label: string }) {
   const { t } = useAdminI18n();
   return (
-    <div className="flex h-48 items-center justify-center border border-white/10 bg-[rgb(18,18,18)] text-[rgb(170,170,170)]">
+    <div className="rounded-lg flex h-48 items-center justify-center border border-[var(--ad-border)] bg-[var(--ad-surface)] text-[var(--ad-text-muted)]">
       <Loader2 className="mr-2 h-5 w-5 animate-spin" />
       {t(label)}
     </div>

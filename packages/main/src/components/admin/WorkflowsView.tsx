@@ -65,7 +65,7 @@ export function WorkflowsView() {
           {t("Workflows")} ({workflows.length})
         </h2>
         <button
-          className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm disabled:opacity-50"
+          className="rounded-md inline-flex h-9 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm disabled:opacity-50"
           disabled={loading}
           onClick={() => void load()}
           type="button"
@@ -74,11 +74,11 @@ export function WorkflowsView() {
           {t("Refresh")}
         </button>
       </div>
-      {error ? <p className="text-xs text-red-300">{error}</p> : null}
+      {error ? <p className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
 
-      <section className="overflow-hidden border border-white/10 bg-[rgb(18,18,18)]">
+      <section className="rounded-lg overflow-hidden border border-[var(--ad-border)] bg-[var(--ad-surface)]">
         <table className="w-full text-left text-sm">
-          <thead className="border-b border-white/10 text-xs text-[rgb(170,170,170)]">
+          <thead className="border-b border-[var(--ad-border)] text-xs text-[var(--ad-text-muted)]">
             <tr>
               <th className="px-3 py-2 font-medium" />
               <th className="px-3 py-2 font-medium">{t("workflowKey")}</th>
@@ -104,7 +104,7 @@ export function WorkflowsView() {
             ))}
             {workflows.length === 0 && !loading ? (
               <tr>
-                <td className="px-3 py-6 text-center text-xs text-[rgb(170,170,170)]" colSpan={7}>
+                <td className="px-3 py-6 text-center text-xs text-[var(--ad-text-muted)]" colSpan={7}>
                   {t("No workflows.")}
                 </td>
               </tr>
@@ -129,7 +129,7 @@ function WorkflowRowItem({
     <>
       <tr
         aria-expanded={expanded}
-        className="cursor-pointer border-b border-white/5 hover:bg-white/5"
+        className="cursor-pointer border-b border-[var(--ad-border)] hover:bg-black/[0.04]"
         onClick={onToggle}
         onKeyDown={(event) => {
           if (event.key === "Enter" || event.key === " ") {
@@ -142,13 +142,13 @@ function WorkflowRowItem({
         <td className="px-3 py-2">
           <ChevronRight
             className={cn(
-              "h-4 w-4 text-[rgb(170,170,170)] transition-transform",
+              "h-4 w-4 text-[var(--ad-text-muted)] transition-transform",
               expanded && "rotate-90",
             )}
           />
         </td>
         <td className="px-3 py-2 font-mono text-xs">{workflow.workflowKey}</td>
-        <td className="px-3 py-2 font-mono text-xs text-[rgb(170,170,170)]">{workflow.modelId}</td>
+        <td className="px-3 py-2 font-mono text-xs text-[var(--ad-text-muted)]">{workflow.modelId}</td>
         <td className="px-3 py-2">
           <KindBadge kind={workflow.backendKind} />
         </td>
@@ -157,7 +157,7 @@ function WorkflowRowItem({
           <div className="flex flex-wrap gap-1">
             {workflow.capabilities.map((capability) => (
               <span
-                className="inline-flex items-center rounded border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-[rgb(170,170,170)]"
+                className="inline-flex items-center rounded border border-[var(--ad-border)] bg-black/[0.03] px-2 py-0.5 text-[11px] text-[var(--ad-text-muted)]"
                 key={capability}
               >
                 {capability}
@@ -168,7 +168,7 @@ function WorkflowRowItem({
         <td className="px-3 py-2">{workflow.inputs.length}</td>
       </tr>
       {expanded ? (
-        <tr className="border-b border-white/5 bg-black/20">
+        <tr className="border-b border-[var(--ad-border)] bg-black/[0.03]">
           <td className="px-3 py-3" colSpan={7}>
             <SlotTable slots={workflow.inputs} />
           </td>
@@ -182,12 +182,12 @@ function SlotTable({ slots }: { slots: WorkflowSlot[] }) {
   const { t } = useAdminI18n();
 
   if (slots.length === 0) {
-    return <p className="text-xs text-[rgb(170,170,170)]">{t("No slots.")}</p>;
+    return <p className="text-xs text-[var(--ad-text-muted)]">{t("No slots.")}</p>;
   }
 
   return (
     <table className="w-full text-left text-xs">
-      <thead className="text-[rgb(114,113,112)]">
+      <thead className="text-[var(--ad-text-muted)]">
         <tr>
           <th className="px-2 py-1 font-medium">{t("key")}</th>
           <th className="px-2 py-1 font-medium">{t("type")}</th>
@@ -197,10 +197,10 @@ function SlotTable({ slots }: { slots: WorkflowSlot[] }) {
       </thead>
       <tbody>
         {slots.map((slot) => (
-          <tr className="border-t border-white/5" key={slot.key}>
+          <tr className="border-t border-[var(--ad-border)]" key={slot.key}>
             <td className="px-2 py-1 font-mono">{slot.key}</td>
             <td className="px-2 py-1">{slot.type}</td>
-            <td className="px-2 py-1 font-mono text-[rgb(170,170,170)]">{formatSlotTarget(slot.target)}</td>
+            <td className="px-2 py-1 font-mono text-[var(--ad-text-muted)]">{formatSlotTarget(slot.target)}</td>
             <td className="px-2 py-1">{slot.default ?? "—"}</td>
           </tr>
         ))}
@@ -216,7 +216,7 @@ function formatSlotTarget(target: WorkflowSlotTarget): string {
 
 function KindBadge({ kind }: { kind: string }) {
   return (
-    <span className="inline-flex items-center rounded border border-white/10 px-2 py-0.5 text-xs font-medium text-[rgb(230,230,230)]">
+    <span className="inline-flex items-center rounded border border-[var(--ad-border)] px-2 py-0.5 text-xs font-medium text-[var(--ad-text)]">
       {kind}
     </span>
   );

@@ -94,10 +94,10 @@ const PLACEMENT_SLOT_BY_PURPOSE: Partial<Record<string, PlacementSlot>> = {
 };
 
 function itemStatusBadgeClass(status: string): string {
-  if (status === "approved" || status === "published") return "bg-emerald-500/15 text-emerald-300";
-  if (status === "rejected" || status === "failed") return "bg-red-500/15 text-red-300";
+  if (status === "approved" || status === "published") return "bg-[var(--ad-green-bg)] text-[var(--ad-green-text)]";
+  if (status === "rejected" || status === "failed") return "bg-[var(--ad-red-bg)] text-[var(--ad-red-text)]";
   if (status === "generated") return "bg-sky-500/15 text-sky-300";
-  return "bg-white/10 text-[rgb(180,180,180)]";
+  return "bg-black/[0.05] text-[var(--ad-text-muted)]";
 }
 
 export function CharacterPregenPanel({ characterId }: { characterId: string }) {
@@ -204,16 +204,16 @@ export function CharacterPregenPanel({ characterId }: { characterId: string }) {
   );
 
   return (
-    <section className="mt-4 border border-white/10 bg-[rgb(18,18,18)] p-4">
+    <section className="rounded-lg mt-4 border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <div className="flex items-center justify-between gap-3">
         <div>
           <h2 className="text-sm font-semibold">{t("Pregen")}</h2>
-          <p className="mt-1 text-xs text-[rgb(170,170,170)]">
+          <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
             {t("Batch-generate cover/hero/chat image packs, review items, and publish placements.")}
           </p>
         </div>
         <button
-          className="inline-flex h-9 shrink-0 items-center gap-2 border border-white/10 px-3 text-xs font-medium text-[rgb(220,220,220)] hover:border-white/30 disabled:opacity-50"
+          className="rounded-md inline-flex h-9 shrink-0 items-center gap-2 border border-[var(--ad-border)] px-3 text-xs font-medium text-[var(--ad-text)] hover:border-[var(--ad-ink)] disabled:opacity-50"
           disabled={loading}
           onClick={() => void load()}
           type="button"
@@ -227,14 +227,14 @@ export function CharacterPregenPanel({ characterId }: { characterId: string }) {
         </button>
       </div>
 
-      {listError ? <p className="mt-3 text-xs text-red-300">{listError}</p> : null}
+      {listError ? <p className="mt-3 text-xs text-[var(--ad-red-text)]">{listError}</p> : null}
 
-      <div className="mt-4 grid gap-2 text-xs text-[rgb(170,170,170)] md:grid-cols-2">
-        <div className="border border-white/10 bg-black/20 px-3 py-2">
+      <div className="mt-4 grid gap-2 text-xs text-[var(--ad-text-muted)] md:grid-cols-2">
+        <div className="rounded-lg border border-[var(--ad-border)] bg-black/[0.03] px-3 py-2">
           {t("Current avatar placement")}:{" "}
           {currentAvatar ? currentAvatar.mediaAssetId : t("Not placed")}
         </div>
-        <div className="border border-white/10 bg-black/20 px-3 py-2">
+        <div className="rounded-lg border border-[var(--ad-border)] bg-black/[0.03] px-3 py-2">
           {t("Current hero placement")}: {currentHero ? currentHero.mediaAssetId : t("Not placed")}
         </div>
       </div>
@@ -242,7 +242,7 @@ export function CharacterPregenPanel({ characterId }: { characterId: string }) {
       <div className="mt-4 flex flex-wrap items-center gap-3">
         {PACKS.map(({ pack, label }) => (
           <button
-            className="inline-flex h-10 items-center gap-2 border border-white/10 px-3 text-sm font-medium text-[rgb(220,220,220)] hover:border-white/30 disabled:opacity-50"
+            className="rounded-md inline-flex h-10 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm font-medium text-[var(--ad-text)] hover:border-[var(--ad-ink)] disabled:opacity-50"
             disabled={packSubmitting !== null}
             key={pack}
             onClick={() => void triggerPack(pack)}
@@ -256,21 +256,21 @@ export function CharacterPregenPanel({ characterId }: { characterId: string }) {
             {t(label)}
           </button>
         ))}
-        {packError ? <p className="text-xs text-red-300">{packError}</p> : null}
+        {packError ? <p className="text-xs text-[var(--ad-red-text)]">{packError}</p> : null}
       </div>
 
-      {itemError ? <p className="mt-3 text-xs text-red-300">{itemError}</p> : null}
+      {itemError ? <p className="mt-3 text-xs text-[var(--ad-red-text)]">{itemError}</p> : null}
 
       <div className="mt-4">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-[rgb(170,170,170)]">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">
           {t("Batches")}
         </h3>
         {loading ? (
-          <div className="mt-2 flex items-center gap-2 text-xs text-[rgb(170,170,170)]">
+          <div className="mt-2 flex items-center gap-2 text-xs text-[var(--ad-text-muted)]">
             <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t("Loading…")}
           </div>
         ) : batches.length === 0 ? (
-          <p className="mt-2 text-xs text-[rgb(170,170,170)]">
+          <p className="mt-2 text-xs text-[var(--ad-text-muted)]">
             {t("No pregen batches yet — trigger a pack above to start.")}
           </p>
         ) : (
@@ -314,11 +314,11 @@ function BatchCard({
   const placementSlot = PLACEMENT_SLOT_BY_PURPOSE[batch.purpose];
 
   return (
-    <div className="border border-white/10 bg-black/20 p-3">
+    <div className="rounded-lg border border-[var(--ad-border)] bg-black/[0.03] p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <p className="text-sm font-medium">{batch.title ?? batch.id}</p>
-          <p className="mt-0.5 text-xs text-[rgb(170,170,170)]">
+          <p className="mt-0.5 text-xs text-[var(--ad-text-muted)]">
             {valueLabel(batch.purpose)} · {valueLabel(batch.status)} ·{" "}
             {t("{completed}/{total} completed", {
               completed: batch.completedItems,
@@ -344,7 +344,7 @@ function BatchCard({
           const busy = itemBusyId === item.id;
           return (
             <div
-              className="flex flex-wrap items-center justify-between gap-2 border border-white/5 bg-black/20 px-3 py-2"
+              className="rounded-lg flex flex-wrap items-center justify-between gap-2 border border-[var(--ad-border)] bg-black/[0.03] px-3 py-2"
               key={item.id}
             >
               <div className="flex items-center gap-2 text-xs">
@@ -353,9 +353,9 @@ function BatchCard({
                 >
                   {valueLabel(item.status)}
                 </span>
-                <span className="text-[rgb(170,170,170)]">#{item.itemIndex}</span>
+                <span className="text-[var(--ad-text-muted)]">#{item.itemIndex}</span>
                 {item.asset?.thumbnailUrl ? (
-                  <span className="max-w-[220px] truncate text-[rgb(170,170,170)]">
+                  <span className="max-w-[220px] truncate text-[var(--ad-text-muted)]">
                     {item.asset.promptSummary ?? item.asset.id}
                   </span>
                 ) : null}
@@ -364,7 +364,7 @@ function BatchCard({
                 {item.status === "generated" ? (
                   <>
                     <button
-                      className="inline-flex h-8 items-center gap-1.5 border border-white/10 px-2 text-xs font-medium text-emerald-300 hover:border-emerald-300/50 disabled:opacity-50"
+                      className="rounded-md inline-flex h-8 items-center gap-1.5 border border-[var(--ad-border)] px-2 text-xs font-medium text-[var(--ad-green-text)] hover:border-[var(--ad-green-text)]/20 disabled:opacity-50"
                       disabled={busy}
                       onClick={() => void onReview(item.id, "approve")}
                       type="button"
@@ -377,7 +377,7 @@ function BatchCard({
                       {t("Approve")}
                     </button>
                     <button
-                      className="inline-flex h-8 items-center gap-1.5 border border-white/10 px-2 text-xs font-medium text-red-300 hover:border-red-300/50 disabled:opacity-50"
+                      className="rounded-md inline-flex h-8 items-center gap-1.5 border border-[var(--ad-border)] px-2 text-xs font-medium text-[var(--ad-red-text)] hover:border-[var(--ad-red-text)]/20 disabled:opacity-50"
                       disabled={busy}
                       onClick={() => void onReview(item.id, "reject")}
                       type="button"
@@ -393,10 +393,10 @@ function BatchCard({
                 ) : null}
                 {item.status === "approved" && item.mediaAssetId && placementSlot ? (
                   placedElsewhere ? (
-                    <span className="text-xs text-emerald-300">{t("Placed")}</span>
+                    <span className="text-xs text-[var(--ad-green-text)]">{t("Placed")}</span>
                   ) : (
                     <button
-                      className="inline-flex h-8 items-center gap-1.5 border border-white/10 px-2 text-xs font-medium text-[rgb(220,220,220)] hover:border-white/30 disabled:opacity-50"
+                      className="rounded-md inline-flex h-8 items-center gap-1.5 border border-[var(--ad-border)] px-2 text-xs font-medium text-[var(--ad-text)] hover:border-[var(--ad-ink)] disabled:opacity-50"
                       disabled={busy}
                       onClick={() => void onPlace(item, placementSlot)}
                       type="button"

@@ -2379,8 +2379,8 @@ function DashboardView({ data }: { data: DashboardData }) {
   return (
     <div className="space-y-6">
       <section className="space-y-3">
-        <h2 className="text-sm font-semibold text-white">{t("Needs your attention")}</h2>
-        <div className="grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-4">
+        <h2 className="text-sm font-semibold text-[var(--ad-ink)]">{t("Needs your attention")}</h2>
+        <div className="rounded-lg grid gap-px overflow-hidden border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
           <Metric
             href="/admin/generation/jobs"
             label="Failed/blocked jobs"
@@ -2409,7 +2409,7 @@ function DashboardView({ data }: { data: DashboardData }) {
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-sm font-semibold text-white">{t("Common tasks")}</h2>
+        <h2 className="text-sm font-semibold text-[var(--ad-ink)]">{t("Common tasks")}</h2>
         <div className="grid gap-3 md:grid-cols-3">
           <TaskCard href="/admin/content/official" icon={ShieldCheck} label="Add official character" />
           <TaskCard href="/admin/content/production" icon={Play} label="Batch generate images" />
@@ -2418,8 +2418,8 @@ function DashboardView({ data }: { data: DashboardData }) {
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-xs font-semibold uppercase text-[rgb(170,170,170)]">{t("Health overview")}</h2>
-        <div className="grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-4">
+        <h2 className="text-xs font-semibold uppercase text-[var(--ad-text-muted)]">{t("Health overview")}</h2>
+        <div className="rounded-lg grid gap-px overflow-hidden border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
           <Metric
             label="Users"
             value={data.metrics.users.active}
@@ -2493,7 +2493,7 @@ function JobsView({
         stringValue(row.status) === "failed" ? (
           <FailureReason code={stringValue(row.errorCode)} />
         ) : (
-          <span className="text-[rgb(170,170,170)]">—</span>
+          <span className="text-[var(--ad-text-muted)]">—</span>
         ),
     },
     {
@@ -2577,15 +2577,15 @@ function GenerationJobInspector({
   const timeline = detail?.timeline ?? [];
 
   return (
-    <section className="border border-white/10 bg-[rgb(18,18,18)]">
-      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-white/10 p-4">
+    <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[var(--ad-border)] p-4">
         <div className="min-w-0">
-          <p className="text-xs font-semibold uppercase text-[rgb(170,170,170)]">{t("Generation job detail")}</p>
+          <p className="text-xs font-semibold uppercase text-[var(--ad-text-muted)]">{t("Generation job detail")}</p>
           <h2 className="mt-1 truncate font-mono text-base font-semibold">{shortId(jobId)}</h2>
         </div>
         <button
           aria-label={t("Close")}
-          className="grid h-8 w-8 place-items-center border border-white/10 text-[rgb(170,170,170)] hover:bg-white/10"
+          className="rounded-lg grid h-8 w-8 place-items-center border border-[var(--ad-border)] text-[var(--ad-text-muted)] hover:bg-black/[0.04]"
           onClick={onClose}
           type="button"
         >
@@ -2594,21 +2594,21 @@ function GenerationJobInspector({
       </div>
 
       {loading ? (
-        <div className="flex h-28 items-center justify-center text-sm text-[rgb(170,170,170)]">
+        <div className="flex h-28 items-center justify-center text-sm text-[var(--ad-text-muted)]">
           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
           {t("Loading job detail")}
         </div>
       ) : null}
 
       {error ? (
-        <div className="m-4 border border-red-400/30 bg-red-950/30 px-3 py-2 text-sm text-red-100">
+        <div className="rounded-lg m-4 border border-[var(--ad-red-text)]/20 bg-[var(--ad-red-bg)] px-3 py-2 text-sm text-[var(--ad-red-text)]">
           {error}
         </div>
       ) : null}
 
       {job ? (
-        <div className="grid gap-px bg-white/10 lg:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
-          <div className="space-y-4 bg-[rgb(18,18,18)] p-4">
+        <div className="grid gap-px bg-black/[0.05] lg:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
+          <div className="space-y-4 bg-[var(--ad-surface)] p-4">
             <div className="grid gap-3 sm:grid-cols-4">
               <Metric label="Status" value={value(stringValue(job.status) || "-")} meta={compactDate(stringValue(job.createdAt), locale)} />
               <Metric label="Mode" value={value(stringValue(job.mode) || "-")} meta={stringValue(job.provider) || "-"} />
@@ -2620,28 +2620,28 @@ function GenerationJobInspector({
               <TextPanel label="Negative prompt" value={stringValue(job.negativePrompt)} />
             </div>
             {providerError ? (
-              <div className="border border-red-400/30 bg-red-950/20 p-3 text-xs text-red-100">
+              <div className="rounded-lg border border-[var(--ad-red-text)]/20 bg-[var(--ad-red-bg)] p-3 text-xs text-[var(--ad-red-text)]">
                 <p className="font-semibold">{t("Provider error")}</p>
-                <code className="mt-2 block break-words text-red-100/80">
+                <code className="mt-2 block break-words text-[var(--ad-red-text)]/80">
                   {JSON.stringify(providerError)}
                 </code>
               </div>
             ) : null}
           </div>
 
-          <div className="space-y-4 bg-[rgb(18,18,18)] p-4">
+          <div className="space-y-4 bg-[var(--ad-surface)] p-4">
             <div>
               <div className="flex items-center justify-between gap-3">
                 <h3 className="text-sm font-semibold">{t("Generated assets")}</h3>
-                <span className="text-xs text-[rgb(170,170,170)]">{assets.length}</span>
+                <span className="text-xs text-[var(--ad-text-muted)]">{assets.length}</span>
               </div>
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
                 {assets.map((asset) => {
                   const url = stringValue(asset.thumbnailUrl) || stringValue(asset.url);
                   return (
-                    <div className="border border-white/10 bg-black/20 p-2" key={stringValue(asset.id) || url}>
+                    <div className="rounded-lg border border-[var(--ad-border)] bg-black/[0.03] p-2" key={stringValue(asset.id) || url}>
                       <SafeImagePreview alt={t("Generated asset")} src={url} />
-                      <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-[rgb(170,170,170)]">
+                      <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--ad-text-muted)]">
                         <span>{value(stringValue(asset.type))}</span>
                         <span>{value(stringValue(asset.safetyStatus))}</span>
                       </div>
@@ -2649,7 +2649,7 @@ function GenerationJobInspector({
                   );
                 })}
                 {assets.length === 0 ? (
-                  <div className="border border-white/10 bg-black/20 px-3 py-8 text-center text-sm text-[rgb(170,170,170)] sm:col-span-2">
+                  <div className="rounded-lg border border-[var(--ad-border)] bg-black/[0.03] px-3 py-8 text-center text-sm text-[var(--ad-text-muted)] sm:col-span-2">
                     {t("No generated assets")}
                   </div>
                 ) : null}
@@ -2659,20 +2659,20 @@ function GenerationJobInspector({
             <div>
               <div className="flex items-center justify-between gap-3">
                 <h3 className="text-sm font-semibold">{t("Timeline")}</h3>
-                <span className="text-xs text-[rgb(170,170,170)]">{timeline.length}</span>
+                <span className="text-xs text-[var(--ad-text-muted)]">{timeline.length}</span>
               </div>
-              <div className="mt-3 max-h-72 overflow-y-auto border border-white/10">
+              <div className="rounded-lg mt-3 max-h-72 overflow-y-auto border border-[var(--ad-border)]">
                 {timeline.map((event, index) => (
-                  <div className="border-b border-white/5 p-3 text-xs last:border-0" key={`${event.at}-${event.type}-${index}`}>
+                  <div className="rounded-lg border-b border-[var(--ad-border)] p-3 text-xs last:border-0" key={`${event.at}-${event.type}-${index}`}>
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="font-semibold text-[rgb(230,230,230)]">{value(event.type)}</span>
-                      <span className="text-[rgb(114,113,112)]">{compactDate(event.at, locale)}</span>
+                      <span className="font-semibold text-[var(--ad-text)]">{value(event.type)}</span>
+                      <span className="text-[var(--ad-text-muted)]">{compactDate(event.at, locale)}</span>
                     </div>
-                    <p className="mt-1 text-[rgb(170,170,170)]">{event.message}</p>
+                    <p className="mt-1 text-[var(--ad-text-muted)]">{event.message}</p>
                   </div>
                 ))}
                 {timeline.length === 0 ? (
-                  <div className="px-3 py-8 text-center text-sm text-[rgb(170,170,170)]">
+                  <div className="px-3 py-8 text-center text-sm text-[var(--ad-text-muted)]">
                     {t("No timeline events")}
                   </div>
                 ) : null}
@@ -2689,10 +2689,10 @@ function ConfigOverviewHeader() {
   const { t } = useAdminI18n();
 
   return (
-    <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
-      <p className="text-xs font-semibold uppercase text-[rgb(170,170,170)]">{t("Model Profiles")}</p>
+    <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
+      <p className="text-xs font-semibold uppercase text-[var(--ad-text-muted)]">{t("Model Profiles")}</p>
       <h2 className="mt-1 text-lg font-semibold">{t("Test and publish generation profiles")}</h2>
-      <p className="mt-2 max-w-3xl text-sm leading-6 text-[rgb(170,170,170)]">
+      <p className="mt-2 max-w-3xl text-sm leading-6 text-[var(--ad-text-muted)]">
         {t("Pick a profile to check readiness, then publish it. Model files and runner setup stay in engineering-owned config.")}
       </p>
     </section>
@@ -2715,15 +2715,15 @@ function ConfigTabNav({
   ];
 
   return (
-    <div className="grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-2">
+    <div className="rounded-lg grid gap-px overflow-hidden border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-2">
       {items.map((item) => {
         const selected = active === item.id;
         return (
           <button
             aria-current={selected ? "page" : undefined}
             className={cn(
-              "bg-[rgb(18,18,18)] px-3 py-3 text-left hover:bg-white/[0.06]",
-              selected && "bg-white text-black hover:bg-white",
+              "bg-[var(--ad-surface)] px-3 py-3 text-left hover:bg-black/[0.04]",
+              selected && "bg-[var(--ad-ink)] text-white hover:bg-[var(--ad-ink)]",
             )}
             key={item.id}
             onClick={() => onChange(item.id)}
@@ -2734,13 +2734,13 @@ function ConfigTabNav({
               <span
                 className={cn(
                   "font-mono text-xs",
-                  selected ? "text-black/60" : "text-[rgb(170,170,170)]",
+                  selected ? "text-white/60" : "text-[var(--ad-text-muted)]",
                 )}
               >
                 {counts[item.id]}
               </span>
             </span>
-            <span className={cn("mt-1 block text-xs", selected ? "text-black/60" : "text-[rgb(170,170,170)]")}>
+            <span className={cn("mt-1 block text-xs", selected ? "text-white/60" : "text-[var(--ad-text-muted)]")}>
               {t(item.meta)}
             </span>
           </button>
@@ -2915,7 +2915,7 @@ function ProfileDetail({
 
   if (!profile) {
     return (
-      <section className="border border-white/10 bg-[rgb(18,18,18)] p-6 text-sm text-[rgb(170,170,170)]">
+      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6 text-sm text-[var(--ad-text-muted)]">
         {t("Select a profile to review its readiness and publish it.")}
       </section>
     );
@@ -2924,22 +2924,22 @@ function ProfileDetail({
   const source = profileSourceLabel(profile);
 
   return (
-    <section className="min-w-0 space-y-4 border border-white/10 bg-[rgb(18,18,18)] p-4">
+    <section className="rounded-lg min-w-0 space-y-4 border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <h2 className="truncate text-lg font-semibold">{profileDisplayName(profile, locale)}</h2>
-          <p className="mt-1 text-sm text-[rgb(170,170,170)]">{t(profileStateLabelKey(profile, verification))}</p>
+          <p className="mt-1 text-sm text-[var(--ad-text-muted)]">{t(profileStateLabelKey(profile, verification))}</p>
         </div>
         <div className="flex shrink-0 flex-wrap gap-2">
           <Link
-            className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs text-[rgb(230,230,230)] hover:bg-white/10"
+            className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs text-[var(--ad-text)] hover:bg-black/[0.04]"
             href="/admin/generation/jobs"
           >
             <ExternalLink className="h-3.5 w-3.5" />
             {t("Open jobs")}
           </Link>
           <button
-            className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs text-[rgb(230,230,230)] hover:bg-white/10"
+            className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs text-[var(--ad-text)] hover:bg-black/[0.04]"
             onClick={() => void onReload()}
             type="button"
           >
@@ -2992,7 +2992,7 @@ function ProfileDetail({
       ) : null}
 
       {publishBlocked ? (
-        <div className="border border-red-400/30 bg-red-950/20 p-3">
+        <div className="rounded-lg border border-[var(--ad-red-text)]/20 bg-[var(--ad-red-bg)] p-3">
           <FailureReason code={profileBlockCode(verification)} detail={verification.meta} />
         </div>
       ) : null}
@@ -3000,19 +3000,19 @@ function ProfileDetail({
       {canTest ? (
         <div className="grid min-w-0 gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,300px)]">
           <label className="block min-w-0">
-            <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">{t("Test prompt")}</span>
+            <span className="mb-1 block text-xs font-medium text-[var(--ad-text-muted)]">{t("Test prompt")}</span>
             <textarea
-              className="min-h-24 w-full resize-y border border-white/10 bg-black/30 px-3 py-2 text-sm leading-6 outline-none focus:border-white/30"
+              className="rounded-md min-h-24 w-full resize-y border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 text-sm leading-6 outline-none focus:border-[var(--ad-ink)]"
               onChange={(event) => setTestPrompt(event.target.value)}
               value={testPrompt}
             />
             {testNotice ? (
-              <div className="mt-2 border border-emerald-400/30 bg-emerald-950/20 px-3 py-2 text-sm text-emerald-100">
+              <div className="rounded-lg mt-2 border border-[var(--ad-green-text)]/20 bg-[var(--ad-green-bg)] px-3 py-2 text-sm text-[var(--ad-green-text)]">
                 {testNotice}
               </div>
             ) : null}
             {testError ? (
-              <div className="mt-2 border border-red-400/30 bg-red-950/30 px-3 py-2 text-sm text-red-100">
+              <div className="rounded-lg mt-2 border border-[var(--ad-red-text)]/20 bg-[var(--ad-red-bg)] px-3 py-2 text-sm text-[var(--ad-red-text)]">
                 {testError}
               </div>
             ) : null}
@@ -3021,18 +3021,18 @@ function ProfileDetail({
             <div className="flex items-center justify-between gap-3">
               <h3 className="text-sm font-semibold">{t("Latest test image")}</h3>
               {latestJob ? (
-                <span className="text-xs text-[rgb(170,170,170)]">
+                <span className="text-xs text-[var(--ad-text-muted)]">
                   {compactDate(stringValue(latestJob.createdAt), locale)}
                 </span>
               ) : null}
             </div>
-            <div className="mt-2 aspect-[4/5] overflow-hidden border border-white/10 bg-black/30">
+            <div className="rounded-lg mt-2 aspect-[4/5] overflow-hidden border border-[var(--ad-border)] bg-[var(--ad-surface)]">
               {latestAsset ? (
                 <a href={latestAsset.url} rel="noreferrer" target="_blank">
                   <SafeImagePreview alt={t("Latest test image")} src={latestAsset.thumbnailUrl || latestAsset.url} />
                 </a>
               ) : (
-                <div className="flex h-full items-center justify-center px-6 text-center text-sm text-[rgb(170,170,170)]">
+                <div className="flex h-full items-center justify-center px-6 text-center text-sm text-[var(--ad-text-muted)]">
                   {latestJob
                     ? isTerminalJobStatus(stringValue(latestJob.status))
                       ? t("No image generated: {status}", { status: value(stringValue(latestJob.status)) })
@@ -3048,13 +3048,13 @@ function ProfileDetail({
       <EngineeringDetails summary={t("Model & workflow details")}>
         <div className="space-y-3">
           <label className="block">
-            <span className="mb-1 flex items-center gap-1 font-medium text-[rgb(170,170,170)]">
+            <span className="mb-1 flex items-center gap-1 font-medium text-[var(--ad-text-muted)]">
               <Workflow className="h-3.5 w-3.5" />
               {t("Workflow")}
             </span>
             <div className="flex gap-2">
               <select
-                className="h-9 w-full border border-white/10 bg-black/30 px-2 text-xs outline-none focus:border-white/30 disabled:opacity-50"
+                className="rounded-md h-9 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-2 text-xs outline-none focus:border-[var(--ad-ink)] disabled:opacity-50"
                 disabled={status !== "draft"}
                 onChange={(event) => setWorkflowDraft(event.target.value)}
                 value={workflowDraft}
@@ -3072,7 +3072,7 @@ function ProfileDetail({
                 })}
               </select>
               <button
-                className="inline-flex h-9 shrink-0 items-center gap-2 border border-white/10 px-3 text-xs text-[rgb(230,230,230)] hover:bg-white/10 disabled:opacity-50"
+                className="rounded-md inline-flex h-9 shrink-0 items-center gap-2 border border-[var(--ad-border)] px-3 text-xs text-[var(--ad-text)] hover:bg-black/[0.04] disabled:opacity-50"
                 disabled={status !== "draft" || workflowSaveBusy || workflowDraft === workflowKey}
                 onClick={() => void saveWorkflowKey()}
                 type="button"
@@ -3081,18 +3081,18 @@ function ProfileDetail({
               </button>
             </div>
             {status !== "draft" ? (
-              <span className="mt-1 block text-[rgb(170,170,170)]">
+              <span className="mt-1 block text-[var(--ad-text-muted)]">
                 {t("Only draft profiles can change workflow routing.")}
               </span>
             ) : null}
           </label>
           {workflowSaveNotice ? (
-            <div className="border border-emerald-400/30 bg-emerald-950/20 px-3 py-2 text-emerald-100">
+            <div className="rounded-lg border border-[var(--ad-green-text)]/20 bg-[var(--ad-green-bg)] px-3 py-2 text-[var(--ad-green-text)]">
               {workflowSaveNotice}
             </div>
           ) : null}
           {workflowSaveError ? (
-            <div className="border border-red-400/30 bg-red-950/30 px-3 py-2 text-red-100">{workflowSaveError}</div>
+            <div className="rounded-lg border border-[var(--ad-red-text)]/20 bg-[var(--ad-red-bg)] px-3 py-2 text-[var(--ad-red-text)]">{workflowSaveError}</div>
           ) : null}
           <div className="space-y-1">
             <div>{t("Profile ID")}: {id || "-"}</div>
@@ -3299,7 +3299,7 @@ function RecipeDetail({
 
   if (!recipe) {
     return (
-      <section className="border border-white/10 bg-[rgb(18,18,18)] p-6 text-sm text-[rgb(170,170,170)]">
+      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6 text-sm text-[var(--ad-text-muted)]">
         {t("Select a recipe to review and publish it.")}
       </section>
     );
@@ -3310,10 +3310,10 @@ function RecipeDetail({
   const label = stringValue(recipe.label) || t("Untitled recipe");
 
   return (
-    <section className="min-w-0 space-y-4 border border-white/10 bg-[rgb(18,18,18)] p-4">
+    <section className="rounded-lg min-w-0 space-y-4 border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <div className="min-w-0">
         <h2 className="truncate text-lg font-semibold">{label}</h2>
-        <p className="mt-1 text-sm text-[rgb(170,170,170)]">
+        <p className="mt-1 text-sm text-[var(--ad-text-muted)]">
           {[useCase ? value(useCase) : null, t(recipeStateLabelKey(recipe))].filter(Boolean).join(" · ")}
         </p>
       </div>
@@ -3403,7 +3403,7 @@ function PresetDetail({ preset }: { preset: Row | null }) {
 
   if (!preset) {
     return (
-      <section className="border border-white/10 bg-[rgb(18,18,18)] p-6 text-sm text-[rgb(170,170,170)]">
+      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6 text-sm text-[var(--ad-text-muted)]">
         {t("Select a preset to review it.")}
       </section>
     );
@@ -3414,10 +3414,10 @@ function PresetDetail({ preset }: { preset: Row | null }) {
   const label = stringValue(preset.label) || t("Untitled preset");
 
   return (
-    <section className="min-w-0 space-y-4 border border-white/10 bg-[rgb(18,18,18)] p-4">
+    <section className="rounded-lg min-w-0 space-y-4 border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <div className="min-w-0">
         <h2 className="truncate text-lg font-semibold">{label}</h2>
-        <p className="mt-1 text-sm text-[rgb(170,170,170)]">{presetSecondaryLine(preset, t, value)}</p>
+        <p className="mt-1 text-sm text-[var(--ad-text-muted)]">{presetSecondaryLine(preset, t, value)}</p>
       </div>
 
       <EngineeringDetails summary={t("Preset details")}>
@@ -3654,19 +3654,19 @@ function ModelManagementView() {
 
   return (
     <div className="space-y-5">
-      <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <p className="text-xs font-semibold uppercase text-[rgb(170,170,170)]">
+            <p className="text-xs font-semibold uppercase text-[var(--ad-text-muted)]">
               {t("Engineering diagnostics")}
             </p>
             <h2 className="mt-1 text-lg font-semibold">{t("Model diagnostics library")}</h2>
-            <p className="mt-2 max-w-3xl text-sm leading-6 text-[rgb(170,170,170)]">
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-[var(--ad-text-muted)]">
               {t("Engineering-only model diagnostics. Operators use seeded profiles in Model Profiles.")}
             </p>
           </div>
           <button
-            className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm text-[rgb(230,230,230)] hover:bg-white/10 disabled:opacity-50"
+            className="rounded-md inline-flex h-9 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm text-[var(--ad-text)] hover:bg-black/[0.04] disabled:opacity-50"
             disabled={busy === "refresh"}
             onClick={() => void refreshLibrary()}
             type="button"
@@ -3701,7 +3701,7 @@ function ModelManagementView() {
             title={t("Publish")}
           />
         </div>
-        <div className="mt-4 grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-4">
+        <div className="rounded-lg mt-4 grid gap-px overflow-hidden border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
           <Metric label="Main Models" value={mainModels.length} meta={library ? t("Library root: {path}", { path: library.roots.root }) : "missing"} />
           <Metric label="LoRA Models" value={loras.length} meta="optional adapters" />
           <Metric label="Model components" value={components.length} meta="LLM / VAE" />
@@ -3710,12 +3710,12 @@ function ModelManagementView() {
       </section>
 
       {error ? (
-        <div className="border border-red-400/30 bg-red-950/30 px-3 py-2 text-sm text-red-100">
+        <div className="rounded-lg border border-[var(--ad-red-text)]/20 bg-[var(--ad-red-bg)] px-3 py-2 text-sm text-[var(--ad-red-text)]">
           {error}
         </div>
       ) : null}
       {notice ? (
-        <div className="border border-emerald-400/30 bg-emerald-950/20 px-3 py-2 text-sm text-emerald-100">
+        <div className="rounded-lg border border-[var(--ad-green-text)]/20 bg-[var(--ad-green-bg)] px-3 py-2 text-sm text-[var(--ad-green-text)]">
           {notice}
         </div>
       ) : null}
@@ -3739,10 +3739,10 @@ function ModelManagementView() {
         />
       </section>
 
-      <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <div className="mb-3">
           <h3 className="text-sm font-semibold">{t("Import from server path")}</h3>
-          <p className="mt-1 text-xs leading-5 text-[rgb(170,170,170)]">
+          <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
             {t("Enter a server file path or a directory path. Directory import registers all supported files under that folder.")}
           </p>
         </div>
@@ -3756,18 +3756,18 @@ function ModelManagementView() {
             />
           </div>
           <label className="min-w-[260px] flex-1">
-            <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">
+            <span className="mb-1 block text-xs font-medium text-[var(--ad-text-muted)]">
               {t("Server file or directory path")}
             </span>
             <input
-              className="h-10 w-full min-w-0 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+              className="rounded-md h-10 w-full min-w-0 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
               onChange={(event) => setServerImportPath(event.target.value)}
               placeholder={t("/Users/kk/Downloads/models or /path/model.safetensors")}
               value={serverImportPath}
             />
           </label>
           <button
-            className="inline-flex h-10 items-center justify-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+            className="inline-flex h-10 items-center justify-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
             disabled={Boolean(busy) || !serverImportPath.trim()}
             onClick={() => void registerAsset(serverImportKind, serverImportPath)}
             type="button"
@@ -3800,10 +3800,10 @@ function ModelImportPanel({
 }) {
   const { t } = useAdminI18n();
   return (
-    <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+    <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <h3 className="text-sm font-semibold">{t(title)}</h3>
-      <p className="mt-1 text-xs leading-5 text-[rgb(170,170,170)]">{t(description)}</p>
-      <label className="mt-4 inline-flex h-10 cursor-pointer items-center justify-center gap-2 bg-white px-3 text-sm font-semibold text-black hover:bg-[rgb(230,230,230)] focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-white">
+      <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">{t(description)}</p>
+      <label className="mt-4 inline-flex h-10 cursor-pointer items-center justify-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white hover:bg-[#333333] focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--ad-ink)]">
         {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
         {t(uploadLabel)}
         <input
@@ -3826,17 +3826,17 @@ function ModelImportPanel({
 function ModelAssetLibraryTable({ items }: { items: ModelImportAsset[] }) {
   const { t } = useAdminI18n();
   return (
-    <section className="overflow-hidden border border-white/10 bg-[rgb(18,18,18)]">
-      <div className="flex h-11 items-center justify-between border-b border-white/10 px-4">
+    <section className="rounded-lg overflow-hidden border border-[var(--ad-border)] bg-[var(--ad-surface)]">
+      <div className="flex h-11 items-center justify-between border-b border-[var(--ad-border)] px-4">
         <h2 className="text-sm font-semibold">{t("Imported model assets")}</h2>
-        <span className="text-xs text-[rgb(170,170,170)]">{items.length}</span>
+        <span className="text-xs text-[var(--ad-text-muted)]">{items.length}</span>
       </div>
       <div className="overflow-x-auto">
         <table className="min-w-full text-left text-xs">
-          <thead className="bg-black/20 text-[rgb(170,170,170)]">
+          <thead className="bg-black/[0.03] text-[var(--ad-text-muted)]">
             <tr>
               {["Asset kind", "Name", "Format", "Size", "Path", "Updated", "Actions"].map((column) => (
-                <th key={column} className="border-b border-white/10 px-3 py-2 font-semibold">
+                <th key={column} className="border-b border-[var(--ad-border)] px-3 py-2 font-semibold">
                   {t(column)}
                 </th>
               ))}
@@ -3844,24 +3844,24 @@ function ModelAssetLibraryTable({ items }: { items: ModelImportAsset[] }) {
           </thead>
           <tbody>
             {items.map((item) => (
-              <tr key={`${item.kind}-${item.path}`} className="border-b border-white/5 last:border-0">
+              <tr key={`${item.kind}-${item.path}`} className="rounded-lg border-b border-[var(--ad-border)] last:border-0">
                 <td className="px-3 py-2 align-top">
-                  <span className="border border-white/10 px-2 py-1 text-[11px] text-[rgb(230,230,230)]">
+                  <span className="rounded-lg border border-[var(--ad-border)] px-2 py-1 text-[11px] text-[var(--ad-text)]">
                     {item.kind}
                   </span>
                 </td>
-                <td className="max-w-[220px] px-3 py-2 align-top text-[rgb(230,230,230)]">
+                <td className="max-w-[220px] px-3 py-2 align-top text-[var(--ad-text)]">
                   <span className="break-words">{item.name}</span>
                 </td>
-                <td className="px-3 py-2 align-top text-[rgb(170,170,170)]">{item.format}</td>
-                <td className="px-3 py-2 align-top font-mono text-[rgb(170,170,170)]">{formatBytes(item.sizeBytes)}</td>
-                <td className="max-w-[440px] px-3 py-2 align-top font-mono text-[rgb(170,170,170)]">
+                <td className="px-3 py-2 align-top text-[var(--ad-text-muted)]">{item.format}</td>
+                <td className="px-3 py-2 align-top font-mono text-[var(--ad-text-muted)]">{formatBytes(item.sizeBytes)}</td>
+                <td className="max-w-[440px] px-3 py-2 align-top font-mono text-[var(--ad-text-muted)]">
                   <span className="break-all">{item.path}</span>
                 </td>
-                <td className="px-3 py-2 align-top text-[rgb(170,170,170)]">{compactDate(item.modifiedAt)}</td>
+                <td className="px-3 py-2 align-top text-[var(--ad-text-muted)]">{compactDate(item.modifiedAt)}</td>
                 <td className="px-3 py-2 align-top">
                   <Link
-                    className="inline-flex h-8 items-center gap-2 border border-white/10 px-2 text-xs text-[rgb(230,230,230)] hover:bg-white/10"
+                    className="rounded-md inline-flex h-8 items-center gap-2 border border-[var(--ad-border)] px-2 text-xs text-[var(--ad-text)] hover:bg-black/[0.04]"
                     href={modelAssetConfigureHref(item)}
                   >
                     <SlidersHorizontal className="h-4 w-4" />
@@ -3872,7 +3872,7 @@ function ModelAssetLibraryTable({ items }: { items: ModelImportAsset[] }) {
             ))}
             {items.length === 0 ? (
               <tr>
-                <td className="px-3 py-8 text-center text-sm text-[rgb(170,170,170)]" colSpan={7}>
+                <td className="px-3 py-8 text-center text-sm text-[var(--ad-text-muted)]" colSpan={7}>
                   {t("No model assets imported")}
                 </td>
               </tr>
@@ -4058,21 +4058,21 @@ function ModelProfileDraftForm({
   const libraryCount = library?.items.length ?? 0;
 
   return (
-    <section className="border border-white/10 bg-[rgb(18,18,18)]">
-      <div className="border-b border-white/10 p-4">
+    <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
+      <div className="border-b border-[var(--ad-border)] p-4">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <p className="text-xs font-semibold uppercase text-[rgb(170,170,170)]">
+            <p className="text-xs font-semibold uppercase text-[var(--ad-text-muted)]">
               {t("sdcpp operations")}
             </p>
             <h2 className="mt-1 text-lg font-semibold">{t("Generation profile setup")}</h2>
-            <p className="mt-2 max-w-3xl text-sm leading-6 text-[rgb(170,170,170)]">
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-[var(--ad-text-muted)]">
               {t("Select an imported model, tune generation defaults, then create a draft for dry run and publish.")}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button
-              className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm text-[rgb(230,230,230)] hover:bg-white/10 disabled:opacity-50"
+              className="rounded-md inline-flex h-9 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm text-[var(--ad-text)] hover:bg-black/[0.04] disabled:opacity-50"
               disabled={importBusy === "refresh"}
               onClick={() => void refreshImports()}
               type="button"
@@ -4085,7 +4085,7 @@ function ModelProfileDraftForm({
               {t("Refresh library")}
             </button>
             <button
-              className="inline-flex h-9 items-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+              className="inline-flex h-9 items-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
               disabled={busy || !canCreate}
               onClick={onCreate}
               type="button"
@@ -4126,7 +4126,7 @@ function ModelProfileDraftForm({
 
       <div className="grid gap-4 p-4 xl:grid-cols-[minmax(0,1fr)_340px]">
         <div className="space-y-4">
-          <section className="border border-white/10 bg-black/20 p-3">
+          <section className="rounded-lg border border-[var(--ad-border)] bg-black/[0.03] p-3">
             <SectionHeader
               description="Start from the consistency path, then adjust only what this model needs."
               eyebrow="Step 1"
@@ -4138,16 +4138,16 @@ function ModelProfileDraftForm({
                 return (
                   <button
                     aria-pressed={selected}
-                    className="min-h-28 border border-white/10 bg-black/30 p-3 text-left hover:bg-white/5 aria-pressed:border-white aria-pressed:bg-white aria-pressed:text-black"
+                    className="rounded-md min-h-28 border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 text-left hover:bg-black/[0.04] aria-pressed:border-[var(--ad-ink)] aria-pressed:bg-[var(--ad-ink)] aria-pressed:text-white"
                     key={template.id}
                     onClick={() => onDraftChange(applyModelProfileTemplate(draft, template.id))}
                     type="button"
                   >
                     <span className="block text-sm font-semibold">{t(template.label)}</span>
-                    <span className={cn("mt-2 block text-xs leading-5", selected ? "text-black/70" : "text-[rgb(170,170,170)]")}>
+                    <span className={cn("mt-2 block text-xs leading-5", selected ? "text-white/70" : "text-[var(--ad-text-muted)]")}>
                       {t(template.description)}
                     </span>
-                    <span className={cn("mt-3 block font-mono text-[11px]", selected ? "text-black/60" : "text-[rgb(114,113,112)]")}>
+                    <span className={cn("mt-3 block font-mono text-[11px]", selected ? "text-white/60" : "text-[var(--ad-text-muted)]")}>
                       {template.intent}
                     </span>
                   </button>
@@ -4156,16 +4156,16 @@ function ModelProfileDraftForm({
             </div>
           </section>
 
-          <div className="border border-white/10 bg-black/20 p-3">
+          <div className="rounded-lg border border-[var(--ad-border)] bg-black/[0.03] p-3">
             <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
               <div>
                 <h3 className="text-sm font-semibold">{t("Select model from library")}</h3>
-                <p className="mt-1 max-w-2xl text-xs leading-5 text-[rgb(170,170,170)]">
+                <p className="mt-1 max-w-2xl text-xs leading-5 text-[var(--ad-text-muted)]">
                   {t("Engineering imports are hidden diagnostics; default Admin uses seeded profiles.")}
                 </p>
               </div>
               <Link
-                className="inline-flex h-8 items-center gap-2 border border-white/10 px-2 text-xs text-[rgb(230,230,230)] hover:bg-white/10"
+                className="rounded-md inline-flex h-8 items-center gap-2 border border-[var(--ad-border)] px-2 text-xs text-[var(--ad-text)] hover:bg-black/[0.04]"
                 href="/admin/generation/config"
               >
                 <Library className="h-4 w-4" />
@@ -4173,7 +4173,7 @@ function ModelProfileDraftForm({
               </Link>
             </div>
             {importError ? (
-              <div className="mb-3 border border-red-400/30 bg-red-950/30 px-3 py-2 text-xs text-red-100">
+              <div className="rounded-lg mb-3 border border-[var(--ad-red-text)]/20 bg-[var(--ad-red-bg)] px-3 py-2 text-xs text-[var(--ad-red-text)]">
                 {importError}
               </div>
             ) : null}
@@ -4182,7 +4182,7 @@ function ModelProfileDraftForm({
                 <span className="sr-only">{t("Select from model library")}</span>
                 <select
                   aria-label={t("Select from model library")}
-                  className="h-10 w-full min-w-0 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+                  className="rounded-md h-10 w-full min-w-0 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
                   onChange={(event) => setSelectedAssetPath(event.target.value)}
                   value={selectedAssetPath}
                 >
@@ -4195,7 +4195,7 @@ function ModelProfileDraftForm({
                 </select>
               </label>
               <button
-                className="inline-flex h-10 items-center justify-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+                className="inline-flex h-10 items-center justify-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
                 disabled={!selectedAsset}
                 onClick={useSelectedAsset}
                 type="button"
@@ -4204,12 +4204,12 @@ function ModelProfileDraftForm({
                 {t("Use")}
               </button>
             </div>
-            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[rgb(170,170,170)]">
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[var(--ad-text-muted)]">
               <span>{selectedAsset ? `${selectedAsset.kind} · ${selectedAsset.path}` : t("No model asset selected")}</span>
               {library ? <span>· {t("{count} assets", { count: libraryCount })}</span> : null}
               {importBusy === "refresh" ? <span>· {t("Loading…")}</span> : null}
               <button
-                className="ml-auto inline-flex h-7 items-center gap-1 border border-white/10 px-2 text-[11px] text-[rgb(230,230,230)] hover:bg-white/10 disabled:opacity-50"
+                className="rounded-md ml-auto inline-flex h-7 items-center gap-1 border border-[var(--ad-border)] px-2 text-[11px] text-[var(--ad-text)] hover:bg-black/[0.04] disabled:opacity-50"
                 disabled={importBusy === "refresh"}
                 onClick={() => void refreshImports()}
                 type="button"
@@ -4219,37 +4219,37 @@ function ModelProfileDraftForm({
               </button>
             </div>
             {modelAssetOptions.length === 0 ? (
-              <div className="mt-3 border border-amber-300/30 bg-amber-400/10 px-3 py-2 text-xs leading-5 text-amber-100">
+              <div className="rounded-lg mt-3 border border-[var(--ad-yellow-text)]/20 bg-[var(--ad-yellow-bg)] px-3 py-2 text-xs leading-5 text-[var(--ad-yellow-text)]">
                 {t("No diagnostic model assets available. Default Admin uses seeded profiles.")}
               </div>
             ) : null}
           </div>
 
-          <section className="border border-white/10 bg-black/20">
+          <section className="rounded-lg border border-[var(--ad-border)] bg-black/[0.03]">
             <button
               aria-expanded={civitaiExpanded}
-              className="flex w-full items-center justify-between gap-3 px-3 py-3 text-left hover:bg-white/5"
+              className="flex w-full items-center justify-between gap-3 px-3 py-3 text-left hover:bg-black/[0.04]"
               onClick={() => setShowCivitai(!civitaiExpanded)}
               type="button"
             >
               <span>
-                <span className="block text-xs font-semibold uppercase text-[rgb(114,113,112)]">
+                <span className="block text-xs font-semibold uppercase text-[var(--ad-text-muted)]">
                   {t("Optional")}
                 </span>
                 <span className="mt-1 block text-sm font-semibold">{t("Civitai config paste")}</span>
-                <span className="mt-1 block text-xs leading-5 text-[rgb(170,170,170)]">
+                <span className="mt-1 block text-xs leading-5 text-[var(--ad-text-muted)]">
                   {t("Paste Civitai metadata when you want to prefill generation defaults.")}
                 </span>
               </span>
               <ChevronRight className={cn("h-4 w-4 shrink-0 transition-transform", civitaiExpanded && "rotate-90")} />
             </button>
             {civitaiExpanded ? (
-              <div className="border-t border-white/10 p-3">
+              <div className="border-t border-[var(--ad-border)] p-3">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                  <label className="inline-flex h-8 items-center gap-2 border border-white/10 px-2 text-xs text-[rgb(230,230,230)]">
+                  <label className="rounded-md inline-flex h-8 items-center gap-2 border border-[var(--ad-border)] px-2 text-xs text-[var(--ad-text)]">
                     <input
                       checked={importCivitaiLoras}
-                      className="h-3 w-3 accent-white"
+                      className="h-3 w-3 accent-[var(--ad-ink)]"
                       onChange={(event) => setImportCivitaiLoras(event.target.checked)}
                       type="checkbox"
                     />
@@ -4257,7 +4257,7 @@ function ModelProfileDraftForm({
                   </label>
                   <div className="flex flex-wrap gap-2">
                     <button
-                      className="inline-flex h-8 items-center gap-2 border border-white/10 px-2 text-xs text-[rgb(230,230,230)] hover:bg-white/10"
+                      className="rounded-md inline-flex h-8 items-center gap-2 border border-[var(--ad-border)] px-2 text-xs text-[var(--ad-text)] hover:bg-black/[0.04]"
                       onClick={() => void pasteFromClipboard()}
                       type="button"
                     >
@@ -4265,7 +4265,7 @@ function ModelProfileDraftForm({
                       {t("Paste from clipboard")}
                     </button>
                     <button
-                      className="inline-flex h-8 items-center gap-2 bg-white px-2 text-xs font-semibold text-black disabled:opacity-50"
+                      className="inline-flex h-8 items-center gap-2 bg-[var(--ad-ink)] px-2 text-xs font-semibold text-white disabled:opacity-50"
                       disabled={!civitaiText.trim()}
                       onClick={() => applyCivitaiPaste(civitaiText)}
                       type="button"
@@ -4276,7 +4276,7 @@ function ModelProfileDraftForm({
                   </div>
                 </div>
                 <textarea
-                  className="min-h-24 w-full resize-y border border-white/10 bg-black/30 px-3 py-2 font-mono text-xs outline-none placeholder:text-[rgb(114,113,112)] focus:border-white/30"
+                  className="rounded-md min-h-24 w-full resize-y border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 font-mono text-xs outline-none placeholder:text-[var(--ad-text-muted)] focus:border-[var(--ad-ink)]"
                   onChange={(event) => {
                     setCivitaiText(event.target.value);
                     setCivitaiStatus(null);
@@ -4288,9 +4288,9 @@ function ModelProfileDraftForm({
                   <p
                     className={cn(
                       "mt-2 text-xs leading-5",
-                      civitaiStatus.tone === "good" && "text-emerald-300",
-                      civitaiStatus.tone === "warn" && "text-amber-200",
-                      civitaiStatus.tone === "bad" && "text-red-300",
+                      civitaiStatus.tone === "good" && "text-[var(--ad-green-text)]",
+                      civitaiStatus.tone === "warn" && "text-[var(--ad-yellow-text)]",
+                      civitaiStatus.tone === "bad" && "text-[var(--ad-red-text)]",
                     )}
                   >
                     {civitaiStatus.message}
@@ -4301,7 +4301,7 @@ function ModelProfileDraftForm({
           </section>
 
           <div className="grid gap-4 lg:grid-cols-2">
-            <section className="border border-white/10 bg-black/20 p-3">
+            <section className="rounded-lg border border-[var(--ad-border)] bg-black/[0.03] p-3">
               <SectionHeader
                 description="This is what operators will find later in dry run, publish, and rollback tables."
                 eyebrow="Step 2"
@@ -4344,7 +4344,7 @@ function ModelProfileDraftForm({
               </div>
             </section>
 
-            <section className="border border-white/10 bg-black/20 p-3">
+            <section className="rounded-lg border border-[var(--ad-border)] bg-black/[0.03] p-3">
               <SectionHeader
                 description="Keep the common operating knobs visible; deeper runner details are below."
                 eyebrow="Step 3"
@@ -4407,7 +4407,7 @@ function ModelProfileDraftForm({
             </section>
           </div>
 
-          <section className="border border-white/10 bg-black/20 p-3">
+          <section className="rounded-lg border border-[var(--ad-border)] bg-black/[0.03] p-3">
             <SectionHeader
               description="Review the generated source paths and GGUF output before draft creation."
               eyebrow="Step 4"
@@ -4463,11 +4463,11 @@ function ModelProfileDraftForm({
                 />
                 <button
                   aria-pressed={draft.conversionEnabled}
-                  className="flex h-10 items-center justify-center gap-2 self-end border border-white/10 bg-black/30 px-3 text-left text-sm text-[rgb(230,230,230)] aria-pressed:bg-white aria-pressed:text-black"
+                  className="rounded-md flex h-10 items-center justify-center gap-2 self-end border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-left text-sm text-[var(--ad-text)] aria-pressed:bg-[var(--ad-ink)] aria-pressed:text-white"
                   onClick={() => onDraftChange({ ...draft, conversionEnabled: !draft.conversionEnabled })}
                   type="button"
                 >
-                  <span className="grid h-4 w-4 place-items-center border border-current">
+                  <span className="rounded-lg grid h-4 w-4 place-items-center border border-current">
                     {draft.conversionEnabled ? <Check className="h-3 w-3" /> : null}
                   </span>
                   <span>{t("Convert to GGUF")}</span>
@@ -4476,7 +4476,7 @@ function ModelProfileDraftForm({
             </div>
           </section>
 
-          <section className="border border-white/10 bg-black/20 p-3">
+          <section className="rounded-lg border border-[var(--ad-border)] bg-black/[0.03] p-3">
             <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
               <SectionHeader
                 description="Attach optional style or character adapters without editing runner JSON."
@@ -4484,18 +4484,18 @@ function ModelProfileDraftForm({
                 title="LoRA stack"
               />
               <div className="flex flex-wrap items-center gap-2">
-                <span className="border border-white/10 px-2 py-1 text-[11px] text-[rgb(170,170,170)]">
+                <span className="rounded-lg border border-[var(--ad-border)] px-2 py-1 text-[11px] text-[var(--ad-text-muted)]">
                   {usableLoraItems.length
                     ? t("{count} LoRA attached", { count: usableLoraItems.length })
                     : t("No LoRA")}
                 </span>
                 {incompleteLoraCount > 0 ? (
-                  <span className="border border-amber-300/30 bg-amber-400/10 px-2 py-1 text-[11px] text-amber-200">
+                  <span className="rounded-lg border border-[var(--ad-yellow-text)]/20 bg-[var(--ad-yellow-bg)] px-2 py-1 text-[11px] text-[var(--ad-yellow-text)]">
                     {t("{count} incomplete LoRA skipped", { count: incompleteLoraCount })}
                   </span>
                 ) : null}
                 <button
-                  className="inline-flex h-7 items-center gap-1 border border-white/10 px-2 text-[11px] text-[rgb(230,230,230)] hover:bg-white/10 disabled:opacity-50"
+                  className="rounded-md inline-flex h-7 items-center gap-1 border border-[var(--ad-border)] px-2 text-[11px] text-[var(--ad-text)] hover:bg-black/[0.04] disabled:opacity-50"
                   disabled={loraItems.length === 0}
                   onClick={clearLoras}
                   type="button"
@@ -4505,13 +4505,13 @@ function ModelProfileDraftForm({
                 </button>
               </div>
             </div>
-            <div className="border border-white/10 bg-black/20">
-              <div className="grid gap-2 border-b border-white/10 p-2 md:grid-cols-[1fr_1.5fr_96px_auto]">
+            <div className="rounded-lg border border-[var(--ad-border)] bg-black/[0.03]">
+              <div className="grid gap-2 border-b border-[var(--ad-border)] p-2 md:grid-cols-[1fr_1.5fr_96px_auto]">
                 <label className="block">
                   <span className="sr-only">{t("LoRA key")}</span>
                   <input
                     aria-label={t("LoRA key")}
-                    className="h-9 w-full min-w-0 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+                    className="rounded-md h-9 w-full min-w-0 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
                     onChange={(event) => setManualLora({ ...manualLora, key: event.target.value })}
                     placeholder={t("LoRA key")}
                     value={manualLora.key}
@@ -4521,7 +4521,7 @@ function ModelProfileDraftForm({
                   <span className="sr-only">{t("LoRA file path")}</span>
                   <input
                     aria-label={t("LoRA file path")}
-                    className="h-9 w-full min-w-0 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+                    className="rounded-md h-9 w-full min-w-0 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
                     onChange={(event) => setManualLora({ ...manualLora, path: event.target.value })}
                     placeholder={t("LoRA file path")}
                     value={manualLora.path}
@@ -4531,14 +4531,14 @@ function ModelProfileDraftForm({
                   <span className="sr-only">{t("Weight")}</span>
                   <input
                     aria-label={t("Weight")}
-                    className="h-9 w-full min-w-0 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+                    className="rounded-md h-9 w-full min-w-0 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
                     onChange={(event) => setManualLora({ ...manualLora, weight: event.target.value })}
                     placeholder={t("Weight")}
                     value={manualLora.weight}
                   />
                 </label>
                 <button
-                  className="inline-flex h-9 items-center justify-center gap-2 border border-white/10 px-3 text-sm text-[rgb(230,230,230)] hover:bg-white/10"
+                  className="rounded-md inline-flex h-9 items-center justify-center gap-2 border border-[var(--ad-border)] px-3 text-sm text-[var(--ad-text)] hover:bg-black/[0.04]"
                   onClick={addManualLora}
                   type="button"
                 >
@@ -4549,12 +4549,12 @@ function ModelProfileDraftForm({
               <div className="max-h-52 overflow-y-auto">
                 {loraItems.map((item, index) => (
                   <div
-                    className="grid gap-2 border-b border-white/5 p-2 text-xs last:border-0 md:grid-cols-[1fr_1.5fr_84px_84px]"
+                    className="rounded-lg grid gap-2 border-b border-[var(--ad-border)] p-2 text-xs last:border-0 md:grid-cols-[1fr_1.5fr_84px_84px]"
                     key={`${item.path || item.key}-${index}`}
                   >
                     <input
                       aria-label={t("LoRA key")}
-                      className="h-8 min-w-0 border border-white/10 bg-black/30 px-2 outline-none focus:border-white/30"
+                      className="rounded-md h-8 min-w-0 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-2 outline-none focus:border-[var(--ad-ink)]"
                       onChange={(event) => {
                         const next = [...loraItems];
                         next[index] = { ...item, key: event.target.value };
@@ -4564,7 +4564,7 @@ function ModelProfileDraftForm({
                     />
                     <input
                       aria-label={t("LoRA file path")}
-                      className="h-8 min-w-0 border border-white/10 bg-black/30 px-2 font-mono outline-none focus:border-white/30"
+                      className="rounded-md h-8 min-w-0 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-2 font-mono outline-none focus:border-[var(--ad-ink)]"
                       onChange={(event) => {
                         const next = [...loraItems];
                         next[index] = { ...item, path: event.target.value };
@@ -4574,7 +4574,7 @@ function ModelProfileDraftForm({
                     />
                     <input
                       aria-label={t("Weight")}
-                      className="h-8 min-w-0 border border-white/10 bg-black/30 px-2 outline-none focus:border-white/30"
+                      className="rounded-md h-8 min-w-0 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-2 outline-none focus:border-[var(--ad-ink)]"
                       onChange={(event) => {
                         const next = [...loraItems];
                         next[index] = { ...item, weight: numberFromText(event.target.value, item.weight) };
@@ -4586,7 +4586,7 @@ function ModelProfileDraftForm({
                       <button
                         aria-label={item.enabled ? t("Disable LoRA") : t("Enable LoRA")}
                         aria-pressed={item.enabled}
-                        className="grid h-8 w-8 place-items-center border border-white/10 text-[rgb(230,230,230)] hover:bg-white/10 aria-pressed:bg-white aria-pressed:text-black"
+                        className="rounded-md grid h-8 w-8 place-items-center border border-[var(--ad-border)] text-[var(--ad-text)] hover:bg-black/[0.04] aria-pressed:bg-[var(--ad-ink)] aria-pressed:text-white"
                         onClick={() => {
                           const next = [...loraItems];
                           next[index] = { ...item, enabled: !item.enabled };
@@ -4599,7 +4599,7 @@ function ModelProfileDraftForm({
                       </button>
                       <button
                         aria-label={t("Remove LoRA")}
-                        className="grid h-8 w-8 place-items-center border border-white/10 text-[rgb(170,170,170)] hover:bg-white/10"
+                        className="rounded-lg grid h-8 w-8 place-items-center border border-[var(--ad-border)] text-[var(--ad-text-muted)] hover:bg-black/[0.04]"
                         onClick={() => setLoras(loraItems.filter((_, childIndex) => childIndex !== index))}
                         title={t("Remove LoRA")}
                         type="button"
@@ -4610,7 +4610,7 @@ function ModelProfileDraftForm({
                   </div>
                 ))}
                 {loraItems.length === 0 ? (
-                  <div className="px-3 py-6 text-center text-xs text-[rgb(170,170,170)]">
+                  <div className="px-3 py-6 text-center text-xs text-[var(--ad-text-muted)]">
                     {t("No LoRA models added. This model will run without LoRA.")}
                   </div>
                 ) : null}
@@ -4618,10 +4618,10 @@ function ModelProfileDraftForm({
             </div>
           </section>
 
-          <section className="border border-white/10 bg-black/20">
+          <section className="rounded-lg border border-[var(--ad-border)] bg-black/[0.03]">
             <button
               aria-expanded={showAdvanced}
-              className="flex w-full items-center justify-between gap-3 px-3 py-3 text-left text-sm font-semibold text-[rgb(230,230,230)] hover:bg-white/5"
+              className="flex w-full items-center justify-between gap-3 px-3 py-3 text-left text-sm font-semibold text-[var(--ad-text)] hover:bg-black/[0.04]"
               onClick={() => setShowAdvanced(!showAdvanced)}
               type="button"
             >
@@ -4629,7 +4629,7 @@ function ModelProfileDraftForm({
               <ChevronRight className={cn("h-4 w-4 transition-transform", showAdvanced && "rotate-90")} />
             </button>
             {showAdvanced ? (
-              <div className="grid gap-3 border-t border-white/10 p-3 md:grid-cols-2">
+              <div className="grid gap-3 border-t border-[var(--ad-border)] p-3 md:grid-cols-2">
                 <FormField
                   label="LoRA Dir"
                   onChange={(value) => onDraftChange({ ...draft, loraModelDir: value })}
@@ -4642,23 +4642,23 @@ function ModelProfileDraftForm({
                   value={draft.loraApplyMode}
                 />
                 <label className="block">
-                  <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">
+                  <span className="mb-1 block text-xs font-medium text-[var(--ad-text-muted)]">
                     {t("Runner Config")}
                   </span>
                   <textarea
-                    className="min-h-20 w-full resize-y border border-white/10 bg-black/30 px-3 py-2 font-mono text-xs outline-none focus:border-white/30"
+                    className="rounded-md min-h-20 w-full resize-y border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 font-mono text-xs outline-none focus:border-[var(--ad-ink)]"
                     onChange={(event) => onDraftChange({ ...draft, runnerConfigJson: event.target.value })}
                     value={draft.runnerConfigJson}
                   />
                 </label>
                 <label className="block">
-                  <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">
+                  <span className="mb-1 block text-xs font-medium text-[var(--ad-text-muted)]">
                     {t("LoRA JSON")}
                   </span>
                   <textarea
                     className={cn(
-                      "min-h-20 w-full resize-y border bg-black/30 px-3 py-2 font-mono text-xs outline-none focus:border-white/30",
-                      hasValidLorasJson ? "border-white/10" : "border-red-400/40",
+                      "rounded-md min-h-20 w-full resize-y border bg-[var(--ad-surface)] px-3 py-2 font-mono text-xs outline-none focus:border-[var(--ad-ink)]",
+                      hasValidLorasJson ? "border-[var(--ad-border)]" : "border-[var(--ad-red-text)]/20",
                     )}
                     onChange={(event) => onDraftChange({ ...draft, lorasJson: event.target.value })}
                     value={draft.lorasJson}
@@ -4670,7 +4670,7 @@ function ModelProfileDraftForm({
         </div>
 
         <aside className="space-y-4 xl:sticky xl:top-20 xl:self-start">
-          <section className="border border-white/10 bg-black/20 p-3">
+          <section className="rounded-lg border border-[var(--ad-border)] bg-black/[0.03] p-3">
             <h3 className="text-sm font-semibold">{t("Draft readiness")}</h3>
             <div className="mt-3 space-y-2">
               {readinessItems.map((item) => (
@@ -4678,7 +4678,7 @@ function ModelProfileDraftForm({
               ))}
             </div>
             <button
-              className="mt-4 inline-flex h-10 w-full items-center justify-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+              className="mt-4 inline-flex h-10 w-full items-center justify-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
               disabled={busy || !canCreate}
               onClick={onCreate}
               type="button"
@@ -4686,11 +4686,11 @@ function ModelProfileDraftForm({
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
               {t("Create Draft")}
             </button>
-            <p className="mt-2 text-xs leading-5 text-[rgb(170,170,170)]">
+            <p className="mt-2 text-xs leading-5 text-[var(--ad-text-muted)]">
               {t("After creation, the draft appears in Drafts for testing and publish.")}
             </p>
           </section>
-          <section className="border border-white/10 bg-black/20 p-3">
+          <section className="rounded-lg border border-[var(--ad-border)] bg-black/[0.03] p-3">
             <h3 className="text-sm font-semibold">{t("Current draft summary")}</h3>
             <div className="mt-3 space-y-3 text-xs">
               <SummaryRow label="Profile" value={draft.profileKey || "-"} />
@@ -4730,22 +4730,22 @@ function WorkflowStep({
   return (
     <div
       className={cn(
-        "border border-white/10 bg-black/20 p-3",
-        active && "border-white/30 bg-white/[0.06]",
+        "rounded-lg border border-[var(--ad-border)] bg-black/[0.03] p-3",
+        active && "border-[var(--ad-ink)] bg-black/[0.04]",
       )}
     >
       <div className="flex items-center gap-3">
         <span
           className={cn(
-            "grid h-7 w-7 place-items-center border border-white/10 font-mono text-xs text-[rgb(170,170,170)]",
-            active && "border-white bg-white text-black",
+            "rounded-lg grid h-7 w-7 place-items-center border border-[var(--ad-border)] font-mono text-xs text-[var(--ad-text-muted)]",
+            active && "border-[var(--ad-ink)] bg-[var(--ad-ink)] text-white",
           )}
         >
           {index}
         </span>
         <div className="min-w-0">
-          <p className="text-sm font-semibold text-[rgb(230,230,230)]">{title}</p>
-          <p className="mt-0.5 truncate text-xs text-[rgb(170,170,170)]">{meta}</p>
+          <p className="text-sm font-semibold text-[var(--ad-text)]">{title}</p>
+          <p className="mt-0.5 truncate text-xs text-[var(--ad-text-muted)]">{meta}</p>
         </div>
       </div>
     </div>
@@ -4765,9 +4765,9 @@ function SectionHeader({
 
   return (
     <div>
-      <p className="text-[11px] font-semibold uppercase text-[rgb(114,113,112)]">{t(eyebrow)}</p>
+      <p className="text-[11px] font-semibold uppercase text-[var(--ad-text-muted)]">{t(eyebrow)}</p>
       <h3 className="mt-1 text-sm font-semibold">{t(title)}</h3>
-      <p className="mt-1 text-xs leading-5 text-[rgb(170,170,170)]">{t(description)}</p>
+      <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">{t(description)}</p>
     </div>
   );
 }
@@ -4775,9 +4775,9 @@ function SectionHeader({
 function TextPanel({ label, value }: { label: string; value: string }) {
   const { t } = useAdminI18n();
   return (
-    <div className="border border-white/10 bg-black/20 p-3">
-      <p className="text-xs font-semibold uppercase text-[rgb(114,113,112)]">{t(label)}</p>
-      <p className="mt-2 max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-sm leading-6 text-[rgb(230,230,230)]">
+    <div className="rounded-lg border border-[var(--ad-border)] bg-black/[0.03] p-3">
+      <p className="text-xs font-semibold uppercase text-[var(--ad-text-muted)]">{t(label)}</p>
+      <p className="mt-2 max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-sm leading-6 text-[var(--ad-text)]">
         {value || "-"}
       </p>
     </div>
@@ -4838,7 +4838,7 @@ function SafeImagePreview({ alt, src }: { alt: string; src: string }) {
   }
 
   return (
-    <div className="grid aspect-[4/5] place-items-center bg-black/30 px-4 text-center text-xs text-[rgb(170,170,170)]">
+    <div className="grid aspect-[4/5] place-items-center bg-[var(--ad-surface)] px-4 text-center text-xs text-[var(--ad-text-muted)]">
       {failed ? t("Asset unavailable") : t("Checking asset")}
     </div>
   );
@@ -4849,15 +4849,15 @@ function ReadinessItem({ label, passed }: { label: string; passed: boolean }) {
     <div className="flex items-center gap-2 text-xs">
       <span
         className={cn(
-          "grid h-5 w-5 place-items-center border",
+          "rounded-lg grid h-5 w-5 place-items-center border",
           passed
-            ? "border-emerald-300/40 bg-emerald-400/10 text-emerald-300"
-            : "border-white/10 text-[rgb(114,113,112)]",
+            ? "border-[var(--ad-green-text)]/20 bg-[var(--ad-green-bg)] text-[var(--ad-green-text)]"
+            : "border-[var(--ad-border)] text-[var(--ad-text-muted)]",
         )}
       >
         {passed ? <Check className="h-3 w-3" /> : null}
       </span>
-      <span className={passed ? "text-[rgb(230,230,230)]" : "text-[rgb(170,170,170)]"}>{label}</span>
+      <span className={passed ? "text-[var(--ad-text)]" : "text-[var(--ad-text-muted)]"}>{label}</span>
     </div>
   );
 }
@@ -4867,8 +4867,8 @@ function SummaryRow({ label, value }: { label: string; value: string }) {
 
   return (
     <div className="grid min-w-0 grid-cols-[76px_minmax(0,1fr)] gap-3 sm:grid-cols-[96px_minmax(0,1fr)]">
-      <span className="text-[rgb(114,113,112)]">{t(label)}</span>
-      <span className="min-w-0 truncate font-mono text-[rgb(230,230,230)]" title={value}>
+      <span className="text-[var(--ad-text-muted)]">{t(label)}</span>
+      <span className="min-w-0 truncate font-mono text-[var(--ad-text)]" title={value}>
         {value}
       </span>
     </div>
@@ -4888,30 +4888,30 @@ function ProfileVerificationPanel({
   return (
     <div
       className={cn(
-        "mt-3 border px-3 py-2 text-xs",
+        "rounded-lg mt-3 border px-3 py-2 text-xs",
         summary.blockedReason
-          ? "border-red-400/30 bg-red-950/20"
-          : "border-white/10 bg-black/20",
+          ? "border-[var(--ad-red-text)]/20 bg-[var(--ad-red-bg)]"
+          : "border-[var(--ad-border)] bg-black/[0.03]",
       )}
     >
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
-        <span className="font-medium text-[rgb(230,230,230)]">{t("Model verification")}</span>
+        <span className="font-medium text-[var(--ad-text)]">{t("Model verification")}</span>
         <Status locale={locale} value={summary.status} tone={summary.tone} />
       </div>
-      <p className="mt-1 break-words leading-5 text-[rgb(170,170,170)]">{t(summary.meta)}</p>
+      <p className="mt-1 break-words leading-5 text-[var(--ad-text-muted)]">{t(summary.meta)}</p>
       {summary.failureMode ? (
-        <p className="mt-1 break-all leading-5 text-red-100">
+        <p className="mt-1 break-all leading-5 text-[var(--ad-red-text)]">
           {t("Failure mode")}: {summary.failureMode}
         </p>
       ) : null}
       {summary.blockedReason ? (
-        <p className="mt-1 leading-5 text-red-100">{t(summary.blockedReason)}</p>
+        <p className="mt-1 leading-5 text-[var(--ad-red-text)]">{t(summary.blockedReason)}</p>
       ) : null}
       {shouldShowComponents && summary.components.length > 0 ? (
         <div className="mt-2 grid gap-1">
           {summary.components.slice(0, compact ? 3 : 8).map((component) => (
             <div className="flex min-w-0 items-center justify-between gap-2" key={component.key}>
-              <span className="min-w-0 truncate text-[rgb(170,170,170)]" title={component.key}>
+              <span className="min-w-0 truncate text-[var(--ad-text-muted)]" title={component.key}>
                 {component.key}
               </span>
               <Status locale={locale} value={component.status} tone={component.tone} />
@@ -4943,11 +4943,11 @@ function RecipeDraftForm({
   const { t } = useAdminI18n();
 
   return (
-    <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+    <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-sm font-semibold">{t("Create Prompt Recipe Draft")}</h2>
         <button
-          className="inline-flex h-9 items-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+          className="inline-flex h-9 items-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
           disabled={busy || !draft.recipeKey.trim() || !draft.label.trim() || !draft.body.trim()}
           onClick={onCreate}
           type="button"
@@ -4982,19 +4982,19 @@ function RecipeDraftForm({
       </div>
       <div className="mt-3 grid gap-3 md:grid-cols-2">
         <label className="block">
-          <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">{t("Body")}</span>
+          <span className="mb-1 block text-xs font-medium text-[var(--ad-text-muted)]">{t("Body")}</span>
           <textarea
-            className="min-h-24 w-full resize-y border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-white/30"
+            className="rounded-md min-h-24 w-full resize-y border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) => onDraftChange({ ...draft, body: event.target.value })}
             value={draft.body}
           />
         </label>
         <label className="block">
-          <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">
+          <span className="mb-1 block text-xs font-medium text-[var(--ad-text-muted)]">
             {t("Negative Base")}
           </span>
           <textarea
-            className="min-h-24 w-full resize-y border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-white/30"
+            className="rounded-md min-h-24 w-full resize-y border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) => onDraftChange({ ...draft, negativeBase: event.target.value })}
             value={draft.negativeBase}
           />
@@ -5017,9 +5017,9 @@ function FormField({
 
   return (
     <label className="block">
-      <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">{t(label)}</span>
+      <span className="mb-1 block text-xs font-medium text-[var(--ad-text-muted)]">{t(label)}</span>
       <input
-        className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+        className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
         onChange={(event) => onChange(event.target.value)}
         value={value}
       />
@@ -5042,9 +5042,9 @@ function FormSelect({
 
   return (
     <label className="block">
-      <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">{t(label)}</span>
+      <span className="mb-1 block text-xs font-medium text-[var(--ad-text-muted)]">{t(label)}</span>
       <select
-        className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+        className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
         onChange={(event) => onChange(event.target.value)}
         value={value}
       >
@@ -5072,9 +5072,9 @@ function SamplerSelect({
 
   return (
     <label className="block">
-      <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">{t(label)}</span>
+      <span className="mb-1 block text-xs font-medium text-[var(--ad-text-muted)]">{t(label)}</span>
       <select
-        className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+        className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
         onChange={(event) => onChange(event.target.value)}
         value={normalizedValue}
       >
@@ -5102,9 +5102,9 @@ function SchedulerSelect({
 
   return (
     <label className="block">
-      <span className="mb-1 block text-xs font-medium text-[rgb(170,170,170)]">{t(label)}</span>
+      <span className="mb-1 block text-xs font-medium text-[var(--ad-text-muted)]">{t(label)}</span>
       <select
-        className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+        className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
         onChange={(event) => onChange(event.target.value)}
         value={normalizedValue}
       >
@@ -5273,22 +5273,22 @@ function UsersView({
 
   return (
     <div className="space-y-5">
-      <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <h2 className="mb-1 text-sm font-semibold">{t("Permission override")}</h2>
-        <p className="mb-3 text-xs text-[rgb(170,170,170)]">
+        <p className="mb-3 text-xs text-[var(--ad-text-muted)]">
           按 user 精确 grant / revoke / clear 单个 permission key（不动 role）。admin only，写审计。
         </p>
         <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_140px_auto]">
           <input
             aria-label={t("Permission user ID")}
-            className="h-10 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) => setPermissionForm({ ...permissionForm, userId: event.target.value })}
             placeholder={t("User ID")}
             value={permissionForm.userId}
           />
           <select
             aria-label={t("Permission key")}
-            className="h-10 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) =>
               setPermissionForm({ ...permissionForm, permissionKey: event.target.value })
             }
@@ -5302,7 +5302,7 @@ function UsersView({
           </select>
           <select
             aria-label={t("Permission effect")}
-            className="h-10 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) =>
               setPermissionForm({
                 ...permissionForm,
@@ -5318,7 +5318,7 @@ function UsersView({
             ))}
           </select>
           <button
-            className="inline-flex h-10 items-center justify-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+            className="inline-flex h-10 items-center justify-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
             disabled={!permissionForm.userId.trim()}
             onClick={() => {
               const targetUserId = permissionForm.userId.trim();
@@ -5398,7 +5398,7 @@ function BillingView({
 
   return (
     <div className="space-y-5">
-      <div className="grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-3">
+      <div className="rounded-lg grid gap-px overflow-hidden border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-3">
         <Metric
           label="Net coins (window)"
           value={reconciliation.totals.net}
@@ -5435,25 +5435,25 @@ function BillingView({
         rows={subscriptions}
         title="Subscriptions"
       />
-      <div className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+      <div className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_140px_auto]">
           <input
             aria-label={t("Adjustment user ID")}
-            className="h-10 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) => setAdjustment({ ...adjustment, userId: event.target.value })}
             placeholder={t("User ID")}
             value={adjustment.userId}
           />
           <input
             aria-label={t("Adjustment delta")}
-            className="h-10 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
             inputMode="numeric"
             onChange={(event) => setAdjustment({ ...adjustment, delta: event.target.value })}
             placeholder={t("Delta")}
             value={adjustment.delta}
           />
           <button
-            className="inline-flex h-10 items-center justify-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+            className="inline-flex h-10 items-center justify-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
             disabled={!adjustment.userId || !Number.isFinite(Number(adjustment.delta))}
             onClick={() => {
               const userId = adjustment.userId.trim();
@@ -5508,16 +5508,16 @@ function PricingView({
 
   return (
     <div className="space-y-6">
-      <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-sm font-semibold">{t("Create Pricing Rule Draft")}</h2>
-            <p className="mt-1 text-xs text-[rgb(170,170,170)]">
+            <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
               改价走 draft → publish 版本化发布；发布即归档同 mode 旧 active，可一键 rollback。
             </p>
           </div>
           <button
-            className="inline-flex h-9 items-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+            className="inline-flex h-9 items-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
             disabled={busy || !canCreatePricingRule(draft)}
             onClick={onCreate}
             type="button"
@@ -5698,7 +5698,7 @@ function DeadLetterView({
         return status === "failed" || status === "blocked" ? (
           <FailureReason code={stringValue(row.errorCode)} />
         ) : (
-          <span className="text-[rgb(170,170,170)]">—</span>
+          <span className="text-[var(--ad-text-muted)]">—</span>
         );
       },
     },
@@ -5763,8 +5763,8 @@ function DeadLetterView({
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-3 border border-white/10 bg-[rgb(18,18,18)] px-4 py-3">
-        <label className="flex items-center gap-2 text-xs text-[rgb(170,170,170)]">
+      <div className="rounded-lg flex flex-wrap items-center gap-3 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-4 py-3">
+        <label className="flex items-center gap-2 text-xs text-[var(--ad-text-muted)]">
           <input
             aria-label={t("Select all dead-letter jobs")}
             checked={allSelected}
@@ -5773,12 +5773,12 @@ function DeadLetterView({
           />
           {t("Select all")}
         </label>
-        <span className="text-xs text-[rgb(170,170,170)]">
+        <span className="text-xs text-[var(--ad-text-muted)]">
           {t("{count} selected", { count: selectedIds.length })}
         </span>
         <div className="ml-auto flex gap-2">
           <button
-            className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm text-[rgb(230,230,230)] hover:bg-white/10 disabled:opacity-40"
+            className="rounded-md inline-flex h-9 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm text-[var(--ad-text)] hover:bg-black/[0.04] disabled:opacity-40"
             disabled={selectedIds.length === 0}
             onClick={() =>
               openAction({
@@ -5800,7 +5800,7 @@ function DeadLetterView({
             {t("Requeue selected")}
           </button>
           <button
-            className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm text-red-200 hover:bg-white/10 disabled:opacity-40"
+            className="rounded-md inline-flex h-9 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm text-[var(--ad-red-text)] hover:bg-black/[0.04] disabled:opacity-40"
             disabled={selectedIds.length === 0}
             onClick={() =>
               openAction({
@@ -5839,11 +5839,11 @@ function AnalyticsView({ data }: { data: AnalyticsData }) {
 
   return (
     <div className="space-y-5">
-      <p className="text-xs text-[rgb(170,170,170)]">
+      <p className="text-xs text-[var(--ad-text-muted)]">
         {t("Window")} {compactDate(data.window.from, locale)} → {compactDate(data.window.to, locale)} ·{" "}
         {t("activity funnel")}
       </p>
-      <div className="grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-4">
+      <div className="rounded-lg grid gap-px overflow-hidden border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
         <Metric label="Signups" value={data.funnel.signups} meta="new users" />
         <Metric label="Activated" value={data.funnel.activatedUsers} meta="generated ≥1" />
         <Metric label="Paying" value={data.funnel.payingUsers} meta="subscribed" />
@@ -5853,7 +5853,7 @@ function AnalyticsView({ data }: { data: AnalyticsData }) {
           meta="paying / signups"
         />
       </div>
-      <div className="grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-4">
+      <div className="rounded-lg grid gap-px overflow-hidden border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
         <Metric
           label="Generations"
           value={data.generation.total}
@@ -5882,7 +5882,7 @@ function RiskView({ data }: { data: AbuseData }) {
 
   return (
     <div className="space-y-5">
-      <p className="text-xs text-[rgb(170,170,170)]">
+      <p className="text-xs text-[var(--ad-text-muted)]">
         {t("Window")} {compactDate(data.window.from, locale)} → {compactDate(data.window.to, locale)} · 只读告警信号，处置走
         Users 封禁 / Billing 调整。多账号聚类基于 anonymousId，清 cookie / 无痕可绕，非完备。
       </p>
@@ -5910,7 +5910,7 @@ function ProviderOpsView({ data }: { data: ProviderOpsData }) {
 
   return (
     <div className="space-y-4">
-      <p className="text-xs text-[rgb(170,170,170)]">
+      <p className="text-xs text-[var(--ad-text-muted)]">
         {t("Window")} {compactDate(data.window.from, locale)} → {compactDate(data.window.to, locale)} · latency = completed −
         created（仅 completed 计入）
       </p>
@@ -5991,14 +5991,14 @@ function ContentView({
 
   return (
     <div className="space-y-5">
-      <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <h2 className="text-sm font-semibold">{t("Featured curation")}</h2>
-        <p className="mt-1 text-xs text-[rgb(170,170,170)]">
+        <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
           逗号分隔的 character id；仅 public+approved 会被保留，公开 feed 优先展示。
         </p>
         <div className="mt-3 grid gap-3 md:grid-cols-[1fr_220px_260px_auto]">
           <input
-            className="h-10 w-full border border-white/10 bg-black/30 px-3 font-mono text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 font-mono text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) => {
               setFeaturedInput(event.target.value);
               setConfirmation("");
@@ -6007,20 +6007,20 @@ function ContentView({
             value={featuredInput}
           />
           <input
-            className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) => setReason(event.target.value)}
             placeholder={t("Reason (≥3 chars)")}
             value={reason}
           />
           <input
             aria-label={t("Featured confirmation")}
-            className="h-10 w-full border border-white/10 bg-black/30 px-3 font-mono text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 font-mono text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) => setConfirmation(event.target.value)}
             placeholder={expectedConfirmation === "CLEAR" ? t("Type CLEAR") : t("Type featured IDs")}
             value={confirmation}
           />
           <button
-            className="inline-flex h-10 items-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+            className="inline-flex h-10 items-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
             disabled={!canSaveFeatured}
             onClick={() => void saveFeatured()}
             type="button"
@@ -6029,7 +6029,7 @@ function ContentView({
             {t("Save featured")}
           </button>
         </div>
-        {err ? <p className="mt-2 text-xs text-red-300">{err}</p> : null}
+        {err ? <p className="mt-2 text-xs text-[var(--ad-red-text)]">{err}</p> : null}
       </section>
       <DataTable columns={["id", "name", "visibility", "status"]} rows={featured} title="Currently featured" />
       <DataTable
@@ -6137,43 +6137,43 @@ function PromoView({
 
   return (
     <div className="space-y-5">
-      <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <h2 className="text-sm font-semibold">{t("Create redeem code")}</h2>
-        <p className="mt-1 text-xs text-[rgb(170,170,170)]">明文 code 仅用于生成 hash，不入库、不回显、不入审计。</p>
+        <p className="mt-1 text-xs text-[var(--ad-text-muted)]">明文 code 仅用于生成 hash，不入库、不回显、不入审计。</p>
         <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-6">
           <input
-            className="h-10 w-full border border-white/10 bg-black/30 px-3 font-mono text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 font-mono text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) => setCode(event.target.value)}
             placeholder={t("Code (≥4)")}
             value={code}
           />
           <input
-            className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) => setDreamcoins(event.target.value)}
             placeholder={t("Dreamcoins")}
             value={dreamcoins}
           />
           <input
-            className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) => setMaxRedemptions(event.target.value)}
             placeholder={t("Max uses (blank=∞)")}
             value={maxRedemptions}
           />
           <input
-            className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) => setReason(event.target.value)}
             placeholder={t("Reason (≥3)")}
             value={reason}
           />
           <input
             aria-label={t("Redeem code confirmation")}
-            className="h-10 w-full border border-white/10 bg-black/30 px-3 font-mono text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 font-mono text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) => setConfirmation(event.target.value)}
             placeholder={t("Type code to confirm")}
             value={confirmation}
           />
           <button
-            className="inline-flex h-10 items-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+            className="inline-flex h-10 items-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
             disabled={!canCreateCode}
             onClick={() => void createCode()}
             type="button"
@@ -6182,7 +6182,7 @@ function PromoView({
             {t("Create")}
           </button>
         </div>
-        {err ? <p className="mt-2 text-xs text-red-300">{err}</p> : null}
+        {err ? <p className="mt-2 text-xs text-[var(--ad-red-text)]">{err}</p> : null}
       </section>
       <DataTable
         actions={(row) => {
@@ -6261,16 +6261,16 @@ function PlaintextAccessPanel() {
     plaintextTargetTypeOptions.find((option) => option.value === draft.targetType)?.fields ?? "prompt";
 
   return (
-    <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+    <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <form className="space-y-4" onSubmit={submitPlaintextView} ref={formRef}>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
-            <h2 className="text-base font-semibold text-[rgb(245,245,245)]">{t("Plaintext access")}</h2>
-            <p className="mt-1 text-xs text-[rgb(170,170,170)]">
+            <h2 className="text-base font-semibold text-[var(--ad-text)]">{t("Plaintext access")}</h2>
+            <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
               {t("Requires active support consent or legal hold.")}
             </p>
           </div>
-          <span className="inline-flex items-center gap-2 border border-white/10 px-3 py-1 text-xs text-[rgb(170,170,170)]">
+          <span className="rounded-lg inline-flex items-center gap-2 border border-[var(--ad-border)] px-3 py-1 text-xs text-[var(--ad-text-muted)]">
             <ShieldCheck className="h-3.5 w-3.5" />
             {t("Audit logged")}
           </span>
@@ -6278,10 +6278,10 @@ function PlaintextAccessPanel() {
 
         <div className="grid gap-3 lg:grid-cols-[180px_1fr_1fr]">
           <label className="flex min-w-0 flex-col gap-1">
-            <span className="text-xs font-semibold text-[rgb(170,170,170)]">{t("Target type")}</span>
+            <span className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Target type")}</span>
             <select
               aria-label={t("Target type")}
-              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm text-[rgb(230,230,230)] outline-none focus:border-white/30"
+              className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
               name="targetType"
               onChange={(event) =>
                 setDraft((current) => ({
@@ -6292,17 +6292,17 @@ function PlaintextAccessPanel() {
               value={draft.targetType}
             >
               {plaintextTargetTypeOptions.map((option) => (
-                <option className="bg-[rgb(18,18,18)] text-white" key={option.value} value={option.value}>
+                <option key={option.value} value={option.value}>
                   {t(option.label)}
                 </option>
               ))}
             </select>
           </label>
           <label className="flex min-w-0 flex-col gap-1">
-            <span className="text-xs font-semibold text-[rgb(170,170,170)]">{t("Plaintext target ID")}</span>
+            <span className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Plaintext target ID")}</span>
             <input
               aria-label={t("Plaintext target ID")}
-              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm text-[rgb(230,230,230)] outline-none focus:border-white/30"
+              className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
               name="targetId"
               onChange={(event) => setDraft((current) => ({ ...current, targetId: event.target.value }))}
               placeholder="job_or_media_id"
@@ -6310,10 +6310,10 @@ function PlaintextAccessPanel() {
             />
           </label>
           <label className="flex min-w-0 flex-col gap-1">
-            <span className="text-xs font-semibold text-[rgb(170,170,170)]">{t("Consent ticket ID")}</span>
+            <span className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Consent ticket ID")}</span>
             <input
               aria-label={t("Consent ticket ID")}
-              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm text-[rgb(230,230,230)] outline-none focus:border-white/30"
+              className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
               name="ticketId"
               onChange={(event) => setDraft((current) => ({ ...current, ticketId: event.target.value }))}
               placeholder="SUP-..."
@@ -6324,10 +6324,10 @@ function PlaintextAccessPanel() {
 
         <div className="grid gap-3 lg:grid-cols-[1fr_1fr_1.5fr]">
           <label className="flex min-w-0 flex-col gap-1">
-            <span className="text-xs font-semibold text-[rgb(170,170,170)]">{t("Legal hold ID")}</span>
+            <span className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Legal hold ID")}</span>
             <input
               aria-label={t("Legal hold ID")}
-              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm text-[rgb(230,230,230)] outline-none focus:border-white/30"
+              className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
               name="legalHoldId"
               onChange={(event) => setDraft((current) => ({ ...current, legalHoldId: event.target.value }))}
               placeholder="hold_id"
@@ -6335,10 +6335,10 @@ function PlaintextAccessPanel() {
             />
           </label>
           <label className="flex min-w-0 flex-col gap-1">
-            <span className="text-xs font-semibold text-[rgb(170,170,170)]">{t("Plaintext confirmation")}</span>
+            <span className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Plaintext confirmation")}</span>
             <input
               aria-label={t("Plaintext confirmation")}
-              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm text-[rgb(230,230,230)] outline-none focus:border-white/30"
+              className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
               name="confirmation"
               onChange={(event) => setDraft((current) => ({ ...current, confirmation: event.target.value }))}
               placeholder={t("Type target ID")}
@@ -6346,10 +6346,10 @@ function PlaintextAccessPanel() {
             />
           </label>
           <label className="flex min-w-0 flex-col gap-1">
-            <span className="text-xs font-semibold text-[rgb(170,170,170)]">{t("Plaintext reason")}</span>
+            <span className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Plaintext reason")}</span>
             <input
               aria-label={t("Plaintext reason")}
-              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm text-[rgb(230,230,230)] outline-none focus:border-white/30"
+              className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
               name="reason"
               onChange={(event) => setDraft((current) => ({ ...current, reason: event.target.value }))}
               placeholder={t("Reason for audit")}
@@ -6360,7 +6360,7 @@ function PlaintextAccessPanel() {
 
         <div className="flex flex-wrap items-center gap-3">
           <button
-            className="inline-flex h-10 items-center gap-2 bg-white px-4 text-sm font-semibold text-black disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex h-10 items-center gap-2 bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
             disabled={!canSubmit}
             onClick={(event) => {
               event.preventDefault();
@@ -6371,7 +6371,7 @@ function PlaintextAccessPanel() {
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
             {loading ? t("Viewing…") : t("View plaintext")}
           </button>
-          <span className="text-xs text-[rgb(114,113,112)]">
+          <span className="text-xs text-[var(--ad-text-muted)]">
             {t("Fields available: {fields}", { fields: fieldSummary })}
           </span>
           {status ? (
@@ -6379,7 +6379,7 @@ function PlaintextAccessPanel() {
               aria-live="polite"
               className={cn(
                 "text-xs font-semibold",
-                status.tone === "good" ? "text-emerald-300" : "text-red-300",
+                status.tone === "good" ? "text-[var(--ad-green-text)]" : "text-[var(--ad-red-text)]",
               )}
               data-testid="admin-plaintext-status"
               role="status"
@@ -6392,28 +6392,28 @@ function PlaintextAccessPanel() {
 
       {result ? (
         <div
-          className="mt-4 space-y-3 border border-white/10 bg-black/20 p-3"
+          className="rounded-lg mt-4 space-y-3 border border-[var(--ad-border)] bg-black/[0.03] p-3"
           data-testid="admin-plaintext-result"
         >
-          <div className="grid gap-2 text-xs text-[rgb(170,170,170)] md:grid-cols-3">
+          <div className="grid gap-2 text-xs text-[var(--ad-text-muted)] md:grid-cols-3">
             <span>
-              {t("Target")}: <code className="text-[rgb(230,230,230)]">{result.target.id}</code>
+              {t("Target")}: <code className="text-[var(--ad-text)]">{result.target.id}</code>
             </span>
             <span>
-              {t("Owner")}: <code className="text-[rgb(230,230,230)]">{result.target.ownerId}</code>
+              {t("Owner")}: <code className="text-[var(--ad-text)]">{result.target.ownerId}</code>
             </span>
             <span>
               {t("Authorization")}:{" "}
-              <code className="text-[rgb(230,230,230)]">
+              <code className="text-[var(--ad-text)]">
                 {result.authorization.legalHoldId ?? result.authorization.ticketId ?? "-"}
               </code>
             </span>
           </div>
           <div className="grid gap-3 md:grid-cols-2">
             {Object.entries(result.plaintext).map(([field, value]) => (
-              <div className="border border-white/10 bg-black/20 p-3" key={field}>
-                <div className="text-xs font-semibold uppercase text-[rgb(170,170,170)]">{field}</div>
-                <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap break-words text-sm leading-6 text-[rgb(245,245,245)]">{plaintextValueText(value)}</pre>
+              <div className="rounded-lg border border-[var(--ad-border)] bg-black/[0.03] p-3" key={field}>
+                <div className="text-xs font-semibold uppercase text-[var(--ad-text-muted)]">{field}</div>
+                <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap break-words text-sm leading-6 text-[var(--ad-text)]">{plaintextValueText(value)}</pre>
               </div>
             ))}
           </div>
@@ -6540,23 +6540,23 @@ function SupportRequestsView({
 
   return (
     <div className="space-y-4">
-      <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <div className="grid gap-3 xl:grid-cols-[1fr_160px_160px_160px_300px] xl:items-end">
           <label className="flex min-w-0 flex-col gap-1">
-            <span className="text-xs font-semibold text-[rgb(170,170,170)]">{t("Support search")}</span>
+            <span className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Support search")}</span>
             <input
               aria-label={t("Support search")}
-              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm text-[rgb(230,230,230)] outline-none focus:border-white/30"
+              className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
               onChange={(event) => setFilters((current) => ({ ...current, query: event.target.value }))}
               placeholder={t("Ticket, user, subject, or notes")}
               value={filters.query}
             />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-xs font-semibold text-[rgb(170,170,170)]">{t("Status")}</span>
+            <span className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Status")}</span>
             <select
               aria-label={t("Support status")}
-              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm text-[rgb(230,230,230)] outline-none focus:border-white/30"
+              className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
               onChange={(event) =>
                 setFilters((current) => ({
                   ...current,
@@ -6566,17 +6566,17 @@ function SupportRequestsView({
               value={filters.status}
             >
               {supportStatusOptions.map((option) => (
-                <option className="bg-[rgb(18,18,18)] text-white" key={option.value} value={option.value}>
+                <option key={option.value} value={option.value}>
                   {option.value === "all" || option.value === "active" ? t(option.label) : valueLabel(option.label)}
                 </option>
               ))}
             </select>
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-xs font-semibold text-[rgb(170,170,170)]">{t("SLA")}</span>
+            <span className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("SLA")}</span>
             <select
               aria-label={t("Support SLA")}
-              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm text-[rgb(230,230,230)] outline-none focus:border-white/30"
+              className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
               onChange={(event) =>
                 setFilters((current) => ({
                   ...current,
@@ -6586,17 +6586,17 @@ function SupportRequestsView({
               value={filters.sla}
             >
               {supportSlaOptions.map((option) => (
-                <option className="bg-[rgb(18,18,18)] text-white" key={option.value} value={option.value}>
+                <option key={option.value} value={option.value}>
                   {option.value === "all" ? t(option.label) : valueLabel(option.label)}
                 </option>
               ))}
             </select>
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-xs font-semibold text-[rgb(170,170,170)]">{t("Category")}</span>
+            <span className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Category")}</span>
             <input
               aria-label={t("Support category")}
-              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm text-[rgb(230,230,230)] outline-none focus:border-white/30"
+              className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
               onChange={(event) => setFilters((current) => ({ ...current, category: event.target.value }))}
               placeholder="generation"
               value={filters.category}
@@ -6609,17 +6609,17 @@ function SupportRequestsView({
               void saveCurrentView();
             }}
           >
-            <span className="text-xs font-semibold text-[rgb(170,170,170)]">{t("Saved view")}</span>
+            <span className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Saved view")}</span>
             <div className="flex gap-2">
               <input
                 aria-label={t("Support saved view label")}
-                className="h-10 min-w-0 flex-1 border border-white/10 bg-black/30 px-3 text-sm text-[rgb(230,230,230)] outline-none focus:border-white/30"
+                className="rounded-md h-10 min-w-0 flex-1 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
                 onChange={(event) => setSavedViewLabel(event.target.value)}
                 placeholder={t("Saved view label")}
                 value={savedViewLabel}
               />
               <button
-                className="inline-flex h-10 shrink-0 items-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+                className="inline-flex h-10 shrink-0 items-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
                 disabled={!savedViewLabel.trim() || savingView}
                 type="submit"
               >
@@ -6630,14 +6630,14 @@ function SupportRequestsView({
           </form>
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          <span className="inline-flex items-center gap-2 text-xs font-semibold text-[rgb(170,170,170)]">
+          <span className="inline-flex items-center gap-2 text-xs font-semibold text-[var(--ad-text-muted)]">
             <SlidersHorizontal className="h-4 w-4" />
             {t("Saved views")}
           </span>
           {savedViews.map((view) => (
-            <span className="inline-flex h-8 items-center border border-white/10" key={view.id}>
+            <span className="rounded-md inline-flex h-8 items-center border border-[var(--ad-border)]" key={view.id}>
               <button
-                className="h-full px-3 text-xs text-[rgb(230,230,230)] hover:bg-white/10"
+                className="h-full px-3 text-xs text-[var(--ad-text)] hover:bg-black/[0.04]"
                 onClick={() => applySavedView(view)}
                 type="button"
               >
@@ -6645,7 +6645,7 @@ function SupportRequestsView({
               </button>
               <button
                 aria-label={t("Delete saved view {label}", { label: view.label })}
-                className="flex h-full w-8 items-center justify-center border-l border-white/10 text-[rgb(170,170,170)] hover:text-white"
+                className="flex h-full w-8 items-center justify-center border-l border-[var(--ad-border)] text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]"
                 onClick={() => void deleteSavedView(view)}
                 title={t("Delete saved view {label}", { label: view.label })}
                 type="button"
@@ -6654,24 +6654,24 @@ function SupportRequestsView({
               </button>
             </span>
           ))}
-          {savedViewsLoading ? <span className="text-xs text-[rgb(170,170,170)]">{t("Loading…")}</span> : null}
+          {savedViewsLoading ? <span className="text-xs text-[var(--ad-text-muted)]">{t("Loading…")}</span> : null}
           {!savedViewsLoading && savedViews.length === 0 ? (
-            <span className="text-xs text-[rgb(110,110,110)]">{t("No saved views.")}</span>
+            <span className="text-xs text-[var(--ad-text-muted)]">{t("No saved views.")}</span>
           ) : null}
           {activeFilterCount > 0 ? (
             <button
-              className="h-8 border border-white/10 px-3 text-xs text-[rgb(230,230,230)] hover:border-white/30"
+              className="rounded-lg h-8 border border-[var(--ad-border)] px-3 text-xs text-[var(--ad-text)] hover:border-[var(--ad-ink)]"
               onClick={() => setFilters(defaultSupportRequestFilters)}
               type="button"
             >
               {t("Reset filters")}
             </button>
           ) : null}
-          <span className="text-xs text-[rgb(114,113,112)]">
+          <span className="text-xs text-[var(--ad-text-muted)]">
             {t("{visible}/{total} requests", { visible: visibleRows.length, total: rows.length })}
           </span>
         </div>
-        {savedViewError ? <p className="mt-2 text-xs text-red-300">{savedViewError}</p> : null}
+        {savedViewError ? <p className="mt-2 text-xs text-[var(--ad-red-text)]">{savedViewError}</p> : null}
       </section>
 
       <PlaintextAccessPanel />
@@ -6853,7 +6853,7 @@ function ApprovalsView({
 }) {
   return (
     <div className="space-y-4">
-      <p className="text-xs text-[rgb(170,170,170)]">
+      <p className="text-xs text-[var(--ad-text-muted)]">
         高危操作复核队列。审批人须 ≠ 发起人，且持该请求声明的 permission key（不变量在服务端强制）。
       </p>
       <DataTable
@@ -6927,7 +6927,7 @@ function ChatOpsView({
   const o = overview ?? {};
   return (
     <div className="space-y-5">
-      <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <div className="flex items-center gap-2">
@@ -6938,45 +6938,45 @@ function ChatOpsView({
                 tone={configured ? "good" : "warn"}
               />
             </div>
-            <p className="mt-1 text-xs text-[rgb(170,170,170)]">
+            <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
               {configured
                 ? t("Internal admin API is reachable.")
                 : t(chatOpsDiagnosticText(diagnostics))}
             </p>
           </div>
-          <div className="grid min-w-[220px] gap-1 text-xs text-[rgb(170,170,170)]">
+          <div className="grid min-w-[220px] gap-1 text-xs text-[var(--ad-text-muted)]">
             <div className="flex justify-between gap-4">
               <span>{t("CHAT_SERVICE_URL")}</span>
-              <span className="font-mono text-[rgb(230,230,230)]">
+              <span className="font-mono text-[var(--ad-text)]">
                 {diagnostics?.serviceUrlConfigured ? t("configured") : t("missing")}
               </span>
             </div>
             {diagnostics?.status ? (
               <div className="flex justify-between gap-4">
                 <span>{t("HTTP status")}</span>
-                <span className="font-mono text-[rgb(230,230,230)]">{diagnostics.status}</span>
+                <span className="font-mono text-[var(--ad-text)]">{diagnostics.status}</span>
               </div>
             ) : null}
           </div>
         </div>
       </section>
 
-      <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <div className="grid gap-3 lg:grid-cols-[1fr_1fr_160px_160px]">
           <input
-            className="h-10 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) => onFiltersChange({ ...filters, userId: event.target.value })}
             placeholder={t("User ID")}
             value={filters.userId}
           />
           <input
-            className="h-10 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) => onFiltersChange({ ...filters, characterId: event.target.value })}
             placeholder={t("Character ID")}
             value={filters.characterId}
           />
           <select
-            className="h-10 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) => onFiltersChange({ ...filters, sessionStatus: event.target.value })}
             value={filters.sessionStatus}
           >
@@ -6987,7 +6987,7 @@ function ChatOpsView({
             ))}
           </select>
           <select
-            className="h-10 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) => onFiltersChange({ ...filters, limit: event.target.value })}
             value={filters.limit}
           >
@@ -7000,7 +7000,7 @@ function ChatOpsView({
         </div>
         <div className="mt-3 grid gap-3 lg:grid-cols-[160px_160px_1fr_1fr_auto_auto]">
           <select
-            className="h-10 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) => onFiltersChange({ ...filters, eventStatus: event.target.value })}
             value={filters.eventStatus}
           >
@@ -7011,7 +7011,7 @@ function ChatOpsView({
             ))}
           </select>
           <select
-            className="h-10 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) => onFiltersChange({ ...filters, eventLayer: event.target.value })}
             value={filters.eventLayer}
           >
@@ -7022,19 +7022,19 @@ function ChatOpsView({
             ))}
           </select>
           <input
-            className="h-10 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) => onFiltersChange({ ...filters, policyCode: event.target.value })}
             placeholder={t("Policy code")}
             value={filters.policyCode}
           />
           <input
-            className="h-10 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) => onFiltersChange({ ...filters, targetId: event.target.value })}
             placeholder={t("Target ID")}
             value={filters.targetId}
           />
           <button
-            className="inline-flex h-10 items-center justify-center gap-2 border border-white/10 px-3 text-sm text-[rgb(230,230,230)] hover:bg-white/10"
+            className="rounded-md inline-flex h-10 items-center justify-center gap-2 border border-[var(--ad-border)] px-3 text-sm text-[var(--ad-text)] hover:bg-black/[0.04]"
             onClick={() => onApplyFilters(filters)}
             type="button"
           >
@@ -7042,7 +7042,7 @@ function ChatOpsView({
             {t("Apply")}
           </button>
           <button
-            className="inline-flex h-10 items-center justify-center gap-2 border border-white/10 px-3 text-sm text-[rgb(170,170,170)] hover:bg-white/10"
+            className="rounded-md inline-flex h-10 items-center justify-center gap-2 border border-[var(--ad-border)] px-3 text-sm text-[var(--ad-text-muted)] hover:bg-black/[0.04]"
             onClick={() => {
               onFiltersChange(defaultChatOpsFilters);
               onApplyFilters(defaultChatOpsFilters);
@@ -7055,13 +7055,13 @@ function ChatOpsView({
         </div>
       </section>
 
-      <div className="grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-4">
+      <div className="rounded-lg grid gap-px overflow-hidden border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
         <Metric label="Active sessions" value={metricNumber(o.activeSessions)} meta="status=active" />
         <Metric label="Archived" value={metricNumber(o.archivedSessions)} meta="sessions" />
         <Metric label="Messages 24h" value={metricNumber(o.messages24h)} meta="last 24h" />
         <Metric label="Moderation 24h" value={metricNumber(o.moderationEvents24h)} meta="events" />
       </div>
-      <div className="grid gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-4">
+      <div className="rounded-lg grid gap-px overflow-hidden border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
         <Metric label="Messages used today" value={metricNumber(o.messagesUsedToday)} meta="quota ledger" />
         <Metric label="Users at daily limit" value={metricNumber(o.usersAtDailyLimit)} meta="free tier" />
         <Metric label="Unlimited users" value={metricNumber(o.unlimitedEntitlements)} meta="entitlements" />
@@ -7163,22 +7163,22 @@ function DataTable({
   const { column: columnLabel, locale, t } = useAdminI18n();
 
   return (
-    <section className="overflow-hidden border border-white/10 bg-[rgb(18,18,18)]">
-      <div className="flex h-11 items-center justify-between border-b border-white/10 px-4">
+    <section className="rounded-lg overflow-hidden border border-[var(--ad-border)] bg-[var(--ad-surface)]">
+      <div className="flex h-11 items-center justify-between border-b border-[var(--ad-border)] px-4">
         <h2 className="text-sm font-semibold">{t(title)}</h2>
-        <span className="text-xs text-[rgb(170,170,170)]">{rows.length}</span>
+        <span className="text-xs text-[var(--ad-text-muted)]">{rows.length}</span>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[860px] border-collapse text-left text-sm">
-          <thead className="bg-black/20 text-[11px] uppercase text-[rgb(170,170,170)]">
+          <thead className="bg-black/[0.03] text-[11px] uppercase text-[var(--ad-text-muted)]">
             <tr>
               {columns.map((column) => (
-                <th key={column} className="border-b border-white/10 px-3 py-2 font-semibold">
+                <th key={column} className="border-b border-[var(--ad-border)] px-3 py-2 font-semibold">
                   {columnLabel(column)}
                 </th>
               ))}
               {actions ? (
-                <th className="sticky right-0 z-10 border-b border-l border-white/10 bg-black/30 px-3 py-2 font-semibold">
+                <th className="sticky right-0 z-10 border-b border-l border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 font-semibold">
                   {t("Actions")}
                 </th>
               ) : null}
@@ -7186,14 +7186,14 @@ function DataTable({
           </thead>
           <tbody>
             {rows.map((row, index) => (
-              <tr key={`${stringValue(row.id) || stringValue(row.key) || title}-${index}`} className="border-b border-white/5 last:border-0">
+              <tr key={`${stringValue(row.id) || stringValue(row.key) || title}-${index}`} className="rounded-lg border-b border-[var(--ad-border)] last:border-0">
                 {columns.map((column) => (
-                  <td key={column} className="max-w-[260px] px-3 py-2 align-top text-[rgb(230,230,230)]">
+                  <td key={column} className="max-w-[260px] px-3 py-2 align-top text-[var(--ad-text)]">
                     {renderCell(row[column], locale)}
                   </td>
                 ))}
                 {actions ? (
-                  <td className="sticky right-0 border-l border-white/10 bg-[rgb(18,18,18)] px-3 py-2 align-top shadow-[-12px_0_18px_rgba(0,0,0,0.22)]">
+                  <td className="sticky right-0 border-l border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 align-top shadow-[-12px_0_18px_rgba(0,0,0,0.22)]">
                     {actions(row)}
                   </td>
                 ) : null}
@@ -7201,7 +7201,7 @@ function DataTable({
             ))}
             {rows.length === 0 ? (
               <tr>
-                <td className="px-3 py-8 text-center text-sm text-[rgb(170,170,170)]" colSpan={columns.length + (actions ? 1 : 0)}>
+                <td className="px-3 py-8 text-center text-sm text-[var(--ad-text-muted)]" colSpan={columns.length + (actions ? 1 : 0)}>
                   {t("Empty")}
                 </td>
               </tr>
@@ -7230,21 +7230,21 @@ function Metric({
   const { t } = useAdminI18n();
   const body = (
     <>
-      <p className="text-xs font-medium text-[rgb(170,170,170)]">{t(label)}</p>
+      <p className="text-xs font-medium text-[var(--ad-text-muted)]">{t(label)}</p>
       <p className="mt-2 text-2xl font-semibold">{value}</p>
-      <p className="mt-1 text-xs text-[rgb(114,113,112)]">{t(meta)}</p>
+      <p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t(meta)}</p>
     </>
   );
 
   if (href) {
     return (
-      <Link className="block bg-[rgb(18,18,18)] p-4 transition-colors hover:bg-white/[0.07]" href={href}>
+      <Link className="block bg-[var(--ad-surface)] p-4 transition-colors hover:bg-black/[0.04]" href={href}>
         {body}
       </Link>
     );
   }
 
-  return <div className="bg-[rgb(18,18,18)] p-4">{body}</div>;
+  return <div className="bg-[var(--ad-surface)] p-4">{body}</div>;
 }
 
 // SPEC: Dashboard "常用任务" launcher card — icon + label + a chevron "go" affordance.
@@ -7253,14 +7253,14 @@ function TaskCard({ href, icon: Icon, label }: { href: string; icon: LucideIcon;
 
   return (
     <Link
-      className="group flex items-center gap-3 border border-white/10 bg-[rgb(18,18,18)] p-4 transition-colors hover:border-white/20 hover:bg-white/[0.07]"
+      className="rounded-lg group flex items-center gap-3 border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 transition-colors hover:border-[var(--ad-border)] hover:bg-black/[0.04]"
       href={href}
     >
-      <span className="flex h-9 w-9 shrink-0 items-center justify-center bg-white/10 text-white">
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center bg-black/[0.05] text-[var(--ad-ink)]">
         <Icon className="h-4 w-4" />
       </span>
-      <span className="flex-1 text-sm font-medium text-white">{t(label)}</span>
-      <ChevronRight className="h-4 w-4 shrink-0 text-[rgb(114,113,112)] transition-transform group-hover:translate-x-0.5 group-hover:text-white" />
+      <span className="flex-1 text-sm font-medium text-[var(--ad-ink)]">{t(label)}</span>
+      <ChevronRight className="h-4 w-4 shrink-0 text-[var(--ad-text-muted)] transition-transform group-hover:translate-x-0.5 group-hover:text-[var(--ad-ink)]" />
     </Link>
   );
 }
@@ -7281,7 +7281,7 @@ function IconAction({
 
   return (
     <button
-      className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs text-[rgb(230,230,230)] hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+      className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs text-[var(--ad-text)] hover:bg-black/[0.04] disabled:cursor-not-allowed disabled:opacity-50"
       disabled={disabled}
       onClick={onClick}
       title={displayLabel}
@@ -7368,7 +7368,7 @@ function configTabValue(value: string | null): ConfigTab | null {
 function renderCell(value: unknown, locale: AdminLocale = "en") {
   if (typeof value === "boolean") {
     return (
-      <span className={cn("inline-flex items-center gap-1 text-xs", value ? "text-emerald-300" : "text-[rgb(170,170,170)]")}>
+      <span className={cn("inline-flex items-center gap-1 text-xs", value ? "text-[var(--ad-green-text)]" : "text-[var(--ad-text-muted)]")}>
         {value ? <Check className="h-3 w-3" /> : <X className="h-3 w-3" />}
         {locale === "zh" ? (value ? "是" : "否") : String(value)}
       </span>
@@ -7388,9 +7388,9 @@ function renderCell(value: unknown, locale: AdminLocale = "en") {
     return <span className="break-words">{adminValueLabel(locale, value)}</span>;
   }
   if (typeof value === "number") return <span className="font-mono">{value}</span>;
-  if (value === null || value === undefined) return <span className="text-[rgb(114,113,112)]">-</span>;
+  if (value === null || value === undefined) return <span className="text-[var(--ad-text-muted)]">-</span>;
   return (
-    <code className="block max-w-[260px] truncate text-xs text-[rgb(170,170,170)]">
+    <code className="block max-w-[260px] truncate text-xs text-[var(--ad-text-muted)]">
       {JSON.stringify(value)}
     </code>
   );
@@ -7409,9 +7409,9 @@ function Status({
     <span
       className={cn(
         "inline-flex rounded px-2 py-0.5 text-xs font-medium",
-        tone === "good" && "bg-emerald-400/10 text-emerald-300",
-        tone === "bad" && "bg-red-400/10 text-red-300",
-        tone === "warn" && "bg-amber-400/10 text-amber-200",
+        tone === "good" && "bg-[var(--ad-green-bg)] text-[var(--ad-green-text)]",
+        tone === "bad" && "bg-[var(--ad-red-bg)] text-[var(--ad-red-text)]",
+        tone === "warn" && "bg-[var(--ad-yellow-bg)] text-[var(--ad-yellow-text)]",
       )}
     >
       {adminValueLabel(locale, value)}

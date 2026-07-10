@@ -24,7 +24,7 @@ type PublishDraft = {
 };
 
 const inputClass =
-  "h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30";
+  "rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]";
 
 export function CmsView() {
   const { t, value: valueLabel } = useAdminI18n();
@@ -81,7 +81,7 @@ export function CmsView() {
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold">{t("CMS pages")} ({pages.length})</h2>
         <button
-          className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm disabled:opacity-50"
+          className="rounded-md inline-flex h-9 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm disabled:opacity-50"
           disabled={loading}
           onClick={() => void load()}
           type="button"
@@ -90,13 +90,13 @@ export function CmsView() {
           {t("Refresh")}
         </button>
       </div>
-      {error ? <p className="text-xs text-red-300">{error}</p> : null}
+      {error ? <p className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
 
       <CreatePageForm reload={load} />
 
       {publishDraft ? (
-        <section className="border border-amber-300/30 bg-amber-950/20 p-3">
-          <p className="text-xs font-semibold text-amber-100">
+        <section className="rounded-lg border border-[var(--ad-yellow-text)]/20 bg-[var(--ad-yellow-bg)] p-3">
+          <p className="text-xs font-semibold text-[var(--ad-yellow-text)]">
             {t("Confirm CMS status change")} <span className="font-mono">{publishDraft.path}</span> →{" "}
             {valueLabel(publishDraft.nextStatus)}
           </p>
@@ -116,14 +116,14 @@ export function CmsView() {
               value={publishDraft.confirmation}
             />
             <button
-              className="inline-flex h-10 items-center justify-center border border-white/10 px-3 text-sm"
+              className="rounded-md inline-flex h-10 items-center justify-center border border-[var(--ad-border)] px-3 text-sm"
               onClick={() => setPublishDraft(null)}
               type="button"
             >
               {t("Cancel")}
             </button>
             <button
-              className="inline-flex h-10 items-center justify-center bg-amber-200 px-3 text-sm font-semibold text-amber-950 disabled:opacity-50"
+              className="inline-flex h-10 items-center justify-center bg-[var(--ad-yellow-bg)] px-3 text-sm font-semibold text-[var(--ad-yellow-text)] disabled:opacity-50"
               disabled={publishBusy || !canConfirmPublish(publishDraft)}
               onClick={() => void publish()}
               type="button"
@@ -135,9 +135,9 @@ export function CmsView() {
         </section>
       ) : null}
 
-      <section className="border border-white/10 bg-[rgb(18,18,18)]">
+      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
         <table className="w-full text-left text-sm">
-          <thead className="border-b border-white/10 text-xs text-[rgb(170,170,170)]">
+          <thead className="border-b border-[var(--ad-border)] text-xs text-[var(--ad-text-muted)]">
             <tr>
               <th className="px-3 py-2 font-medium">{t("path")}</th>
               <th className="px-3 py-2 font-medium">{t("title")}</th>
@@ -147,14 +147,14 @@ export function CmsView() {
           </thead>
           <tbody>
             {pages.map((page) => (
-              <tr key={page.path} className="border-b border-white/5">
+              <tr key={page.path} className="border-b border-[var(--ad-border)]">
                 <td className="px-3 py-2 font-mono text-xs">{page.path}</td>
                 <td className="px-3 py-2">{page.title}</td>
-                <td className="px-3 py-2 text-[rgb(170,170,170)]">{valueLabel(page.contentStatus)}</td>
+                <td className="px-3 py-2 text-[var(--ad-text-muted)]">{valueLabel(page.contentStatus)}</td>
                 <td className="px-3 py-2 text-right">
                   {page.contentStatus === "published" ? (
                     <button
-                      className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs"
+                      className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
                       disabled={publishBusy}
                       onClick={() => startPublish(page.path, "draft")}
                       type="button"
@@ -163,7 +163,7 @@ export function CmsView() {
                     </button>
                   ) : (
                     <button
-                      className="inline-flex h-8 items-center gap-1 bg-white px-2 text-xs font-semibold text-black"
+                      className="inline-flex h-8 items-center gap-1 bg-[var(--ad-ink)] px-2 text-xs font-semibold text-white"
                       disabled={publishBusy}
                       onClick={() => startPublish(page.path, "published")}
                       type="button"
@@ -177,7 +177,7 @@ export function CmsView() {
             ))}
             {pages.length === 0 && !loading ? (
               <tr>
-                <td className="px-3 py-6 text-center text-xs text-[rgb(170,170,170)]" colSpan={4}>
+                <td className="px-3 py-6 text-center text-xs text-[var(--ad-text-muted)]" colSpan={4}>
                   {t("No CMS pages yet.")}
                 </td>
               </tr>
@@ -248,9 +248,9 @@ function CreatePageForm({ reload }: { reload: () => void }) {
     confirmation.trim() === expectedPath;
 
   return (
-    <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+    <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <h2 className="text-sm font-semibold">{t("Create / overwrite page (draft)")}</h2>
-      <p className="mt-1 text-xs text-[rgb(170,170,170)]">
+      <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
         path 须以 / 开头。已发布的页会覆盖同 path 的静态页（ISR 生效），未匹配静态集合的 path 即新页。
       </p>
       <div className="mt-3 grid gap-3 md:grid-cols-2">
@@ -263,7 +263,7 @@ function CreatePageForm({ reload }: { reload: () => void }) {
           value={description}
         />
         <textarea
-          className="min-h-32 w-full border border-white/10 bg-black/30 px-3 py-2 font-mono text-xs outline-none focus:border-white/30 md:col-span-2"
+          className="rounded-md min-h-32 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 font-mono text-xs outline-none focus:border-[var(--ad-ink)] md:col-span-2"
           onChange={(e) => setBodyJson(e.target.value)}
           value={bodyJson}
         />
@@ -281,7 +281,7 @@ function CreatePageForm({ reload }: { reload: () => void }) {
           value={confirmation}
         />
         <button
-          className="inline-flex h-10 items-center justify-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50 md:col-span-2"
+          className="inline-flex h-10 items-center justify-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50 md:col-span-2"
           disabled={!canCreate}
           onClick={() => void create()}
           type="button"
@@ -290,7 +290,7 @@ function CreatePageForm({ reload }: { reload: () => void }) {
           {t("Create draft")}
         </button>
       </div>
-      {err ? <p className="mt-2 text-xs text-red-300">{err}</p> : null}
+      {err ? <p className="mt-2 text-xs text-[var(--ad-red-text)]">{err}</p> : null}
     </section>
   );
 }

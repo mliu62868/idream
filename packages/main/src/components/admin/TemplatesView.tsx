@@ -232,18 +232,18 @@ export function TemplatesView() {
   return (
     <div className="space-y-5">
       {notice ? (
-        <div className="border border-amber-400/30 bg-amber-950/20 px-4 py-3 text-sm text-amber-100">
+        <div className="rounded-lg border border-[var(--ad-yellow-text)]/20 bg-[var(--ad-yellow-bg)] px-4 py-3 text-sm text-[var(--ad-yellow-text)]">
           {notice}
         </div>
       ) : null}
-      <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold">
             {editingId ? `${t("Edit template")} ${editingId}` : t("Create character template")}
           </h2>
           {editingId ? (
             <button
-              className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs text-[rgb(170,170,170)] hover:border-white/30"
+              className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs text-[var(--ad-text-muted)] hover:border-[var(--ad-ink)]"
               onClick={resetForm}
               type="button"
             >
@@ -251,18 +251,18 @@ export function TemplatesView() {
             </button>
           ) : null}
         </div>
-        <p className="mt-1 text-xs text-[rgb(170,170,170)]">
+        <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
           模板是创建脚手架——前台选完即与已建角色脱钩，不做继承/版本。
         </p>
-        <div className="mt-3 flex flex-col gap-2 border border-dashed border-white/15 bg-black/20 p-3 sm:flex-row sm:items-center">
+        <div className="rounded-lg mt-3 flex flex-col gap-2 border border-dashed border-[var(--ad-border)] bg-black/[0.03] p-3 sm:flex-row sm:items-center">
           <input
-            className="h-10 w-full flex-1 border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 w-full flex-1 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) => setSeed(event.target.value)}
             placeholder={t("AI seed: 一句话灵感 → 填充 Summary + Tags")}
             value={seed}
           />
           <button
-            className="inline-flex h-10 shrink-0 items-center gap-2 border border-white/20 px-3 text-sm font-semibold disabled:opacity-50"
+            className="rounded-md inline-flex h-10 shrink-0 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm font-semibold disabled:opacity-50"
             disabled={assisting || seed.trim().length < 3}
             onClick={() => void generateWithAI()}
             type="button"
@@ -270,23 +270,23 @@ export function TemplatesView() {
             {assisting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
             {t("Generate with AI")}
           </button>
-          {assistError ? <p className="text-xs text-red-300">{assistError}</p> : null}
+          {assistError ? <p className="text-xs text-[var(--ad-red-text)]">{assistError}</p> : null}
         </div>
         <div className="mt-3 grid gap-3 md:grid-cols-3">
           <input
-            className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) => updateForm({ ...form, name: event.target.value })}
             placeholder={t("Name (≥1)")}
             value={form.name}
           />
           <input
-            className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) => updateForm({ ...form, summary: event.target.value })}
             placeholder={t("Summary (≤200)")}
             value={form.summary}
           />
           <select
-            className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) => updateForm({ ...form, scope: event.target.value })}
             value={form.scope}
           >
@@ -294,37 +294,37 @@ export function TemplatesView() {
           <option value="community">{valueLabel("community")}</option>
           </select>
           <input
-            className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) => updateForm({ ...form, gender: event.target.value })}
             placeholder={t("Gender")}
             value={form.gender}
           />
           <input
-            className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) => updateForm({ ...form, style: event.target.value })}
             placeholder={t("Style")}
             value={form.style}
           />
           <input
-            className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) => updateForm({ ...form, tags: event.target.value })}
             placeholder={t("Tags (comma-separated, ≤12)")}
             value={form.tags}
           />
           <input
-            className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) => updateForm({ ...form, sortOrder: event.target.value })}
             placeholder={t("Sort order")}
             value={form.sortOrder}
           />
           <input
-            className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+            className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
             onChange={(event) => updateForm({ ...form, reason: event.target.value })}
             placeholder={t("Reason (≥3)")}
             value={form.reason}
           />
           <button
-            className="inline-flex h-10 items-center justify-center gap-2 bg-white px-3 text-sm font-semibold text-black disabled:opacity-50"
+            className="inline-flex h-10 items-center justify-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
             disabled={busy || !canSubmit}
             onClick={() => void submit()}
             type="button"
@@ -345,22 +345,22 @@ export function TemplatesView() {
                 : t("Create")}
           </button>
         </div>
-        {err ? <p className="mt-2 text-xs text-red-300">{err}</p> : null}
+        {err ? <p className="mt-2 text-xs text-[var(--ad-red-text)]">{err}</p> : null}
       </section>
 
       {actionDraft ? (
-        <section className="border border-amber-400/30 bg-amber-950/20 p-4">
+        <section className="rounded-lg border border-[var(--ad-yellow-text)]/20 bg-[var(--ad-yellow-bg)] p-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h2 className="text-sm font-semibold">
                 {actionDraft.active ? t("Confirm publish template") : t("Confirm offline template")}
               </h2>
-              <p className="mt-1 text-xs text-amber-100/80">
+              <p className="mt-1 text-xs text-[var(--ad-yellow-text)]/80">
                 {actionDraft.templateName} · {t("Type")} {t("template ID")} {actionConfirmation}
               </p>
             </div>
             <button
-              className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs"
+              className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
               disabled={busy}
               onClick={() => setActionDraft(null)}
               type="button"
@@ -372,20 +372,20 @@ export function TemplatesView() {
           <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_220px_auto]">
             <input
               aria-label="Template action reason"
-              className="h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30"
+              className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
               onChange={(event) => setActionDraft({ ...actionDraft, reason: event.target.value })}
               placeholder={t("Reason (≥3)")}
               value={actionDraft.reason}
             />
             <input
               aria-label="Template action confirmation"
-              className="h-10 w-full border border-white/10 bg-black/30 px-3 font-mono text-sm outline-none focus:border-white/30"
+              className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 font-mono text-sm outline-none focus:border-[var(--ad-ink)]"
               onChange={(event) => setActionDraft({ ...actionDraft, confirmation: event.target.value })}
               placeholder={actionConfirmation}
               value={actionDraft.confirmation}
             />
             <button
-              className="inline-flex h-10 items-center justify-center gap-2 bg-amber-200 px-3 text-sm font-semibold text-amber-950 disabled:opacity-50"
+              className="inline-flex h-10 items-center justify-center gap-2 bg-[var(--ad-yellow-bg)] px-3 text-sm font-semibold text-[var(--ad-yellow-text)] disabled:opacity-50"
               disabled={!canConfirmAction}
               onClick={() => void confirmToggleActive()}
               type="button"
@@ -397,11 +397,11 @@ export function TemplatesView() {
         </section>
       ) : null}
 
-      <section className="border border-white/10 bg-[rgb(18,18,18)]">
-        <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
+        <div className="flex items-center justify-between border-b border-[var(--ad-border)] px-4 py-3">
           <h2 className="text-sm font-semibold">{t("Character Starters")}</h2>
           <button
-            className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs text-[rgb(170,170,170)] hover:border-white/30"
+            className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs text-[var(--ad-text-muted)] hover:border-[var(--ad-ink)]"
             onClick={() => void reload()}
             type="button"
           >
@@ -410,8 +410,8 @@ export function TemplatesView() {
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
-            <thead className="text-xs text-[rgb(170,170,170)]">
-              <tr className="border-b border-white/10">
+            <thead className="text-xs text-[var(--ad-text-muted)]">
+              <tr className="border-b border-[var(--ad-border)]">
                 <th className="px-4 py-2 font-medium">{t("name")}</th>
                 <th className="px-4 py-2 font-medium">{t("scope")}</th>
                 <th className="px-4 py-2 font-medium">{t("active")}</th>
@@ -423,20 +423,20 @@ export function TemplatesView() {
             <tbody>
               {templates.length === 0 ? (
                 <tr>
-                  <td className="px-4 py-6 text-xs text-[rgb(170,170,170)]" colSpan={6}>
+                  <td className="px-4 py-6 text-xs text-[var(--ad-text-muted)]" colSpan={6}>
                     {loading ? t("Loading…") : t("No templates yet.")}
                   </td>
                 </tr>
               ) : (
                 templates.map((template) => (
-                  <tr className="border-b border-white/5" key={template.id}>
+                  <tr className="border-b border-[var(--ad-border)]" key={template.id}>
                     <td className="px-4 py-2">{template.name}</td>
-                    <td className="px-4 py-2 text-[rgb(170,170,170)]">{valueLabel(template.scope)}</td>
+                    <td className="px-4 py-2 text-[var(--ad-text-muted)]">{valueLabel(template.scope)}</td>
                     <td className="px-4 py-2">
                       <span
                         className={cn(
                           "inline-flex items-center gap-1 text-xs",
-                          template.isActive ? "text-emerald-300" : "text-[rgb(170,170,170)]",
+                          template.isActive ? "text-[var(--ad-green-text)]" : "text-[var(--ad-text-muted)]",
                         )}
                       >
                         {template.isActive ? (
@@ -447,14 +447,14 @@ export function TemplatesView() {
                         {template.isActive ? valueLabel("active") : valueLabel("offline")}
                       </span>
                     </td>
-                    <td className="px-4 py-2 text-[rgb(170,170,170)]">{template.sortOrder}</td>
-                    <td className="px-4 py-2 text-xs text-[rgb(170,170,170)]">
+                    <td className="px-4 py-2 text-[var(--ad-text-muted)]">{template.sortOrder}</td>
+                    <td className="px-4 py-2 text-xs text-[var(--ad-text-muted)]">
                       {template.tags.join(", ") || "—"}
                     </td>
                     <td className="px-4 py-2">
                       <div className="flex items-center gap-2">
                         <button
-                          className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs hover:border-white/30 disabled:opacity-50"
+                          className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs hover:border-[var(--ad-ink)] disabled:opacity-50"
                           disabled={busy}
                           onClick={() => startEdit(template)}
                           type="button"
@@ -462,7 +462,7 @@ export function TemplatesView() {
                           <Pencil className="h-3.5 w-3.5" /> {t("Edit")}
                         </button>
                         <button
-                          className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs hover:border-white/30 disabled:opacity-50"
+                          className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs hover:border-[var(--ad-ink)] disabled:opacity-50"
                           disabled={busy}
                           onClick={() => startToggleActive(template)}
                           type="button"

@@ -71,54 +71,54 @@ export function AdminDevLogin({ accounts, actor }: AdminDevLoginProps) {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-[rgb(13,13,13)] px-6 py-10 text-white">
-      <div className="w-full max-w-sm border border-white/10 bg-[rgb(18,18,18)] p-6">
+    <main className="flex min-h-screen items-center justify-center bg-[var(--ad-canvas)] px-6 py-10 text-[var(--ad-ink)]">
+      <div className="rounded-lg w-full max-w-sm border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6">
         <div className="flex items-center gap-3">
-          <ShieldCheck className="h-5 w-5 text-emerald-300" />
+          <ShieldCheck className="h-5 w-5 text-[var(--ad-green-text)]" />
           <h1 className="text-lg font-semibold">后台登录</h1>
-          <span className="ml-auto rounded bg-amber-400/10 px-2 py-0.5 text-[10px] font-medium text-amber-300">
+          <span className="ml-auto rounded bg-[var(--ad-yellow-bg)] px-2 py-0.5 text-[10px] font-medium text-[var(--ad-yellow-text)]">
             DEV ONLY
           </span>
         </div>
 
         {actor ? (
-          <div className="mt-3 rounded border border-amber-400/20 bg-amber-400/5 p-3 text-xs text-amber-200">
+          <div className="mt-3 rounded border border-[var(--ad-yellow-text)]/20 bg-[var(--ad-yellow-bg)] p-3 text-xs text-[var(--ad-yellow-text)]">
             当前登录角色 <span className="font-semibold">{actor.role}</span>{" "}
             无后台权限，请换内部角色账号。
           </div>
         ) : (
-          <p className="mt-2 text-sm text-[rgb(170,170,170)]">
+          <p className="mt-2 text-sm text-[var(--ad-text-muted)]">
             内置开发账号，仅本地可用。
           </p>
         )}
 
         <form onSubmit={submit} className="mt-4 space-y-3">
-          <label className="block text-xs text-[rgb(170,170,170)]">
+          <label className="block text-xs text-[var(--ad-text-muted)]">
             账号
             <input
               value={username}
               onChange={(event) => setUsername(event.target.value)}
               autoComplete="username"
-              className="mt-1 w-full border border-white/10 bg-[rgb(13,13,13)] px-3 py-2 text-sm text-white outline-none focus:border-white/30"
+              className="rounded-md mt-1 w-full border border-[var(--ad-border)] bg-[var(--ad-canvas)] px-3 py-2 text-sm text-[var(--ad-ink)] outline-none focus:border-[var(--ad-ink)]"
             />
           </label>
-          <label className="block text-xs text-[rgb(170,170,170)]">
+          <label className="block text-xs text-[var(--ad-text-muted)]">
             密码
             <input
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
               autoComplete="current-password"
-              className="mt-1 w-full border border-white/10 bg-[rgb(13,13,13)] px-3 py-2 text-sm text-white outline-none focus:border-white/30"
+              className="rounded-md mt-1 w-full border border-[var(--ad-border)] bg-[var(--ad-canvas)] px-3 py-2 text-sm text-[var(--ad-ink)] outline-none focus:border-[var(--ad-ink)]"
             />
           </label>
 
-          {error && <p className="text-xs text-red-300">{error}</p>}
+          {error && <p className="text-xs text-[var(--ad-red-text)]">{error}</p>}
 
           <button
             type="submit"
             disabled={busy}
-            className="flex w-full items-center justify-center gap-2 bg-white py-2 text-sm font-medium text-black disabled:opacity-60"
+            className="flex w-full items-center justify-center gap-2 bg-[var(--ad-ink)] py-2 text-sm font-medium text-white disabled:opacity-60"
           >
             {busy ? (
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -129,8 +129,8 @@ export function AdminDevLogin({ accounts, actor }: AdminDevLoginProps) {
           </button>
         </form>
 
-        <div className="mt-5 border-t border-white/10 pt-4">
-          <p className="mb-2 text-[11px] uppercase tracking-wide text-[rgb(120,120,120)]">
+        <div className="mt-5 border-t border-[var(--ad-border)] pt-4">
+          <p className="mb-2 text-[11px] uppercase tracking-wide text-[var(--ad-text-muted)]">
             快捷账号
           </p>
           <div className="space-y-2">
@@ -139,12 +139,12 @@ export function AdminDevLogin({ accounts, actor }: AdminDevLoginProps) {
                 key={account.username}
                 type="button"
                 onClick={() => fill(account)}
-                className="flex w-full items-center gap-2 border border-white/10 px-3 py-2 text-left text-xs text-[rgb(200,200,200)] hover:border-white/30"
+                className="rounded-lg flex w-full items-center gap-2 border border-[var(--ad-border)] px-3 py-2 text-left text-xs text-[var(--ad-text)] hover:border-[var(--ad-ink)]"
               >
-                <UserCog className="h-4 w-4 shrink-0 text-[rgb(150,150,150)]" />
-                <span className="font-medium text-white">{account.username}</span>
-                <span className="text-[rgb(140,140,140)]">/ {account.password}</span>
-                <span className="ml-auto text-[rgb(140,140,140)]">{account.label}</span>
+                <UserCog className="h-4 w-4 shrink-0 text-[var(--ad-text-muted)]" />
+                <span className="font-medium text-[var(--ad-ink)]">{account.username}</span>
+                <span className="text-[var(--ad-text-muted)]">/ {account.password}</span>
+                <span className="ml-auto text-[var(--ad-text-muted)]">{account.label}</span>
               </button>
             ))}
           </div>
@@ -155,7 +155,7 @@ export function AdminDevLogin({ accounts, actor }: AdminDevLoginProps) {
             type="button"
             onClick={logout}
             disabled={busy}
-            className="mt-4 w-full border border-white/10 py-2 text-xs text-[rgb(170,170,170)] hover:border-white/30 disabled:opacity-60"
+            className="rounded-lg mt-4 w-full border border-[var(--ad-border)] py-2 text-xs text-[var(--ad-text-muted)] hover:border-[var(--ad-ink)] disabled:opacity-60"
           >
             退出当前前台登录
           </button>

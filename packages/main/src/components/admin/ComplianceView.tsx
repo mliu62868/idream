@@ -9,7 +9,7 @@ import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
 
 const inputClass =
-  "h-10 w-full border border-white/10 bg-black/30 px-3 text-sm outline-none focus:border-white/30";
+  "rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]";
 
 type AgeRow = {
   id: string;
@@ -89,9 +89,9 @@ function DsarSection() {
   }
 
   return (
-    <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+    <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <h2 className="text-sm font-semibold">{t("DSAR — export / erase")}</h2>
-      <p className="mt-1 text-xs text-[rgb(170,170,170)]">
+      <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
         导出为脱敏结构化数据（不含明文 prompt/chat）。擦除走 P0-F 跨服务流，需确认。
       </p>
       <div className="mt-3 grid gap-3 md:grid-cols-[1fr_auto_auto]">
@@ -103,7 +103,7 @@ function DsarSection() {
           value={userId}
         />
         <button
-          className="inline-flex h-10 items-center gap-2 border border-white/10 px-3 text-sm disabled:opacity-50"
+          className="rounded-md inline-flex h-10 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm disabled:opacity-50"
           disabled={busy !== null || !userId.trim()}
           onClick={() => void exportData()}
           type="button"
@@ -112,7 +112,7 @@ function DsarSection() {
           {t("Export")}
         </button>
         <button
-          className="inline-flex h-10 items-center gap-2 border border-red-400/30 px-3 text-sm text-red-200 disabled:opacity-50"
+          className="rounded-md inline-flex h-10 items-center gap-2 border border-[var(--ad-red-text)]/20 px-3 text-sm text-[var(--ad-red-text)] disabled:opacity-50"
           disabled={busy !== null || !userId.trim()}
           onClick={() => {
             setErr(null);
@@ -126,8 +126,8 @@ function DsarSection() {
         </button>
       </div>
       {eraseDraft ? (
-        <section className="mt-3 border border-red-400/30 bg-red-950/20 p-3">
-          <p className="text-xs font-semibold text-red-100">
+        <section className="rounded-lg mt-3 border border-[var(--ad-red-text)]/20 bg-[var(--ad-red-bg)] p-3">
+          <p className="text-xs font-semibold text-[var(--ad-red-text)]">
             {t("Confirm erasure for")} <span className="font-mono">{userId.trim()}</span>
           </p>
           <div className="mt-3 grid gap-3 md:grid-cols-[1fr_220px_auto_auto]">
@@ -146,14 +146,14 @@ function DsarSection() {
               value={eraseDraft.confirmation}
             />
             <button
-              className="inline-flex h-10 items-center justify-center border border-white/10 px-3 text-sm"
+              className="rounded-md inline-flex h-10 items-center justify-center border border-[var(--ad-border)] px-3 text-sm"
               onClick={() => setEraseDraft(null)}
               type="button"
             >
               {t("Cancel")}
             </button>
             <button
-              className="inline-flex h-10 items-center justify-center bg-red-200 px-3 text-sm font-semibold text-red-950 disabled:opacity-50"
+              className="inline-flex h-10 items-center justify-center bg-[var(--ad-red-bg)] px-3 text-sm font-semibold text-[var(--ad-red-text)] disabled:opacity-50"
               disabled={busy !== null || !canConfirm(eraseDraft, userId.trim())}
               onClick={() => void erase()}
               type="button"
@@ -163,10 +163,10 @@ function DsarSection() {
           </div>
         </section>
       ) : null}
-      {err ? <p className="mt-2 text-xs text-red-300">{err}</p> : null}
-      {note ? <p className="mt-2 text-xs text-emerald-300">{note}</p> : null}
+      {err ? <p className="mt-2 text-xs text-[var(--ad-red-text)]">{err}</p> : null}
+      {note ? <p className="mt-2 text-xs text-[var(--ad-green-text)]">{note}</p> : null}
       {exported ? (
-        <pre className="mt-3 max-h-80 overflow-auto border border-white/10 bg-black/30 p-3 text-xs">
+        <pre className="rounded-lg mt-3 max-h-80 overflow-auto border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 text-xs">
           {JSON.stringify(exported, null, 2)}
         </pre>
       ) : null}
@@ -232,12 +232,12 @@ function AgeVerificationSection() {
   }
 
   return (
-    <section className="border border-white/10 bg-[rgb(18,18,18)]">
-      <div className="flex items-center justify-between border-b border-white/10 p-3">
+    <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
+      <div className="flex items-center justify-between border-b border-[var(--ad-border)] p-3">
         <h2 className="text-sm font-semibold">{t("Age verification queue")}</h2>
         <div className="flex items-center gap-2">
           <select
-            className="h-9 border border-white/10 bg-black/30 px-2 text-sm outline-none"
+            className="rounded-md h-9 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-2 text-sm outline-none"
             onChange={(e) => setStatus(e.target.value)}
             value={status}
           >
@@ -248,7 +248,7 @@ function AgeVerificationSection() {
             ))}
           </select>
           <button
-            className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm disabled:opacity-50"
+            className="rounded-md inline-flex h-9 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm disabled:opacity-50"
             disabled={loading}
             onClick={() => void load()}
             type="button"
@@ -258,11 +258,11 @@ function AgeVerificationSection() {
           </button>
         </div>
       </div>
-      {error ? <p className="px-3 py-2 text-xs text-red-300">{error}</p> : null}
-      {notice ? <p className="px-3 py-2 text-xs text-emerald-300">{notice}</p> : null}
+      {error ? <p className="px-3 py-2 text-xs text-[var(--ad-red-text)]">{error}</p> : null}
+      {notice ? <p className="px-3 py-2 text-xs text-[var(--ad-green-text)]">{notice}</p> : null}
       {overrideDraft ? (
-        <section className="m-3 border border-amber-300/30 bg-amber-950/20 p-3">
-          <p className="text-xs font-semibold text-amber-100">
+        <section className="rounded-lg m-3 border border-[var(--ad-yellow-text)]/20 bg-[var(--ad-yellow-bg)] p-3">
+          <p className="text-xs font-semibold text-[var(--ad-yellow-text)]">
             {t("Confirm age verification override")}{" "}
             <span className="font-mono">{overrideDraft.id}</span> → {valueLabel(overrideDraft.next)}
           </p>
@@ -282,14 +282,14 @@ function AgeVerificationSection() {
               value={overrideDraft.confirmation}
             />
             <button
-              className="inline-flex h-10 items-center justify-center border border-white/10 px-3 text-sm"
+              className="rounded-md inline-flex h-10 items-center justify-center border border-[var(--ad-border)] px-3 text-sm"
               onClick={() => setOverrideDraft(null)}
               type="button"
             >
               {t("Cancel")}
             </button>
             <button
-              className="inline-flex h-10 items-center justify-center bg-amber-200 px-3 text-sm font-semibold text-amber-950 disabled:opacity-50"
+              className="inline-flex h-10 items-center justify-center bg-[var(--ad-yellow-bg)] px-3 text-sm font-semibold text-[var(--ad-yellow-text)] disabled:opacity-50"
               disabled={overrideBusy || !canConfirm(overrideDraft, overrideDraft.id)}
               onClick={() => void override()}
               type="button"
@@ -300,7 +300,7 @@ function AgeVerificationSection() {
         </section>
       ) : null}
       <table className="w-full text-left text-sm">
-        <thead className="border-b border-white/10 text-xs text-[rgb(170,170,170)]">
+        <thead className="border-b border-[var(--ad-border)] text-xs text-[var(--ad-text-muted)]">
           <tr>
             <th className="px-3 py-2 font-medium">{t("user")}</th>
             <th className="px-3 py-2 font-medium">{t("provider")}</th>
@@ -311,15 +311,15 @@ function AgeVerificationSection() {
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={row.id} className="border-b border-white/5">
+            <tr key={row.id} className="border-b border-[var(--ad-border)]">
               <td className="px-3 py-2 font-mono text-xs">{row.userId}</td>
               <td className="px-3 py-2">{row.provider}</td>
-              <td className="px-3 py-2 text-[rgb(170,170,170)]">{valueLabel(row.status)}</td>
+              <td className="px-3 py-2 text-[var(--ad-text-muted)]">{valueLabel(row.status)}</td>
               <td className="px-3 py-2">{row.jurisdiction ?? "—"}</td>
               <td className="px-3 py-2 text-right">
                 <div className="flex justify-end gap-2">
                   <button
-                    className="inline-flex h-8 items-center gap-1 bg-white px-2 text-xs font-semibold text-black"
+                    className="inline-flex h-8 items-center gap-1 bg-[var(--ad-ink)] px-2 text-xs font-semibold text-white"
                     disabled={overrideBusy}
                     onClick={() => {
                       setError(null);
@@ -332,7 +332,7 @@ function AgeVerificationSection() {
                     {t("Verify")}
                   </button>
                   <button
-                    className="inline-flex h-8 items-center gap-1 border border-white/10 px-2 text-xs"
+                    className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
                     disabled={overrideBusy}
                     onClick={() => {
                       setError(null);
@@ -349,7 +349,7 @@ function AgeVerificationSection() {
           ))}
           {rows.length === 0 && !loading ? (
             <tr>
-              <td className="px-3 py-6 text-center text-xs text-[rgb(170,170,170)]" colSpan={5}>
+              <td className="px-3 py-6 text-center text-xs text-[var(--ad-text-muted)]" colSpan={5}>
                 {t("No records.")}
               </td>
             </tr>

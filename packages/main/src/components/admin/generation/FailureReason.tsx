@@ -6,9 +6,9 @@ import { EngineeringDetails } from "./EngineeringDetails";
 import { resolveFailureReason } from "./failureReasons";
 
 const SEVERITY_CLASS: Record<string, string> = {
-  retry: "text-amber-300",
-  engineering: "text-red-300",
-  waiting: "text-[rgb(170,170,170)]",
+  retry: "text-[var(--ad-yellow-text)]",
+  engineering: "text-[var(--ad-red-text)]",
+  waiting: "text-[var(--ad-text-muted)]",
 };
 
 export function FailureReason({ code, detail }: { code: string | null | undefined; detail?: string }) {
@@ -19,7 +19,7 @@ export function FailureReason({ code, detail }: { code: string | null | undefine
     <div className="space-y-2">
       <p className="text-sm">
         <span className={`font-medium ${SEVERITY_CLASS[reason.severity]}`}>{t(reason.title)}</span>
-        <span className="text-[rgb(170,170,170)]"> · {t(reason.hint)}</span>
+        <span className="text-[var(--ad-text-muted)]"> · {t(reason.hint)}</span>
       </p>
       {hasTechnical ? (
         <EngineeringDetails summary={t("Technical detail")}>

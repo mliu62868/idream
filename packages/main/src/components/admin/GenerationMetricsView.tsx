@@ -89,12 +89,12 @@ export function GenerationMetricsView() {
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold">{t("Metrics")}</h2>
         <div className="flex items-center gap-2">
-          <div className="flex border border-white/10">
+          <div className="rounded-lg flex border border-[var(--ad-border)]">
             {WINDOW_OPTIONS.map((days) => (
               <button
                 className={cn(
                   "h-9 px-3 text-sm",
-                  windowDays === days ? "bg-white/10" : "opacity-70 hover:opacity-100",
+                  windowDays === days ? "bg-black/[0.05]" : "opacity-70 hover:opacity-100",
                 )}
                 key={days}
                 onClick={() => setWindowDays(days)}
@@ -105,7 +105,7 @@ export function GenerationMetricsView() {
             ))}
           </div>
           <button
-            className="inline-flex h-9 items-center gap-2 border border-white/10 px-3 text-sm disabled:opacity-50"
+            className="rounded-md inline-flex h-9 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm disabled:opacity-50"
             disabled={loading}
             onClick={() => void load(windowDays)}
             type="button"
@@ -115,7 +115,7 @@ export function GenerationMetricsView() {
           </button>
         </div>
       </div>
-      {error ? <p className="text-xs text-red-300">{error}</p> : null}
+      {error ? <p className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
 
       <ProfilesTable profiles={metrics?.profiles ?? []} t={t} />
       <RecipesTable recipes={metrics?.recipes ?? []} t={t} />
@@ -131,10 +131,10 @@ type Translate = (text: string) => string;
 
 function SectionShell({ title, isEmpty, t, children }: { title: string; isEmpty: boolean; t: Translate; children: ReactNode }) {
   return (
-    <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+    <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <h3 className="mb-3 text-sm font-semibold">{t(title)}</h3>
       {isEmpty ? (
-        <p className="text-xs text-[rgb(170,170,170)]">{t("No generation records in window.")}</p>
+        <p className="text-xs text-[var(--ad-text-muted)]">{t("No generation records in window.")}</p>
       ) : (
         children
       )}
@@ -148,7 +148,7 @@ function ProfilesTable({ profiles, t }: { profiles: ProfileMetric[]; t: Translat
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs">
           <thead>
-            <tr className="text-[rgb(170,170,170)]">
+            <tr className="text-[var(--ad-text-muted)]">
               <th className="pb-2 pr-4">{t("Label")}</th>
               <th className="pb-2 pr-4">{t("Profile")}</th>
               <th className="pb-2 pr-4">{t("Workflow")}</th>
@@ -164,7 +164,7 @@ function ProfilesTable({ profiles, t }: { profiles: ProfileMetric[]; t: Translat
             {profiles.map((row) => {
               const isHighFailure = failureRate(row) > 0.2;
               return (
-                <tr className="border-t border-white/5" key={`${row.profileId}@${row.profileVersion ?? 0}`}>
+                <tr className="border-t border-[var(--ad-border)]" key={`${row.profileId}@${row.profileVersion ?? 0}`}>
                   <td className="py-2 pr-4">{row.label ?? "–"}</td>
                   <td className="py-2 pr-4 font-mono">
                     {row.profileId}@{row.profileVersion ?? 0}
@@ -172,7 +172,7 @@ function ProfilesTable({ profiles, t }: { profiles: ProfileMetric[]; t: Translat
                   <td className="py-2 pr-4 font-mono">{row.workflowKey ?? "–"}</td>
                   <td className="py-2 pr-4">{row.total}</td>
                   <td className="py-2 pr-4">{row.completed}</td>
-                  <td className={cn("py-2 pr-4", isHighFailure && "text-red-300")}>{row.failed}</td>
+                  <td className={cn("py-2 pr-4", isHighFailure && "text-[var(--ad-red-text)]")}>{row.failed}</td>
                   <td className="py-2 pr-4">{row.blocked}</td>
                   <td className="py-2 pr-4">{row.costDreamcoins}</td>
                   <td className="py-2">{formatDuration(row.avgDurationMs)}</td>
@@ -192,7 +192,7 @@ function RecipesTable({ recipes, t }: { recipes: RecipeMetric[]; t: Translate })
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs">
           <thead>
-            <tr className="text-[rgb(170,170,170)]">
+            <tr className="text-[var(--ad-text-muted)]">
               <th className="pb-2 pr-4">{t("Recipe")}</th>
               <th className="pb-2 pr-4">{t("Total")}</th>
               <th className="pb-2 pr-4">{t("Completed")}</th>
@@ -205,11 +205,11 @@ function RecipesTable({ recipes, t }: { recipes: RecipeMetric[]; t: Translate })
             {recipes.map((row) => {
               const isHighFailure = failureRate(row) > 0.2;
               return (
-                <tr className="border-t border-white/5" key={row.recipeId}>
+                <tr className="border-t border-[var(--ad-border)]" key={row.recipeId}>
                   <td className="py-2 pr-4 font-mono">{row.recipeId}</td>
                   <td className="py-2 pr-4">{row.total}</td>
                   <td className="py-2 pr-4">{row.completed}</td>
-                  <td className={cn("py-2 pr-4", isHighFailure && "text-red-300")}>{row.failed}</td>
+                  <td className={cn("py-2 pr-4", isHighFailure && "text-[var(--ad-red-text)]")}>{row.failed}</td>
                   <td className="py-2 pr-4">{row.blocked}</td>
                   <td className="py-2">{row.costDreamcoins}</td>
                 </tr>
@@ -228,7 +228,7 @@ function SourcesTable({ sources, t }: { sources: SourceMetric[]; t: Translate })
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs">
           <thead>
-            <tr className="text-[rgb(170,170,170)]">
+            <tr className="text-[var(--ad-text-muted)]">
               <th className="pb-2 pr-4">{t("Source")}</th>
               <th className="pb-2 pr-4">{t("Total")}</th>
               <th className="pb-2 pr-4">{t("Completed")}</th>
@@ -241,11 +241,11 @@ function SourcesTable({ sources, t }: { sources: SourceMetric[]; t: Translate })
             {sources.map((row) => {
               const isHighFailure = failureRate(row) > 0.2;
               return (
-                <tr className="border-t border-white/5" key={row.sourceType}>
+                <tr className="border-t border-[var(--ad-border)]" key={row.sourceType}>
                   <td className="py-2 pr-4 font-mono">{row.sourceType}</td>
                   <td className="py-2 pr-4">{row.total}</td>
                   <td className="py-2 pr-4">{row.completed}</td>
-                  <td className={cn("py-2 pr-4", isHighFailure && "text-red-300")}>{row.failed}</td>
+                  <td className={cn("py-2 pr-4", isHighFailure && "text-[var(--ad-red-text)]")}>{row.failed}</td>
                   <td className="py-2 pr-4">{row.blocked}</td>
                   <td className="py-2">{row.costDreamcoins}</td>
                 </tr>
@@ -264,7 +264,7 @@ function PlacementsTable({ placements, t }: { placements: PlacementMetric[]; t: 
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs">
           <thead>
-            <tr className="text-[rgb(170,170,170)]">
+            <tr className="text-[var(--ad-text-muted)]">
               <th className="pb-2 pr-4">{t("Slot")}</th>
               <th className="pb-2 pr-4">{t("Status")}</th>
               <th className="pb-2">{t("Count")}</th>
@@ -272,7 +272,7 @@ function PlacementsTable({ placements, t }: { placements: PlacementMetric[]; t: 
           </thead>
           <tbody>
             {placements.map((row) => (
-              <tr className="border-t border-white/5" key={`${row.slot}:${row.status}`}>
+              <tr className="border-t border-[var(--ad-border)]" key={`${row.slot}:${row.status}`}>
                 <td className="py-2 pr-4 font-mono">{row.slot}</td>
                 <td className="py-2 pr-4">{row.status}</td>
                 <td className="py-2">{row.count}</td>
@@ -297,7 +297,7 @@ function PlacementEngagementTable({
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs">
           <thead>
-            <tr className="text-[rgb(170,170,170)]">
+            <tr className="text-[var(--ad-text-muted)]">
               <th className="pb-2 pr-4">{t("Slot")}</th>
               <th className="pb-2 pr-4">{t("Placement")}</th>
               <th className="pb-2 pr-4">{t("Impressions")}</th>
@@ -306,7 +306,7 @@ function PlacementEngagementTable({
           </thead>
           <tbody>
             {engagement.map((row) => (
-              <tr className="border-t border-white/5" key={`${row.slot}:${row.placementId}`}>
+              <tr className="border-t border-[var(--ad-border)]" key={`${row.slot}:${row.placementId}`}>
                 <td className="py-2 pr-4 font-mono">{row.slot}</td>
                 <td className="py-2 pr-4 font-mono">{row.placementId ?? "–"}</td>
                 <td className="py-2 pr-4">{row.impressions}</td>
@@ -322,7 +322,7 @@ function PlacementEngagementTable({
 
 function RemixSection({ total, t }: { total: number; t: Translate }) {
   return (
-    <section className="border border-white/10 bg-[rgb(18,18,18)] p-4">
+    <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <h3 className="mb-3 text-sm font-semibold">{t("Remix")}</h3>
       <p className="text-xs">
         {t("Total")}: <span className="font-mono">{total}</span>
