@@ -54,6 +54,7 @@ import {
 import { ImageProductionView } from "@/components/admin/ImageProductionView";
 import { OperatorFlow, type OperatorFlowItem } from "@/components/admin/generation/OperatorFlow";
 import { FailureReason } from "@/components/admin/generation/FailureReason";
+import { ReadonlyOpsView, type OpsColumn } from "@/components/admin/generation/ReadonlyOpsView";
 import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
 import {
   AdminI18nProvider,
@@ -2472,45 +2473,72 @@ function JobsView({
     }
   }
 
+  // SPEC: read-mostly triage table — plain-language failure for failed jobs; the raw jobId/errorCode
+  //        never sit as bare columns (errorCode folds inside FailureReason; jobId only inside controls).
+  // INTENT: keep BOTH existing per-row controls (Requeue = mutating, via openAction verbatim; Details = view).
+  const columns: OpsColumn[] = [
+    {
+      key: "userId",
+      label: "User",
+      render: (row) => <span className="font-mono text-xs">{shortId(stringValue(row.userId))}</span>,
+    },
+    {
+      key: "createdAt",
+      label: "Created",
+      render: (row) => compactDate(stringValue(row.createdAt), locale),
+    },
+    { key: "status", label: "Status" },
+    {
+      key: "failure",
+      label: "Failure reason",
+      render: (row) =>
+        stringValue(row.status) === "failed" ? (
+          <FailureReason code={stringValue(row.errorCode)} />
+        ) : (
+          <span className="text-[rgb(170,170,170)]">—</span>
+        ),
+    },
+    {
+      key: "actions",
+      label: "Actions",
+      render: (row) => {
+        const id = stringValue(row.id);
+        const status = stringValue(row.status);
+        return (
+          <div className="flex flex-wrap gap-1">
+            <IconAction
+              icon={<FileText className="h-4 w-4" />}
+              label="Details"
+              onClick={() => void openJobDetail(id)}
+            />
+            {status === "failed" ? (
+              <IconAction
+                icon={<RefreshCcw className="h-4 w-4" />}
+                label="Requeue"
+                onClick={() =>
+                  openAction({
+                    title: `Requeue ${id}`,
+                    endpoint: `/api/v1/admin/generation/jobs/${id}/requeue`,
+                    method: "POST",
+                    confirmText: id,
+                    reasonRequired: false,
+                    body: (actionReason, actionConfirmation) => ({
+                      reason: actionReason || undefined,
+                      confirmation: actionConfirmation,
+                    }),
+                  })
+                }
+              />
+            ) : null}
+          </div>
+        );
+      },
+    },
+  ];
+
   return (
     <div className="space-y-4">
-      <DataTable
-        actions={(row) => {
-          const id = stringValue(row.id);
-          const status = stringValue(row.status);
-          return (
-            <div className="flex flex-wrap gap-1">
-              <IconAction
-                icon={<FileText className="h-4 w-4" />}
-                label="Details"
-                onClick={() => void openJobDetail(id)}
-              />
-              {status === "failed" ? (
-                <IconAction
-                  icon={<RefreshCcw className="h-4 w-4" />}
-                  label="Requeue"
-                  onClick={() =>
-                    openAction({
-                      title: `Requeue ${id}`,
-                      endpoint: `/api/v1/admin/generation/jobs/${id}/requeue`,
-                      method: "POST",
-                      confirmText: id,
-                      reasonRequired: false,
-                      body: (actionReason, actionConfirmation) => ({
-                        reason: actionReason || undefined,
-                        confirmation: actionConfirmation,
-                      }),
-                    })
-                  }
-                />
-              ) : null}
-            </div>
-          );
-        }}
-        columns={["id", "userId", "mode", "status", "profileId", "profileVersion", "costDreamcoins", "errorCode", "createdAt"]}
-        rows={rows}
-        title="Generation Jobs"
-      />
+      <ReadonlyOpsView columns={columns} rows={rows} title="Generation Jobs" />
       {selectedJobId ? (
         <GenerationJobInspector
           detail={detail}

@@ -1,6 +1,8 @@
 "use client";
-// SPEC: 运维只读视图——表格展示 rows；失败行由调用方用 FailureReason 渲染 render() 出人话；无写操作。
-// INVARIANTS: 纯展示；表格外层 overflow-x-auto，窄屏横滚不挤压。
+// SPEC: 运维「读为主」视图——表格展示 rows；失败行由调用方用 FailureReason 渲染 render() 出人话。
+//       调用方 MAY 在某列 render() 里放安全的单行 triage 动作（如 requeue/discard 按钮）；
+//       primitive 自身不做任何写操作，写动作的语义与后端调用完全由调用方持有。
+// INVARIANTS: primitive 无写副作用；表格外层 overflow-x-auto，窄屏横滚不挤压。
 import type { ReactNode } from "react";
 import { useAdminI18n } from "@/components/admin/i18n";
 
