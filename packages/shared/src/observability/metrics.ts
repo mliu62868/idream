@@ -143,3 +143,52 @@ export function renderPrometheusMetrics() {
 export function resetMetricsForTests() {
   metrics.clear();
 }
+
+export type MetricSnapshot = ReadonlyArray<{
+  name: string;
+  type: "counter" | "gauge" | "histogram";
+  series: ReadonlyArray<{
+    labels: MetricLabels;
+    value?: number;
+    count?: number;
+    sum?: number;
+    buckets?: ReadonlyArray<{ le: number; count: number }>;
+  }>;
+}>;
+
+export function metricSnapshot(): MetricSnapshot {
+  return [...metrics.entries()].map(([name, metric]) => {
+    if (metric.type === "histogram") {
+      return {
+        name,
+        type: metric.type,
+        series: [...metric.series.values()].map((series) => ({
+          labels: series.labels,
+          count: series.count,
+          sum: series.sum,
+          buckets: metric.boundaries.map((le, index) => ({ le, count: series.buckets[index] })),
+        })),
+      };
+    }
+    return {
+      name,
+      type: metric.type,
+      series: [...metric.series.values()].map((series) => ({ labels: series.labels, value: series.value })),
+    };
+  });
+}
+
+export function histogramQuantileUpperBound(
+  name: string,
+  labels: MetricLabels,
+  quantile: number,
+): number | null {
+  if (!(quantile > 0 && quantile <= 1)) throw new Error("Histogram quantile must be in (0, 1]");
+  const metric = metrics.get(name);
+  if (!metric || metric.type !== "histogram") return null;
+  const series = metric.series.get(seriesKey(labels));
+  if (!series || series.count === 0) return null;
+  const target = Math.ceil(series.count * quantile);
+  const index = series.buckets.findIndex((count) => count >= target);
+  return index >= 0 ? metric.boundaries[index] : Number.POSITIVE_INFINITY;
+}

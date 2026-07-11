@@ -3,6 +3,7 @@ import { incrementCounter, observeHistogram } from "@idream/shared";
 import { canonicalSha256 } from "./canonical-json";
 import { toInputJson } from "./prisma-json";
 import { Errors } from "@/server/lib/errors";
+import { logger } from "@/server/lib/logger";
 
 export interface CanonicalCommandRequest {
   readonly commandType: string;
@@ -110,12 +111,15 @@ export async function acceptControlPlaneCommand(
 ) {
   const startedAt = performance.now();
   let outcome = "error";
+  let commandId: string | null = null;
+  let errorCode: string | null = null;
   try {
     const scope = `${input.environment}:${input.actor.id}`;
     const requestHash = canonicalRequestHash(input);
     const existing = await resolveExisting(db, scope, input.idempotencyKey, requestHash);
     if (existing) {
       outcome = "replayed";
+      commandId = existing.commandId;
       return existing;
     }
 
@@ -179,12 +183,14 @@ export async function acceptControlPlaneCommand(
         return { commandId: command.id, status: command.status, replayed: false as const };
       });
       outcome = "accepted";
+      commandId = result.commandId;
       return result;
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
         const raced = await resolveExisting(db, scope, input.idempotencyKey, requestHash);
         if (raced) {
           outcome = "replayed";
+          commandId = raced.commandId;
           return raced;
         }
       }
@@ -192,16 +198,38 @@ export async function acceptControlPlaneCommand(
     }
   } catch (error) {
     outcome = error instanceof IdempotencyConflictError ? "conflict" : "error";
+    errorCode = error instanceof IdempotencyConflictError
+      ? error.code
+      : error && typeof error === "object" && "code" in error
+        ? String(error.code)
+        : "internal_error";
     throw error;
   } finally {
+    const duration = Math.max(0, performance.now() - startedAt) / 1_000;
     const labels = { type: input.commandType, outcome };
     incrementCounter("admin_command_total", "Admin control-plane command acceptance outcomes", labels);
     observeHistogram(
       "admin_command_duration_seconds",
       "Admin control-plane command acceptance latency in seconds",
       labels,
-      Math.max(0, performance.now() - startedAt) / 1_000,
+      duration,
     );
+    const context = {
+      requestId: input.requestId,
+      commandId,
+      actorId: input.actor.id,
+      permission: input.approvalPermissionKey ?? null,
+      module: "admin.control_plane",
+      operation: input.commandType,
+      target: `${input.target.type}:${input.target.id}`,
+      expectedVersion: input.expectedVersion ?? null,
+      outcome,
+      errorCode,
+      duration,
+      environment: input.environment,
+    };
+    if (errorCode) logger.warn(context, "admin command acceptance failed");
+    else logger.info(context, "admin command accepted");
   }
 }
 

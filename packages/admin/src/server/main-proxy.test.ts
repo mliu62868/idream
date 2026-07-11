@@ -59,7 +59,7 @@ describe("Admin main HTTP proxy", () => {
     await expect(response.json()).resolves.toEqual({ ok: true });
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(renderPrometheusMetrics()).toContain(
-      'admin_http_requests_total{method="POST",outcome="completed",surface="legacy_v1"} 1',
+      'admin_http_requests_total{method="POST",outcome="completed",routeClass="list",surface="legacy_v1"} 1',
     );
     expect(renderPrometheusMetrics()).toContain(
       'admin_legacy_v1_requests_total{method="POST",outcome="completed"} 1',
@@ -96,7 +96,7 @@ describe("Admin main HTTP proxy", () => {
       error: { code: "admin_upstream_unavailable" },
     });
     expect(renderPrometheusMetrics()).toContain(
-      'admin_http_requests_total{method="GET",outcome="unavailable",surface="admin_v2"} 1',
+      'admin_http_requests_total{method="GET",outcome="unavailable",routeClass="today",surface="admin_v2"} 1',
     );
   });
 });

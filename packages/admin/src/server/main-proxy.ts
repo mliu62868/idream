@@ -31,6 +31,7 @@ const responseHopByHopHeaders = [
 export async function proxyToMain(request: Request, pathname: string): Promise<Response> {
   const startedAt = performance.now();
   const surface = proxySurface(pathname);
+  const routeClass = proxyRouteClass(pathname, request.method);
   const incomingURL = new URL(request.url);
   const upstreamURL = new URL(pathname, `${mainWebURL}/`);
   upstreamURL.search = incomingURL.search;
@@ -60,7 +61,7 @@ export async function proxyToMain(request: Request, pathname: string): Promise<R
     headers.set(BFF_HEADER, signature);
     headers.set(BFF_USER_HEADER, JSON.stringify(context));
   } else if (process.env.APP_ENV === "production") {
-    recordProxyMetrics(request.method, "configuration_error", surface, startedAt);
+    recordProxyMetrics(request.method, "configuration_error", surface, routeClass, startedAt);
     return Response.json(
       {
         ok: false,
@@ -83,14 +84,14 @@ export async function proxyToMain(request: Request, pathname: string): Promise<R
     });
     const responseHeaders = new Headers(upstream.headers);
     for (const name of responseHopByHopHeaders) responseHeaders.delete(name);
-    recordProxyMetrics(request.method, upstream.status < 500 ? "completed" : "upstream_error", surface, startedAt);
+    recordProxyMetrics(request.method, upstream.status < 500 ? "completed" : "upstream_error", surface, routeClass, startedAt);
     return new Response(upstream.body, {
       status: upstream.status,
       statusText: upstream.statusText,
       headers: responseHeaders,
     });
   } catch {
-    recordProxyMetrics(request.method, "unavailable", surface, startedAt);
+    recordProxyMetrics(request.method, "unavailable", surface, routeClass, startedAt);
     return Response.json(
       {
         ok: false,
@@ -112,8 +113,17 @@ function proxySurface(pathname: string) {
   return "other";
 }
 
-function recordProxyMetrics(method: string, outcome: string, surface: string, startedAt: number) {
-  const labels = { method, outcome, surface };
+function proxyRouteClass(pathname: string, method: string) {
+  if (pathname.includes("/today")) return "today";
+  if (pathname.includes("/search")) return "search";
+  if (pathname.includes("/commands/") || pathname.includes("/action-plans/")) return "command";
+  const segments = pathname.split("/").filter(Boolean);
+  if (method === "GET" && segments[0] === "api" && segments[1] === "v2" && segments[2] === "admin" && segments.length >= 5) return "detail";
+  return "list";
+}
+
+function recordProxyMetrics(method: string, outcome: string, surface: string, routeClass: string, startedAt: number) {
+  const labels = { method, outcome, routeClass, surface };
   incrementCounter(
     "admin_http_requests_total",
     "Requests handled by the Admin HTTP BFF",
