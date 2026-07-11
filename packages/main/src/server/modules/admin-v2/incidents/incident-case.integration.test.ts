@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { renderPrometheusMetrics, resetMetricsForTests } from "@idream/shared";
 import { prisma } from "@/server/lib/db";
 import {
   backfillGenerationIncidents,
@@ -166,10 +167,14 @@ describe("Incident and P0 Review Case authority loops", () => {
   });
 
   it("correlates stable failures, freezes the occurrence set, executes mitigation, verifies, and resolves", async () => {
+    resetMetricsForTests();
     const first = await correlateFailedGenerationAttempt(attemptA);
     createdIncidentIds.push(first.id);
     const second = await correlateFailedGenerationAttempt(attemptB);
     expect(second.id).toBe(first.id);
+    expect(renderPrometheusMetrics()).toContain(
+      "incident_detection_lag_seconds_count{severity=\"medium\"} 2",
+    );
     expect(second.impact).toMatchObject({ affectedRequests: 2, affectedUsers: 2 });
     expect(await prisma.opsIncidentOccurrence.count({ where: { incidentId: first.id } })).toBe(2);
 

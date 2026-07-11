@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { observeHistogram } from "@idream/shared";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
@@ -99,12 +100,16 @@ export async function correlateFailedGenerationAttempt(
   attemptId: string,
   options: { readonly joinGapMs?: number } = {},
 ) {
-  return prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
     const existingOccurrence = await tx.opsIncidentOccurrence.findUnique({
       where: { occurrenceKey: `generation-attempt:${attemptId}` },
     });
     if (existingOccurrence) {
-      return tx.opsIncident.findUniqueOrThrow({ where: { id: existingOccurrence.incidentId } });
+      return {
+        incident: await tx.opsIncident.findUniqueOrThrow({ where: { id: existingOccurrence.incidentId } }),
+        observedAt: existingOccurrence.observedAt,
+        recorded: false as const,
+      };
     }
     const attempt = await tx.generationAttempt.findUnique({ where: { id: attemptId } });
     if (!attempt) throw Errors.notFound("Generation attempt not found", { attemptId });
@@ -189,11 +194,18 @@ export async function correlateFailedGenerationAttempt(
       },
     });
     const impact = await refreshIncidentImpact(tx, incident.id);
-    return tx.opsIncident.findUniqueOrThrow({ where: { id: incident.id } }).then((row) => ({
-      ...row,
-      impact,
-    }));
+    const updated = await tx.opsIncident.findUniqueOrThrow({ where: { id: incident.id } });
+    return { incident: { ...updated, impact }, observedAt, recorded: true as const };
   });
+  if (result.recorded) {
+    observeHistogram(
+      "incident_detection_lag_seconds",
+      "Lag from the first observed failure fact to durable Incident correlation",
+      { severity: result.incident.severity },
+      Math.max(0, Date.now() - result.observedAt.getTime()) / 1_000,
+    );
+  }
+  return result.incident;
 }
 
 export async function backfillGenerationIncidents(input: {
