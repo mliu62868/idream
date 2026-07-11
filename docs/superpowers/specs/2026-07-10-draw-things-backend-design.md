@@ -81,11 +81,14 @@ arrive as base64 or a fetchable URL and is deleted after the command exits.
 - `DRAWTHINGS_MODELS_DIR` — optional model directory. On macOS, omission lets
   the CLI use the Draw Things app model directory.
 - `DRAWTHINGS_OFFLINE` — defaults to `true`.
+- `GEN_IMAGE_INSTANCES` — PM2 image-worker process count. Set it to `1` for a
+  Draw Things deployment that must load only one model process at a time.
 
 ## Operational behavior
 
-- Start with generation-profile concurrency `1` because each CLI process can
-  load a large model.
+- The adapter serializes CLI generation within each image-worker process because
+  every child may load a large model. Set `GEN_IMAGE_INSTANCES=1` for strict
+  host-wide serialization; multiple PM2 workers intentionally provide parallelism.
 - A timeout aborts the child process and is retryable through the existing
   `BackendImageModel` error mapping.
 - stdout/stderr are bounded before inclusion in errors.

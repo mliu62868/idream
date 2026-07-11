@@ -15,6 +15,9 @@ const state = vi.hoisted(() => ({
   calls: [] as Array<{ command: string; args: string[] }>,
   exitCode: 0,
   hang: false,
+  delayMs: 0,
+  active: 0,
+  maxActive: 0,
 }));
 
 vi.mock("node:child_process", () => ({
@@ -31,7 +34,9 @@ vi.mock("node:child_process", () => ({
       });
       return child as unknown as ChildProcess;
     }
-    queueMicrotask(() => {
+    state.active += 1;
+    state.maxActive = Math.max(state.maxActive, state.active);
+    const complete = () => {
       void (async () => {
         if (state.exitCode === 0) {
           const outputIndex = args.indexOf("--output");
@@ -40,9 +45,12 @@ vi.mock("node:child_process", () => ({
         } else {
           child.stderr?.emit("data", Buffer.from("draw-things-cli boom"));
         }
+        state.active -= 1;
         child.emit("close", state.exitCode);
       })();
-    });
+    };
+    if (state.delayMs > 0) setTimeout(complete, state.delayMs);
+    else queueMicrotask(complete);
     return child as unknown as ChildProcess;
   }),
 }));
@@ -73,10 +81,14 @@ describe("DrawThingsBackend", () => {
     state.calls.length = 0;
     state.exitCode = 0;
     state.hang = false;
+    state.delayMs = 0;
+    state.active = 0;
+    state.maxActive = 0;
     outputDir = await mkdtemp(path.join(tmpdir(), "drawthings-backend-test-"));
   });
 
   afterEach(async () => {
+    vi.unstubAllGlobals();
     await rm(outputDir, { recursive: true, force: true });
   });
 
@@ -117,6 +129,7 @@ describe("DrawThingsBackend", () => {
     expect(valueAfter(args, "--models-dir")).toBe("/draw-things-models");
     expect(args).toContain("--no-download-missing");
     expect(args).toContain("--offline");
+    await expect(access(valueAfter(args, "--output") as string)).rejects.toThrow();
 
     const result = await backend.poll(handle);
     expect(result.assets).toHaveLength(1);
@@ -132,6 +145,11 @@ describe("DrawThingsBackend", () => {
     const health = await missingBackend.health();
     expect(health.ok).toBe(false);
     expect(health.detail).toBeTruthy();
+  });
+
+  it("discovers a bare CLI command through PATH", async () => {
+    const backend = new DrawThingsBackend({ cli: "true", outputDir });
+    await expect(backend.health()).resolves.toEqual({ ok: true });
   });
 
   it("materializes one source image for img2img and removes it after generation", async () => {
@@ -176,6 +194,31 @@ describe("DrawThingsBackend", () => {
     expect(state.calls).toHaveLength(0);
   });
 
+  it("fetches and cleans up a source-image URL for img2img", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(PNG, { status: 200, headers: { "content-type": "image/png" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const backend = new DrawThingsBackend({ cli: "/bin/true", outputDir });
+    await backend.submit({
+      descriptor,
+      slots: { prompt: "same portrait", seed: 9 },
+      referenceImages: [
+        {
+          assetId: "source-url",
+          role: "source_image",
+          url: "https://blob.test/source.png",
+        },
+      ],
+      timeoutMs: 5_000,
+    });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const sourcePath = valueAfter(state.calls[0]?.args ?? [], "--image");
+    expect(sourcePath).toBeTruthy();
+    await expect(access(sourcePath as string)).rejects.toThrow();
+  });
+
   it("surfaces a bounded non-zero CLI failure", async () => {
     state.exitCode = 2;
     const backend = new DrawThingsBackend({ cli: "/bin/false", outputDir });
@@ -201,6 +244,18 @@ describe("DrawThingsBackend", () => {
     await expect(
       backend.submit({ descriptor, slots: { prompt: "portrait", seed: 9 }, timeoutMs: 5 }),
     ).rejects.toThrow(/timed out after 5ms/);
+  });
+
+  it("serializes concurrent submissions within one worker process", async () => {
+    state.delayMs = 10;
+    const backend = new DrawThingsBackend({ cli: "/bin/true", outputDir });
+    await Promise.all([
+      backend.submit({ descriptor, slots: { prompt: "first", seed: 1 }, timeoutMs: 5_000 }),
+      backend.submit({ descriptor, slots: { prompt: "second", seed: 2 }, timeoutMs: 5_000 }),
+    ]);
+
+    expect(state.calls).toHaveLength(2);
+    expect(state.maxActive).toBe(1);
   });
 });
 

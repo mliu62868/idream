@@ -7,11 +7,11 @@
 // 不值得每次请求都扫目录。
 // INVARIANTS: 全部只读、全部要求 generation.config.read；workflows 列表摘要绝不包含
 // apiPrompt（体积大且是内部实现细节，只在 detail 端点展开供工程排查）。
-import { constants as fsConstants, existsSync } from "node:fs";
-import { access } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { loadWorkflowDescriptors, type WorkflowDescriptor } from "@idream/shared/gen-workflow";
+import { resolveExecutable } from "@idream/shared";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import { actorWithPermission } from "@/server/modules/admin/service";
@@ -103,23 +103,6 @@ async function executableHealth(command: string): Promise<BackendHealth> {
   } catch (error) {
     return { ok: false, detail: error instanceof Error ? error.message : String(error) };
   }
-}
-
-async function resolveExecutable(command: string) {
-  if (command.includes(path.sep)) {
-    await access(command, fsConstants.X_OK);
-    return command;
-  }
-  for (const dir of (process.env.PATH ?? "").split(path.delimiter).filter(Boolean)) {
-    const candidate = path.join(dir, command);
-    try {
-      await access(candidate, fsConstants.X_OK);
-      return candidate;
-    } catch {
-      // Continue searching PATH.
-    }
-  }
-  throw new Error(`${command} was not found on PATH`);
 }
 
 // INVARIANT: env 读取放在 handler 内部（不是 module 顶层常量），测试才能按用例覆盖

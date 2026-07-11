@@ -3,19 +3,19 @@
 // INTENT: Keep Draw Things process/model/temp-file knowledge out of queue and
 // ImageModel callers. submit() completes generation and caches one result; poll()
 // consumes it, matching the synchronous SdcppBackend adapter shape.
-import { constants as fsConstants } from "node:fs";
-import { access, mkdir, readFile, rm } from "node:fs/promises";
+import { mkdir, readFile, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { resolveExecutable } from "@idream/shared";
 import { assertGeneratedImageSanity } from "../generated-image-sanity";
 import { logger } from "../logger";
 import {
-  cleanupSdcppReferenceImages,
-  materializeSdcppReferenceImages,
-  type MaterializedSdcppReferenceImage,
-  type SdcppReferenceImage,
-} from "../sdcpp-reference-images";
+  cleanupGenerationReferenceImages,
+  materializeGenerationReferenceImages,
+  type GenerationReferenceImage,
+  type MaterializedGenerationReferenceImage,
+} from "../generation-reference-images";
 import { bindWorkflowArgs } from "./workflow";
 import type {
   BackendHandle,
@@ -38,6 +38,7 @@ export class DrawThingsBackend implements GenBackend {
   private readonly outputDir: string;
   private readonly offline: boolean;
   private readonly results = new Map<string, BackendResult>();
+  private generationTail: Promise<void> = Promise.resolve();
 
   constructor(opts: {
     cli: string;
@@ -62,6 +63,20 @@ export class DrawThingsBackend implements GenBackend {
   }
 
   async submit(job: ResolvedGenJob): Promise<BackendHandle> {
+    const previous = this.generationTail;
+    let release = () => {};
+    this.generationTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await this.submitOnce(job);
+    } finally {
+      release();
+    }
+  }
+
+  private async submitOnce(job: ResolvedGenJob): Promise<BackendHandle> {
     if (job.descriptor.backendKind !== "drawthings") {
       throw new Error(
         `drawthings: workflow ${job.descriptor.workflowKey} targets ${job.descriptor.backendKind}`,
@@ -77,9 +92,9 @@ export class DrawThingsBackend implements GenBackend {
     await mkdir(this.outputDir, { recursive: true });
     const outputPath = path.join(this.outputDir, `${id}.png`);
     const referenceDir = path.join(this.outputDir, "references", id);
-    let materialized: MaterializedSdcppReferenceImage[] = [];
+    let materialized: MaterializedGenerationReferenceImage[] = [];
     try {
-      materialized = await materializeSdcppReferenceImages({
+      materialized = await materializeGenerationReferenceImages({
         images: references,
         dir: referenceDir,
         timeoutMs: job.timeoutMs,
@@ -105,7 +120,7 @@ export class DrawThingsBackend implements GenBackend {
       return { id };
     } finally {
       await rm(outputPath, { force: true }).catch(() => {});
-      await cleanupSdcppReferenceImages(materialized);
+      await cleanupGenerationReferenceImages(materialized);
       await rm(referenceDir, { recursive: true, force: true }).catch(() => {});
     }
   }
@@ -119,7 +134,7 @@ export class DrawThingsBackend implements GenBackend {
 
   async health(): Promise<BackendHealth> {
     try {
-      await executablePath(this.cli);
+      await resolveExecutable(this.cli);
       return { ok: true };
     } catch (error) {
       return { ok: false, detail: error instanceof Error ? error.message : String(error) };
@@ -130,7 +145,7 @@ export class DrawThingsBackend implements GenBackend {
     job: ResolvedGenJob,
     descriptor: Extract<ResolvedGenJob["descriptor"], { backendKind: "drawthings" }>,
     outputPath: string,
-    sourceImage: MaterializedSdcppReferenceImage | undefined,
+    sourceImage: MaterializedGenerationReferenceImage | undefined,
   ) {
     return [
       "generate",
@@ -195,7 +210,7 @@ export class DrawThingsBackend implements GenBackend {
   }
 }
 
-function drawThingsReferences(images: ResolvedGenJob["referenceImages"]): SdcppReferenceImage[] {
+function drawThingsReferences(images: ResolvedGenJob["referenceImages"]): GenerationReferenceImage[] {
   return (images ?? []).map((image) => ({
     role: image.role,
     ...(image.assetId ? { assetId: image.assetId } : {}),
@@ -204,24 +219,6 @@ function drawThingsReferences(images: ResolvedGenJob["referenceImages"]): SdcppR
     ...(image.url ? { url: image.url } : {}),
     ...(image.contentType ? { contentType: image.contentType } : {}),
   }));
-}
-
-async function executablePath(command: string) {
-  if (command.includes(path.sep)) {
-    await access(command, fsConstants.X_OK);
-    return command;
-  }
-  const searchPath = process.env.PATH ?? "";
-  for (const dir of searchPath.split(path.delimiter).filter(Boolean)) {
-    const candidate = path.join(dir, command);
-    try {
-      await access(candidate, fsConstants.X_OK);
-      return candidate;
-    } catch {
-      // Continue searching PATH.
-    }
-  }
-  throw new Error(`${command} was not found on PATH`);
 }
 
 function strengthSlot(slots: ResolvedGenJob["slots"]) {

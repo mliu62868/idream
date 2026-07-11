@@ -48,6 +48,11 @@ On macOS the CLI automatically reuses the Draw Things app model directory;
 (`DRAWTHINGS_OFFLINE=true`) so missing models fail instead of downloading at
 request time.
 
+The adapter serializes Draw Things commands inside each worker. When the host
+must load only one model process at a time, start PM2 with
+`GEN_IMAGE_INSTANCES=1`; leaving the variable unset preserves the two-worker
+default used by the other backends.
+
 ```bash
 cd packages/gen
 GEN_IMAGE_PROVIDER=backend \

@@ -140,9 +140,6 @@ export class BackendImageModel implements ImageModel {
     const baseSeed = numericSeed(input.seed, input.requestId);
     const count = Math.max(1, Math.min(input.count, 4));
     const stepsOverride = numericControl(input.controls, "steps");
-    const cfgOverride = numericFloatControl(input.controls, "cfgScale")
-      ?? numericFloatControl(input.controls, "cfg");
-    const strengthOverride = numericFloatControl(input.controls, "strength");
 
     try {
       const assets: ImageAsset[] = [];
@@ -154,8 +151,6 @@ export class BackendImageModel implements ImageModel {
           ...(size.height !== undefined ? { height: size.height } : {}),
           seed: baseSeed + index,
           ...(stepsOverride !== undefined ? { steps: stepsOverride } : {}),
-          ...(cfgOverride !== undefined ? { cfg: cfgOverride } : {}),
-          ...(strengthOverride !== undefined ? { strength: strengthOverride } : {}),
         };
         const handle = await backend.submit({
           descriptor,
@@ -242,12 +237,4 @@ function numericSeed(seed: string | undefined, requestId: string | undefined): n
 function numericControl(controls: Record<string, unknown> | undefined, key: string): number | undefined {
   const value = controls?.[key];
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
-}
-
-function numericFloatControl(
-  controls: Record<string, unknown> | undefined,
-  key: string,
-): number | undefined {
-  const value = controls?.[key];
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
 }

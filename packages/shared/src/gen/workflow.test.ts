@@ -108,6 +108,38 @@ describe("workflow backend contracts", () => {
       }),
     ).toThrow();
   });
+
+  it("rejects node-bound inputs on Draw Things command workflows", () => {
+    expect(() =>
+      workflowDescriptorSchema.parse({
+        workflowKey: "broken-drawthings",
+        modelId: "broken-drawthings",
+        backendKind: "drawthings",
+        version: 1,
+        capabilities: ["textToImage"],
+        drawThings: { model: "model.ckpt" },
+        inputs: [
+          { key: "prompt", type: "text", target: { nodeId: "1", field: "text" } },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it("rejects argument-bound inputs on ComfyUI graph workflows", () => {
+    expect(() =>
+      workflowDescriptorSchema.parse({
+        workflowKey: "broken-comfy",
+        modelId: "broken-comfy",
+        backendKind: "comfyui",
+        version: 1,
+        capabilities: ["textToImage"],
+        apiPrompt: {},
+        inputs: [
+          { key: "prompt", type: "text", target: { argFlag: "--prompt" } },
+        ],
+      }),
+    ).toThrow();
+  });
 });
 
 describe("bindSdcppArgs", () => {

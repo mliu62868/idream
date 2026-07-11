@@ -268,16 +268,4 @@ describe("BackendImageModel numericControl", () => {
 
     expect(submittedSlots(backend)).not.toHaveProperty("steps");
   });
-
-  it("passes fractional CFG and img2img strength controls as backend slots", async () => {
-    const backend = makeStubBackend();
-    await modelWith(backend).generate({
-      prompt: "a cat",
-      count: 1,
-      model: "m",
-      controls: { cfgScale: 1.5, strength: 0.7 },
-    });
-
-    expect(submittedSlots(backend)).toMatchObject({ cfg: 1.5, strength: 0.7 });
-  });
 });

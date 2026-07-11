@@ -77,7 +77,9 @@ module.exports = {
       script: "node_modules/tsx/dist/cli.mjs",
       args: "src/image.ts",
       exec_mode: "fork",
-      instances: 2,
+      // Draw Things serializes within one worker. Set GEN_IMAGE_INSTANCES=1 for
+      // strict host-wide single-process model loading; other backends may scale out.
+      instances: process.env.GEN_IMAGE_INSTANCES ?? 2,
     },
     // gen-video is DEFERRED to V1.1 (video_gen flag is off; see docs/architecture/12-roadmap.md).
     // Keep it out of the running topology until a real video provider is enabled, so we

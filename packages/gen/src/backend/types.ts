@@ -1,8 +1,8 @@
-// SPEC: GenBackend 契约 — 生图后端(comfyui/sdcpp)统一接口。上层(pipeline)只认这层契约，
+// SPEC: GenBackend 契约 — 生图后端统一接口。上层(pipeline)只认这层契约，
 // 不关心具体后端如何提交/轮询/取图。
 // INTENT: submit/poll 分离以支持异步长耗时生成；health 用于就绪探针。
 import type { ImageGeneratePayload } from "@idream/shared/contracts";
-import type { SlotValues, WorkflowDescriptor } from "./workflow";
+import type { SlotValues, WorkflowBackendKind, WorkflowDescriptor } from "./workflow";
 
 export interface Capabilities {
   textToImage: boolean;
@@ -32,7 +32,7 @@ export interface BackendHealth { ok: boolean; detail?: string }
 
 export interface GenBackend {
   readonly id: string;
-  readonly kind: "comfyui" | "sdcpp" | "drawthings";
+  readonly kind: WorkflowBackendKind;
   capabilities(): Capabilities;
   submit(job: ResolvedGenJob): Promise<BackendHandle>;
   poll(handle: BackendHandle): Promise<BackendResult>;

@@ -8,21 +8,31 @@ import { z } from "zod";
 
 export type SlotValues = Record<string, string | number>;
 
+export const workflowBackendKinds = ["comfyui", "sdcpp", "drawthings"] as const;
+export const workflowBackendKindSchema = z.enum(workflowBackendKinds);
+export type WorkflowBackendKind = z.infer<typeof workflowBackendKindSchema>;
+
 const comfyNodeSchema = z.object({
   class_type: z.string(),
   inputs: z.record(z.string(), z.unknown()),
 });
 export type ComfyNode = z.infer<typeof comfyNodeSchema>;
 
-const slotSchema = z.object({
+const slotBaseSchema = z.object({
   key: z.string(),
   type: z.enum(["text", "int", "float", "image"]),
-  target: z.union([
-    z.object({ nodeId: z.string(), field: z.string() }),
-    z.object({ argFlag: z.string() }),
-  ]),
   default: z.union([z.string(), z.number()]).optional(),
 });
+
+const comfySlotSchema = slotBaseSchema.extend({
+  target: z.object({ nodeId: z.string(), field: z.string() }),
+});
+
+const commandSlotSchema = slotBaseSchema.extend({
+  target: z.object({ argFlag: z.string() }),
+});
+
+type WorkflowSlot = z.infer<typeof comfySlotSchema> | z.infer<typeof commandSlotSchema>;
 
 export const workflowIdentityCapabilitySchema = z.object({
   mode: z.enum(["none", "single_reference", "multi_reference", "adapter", "multi_identity"]),
@@ -53,12 +63,12 @@ const workflowDescriptorBaseSchema = z.object({
     maxCandidates: 1,
     evaluatorDimensions: ["artifact"],
   }),
-  inputs: z.array(slotSchema),
 });
 
 const comfyWorkflowDescriptorSchema = workflowDescriptorBaseSchema.extend({
   backendKind: z.literal("comfyui"),
   apiPrompt: z.record(z.string(), comfyNodeSchema),
+  inputs: z.array(comfySlotSchema),
 });
 
 const sdcppWorkflowDescriptorSchema = workflowDescriptorBaseSchema.extend({
@@ -66,6 +76,7 @@ const sdcppWorkflowDescriptorSchema = workflowDescriptorBaseSchema.extend({
   // Accepted for backward compatibility with descriptors created before the
   // backend-specific schema split. sd.cpp never reads this field.
   apiPrompt: z.record(z.string(), comfyNodeSchema).optional(),
+  inputs: z.array(commandSlotSchema),
 });
 
 const drawThingsWorkflowDescriptorSchema = workflowDescriptorBaseSchema.extend({
@@ -73,6 +84,7 @@ const drawThingsWorkflowDescriptorSchema = workflowDescriptorBaseSchema.extend({
   drawThings: z.object({
     model: z.string().trim().min(1),
   }),
+  inputs: z.array(commandSlotSchema),
 });
 
 export const workflowDescriptorSchema = z.discriminatedUnion("backendKind", [
@@ -82,7 +94,7 @@ export const workflowDescriptorSchema = z.discriminatedUnion("backendKind", [
 ]);
 export type WorkflowDescriptor = z.infer<typeof workflowDescriptorSchema>;
 
-function resolveValue(slot: z.infer<typeof slotSchema>, values: SlotValues) {
+function resolveValue(slot: WorkflowSlot, values: SlotValues) {
   const v = values[slot.key] ?? slot.default;
   if (v === undefined) throw new Error(`missing required slot: ${slot.key}`);
   return v;
