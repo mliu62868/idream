@@ -193,6 +193,20 @@ describe("Support and billing Case depth", () => {
   });
 
   it("returns a permission-gated authoritative Customer 360 read model", async () => {
+    await prisma.adminCase.create({
+      data: {
+        id: `restricted-review-case-${suffix}`,
+        type: "content_report",
+        targetType: "user",
+        targetId: customerId,
+        caseKey: `restricted-review-${suffix}`,
+        activeKey: `restricted-review-active-${suffix}`,
+        status: "new",
+        priority: "high",
+        slaDueAt: new Date(Date.now() + 60_000),
+        resolution: { severity: "high" },
+      },
+    });
     const response = await getCustomer360(new Request(
       `http://localhost/api/v2/admin/customers/${customerId}`,
       { headers },

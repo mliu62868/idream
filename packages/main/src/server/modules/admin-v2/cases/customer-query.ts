@@ -8,7 +8,7 @@ import { caseDto } from "./query";
 const ACTIVE_CASE_STATUSES = ["new", "triaged", "in_progress", "waiting", "reopened"];
 
 export async function getCustomer360(request: Request, customerId: string) {
-  await actorWithPermission(request, "customer.read");
+  const actor = await actorWithPermission(request, "customer.read");
   const customer = await prisma.user.findUnique({ where: { id: customerId } });
   if (!customer || customer.role !== "user") throw Errors.notFound("Customer not found");
 
@@ -36,7 +36,11 @@ export async function getCustomer360(request: Request, customerId: string) {
       take: 20,
     }),
     prisma.adminCase.findMany({
-      where: { targetType: "user", targetId: customerId },
+      where: {
+        targetType: "user",
+        targetId: customerId,
+        ...(actor.role === "support" ? { type: { in: ["support_request", "billing_dispute"] } } : {}),
+      },
       orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
       take: 100,
     }),

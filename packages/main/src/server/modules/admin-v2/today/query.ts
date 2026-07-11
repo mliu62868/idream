@@ -273,7 +273,7 @@ function scopedCaseWhere(
   permissions: ReadonlySet<AdminPermissionKey>,
 ): Prisma.AdminCaseWhereInput | null {
   if (!permissions.has("case.read")) return null;
-  return actor.role === "support" ? { type: "support_request" } : {};
+  return actor.role === "support" ? { type: { in: ["support_request", "billing_dispute"] } } : {};
 }
 
 function scopedIncidentWhere(
