@@ -1,6 +1,8 @@
 # iDream 管理后台产品与实现方案
 
-更新日期：2026-06-28
+更新日期：2026-07-11（原始方案：2026-06-28）
+
+> **目标方案更新（2026-07-11）**：管理后台的目标定位、状态/指标真相、运营闭环、信息架构、API v2 与 admin/main 技术边界、优先级和渐进迁移，以 [`ADMIN_CONSOLE_FIRST_PRINCIPLES_REMEDIATION_PLAN.md`](./ADMIN_CONSOLE_FIRST_PRINCIPLES_REMEDIATION_PLAN.md) 为准。本文主体保留为 2026-06-28 的 v1/历史设计记录，仅继续作为已落地 permission、审计、高风险确认、审批、配置版本化与回滚约束的基线；文中的 P0/P1、阶段标签、v1 API 与 main 内 `/admin` 建议不再代表当前目标。实现事实只看 [`CURRENT_FUNCTIONAL_COVERAGE.md`](./CURRENT_FUNCTIONAL_COVERAGE.md)。
 
 ## 1. 文档目的
 
@@ -57,7 +59,7 @@ permission key 采用 `domain.resource.action` 命名，例如 `generation.confi
 
 ### 3.2 role → permission key 矩阵（P0 SSoT）
 
-`ROLE_PERMISSIONS` 是 P0 权限的单一事实来源（建议放 `lib/admin/permissions.ts`）。`✓` = 拥有该 key。
+`ROLE_PERMISSIONS` 的当前实现位于 `packages/main/src/server/admin/permissions.ts`。`✓` = 拥有该 key。
 
 | permission key | admin | moderator | support | ops | analyst |
 | --- | :-: | :-: | :-: | :-: | :-: |
@@ -104,7 +106,7 @@ Admin
   │   ├─ Video (beta)                  [P0]  只读、标 disabled（见 §6.4）
   │   └─ Queue / Provider Health       [P1]  (dead-letter 操作台见 §12)
   ├─ Trust & Safety                    [P0]  举报队列、审核决定、blocked media、申诉
-  ├─ Billing & Entitlements            [P0]  plan/subscription/entitlement/ledger 查询；adjust 见 §11
+  ├─ Billing & Entitlements            [P0]  plan/subscription/entitlement/ledger 查询；adjust 见 §8、§10
   ├─ Product Config                    [P0]  feature flags（pricing 改价 = P1 进配置版本化）
   ├─ Media & Gallery                   [P1]
   ├─ Feed & Community                  [P1]
@@ -235,7 +237,7 @@ P1 再开放 user/community preset，但必须经过审核、举报、下架和�
 
 ### 6.4 视频生成的后台归属（P0：可见但禁用）
 
-视频生成在产品层仍是 stub（feature flag OFF；费率已在 `ECONOMY_AND_PRICING §1.1` 定义为 100 币/个，但 flag OFF 时 `POST /generation/jobs` 对 video 直接 402/403，不创建 job、不扣费，生成请求契约见 `BackendFeatureSpec §5.5` 与代码 `service.ts`）。后台对视频的处理：
+视频生成在产品层仍是 stub（feature flag OFF；费率已在 `ECONOMY_AND_PRICING §1.1` 定义为 100 币/个，但 flag OFF 时 `POST /generation/jobs` 对 video 直接 402/403，不创建 job、不扣费，生成请求契约见 `BackendFeatureSpec §5.5` 与代码 `packages/main/src/server/modules/ourdream/service.ts`）。后台对视频的处理：
 
 - **配置可见**：`GenerationModelProfile.mode = video` 的档位在 Generation Config 中**可读可编辑 draft**，但 UI 顶部固定标 `beta / disabled` 徽章，且 publish 按钮禁用（受 `config.feature_flag` 门控）。让团队可以提前准备配置，不影响线上。
 - **无在线队列**：P0 **不**展示视频的 live job 队列 / dead-letter（没有真实流量）。Generation Jobs 列表按 `mode` 过滤，默认只显示 image；视频 tab 留位但显示空态「video 生成未启用」。

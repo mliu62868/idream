@@ -1,6 +1,6 @@
 # iDream Remaining Work Execution Plan
 
-Updated: 2026-07-05
+Updated: 2026-07-11
 
 ## Current State
 
@@ -12,6 +12,9 @@ Use these documents as the current source of truth:
 - `docs/product/LAUNCH_READINESS_AUDIT.md`: production blockers.
 - `docs/product/PRODUCTION_SECRET_CHECKLIST.md`: production env and secret checklist.
 - `docs/product-audits/current-implementation/pm-audit.md`: PM/UX gaps.
+- `docs/product/ADMIN_CONSOLE_FIRST_PRINCIPLES_REMEDIATION_PLAN.md`: management-console correctness, operating model, migration gates, and 90-day remediation sequence.
+
+The 2026-07-11 Admin correctness review found that several Admin surfaces are interactively covered but do not yet have certified state/metric semantics. For Admin work, the remediation plan above supersedes the older completion assumptions in this document; Phase 0 truth containment and the four dependency chains must be scheduled before Admin visual expansion or architectural cleanup.
 
 Current launch gate in the current non-production shell: `7 pass / 50 fail / 2 warn`.
 

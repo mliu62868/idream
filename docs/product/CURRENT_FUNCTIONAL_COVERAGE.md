@@ -1,12 +1,24 @@
 # iDream 当前功能覆盖审计
 
-更新日期：2026-07-10
+更新日期：2026-07-11
 
 ## 结论
 
 这份文档是当前代码态的功能覆盖表，覆盖的是“用户能否完整使用”和“有没有测试证据”。它补充并修正 `ProductFeatureMap.md` 里 2026-06-13 的旧状态描述。
 
 当前状态：**本地产品闭环可用，内部 pipeline 6/6 通过；当前目标仍是内部演示/受控 beta，公开上线仍被真实生产依赖阻断**。
+
+## 2026-07-11 管理后台正确性复核
+
+2026-07-11 实机与源码复核确认：下述页面/接口仍然“可达、可操作、有测试覆盖”，但部分状态和指标语义不足以支持发布或经营决策；本节修正本文后续历史条目中可能把交互覆盖等同于业务正确性的表述。
+
+- 官方角色发布检查当前只在部分状态迁移上服务端强制；历史 approved/public 角色仍可能在 Persona、视觉方向或 Visual Identity 证据不完整时保持公开，readiness 也存在客户端/服务端重复计算。
+- `active` Visual Identity 当前不等于经过样本验证；anchor/reference/评分为空的 active 版本仍可能存在。
+- Content Production 的旧 `completed` 终态可能包含 0/N 全失败；Generation Job 的 failed 记录也可能因兼容时间字段显示成功语义 timeline event。
+- 当前 Analytics 的 Activated、Conversion、D1/D7 口径分别存在“任意 job”“跨窗口总体相除”“累计窗口冒充指定日留存”等问题，在 v2 指标切换前均不得作为经营决策依据。
+- Jobs、Reports 等列表具备操作能力，但尚未形成 Incident/Case 的 owner、SLA、影响、处置和恢复验证闭环。
+
+完整目标状态、修复依赖、迁移 Gate 和验收标准见 [`ADMIN_CONSOLE_FIRST_PRINCIPLES_REMEDIATION_PLAN.md`](./ADMIN_CONSOLE_FIRST_PRINCIPLES_REMEDIATION_PLAN.md)。在对应修复落地前，本文中的“可用”只代表功能覆盖，不代表状态与指标已认证。
 
 ## 2026-07-10 角色运营项目工作台
 
