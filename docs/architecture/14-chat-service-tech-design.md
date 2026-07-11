@@ -44,7 +44,7 @@ Postgres cluster (单实例, 多 schema)  ── 账本/事务/计费/查询
 
 文件系统 (本地文件夹, CHAT_FS_ROOT；直接 fs 读写，集中在一个模块) ── agent 友好，igrep 索引
   sessions/{userId}/{sessionId}.jsonl  ← 完整 agent 执行轨迹（append-only，session.jsonl 权威）
-  mem/{userId}/{charId}/memory.md   ← 长期记忆（从 session.jsonl 派生，记忆权威，非 PG）
+  mem/{userId}/{charId}/memory.md   ← 长期记忆（从 PG 精确 turn 派生，记忆权威，非 PG）
   mem/{userId}/{charId}/relationship.md
   mem/{userId}/global/boundaries.md
 
@@ -205,12 +205,12 @@ chat-session-append:<assistantMessageId>:<attempt>
 | 层 | 是什么事实 | 权威在 | 读者 |
 |---|---|---|---|
 | PG `chat.messages` | **用户看到什么**：user 输入 + 最终 assistant 回复 + status/usage/safety | Postgres | UI 渲染、计费、审核、reconciler |
-| `sessions/{user}/{session}.jsonl` | **agent 做了什么**：system prompt、注入了哪些记忆、tool 调用/结果、raw model 输出、候选、耗时 | 本地文件 | agent 续上下文/replay、可观测、igrep 历史检索 |
-| `mem/*.md` | **该长期记住什么**：从 session.jsonl 派生 + 过 `canMemorize` 的记忆/关系 | 本地文件 | 构上下文 |
+| `sessions/{user}/{session}.jsonl` | **agent 做了什么**：system prompt、注入了哪些记忆、tool 调用/结果、raw model 输出、候选、耗时 | 本地文件 | replay、可观测、故障诊断 |
+| `mem/*.md` | **该长期记住什么**：从 PG 中 reply_to_message_id 指定的精确 turn 派生 + 过 `canMemorize` 的记忆/关系 | 本地文件 | 构上下文 |
 
 - **谁写 session.jsonl**：`chat.generate` 进程**自己 append**（step 12，它已持有完整执行上下文）——**不是单独的 worker**。append-only，一会话一文件 `sessions/{userId}/{sessionId}.jsonl`，igrep `mem ingest` 正好吃 JSONL。
 - **不算违 SSoT**：三者是三个不同的事实（"看到什么"/"做了什么"/"记住什么"），各有唯一 canonical。唯一重叠的是"最终回复文本"——它在 session.jsonl 里只是自包含的一份原始拷贝（含 raw/候选，可能与 PG 的 user-visible 版本不同），**用户可见版本一律以 PG 为准**（UI/计费/审核只认 PG）。
-- **派生记忆的隐私铁律**：session.jsonl 含**完整**内容（含 raw/blocked/敏感）。`chat.memory.extract` 从 session.jsonl 派生时，**`canMemorize` 必须回查 PG message 的 `status`/`safety_status`**（权威），绝不只看 session.jsonl 文本——否则会把 blocked/已删内容写进记忆（违 PRD §7.2）。每个可派生事件必须带 `source_message_ids` 回链 PG。
+- **派生记忆的隐私铁律**：`chat.memory.extract` 按 assistant 的 `reply_to_message_id` 精确读取 PG user/assistant turn，并由 **PG message 的 `status`/`safety_status`**执行 `canMemorize`。session.jsonl 仅是 best-effort 诊断轨迹，缺失或 append 失败不能阻断记忆派生；每条记忆必须带 `source_message_ids` 回链 PG。
 - **删除**：会话/账号删除必须连 `sessions/...jsonl` 一起清（见隐私删除）。
 
 **一句话规则**：可变/高频/要跨租户查/是钱 → PG 权威；agent 直读/低频/按租户分区/叙事 → 文件权威；**同一事实只能有一个 canonical**，其余单向派生，永不双写。
@@ -228,7 +228,7 @@ CHAT_FS_ROOT/
 
 **igrep-tme 的角色**（版本固定在 lockfile；注意 0.1.x pre-1.0，喂记忆派生的路径要容忍其行为变化，故 P0 不依赖、P1 带退化）
 1. **检索索引**：索引 `mem/` 前缀，构上下文时 `igrep recall` / `mem-api memory-search` 取最相关记忆。索引可重建，丢了从文件重灌。
-2. **离线派生**：`chat.memory.extract` worker 用 igrep `mem derive`/`consolidate`（observation 模型 source-linked，正对 `source_message_ids`）从对话提炼/合并候选 → 过 `canMemorize` 守卫 → 写入 memory 文件。取代现状热路径正则（`chat-runtime.ts memoryCandidatesFor`），且移出热路径。
+2. **离线派生**：`chat.memory.extract` worker 从 PG 精确 turn 提炼候选，用 igrep `mem derive`/`consolidate`（observation 模型 source-linked，正对 `source_message_ids`）合并 → 过 `canMemorize` 守卫 → 写入 memory 文件。派生移出热路径；诊断 trace 不参与可用性链路。
 3. **知识 RAG**：角色 lore/世界设定（按角色数有界），igrep 语义检索。
 4. **开发期 agent 记忆**：本项目跨会话记忆走 `igrep mem`（`.igrep/mem`，已初始化）。
 
@@ -309,7 +309,7 @@ IGREP_KNOWLEDGE_ROOT=...              # 角色 lore / persona 知识包语料根
 
 session.jsonl append-only 会无限增长，且含 raw/敏感内容——按"数据最小化 + 派生够用 + 可检索"分级：
 
-1. **派生水位线**：`chat.memory.extract` 处理到的行号记进 PG（`chat_sessions.log_extracted_seq`）。水位线**以下**的 session.jsonl 对派生无用，可安全裁剪。
+1. **派生水位线**：`chat.memory.extract` 每成功处理一个权威 PG turn 就推进 `chat_sessions.log_extracted_seq`，用于观测派生进度；它不是 JSONL 行号，trace 裁剪不依赖该值。
 2. **滚动压缩**：单会话 session.jsonl 超过阈值（如 5MB / 30 天）→ 滚动为 `sessions/{user}/{session}.{seq}.jsonl.gz`，活动文件保持小、append 快。
 3. **TTL 硬过期**：原始 session.jsonl 最长保留（如 180 天）后**删除**——长期记忆已蒸馏进 `mem/*.md` 独立存活，删旧 session.jsonl 不丢记忆。法务 hold 例外。
 4. **no-memory/incognito**：`memory_enabled=false` 会话**不落 session.jsonl**（或仅 ephemeral 短 TTL），既不派生也不留底，贴合隐私意图。

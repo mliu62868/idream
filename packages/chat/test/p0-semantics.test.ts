@@ -27,6 +27,7 @@ const USERS = [
   "u_p0_nomem",
   "u_p0_nomem_summary",
   "u_p0_bound",
+  "u_p0_bound_nomem",
   "u_p0_erase",
   "u_p0_model",
   "u_p1_rel",
@@ -165,6 +166,19 @@ describe("P0-G: boundaries fail closed", () => {
     expect(handled).toBe(0);
     const assistant = await prisma.message.findUnique({ where: { id: sent.assistantMessageId } });
     // Fail closed: the assistant turn never reaches "sent" with missing boundaries.
+    expect(assistant?.status).not.toBe("sent");
+  });
+
+  it("keeps global boundaries active when session memory is disabled", async () => {
+    const user = "u_p0_bound_nomem";
+    await mkdir(path.join(fsRoot, "mem", user, "global", "boundaries.md"), { recursive: true });
+
+    const session = await createSession({ userId: user, characterId: CHAR }, { prisma });
+    await setNoMemory({ userId: user, sessionId: session.id, memoryEnabled: false }, { prisma });
+    const sent = await sendMessage({ userId: user, sessionId: session.id, content: "hello there" }, { prisma });
+
+    expect(await generateOnce()).toBe(0);
+    const assistant = await prisma.message.findUnique({ where: { id: sent.assistantMessageId } });
     expect(assistant?.status).not.toBe("sent");
   });
 });

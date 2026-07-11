@@ -549,7 +549,7 @@ Chat Service 内部可以使用 BullMQ + Redis，但这些队列不是主站到 
 ```text
 chat.generate            生成 assistant 回复 + 落账本 + 写 session.jsonl
 chat.moderation.deep     深度审核补偿
-chat.memory.extract      读 session.jsonl + 回查 PG 状态，派生记忆/关系写文件层
+chat.memory.extract      按 reply_to_message_id 读取 PG 权威 turn，派生记忆/关系写文件层；session.jsonl 仅诊断
 chat.memory.rebuild      重建 memory index（igrep）
 chat.outbox.deliver      投递 Chat→Main 跨服务事件
 chat.inbox.consume       消费 Main→Chat 入站事件（chat_inbox_events）

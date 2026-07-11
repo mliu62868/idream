@@ -35,15 +35,12 @@ import {
   CHAT_QUEUES,
   CHAT_TO_MAIN_EVENTS,
   idempotencyKeys,
+  type ChatGeneratePayload,
   type ChatImageRequestedPayload,
+  type ChatMemoryExtractPayload,
 } from "@idream/shared/contracts";
 
-export interface GeneratePayload {
-  sessionId: string;
-  assistantMessageId: string;
-  userMessageId: string;
-  attempt: number;
-}
+export type GeneratePayload = ChatGeneratePayload;
 
 export async function processGenerate(
   payload: GeneratePayload,
@@ -83,6 +80,22 @@ export async function processGenerate(
     });
   };
 
+  // The lease belongs to the whole generation lifecycle, not to token flow.
+  // First-token latency, tool planning, provider pauses, and moderation can all
+  // be silent for longer than the reconciler deadline while work is healthy.
+  let heartbeatInFlight = false;
+  const heartbeatTimer = setInterval(() => {
+    if (heartbeatInFlight) return;
+    heartbeatInFlight = true;
+    heartbeat(true)
+      .catch((error) => logger.warn({ err: error, assistantMessageId: payload.assistantMessageId }, "generation heartbeat failed"))
+      .finally(() => {
+        heartbeatInFlight = false;
+      });
+  }, 30_000);
+  heartbeatTimer.unref();
+
+  try {
   const key = streamKey(payload.assistantMessageId);
   const context = await buildContext({
     prisma,
@@ -315,7 +328,8 @@ export async function processGenerate(
     });
   }
 
-  // Derive long-term memory off the hot path (reads jsonl + re-checks PG status).
+  // Derive long-term memory off the hot path from the exact authoritative PG turn.
+  // session.jsonl is diagnostic only and is deliberately not an availability dependency.
   if (!blocked && session.memoryEnabled) {
     await enqueue({
       queue: CHAT_QUEUES.memoryExtract,
@@ -324,7 +338,7 @@ export async function processGenerate(
         assistantMessageId: payload.assistantMessageId,
         userMessageId: payload.userMessageId,
         attempt: payload.attempt,
-      },
+      } satisfies ChatMemoryExtractPayload,
       dedupeKey: idempotencyKeys.chatMemoryExtract(payload.assistantMessageId, payload.attempt),
     }).catch((error) => {
       // Reconcile scans sent messages whose memory_extracted_attempt lags.
@@ -334,6 +348,9 @@ export async function processGenerate(
 
   await scheduleOutboxDelivery();
   return { status: blocked ? "blocked" : "sent" };
+  } finally {
+    clearInterval(heartbeatTimer);
+  }
 }
 
 interface FinalizeInput {

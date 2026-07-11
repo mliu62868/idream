@@ -113,6 +113,9 @@ describe("agent image tool planning", () => {
   it("builds planner messages without embedding regex trigger rules", () => {
     const messages = buildToolPlannerMessages(context);
     expect(messages[0]?.content).toContain("Available tool");
+    expect(messages[0]?.content).toContain("BOUNDARIES");
+    expect(messages[0]?.content).toContain("mandatory constraints");
+    expect(messages[0]?.content).toContain('{"tool":null}');
     expect(messages[0]?.content).not.toContain("regex");
   });
 

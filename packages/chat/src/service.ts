@@ -1,7 +1,7 @@
 // SPEC: chat/web operations (design §3, PRD §8/§9). The web layer re-checks the
 // read-only views (never trusts BFF headers), does input moderation + rate limit
 // locally, then in ONE transaction writes user msg(sent) + assistant
-// placeholder(generating) + bumps session, enqueues chat.generate, returns
+// placeholder(pending) + bumps session; chat.generate owns pending→generating.
 // {assistantMessageId, streamUrl}. NO synchronous generation in the request.
 import type { ChatPrismaClient } from "./db.js";
 import type { Prisma } from "../generated/client/client.js";
@@ -19,6 +19,7 @@ import {
   CHAT_QUEUES,
   CHAT_TO_MAIN_EVENTS,
   idempotencyKeys,
+  type ChatGeneratePayload,
   type ChatImageRequestedPayload,
 } from "@idream/shared/contracts";
 
@@ -296,6 +297,17 @@ export async function editUserMessage(
     where: {
       sessionId: session.id,
       role: "assistant",
+      replyToMessageId: message.id,
+      deletedAt: null,
+    },
+    orderBy: { createdAt: "asc" },
+  });
+  // Compatibility for rows created before reply_to_message_id existed.
+  assistant ??= await prisma.message.findFirst({
+    where: {
+      sessionId: session.id,
+      role: "assistant",
+      replyToMessageId: null,
       deletedAt: null,
       createdAt: { gte: message.createdAt },
     },
@@ -315,7 +327,9 @@ export async function editUserMessage(
 
   await prisma.$transaction(async (tx) => {
     await lockTurn(tx, input.userId, session.id);
-    await assertTurnCapacity(tx, input.userId, session.id, policy, assistantMessageId);
+    if (moderation.status !== "blocked") {
+      await assertTurnCapacity(tx, input.userId, session.id, policy, assistantMessageId);
+    }
     await tx.message.update({
       where: { id: message.id },
       data: {
@@ -635,7 +649,7 @@ export async function confirmImageAttachment(
 }
 
 // Paid entitlements set unlimitedMessages and short-circuit this check entirely.
-async function currentUsage(prisma: ChatPrismaClient, userId: string): Promise<number> {
+async function currentUsage(prisma: Pick<ChatPrismaClient, "chatUsage">, userId: string): Promise<number> {
   const now = new Date();
   const periodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   const row = await prisma.chatUsage.findUnique({
@@ -684,7 +698,7 @@ async function assertTurnCapacity(
     },
   });
   if (!policy.unlimitedMessages) {
-    const used = await currentUsage(tx as unknown as ChatPrismaClient, userId);
+    const used = await currentUsage(tx, userId);
     if (used + pendingReservations >= FREE_DAILY_MESSAGES) {
       throw new ChatError("quota_exceeded", "Daily free message limit reached.", 402);
     }
@@ -705,10 +719,11 @@ async function enqueueGeneration(input: {
   userMessageId: string;
   attempt: number;
 }): Promise<void> {
+  const payload = input satisfies ChatGeneratePayload;
   try {
     await enqueue({
       queue: CHAT_QUEUES.generate,
-      payload: input,
+      payload,
       dedupeKey: idempotencyKeys.chatGenerate(input.assistantMessageId, input.attempt),
     });
   } catch (error) {

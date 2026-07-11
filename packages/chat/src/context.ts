@@ -129,10 +129,13 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
   let boundaries: string[] = [];
   let longTermMemories: string[] = [];
   let relationship: BuiltContext["relationship"] = null;
-  if (memoryEnabled && policy.maxMemories > 0) {
-    // Fail-closed: a genuine boundaries read error propagates and aborts the turn.
-    boundaries = await readBoundaries(userId);
 
+  // Global interaction boundaries are not memories. They remain in force for
+  // incognito sessions and zero-memory tiers, and any read failure aborts the
+  // turn rather than silently generating without them.
+  boundaries = await readBoundaries(userId);
+
+  if (memoryEnabled && policy.maxMemories > 0) {
     const query = [...recentMessages].reverse().find((m) => m.role === "user")?.content ?? "";
     const read = retrieveMemories({ userId, characterId, query, max: policy.maxMemories });
     // Outer hot-path cap. recency = 250ms; igrep mode gets its own budget + margin

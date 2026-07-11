@@ -34,72 +34,21 @@ export const chatStreamEventSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
-const entitlementSnapshotSchema = z
-  .object({
-    modelTier: z.enum(["free", "premium", "deluxe"]),
-    memoryMultiplier: z.number().min(1),
-    unlimitedMessages: z.boolean(),
-  })
-  .passthrough();
+/** Durable internal intent. Runtime context is rebuilt from current authorities. */
+export const chatGeneratePayloadSchema = z.object({
+  sessionId: z.string().min(1),
+  userMessageId: z.string().min(1),
+  assistantMessageId: z.string().min(1),
+  attempt: z.number().int().min(1),
+});
 
-const chatUserSnapshotSchema = z
-  .object({
-    userId: z.string(),
-    displayName: z.string().nullable(),
-    locale: z.string(),
-    memoryEnabled: z.boolean(),
-    mutedTags: z.array(z.string()),
-    safeModeFlags: z.record(z.string(), z.unknown()),
-  })
-  .passthrough();
-
-const chatCharacterSnapshotSchema = z
-  .object({
-    characterId: z.string(),
-    name: z.string(),
-    age: z.number().int().min(18),
-    relationship: z.string().nullable(),
-    description: z.string(),
-    systemPrompt: z.string().nullable(),
-    tags: z.array(z.string()),
-  })
-  .passthrough();
-
-const chatContextSchema = z
-  .object({
-    sessionSummary: z.string().nullable(),
-    recentMessages: z.array(modelMessageSchema),
-    longTermMemories: z.array(z.unknown()),
-    relationshipState: z.unknown().nullable(),
-  })
-  .passthrough();
-
-const chatPolicySchema = z
-  .object({
-    allowMemoryWrite: z.boolean(),
-    allowGlobalMemoryWrite: z.boolean(),
-    allowRelationshipPatch: z.boolean(),
-    outputModerationRequired: z.boolean(),
-  })
-  .passthrough();
-
-export const chatGeneratePayloadSchema = z
-  .object({
-    version: z.literal(1),
-    kind: z.literal("chat.generate"),
-    requestId: z.string(),
-    sessionId: z.string(),
-    userMessageId: z.string(),
-    assistantMessageId: z.string(),
-    streamKey: z.string(),
-    mode: z.enum(["normal", "regenerate", "no_memory", "debug"]),
-    entitlements: entitlementSnapshotSchema,
-    user: chatUserSnapshotSchema,
-    character: chatCharacterSnapshotSchema,
-    context: chatContextSchema,
-    policy: chatPolicySchema,
-  })
-  .passthrough();
+/** Exact source turn used by the asynchronous memory/relationship projector. */
+export const chatMemoryExtractPayloadSchema = z.object({
+  sessionId: z.string().min(1),
+  userMessageId: z.string().min(1),
+  assistantMessageId: z.string().min(1),
+  attempt: z.number().int().min(1),
+});
 
 export const imageGeneratePayloadSchema = z
   .object({
@@ -323,6 +272,26 @@ export const memoryRebuildPayloadSchema = z
 
 const usageSchema = z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()]));
 
+const generationQualityDimensionSchema = z
+  .object({
+    status: z.enum(["passed", "failed", "unscored"]),
+    score: z.number().min(0).max(1).optional(),
+    threshold: z.number().min(0).max(1).optional(),
+    reason: z.string().optional(),
+  })
+  .passthrough();
+
+const generationQualitySchema = z
+  .object({
+    schemaVersion: z.literal("1"),
+    evaluatorVersion: z.string(),
+    artifact: generationQualityDimensionSchema,
+    faceCount: generationQualityDimensionSchema,
+    identity: generationQualityDimensionSchema,
+    intent: generationQualityDimensionSchema,
+  })
+  .passthrough();
+
 const memoryPatchSchema = z
   .object({
     sessionSummary: z
@@ -342,6 +311,7 @@ const generationAssetSchema = z
     height: z.number().int().min(1).optional(),
     seconds: z.number().min(0).optional(),
     contentType: z.string(),
+    quality: generationQualitySchema.optional(),
   })
   .passthrough();
 
@@ -443,6 +413,7 @@ export const aiFinalizePayloadSchema = z.discriminatedUnion("kind", [
 
 export type ChatStreamEvent = z.infer<typeof chatStreamEventSchema>;
 export type ChatGeneratePayload = z.infer<typeof chatGeneratePayloadSchema>;
+export type ChatMemoryExtractPayload = z.infer<typeof chatMemoryExtractPayloadSchema>;
 export type ImageGeneratePayload = z.infer<typeof imageGeneratePayloadSchema>;
 export type VideoGeneratePayload = z.infer<typeof videoGeneratePayloadSchema>;
 export type ChatImageRequestedPayload = z.infer<typeof chatImageRequestedPayloadSchema>;

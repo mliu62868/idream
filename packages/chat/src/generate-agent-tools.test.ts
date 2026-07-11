@@ -48,7 +48,7 @@ vi.mock("./queue.js", () => ({ enqueue: enqueueMock }));
 
 const { processGenerate } = await import("./generate.js");
 
-type CreateCall = { data: Record<string, unknown> };
+type CreateCall = { data: Record<string, unknown>; where?: Record<string, unknown> };
 
 // `completedSourceAttachment` seeds the edit_last_image lookup (generate.ts's
 // buildImageRequestFromPlan queries tx.messageAttachment.findFirst); undefined
@@ -169,6 +169,38 @@ describe("chat generate agent image tool", () => {
     buildContextMock.mockResolvedValue(context);
     moderationMock.mockResolvedValue({ status: "passed", confidence: 0.5 });
     supportsToolsState.value = true;
+  });
+
+  it("renews the generation lease while the provider is silent", async () => {
+    vi.useFakeTimers();
+    try {
+      supportsToolsState.value = false;
+      buildContextMock.mockResolvedValue({
+        ...context,
+        policy: { ...context.policy, imageToolEnabled: false },
+      });
+      streamMock.mockImplementation(async function* silentFirstToken() {
+        await new Promise((resolve) => setTimeout(resolve, 65_000));
+        yield { delta: "hello", done: true };
+      });
+      const { prisma, rootMessageUpdates } = fakePrisma();
+
+      const generation = processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        prisma,
+      );
+      await vi.advanceTimersByTimeAsync(61_000);
+
+      const leaseRenewals = rootMessageUpdates.filter(
+        (call) => call.where?.status === "generating",
+      );
+      expect(leaseRenewals).toHaveLength(2);
+
+      await vi.advanceTimersByTimeAsync(4_000);
+      await expect(generation).resolves.toEqual({ status: "sent" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("executes the model-selected async image tool by creating a requesting attachment and outbox event", async () => {

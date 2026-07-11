@@ -23,11 +23,14 @@
 - session create TOCTOU：事务 advisory lock 后 read/create。
 - 同 session 双提交与 free quota 并发穿透：user/session lock + pending reservation + hourly limiter。
 - commit 后 enqueue 丢失：assistant `pending` 是 durable intent；reconciler 补投，failed deterministic job revive。
-- 长生成误回收：`generating` lease heartbeat + compare-and-update stale recovery。
+- 长生成误回收：覆盖首 token、工具规划、流式停顿与审核阶段的独立 30s lease heartbeat + compare-and-update stale recovery。
 - 派生任务丢失/重复：`reply_to_message_id`、`memory_extracted_attempt`、relationship turn key。
 - 上下文顺序与分页：相同 TX timestamp 稳定排序；GET 返回最新 200 条且只查对应 attachments。
 - 摘要冻结：预算优先保留最新 user/assistant turn。
 - prompt hierarchy：新增 `prompt.ts`，派生 context 统一 JSON data block，tool planner 与主回复共享规则。
+- 边界执行：global boundaries 与长期记忆解耦，无记忆/零记忆额度会话仍每轮 fail-closed 读取；tool planner 明确禁止规划越界调用。
+- 队列契约漂移：`chat.generate` / `chat.memory.extract` payload schema 与类型统一到 `@idream/shared`，worker 入口做运行时解析，不再强制断言。
+- 记忆输入权威：memory extractor 按 `reply_to_message_id` 精确读取 PG turn；session.jsonl 只作 best-effort 诊断轨迹，不进入记忆可用性链路。
 - 资源无界：12k 单消息、64KiB HTTP body、recent transcript 字符预算、memory/relationship 上限、Redis Stream 24h TTL。
 - 文件写覆盖：memory/relationship authority file 的 read-modify-write 按路径互斥。
 - 权威遗漏：private character 与未接受 age gate 的用户在 Chat service 入口拒绝。

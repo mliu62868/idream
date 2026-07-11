@@ -10,7 +10,12 @@ import { appendStreamEvent, streamKey } from "./stream.js";
 import { deliverPendingOutbox } from "./outbox.js";
 import { reprocessPendingInbox } from "./inbox.js";
 import { enqueue } from "./queue.js";
-import { CHAT_QUEUES, idempotencyKeys } from "@idream/shared/contracts";
+import {
+  CHAT_QUEUES,
+  idempotencyKeys,
+  type ChatGeneratePayload,
+  type ChatMemoryExtractPayload,
+} from "@idream/shared/contracts";
 
 const STUCK_GENERATING_MS = 2 * 60_000; // 2 minutes
 const PENDING_REQUEUE_MS = 5_000;
@@ -53,7 +58,7 @@ export async function reconcile(
         assistantMessageId: message.id,
         userMessageId: message.replyToMessageId,
         attempt: message.attempt,
-      },
+      } satisfies ChatGeneratePayload,
       dedupeKey: idempotencyKeys.chatGenerate(message.id, message.attempt),
     });
     requeuedPending += 1;
@@ -98,7 +103,7 @@ export async function reconcile(
         assistantMessageId: message.id,
         userMessageId: message.replyToMessageId,
         attempt: message.attempt,
-      },
+      } satisfies ChatMemoryExtractPayload,
       dedupeKey: idempotencyKeys.chatMemoryExtract(message.id, message.attempt),
     });
     scheduledMemory += 1;

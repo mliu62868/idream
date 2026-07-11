@@ -2,11 +2,16 @@
 // generate / memory.extract / outbox.deliver / inbox.consume / reconcile /
 // maintain. Single instance (writes local files). Graceful shutdown closes all.
 import type { Worker } from "bullmq";
-import { CHAT_QUEUES, MAIN_TO_CHAT_QUEUE } from "@idream/shared/contracts";
+import {
+  CHAT_QUEUES,
+  MAIN_TO_CHAT_QUEUE,
+  chatGeneratePayloadSchema,
+  chatMemoryExtractPayloadSchema,
+} from "@idream/shared/contracts";
 import { runWorker } from "./queue.js";
 import { logger } from "./logger.js";
-import { processGenerate, type GeneratePayload } from "./generate.js";
-import { processMemoryExtract, type MemoryExtractPayload } from "./memory.js";
+import { processGenerate } from "./generate.js";
+import { processMemoryExtract } from "./memory.js";
 import { deliverPendingOutbox } from "./outbox.js";
 import { consumeInbound, type InboundEvent } from "./inbox.js";
 import { reconcile } from "./reconcile.js";
@@ -18,11 +23,11 @@ const MAINTAIN_INTERVAL_MS = 60 * 60_000;
 export function startWorker(): { close: () => Promise<void> } {
   const workers: Worker[] = [
     runWorker(CHAT_QUEUES.generate, async (job) => {
-      await processGenerate(job.payload as GeneratePayload);
+      await processGenerate(chatGeneratePayloadSchema.parse(job.payload));
     }, { concurrency: 2 }),
 
     runWorker(CHAT_QUEUES.memoryExtract, async (job) => {
-      await processMemoryExtract(job.payload as MemoryExtractPayload);
+      await processMemoryExtract(chatMemoryExtractPayloadSchema.parse(job.payload));
     }, { concurrency: 1 }),
 
     runWorker(CHAT_QUEUES.outboxDeliver, async () => {

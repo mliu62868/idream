@@ -1,6 +1,6 @@
 // SPEC: chat.memory.extract (P1-1, design §5). Derive long-term memory OFF the hot
-// path: read the turn, re-check PG authority, write mem/*.md. PRIVACY IRON LAW:
-// canMemorize re-queries PG message status/safety — never trust the jsonl text;
+// path: read the exact PG turn, re-check authority, write mem/*.md. PRIVACY IRON LAW:
+// canMemorize re-queries PG message status/safety — never trust diagnostic trace text;
 // blocked/deleted/no-memory content must NEVER become long-term memory (PRD §7.2).
 // Each memory line carries source_message_ids back-linking PG.
 import type { ChatPrismaClient } from "./db.js";
@@ -10,19 +10,13 @@ import { consolidateMemories } from "./memories.js";
 import { extractCandidates } from "./extract.js";
 import { resolvePolicy, snapshotFromView } from "./policy.js";
 import { recordOutbox } from "./outbox.js";
-import { CHAT_TO_MAIN_EVENTS } from "@idream/shared/contracts";
+import { CHAT_TO_MAIN_EVENTS, type ChatMemoryExtractPayload } from "@idream/shared/contracts";
 
 // Re-export the extractor surface so existing importers keep their path.
 export { deriveCandidates } from "./extract.js";
 export type { MemoryCandidate } from "./extract.js";
 
-export interface MemoryExtractPayload {
-  sessionId: string;
-  assistantMessageId: string;
-  /** Exact source turn. Optional only for draining jobs created before this field shipped. */
-  userMessageId?: string;
-  attempt: number;
-}
+export type MemoryExtractPayload = ChatMemoryExtractPayload;
 
 export async function processMemoryExtract(
   payload: MemoryExtractPayload,
@@ -39,7 +33,7 @@ export async function processMemoryExtract(
   if (!assistant) return { written: 0, skipped: "no_assistant" };
   if (assistant.attempt !== payload.attempt) return { written: 0, skipped: "stale_attempt" };
   if (assistant.memoryExtractedAttempt >= payload.attempt) return { written: 0, skipped: "already_extracted" };
-  const sourceId = payload.userMessageId ?? assistant.replyToMessageId;
+  const sourceId = payload.userMessageId || assistant.replyToMessageId;
   const userMessage = sourceId
     ? await prisma.message.findUnique({ where: { id: sourceId } })
     : await prisma.message.findFirst({
