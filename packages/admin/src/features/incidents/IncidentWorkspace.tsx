@@ -3,7 +3,11 @@
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, ArrowRight, CheckCircle2, RefreshCcw, X } from "lucide-react";
-import type { OpsIncident } from "@idream/shared/admin";
+import {
+  incidentListResponseSchema,
+  type AdminListResponse,
+  type OpsIncident,
+} from "@idream/shared/admin";
 import { adminV2Request, setWorkspaceUrl } from "@/lib/admin-v2-api";
 import { buildIncidentQuery, type IncidentQueryDraft } from "./query";
 import {
@@ -16,12 +20,7 @@ import {
   WorkspaceButton,
 } from "../operations/WorkspaceUi";
 
-type IncidentList = {
-  items: OpsIncident[];
-  pageInfo: { endCursor: string | null; hasNextPage: boolean };
-  asOf: string;
-  freshness: "fresh" | "stale" | "degraded";
-};
+type IncidentList = AdminListResponse<OpsIncident>;
 
 type IncidentDetail = {
   incident: OpsIncident;
@@ -65,33 +64,40 @@ export function IncidentWorkspace({ canManage }: { canManage: boolean }) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const firstQuery = useRef(query);
+  const listRequestId = useRef(0);
+  const detailRequestId = useRef(0);
 
   const loadList = useCallback(async (next: IncidentQueryDraft, append = false) => {
+    const requestId = ++listRequestId.current;
     setLoading(!append);
     setError(null);
     try {
       const response = await adminV2Request<IncidentList>(
         `/api/v2/admin/incidents?${buildIncidentQuery(next)}`,
+        { schema: incidentListResponseSchema },
       );
+      if (requestId !== listRequestId.current) return;
       setList((current) => append && current
         ? { ...response, items: [...current.items, ...response.items] }
         : response);
     } catch (loadError) {
-      setError(message(loadError));
+      if (requestId === listRequestId.current) setError(message(loadError));
     } finally {
-      setLoading(false);
+      if (requestId === listRequestId.current) setLoading(false);
     }
   }, []);
 
   const loadDetail = useCallback(async (incidentId: string) => {
+    const requestId = ++detailRequestId.current;
     setDetailLoading(true);
     setError(null);
     try {
-      setDetail(await adminV2Request<IncidentDetail>(`/api/v2/admin/incidents/${encodeURIComponent(incidentId)}`));
+      const response = await adminV2Request<IncidentDetail>(`/api/v2/admin/incidents/${encodeURIComponent(incidentId)}`);
+      if (requestId === detailRequestId.current) setDetail(response);
     } catch (loadError) {
-      setError(message(loadError));
+      if (requestId === detailRequestId.current) setError(message(loadError));
     } finally {
-      setDetailLoading(false);
+      if (requestId === detailRequestId.current) setDetailLoading(false);
     }
   }, []);
 
@@ -120,6 +126,7 @@ export function IncidentWorkspace({ canManage }: { canManage: boolean }) {
   }
 
   function selectIncident(id: string | null) {
+    detailRequestId.current += 1;
     setSelectedId(id);
     setDetail(null);
     updateUrl(query, id);
@@ -204,7 +211,7 @@ export function IncidentWorkspace({ canManage }: { canManage: boolean }) {
 
           {selectedId ? (
             detailLoading && !detail ? <LoadingWorkspace label="Loading incident detail" /> : detail ? (
-              <IncidentInspector busy={busy} canManage={canManage} detail={detail} onClose={() => selectIncident(null)} onMutate={mutate} />
+              <IncidentInspector busy={busy} canManage={canManage} detail={detail} key={detail.incident.id} onClose={() => selectIncident(null)} onMutate={mutate} />
             ) : null
           ) : (
             <aside className="hidden rounded-xl bg-[var(--ad-surface-subtle)] p-8 text-sm text-[var(--ad-text-muted)] xl:block">Select an incident to inspect occurrences, mitigation scope, and recovery evidence.</aside>
@@ -230,6 +237,8 @@ function IncidentInspector({ busy, canManage, detail, onClose, onMutate }: {
   const [action, setAction] = useState<IncidentPlan["action"]>("retry_eligible");
   const [targetVersion, setTargetVersion] = useState(incident.rollbackTarget ?? "");
   const [plan, setPlan] = useState<IncidentPlan | null>(null);
+  const [planIdempotencyKey, setPlanIdempotencyKey] = useState(() => crypto.randomUUID());
+  const [resolveIdempotencyKey] = useState(() => crypto.randomUUID());
   const [confirmation, setConfirmation] = useState("");
   const [evidence, setEvidence] = useState("");
 
@@ -260,11 +269,11 @@ function IncidentInspector({ busy, canManage, detail, onClose, onMutate }: {
             </form>
 
             <section className="space-y-3 border-t border-[var(--ad-border)] pt-5" aria-labelledby="mitigation-plan-title"><h4 className="text-sm font-semibold" id="mitigation-plan-title">Mitigation plan</h4><div className="grid gap-3 sm:grid-cols-2"><Select label="Action" onChange={(value) => { setAction(value as IncidentPlan["action"]); setPlan(null); }} options={["retry_eligible", "refund", "pause_route", "rollback"]} value={action} /><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Rollback target<input className={fieldClass} disabled={action !== "rollback"} onChange={(event) => setTargetVersion(event.target.value)} value={targetVersion} /></label></div>
-              <WorkspaceButton disabled={busy || (action === "rollback" && !targetVersion.trim())} onClick={() => void onMutate("Frozen mitigation preview created", async () => { const next = await adminV2Request<IncidentPlan>(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/action-plans/preview`, { method: "POST", body: { action, targetVersion: action === "rollback" ? targetVersion : undefined } }); setPlan(next); })}>Preview eligible scope</WorkspaceButton>
-              {plan ? <div className="rounded-md bg-[var(--ad-yellow-bg)] p-3 text-sm"><p><strong>{plan.eligibleIds?.length ?? plan.eligibleOccurrenceIds?.length ?? 0}</strong> eligible · <strong>{plan.skippedIds?.length ?? plan.skippedOccurrenceIds?.length ?? 0}</strong> skipped</p><code className="mt-2 block break-all text-xs">{expectedPlanConfirmation}</code><label className="mt-3 grid gap-1 text-xs font-semibold">Type confirmation<input className={fieldClass} onChange={(event) => setConfirmation(event.target.value)} value={confirmation} /></label><div className="mt-3"><WorkspaceButton disabled={busy || confirmation !== expectedPlanConfirmation} tone="danger" onClick={() => void onMutate("Mitigation plan executed", () => adminV2Request(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/action-plans/${encodeURIComponent(plan.id)}/execute`, { method: "POST", idempotencyKey: crypto.randomUUID(), body: { entityVersion: incident.version, confirmation } }))}>Execute frozen plan</WorkspaceButton></div></div> : null}
+              <WorkspaceButton disabled={busy || (action === "rollback" && !targetVersion.trim())} onClick={() => void onMutate("Frozen mitigation preview created", async () => { const next = await adminV2Request<IncidentPlan>(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/action-plans/preview`, { method: "POST", body: { action, targetVersion: action === "rollback" ? targetVersion : undefined } }); setPlan(next); setPlanIdempotencyKey(crypto.randomUUID()); })}>Preview eligible scope</WorkspaceButton>
+              {plan ? <div className="rounded-md bg-[var(--ad-yellow-bg)] p-3 text-sm"><p><strong>{plan.eligibleIds?.length ?? plan.eligibleOccurrenceIds?.length ?? 0}</strong> eligible · <strong>{plan.skippedIds?.length ?? plan.skippedOccurrenceIds?.length ?? 0}</strong> skipped</p><code className="mt-2 block break-all text-xs">{expectedPlanConfirmation}</code><label className="mt-3 grid gap-1 text-xs font-semibold">Type confirmation<input className={fieldClass} onChange={(event) => setConfirmation(event.target.value)} value={confirmation} /></label><div className="mt-3"><WorkspaceButton disabled={busy || confirmation !== expectedPlanConfirmation} tone="danger" onClick={() => void onMutate("Mitigation plan executed", () => adminV2Request(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/action-plans/${encodeURIComponent(plan.id)}/execute`, { method: "POST", idempotencyKey: planIdempotencyKey, body: { entityVersion: incident.version, confirmation } }))}>Execute frozen plan</WorkspaceButton></div></div> : null}
             </section>
 
-            <section className="space-y-3 border-t border-[var(--ad-border)] pt-5" aria-labelledby="incident-verification-title"><h4 className="text-sm font-semibold" id="incident-verification-title">Recovery verification</h4><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Evidence reference<input className={fieldClass} onChange={(event) => setEvidence(event.target.value)} placeholder="monitor, dashboard, or runbook reference" value={evidence} /></label><p className="text-xs leading-5 text-[var(--ad-text-muted)]">Passing records all five required checks: success rate, signature growth, backlog, failed-request plan, and settlement.</p><div className="flex flex-wrap gap-2"><WorkspaceButton disabled={busy || !canVerify || !evidence.trim()} onClick={() => void onMutate("Recovery verification recorded", () => adminV2Request(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/verification`, { method: "POST", body: { entityVersion: incident.version, state: "passed", evidenceRefs: [evidence.trim()], checks: { successRateRecovered: true, signatureGrowthStopped: true, backlogRecovering: true, failedRequestPlanComplete: true, settlementReconciled: true } } }))}><CheckCircle2 className="h-4 w-4" />Mark recovery verified</WorkspaceButton><WorkspaceButton disabled={busy || !canResolve || reason.trim().length < 3} tone="primary" onClick={() => void onMutate("Incident resolve command accepted", () => adminV2Request(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/commands/resolve`, { method: "POST", idempotencyKey: crypto.randomUUID(), body: { entityVersion: incident.version, reason: { code: "recovery_verified", summary: reason.trim() }, confirmation: `${incident.id}:resolve` } }))}>Resolve incident</WorkspaceButton></div>{!canVerify ? <p className="text-xs text-[var(--ad-yellow-text)]"><AlertTriangle className="mr-1 inline h-3.5 w-3.5" />Execute mitigation before verification.</p> : null}</section>
+        <section className="space-y-3 border-t border-[var(--ad-border)] pt-5" aria-labelledby="incident-verification-title"><h4 className="text-sm font-semibold" id="incident-verification-title">Recovery verification</h4><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Evidence reference<input className={fieldClass} onChange={(event) => setEvidence(event.target.value)} placeholder="monitor, dashboard, or runbook reference" value={evidence} /></label><p className="text-xs leading-5 text-[var(--ad-text-muted)]">Passing records all five required checks: success rate, signature growth, backlog, failed-request plan, and settlement.</p><div className="flex flex-wrap gap-2"><WorkspaceButton disabled={busy || !canVerify || !evidence.trim()} onClick={() => void onMutate("Recovery verification recorded", () => adminV2Request(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/verification`, { method: "POST", body: { entityVersion: incident.version, state: "passed", evidenceRefs: [evidence.trim()], checks: { successRateRecovered: true, signatureGrowthStopped: true, backlogRecovering: true, failedRequestPlanComplete: true, settlementReconciled: true } } }))}><CheckCircle2 className="h-4 w-4" />Mark recovery verified</WorkspaceButton><WorkspaceButton disabled={busy || !canResolve || reason.trim().length < 3} tone="primary" onClick={() => void onMutate("Incident resolve command accepted", () => adminV2Request(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/commands/resolve`, { method: "POST", idempotencyKey: resolveIdempotencyKey, body: { entityVersion: incident.version, reason: { code: "recovery_verified", summary: reason.trim() }, confirmation: `${incident.id}:resolve` } }))}>Resolve incident</WorkspaceButton></div>{!canVerify ? <p className="text-xs text-[var(--ad-yellow-text)]"><AlertTriangle className="mr-1 inline h-3.5 w-3.5" />Execute mitigation before verification.</p> : null}</section>
           </>
         ) : <p className="rounded-md bg-[var(--ad-surface-subtle)] p-3 text-sm text-[var(--ad-text-muted)]">Read access only. Incident actions require <code>ops.incident.manage</code>.</p>}
       </div>

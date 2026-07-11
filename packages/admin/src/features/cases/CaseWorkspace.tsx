@@ -3,7 +3,11 @@
 import type { FormEvent, KeyboardEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowRight, CheckCircle2, ClipboardCheck, RefreshCcw, X } from "lucide-react";
-import type { OperationsCase } from "@idream/shared/admin";
+import {
+  operationsCaseListResponseSchema,
+  type AdminListResponse,
+  type OperationsCase,
+} from "@idream/shared/admin";
 import { adminV2Request, setWorkspaceUrl } from "@/lib/admin-v2-api";
 import { buildCaseQuery, type CaseQueryDraft } from "./query";
 import {
@@ -16,12 +20,7 @@ import {
   WorkspaceButton,
 } from "../operations/WorkspaceUi";
 
-type CaseList = {
-  items: OperationsCase[];
-  pageInfo: { endCursor: string | null; hasNextPage: boolean };
-  asOf: string;
-  freshness: "fresh" | "stale" | "degraded";
-};
+type CaseList = AdminListResponse<OperationsCase>;
 
 type CaseEvidence = {
   id: string;
@@ -62,31 +61,39 @@ export function CaseWorkspace({ canAssign, canDecide }: { canAssign: boolean; ca
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const firstQuery = useRef(query);
+  const listRequestId = useRef(0);
+  const detailRequestId = useRef(0);
 
   const loadList = useCallback(async (next: CaseQueryDraft, append = false) => {
+    const requestId = ++listRequestId.current;
     setLoading(!append);
     setError(null);
     try {
-      const response = await adminV2Request<CaseList>(`/api/v2/admin/cases?${buildCaseQuery(next)}`);
+      const response = await adminV2Request<CaseList>(`/api/v2/admin/cases?${buildCaseQuery(next)}`, {
+        schema: operationsCaseListResponseSchema,
+      });
+      if (requestId !== listRequestId.current) return;
       setList((current) => append && current
         ? { ...response, items: [...current.items, ...response.items] }
         : response);
     } catch (loadError) {
-      setError(message(loadError));
+      if (requestId === listRequestId.current) setError(message(loadError));
     } finally {
-      setLoading(false);
+      if (requestId === listRequestId.current) setLoading(false);
     }
   }, []);
 
   const loadDetail = useCallback(async (caseId: string) => {
+    const requestId = ++detailRequestId.current;
     setDetailLoading(true);
     setError(null);
     try {
-      setDetail(await adminV2Request<CaseDetail>(`/api/v2/admin/cases/${encodeURIComponent(caseId)}`));
+      const response = await adminV2Request<CaseDetail>(`/api/v2/admin/cases/${encodeURIComponent(caseId)}`);
+      if (requestId === detailRequestId.current) setDetail(response);
     } catch (loadError) {
-      setError(message(loadError));
+      if (requestId === detailRequestId.current) setError(message(loadError));
     } finally {
-      setDetailLoading(false);
+      if (requestId === detailRequestId.current) setDetailLoading(false);
     }
   }, []);
 
@@ -123,6 +130,7 @@ export function CaseWorkspace({ canAssign, canDecide }: { canAssign: boolean; ca
   }
 
   function selectCase(id: string | null) {
+    detailRequestId.current += 1;
     setSelectedId(id);
     setDetail(null);
     updateUrl(query, id);
@@ -171,7 +179,7 @@ export function CaseWorkspace({ canAssign, canDecide }: { canAssign: boolean; ca
             {list?.items.map((adminCase) => <CaseRow adminCase={adminCase} active={selectedId === adminCase.id} key={adminCase.id} onSelect={() => selectCase(adminCase.id)} referenceTime={list.asOf} />)}
             {list?.pageInfo.hasNextPage && list.pageInfo.endCursor ? <WorkspaceButton disabled={loading} onClick={() => void loadList({ ...query, cursor: list.pageInfo.endCursor ?? undefined }, true)}><RefreshCcw className="h-4 w-4" />Load more</WorkspaceButton> : null}
           </div>
-          {selectedId ? detailLoading && !detail ? <LoadingWorkspace label="Loading case detail" /> : detail ? <CaseInspector busy={busy} canAssign={canAssign} canDecide={canDecide} detail={detail} onClose={() => selectCase(null)} onMutate={mutate} /> : null : <aside className="hidden rounded-xl bg-[var(--ad-surface-subtle)] p-8 text-sm text-[var(--ad-text-muted)] xl:block">Select a case to inspect evidence and complete the decision loop.</aside>}
+          {selectedId ? detailLoading && !detail ? <LoadingWorkspace label="Loading case detail" /> : detail ? <CaseInspector busy={busy} canAssign={canAssign} canDecide={canDecide} detail={detail} key={detail.case.id} onClose={() => selectCase(null)} onMutate={mutate} /> : null : <aside className="hidden rounded-xl bg-[var(--ad-surface-subtle)] p-8 text-sm text-[var(--ad-text-muted)] xl:block">Select a case to inspect evidence and complete the decision loop.</aside>}
         </div>
       )}
     </section>
@@ -206,6 +214,7 @@ function CaseInspector({ busy, canAssign, canDecide, detail, onClose, onMutate }
   const [summary, setSummary] = useState(adminCase.resolutionSummary ?? "");
   const [evidenceRefs, setEvidenceRefs] = useState(defaultEvidence);
   const [confirmation, setConfirmation] = useState("");
+  const [closeIdempotencyKey] = useState(() => crypto.randomUUID());
   const refs = evidenceRefs.split(",").map((item) => item.trim()).filter(Boolean);
   const closeConfirmation = `${adminCase.id}:close`;
   const canClose = adminCase.status === "resolved" && ["passed", "overridden"].includes(adminCase.verification?.state ?? "");
@@ -219,7 +228,7 @@ function CaseInspector({ busy, canAssign, canDecide, detail, onClose, onMutate }
       {canAssign ? <form className="space-y-3 border-t border-[var(--ad-border)] pt-5" onSubmit={(event) => { event.preventDefault(); void onMutate("Case assignment saved", () => adminV2Request(`/api/v2/admin/cases/${encodeURIComponent(adminCase.id)}/assignment`, { method: "POST", body: { entityVersion: adminCase.version, ownerId: ownerId.trim() || null, priority, reason: reason.trim() } })); }}><h4 className="text-sm font-semibold">Assignment</h4><div className="grid gap-3 sm:grid-cols-2"><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Owner ID<input className={fieldClass} onChange={(event) => setOwnerId(event.target.value)} value={ownerId} /></label><Select label="Priority" onChange={(value) => setPriority(value as OperationsCase["priority"])} options={["urgent", "high", "normal", "low"]} value={priority} /></div><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Audit reason<input className={fieldClass} onChange={(event) => setReason(event.target.value)} required value={reason} /></label><WorkspaceButton disabled={busy || reason.trim().length < 3} tone="primary" type="submit">Save assignment</WorkspaceButton></form> : null}
 
       {canDecide ? <section className="space-y-4 border-t border-[var(--ad-border)] pt-5" aria-labelledby="case-decision-title"><h4 className="text-sm font-semibold" id="case-decision-title">Decision and verification</h4><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Decision<input className={fieldClass} onChange={(event) => setDecision(event.target.value)} placeholder="approve, reject, refund, restore…" value={decision} /></label><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Resolution summary<textarea className={textAreaClass} onChange={(event) => setSummary(event.target.value)} value={summary} /></label><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Evidence IDs (comma separated)<input className={fieldClass} onChange={(event) => setEvidenceRefs(event.target.value)} value={evidenceRefs} /></label><div className="flex flex-wrap gap-2"><WorkspaceButton disabled={busy || !decision.trim() || !summary.trim() || refs.length === 0} onClick={() => void onMutate("Case decision recorded", () => adminV2Request(`/api/v2/admin/cases/${encodeURIComponent(adminCase.id)}/decisions`, { method: "POST", body: { entityVersion: adminCase.version, decision: decision.trim(), summary: summary.trim(), evidenceRefs: refs } }))}><ClipboardCheck className="h-4 w-4" />Record decision</WorkspaceButton><WorkspaceButton disabled={busy || !adminCase.resolutionSummary || refs.length === 0} onClick={() => void onMutate("Downstream outcome verified", () => adminV2Request(`/api/v2/admin/cases/${encodeURIComponent(adminCase.id)}/verification`, { method: "POST", body: { entityVersion: adminCase.version, state: "passed", evidenceRefs: refs } }))}><CheckCircle2 className="h-4 w-4" />Verify outcome</WorkspaceButton></div>
-        <div className="rounded-md bg-[var(--ad-surface-subtle)] p-3"><code className="block break-all text-xs">{closeConfirmation}</code><label className="mt-3 grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Type confirmation<input className={fieldClass} onChange={(event) => setConfirmation(event.target.value)} value={confirmation} /></label><div className="mt-3"><WorkspaceButton disabled={busy || !canClose || confirmation !== closeConfirmation || reason.trim().length < 3} tone="danger" onClick={() => void onMutate("Case close command accepted", () => adminV2Request(`/api/v2/admin/cases/${encodeURIComponent(adminCase.id)}/commands/close`, { method: "POST", idempotencyKey: crypto.randomUUID(), body: { entityVersion: adminCase.version, reason: { code: "outcome_verified", summary: reason.trim() }, confirmation } }))}>Close case</WorkspaceButton></div></div>
+        <div className="rounded-md bg-[var(--ad-surface-subtle)] p-3"><code className="block break-all text-xs">{closeConfirmation}</code><label className="mt-3 grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Type confirmation<input className={fieldClass} onChange={(event) => setConfirmation(event.target.value)} value={confirmation} /></label><div className="mt-3"><WorkspaceButton disabled={busy || !canClose || confirmation !== closeConfirmation || reason.trim().length < 3} tone="danger" onClick={() => void onMutate("Case close command accepted", () => adminV2Request(`/api/v2/admin/cases/${encodeURIComponent(adminCase.id)}/commands/close`, { method: "POST", idempotencyKey: closeIdempotencyKey, body: { entityVersion: adminCase.version, reason: { code: "outcome_verified", summary: reason.trim() }, confirmation } }))}>Close case</WorkspaceButton></div></div>
       </section> : <p className="rounded-md bg-[var(--ad-surface-subtle)] p-3 text-sm text-[var(--ad-text-muted)]">Read access only. Decisions require <code>case.decide</code>.</p>}
     </div></aside>;
 }

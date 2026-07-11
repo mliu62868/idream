@@ -8,12 +8,17 @@ type ApiEnvelope<T> =
   | { ok: true; data: T }
   | { ok: false; error: ApiError };
 
+type RuntimeSchema<T> = {
+  parse(value: unknown): T;
+};
+
 export async function adminV2Request<T>(
   path: string,
   options: {
     method?: "GET" | "POST" | "PATCH";
     body?: unknown;
     idempotencyKey?: string;
+    schema?: RuntimeSchema<T>;
   } = {},
 ) {
   const headers = new Headers();
@@ -26,9 +31,15 @@ export async function adminV2Request<T>(
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
     cache: "no-store",
   });
-  const payload = (await response.json()) as ApiEnvelope<T>;
+  const raw = await response.text();
+  let payload: ApiEnvelope<T>;
+  try {
+    payload = JSON.parse(raw) as ApiEnvelope<T>;
+  } catch {
+    throw new Error(`Admin authority request failed (${response.status})`);
+  }
   if (!payload.ok) throw new Error(payload.error.message ?? payload.error.code ?? "Admin request failed");
-  return payload.data;
+  return options.schema ? options.schema.parse(payload.data) : payload.data;
 }
 
 export function setWorkspaceUrl(params: URLSearchParams) {
