@@ -97,6 +97,7 @@ import {
   ensureReviewCaseForAppeal,
   ensureReviewCaseForReport,
   recordReviewCaseDecision,
+  synchronizeSupportCaseFromRequest,
 } from "@/server/modules/admin-v2/cases/service";
 
 const FEATURED_SETTING_KEY = "feed.featured";
@@ -3610,19 +3611,23 @@ async function patchSupportRequest(request: Request, ticketId: string) {
   const before = await prisma.supportRequest.findUnique({ where: { ticketId } });
   if (!before) throw Errors.notFound("Support request not found");
   const terminal = body.status === "resolved" || body.status === "closed";
-  const updated = await prisma.supportRequest.update({
-    where: { ticketId },
-    data: {
-      assignedToId: body.assignedToId === undefined ? undefined : body.assignedToId,
-      priority: body.priority,
-      resolutionNotes: body.resolutionNotes === undefined ? undefined : body.resolutionNotes,
-      resolvedAt: body.status === undefined ? undefined : terminal ? new Date() : null,
-      status: body.status,
-    },
-    include: {
-      assignedTo: { select: { id: true, email: true, displayName: true, role: true } },
-      user: { select: { id: true, email: true, displayName: true, role: true } },
-    },
+  const updated = await prisma.$transaction(async (tx) => {
+    const row = await tx.supportRequest.update({
+      where: { ticketId },
+      data: {
+        assignedToId: body.assignedToId === undefined ? undefined : body.assignedToId,
+        priority: body.priority,
+        resolutionNotes: body.resolutionNotes === undefined ? undefined : body.resolutionNotes,
+        resolvedAt: body.status === undefined ? undefined : terminal ? new Date() : null,
+        status: body.status,
+      },
+      include: {
+        assignedTo: { select: { id: true, email: true, displayName: true, role: true } },
+        user: { select: { id: true, email: true, displayName: true, role: true } },
+      },
+    });
+    await synchronizeSupportCaseFromRequest(tx, row);
+    return row;
   });
 
   await writeAudit(request, actor, {
@@ -3669,20 +3674,24 @@ async function escalateSupportRequest(request: Request, ticketId: string) {
     throw Errors.badRequest("Only due-soon or overdue support requests can be escalated");
   }
   const escalatedAt = new Date();
-  const updated = await prisma.supportRequest.update({
-    where: { ticketId },
-    data: {
-      assignedToId: before.assignedToId ?? actor.id,
-      priority: 1,
-      slaEscalatedAt: escalatedAt,
-      slaEscalatedById: actor.id,
-      slaEscalationReason: body.reason,
-      status: before.status === "received" ? "open" : before.status,
-    },
-    include: {
-      assignedTo: { select: { id: true, email: true, displayName: true, role: true } },
-      user: { select: { id: true, email: true, displayName: true, role: true } },
-    },
+  const updated = await prisma.$transaction(async (tx) => {
+    const row = await tx.supportRequest.update({
+      where: { ticketId },
+      data: {
+        assignedToId: before.assignedToId ?? actor.id,
+        priority: 1,
+        slaEscalatedAt: escalatedAt,
+        slaEscalatedById: actor.id,
+        slaEscalationReason: body.reason,
+        status: before.status === "received" ? "open" : before.status,
+      },
+      include: {
+        assignedTo: { select: { id: true, email: true, displayName: true, role: true } },
+        user: { select: { id: true, email: true, displayName: true, role: true } },
+      },
+    });
+    await synchronizeSupportCaseFromRequest(tx, row);
+    return row;
   });
 
   await writeAudit(request, actor, {

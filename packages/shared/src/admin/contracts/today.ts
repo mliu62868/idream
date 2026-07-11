@@ -14,6 +14,8 @@ export const todaySourceTypeSchema = z.enum([
   "admin_case",
   "ops_incident",
   "control_plane_command",
+  "character_release",
+  "creative_run",
 ]);
 
 export const todayWorkModeSchema = z.enum([
@@ -66,6 +68,16 @@ export const todayProjectionSchema = z
     freshness: adminFreshnessSchema,
     workMode: todayWorkModeSchema,
     rankingPolicyVersion: z.string().trim().min(1),
+  })
+  .strict();
+
+export const operationalWorkPreferenceUpdateSchema = z
+  .object({
+    sourceType: todaySourceTypeSchema,
+    sourceId: adminIdSchema,
+    watching: z.boolean(),
+    pinned: z.boolean(),
+    snoozedUntil: adminIsoDateTimeSchema.nullable(),
   })
   .strict();
 

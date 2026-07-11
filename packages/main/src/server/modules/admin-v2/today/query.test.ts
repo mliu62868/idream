@@ -153,3 +153,88 @@ describe("Today authoritative projection", () => {
     expect(response.status).toBe(401);
   });
 });
+
+describe("Today domain roots", () => {
+  const suffix = randomUUID();
+  const actorId = `today-root-admin-${suffix}`;
+  const projectId = `today-project-${suffix}`;
+  const releaseId = `today-release-${suffix}`;
+  const creativeRunId = `today-creative-${suffix}`;
+
+  beforeAll(async () => {
+    await prisma.user.create({
+      data: { id: actorId, email: `${actorId}@example.test`, role: "admin", status: "active" },
+    });
+    await prisma.characterProject.create({
+      data: {
+        id: projectId,
+        characterId: `character-${suffix}`,
+        ownerId: actorId,
+        phase: "qa",
+        audience: {},
+        successCriteria: [],
+        activeKey: `today-project-active-${suffix}`,
+      },
+    });
+    await prisma.characterRelease.create({
+      data: {
+        id: releaseId,
+        projectId,
+        revisionId: `revision-${suffix}`,
+        characterContentVersionId: `content-version-${suffix}`,
+        generationProvenance: {},
+        releasePlacementManifest: {},
+        snapshotHash: `snapshot-${suffix}`,
+        readiness: "blocked",
+        status: "in_review",
+      },
+    });
+    await prisma.contentProductionBatch.create({
+      data: {
+        id: creativeRunId,
+        title: "Homepage visual",
+        purpose: "homepage",
+        presetIds: [],
+        createdById: actorId,
+        ownerId: actorId,
+        dueAt: new Date("2026-07-11T18:00:00.000Z"),
+        priority: "high",
+        lifecycleState: "active",
+        workflowStage: "review",
+        verificationState: "failed",
+      },
+    });
+    await prisma.operationalWorkPreference.createMany({
+      data: [
+        { actorId, sourceType: "character_release", sourceId: releaseId, watching: true, pinned: true },
+        { actorId, sourceType: "creative_run", sourceId: creativeRunId, snoozedUntil: new Date("2026-07-12T00:00:00.000Z") },
+      ],
+    });
+  });
+
+  afterAll(async () => {
+    await prisma.operationalWorkPreference.deleteMany({ where: { actorId } });
+    await prisma.contentProductionBatch.deleteMany({ where: { id: creativeRunId } });
+    await prisma.characterRelease.deleteMany({ where: { id: releaseId } });
+    await prisma.characterProject.deleteMany({ where: { id: projectId } });
+    await prisma.user.deleteMany({ where: { id: actorId } });
+    await prisma.$disconnect();
+  });
+
+  it("projects Character Release and Creative Run roots with watch, pin and snooze", async () => {
+    const projection = await buildTodayProjection({
+      actor: { id: actorId, role: "admin" },
+      permissions: resolvePermissions("admin"),
+      now: new Date("2026-07-11T12:00:00.000Z"),
+      workMode: "character_producer",
+    });
+
+    expect(projection.nextBestActions.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sourceType: "character_release", sourceId: releaseId, pinned: true }),
+    ]));
+    expect(projection.nextBestActions.items.some((item) => item.sourceId === creativeRunId)).toBe(false);
+    expect(projection.watching.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sourceType: "character_release", sourceId: releaseId }),
+    ]));
+  });
+});

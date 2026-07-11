@@ -46,6 +46,24 @@ export const caseVerificationRequestSchema = z
     }
   });
 
+export const customerCaseActionRequestSchema = z
+  .object({
+    entityVersion: z.number().int().nonnegative(),
+    action: z.enum([
+      "diagnostic_reviewed",
+      "reply_requested",
+      "incident_escalated",
+      "account_guidance_provided",
+      "ledger_reconciled",
+      "refund_requested",
+      "subscription_corrected",
+    ]),
+    summary: z.string().trim().min(1).max(4_000),
+    evidenceRefs: z.array(adminIdSchema).min(1),
+    outcomeRef: z.string().trim().min(1).max(500),
+  })
+  .strict();
+
 export const operationsCaseTypeSchema = z.enum([
   "support_request",
   "content_report",
@@ -122,9 +140,12 @@ export const operationsCaseQuerySchema = adminCursorQuerySchema.extend({
   status: operationsCaseStatusSchema.optional(),
   ownerId: adminIdSchema.optional(),
   priority: adminPrioritySchema.optional(),
+  sort: z.enum(["updated_desc", "updated_asc"]).default("updated_desc"),
 });
 
-export const operationsCaseListResponseSchema = adminListResponseSchema(operationsCaseSchema);
+export const operationsCaseListResponseSchema = adminListResponseSchema(operationsCaseSchema).extend({
+  query: operationsCaseQuerySchema.extend({ cursor: z.string().nullable() }),
+});
 
 export type OperationsCase = z.infer<typeof operationsCaseSchema>;
 export type CaseEvidence = z.infer<typeof caseEvidenceSchema>;
@@ -133,3 +154,4 @@ export type CaseCloseCommandRequest = z.infer<typeof caseCloseCommandRequestSche
 export type CaseAssignmentRequest = z.infer<typeof caseAssignmentRequestSchema>;
 export type CaseDecisionRequest = z.infer<typeof caseDecisionRequestSchema>;
 export type CaseVerificationRequest = z.infer<typeof caseVerificationRequestSchema>;
+export type CustomerCaseActionRequest = z.infer<typeof customerCaseActionRequestSchema>;

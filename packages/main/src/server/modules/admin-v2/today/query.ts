@@ -7,6 +7,8 @@ import {
 } from "@idream/shared/admin";
 import type {
   AdminCase,
+  CharacterRelease,
+  ContentProductionBatch,
   ControlPlaneCommand,
   OpsIncident,
   Prisma,
@@ -25,11 +27,19 @@ const ACTIVE_INCIDENT_STATUSES = ["detected", "triaged", "mitigating", "monitori
 const ACTIVE_COMMAND_STATUSES = ["accepted", "running", "verifying", "failed"];
 const RESOLVED_CASE_STATUSES = ["resolved", "closed"];
 const RESOLVED_INCIDENT_STATUSES = ["resolved", "closed"];
+const ACTIVE_RELEASE_STATUSES = ["draft", "validating", "in_review", "approved"];
+const RESOLVED_RELEASE_STATUSES = ["published", "superseded", "withdrawn"];
 
 type ProjectableRow =
   | { sourceType: "admin_case"; row: AdminCase }
   | { sourceType: "ops_incident"; row: OpsIncident }
-  | { sourceType: "control_plane_command"; row: ControlPlaneCommand };
+  | { sourceType: "control_plane_command"; row: ControlPlaneCommand }
+  | {
+      sourceType: "character_release";
+      row: CharacterRelease;
+      project: { ownerId: string | null; characterId: string; phase: string; plannedLaunchAt: Date | null };
+    }
+  | { sourceType: "creative_run"; row: ContentProductionBatch };
 
 type QueueRows = {
   totalCount: number;
@@ -125,6 +135,64 @@ function projectRow(row: ProjectableRow, pinnedKeys: ReadonlySet<string>): Today
       pinned: pinnedKeys.has(`${row.sourceType}:${item.id}`),
     };
   }
+  if (row.sourceType === "character_release") {
+    const item = row.row;
+    const severity = item.readiness === "blocked" ? "high" : item.readiness === "stale" ? "medium" : "low";
+    return {
+      sourceType: row.sourceType,
+      sourceId: item.id,
+      title: `Character release ${item.status.replaceAll("_", " ")}`,
+      summary: `${row.project.characterId} · ${row.project.phase.replaceAll("_", " ")} · readiness ${item.readiness}`,
+      severity,
+      priority: severity === "high" ? "high" : "normal",
+      impactSnapshot: {
+        projectId: item.projectId,
+        characterId: row.project.characterId,
+        readiness: item.readiness,
+        snapshotHash: item.snapshotHash,
+      },
+      ownerId: row.project.ownerId,
+      slaDueAt: row.project.plannedLaunchAt?.toISOString() ?? null,
+      recommendedAction: item.readiness === "blocked" ? "Resolve release readiness blockers" : "Advance release checks",
+      rankingReason: rankingReason(severity, row.project.plannedLaunchAt, item.createdAt),
+      deepLink: `/admin/characters/releases/${encodeURIComponent(item.id)}`,
+      verificationState: item.readiness === "blocked" ? "failed" : item.readiness === "ready" ? "passed" : "pending",
+      lastChangedAt: item.updatedAt.toISOString(),
+      environment,
+      dataClass: "internal",
+      pinned: pinnedKeys.has(`${row.sourceType}:${item.id}`),
+    };
+  }
+  if (row.sourceType === "creative_run") {
+    const item = row.row;
+    const severity = item.verificationState === "failed" ? "high" : "medium";
+    return {
+      sourceType: row.sourceType,
+      sourceId: item.id,
+      title: item.title,
+      summary: `${item.workflowStage.replaceAll("_", " ")} · ${item.status.replaceAll("_", " ")}`,
+      severity,
+      priority: normalizePriority(item.priority),
+      impactSnapshot: {
+        purpose: item.purpose,
+        targetType: item.targetType,
+        targetId: item.targetId,
+        totalItems: item.totalItems,
+        failedItems: item.failedItems,
+        approvedItems: item.approvedItems,
+      },
+      ownerId: item.ownerId,
+      slaDueAt: item.dueAt?.toISOString() ?? null,
+      recommendedAction: item.verificationState === "failed" ? "Reopen Creative verification" : "Advance the Creative Run",
+      rankingReason: rankingReason(severity, item.dueAt, item.createdAt),
+      deepLink: `/admin/creative/runs/${encodeURIComponent(item.id)}`,
+      verificationState: normalizeVerification(item.verificationState),
+      lastChangedAt: item.updatedAt.toISOString(),
+      environment,
+      dataClass: "internal",
+      pinned: pinnedKeys.has(`${row.sourceType}:${item.id}`),
+    };
+  }
   const item = row.row;
   const verificationState = commandVerification(item.status);
   return {
@@ -165,13 +233,13 @@ const severityScore = { critical: 4, high: 3, medium: 2, low: 1 } as const;
 const priorityScore = { urgent: 4, high: 3, normal: 2, low: 1 } as const;
 
 const MODE_SOURCE_ORDER: Record<TodayWorkMode, readonly TodayWorkItem["sourceType"][]> = {
-  character_producer: ["control_plane_command", "admin_case", "ops_incident"],
-  creative_operator: ["control_plane_command", "ops_incident", "admin_case"],
-  platform_ops: ["ops_incident", "control_plane_command", "admin_case"],
-  support: ["admin_case", "ops_incident", "control_plane_command"],
-  moderator: ["admin_case", "control_plane_command", "ops_incident"],
-  growth_analyst: ["control_plane_command", "ops_incident", "admin_case"],
-  admin: ["ops_incident", "control_plane_command", "admin_case"],
+  character_producer: ["character_release", "creative_run", "control_plane_command", "admin_case", "ops_incident"],
+  creative_operator: ["creative_run", "character_release", "control_plane_command", "ops_incident", "admin_case"],
+  platform_ops: ["ops_incident", "creative_run", "control_plane_command", "character_release", "admin_case"],
+  support: ["admin_case", "ops_incident", "control_plane_command", "character_release", "creative_run"],
+  moderator: ["admin_case", "character_release", "control_plane_command", "ops_incident", "creative_run"],
+  growth_analyst: ["character_release", "creative_run", "control_plane_command", "ops_incident", "admin_case"],
+  admin: ["ops_incident", "character_release", "creative_run", "control_plane_command", "admin_case"],
 };
 
 function sortItems(items: TodayWorkItem[], now: Date, workMode: TodayWorkMode) {
@@ -232,11 +300,18 @@ function sourceRows(
   cases: AdminCase[],
   incidents: OpsIncident[],
   commands: ControlPlaneCommand[],
+  releases: Array<{
+    row: CharacterRelease;
+    project: { ownerId: string | null; characterId: string; phase: string; plannedLaunchAt: Date | null };
+  }> = [],
+  creativeRuns: ContentProductionBatch[] = [],
 ): ProjectableRow[] {
   return [
     ...cases.map((row) => ({ sourceType: "admin_case" as const, row })),
     ...incidents.map((row) => ({ sourceType: "ops_incident" as const, row })),
     ...commands.map((row) => ({ sourceType: "control_plane_command" as const, row })),
+    ...releases.map(({ row, project }) => ({ sourceType: "character_release" as const, row, project })),
+    ...creativeRuns.map((row) => ({ sourceType: "creative_run" as const, row })),
   ];
 }
 
@@ -244,23 +319,40 @@ async function findQueueRows(input: {
   caseWhere: Prisma.AdminCaseWhereInput | null;
   incidentWhere: Prisma.OpsIncidentWhereInput | null;
   commandWhere: Prisma.ControlPlaneCommandWhereInput | null;
+  releaseWhere: Prisma.CharacterReleaseWhereInput | null;
+  creativeWhere: Prisma.ContentProductionBatchWhereInput | null;
   permissions: ReadonlySet<AdminPermissionKey>;
 }) {
   const commandPermissionWhere = readableCommandWhere(input.permissions);
   const commandWhere = input.commandWhere && commandPermissionWhere
     ? { AND: [input.commandWhere, commandPermissionWhere] }
     : null;
-  const [caseCount, cases, incidentCount, incidents, commandCount, commands] = await Promise.all([
+  const [caseCount, cases, incidentCount, incidents, commandCount, commands, releaseCount, releaseRows, creativeCount, creativeRuns] = await Promise.all([
     input.caseWhere ? prisma.adminCase.count({ where: input.caseWhere }) : 0,
     input.caseWhere ? prisma.adminCase.findMany({ where: input.caseWhere, orderBy: { updatedAt: "desc" }, take: QUEUE_LIMIT }) : [],
     input.incidentWhere ? prisma.opsIncident.count({ where: input.incidentWhere }) : 0,
     input.incidentWhere ? prisma.opsIncident.findMany({ where: input.incidentWhere, orderBy: { updatedAt: "desc" }, take: QUEUE_LIMIT }) : [],
     commandWhere ? prisma.controlPlaneCommand.count({ where: commandWhere }) : 0,
     commandWhere ? prisma.controlPlaneCommand.findMany({ where: commandWhere, orderBy: { updatedAt: "desc" }, take: QUEUE_LIMIT }) : [],
+    input.releaseWhere ? prisma.characterRelease.count({ where: input.releaseWhere }) : 0,
+    input.releaseWhere ? prisma.characterRelease.findMany({ where: input.releaseWhere, orderBy: { updatedAt: "desc" }, take: QUEUE_LIMIT }) : [],
+    input.creativeWhere ? prisma.contentProductionBatch.count({ where: input.creativeWhere }) : 0,
+    input.creativeWhere ? prisma.contentProductionBatch.findMany({ where: input.creativeWhere, orderBy: { updatedAt: "desc" }, take: QUEUE_LIMIT }) : [],
   ]);
+  const projects = releaseRows.length > 0
+    ? await prisma.characterProject.findMany({
+        where: { id: { in: releaseRows.map((item) => item.projectId) } },
+        select: { id: true, ownerId: true, characterId: true, phase: true, plannedLaunchAt: true },
+      })
+    : [];
+  const projectsById = new Map(projects.map((item) => [item.id, item]));
+  const releases = releaseRows.flatMap((row) => {
+    const project = projectsById.get(row.projectId);
+    return project ? [{ row, project }] : [];
+  });
   return {
-    totalCount: caseCount + incidentCount + commandCount,
-    rows: sourceRows(cases, incidents, commands),
+    totalCount: caseCount + incidentCount + commandCount + releaseCount + creativeCount,
+    rows: sourceRows(cases, incidents, commands, releases, creativeRuns),
   };
 }
 
@@ -277,12 +369,22 @@ export async function buildTodayProjection(input: {
   const recentCutoff = new Date(now.getTime() - 24 * 60 * 60 * 1_000);
   const caseScope = scopedCaseWhere(input.actor, input.permissions);
   const incidentScope = scopedIncidentWhere(input.actor, input.permissions);
+  const releaseReadable = input.permissions.has("character.release.read");
+  const creativeReadable = input.permissions.has("creative.run.read");
+  const projects = releaseReadable
+    ? await prisma.characterProject.findMany({ select: { id: true, ownerId: true } })
+    : [];
+  const allProjectIds = projects.map((item) => item.id);
+  const ownedProjectIds = projects.filter((item) => item.ownerId === input.actor.id).map((item) => item.id);
+  const unassignedProjectIds = projects.filter((item) => item.ownerId === null).map((item) => item.id);
   const preferences = await prisma.operationalWorkPreference.findMany({ where: { actorId: input.actor.id } });
   const pinnedKeys = new Set(preferences.filter((item) => item.pinned).map((item) => `${item.sourceType}:${item.sourceId}`));
   const snoozed = preferences.filter((item) => item.snoozedUntil && item.snoozedUntil > now);
   const snoozedCaseIds = snoozed.filter((item) => item.sourceType === "admin_case").map((item) => item.sourceId);
   const snoozedIncidentIds = snoozed.filter((item) => item.sourceType === "ops_incident").map((item) => item.sourceId);
   const snoozedCommandIds = snoozed.filter((item) => item.sourceType === "control_plane_command").map((item) => item.sourceId);
+  const snoozedReleaseIds = snoozed.filter((item) => item.sourceType === "character_release").map((item) => item.sourceId);
+  const snoozedCreativeIds = snoozed.filter((item) => item.sourceType === "creative_run").map((item) => item.sourceId);
   const withoutIds = (ids: string[]) => ids.length > 0 ? { notIn: ids } : undefined;
 
   const activeCaseWhere = caseScope && { AND: [caseScope, { status: { in: ACTIVE_CASE_STATUSES }, id: withoutIds(snoozedCaseIds) }] };
@@ -292,25 +394,48 @@ export async function buildTodayProjection(input: {
     status: { in: ACTIVE_COMMAND_STATUSES },
     id: withoutIds(snoozedCommandIds),
   } satisfies Prisma.ControlPlaneCommandWhereInput;
+  const activeReleaseWhere = releaseReadable
+    ? { status: { in: ACTIVE_RELEASE_STATUSES }, projectId: { in: allProjectIds }, id: withoutIds(snoozedReleaseIds) }
+    : null;
+  const activeCreativeWhere = creativeReadable
+    ? { lifecycleState: "active", id: withoutIds(snoozedCreativeIds) }
+    : null;
 
   const [myShift, nextBest, unassigned, recentlyResolved] = await Promise.all([
     findQueueRows({
       caseWhere: activeCaseWhere && { AND: [activeCaseWhere, { ownerId: input.actor.id }, { OR: [{ slaDueAt: { lte: endOfToday } }, { verificationState: "failed" }] }] },
       incidentWhere: activeIncidentWhere && { AND: [activeIncidentWhere, { ownerId: input.actor.id }, { OR: [{ slaDueAt: { lte: endOfToday } }, { verificationState: "failed" }] }] },
       commandWhere: actorCommandWhere,
+      releaseWhere: activeReleaseWhere && { AND: [activeReleaseWhere, { projectId: { in: ownedProjectIds } }] },
+      creativeWhere: activeCreativeWhere && {
+        AND: [activeCreativeWhere, { ownerId: input.actor.id }, { OR: [{ dueAt: { lte: endOfToday } }, { verificationState: "failed" }] }],
+      },
       permissions: input.permissions,
     }),
-    findQueueRows({ caseWhere: activeCaseWhere, incidentWhere: activeIncidentWhere, commandWhere: actorCommandWhere, permissions: input.permissions }),
+    findQueueRows({
+      caseWhere: activeCaseWhere,
+      incidentWhere: activeIncidentWhere,
+      commandWhere: actorCommandWhere,
+      releaseWhere: activeReleaseWhere,
+      creativeWhere: activeCreativeWhere,
+      permissions: input.permissions,
+    }),
     findQueueRows({
       caseWhere: activeCaseWhere && { AND: [activeCaseWhere, { ownerId: null }] },
       incidentWhere: activeIncidentWhere && { AND: [activeIncidentWhere, { ownerId: null }] },
       commandWhere: null,
+      releaseWhere: activeReleaseWhere && { AND: [activeReleaseWhere, { projectId: { in: unassignedProjectIds } }] },
+      creativeWhere: activeCreativeWhere && { AND: [activeCreativeWhere, { ownerId: null }] },
       permissions: input.permissions,
     }),
     findQueueRows({
       caseWhere: caseScope && { AND: [caseScope, { status: { in: RESOLVED_CASE_STATUSES }, verificationState: { in: ["passed", "overridden"] }, updatedAt: { gte: recentCutoff } }] },
       incidentWhere: incidentScope && { AND: [incidentScope, { status: { in: RESOLVED_INCIDENT_STATUSES }, verificationState: { in: ["passed", "overridden"] }, updatedAt: { gte: recentCutoff } }] },
       commandWhere: { actorId: input.actor.id, status: "succeeded", finishedAt: { gte: recentCutoff } },
+      releaseWhere: releaseReadable ? { status: { in: RESOLVED_RELEASE_STATUSES }, updatedAt: { gte: recentCutoff } } : null,
+      creativeWhere: creativeReadable
+        ? { lifecycleState: { in: ["closed", "archived"] }, verificationState: { in: ["passed", "overridden"] }, updatedAt: { gte: recentCutoff } }
+        : null,
       permissions: input.permissions,
     }),
   ]);
@@ -319,17 +444,36 @@ export async function buildTodayProjection(input: {
   const watchedCaseIds = watchedPreferences.filter((item) => item.sourceType === "admin_case").map((item) => item.sourceId);
   const watchedIncidentIds = watchedPreferences.filter((item) => item.sourceType === "ops_incident").map((item) => item.sourceId);
   const watchedCommandIds = watchedPreferences.filter((item) => item.sourceType === "control_plane_command").map((item) => item.sourceId);
+  const watchedReleaseIds = watchedPreferences.filter((item) => item.sourceType === "character_release").map((item) => item.sourceId);
+  const watchedCreativeIds = watchedPreferences.filter((item) => item.sourceType === "creative_run").map((item) => item.sourceId);
   const commandPermissionWhere = readableCommandWhere(input.permissions);
-  const [watchedCases, watchedIncidents, watchedCommands] = await Promise.all([
+  const [watchedCases, watchedIncidents, watchedCommands, watchedReleases, watchedCreativeRuns] = await Promise.all([
     caseScope && watchedCaseIds.length > 0 ? prisma.adminCase.findMany({ where: { AND: [caseScope, { id: { in: watchedCaseIds } }] } }) : [],
     incidentScope && watchedIncidentIds.length > 0 ? prisma.opsIncident.findMany({ where: { AND: [incidentScope, { id: { in: watchedIncidentIds } }] } }) : [],
     watchedCommandIds.length > 0 && commandPermissionWhere
       ? prisma.controlPlaneCommand.findMany({ where: { AND: [{ id: { in: watchedCommandIds }, actorId: input.actor.id }, commandPermissionWhere] } })
       : [],
+    releaseReadable && watchedReleaseIds.length > 0
+      ? prisma.characterRelease.findMany({ where: { id: { in: watchedReleaseIds } } })
+      : [],
+    creativeReadable && watchedCreativeIds.length > 0
+      ? prisma.contentProductionBatch.findMany({ where: { id: { in: watchedCreativeIds } } })
+      : [],
   ]);
+  const watchedProjects = watchedReleases.length > 0
+    ? await prisma.characterProject.findMany({
+        where: { id: { in: watchedReleases.map((item) => item.projectId) } },
+        select: { id: true, ownerId: true, characterId: true, phase: true, plannedLaunchAt: true },
+      })
+    : [];
+  const watchedProjectsById = new Map(watchedProjects.map((item) => [item.id, item]));
+  const projectedWatchedReleases = watchedReleases.flatMap((row) => {
+    const project = watchedProjectsById.get(row.projectId);
+    return project ? [{ row, project }] : [];
+  });
   const watching = {
-    totalCount: watchedCases.length + watchedIncidents.length + watchedCommands.length,
-    rows: sourceRows(watchedCases, watchedIncidents, watchedCommands),
+    totalCount: watchedCases.length + watchedIncidents.length + watchedCommands.length + projectedWatchedReleases.length + watchedCreativeRuns.length,
+    rows: sourceRows(watchedCases, watchedIncidents, watchedCommands, projectedWatchedReleases, watchedCreativeRuns),
   };
 
   return todayProjectionSchema.parse({

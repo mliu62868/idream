@@ -295,6 +295,35 @@ export async function purgeTestData(prefix: string) {
     "character.preview",
   ]);
 
+  const derivedCaseEvidence = await prisma.caseEvidence.findMany({
+    where: { sourceId: sw },
+    select: { caseId: true },
+  });
+  const derivedCases = await prisma.adminCase.findMany({
+    where: {
+      OR: [
+        { id: sw },
+        { targetId: sw },
+        { ownerId: sw },
+        { id: { in: derivedCaseEvidence.map((item) => item.caseId) } },
+      ],
+    },
+    select: { id: true },
+  });
+  const derivedCaseIds = derivedCases.map((item) => item.id);
+  if (derivedCaseIds.length > 0) {
+    await prisma.operationalWorkPreference.deleteMany({
+      where: { sourceType: "admin_case", sourceId: { in: derivedCaseIds } },
+    });
+    await prisma.decisionRecord.deleteMany({
+      where: { sourceType: "admin_case", sourceId: { in: derivedCaseIds } },
+    });
+    await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: { in: derivedCaseIds } } });
+    await prisma.adminAuditLog.deleteMany({ where: { targetId: { in: derivedCaseIds } } });
+    await prisma.caseEvidence.deleteMany({ where: { caseId: { in: derivedCaseIds } } });
+    await prisma.adminCase.deleteMany({ where: { id: { in: derivedCaseIds } } });
+  }
+
   await prisma.moderationReview.deleteMany({ where: { OR: [{ id: sw }, { reportId: sw }] } });
   await prisma.adminAuditLog.deleteMany({
     where: { OR: [{ id: sw }, { actorId: sw }, { targetId: sw }] },

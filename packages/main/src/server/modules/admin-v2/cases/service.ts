@@ -1,4 +1,4 @@
-import type { Appeal, ContentReport, Prisma, PrismaClient } from "@prisma/client";
+import type { Appeal, ContentReport, Prisma, PrismaClient, SupportRequest } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { toInputJson } from "../shared/prisma-json";
@@ -7,6 +7,27 @@ type Db = PrismaClient | Prisma.TransactionClient;
 type Actor = { readonly id: string; readonly role: string };
 
 const ACTIVE_REPORT_STATUSES = ["open", "triaged", "reviewing"];
+const ACTIVE_SUPPORT_STATUSES = ["received", "open", "waiting_on_user"];
+const BILLING_CATEGORIES = new Set([
+  "billing",
+  "billing_dispute",
+  "charge",
+  "duplicate_charge",
+  "payment",
+  "refund",
+  "subscription",
+]);
+const SUPPORT_ACTIONS = new Set([
+  "diagnostic_reviewed",
+  "reply_requested",
+  "incident_escalated",
+  "account_guidance_provided",
+]);
+const BILLING_ACTIONS = new Set([
+  "ledger_reconciled",
+  "refund_requested",
+  "subscription_corrected",
+]);
 
 function reportCaseKey(report: Pick<ContentReport, "category">) {
   return `review:${report.category.trim().toLowerCase()}`;
@@ -25,6 +46,28 @@ function priorityForReport(priority: number) {
   if (priority === 2) return "high";
   if (priority >= 4) return "low";
   return "normal";
+}
+
+function priorityForSupport(priority: number) {
+  return priorityForReport(priority);
+}
+
+function supportCaseType(category: string) {
+  return BILLING_CATEGORIES.has(category.trim().toLowerCase())
+    ? "billing_dispute"
+    : "support_request";
+}
+
+function supportCaseKey(request: Pick<SupportRequest, "ticketId">) {
+  return `ticket:${request.ticketId}`;
+}
+
+function supportStatus(status: string) {
+  if (status === "waiting_on_user") return "waiting";
+  if (status === "resolved") return "resolved";
+  if (status === "closed") return "closed";
+  if (status === "open") return "triaged";
+  return "new";
 }
 
 function severityForPriority(priority: string) {
@@ -71,6 +114,317 @@ function decodeBackfillCursor(cursor?: string) {
 function encodeBackfillCursor(cursor: { reportId?: string; appealId?: string }) {
   if (!cursor.reportId && !cursor.appealId) return null;
   return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+function decodeCustomerBackfillCursor(cursor?: string) {
+  if (!cursor) return undefined;
+  try {
+    const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as { supportRequestId?: unknown };
+    return typeof parsed.supportRequestId === "string" ? parsed.supportRequestId : undefined;
+  } catch {
+    return cursor;
+  }
+}
+
+function encodeCustomerBackfillCursor(supportRequestId?: string) {
+  return supportRequestId
+    ? Buffer.from(JSON.stringify({ supportRequestId }), "utf8").toString("base64url")
+    : null;
+}
+
+export async function ensureSupportCaseForRequest(db: Db, request: SupportRequest) {
+  const type = supportCaseType(request.category);
+  const key = supportCaseKey(request);
+  const keyActive = activeKey(type, "user", request.userId, key);
+  const sourceEvidence = await db.caseEvidence.findFirst({
+    where: { sourceType: "support_request", sourceId: request.id },
+  });
+  if (sourceEvidence) {
+    return db.adminCase.findUnique({ where: { id: sourceEvidence.caseId } });
+  }
+
+  const isActive = ACTIVE_SUPPORT_STATUSES.includes(request.status);
+  const priority = priorityForSupport(request.priority);
+  let adminCase = isActive
+    ? await db.adminCase.upsert({
+        where: { activeKey: keyActive },
+        create: {
+          type,
+          targetType: "user",
+          targetId: request.userId,
+          caseKey: key,
+          activeKey: keyActive,
+          status: supportStatus(request.status),
+          priority,
+          ownerId: request.assignedToId,
+          slaDueAt: slaFor(priority, request.createdAt),
+          resolution: toInputJson({
+            severity: severityForPriority(priority),
+            category: request.category,
+          }),
+        },
+        update: {},
+      })
+    : await db.adminCase.create({
+        data: {
+          type,
+          targetType: "user",
+          targetId: request.userId,
+          caseKey: key,
+          activeKey: null,
+          status: supportStatus(request.status),
+          priority,
+          ownerId: request.assignedToId,
+          slaDueAt: request.resolvedAt ?? request.updatedAt,
+          verificationState: "overridden",
+        },
+      });
+
+  const evidence = await db.caseEvidence.create({
+    data: {
+      caseId: adminCase.id,
+      sourceType: "support_request",
+      sourceId: request.id,
+      snapshot: toInputJson({
+        ticketId: request.ticketId,
+        userId: request.userId,
+        category: request.category,
+        subject: request.subject,
+        description: request.description,
+        diagnosticConsent: request.diagnosticConsent,
+        sourcePath: request.sourcePath,
+        sourceStatus: request.status,
+        assignedToId: request.assignedToId,
+        resolutionNotes: request.resolutionNotes,
+      }),
+      occurredAt: request.createdAt,
+    },
+  });
+
+  if (type === "billing_dispute") {
+    await addBillingEvidence(db, adminCase.id, request.userId);
+  }
+
+  if (!isActive) {
+    const verifiedAt = (request.resolvedAt ?? request.updatedAt).toISOString();
+    adminCase = await db.adminCase.update({
+      where: { id: adminCase.id, version: adminCase.version },
+      data: {
+        resolution: toInputJson({
+          severity: severityForPriority(priority),
+          category: request.category,
+          summary: request.resolutionNotes?.trim() || `Imported terminal Support Request (${request.status})`,
+          decision: request.status,
+          evidenceRefs: [evidence.id],
+          verification: {
+            state: "overridden",
+            evidenceRefs: [evidence.id],
+            verifiedAt,
+            overrideReason: "Legacy terminal Support Request imported without replaying downstream verification.",
+          },
+        }),
+      },
+    });
+  }
+
+  await db.adminAuditLog.create({
+    data: {
+      actorId: request.userId,
+      actorRole: "customer",
+      action: "case.evidence.added",
+      targetType: "admin_case",
+      targetId: adminCase.id,
+      reason: "Immutable Support Request intake",
+      after: toInputJson({ sourceType: "support_request", sourceId: request.id, caseType: type }),
+      requestId: `case-evidence:support-request:${request.id}`,
+    },
+  });
+  return adminCase;
+}
+
+export async function synchronizeSupportCaseFromRequest(db: Db, request: SupportRequest) {
+  await ensureSupportCaseForRequest(db, request);
+  const evidence = await db.caseEvidence.findFirst({
+    where: { sourceType: "support_request", sourceId: request.id },
+  });
+  if (!evidence) throw Errors.internal("Support Case intake evidence is missing");
+  const current = await db.adminCase.findUnique({ where: { id: evidence.caseId } });
+  if (!current) throw Errors.internal("Support Case is missing");
+  const terminal = ["resolved", "closed"].includes(request.status);
+  const priority = priorityForSupport(request.priority);
+  let resolutionEvidenceId = evidence.id;
+  if (terminal) {
+    const resolutionEvidence = await db.caseEvidence.upsert({
+      where: {
+        caseId_sourceType_sourceId: {
+          caseId: current.id,
+          sourceType: "support_resolution",
+          sourceId: request.id,
+        },
+      },
+      create: {
+        caseId: current.id,
+        sourceType: "support_resolution",
+        sourceId: request.id,
+        snapshot: toInputJson({
+          sourceStatus: request.status,
+          resolutionNotes: request.resolutionNotes,
+          assignedToId: request.assignedToId,
+          resolvedAt: request.resolvedAt,
+        }),
+        occurredAt: request.resolvedAt ?? request.updatedAt,
+      },
+      update: {},
+    });
+    resolutionEvidenceId = resolutionEvidence.id;
+  }
+  const baseResolution = current.resolution && typeof current.resolution === "object" && !Array.isArray(current.resolution)
+    ? current.resolution as Record<string, unknown>
+    : {};
+  return db.adminCase.update({
+    where: { id: current.id, version: current.version },
+    data: {
+      activeKey: terminal
+        ? null
+        : activeKey(current.type, current.targetType, current.targetId, current.caseKey),
+      status: supportStatus(request.status),
+      priority,
+      ownerId: request.assignedToId,
+      slaDueAt: terminal ? request.resolvedAt ?? request.updatedAt : slaFor(priority, request.createdAt),
+      verificationState: terminal ? "overridden" : "pending",
+      resolution: terminal
+        ? toInputJson({
+            ...baseResolution,
+            summary: request.resolutionNotes?.trim() || `Support Request ${request.status}`,
+            decision: request.status,
+            evidenceRefs: [evidence.id, resolutionEvidenceId],
+            verification: {
+              state: "overridden",
+              evidenceRefs: [resolutionEvidenceId],
+              verifiedAt: (request.resolvedAt ?? request.updatedAt).toISOString(),
+              overrideReason: "Legacy Support Request update does not include system verification.",
+            },
+          })
+        : toInputJson({ ...baseResolution, severity: severityForPriority(priority), category: request.category }),
+      version: { increment: 1 },
+    },
+  });
+}
+
+async function addBillingEvidence(db: Db, caseId: string, userId: string) {
+  const [subscription, ledger] = await Promise.all([
+    db.subscription.findFirst({
+      where: { userId },
+      include: { plan: true },
+      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+    }),
+    db.dreamcoinLedger.findFirst({
+      where: { userId },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    }),
+  ]);
+  if (subscription) {
+    await db.caseEvidence.upsert({
+      where: {
+        caseId_sourceType_sourceId: {
+          caseId,
+          sourceType: "subscription_snapshot",
+          sourceId: subscription.id,
+        },
+      },
+      create: {
+        caseId,
+        sourceType: "subscription_snapshot",
+        sourceId: subscription.id,
+        snapshot: toInputJson({
+          userId,
+          status: subscription.status,
+          provider: subscription.provider,
+          providerSubscriptionId: subscription.providerSubscriptionId,
+          currentPeriodEnd: subscription.currentPeriodEnd,
+          cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
+          plan: {
+            id: subscription.plan.id,
+            name: subscription.plan.name,
+            billingPeriod: subscription.plan.billingPeriod,
+            priceCents: subscription.plan.priceCents,
+          },
+        }),
+        occurredAt: subscription.updatedAt,
+      },
+      update: {},
+    });
+  }
+  if (ledger) {
+    await db.caseEvidence.upsert({
+      where: {
+        caseId_sourceType_sourceId: {
+          caseId,
+          sourceType: "dreamcoin_ledger",
+          sourceId: ledger.id,
+        },
+      },
+      create: {
+        caseId,
+        sourceType: "dreamcoin_ledger",
+        sourceId: ledger.id,
+        snapshot: toInputJson({
+          userId,
+          delta: ledger.delta,
+          balanceAfter: ledger.balanceAfter,
+          reason: ledger.reason,
+          sourceId: ledger.sourceId,
+        }),
+        occurredAt: ledger.createdAt,
+      },
+      update: {},
+    });
+  }
+}
+
+export async function backfillCustomerCases(input: {
+  readonly dryRun: boolean;
+  readonly cursor?: string;
+  readonly batchSize?: number;
+  readonly actor: Actor;
+}) {
+  const take = Math.min(500, Math.max(1, input.batchSize ?? 100));
+  const cursor = decodeCustomerBackfillCursor(input.cursor);
+  const fetched = await prisma.supportRequest.findMany({
+    where: cursor ? { id: { gt: cursor } } : undefined,
+    orderBy: { id: "asc" },
+    take: take + 1,
+  });
+  const hasNextPage = fetched.length > take;
+  const rows = fetched.slice(0, take);
+  const before = await prisma.adminCase.count({ where: { type: { in: ["support_request", "billing_dispute"] } } });
+  const mismatches: Array<{ sourceType: string; sourceId: string; reason: string }> = [];
+  let applied = 0;
+  if (!input.dryRun) {
+    for (const row of rows) {
+      try {
+        await prisma.$transaction((tx) => ensureSupportCaseForRequest(tx, row));
+        applied += 1;
+      } catch (error) {
+        mismatches.push({
+          sourceType: "support_request",
+          sourceId: row.id,
+          reason: error instanceof Error ? error.message : "unknown_error",
+        });
+      }
+    }
+  }
+  return {
+    dryRun: input.dryRun,
+    scanned: rows.length,
+    eligible: rows.length,
+    applied,
+    unavailable: [],
+    mismatches,
+    nextCursor: hasNextPage ? encodeCustomerBackfillCursor(rows.at(-1)?.id) : null,
+    beforeCases: before,
+    afterCases: await prisma.adminCase.count({ where: { type: { in: ["support_request", "billing_dispute"] } } }),
+  };
 }
 
 export async function ensureReviewCaseForReport(db: Db, report: ContentReport) {
@@ -602,6 +956,106 @@ export async function verifyReviewCase(input: {
         before: toInputJson({ status: current.status, verificationState: current.verificationState }),
         after: toInputJson({ status: updated.status, verificationState: updated.verificationState }),
         requestId: input.requestId,
+      },
+    });
+    return updated;
+  });
+}
+
+export async function recordCustomerCaseAction(input: {
+  readonly caseId: string;
+  readonly actor: Actor;
+  readonly expectedVersion: number;
+  readonly action:
+    | "diagnostic_reviewed"
+    | "reply_requested"
+    | "incident_escalated"
+    | "account_guidance_provided"
+    | "ledger_reconciled"
+    | "refund_requested"
+    | "subscription_corrected";
+  readonly summary: string;
+  readonly evidenceRefs: readonly string[];
+  readonly outcomeRef: string;
+  readonly requestId: string;
+}) {
+  return prisma.$transaction(async (tx) => {
+    const current = await tx.adminCase.findUnique({ where: { id: input.caseId } });
+    if (!current) throw Errors.notFound("Case not found");
+    assertCaseScope(current, input.actor);
+    if (!["support_request", "billing_dispute"].includes(current.type)) {
+      throw Errors.badRequest("Customer Case actions only apply to Support/Billing subtypes");
+    }
+    const allowed = current.type === "billing_dispute" ? BILLING_ACTIONS : SUPPORT_ACTIONS;
+    if (!allowed.has(input.action)) {
+      throw Errors.badRequest("Action is not valid for this Case subtype", {
+        caseType: current.type,
+        action: input.action,
+      });
+    }
+    if (current.version !== input.expectedVersion) throw Errors.conflict("Case version changed");
+    if (["resolved", "closed"].includes(current.status)) {
+      throw Errors.conflict("Terminal Case must be reopened before another action");
+    }
+    const evidenceCount = await tx.caseEvidence.count({
+      where: { caseId: current.id, id: { in: [...input.evidenceRefs] } },
+    });
+    if (input.evidenceRefs.length === 0 || evidenceCount !== new Set(input.evidenceRefs).size) {
+      throw Errors.badRequest("Action evidence must reference evidence on this Case");
+    }
+    const currentResolution = current.resolution && typeof current.resolution === "object" && !Array.isArray(current.resolution)
+      ? current.resolution as Record<string, unknown>
+      : {};
+    const priorActions = Array.isArray(currentResolution.actions) ? currentResolution.actions : [];
+    const action = {
+      action: input.action,
+      summary: input.summary,
+      evidenceRefs: [...input.evidenceRefs],
+      outcomeRef: input.outcomeRef,
+      actorId: input.actor.id,
+      performedAt: new Date().toISOString(),
+    };
+    const updated = await tx.adminCase.update({
+      where: { id: current.id, version: current.version },
+      data: {
+        status: "in_progress",
+        verificationState: "pending",
+        resolution: toInputJson({ ...currentResolution, actions: [...priorActions, action] }),
+        version: { increment: 1 },
+      },
+    });
+    await tx.decisionRecord.create({
+      data: {
+        sourceType: "admin_case",
+        sourceId: current.id,
+        question: `Execute ${current.type} action`,
+        evidenceRefs: [...input.evidenceRefs],
+        decision: input.action,
+        ownerId: input.actor.id,
+        successCriteria: ["action_outcome_verified"],
+        guardrails: ["typed_subtype_action", "evidence_preserved"],
+        outcome: toInputJson({ outcomeRef: input.outcomeRef, verificationState: "pending" }),
+      },
+    });
+    await tx.adminAuditLog.create({
+      data: {
+        actorId: input.actor.id,
+        actorRole: input.actor.role,
+        action: "case.action.recorded",
+        targetType: "admin_case",
+        targetId: current.id,
+        reason: input.summary,
+        before: toInputJson({ status: current.status, version: current.version }),
+        after: toInputJson({ ...action, status: updated.status, version: updated.version }),
+        requestId: input.requestId,
+      },
+    });
+    await tx.mainOutboxEvent.create({
+      data: {
+        eventType: "admin.case.action.recorded.v2",
+        aggregateType: "admin_case",
+        aggregateId: current.id,
+        payload: toInputJson({ caseId: current.id, ...action, version: updated.version }),
       },
     });
     return updated;

@@ -14,6 +14,7 @@ import { dispatchAdmin } from "@/server/modules/admin/service";
 import {
   ensureReviewCaseForAppeal,
   ensureReviewCaseForReport,
+  ensureSupportCaseForRequest,
 } from "@/server/modules/admin-v2/cases/service";
 import { listActiveTemplates } from "@/server/modules/admin/characters/templates";
 import {
@@ -4628,6 +4629,7 @@ async function submitSupportRequest(request: Request) {
         }),
       },
     });
+    await ensureSupportCaseForRequest(tx, created);
     return created;
   });
 

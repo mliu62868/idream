@@ -18,7 +18,7 @@ function severity(value: Prisma.JsonValue | null) {
     : "medium";
 }
 
-async function caseDto(row: Awaited<ReturnType<typeof prisma.adminCase.findUniqueOrThrow>>) {
+export async function caseDto(row: Awaited<ReturnType<typeof prisma.adminCase.findUniqueOrThrow>>) {
   const evidence = await prisma.caseEvidence.findMany({ where: { caseId: row.id } });
   const resolution = record(row.resolution);
   const verification = record(resolution.verification as Prisma.JsonValue | null);
@@ -72,6 +72,28 @@ async function caseDto(row: Awaited<ReturnType<typeof prisma.adminCase.findUniqu
   };
 }
 
+type CaseCursor = { updatedAt: string; id: string };
+
+function decodeCaseCursor(value?: string): CaseCursor | null {
+  if (!value) return null;
+  try {
+    const decoded = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as {
+      updatedAt?: unknown;
+      id?: unknown;
+    };
+    if (typeof decoded.updatedAt !== "string" || typeof decoded.id !== "string") return null;
+    const updatedAt = new Date(decoded.updatedAt);
+    if (Number.isNaN(updatedAt.getTime())) return null;
+    return { updatedAt: updatedAt.toISOString(), id: decoded.id };
+  } catch {
+    return null;
+  }
+}
+
+function encodeCaseCursor(row: { updatedAt: Date; id: string }) {
+  return Buffer.from(JSON.stringify({ updatedAt: row.updatedAt.toISOString(), id: row.id }), "utf8").toString("base64url");
+}
+
 function scopedCaseWhere(role: string, view: string, actorId: string): Prisma.AdminCaseWhereInput {
   const where: Prisma.AdminCaseWhereInput = {};
   if (role === "support") where.type = { in: ["support_request", "billing_dispute"] };
@@ -94,6 +116,28 @@ export async function listCases(request: Request) {
   const url = new URL(request.url);
   const query = operationsCaseQuerySchema.parse(Object.fromEntries(url.searchParams));
   const scope = scopedCaseWhere(actor.role, query.view, actor.id);
+  const cursor = decodeCaseCursor(query.cursor);
+  const cursorDirection = query.sort === "updated_asc" ? "gt" : "lt";
+  let searchedCaseIds: string[] = [];
+  if (query.search) {
+    const sources = await prisma.supportRequest.findMany({
+      where: {
+        OR: [
+          { ticketId: { contains: query.search, mode: "insensitive" } },
+          { subject: { contains: query.search, mode: "insensitive" } },
+          { description: { contains: query.search, mode: "insensitive" } },
+        ],
+      },
+      select: { id: true },
+      take: 500,
+    });
+    if (sources.length > 0) {
+      searchedCaseIds = (await prisma.caseEvidence.findMany({
+        where: { sourceType: "support_request", sourceId: { in: sources.map((item) => item.id) } },
+        select: { caseId: true },
+      })).map((item) => item.caseId);
+    }
+  }
   const where: Prisma.AdminCaseWhereInput = {
     AND: [
       scope,
@@ -102,12 +146,20 @@ export async function listCases(request: Request) {
         status: query.status,
         ownerId: query.ownerId ?? scope.ownerId,
         priority: query.priority,
-        ...(query.cursor ? { id: { gt: query.cursor } } : {}),
+        ...(cursor
+          ? {
+              OR: [
+                { updatedAt: { [cursorDirection]: new Date(cursor.updatedAt) } },
+                { updatedAt: new Date(cursor.updatedAt), id: { [cursorDirection]: cursor.id } },
+              ],
+            }
+          : {}),
         ...(query.search
           ? {
               OR: [
                 { targetId: { contains: query.search, mode: "insensitive" } },
                 { caseKey: { contains: query.search, mode: "insensitive" } },
+                ...(searchedCaseIds.length > 0 ? [{ id: { in: searchedCaseIds } }] : []),
               ],
             }
           : {}),
@@ -116,14 +168,19 @@ export async function listCases(request: Request) {
   };
   const rows = await prisma.adminCase.findMany({
     where,
-    orderBy: { id: "asc" },
+    orderBy: [
+      { updatedAt: query.sort === "updated_asc" ? "asc" : "desc" },
+      { id: query.sort === "updated_asc" ? "asc" : "desc" },
+    ],
     take: query.limit + 1,
   });
   const hasNextPage = rows.length > query.limit;
-  const items = await Promise.all(rows.slice(0, query.limit).map(caseDto));
+  const pageRows = rows.slice(0, query.limit);
+  const items = await Promise.all(pageRows.map(caseDto));
   return ok({
     items,
-    pageInfo: { endCursor: hasNextPage ? items.at(-1)?.id ?? null : null, hasNextPage },
+    pageInfo: { endCursor: hasNextPage && pageRows.at(-1) ? encodeCaseCursor(pageRows.at(-1)!) : null, hasNextPage },
+    query: { ...query, cursor: query.cursor ?? null },
     asOf: new Date().toISOString(),
     freshness: "fresh",
   });

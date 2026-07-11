@@ -3,6 +3,7 @@ export * from "./characters";
 export * from "./creative";
 export * from "./incidents";
 export * from "./cases";
+export * from "./customers";
 export * from "./metrics";
 export * from "./experiments";
 export * from "./reconciliation";
