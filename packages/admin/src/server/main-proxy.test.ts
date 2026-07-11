@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { renderPrometheusMetrics, resetMetricsForTests } from "@idream/shared";
 import { proxyToMain } from "./main-proxy";
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  resetMetricsForTests();
 });
 
 describe("Admin main HTTP proxy", () => {
@@ -37,6 +39,9 @@ describe("Admin main HTTP proxy", () => {
     expect(response.headers.get("set-cookie")).toContain("admin=renewed");
     await expect(response.json()).resolves.toEqual({ ok: true });
     expect(fetchMock).toHaveBeenCalledOnce();
+    expect(renderPrometheusMetrics()).toContain(
+      'admin_http_requests_total{method="POST",outcome="completed"} 1',
+    );
   });
 
   it("fails closed when main authority is unavailable", async () => {
@@ -50,5 +55,8 @@ describe("Admin main HTTP proxy", () => {
       ok: false,
       error: { code: "admin_upstream_unavailable" },
     });
+    expect(renderPrometheusMetrics()).toContain(
+      'admin_http_requests_total{method="GET",outcome="unavailable"} 1',
+    );
   });
 });

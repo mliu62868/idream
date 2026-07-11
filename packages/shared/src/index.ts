@@ -7,3 +7,4 @@ export * from "./storage/s3-blob";
 export * from "./moderation/safety-gateway";
 export * from "./runtime/executable";
 export * from "./admin/index";
+export * from "./observability/metrics";
