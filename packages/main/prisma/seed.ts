@@ -158,6 +158,39 @@ async function seedUsers() {
     },
   });
 
+  // The launch chat-service probe uses DEV_USER_ID for a real conversation.
+  // Keep its eligibility deterministic so a fresh seed can exercise the full
+  // create → send → stream → read path instead of stopping at the age gate.
+  await prisma.ageGateAcceptance.upsert({
+    where: { id: "seed-dev-user-age-gate" },
+    update: {
+      userId: DEV_USER_ID,
+      sourcePath: "/launch-probe",
+      policyVersion: "seed-v1",
+    },
+    create: {
+      id: "seed-dev-user-age-gate",
+      userId: DEV_USER_ID,
+      sourcePath: "/launch-probe",
+      policyVersion: "seed-v1",
+    },
+  });
+
+  // Live probes are operational checks, not customer consumption. Without this
+  // entitlement, the deterministic probe user reaches the daily message cap
+  // after repeated health checks and turns a healthy service red.
+  await prisma.entitlement.upsert({
+    where: { userId_key: { userId: DEV_USER_ID, key: "unlimited_messages" } },
+    update: { value: true, source: "manual", expiresAt: null },
+    create: {
+      id: "seed-dev-user-unlimited-messages",
+      userId: DEV_USER_ID,
+      key: "unlimited_messages",
+      value: true,
+      source: "manual",
+    },
+  });
+
   await prisma.user.upsert({
     where: { id: SUPPORT_USER_ID },
     update: {},

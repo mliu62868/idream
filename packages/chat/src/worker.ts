@@ -32,7 +32,7 @@ export function startWorker(): { close: () => Promise<void> } {
 
     runWorker(CHAT_QUEUES.outboxDeliver, async () => {
       await deliverPendingOutbox();
-    }),
+    }, { concurrency: 1 }),
 
     runWorker(MAIN_TO_CHAT_QUEUE, async (job) => {
       await consumeInbound(job.payload as InboundEvent);

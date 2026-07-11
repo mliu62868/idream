@@ -39,7 +39,10 @@ export async function recordOutbox(
 
 /** Kick the deliver queue (best-effort; reconcile also sweeps pending). */
 export async function scheduleOutboxDelivery(): Promise<void> {
-  await enqueue({ queue: CHAT_QUEUES.outboxDeliver, payload: {}, dedupeKey: "chat-outbox-deliver-tick" });
+  // Do not use a fixed deterministic job id here. Completed BullMQ jobs are
+  // retained for observability, so reusing one suppresses every later wake-up
+  // until retention expires. Delivery itself is idempotent at the event id.
+  await enqueue({ queue: CHAT_QUEUES.outboxDeliver, payload: {} });
 }
 
 /**

@@ -357,7 +357,7 @@ async function probeConversation(input: {
     };
 
     // 5) no-memory smoke: toggle memory off then send — must still 202.
-    await signedFetch({
+    const disableMemory = await signedFetch({
       ...input, method: "POST", path: `/api/v1/chat/sessions/${session.id}/memory`,
       body: JSON.stringify({ memoryEnabled: false }),
     });
@@ -365,7 +365,28 @@ async function probeConversation(input: {
       ...input, method: "POST", path: `/api/v1/chat/sessions/${session.id}/messages`,
       body: JSON.stringify({ content: "incognito turn from probe" }),
     });
-    evidence.noMemory = { ok: noMemSend.status === 202, status: noMemSend.status };
+    const noMemTurn = (await noMemSend.json().catch(() => ({}))) as { assistantMessageId?: string };
+    const noMemStream = noMemTurn.assistantMessageId
+      ? await probeStream({ ...input, assistantMessageId: noMemTurn.assistantMessageId })
+      : { ok: false, error: "missing assistantMessageId" };
+    // The probe reuses one active session per character. Restore memory only
+    // after the incognito turn is terminal, otherwise the worker could observe
+    // the restored flag and derive memory for a turn submitted as no-memory.
+    const restoreMemory = await signedFetch({
+      ...input, method: "POST", path: `/api/v1/chat/sessions/${session.id}/memory`,
+      body: JSON.stringify({ memoryEnabled: true }),
+    });
+    evidence.noMemory = {
+      ok:
+        disableMemory.status === 200 &&
+        noMemSend.status === 202 &&
+        noMemStream.ok &&
+        restoreMemory.status === 200,
+      status: noMemSend.status,
+      error: disableMemory.status === 200 && noMemStream.ok && restoreMemory.status === 200
+        ? null
+        : `disable=${disableMemory.status}; stream=${noMemStream.ok}; restore=${restoreMemory.status}`,
+    };
 
     // 6) blocked-input smoke: the mock/safety provider blocks the underage keyword.
     const blockedRes = await signedFetch({
