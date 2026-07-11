@@ -50,7 +50,7 @@ import { InsightsView } from "@/components/admin/InsightsView";
 import { AnnouncementsView } from "@/components/admin/AnnouncementsView";
 import { ExperimentsView } from "@/components/admin/ExperimentsView";
 import { TodayView, type TodayData, type TodayLegacyData } from "@/components/admin/today/TodayView";
-import type { MetricDashboardResponse, TodayProjection } from "@idream/shared/admin";
+import type { AdminCommandStatus, MetricDashboardResponse, TodayProjection } from "@idream/shared/admin";
 import { PlacementsSection } from "@/components/admin/placements/PlacementsSection";
 import { OperatorFlow, type OperatorFlowItem } from "@/components/admin/generation/OperatorFlow";
 import { FailureReason } from "@/components/admin/generation/FailureReason";
@@ -266,7 +266,7 @@ type SectionData =
       usage: Row[];
       events: Row[];
     }
-  | { kind: "audit"; rows: Row[] };
+  | { kind: "audit"; rows: Row[]; command: AdminCommandStatus | null };
 
 type PendingAction = {
   title: string;
@@ -609,6 +609,7 @@ export function AdminConsoleClient({
 }: AdminConsoleClientProps) {
   const sidebarNavRef = useRef<HTMLElement | null>(null);
   const { sectionId, view: subview } = parseAdminPath(initialSection);
+  const commandId = new URLSearchParams(initialSection.split("?", 2)[1] ?? "").get("commandId");
   const activeItem = navItems.find((item) => item.id === sectionId) ?? navItems[0];
   const permissions = useMemo(() => new Set(initialPermissions), [initialPermissions]);
   const canAccessActiveSection = sectionIsPermitted(sectionId, permissions);
@@ -677,7 +678,7 @@ export function AdminConsoleClient({
     setLoading(true);
     setError(null);
     try {
-      setData(await fetchSection(sectionId, { chatOps: nextChatOpsFilters, workMode: nextWorkMode }));
+      setData(await fetchSection(sectionId, { chatOps: nextChatOpsFilters, commandId, workMode: nextWorkMode }));
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Failed to load admin data");
     } finally {
@@ -692,7 +693,7 @@ export function AdminConsoleClient({
     return () => window.clearTimeout(timer);
     // sectionId is derived from the route; load should run when the route changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sectionId, initialAccess, canAccessActiveSection]);
+  }, [sectionId, commandId, initialAccess, canAccessActiveSection]);
 
   function openAction(action: PendingAction) {
     setReason("");
@@ -1277,7 +1278,7 @@ async function fetchGenerationConfig(): Promise<ConfigData> {
 
 async function fetchSection(
   sectionId: string,
-  options: { chatOps?: ChatOpsFilters; workMode?: WorkMode } = {},
+  options: { chatOps?: ChatOpsFilters; commandId?: string | null; workMode?: WorkMode } = {},
 ): Promise<SectionData> {
   if (sectionId === "generation/jobs") {
     const payload = await apiGet<{ items: Row[] }>("/api/v1/admin/generation/jobs?mode=image");
@@ -1346,8 +1347,13 @@ async function fetchSection(
     return { kind: "risk", data: payload };
   }
   if (sectionId === "audit-log") {
-    const payload = await apiGet<{ items: Row[] }>("/api/v1/admin/audit-log");
-    return { kind: "audit", rows: payload.items };
+    const [payload, command] = await Promise.all([
+      apiGet<{ items: Row[] }>("/api/v1/admin/audit-log"),
+      options.commandId
+        ? apiGet<AdminCommandStatus>(`/api/v2/admin/commands/${encodeURIComponent(options.commandId)}`)
+        : Promise.resolve(null),
+    ]);
+    return { kind: "audit", rows: payload.items, command };
   }
   if (sectionId === "support") {
     const payload = await apiGet<{ items: Row[] }>("/api/v1/admin/support/requests");
@@ -2354,13 +2360,19 @@ function renderSection(
     if (section.view === "workflows") return <WorkflowsView />;
     if (section.view === "generation-metrics") return <GenerationMetricsView />;
     if (section.view === "incidents") {
-      return <IncidentWorkspace canManage={ctx.permissions.has("ops.incident.manage")} />;
+      return <IncidentWorkspace
+        canManage={ctx.permissions.has("ops.incident.manage")}
+        initialIncidentId={subview.kind === "detail" ? subview.id : null}
+        key={subview.kind === "detail" ? subview.id : "incident-list"}
+      />;
     }
     if (section.view === "cases") {
       return (
         <CaseWorkspace
           canAssign={ctx.permissions.has("case.assign")}
           canDecide={ctx.permissions.has("case.decide")}
+          initialCaseId={subview.kind === "detail" ? subview.id : null}
+          key={subview.kind === "detail" ? subview.id : "case-list"}
         />
       );
     }
@@ -2382,7 +2394,7 @@ function renderSection(
       />
     );
   }
-  return <AuditView rows={section.rows} />;
+  return <AuditView command={section.command} rows={section.rows} />;
 }
 
 function JobsView({
@@ -5565,13 +5577,31 @@ function ProviderOpsView({ data }: { data: ProviderOpsData }) {
   );
 }
 
-function AuditView({ rows }: { rows: Row[] }) {
+function AuditView({ command, rows }: { command: AdminCommandStatus | null; rows: Row[] }) {
   return (
-    <DataTable
-      columns={["id", "actorId", "actorRole", "action", "targetType", "targetId", "reason", "createdAt"]}
-      rows={rows}
-      title="Audit"
-    />
+    <div className="space-y-5">
+      {command ? (
+        <DataTable
+          columns={["commandId", "commandType", "targetType", "targetId", "status", "verificationState", "needsReconciliation", "updatedAt"]}
+          rows={[{
+            commandId: command.commandId,
+            commandType: command.commandType,
+            targetType: command.target.type,
+            targetId: command.target.id,
+            status: command.status,
+            verificationState: command.verificationState ?? "pending",
+            needsReconciliation: command.needsReconciliation,
+            updatedAt: command.updatedAt,
+          }]}
+          title="Command context"
+        />
+      ) : null}
+      <DataTable
+        columns={["id", "actorId", "actorRole", "action", "targetType", "targetId", "reason", "createdAt"]}
+        rows={rows}
+        title="Audit"
+      />
+    </div>
   );
 }
 

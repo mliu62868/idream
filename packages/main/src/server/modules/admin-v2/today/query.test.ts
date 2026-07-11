@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { resolvePermissions } from "@/server/admin/permissions";
 import { prisma } from "@/server/lib/db";
+import { updateOperationalWorkPreference } from "./preferences";
 import { buildTodayProjection, getTodayProjection } from "./query";
 
 describe("Today authoritative projection", () => {
@@ -230,11 +231,328 @@ describe("Today domain roots", () => {
     });
 
     expect(projection.nextBestActions.items).toEqual(expect.arrayContaining([
-      expect.objectContaining({ sourceType: "character_release", sourceId: releaseId, pinned: true }),
+      expect.objectContaining({
+        sourceType: "character_release",
+        sourceId: releaseId,
+        pinned: true,
+        deepLink: `/admin/characters/character-${suffix}?tab=release&releaseId=${releaseId}`,
+      }),
     ]));
     expect(projection.nextBestActions.items.some((item) => item.sourceId === creativeRunId)).toBe(false);
     expect(projection.watching.items).toEqual(expect.arrayContaining([
       expect.objectContaining({ sourceType: "character_release", sourceId: releaseId }),
+    ]));
+  });
+});
+
+describe("Today complete-set ranking and collaboration bridge", () => {
+  const suffix = randomUUID();
+  const actorId = `today-ranking-${suffix}`;
+  const caseIds = Array.from({ length: 12 }, (_, index) => `today-ranking-case-${index}-${suffix}`);
+
+  beforeAll(async () => {
+    await prisma.user.create({
+      data: { id: actorId, email: `${actorId}@example.test`, role: "support", status: "active" },
+    });
+    await prisma.adminCase.createMany({
+      data: caseIds.map((id, index) => ({
+        id,
+        type: "support_request",
+        targetType: "user",
+        targetId: `ranking-customer-${index}-${suffix}`,
+        caseKey: `ranking-${index}-${suffix}`,
+        activeKey: `ranking-active-${index}-${suffix}`,
+        status: "in_progress",
+        priority: index === 0 ? "urgent" : "low",
+        ownerId: actorId,
+        slaDueAt: index === 0
+          ? new Date("2026-07-10T08:00:00.000Z")
+          : new Date("2026-07-11T18:00:00.000Z"),
+        verificationState: "pending",
+        createdAt: index === 0
+          ? new Date("2026-06-01T00:00:00.000Z")
+          : new Date(`2026-07-11T${String(index).padStart(2, "0")}:00:00.000Z`),
+        updatedAt: index === 0
+          ? new Date("2026-06-01T00:00:00.000Z")
+          : new Date(`2026-07-11T${String(index).padStart(2, "0")}:00:00.000Z`),
+      })),
+    });
+  });
+
+  afterAll(async () => {
+    await prisma.adminCase.deleteMany({ where: { id: { in: caseIds } } });
+    await prisma.user.deleteMany({ where: { id: actorId } });
+    await prisma.$disconnect();
+  });
+
+  it("ranks an old critical overdue row above newer low-priority rows from the complete eligible set", async () => {
+    const projection = await buildTodayProjection({
+      actor: { id: actorId, role: "support" },
+      permissions: resolvePermissions("support"),
+      now: new Date("2026-07-11T12:00:00.000Z"),
+    });
+
+    expect(projection.myShift.totalCount).toBe(12);
+    expect(projection.myShift.items).toHaveLength(10);
+    expect(projection.myShift.items[0]).toMatchObject({
+      sourceType: "admin_case",
+      sourceId: caseIds[0],
+      severity: "critical",
+    });
+  });
+});
+
+describe("Today mentions and collaboration watch aliases", () => {
+  const suffix = randomUUID();
+  const actorId = `today-collab-${suffix}`;
+  const visibleCaseId = `today-visible-case-${suffix}`;
+  const hiddenCaseId = `today-hidden-case-${suffix}`;
+  const incidentId = `today-watched-incident-${suffix}`;
+  const projectId = `today-watched-project-${suffix}`;
+  const characterId = `today-watched-character-${suffix}`;
+  const currentReleaseId = `today-watched-current-${suffix}`;
+  const candidateReleaseId = `today-watched-candidate-${suffix}`;
+  const creativeRunId = `today-watched-creative-${suffix}`;
+  const commandId = `today-command-${suffix}`;
+
+  beforeAll(async () => {
+    await prisma.user.create({
+      data: { id: actorId, email: `${actorId}@example.test`, role: "support", status: "active" },
+    });
+    await prisma.adminCase.createMany({ data: [
+      {
+        id: visibleCaseId,
+        type: "support_request",
+        targetType: "user",
+        targetId: `visible-customer-${suffix}`,
+        caseKey: `visible-${suffix}`,
+        activeKey: `visible-active-${suffix}`,
+        status: "new",
+        priority: "normal",
+        slaDueAt: new Date("2026-07-15T00:00:00.000Z"),
+      },
+      {
+        id: hiddenCaseId,
+        type: "content_report",
+        targetType: "character",
+        targetId: `hidden-character-${suffix}`,
+        caseKey: `hidden-${suffix}`,
+        activeKey: `hidden-active-${suffix}`,
+        status: "new",
+        priority: "high",
+        slaDueAt: new Date("2026-07-12T00:00:00.000Z"),
+      },
+    ] });
+    await prisma.adminCollaborationActivity.createMany({ data: [
+      {
+        id: `today-visible-mention-${suffix}`,
+        targetType: "case",
+        targetId: visibleCaseId,
+        kind: "comment",
+        actorId,
+        body: "Please verify the customer outcome",
+        mentionedIds: [actorId],
+        metadata: {},
+        idempotencyKey: `visible-mention-${suffix}`,
+      },
+      {
+        id: `today-hidden-mention-${suffix}`,
+        targetType: "case",
+        targetId: hiddenCaseId,
+        kind: "comment",
+        actorId,
+        body: "Out-of-scope moderation mention",
+        mentionedIds: [actorId],
+        metadata: {},
+        idempotencyKey: `hidden-mention-${suffix}`,
+      },
+    ] });
+    await prisma.opsIncident.create({ data: {
+      id: incidentId,
+      signature: `today-watch-${suffix}`,
+      signatureVersion: "v1",
+      status: "monitoring",
+      severity: "high",
+      ownerId: actorId,
+      firstSeen: new Date("2026-07-11T08:00:00.000Z"),
+      lastSeen: new Date("2026-07-11T09:00:00.000Z"),
+      impact: {},
+      mitigation: {},
+    } });
+    await prisma.characterProject.create({ data: {
+      id: projectId,
+      characterId,
+      ownerId: actorId,
+      phase: "qa",
+      audience: {},
+      successCriteria: [],
+      activeKey: `today-watch-project-${suffix}`,
+    } });
+    await prisma.characterRelease.createMany({ data: [
+      {
+        id: currentReleaseId,
+        projectId,
+        revisionId: `current-revision-${suffix}`,
+        characterContentVersionId: `current-content-${suffix}`,
+        generationProvenance: {},
+        releasePlacementManifest: {},
+        snapshotHash: `current-snapshot-${suffix}`,
+        readiness: "ready",
+        status: "published",
+      },
+      {
+        id: candidateReleaseId,
+        projectId,
+        revisionId: `candidate-revision-${suffix}`,
+        characterContentVersionId: `candidate-content-${suffix}`,
+        generationProvenance: {},
+        releasePlacementManifest: {},
+        snapshotHash: `candidate-snapshot-${suffix}`,
+        readiness: "blocked",
+        status: "approved",
+      },
+    ] });
+    await prisma.characterServing.create({ data: {
+      id: `today-watch-serving-${suffix}`,
+      characterId,
+      currentReleaseId,
+      state: "live",
+    } });
+    await prisma.contentProductionBatch.create({ data: {
+      id: creativeRunId,
+      title: "Watched Creative Run",
+      purpose: "campaign",
+      presetIds: [],
+      createdById: actorId,
+      lifecycleState: "active",
+      workflowStage: "review",
+    } });
+    await prisma.controlPlaneCommand.create({ data: {
+      id: commandId,
+      scope: `today-command-${suffix}`,
+      idempotencyKey: `today-command-${suffix}`,
+      commandType: "case.verify",
+      targetType: "admin_case",
+      targetId: visibleCaseId,
+      actorId,
+      requestId: `today-request-${suffix}`,
+      requestHash: `today-hash-${suffix}`,
+      requestPayload: {},
+      status: "verifying",
+    } });
+    await prisma.operationalWorkPreference.createMany({ data: [
+      { actorId, sourceType: "case", sourceId: visibleCaseId, watching: true },
+      { actorId, sourceType: "incident", sourceId: incidentId, watching: true },
+      { actorId, sourceType: "character_project", sourceId: projectId, watching: true },
+      { actorId, sourceType: "creative_run", sourceId: creativeRunId, watching: true },
+    ] });
+  });
+
+  afterAll(async () => {
+    await prisma.operationalWorkPreference.deleteMany({ where: { actorId } });
+    await prisma.adminCollaborationActivity.deleteMany({ where: { actorId } });
+    await prisma.controlPlaneCommand.deleteMany({ where: { id: commandId } });
+    await prisma.contentProductionBatch.deleteMany({ where: { id: creativeRunId } });
+    await prisma.characterServing.deleteMany({ where: { characterId } });
+    await prisma.characterRelease.deleteMany({ where: { projectId } });
+    await prisma.characterProject.deleteMany({ where: { id: projectId } });
+    await prisma.opsIncident.deleteMany({ where: { id: incidentId } });
+    await prisma.adminCase.deleteMany({ where: { id: { in: [visibleCaseId, hiddenCaseId] } } });
+    await prisma.user.deleteMany({ where: { id: actorId } });
+    await prisma.$disconnect();
+  });
+
+  it("projects only read-scoped mentions into My shift", async () => {
+    const projection = await buildTodayProjection({
+      actor: { id: actorId, role: "support" },
+      permissions: resolvePermissions("support"),
+      now: new Date("2026-07-11T12:00:00.000Z"),
+    });
+    const mentions = projection.myShift.items.filter((item) => item.sourceType === "collaboration_mention");
+    expect(mentions).toEqual([
+      expect.objectContaining({
+        sourceId: `today-visible-mention-${suffix}`,
+        ownerId: actorId,
+        deepLink: `/admin/cases/${visibleCaseId}`,
+      }),
+    ]);
+  });
+
+  it("links commands to readable command context in the audit workspace", async () => {
+    const projection = await buildTodayProjection({
+      actor: { id: actorId, role: "support" },
+      permissions: resolvePermissions("support"),
+      now: new Date("2026-07-11T12:00:00.000Z"),
+    });
+    expect(projection.myShift.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sourceType: "control_plane_command",
+        sourceId: commandId,
+        deepLink: `/admin/system/audit?commandId=${commandId}`,
+      }),
+    ]));
+  });
+
+  it("applies pin and snooze preferences to an authorized mention", async () => {
+    const mentionId = `today-visible-mention-${suffix}`;
+    const requestIds = [`pin-mention-${suffix}`, `snooze-mention-${suffix}`];
+    try {
+      await updateOperationalWorkPreference({
+        actor: { id: actorId, role: "support" },
+        permissions: resolvePermissions("support"),
+        sourceType: "collaboration_mention",
+        sourceId: mentionId,
+        watching: false,
+        pinned: true,
+        snoozedUntil: null,
+        requestId: requestIds[0],
+      });
+      const pinned = await buildTodayProjection({
+        actor: { id: actorId, role: "support" },
+        permissions: resolvePermissions("support"),
+        now: new Date("2026-07-11T12:00:00.000Z"),
+      });
+      expect(pinned.myShift.items).toEqual(expect.arrayContaining([
+        expect.objectContaining({ sourceType: "collaboration_mention", sourceId: mentionId, pinned: true }),
+      ]));
+
+      await updateOperationalWorkPreference({
+        actor: { id: actorId, role: "support" },
+        permissions: resolvePermissions("support"),
+        sourceType: "collaboration_mention",
+        sourceId: mentionId,
+        watching: false,
+        pinned: false,
+        snoozedUntil: new Date("2026-07-12T12:00:00.000Z"),
+        requestId: requestIds[1],
+      });
+      const snoozed = await buildTodayProjection({
+        actor: { id: actorId, role: "support" },
+        permissions: resolvePermissions("support"),
+        now: new Date("2026-07-11T12:00:00.000Z"),
+      });
+      expect(snoozed.myShift.items.some((item) => item.sourceId === mentionId)).toBe(false);
+      expect(snoozed.nextBestActions.items.some((item) => item.sourceId === mentionId)).toBe(false);
+    } finally {
+      await prisma.operationalWorkPreference.deleteMany({
+        where: { actorId, sourceType: "collaboration_mention", sourceId: mentionId },
+      });
+      await prisma.adminAuditLog.deleteMany({ where: { requestId: { in: requestIds } } });
+    }
+  });
+
+  it("bridges collaboration target aliases and maps a watched Character Project to current and candidate Releases", async () => {
+    const projection = await buildTodayProjection({
+      actor: { id: actorId, role: "admin" },
+      permissions: resolvePermissions("admin"),
+      now: new Date("2026-07-11T12:00:00.000Z"),
+    });
+    expect(new Set(projection.watching.items.map((item) => item.sourceId))).toEqual(new Set([
+      visibleCaseId,
+      incidentId,
+      currentReleaseId,
+      candidateReleaseId,
+      creativeRunId,
     ]));
   });
 });

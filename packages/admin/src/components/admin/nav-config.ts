@@ -205,8 +205,14 @@ const CANONICAL_LIST_SECTIONS: Record<string, string> = {
 };
 
 function canonicalSection(path: string, query: URLSearchParams): AdminPath | null {
+  if (path.startsWith("cases/") && path.split("/").length === 2) {
+    return { sectionId: "cases", view: { kind: "detail", id: path.slice("cases/".length) } };
+  }
   if (path === "cases") {
     return { sectionId: "cases", view: { kind: "list" } };
+  }
+  if (path.startsWith("ops/incidents/") && path.split("/").length === 3) {
+    return { sectionId: "ops/incidents", view: { kind: "detail", id: path.slice("ops/incidents/".length) } };
   }
   if (path === "growth/merchandising") {
     return {

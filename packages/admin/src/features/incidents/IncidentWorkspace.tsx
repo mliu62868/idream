@@ -60,10 +60,10 @@ const initialQuery: IncidentQueryDraft = {
   limit: 30,
 };
 
-export function IncidentWorkspace({ canManage }: { canManage: boolean }) {
+export function IncidentWorkspace({ canManage, initialIncidentId = null }: { canManage: boolean; initialIncidentId?: string | null }) {
   const [query, setQuery] = useState<IncidentQueryDraft>(() => queryFromLocation());
   const [list, setList] = useState<IncidentList | null>(null);
-  const [selectedId, setSelectedId] = useState(() => valueFromLocation("incident"));
+  const [selectedId, setSelectedId] = useState(() => initialIncidentId ?? valueFromLocation("incident"));
   const [selectedSavedViewId, setSelectedSavedViewId] = useState(() => valueFromLocation("savedView"));
   const [detail, setDetail] = useState<IncidentDetail | null>(null);
   const [loading, setLoading] = useState(true);

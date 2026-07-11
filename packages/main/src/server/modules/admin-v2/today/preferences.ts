@@ -19,6 +19,35 @@ async function assertReadableSource(
   sourceType: TodaySourceType,
   sourceId: string,
 ) {
+  if (sourceType === "collaboration_mention") {
+    const activity = await prisma.adminCollaborationActivity.findUnique({
+      where: { id: sourceId },
+      select: { targetType: true, targetId: true, mentionedIds: true },
+    });
+    if (!activity) throw Errors.notFound("Mention not found");
+    if (!activity.mentionedIds.includes(actor.id)) {
+      throw Errors.forbidden("Mention is outside the actor's read scope");
+    }
+    if (activity.targetType === "case") {
+      return assertReadableSource(actor, permissions, "admin_case", activity.targetId);
+    }
+    if (activity.targetType === "incident") {
+      return assertReadableSource(actor, permissions, "ops_incident", activity.targetId);
+    }
+    if (activity.targetType === "creative_run") {
+      return assertReadableSource(actor, permissions, "creative_run", activity.targetId);
+    }
+    if (activity.targetType === "character_project") {
+      if (!permissions.has("character.project.read")) {
+        throw Errors.forbidden("Character Project mention is outside the actor's read scope");
+      }
+      if (!await prisma.characterProject.findUnique({ where: { id: activity.targetId }, select: { id: true } })) {
+        throw Errors.notFound("Character Project not found");
+      }
+      return;
+    }
+    throw Errors.forbidden("Mention target is outside the actor's read scope");
+  }
   if (sourceType === "admin_case") {
     if (!permissions.has("case.read")) throw Errors.forbidden("Case is outside the actor's read scope");
     const row = await prisma.adminCase.findUnique({ where: { id: sourceId }, select: { type: true } });

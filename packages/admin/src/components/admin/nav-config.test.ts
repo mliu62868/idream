@@ -40,7 +40,11 @@ describe("admin navigation information architecture", () => {
     expect(parseAdminPath("characters/new")).toEqual({ sectionId: "content/official", view: { kind: "new" } });
     expect(parseAdminPath("characters/char-1")).toEqual({ sectionId: "content/official", view: { kind: "detail", id: "char-1" } });
     expect(parseAdminPath("cases?view=overdue").sectionId).toBe("cases");
+    expect(parseAdminPath("cases/case-1")).toEqual({ sectionId: "cases", view: { kind: "detail", id: "case-1" } });
     expect(parseAdminPath("ops/incidents").sectionId).toBe("ops/incidents");
+    expect(parseAdminPath("ops/incidents/incident-1")).toEqual({ sectionId: "ops/incidents", view: { kind: "detail", id: "incident-1" } });
+    expect(parseAdminPath("characters/char-1?tab=release&releaseId=release-1")).toEqual({ sectionId: "content/official", view: { kind: "detail", id: "char-1" } });
+    expect(parseAdminPath("system/audit?commandId=command-1")).toEqual({ sectionId: "audit-log", view: { kind: "list" } });
     expect(parseAdminPath("growth/offers?view=promo").sectionId).toBe("promo");
     expect(parseAdminPath("ops/recipes?view=presets").sectionId).toBe("generation/presets");
     expect(parseAdminPath("growth/merchandising?view=announcements").sectionId).toBe("announcements");

@@ -6,6 +6,7 @@ import {
   type TodayWorkItem,
 } from "@idream/shared/admin";
 import type {
+  AdminCollaborationActivity,
   AdminCase,
   CharacterRelease,
   ContentProductionBatch,
@@ -31,6 +32,21 @@ const ACTIVE_RELEASE_STATUSES = ["draft", "validating", "in_review", "approved"]
 const RESOLVED_RELEASE_STATUSES = ["published", "superseded", "withdrawn"];
 
 type ProjectableRow =
+  | {
+      sourceType: "collaboration_mention";
+      row: AdminCollaborationActivity;
+      target: {
+        label: string;
+        deepLink: string;
+        severity: TodayWorkItem["severity"];
+        priority: TodayWorkItem["priority"];
+        impactSnapshot: Record<string, unknown>;
+        ownerId: string;
+        slaDueAt: Date | null;
+        verificationState: TodayWorkItem["verificationState"];
+        dataClass: TodayWorkItem["dataClass"];
+      };
+    }
   | { sourceType: "admin_case"; row: AdminCase }
   | { sourceType: "ops_incident"; row: OpsIncident }
   | { sourceType: "control_plane_command"; row: ControlPlaneCommand }
@@ -90,6 +106,33 @@ function asImpact(value: Prisma.JsonValue | null): Record<string, unknown> {
 
 function projectRow(row: ProjectableRow, pinnedKeys: ReadonlySet<string>): TodayWorkItem {
   const environment = deploymentEnvironment();
+  if (row.sourceType === "collaboration_mention") {
+    return {
+      sourceType: row.sourceType,
+      sourceId: row.row.id,
+      title: `Mention on ${row.target.label}`,
+      summary: row.row.body?.trim() || `${row.row.actorId} mentioned you`,
+      severity: row.target.severity,
+      priority: row.target.priority,
+      impactSnapshot: {
+        ...row.target.impactSnapshot,
+        activityId: row.row.id,
+        mentionedById: row.row.actorId,
+        targetType: row.row.targetType,
+        targetId: row.row.targetId,
+      },
+      ownerId: row.target.ownerId,
+      slaDueAt: row.target.slaDueAt?.toISOString() ?? null,
+      recommendedAction: "Open the mentioned context and respond or hand off",
+      rankingReason: rankingReason(row.target.severity, row.target.slaDueAt, row.row.createdAt),
+      deepLink: row.target.deepLink,
+      verificationState: row.target.verificationState,
+      lastChangedAt: row.row.createdAt.toISOString(),
+      environment,
+      dataClass: row.target.dataClass,
+      pinned: pinnedKeys.has(`${row.sourceType}:${row.row.id}`),
+    };
+  }
   if (row.sourceType === "admin_case") {
     const item = row.row;
     return {
@@ -155,7 +198,7 @@ function projectRow(row: ProjectableRow, pinnedKeys: ReadonlySet<string>): Today
       slaDueAt: row.project.plannedLaunchAt?.toISOString() ?? null,
       recommendedAction: item.readiness === "blocked" ? "Resolve release readiness blockers" : "Advance release checks",
       rankingReason: rankingReason(severity, row.project.plannedLaunchAt, item.createdAt),
-      deepLink: `/admin/characters/releases/${encodeURIComponent(item.id)}`,
+      deepLink: `/admin/characters/${encodeURIComponent(row.project.characterId)}?tab=release&releaseId=${encodeURIComponent(item.id)}`,
       verificationState: item.readiness === "blocked" ? "failed" : item.readiness === "ready" ? "passed" : "pending",
       lastChangedAt: item.updatedAt.toISOString(),
       environment,
@@ -213,7 +256,7 @@ function projectRow(row: ProjectableRow, pinnedKeys: ReadonlySet<string>): Today
     slaDueAt: item.leaseExpiresAt?.toISOString() ?? null,
     recommendedAction: item.needsReconciliation ? "Reconcile the uncertain downstream effect" : "Check command verification",
     rankingReason: rankingReason(verificationState === "failed" ? "high" : "medium", item.leaseExpiresAt, item.createdAt),
-    deepLink: `/admin/system/commands/${encodeURIComponent(item.id)}`,
+    deepLink: `/admin/system/audit?commandId=${encodeURIComponent(item.id)}`,
     verificationState,
     lastChangedAt: item.updatedAt.toISOString(),
     environment,
@@ -233,13 +276,13 @@ const severityScore = { critical: 4, high: 3, medium: 2, low: 1 } as const;
 const priorityScore = { urgent: 4, high: 3, normal: 2, low: 1 } as const;
 
 const MODE_SOURCE_ORDER: Record<TodayWorkMode, readonly TodayWorkItem["sourceType"][]> = {
-  character_producer: ["character_release", "creative_run", "control_plane_command", "admin_case", "ops_incident"],
-  creative_operator: ["creative_run", "character_release", "control_plane_command", "ops_incident", "admin_case"],
-  platform_ops: ["ops_incident", "creative_run", "control_plane_command", "character_release", "admin_case"],
-  support: ["admin_case", "ops_incident", "control_plane_command", "character_release", "creative_run"],
-  moderator: ["admin_case", "character_release", "control_plane_command", "ops_incident", "creative_run"],
-  growth_analyst: ["character_release", "creative_run", "control_plane_command", "ops_incident", "admin_case"],
-  admin: ["ops_incident", "character_release", "creative_run", "control_plane_command", "admin_case"],
+  character_producer: ["collaboration_mention", "character_release", "creative_run", "control_plane_command", "admin_case", "ops_incident"],
+  creative_operator: ["collaboration_mention", "creative_run", "character_release", "control_plane_command", "ops_incident", "admin_case"],
+  platform_ops: ["collaboration_mention", "ops_incident", "creative_run", "control_plane_command", "character_release", "admin_case"],
+  support: ["collaboration_mention", "admin_case", "ops_incident", "control_plane_command", "character_release", "creative_run"],
+  moderator: ["collaboration_mention", "admin_case", "character_release", "control_plane_command", "ops_incident", "creative_run"],
+  growth_analyst: ["collaboration_mention", "character_release", "creative_run", "control_plane_command", "ops_incident", "admin_case"],
+  admin: ["collaboration_mention", "ops_incident", "character_release", "creative_run", "control_plane_command", "admin_case"],
 };
 
 function sortItems(items: TodayWorkItem[], now: Date, workMode: TodayWorkMode) {
@@ -305,8 +348,10 @@ function sourceRows(
     project: { ownerId: string | null; characterId: string; phase: string; plannedLaunchAt: Date | null };
   }> = [],
   creativeRuns: ContentProductionBatch[] = [],
+  mentions: Extract<ProjectableRow, { sourceType: "collaboration_mention" }>[] = [],
 ): ProjectableRow[] {
   return [
+    ...mentions,
     ...cases.map((row) => ({ sourceType: "admin_case" as const, row })),
     ...incidents.map((row) => ({ sourceType: "ops_incident" as const, row })),
     ...commands.map((row) => ({ sourceType: "control_plane_command" as const, row })),
@@ -322,22 +367,21 @@ async function findQueueRows(input: {
   releaseWhere: Prisma.CharacterReleaseWhereInput | null;
   creativeWhere: Prisma.ContentProductionBatchWhereInput | null;
   permissions: ReadonlySet<AdminPermissionKey>;
+  mentions?: Extract<ProjectableRow, { sourceType: "collaboration_mention" }>[];
 }) {
   const commandPermissionWhere = readableCommandWhere(input.permissions);
   const commandWhere = input.commandWhere && commandPermissionWhere
     ? { AND: [input.commandWhere, commandPermissionWhere] }
     : null;
-  const [caseCount, cases, incidentCount, incidents, commandCount, commands, releaseCount, releaseRows, creativeCount, creativeRuns] = await Promise.all([
-    input.caseWhere ? prisma.adminCase.count({ where: input.caseWhere }) : 0,
-    input.caseWhere ? prisma.adminCase.findMany({ where: input.caseWhere, orderBy: { updatedAt: "desc" }, take: QUEUE_LIMIT }) : [],
-    input.incidentWhere ? prisma.opsIncident.count({ where: input.incidentWhere }) : 0,
-    input.incidentWhere ? prisma.opsIncident.findMany({ where: input.incidentWhere, orderBy: { updatedAt: "desc" }, take: QUEUE_LIMIT }) : [],
-    commandWhere ? prisma.controlPlaneCommand.count({ where: commandWhere }) : 0,
-    commandWhere ? prisma.controlPlaneCommand.findMany({ where: commandWhere, orderBy: { updatedAt: "desc" }, take: QUEUE_LIMIT }) : [],
-    input.releaseWhere ? prisma.characterRelease.count({ where: input.releaseWhere }) : 0,
-    input.releaseWhere ? prisma.characterRelease.findMany({ where: input.releaseWhere, orderBy: { updatedAt: "desc" }, take: QUEUE_LIMIT }) : [],
-    input.creativeWhere ? prisma.contentProductionBatch.count({ where: input.creativeWhere }) : 0,
-    input.creativeWhere ? prisma.contentProductionBatch.findMany({ where: input.creativeWhere, orderBy: { updatedAt: "desc" }, take: QUEUE_LIMIT }) : [],
+  // Fetch the complete eligible set before applying the versioned cross-domain
+  // ranking policy. A per-domain updatedAt cap is not rank-preserving: an old
+  // critical/SLA-breached row can legitimately outrank every newer row.
+  const [cases, incidents, commands, releaseRows, creativeRuns] = await Promise.all([
+    input.caseWhere ? prisma.adminCase.findMany({ where: input.caseWhere }) : [],
+    input.incidentWhere ? prisma.opsIncident.findMany({ where: input.incidentWhere }) : [],
+    commandWhere ? prisma.controlPlaneCommand.findMany({ where: commandWhere }) : [],
+    input.releaseWhere ? prisma.characterRelease.findMany({ where: input.releaseWhere }) : [],
+    input.creativeWhere ? prisma.contentProductionBatch.findMany({ where: input.creativeWhere }) : [],
   ]);
   const projects = releaseRows.length > 0
     ? await prisma.characterProject.findMany({
@@ -351,9 +395,105 @@ async function findQueueRows(input: {
     return project ? [{ row, project }] : [];
   });
   return {
-    totalCount: caseCount + incidentCount + commandCount + releaseCount + creativeCount,
-    rows: sourceRows(cases, incidents, commands, releases, creativeRuns),
+    totalCount: cases.length + incidents.length + commands.length + releases.length + creativeRuns.length + (input.mentions?.length ?? 0),
+    rows: sourceRows(cases, incidents, commands, releases, creativeRuns, input.mentions),
   };
+}
+
+type MentionRow = Extract<ProjectableRow, { sourceType: "collaboration_mention" }>;
+
+function mentionTargetFromItem(item: TodayWorkItem, ownerId: string): MentionRow["target"] {
+  return {
+    label: item.title,
+    deepLink: item.deepLink,
+    severity: item.severity,
+    priority: item.priority,
+    impactSnapshot: item.impactSnapshot,
+    ownerId,
+    slaDueAt: item.slaDueAt ? new Date(item.slaDueAt) : null,
+    verificationState: item.verificationState,
+    dataClass: item.dataClass,
+  };
+}
+
+async function findMentionRows(input: {
+  actor: { id: string; role: string };
+  permissions: ReadonlySet<AdminPermissionKey>;
+  caseScope: Prisma.AdminCaseWhereInput | null;
+  incidentScope: Prisma.OpsIncidentWhereInput | null;
+  now: Date;
+}): Promise<MentionRow[]> {
+  const activities = await prisma.adminCollaborationActivity.findMany({
+    where: { mentionedIds: { has: input.actor.id } },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+  });
+  if (activities.length === 0) return [];
+
+  const ids = (targetType: string) => activities
+    .filter((activity) => activity.targetType === targetType)
+    .map((activity) => activity.targetId);
+  const caseIds = ids("case");
+  const incidentIds = ids("incident");
+  const projectIds = ids("character_project");
+  const creativeIds = ids("creative_run");
+  const [cases, incidents, projects, creativeRuns] = await Promise.all([
+    input.caseScope && caseIds.length > 0
+      ? prisma.adminCase.findMany({ where: { AND: [input.caseScope, { id: { in: caseIds } }] } })
+      : [],
+    input.incidentScope && incidentIds.length > 0
+      ? prisma.opsIncident.findMany({ where: { AND: [input.incidentScope, { id: { in: incidentIds } }] } })
+      : [],
+    input.permissions.has("character.project.read") && projectIds.length > 0
+      ? prisma.characterProject.findMany({ where: { id: { in: projectIds } } })
+      : [],
+    input.permissions.has("creative.run.read") && creativeIds.length > 0
+      ? prisma.contentProductionBatch.findMany({ where: { id: { in: creativeIds } } })
+      : [],
+  ]);
+  const casesById = new Map(cases.map((row) => [row.id, row]));
+  const incidentsById = new Map(incidents.map((row) => [row.id, row]));
+  const projectsById = new Map(projects.map((row) => [row.id, row]));
+  const creativeById = new Map(creativeRuns.map((row) => [row.id, row]));
+  const noPins = new Set<string>();
+
+  return activities.flatMap((row): MentionRow[] => {
+    if (row.targetType === "case") {
+      const target = casesById.get(row.targetId);
+      if (!target) return [];
+      const item = projectRow({ sourceType: "admin_case", row: target }, noPins);
+      return [{ sourceType: "collaboration_mention", row, target: mentionTargetFromItem(item, input.actor.id) }];
+    }
+    if (row.targetType === "incident") {
+      const target = incidentsById.get(row.targetId);
+      if (!target) return [];
+      const item = projectRow({ sourceType: "ops_incident", row: target }, noPins);
+      return [{ sourceType: "collaboration_mention", row, target: mentionTargetFromItem(item, input.actor.id) }];
+    }
+    if (row.targetType === "creative_run") {
+      const target = creativeById.get(row.targetId);
+      if (!target) return [];
+      const item = projectRow({ sourceType: "creative_run", row: target }, noPins);
+      return [{ sourceType: "collaboration_mention", row, target: mentionTargetFromItem(item, input.actor.id) }];
+    }
+    const project = projectsById.get(row.targetId);
+    if (!project) return [];
+    const severity = project.plannedLaunchAt && project.plannedLaunchAt <= input.now ? "high" : "medium";
+    return [{
+      sourceType: "collaboration_mention",
+      row,
+      target: {
+        label: `Character project ${project.characterId}`,
+        deepLink: `/admin/characters/${encodeURIComponent(project.characterId)}?tab=project`,
+        severity,
+        priority: severity === "high" ? "high" : "normal",
+        impactSnapshot: { projectId: project.id, characterId: project.characterId, phase: project.phase },
+        ownerId: input.actor.id,
+        slaDueAt: project.plannedLaunchAt,
+        verificationState: "pending",
+        dataClass: "internal",
+      },
+    }];
+  });
 }
 
 export async function buildTodayProjection(input: {
@@ -383,6 +523,7 @@ export async function buildTodayProjection(input: {
   const snoozedCaseIds = snoozed.filter((item) => item.sourceType === "admin_case").map((item) => item.sourceId);
   const snoozedIncidentIds = snoozed.filter((item) => item.sourceType === "ops_incident").map((item) => item.sourceId);
   const snoozedCommandIds = snoozed.filter((item) => item.sourceType === "control_plane_command").map((item) => item.sourceId);
+  const snoozedMentionIds = snoozed.filter((item) => item.sourceType === "collaboration_mention").map((item) => item.sourceId);
   const snoozedReleaseIds = snoozed.filter((item) => item.sourceType === "character_release").map((item) => item.sourceId);
   const snoozedCreativeIds = snoozed.filter((item) => item.sourceType === "creative_run").map((item) => item.sourceId);
   const withoutIds = (ids: string[]) => ids.length > 0 ? { notIn: ids } : undefined;
@@ -400,6 +541,15 @@ export async function buildTodayProjection(input: {
   const activeCreativeWhere = creativeReadable
     ? { lifecycleState: "active", id: withoutIds(snoozedCreativeIds) }
     : null;
+  const allMentions = await findMentionRows({
+    actor: input.actor,
+    permissions: input.permissions,
+    caseScope,
+    incidentScope,
+    now,
+  });
+  const snoozedMentionSet = new Set(snoozedMentionIds);
+  const mentions = allMentions.filter((mention) => !snoozedMentionSet.has(mention.row.id));
 
   const [myShift, nextBest, unassigned, recentlyResolved] = await Promise.all([
     findQueueRows({
@@ -411,6 +561,7 @@ export async function buildTodayProjection(input: {
         AND: [activeCreativeWhere, { ownerId: input.actor.id }, { OR: [{ dueAt: { lte: endOfToday } }, { verificationState: "failed" }] }],
       },
       permissions: input.permissions,
+      mentions,
     }),
     findQueueRows({
       caseWhere: activeCaseWhere,
@@ -419,6 +570,7 @@ export async function buildTodayProjection(input: {
       releaseWhere: activeReleaseWhere,
       creativeWhere: activeCreativeWhere,
       permissions: input.permissions,
+      mentions,
     }),
     findQueueRows({
       caseWhere: activeCaseWhere && { AND: [activeCaseWhere, { ownerId: null }] },
@@ -441,12 +593,42 @@ export async function buildTodayProjection(input: {
   ]);
 
   const watchedPreferences = preferences.filter((item) => item.watching);
-  const watchedCaseIds = watchedPreferences.filter((item) => item.sourceType === "admin_case").map((item) => item.sourceId);
-  const watchedIncidentIds = watchedPreferences.filter((item) => item.sourceType === "ops_incident").map((item) => item.sourceId);
+  const watchedCaseIds = watchedPreferences.filter((item) => ["admin_case", "case"].includes(item.sourceType)).map((item) => item.sourceId);
+  const watchedIncidentIds = watchedPreferences.filter((item) => ["ops_incident", "incident"].includes(item.sourceType)).map((item) => item.sourceId);
   const watchedCommandIds = watchedPreferences.filter((item) => item.sourceType === "control_plane_command").map((item) => item.sourceId);
-  const watchedReleaseIds = watchedPreferences.filter((item) => item.sourceType === "character_release").map((item) => item.sourceId);
+  const watchedMentionIds = new Set(watchedPreferences.filter((item) => item.sourceType === "collaboration_mention").map((item) => item.sourceId));
+  const directlyWatchedReleaseIds = watchedPreferences.filter((item) => item.sourceType === "character_release").map((item) => item.sourceId);
+  const watchedProjectIds = watchedPreferences.filter((item) => item.sourceType === "character_project").map((item) => item.sourceId);
   const watchedCreativeIds = watchedPreferences.filter((item) => item.sourceType === "creative_run").map((item) => item.sourceId);
   const commandPermissionWhere = readableCommandWhere(input.permissions);
+  const watchedCharacterProjects = releaseReadable && input.permissions.has("character.project.read") && watchedProjectIds.length > 0
+    ? await prisma.characterProject.findMany({ where: { id: { in: watchedProjectIds } } })
+    : [];
+  const [watchedProjectServings, watchedProjectCandidates] = watchedCharacterProjects.length > 0
+    ? await Promise.all([
+        prisma.characterServing.findMany({
+          where: { characterId: { in: watchedCharacterProjects.map((project) => project.characterId) } },
+          select: { characterId: true, currentReleaseId: true },
+        }),
+        prisma.characterRelease.findMany({
+          where: { projectId: { in: watchedCharacterProjects.map((project) => project.id) }, status: { in: ACTIVE_RELEASE_STATUSES } },
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        }),
+      ])
+    : [[], []] as const;
+  const candidateByProject = new Map<string, CharacterRelease>();
+  for (const release of watchedProjectCandidates) {
+    if (!candidateByProject.has(release.projectId)) candidateByProject.set(release.projectId, release);
+  }
+  const servingByCharacter = new Map(watchedProjectServings.map((serving) => [serving.characterId, serving.currentReleaseId]));
+  const watchedReleaseIds = [...new Set([
+    ...directlyWatchedReleaseIds,
+    ...watchedCharacterProjects.flatMap((project) => {
+      const currentReleaseId = servingByCharacter.get(project.characterId);
+      const candidateReleaseId = candidateByProject.get(project.id)?.id;
+      return [currentReleaseId, candidateReleaseId].filter((id): id is string => Boolean(id));
+    }),
+  ])];
   const [watchedCases, watchedIncidents, watchedCommands, watchedReleases, watchedCreativeRuns] = await Promise.all([
     caseScope && watchedCaseIds.length > 0 ? prisma.adminCase.findMany({ where: { AND: [caseScope, { id: { in: watchedCaseIds } }] } }) : [],
     incidentScope && watchedIncidentIds.length > 0 ? prisma.opsIncident.findMany({ where: { AND: [incidentScope, { id: { in: watchedIncidentIds } }] } }) : [],
@@ -471,9 +653,17 @@ export async function buildTodayProjection(input: {
     const project = watchedProjectsById.get(row.projectId);
     return project ? [{ row, project }] : [];
   });
+  const watchedMentions = allMentions.filter((mention) => watchedMentionIds.has(mention.row.id));
   const watching = {
-    totalCount: watchedCases.length + watchedIncidents.length + watchedCommands.length + projectedWatchedReleases.length + watchedCreativeRuns.length,
-    rows: sourceRows(watchedCases, watchedIncidents, watchedCommands, projectedWatchedReleases, watchedCreativeRuns),
+    totalCount: watchedCases.length + watchedIncidents.length + watchedCommands.length + projectedWatchedReleases.length + watchedCreativeRuns.length + watchedMentions.length,
+    rows: sourceRows(
+      watchedCases,
+      watchedIncidents,
+      watchedCommands,
+      projectedWatchedReleases,
+      watchedCreativeRuns,
+      watchedMentions,
+    ),
   };
 
   return todayProjectionSchema.parse({

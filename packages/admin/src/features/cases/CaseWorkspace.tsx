@@ -58,10 +58,10 @@ const initialQuery: CaseQueryDraft = {
   limit: 30,
 };
 
-export function CaseWorkspace({ canAssign, canDecide }: { canAssign: boolean; canDecide: boolean }) {
+export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { canAssign: boolean; canDecide: boolean; initialCaseId?: string | null }) {
   const [query, setQuery] = useState<CaseQueryDraft>(() => queryFromLocation());
   const [list, setList] = useState<CaseList | null>(null);
-  const [selectedId, setSelectedId] = useState(() => valueFromLocation("case"));
+  const [selectedId, setSelectedId] = useState(() => initialCaseId ?? valueFromLocation("case"));
   const [selectedSavedViewId, setSelectedSavedViewId] = useState(() => valueFromLocation("savedView"));
   const [detail, setDetail] = useState<CaseDetail | null>(null);
   const [loading, setLoading] = useState(true);

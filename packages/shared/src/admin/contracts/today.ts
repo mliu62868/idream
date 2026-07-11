@@ -14,6 +14,7 @@ export const todaySourceTypeSchema = z.enum([
   "admin_case",
   "ops_incident",
   "control_plane_command",
+  "collaboration_mention",
   "character_release",
   "creative_run",
 ]);
