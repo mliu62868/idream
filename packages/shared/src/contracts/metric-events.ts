@@ -63,6 +63,19 @@ export const aiUsageRecordedV2Schema = z.object({
   pricingVersion: z.string().min(1),
 });
 
+export const experimentExposedV2Schema = z.object({
+  exposureId: z.string().min(1),
+  assignmentId: z.string().min(1),
+  experimentId: z.string().min(1),
+  experimentVersion: z.number().int().positive(),
+  assignmentVersion: z.string().min(1),
+  subjectType: z.enum(["user", "anonymous"]),
+  subjectId: z.string().min(1),
+  variant: z.string().min(1),
+  eligible: z.boolean(),
+  surface: z.string().min(1),
+});
+
 export const METRIC_PRODUCT_EVENTS = {
   chatExchangeCompleted: "chat.exchange.completed.v2",
   chatExchangeCorrected: "chat.exchange.corrected.v2",
@@ -71,7 +84,9 @@ export const METRIC_PRODUCT_EVENTS = {
   subscriptionEnded: "subscription.ended.v2",
   generationDeliveryCompleted: "generation.delivery.completed.v2",
   aiUsageRecorded: "ai.usage.recorded.v2",
+  experimentExposed: "experiment.exposed.v2",
 } as const;
 
 export type ChatExchangeCompletedV2 = z.infer<typeof chatExchangeCompletedV2Schema>;
 export type ChatExchangeCorrectionV2 = z.infer<typeof chatExchangeCorrectionV2Schema>;
+export type ExperimentExposedV2 = z.infer<typeof experimentExposedV2Schema>;

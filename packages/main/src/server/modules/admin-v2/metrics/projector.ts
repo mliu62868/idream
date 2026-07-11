@@ -4,6 +4,7 @@ import {
   chatExchangeCompletedV2Schema,
   chatExchangeCorrectionV2Schema,
   customerSignupCompletedV2Schema,
+  experimentExposedV2Schema,
   generationDeliveryCompletedV2Schema,
   subscriptionActivatedV2Schema,
   subscriptionEndedV2Schema,
@@ -106,6 +107,35 @@ async function refreshCompanionDaily(
 async function applyEvent(tx: Transaction, event: MetricProductEvent): Promise<MetricProjectionResult> {
   if (event.name === "chat.message.completed") {
     return { status: "skipped", reason: "legacy_untyped" };
+  }
+  if (event.name === METRIC_PRODUCT_EVENTS.experimentExposed) {
+    const payload = experimentExposedV2Schema.parse(event.props);
+    const eligibleExposure = event.environment === "production" &&
+      event.dataClass === "customer" &&
+      (event.trustClass === "typed_client" || event.trustClass === "canonical") &&
+      !actorIsInternal(event) && payload.eligible;
+    if (!eligibleExposure) return { status: "skipped", reason: "ineligible_data" };
+    const fact = await tx.experimentExposureFact.upsert({
+      where: { exposureId: payload.exposureId },
+      create: {
+        exposureId: payload.exposureId,
+        sourceService: event.sourceService,
+        sourceEventId: event.sourceEventId,
+        experimentId: payload.experimentId,
+        experimentVersion: payload.experimentVersion,
+        assignmentVersion: payload.assignmentVersion,
+        subjectType: payload.subjectType,
+        subjectId: payload.subjectId,
+        variant: payload.variant,
+        eligible: true,
+        environment: event.environment,
+        dataClass: event.dataClass,
+        trustClass: event.trustClass,
+        occurredAt: event.occurredAt,
+      },
+      update: {},
+    });
+    return { status: "applied", factType: "experiment_exposure", factId: fact.id };
   }
   if (!isEligibleServerOutcome(event)) {
     return { status: "skipped", reason: "ineligible_data" };
