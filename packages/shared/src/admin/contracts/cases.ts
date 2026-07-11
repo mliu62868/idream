@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   adminCursorQuerySchema,
+  adminCommandRequestSchema,
   adminEntityRefSchema,
   adminIdSchema,
   adminIsoDateTimeSchema,
@@ -8,6 +9,8 @@ import {
   adminPrioritySchema,
   adminSeveritySchema,
 } from "./common";
+
+export const caseCloseCommandRequestSchema = adminCommandRequestSchema;
 
 export const operationsCaseTypeSchema = z.enum([
   "support_request",
@@ -92,3 +95,4 @@ export const operationsCaseListResponseSchema = adminListResponseSchema(operatio
 export type OperationsCase = z.infer<typeof operationsCaseSchema>;
 export type CaseEvidence = z.infer<typeof caseEvidenceSchema>;
 export type OperationsCaseQuery = z.infer<typeof operationsCaseQuerySchema>;
+export type CaseCloseCommandRequest = z.infer<typeof caseCloseCommandRequestSchema>;

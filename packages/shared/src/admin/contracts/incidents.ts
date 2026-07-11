@@ -1,12 +1,15 @@
 import { z } from "zod";
 import {
   adminCursorQuerySchema,
+  adminCommandRequestSchema,
   adminIdSchema,
   adminIsoDateTimeSchema,
   adminListResponseSchema,
   adminSeveritySchema,
   adminVerificationStateSchema,
 } from "./common";
+
+export const incidentResolveCommandRequestSchema = adminCommandRequestSchema;
 
 export const incidentStatusSchema = z.enum([
   "detected",
@@ -100,3 +103,4 @@ export type OpsIncident = z.infer<typeof incidentSchema>;
 export type IncidentOccurrence = z.infer<typeof incidentOccurrenceSchema>;
 export type IncidentActionPlan = z.infer<typeof incidentActionPlanSchema>;
 export type IncidentQuery = z.infer<typeof incidentQuerySchema>;
+export type IncidentResolveCommandRequest = z.infer<typeof incidentResolveCommandRequestSchema>;

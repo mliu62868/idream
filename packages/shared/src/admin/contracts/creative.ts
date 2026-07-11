@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   adminCursorQuerySchema,
+  adminCommandRequestSchema,
   adminEntityRefSchema,
   adminIdSchema,
   adminIsoDateTimeSchema,
@@ -8,6 +9,8 @@ import {
   adminPrioritySchema,
   adminVerificationStateSchema,
 } from "./common";
+
+export const creativeRunRetryFailedCommandRequestSchema = adminCommandRequestSchema;
 
 export const creativeLifecycleStateSchema = z.enum(["draft", "active", "closed", "archived"]);
 export const creativeWorkflowStageSchema = z.enum([
@@ -139,3 +142,6 @@ export const creativeRunListResponseSchema = adminListResponseSchema(creativeRun
 export type CreativeRun = z.infer<typeof creativeRunSchema>;
 export type CreativeAssetLineage = z.infer<typeof creativeAssetLineageSchema>;
 export type CreativeRunQuery = z.infer<typeof creativeRunQuerySchema>;
+export type CreativeRunRetryFailedCommandRequest = z.infer<
+  typeof creativeRunRetryFailedCommandRequestSchema
+>;

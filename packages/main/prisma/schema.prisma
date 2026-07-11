@@ -649,6 +649,7 @@ model ContentProductionBatch {
   approvedItems           Int                     @default(0)
   estimatedCostDreamcoins Int                     @default(0)
   status                  String                  @default("draft") // enum: draft | queued | reviewing | completed | archived
+  version                 Int                     @default(1)
   createdById             String
   createdBy               User                    @relation(fields: [createdById], references: [id], onDelete: Cascade)
   items                   ContentProductionItem[]

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   adminCursorQuerySchema,
+  adminCommandRequestSchema,
   adminIdSchema,
   adminIsoDateTimeSchema,
   adminListResponseSchema,
@@ -9,6 +10,8 @@ import {
   adminVerificationStateSchema,
   operationalStateViewSchema,
 } from "./common";
+
+export const characterReleasePublishCommandRequestSchema = adminCommandRequestSchema;
 
 export const characterProjectPhaseSchema = z.enum([
   "idea",
@@ -181,3 +184,6 @@ export type CharacterRelease = z.infer<typeof characterReleaseSchema>;
 export type CharacterServing = z.infer<typeof characterServingSchema>;
 export type CharacterPortfolioItem = z.infer<typeof characterPortfolioItemSchema>;
 export type CharacterPortfolioQuery = z.infer<typeof characterPortfolioQuerySchema>;
+export type CharacterReleasePublishCommandRequest = z.infer<
+  typeof characterReleasePublishCommandRequestSchema
+>;
