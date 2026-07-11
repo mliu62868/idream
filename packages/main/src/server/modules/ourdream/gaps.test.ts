@@ -530,7 +530,10 @@ describe("feed share and remix provenance", () => {
       sourceCreatorId: owner,
       sourceCharacterName: "Feed Remix Source",
     });
-    await runQueuedGenerationJobs(4);
+    // The full integration suite shares one deterministic test queue across
+    // files. Drain enough work to guarantee this remix reaches its terminal
+    // finalize step even when earlier tests left completed queue records.
+    await runQueuedGenerationJobs(32);
 
     const asset = await prisma.mediaAsset.findFirstOrThrow({
       where: { sourceJobId: job.data.job.id as string },

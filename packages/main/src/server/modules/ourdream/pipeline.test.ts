@@ -112,13 +112,13 @@ describe("local AI service pipeline", () => {
         profileId: "profile_image_default_v1",
         width: 512,
         height: 512,
-        sdcpp: expect.objectContaining({
-          profileKey: "profile_image_default_v1",
-          apiModelId: "pornmaster-zimage-turbo",
-          modelFormat: "safetensors",
+        modelCapabilities: expect.objectContaining({
+          referenceImages: false,
+          initImage: false,
         }),
       },
     });
+    expect((queuedGenerateJob?.payload as { controls?: unknown })?.controls).not.toHaveProperty("sdcpp");
 
     await runQueuedGenerationJobs(8);
     const completed = await api("GET", `generation/jobs/${jobId}`, { userId, ageGate: true });

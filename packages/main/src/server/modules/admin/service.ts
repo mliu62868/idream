@@ -3246,9 +3246,9 @@ async function patchFeatureFlag(request: Request, key: string) {
   return ok({ flag: updated });
 }
 
-// SPEC: Analytics/BI 概览 —— 漏斗（注册→激活→付费）、生成状态、币经济、Top 事件，按时间窗只读聚合。
-// INTENT: 接通早已存在但无 endpoint 的 analytics.export 权限（admin+analyst）；给增长决策一个脱敏聚合看板。
-// INVARIANTS: 只读不写；漏斗为窗口内活动口径（非严格 cohort），数与底层表一致；默认窗口最近 30 天。
+// SPEC: Phase-0 truth containment. Exact operational aggregates remain available,
+// while the legacy activation/conversion values are explicitly invalid until the
+// canonical fact + certified metric cutover.
 async function analyticsOverview(request: Request) {
   await actorWithPermission(request, "analytics.export");
   const url = new URL(request.url);
@@ -3304,12 +3304,26 @@ async function analyticsOverview(request: Request) {
 
   return ok({
     window: { from: from.toISOString(), to: to.toISOString() },
-    funnel: { signups, activatedUsers, payingUsers, conversionRate },
+    funnel: {
+      signups,
+      activatedUsers: null,
+      payingUsers: null,
+      conversionRate: null,
+      qualityState: "invalid",
+      validForDecisions: false,
+      metricVersion: "legacy-v1",
+      reason:
+        "Legacy activation used any generation job and conversion mixed unrelated windows; certified cohort metrics are not available yet.",
+      legacyObserved: { activatedUsers, payingUsers, conversionRate },
+    },
     generation: {
       total: generationTotal,
       completed: statusCount("completed"),
       failed: statusCount("failed"),
       blocked: statusCount("blocked"),
+      qualityState: "directional",
+      validForDecisions: false,
+      reason: "Legacy status counts are operational diagnostics, not fulfillment outcomes.",
     },
     economy: { coinsGranted, coinsSpent, net: coinsGranted + coinsSpent, byReason },
     topEvents,

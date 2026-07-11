@@ -3638,6 +3638,11 @@ async function createMediaVariation(request: Request, id: string) {
       characterId,
       freeplay: !characterId,
       consistencyMode: body.consistencyMode,
+      // A variation is an img2img request even when the source asset has no
+      // originating job/profile. Route it through the qualified edit profile;
+      // the common generation path will deterministically drop the source and
+      // degrade to text-to-image if that profile is unavailable.
+      model: "chat-image-edit",
       prompt: variationScenePrompt(asset.prompt ?? sourceJob?.prompt),
       controls,
       presetIds: sourceJob ? jsonStringArray(sourceJob.presetIds) : [],

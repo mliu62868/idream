@@ -20,6 +20,19 @@
 
 完整目标状态、修复依赖、迁移 Gate 和验收标准见 [`ADMIN_CONSOLE_FIRST_PRINCIPLES_REMEDIATION_PLAN.md`](./ADMIN_CONSOLE_FIRST_PRINCIPLES_REMEDIATION_PLAN.md)。在对应修复落地前，本文中的“可用”只代表功能覆盖，不代表状态与指标已认证。
 
+## 2026-07-11 管理后台修复实施批次 1（Truth + Reliability Foundation）
+
+- Phase 0 指标止血已落地：旧 Activated、Conversion、D1/D7 API 明确返回 `qualityState=invalid`、`validForDecisions=false` 和 `null` 决策值；旧观察值只保留在诊断字段，CSV 也不再导出伪精确漏斗数。没有 assignment/exposure 的实验在 v2 Registry 中定义为 directional `Flag Monitoring`。
+- Generation/Creative 状态真相已落地：Job timeline 只使用真实 typed event，不再因 legacy `completedAt` 合成 `job.completed`；terminal conflict、`finishedAt`、retry eligibility 由事件/资产/账本事实派生。Creative Run DTO 分离 execution/review/deployment/verification/settlement，0/4、1/4、4/4 分别为 failed/partially_succeeded/succeeded；旧 `completed` 只作为 `legacyState`。
+- Shared Admin v2 contract 与权限底座已落地：公共 Zod contracts、统一 query/command/error envelope、Metric Registry、v2 permission matrix、scope metadata 和 grant bundles 已由 `@idream/shared/admin` 导出；main 现有权限入口改为 shared SSoT adapter，保留 v1 兼容。
+- Admin IA / Today containment 已落地：七个工作区由 effective permissions 生成；work mode 只重排、不扩权；34 个 legacy capability 继续映射到 canonical URL，`/admin` 与 `/admin/inbox` 保留 query 后跳转 Today。Shell 固定展示 environment、data class、fixture、UTC product timezone 和 freshness；Today 在 authority projection 尚未 cutover 时明确显示 `legacy-v1 degraded`，不伪造 owner/SLA/verification；无权限 deep link 显示页面级拒绝。
+- Migration Bootstrap / Phase 1 additive schema 已落地：提交当前 schema baseline migration 与 Admin v2 expand migration；新增 immutable Character Project/ContentVersion/Revision/Release/Serving/Validation、Generation Attempt/Transport/Artifact/Delivery/Settlement、Incident、Case、Work Preference、Decision、Command/Attempt、Inbound Receipt、Outbox、Experiment、Metric Snapshot、AiUsageFact 等模型。fresh deploy、重复 deploy、现存 schema baseline 标记后 upgrade 均已在隔离 PostgreSQL 数据库演练通过。
+- Reliability seam 已落地：canonical command request hash 覆盖 commandType/target/version/payload/approval；相同幂等请求只产生一份 Command/Audit/Outbox，不同请求复用 key 返回 conflict；worker lease 过期按预算 requeue 或 fail-closed。Canonical Product Event 使用 `(sourceService, sourceEventId)` receipt；同 payload 安全重放，不同 payload 持久化 quarantine；receipt、event、local outbox 同事务。
+- Character Release 最小发布门已落地：服务端 readiness evaluator 覆盖 Persona/opening、immutable Visual Identity、anchor/traits、active ReferenceSetRevision、route qualification/staleness、角色 QA、snapshot hash 和 policy version；Serving pointer 拒绝跨 Character 与 current/scheduled 冲突。`GET /api/v2/admin/commands/:commandId` 提供按 effective permission 的 authoritative command status。
+- 自动化证据：Admin v2 reliability/route/readiness 17/17；analytics containment focused integration 2/2；shared 全套 56/56；Generation/Creative 与 Admin API 隔离套件 68/68；main 全套 56 files / 498 tests；root lint/typecheck/build 12/12 tasks。Playwright 验证 31 个 legacy/canonical Admin 入口、Today redirect、媒体代理、Users/Billing 审计写和 Support 解决闭环。
+
+本批次是方案的可运行第一阶段，不代表 90 天蓝图全部 cutover：历史 backfill/shadow、四个完整领域 command、Today 的权威服务端 projection、Case/Incident 全工作流、canonical metric facts、Admin BFF 源码解耦和生产 canary 仍按 `REMAINING_WORK_EXECUTION_PLAN.md` 推进；这些能力完成前不得宣布 §24/§24.5 的最终 Go。
+
 ## 2026-07-10 角色运营项目工作台
 
 - 官方角色创建由“创建即 approved/public”改为 `draft/private`；首次发布是独立操作，并由服务端强制检查 tags、Persona、首条消息、视觉方向、active Visual Identity、参考图和已发布角色图。下架同步切为 `archived/private`。

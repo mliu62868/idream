@@ -3031,11 +3031,21 @@ describe("analytics overview", () => {
       role: "analyst",
     });
     expectOk(overview);
-    // 全局窗口聚合，用 >= 兼容并发测试数据。
+    // Phase 0 truth containment: exact signups remain visible, but the old
+    // generation-as-activation and cross-window conversion are invalid.
     expect(overview.data.funnel.signups).toBeGreaterThanOrEqual(1);
-    expect(overview.data.funnel.activatedUsers).toBeGreaterThanOrEqual(1);
-    expect(overview.data.funnel.payingUsers).toBeGreaterThanOrEqual(1);
-    expect(typeof overview.data.funnel.conversionRate).toBe("number");
+    expect(overview.data.funnel).toMatchObject({
+      activatedUsers: null,
+      payingUsers: null,
+      conversionRate: null,
+      qualityState: "invalid",
+      validForDecisions: false,
+    });
+    expect(overview.data.funnel.legacyObserved).toMatchObject({
+      activatedUsers: expect.any(Number),
+      payingUsers: expect.any(Number),
+      conversionRate: expect.any(Number),
+    });
     expect(overview.data.generation.total).toBeGreaterThanOrEqual(1);
     expect(overview.data.economy.coinsGranted).toBeGreaterThanOrEqual(100);
     expect(overview.data.economy.coinsSpent).toBeLessThanOrEqual(-5);
@@ -4235,6 +4245,7 @@ describe("admin analytics export + retention (T4)", () => {
 
     const retention = await api("GET", "admin/analytics/retention", { userId: admin, role: "admin" });
     expectOk(retention);
+    expect(retention.data).toMatchObject({ qualityState: "invalid", validForDecisions: false });
     expect(Array.isArray(retention.data.items)).toBe(true);
   });
 });
