@@ -76,6 +76,10 @@ import {
 import { profileHealth, profileDryRun } from "./generation-health";
 import { generationMetrics } from "./generation-metrics";
 import {
+  deriveGenerationJobState,
+  deriveGenerationTimeline,
+} from "./generation-job-state";
+import {
   getGenerationWorkflow,
   listGenerationBackends,
   listGenerationWorkflows,
@@ -1056,6 +1060,14 @@ async function getGenerationJobDetail(request: Request, jobId: string) {
       orderBy: { createdAt: "asc" },
     }),
   ]);
+  const state = deriveGenerationJobState({
+    status: job.status,
+    completedAt: job.completedAt,
+    errorCode: job.errorCode,
+    assets: job.assets,
+    events: job.events,
+    ledgerEntries: ledger,
+  });
 
   return ok({
     job: redactJob(job),
@@ -1073,27 +1085,14 @@ async function getGenerationJobDetail(request: Request, jobId: string) {
     })),
     providerError: job.errorCode ? { code: job.errorCode } : null,
     ledger,
-    timeline: [
-      ...job.events.map((event) => ({
-        at: event.createdAt,
-        type: event.type,
-        message: event.message,
-        metadata: event.metadata,
-      })),
-      ...moderationEvents.map((event) => ({
-        at: event.createdAt,
-        type: `moderation.${event.layer}`,
-        status: event.status,
-        policyCode: event.policyCode,
-      })),
-      ...ledger.map((entry) => ({
-        at: entry.createdAt,
-        type: `ledger.${entry.reason}`,
-        delta: entry.delta,
-        balanceAfter: entry.balanceAfter,
-      })),
-      ...(job.completedAt ? [{ at: job.completedAt, type: "job.completed", status: job.status }] : []),
-    ],
+    state,
+    timeline: deriveGenerationTimeline({
+      status: job.status,
+      completedAt: job.completedAt,
+      events: job.events,
+      moderationEvents,
+      ledgerEntries: ledger,
+    }),
   });
 }
 
@@ -1103,16 +1102,26 @@ async function requeueGenerationJob(request: Request, jobId: string) {
   if (body.confirmation !== jobId) {
     throw Errors.badRequest("Confirmation did not match requeue target");
   }
-  const job = await prisma.generationJob.findUnique({ where: { id: jobId } });
+  const job = await prisma.generationJob.findUnique({
+    where: { id: jobId },
+    include: { assets: true, events: { orderBy: { createdAt: "asc" } } },
+  });
   if (!job) throw Errors.notFound("Generation job not found");
-  if (job.status !== "failed") {
-    throw Errors.badRequest("Only failed jobs can be requeued");
-  }
-  const refunded = await prisma.dreamcoinLedger.findFirst({
+  const ledger = await prisma.dreamcoinLedger.findMany({
     where: { sourceId: job.id, reason: "refund" },
   });
-  if (refunded) {
-    throw Errors.conflict("Refunded jobs require a new paid generation request");
+  const state = deriveGenerationJobState({
+    status: job.status,
+    completedAt: job.completedAt,
+    errorCode: job.errorCode,
+    assets: job.assets,
+    events: job.events,
+    ledgerEntries: ledger,
+  });
+  if (!state.retryEligibility.eligible) {
+    throw Errors.conflict("Generation job is not eligible for retry", {
+      reason: state.retryEligibility.reason,
+    });
   }
 
   await prisma.generationJob.update({
@@ -1194,6 +1203,7 @@ async function deadLetterQueue(request: Request) {
       errorCode: errorCode ? { contains: errorCode } : undefined,
       mode: mode && mode !== "all" ? mode : undefined,
     },
+    include: { assets: true, events: { orderBy: { createdAt: "asc" } } },
     orderBy: { updatedAt: "desc" },
     take: clampInt(url.searchParams.get("limit"), 1, 200, 100),
   });
@@ -1202,6 +1212,16 @@ async function deadLetterQueue(request: Request) {
     items: jobs.map((job) => ({
       ...redactJob(job),
       ledgerState: refundedIds.has(job.id) ? "refunded" : "reserved",
+      retryEligibility: deriveGenerationJobState({
+        status: job.status,
+        completedAt: job.completedAt,
+        errorCode: job.errorCode,
+        assets: job.assets,
+        events: job.events,
+        ledgerEntries: refundedIds.has(job.id)
+          ? [{ reason: "refund", delta: job.costDreamcoins }]
+          : [],
+      }).retryEligibility,
     })),
   });
 }
@@ -1212,17 +1232,26 @@ async function requeueDeadLetterBatch(request: Request) {
   if (body.confirmation !== deadLetterBatchConfirmation(body.jobIds)) {
     throw Errors.badRequest("Batch requeue confirmation did not match selected jobs");
   }
-  const jobs = await prisma.generationJob.findMany({ where: { id: { in: body.jobIds } } });
+  const jobs = await prisma.generationJob.findMany({
+    where: { id: { in: body.jobIds } },
+    include: { assets: true, events: { orderBy: { createdAt: "asc" } } },
+  });
   const refundedIds = await refundedJobIds(body.jobIds);
   const requeued: string[] = [];
   const skipped: { id: string; reason: string }[] = [];
   for (const job of jobs) {
-    if (job.status !== "failed") {
-      skipped.push({ id: job.id, reason: "not_failed" });
-      continue;
-    }
-    if (refundedIds.has(job.id)) {
-      skipped.push({ id: job.id, reason: "refunded" });
+    const retryEligibility = deriveGenerationJobState({
+      status: job.status,
+      completedAt: job.completedAt,
+      errorCode: job.errorCode,
+      assets: job.assets,
+      events: job.events,
+      ledgerEntries: refundedIds.has(job.id)
+        ? [{ reason: "refund", delta: job.costDreamcoins }]
+        : [],
+    }).retryEligibility;
+    if (!retryEligibility.eligible) {
+      skipped.push({ id: job.id, reason: retryEligibility.reason });
       continue;
     }
     await prisma.generationJob.update({

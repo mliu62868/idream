@@ -2719,6 +2719,178 @@ describe("dead-letter operations console", () => {
   });
 });
 
+describe("generation and Creative Run truth containment", () => {
+  it("keeps failed legacy completedAt out of the success timeline and retry set", async () => {
+    const admin = await setupActor("admin", "generation-truth");
+    const owner = `${P}generation-truth-owner`;
+    await createUser({ id: owner });
+    const failedAt = new Date("2026-01-02T03:04:05.000Z");
+    const failedJob = await prisma.generationJob.create({
+      data: {
+        id: `${P}generation-truth-failed`,
+        userId: owner,
+        mode: "image",
+        controls: {},
+        presetIds: [],
+        status: "failed",
+        errorCode: "provider_timeout",
+        completedAt: failedAt,
+        events: {
+          create: {
+            type: "failed",
+            message: "Provider timed out",
+            metadata: {},
+            createdAt: failedAt,
+          },
+        },
+      },
+    });
+
+    const detail = await api("GET", `admin/generation/jobs/${failedJob.id}`, {
+      userId: admin,
+      role: "admin",
+    });
+    expectOk(detail);
+    expect(detail.data.timeline.map((entry: { type: string }) => entry.type)).toEqual(["failed"]);
+    expect(detail.data.state).toMatchObject({
+      executionOutcome: "failed",
+      terminalSource: "event",
+      retryEligibility: { eligible: true },
+    });
+
+    const artifactJob = await prisma.generationJob.create({
+      data: {
+        id: `${P}generation-truth-artifact`,
+        userId: owner,
+        mode: "image",
+        controls: {},
+        presetIds: [],
+        status: "failed",
+        errorCode: "ingest_timeout",
+        completedAt: failedAt,
+      },
+    });
+    await prisma.mediaAsset.create({
+      data: {
+        id: `${P}generation-truth-asset`,
+        ownerId: owner,
+        sourceJobId: artifactJob.id,
+        type: "image",
+        url: "https://example.test/generation-truth.png",
+        safetyStatus: "passed",
+        metadata: {},
+      },
+    });
+    const artifactDetail = await api("GET", `admin/generation/jobs/${artifactJob.id}`, {
+      userId: admin,
+      role: "admin",
+    });
+    expectOk(artifactDetail);
+    expect(artifactDetail.data.state).toMatchObject({
+      executionOutcome: "succeeded",
+      retryEligibility: { eligible: false, reason: "successful_artifact_exists" },
+    });
+    expectError(
+      await api("POST", `admin/generation/jobs/${artifactJob.id}/requeue`, {
+        userId: admin,
+        role: "admin",
+        body: {
+          reason: "must not duplicate a successful artifact",
+          confirmation: artifactJob.id,
+        },
+      }),
+      409,
+      "conflict",
+    );
+  });
+
+  it("exposes 0/4, 1/4, and 4/4 child-fact outcomes through the Admin API", async () => {
+    const admin = await setupActor("admin", "creative-truth");
+
+    async function createRun(suffix: string, successfulCount: number) {
+      const batch = await prisma.contentProductionBatch.create({
+        data: {
+          id: `${P}creative-truth-${suffix}`,
+          title: `Creative truth ${suffix}`,
+          purpose: "campaign",
+          targetType: "none",
+          presetIds: [],
+          count: 4,
+          totalItems: 4,
+          status: "completed",
+          createdById: admin,
+        },
+      });
+      for (let index = 0; index < 4; index += 1) {
+        const succeeded = index < successfulCount;
+        const job = await prisma.generationJob.create({
+          data: {
+            id: `${batch.id}-job-${index}`,
+            userId: admin,
+            mode: "image",
+            controls: {},
+            presetIds: [],
+            status: succeeded ? "completed" : "failed",
+            errorCode: succeeded ? null : "provider_timeout",
+            costDreamcoins: 5,
+            sourceType: "content_production_item",
+            sourceId: `${batch.id}-item-${index}`,
+          },
+        });
+        const asset = succeeded
+          ? await prisma.mediaAsset.create({
+              data: {
+                id: `${batch.id}-asset-${index}`,
+                ownerId: admin,
+                sourceJobId: job.id,
+                type: "image",
+                url: `https://example.test/${batch.id}-${index}.png`,
+                safetyStatus: "passed",
+                metadata: {},
+              },
+            })
+          : null;
+        await prisma.contentProductionItem.create({
+          data: {
+            id: `${batch.id}-item-${index}`,
+            batchId: batch.id,
+            jobId: job.id,
+            mediaAssetId: asset?.id,
+            itemIndex: index,
+            status: succeeded ? "approved" : "failed",
+            tags: [],
+          },
+        });
+      }
+      return batch;
+    }
+
+    const fixtures = await Promise.all([
+      createRun("zero", 0),
+      createRun("partial", 1),
+      createRun("full", 4),
+    ]);
+    const expected = ["failed", "partially_succeeded", "succeeded"];
+    for (const [index, batch] of fixtures.entries()) {
+      const detail = await api("GET", `admin/content/production/batches/${batch.id}`, {
+        userId: admin,
+        role: "admin",
+      });
+      expectOk(detail);
+      expect(detail.data.batch.status).toBe("completed");
+      expect(detail.data.batch.state).toMatchObject({
+        executionOutcome: expected[index],
+        legacyState: "completed",
+        counts: {
+          generated: index === 0 ? 0 : index === 1 ? 1 : 4,
+          failed: index === 0 ? 4 : index === 1 ? 3 : 0,
+          total: 4,
+        },
+      });
+    }
+  });
+});
+
 describe("billing operations", () => {
   it("lists subscriptions with plan + status and gates by billing.read", async () => {
     const support = await setupActor("support", "billing-subs");

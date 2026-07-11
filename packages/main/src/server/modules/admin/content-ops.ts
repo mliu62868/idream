@@ -15,8 +15,10 @@ import {
   type AdminActor,
 } from "./service";
 import {
+  deriveCreativeRunState,
   markProductionItemFailed,
   refreshContentProductionBatchStats,
+  type CreativeRunLedgerFact,
 } from "./content-production-state";
 
 const productionPurposeSchema = z.enum([
@@ -186,7 +188,12 @@ export async function listProductionBatches(request: Request) {
     orderBy: { createdAt: "desc" },
     take: clampInt(url.searchParams.get("limit"), 1, 100, 50),
   });
-  return ok({ items: batches.map(productionBatchDTO) });
+  const ledgerEntries = await productionBatchLedgerEntries(batches);
+  return ok({
+    items: batches.map((batch) =>
+      productionBatchDTO(batch, ledgerEntriesForBatch(batch, ledgerEntries)),
+    ),
+  });
 }
 
 export async function estimateProductionBatch(request: Request) {
@@ -408,7 +415,8 @@ export async function getProductionBatch(request: Request, id: string) {
     include: productionBatchInclude,
   });
   if (!batch) throw Errors.notFound("Production batch not found");
-  return ok({ batch: productionBatchDTO(batch) });
+  const ledgerEntries = await productionBatchLedgerEntries([batch]);
+  return ok({ batch: productionBatchDTO(batch, ledgerEntries) });
 }
 
 export async function approveProductionItem(request: Request, id: string) {
@@ -1430,7 +1438,40 @@ async function appendProductionJobEvent(
   });
 }
 
-export function productionBatchDTO(batch: ProductionBatchWithItems) {
+export function productionBatchDTO(
+  batch: ProductionBatchWithItems,
+  ledgerEntries: ReadonlyArray<CreativeRunLedgerFact> = [],
+) {
+  const state = deriveCreativeRunState({
+    legacyStatus: batch.status,
+    expectedItemCount: batch.totalItems,
+    items: batch.items.map((item) => {
+      const asset = item.mediaAsset ?? item.job?.assets[0] ?? null;
+      return {
+        id: item.id,
+        status: item.status,
+        job: item.job
+          ? {
+              id: item.job.id,
+              status: item.job.status,
+              errorCode: item.job.errorCode,
+              costDreamcoins: item.job.costDreamcoins,
+            }
+          : null,
+        asset: asset
+          ? {
+              id: asset.id,
+              safetyStatus: asset.safetyStatus,
+              deletedAt: asset.deletedAt,
+            }
+          : null,
+        placements: item.status === "published"
+          ? [{ status: "published", verificationState: "pending" as const }]
+          : [],
+      };
+    }),
+    ledgerEntries,
+  });
   return {
     id: batch.id,
     title: batch.title,
@@ -1452,12 +1493,36 @@ export function productionBatchDTO(batch: ProductionBatchWithItems) {
     estimatedCostDreamcoins: batch.estimatedCostDreamcoins,
     consistencyMode: batch.items[0]?.job?.consistencyMode ?? null,
     status: batch.status,
+    state,
     createdById: batch.createdById,
     createdByEmail: batch.createdBy.email,
     createdAt: batch.createdAt,
     updatedAt: batch.updatedAt,
     items: batch.items.map(productionItemDTO),
   };
+}
+
+async function productionBatchLedgerEntries(
+  batches: ReadonlyArray<ProductionBatchWithItems>,
+): Promise<CreativeRunLedgerFact[]> {
+  const jobIds = batches.flatMap((batch) =>
+    batch.items.flatMap((item) => (item.jobId ? [item.jobId] : [])),
+  );
+  if (jobIds.length === 0) return [];
+  return prisma.dreamcoinLedger.findMany({
+    where: { sourceId: { in: jobIds }, reason: { in: ["generation_spend", "refund"] } },
+    select: { sourceId: true, reason: true, delta: true },
+  });
+}
+
+function ledgerEntriesForBatch(
+  batch: ProductionBatchWithItems,
+  ledgerEntries: ReadonlyArray<CreativeRunLedgerFact>,
+) {
+  const jobIds = new Set(
+    batch.items.flatMap((item) => (item.jobId ? [item.jobId] : [])),
+  );
+  return ledgerEntries.filter((entry) => entry.sourceId && jobIds.has(entry.sourceId));
 }
 
 function productionItemDTO(

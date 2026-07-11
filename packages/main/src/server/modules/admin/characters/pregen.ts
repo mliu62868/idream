@@ -92,7 +92,7 @@ export async function listCharacterPregenBatches(request: Request, characterId: 
     }),
   ]);
   return ok({
-    items: batches.map(productionBatchDTO),
+    items: batches.map((batch) => productionBatchDTO(batch)),
     placements: placements.map((placement) => ({
       id: placement.id,
       slot: placement.slot,
