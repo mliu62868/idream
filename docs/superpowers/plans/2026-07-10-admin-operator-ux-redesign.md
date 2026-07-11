@@ -109,6 +109,7 @@ packages/main/src/components/admin/
   --ad-red-text: #9f2f2d;
   --ad-blue-bg: #e1f3fe;
   --ad-blue-text: #1f6c9f;
+  --ad-red-hover: #f9dfe1;
   --ad-shadow-hover: 0 2px 8px rgba(0, 0, 0, 0.04);
 }
 
@@ -234,9 +235,10 @@ const TONE_CLASSES: Record<StatusTone, string> = {
   neutral: "bg-black/[0.05] text-[var(--ad-text-muted)]",
 };
 
-// SPEC: pastel 状态 pill。label 缺省时用 t(status) 翻译状态词本身。
+// SPEC: pastel 状态 pill。label 缺省时用 value(status) 翻译状态词本身
+// （枚举/状态值走 zhValues 表，代码库既定机制；t() 是 UI 文案表会漏翻——review 修正）。
 export function StatusPill({ status, label }: { status: string; label?: string }) {
-  const { t } = useAdminI18n();
+  const { value } = useAdminI18n();
   return (
     <span
       className={cn(
@@ -244,7 +246,7 @@ export function StatusPill({ status, label }: { status: string; label?: string }
         TONE_CLASSES[statusTone(status)],
       )}
     >
-      {label ?? t(status)}
+      {label ?? value(status)}
     </span>
   );
 }
@@ -340,7 +342,7 @@ export function DangerButton({ className, ...props }: ButtonHTMLAttributes<HTMLB
       type="button"
       className={cn(
         BASE,
-        "border border-[var(--ad-red-text)]/20 bg-[var(--ad-red-bg)] text-[var(--ad-red-text)] hover:bg-[#f9dfe1]",
+        "border border-[var(--ad-red-text)]/20 bg-[var(--ad-red-bg)] text-[var(--ad-red-text)] hover:bg-[var(--ad-red-hover)]",
         className,
       )}
       {...props}
@@ -454,7 +456,7 @@ git commit -m "feat(admin): ui primitives — buttons, PageHeader, FilterBar"
 **Interfaces:**
 - Produces:
   - `<DataTable headers={string[]} rows={DataTableRow[]} empty?={ReactNode} />`，`DataTableRow = { id: string; cells: ReactNode[]; href?: string }`（有 href 整行可点，用于进详情）。
-  - `<CardGrid>{children}</CardGrid>` + `<EntityCard href title image? monogram? meta? status? statusLabel? />`。
+  - `<CardGrid>{children}</CardGrid>` + `<EntityCard href title image? meta? status? statusLabel? />`（monogram 由 title 首字符自动派生）。
 
 - [ ] **Step 1: 写 DataTable** `ui/DataTable.tsx`：
 
@@ -491,8 +493,13 @@ export function DataTable({
         <tbody>
           {rows.map((row) => (
             <tr
-              className="border-b border-[var(--ad-border)] transition-colors last:border-b-0 hover:bg-black/[0.02]"
+              className={
+                row.href
+                  ? "cursor-pointer border-b border-[var(--ad-border)] transition-colors last:border-b-0 hover:bg-black/[0.02]"
+                  : "border-b border-[var(--ad-border)] transition-colors last:border-b-0"
+              }
               key={row.id}
+              onClick={row.href ? () => window.location.assign(row.href as string) : undefined}
             >
               {row.cells.map((cell, index) => (
                 <td className="px-4 py-3 align-middle" key={index}>
@@ -837,9 +844,10 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
 - [ ] **Step 4: i18n 新 key 补 zh**（`i18n.tsx` 的 `zh` 表按字母序插入）：
 
 ```
+"Request failed": "请求失败",
 "Type the name to confirm": "输入名称以确认",
 ```
-（`"Reason (≥3)"`、`"Cancel"`、`"Request failed"` 已存在，勿重复。）
+（`"Reason (≥3)"`、`"Cancel"` 已存在，勿重复。）
 
 - [ ] **Step 5: lint/typecheck + 提交**
 
@@ -1285,7 +1293,7 @@ import {
 // SPEC: 官方角色列表页 —— 搜索/筛选 + 卡片网格（头像、名字、风格·年龄、参考图数、状态）。
 // INTENT: 浏览页只浏览；创建在 /new，详情在 /<id>（spec §7 列表页）。
 export function OfficialListPage() {
-  const { t } = useAdminI18n();
+  const { t, value } = useAdminI18n();
   const [rows, setRows] = useState<OfficialRow[]>([]);
   const [thumbs, setThumbs] = useState<Map<string, string>>(new Map());
   const [loading, setLoading] = useState(true);
@@ -1318,7 +1326,10 @@ export function OfficialListPage() {
   }, [t]);
 
   useEffect(() => {
-    void reload();
+    const timer = window.setTimeout(() => {
+      void reload();
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [reload]);
 
   const filtered = useMemo(
@@ -1353,14 +1364,14 @@ export function OfficialListPage() {
         searchPlaceholder={t("Search by name")}
         selects={[
           { name: t("Gender"), value: gender, onChange: setGender,
-            options: [allOption, ...GENDERS.map((g) => ({ value: g, label: t(g) }))] },
+            options: [allOption, ...GENDERS.map((g) => ({ value: g, label: value(g) }))] },
           { name: t("Style"), value: style, onChange: setStyle,
-            options: [allOption, ...STYLES.map((s) => ({ value: s, label: t(s) }))] },
+            options: [allOption, ...STYLES.map((s) => ({ value: s, label: value(s) }))] },
           { name: t("Status"), value: status, onChange: setStatus,
             options: [allOption,
-              { value: "approved", label: t("approved") },
-              { value: "draft", label: t("draft") },
-              { value: "archived", label: t("archived") }] },
+              { value: "approved", label: value("approved") },
+              { value: "draft", label: value("draft") },
+              { value: "archived", label: value("archived") }] },
         ]}
       />
       {error ? <p className="mb-4 text-sm text-[var(--ad-red-text)]">{error}</p> : null}
@@ -1387,7 +1398,7 @@ export function OfficialListPage() {
               key={row.id}
               meta={
                 <span>
-                  {t(row.style)} · {row.age} · {visualReferenceCount(row)} {t("reference images")}
+                  {value(row.style)} · {row.age} · {visualReferenceCount(row)} {t("reference images")}
                 </span>
               }
               status={row.status}
@@ -1634,9 +1645,10 @@ export const OFFICIAL_KEYS = [
   "No official characters yet.", "Back to official characters", "AI assist",
   "One-line inspiration — AI fills description and tags.", "Inspiration",
   "Basic info", "Appearance & style", "Description & tags", "Create character",
-  "Character not found.", "Edit profile", "Save changes", "approved", "draft", "archived",
-  "female", "male", "trans", "realistic", "anime", "hybrid", "other",
+  "Character not found.", "Edit profile", "Save changes", "Age", "Description",
 ];
+// 注意：枚举/状态词（approved/draft/archived/female/…/realistic/…）不进 zh 表——
+// 它们走 value()/zhValues 通道（已覆盖，加进 zh 表反而重复破坏 SSoT）。
 
 describe("admin i18n — trio pages have zh", () => {
   it("official characters trio", () => {
@@ -1666,8 +1678,10 @@ Run: `bunx vitest run src/components/admin/i18n-pages.test.ts` → Expected: FAI
 "Character not found.": "未找到该角色。",
 "Edit profile": "编辑资料",
 "Save changes": "保存修改",
+"Age": "年龄",
+"Description": "描述",
 ```
-（`approved/draft/archived/female/…` 等状态与枚举词：先 `grep '"approved"' i18n.tsx` 查存在性，缺的补上：`"approved": "已上线", "draft": "草稿", "archived": "已下线", "female": "女", "male": "男", "trans": "跨性别", "realistic": "写实", "anime": "动漫", "hybrid": "混合", "other": "其他"`。）
+（枚举/状态词一律走 `value()`/zhValues，不进 zh 表；若 zhValues 缺某枚举值则补 zhValues。）
 再跑测试 → Expected: PASS。
 
 - [ ] **Step 5: 全量验证 + 冒烟 + 提交**
@@ -1791,7 +1805,7 @@ export function presetPayload(draft: PresetDraft): Record<string, unknown> {
 ```
 测试：合法 JSON、空串、非对象抛错 三个用例（TDD）。
 - 列表页：DataTable（label / type / category / visibility / status pill），FilterBar 搜索 label + type 下拉。
-- 详情页：字段展示 + controls JSON 放 `EngineeringDetails`；动作：编辑（PATCH，ConfirmDialog normal）、归档（PATCH `{status:"archived"}`，**destructive** expectedName=label）、恢复（`{status:"active"}`，normal）。**注意**：presets 后端无 reason 字段——ConfirmDialog 收集的 reason 仍放进 body（zod 非 strict 会剥掉，不破坏契约），保持全后台确认体验一致。
+- 详情页：字段展示 + controls JSON 放 `EngineeringDetails`；动作：编辑（**直连 PATCH，无对话框**）、归档（ConfirmDialog **destructive** expectedName=label 且 `requireReason: false`，body `{status:"archived"}`）、恢复（直连 PATCH `{status:"active"}`）。**规则（T14 评审确立）**：后端无 reason 字段的写操作不得让运营填会被丢弃的 reason——非破坏性直连；破坏性保留名称确认但去掉 reason 输入（ConfirmDialog 增加 `requireReason?: boolean` 默认 true）。
 - 新建页：type/label/category/visibility 四个 Field + controls JSON textarea（mono 字体 `font-mono`）；无 reason 输入。成功回列表（POST 响应 `{preset:{id}}` → 跳 `/admin/generation/presets/<id>`）。
 - i18n KEYS 常量 `PRESETS_KEYS`：`"New preset"`:"新建预设"、`"Manage built-in generation presets."`:"管理内置生成预设。"、`"Back to presets"`:"返回预设"、`"Archive preset"`:"归档预设"、`"Restore"`:"恢复"、`"Controls (JSON)"`:"控制参数（JSON）" 等。
 

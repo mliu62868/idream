@@ -172,3 +172,37 @@ Task 12: complete (commit a1d966de, sonnet review Approved, 0 Critical/Important
 Task 13: complete (commit 0531d6ef backfill + d95cc6e6 fix; sonnet review found 2 Important, #1 fixed). i18n 67 zh + 11 zhValues, bun run check GREEN 12/12. Fix #1: enum cells (jobs status; dead-letter mode/status/ledgerState) render via value(); verified all 11 enum values have zhValues. #3 校验→验证, #5 aria-labels wrapped. DEFERRED #2: verificationMeta 4th branch folded-English (needs cross-caller sig change; only in collapsed EngineeringDetails).
 === ALL 13 TASKS COMPLETE. Branch admin-generation-group-redesign, 17 commits since 16009c90. bun run check GREEN. Pending: final whole-branch review + live zh smoke + finishing-a-development-branch. ===
 FINAL whole-branch review (opus): READY TO MERGE. All 6 cross-cutting checks PASS (pure-front-end confirmed via name-only grep = 0 server/prisma/api; operator-surface holds globally; all mutations preserved verbatim; nav+i18n coherent 10 nav tests pass; primitives sound; tsc+3 admin test files 25 green). All deferred Minor triaged DEFER, 0 must-fix. Fast-follows (non-blocking): (1) failureReasons.ts add 'missing'/verification-pending entries so draft-needs-dryrun reads better than 'Unknown error' [top]; (2) presetSecondaryLine category raw (empty in seed); (3) BackendsView.kind comfyui/sdcpp proper nouns raw. LIVE zh smoke NOT completed via automation (dev-login session reset + Next-dev document_idle timeout blocked Chrome; T9 impl did partial via pm2 rebuild) — recommend user eyeball 6 pages. Branch 17 commits 16009c90..d95cc6e6, bun run check GREEN.
+
+=== ADMIN OPERATOR UX REDESIGN SDD START ===
+Branch: admin-operator-ux-redesign
+Plan: docs/superpowers/plans/2026-07-10-admin-operator-ux-redesign.md
+Scope: presentation-only (0 DB/API). Light editorial reskin (tokens+9 primitives) + list/detail/new trios for 7 content pages. 19 tasks / 4 phases.
+Base (before Task 1): 1f9506616eb696b578796c4d029fa6cd6fd087d2
+Task 1: complete (commit 206f99b6, review clean ✅ sonnet; byte-exact tokens)
+Task 2: complete (commits bfd64859 + fix b3608749, review 1 Important fixed [StatusPill t()→value() enum channel], controller grep-verified ✅)
+Task 3: complete (commits c206646e + fix 0d1621ba, review clean after tokenize fix ✅, controller grep-verified)
+Task 4: complete (commits 3180bfe9 + fix e2c32832 [whole-row click], review clean ✅, controller grep-verified)
+Task 5: complete (commits 40d34049 + fix b6a5eb76 [zh "Request failed"], review clean after fix ✅, controller grep-verified)
+- Task 5 minor (defer to final review/T19 visual QA): ConfirmDialog scrim bg-black/20 may read under-dimmed vs old bg-black/70 modal convention.
+Task 6: complete (commit 88b30f1a, review clean ✅ sonnet; parseAdminPath TDD 20/20, zero behavior change verified)
+Task 7: complete (commits d0488b1b + fix d57d1c9a [access-denied branch], review clean after fix ✅; NavLink active soft-state judgment call approved by reviewer)
+Task 8: complete (commits ddd42e78 + fix 41d31772 [divider radius], review Approved ✅; className-only verified 766/766 symmetric, hard-gate grep 0, self-caught ink-on-ink fix real, bun run check 12/12 green)
+=== P1 COMPLETE (tokens/9 primitives/parseAdminPath/shell+full sweep), commits 206f99b6..41d31772 ===
+Task 9: complete (commit 5fa621fd, review clean ✅; payload parity with legacy view field-verified)
+Task 10: complete (commits 0ba93818 + fix 8055cbf5 [deferral effect + enum value() channel], review clean after fix ✅, controller grep-verified)
+Task 11: complete (commits 563b179e + fix b616850a [unwrap VisualPassportPanel + summary label], review clean after fix ✅)
+- Task 11 minors (defer to final review): detail page full reload flicker under ConfirmDialog; EngineeringDetails summary==hint label duplication.
+Task 12: complete (commits 6c191798 + fix 25d37bce [zh Age/Description + comment tidy], review clean after fix ✅; vitest 39/39, bun run check 12/12 green)
+=== P2 COMPLETE (official trio exemplar). Controller Chrome smoke PASS: list card-grid zh, detail deep-link /official/<slug> with sections+actions, /new grouped form, unknown-path->dashboard. Known leaks for T18: "Visibility" label no zh (new find); "Age"/"Description" fixed in code but running build predates fix; VisualPassportPanel ported English body copy (pre-existing debt, scope decision for T18); minor: pill text wraps on long-name cards. ===
+Task 13: complete (commits da1a8fbc + fix 40c7c588 [Critical: 3 files left unstaged by aborted git add — folded in; pill label Published/未上线], review clean after fix ✅; vitest 43/43)
+- Task 13 note: git add pathspec aborts on already-rm-ed files — stage explicitly. Pill pair 已发布/未上线 register acceptable (defer polish to final review).
+Task 14: complete (commits 8a7e0f85 + d72b4e15 [TDD tests] + fix 3c84a518 [save direct PATCH, dead recipes fetch removed], review Approved ✅; vitest 48/48; RULE ESTABLISHED: no-reason backends never collect operator reason — nondestructive writes go direct, destructive keep name-confirm via ConfirmDialog requireReason:false)
+Task 15: complete (commit 46d79bfa, review Approved ✅; ConfirmDialog requireReason additive verified vs 3 callers, presetPayload schema-verified; vitest 52/52)
+- Task 15 minors (defer to final): no unit test for requireReason:false branch; "Edit profile"(编辑资料) label reused on preset entity.
+Task 16: complete (commit c3f62149, review Approved ✅; 3 adjudications verified — curation reshape OK, brief upload/import claim was wrong, all-writes ConfirmDialog correct per assetPatchSchema; vitest 60/60)
+- Task 16 minor (defer to final): AssetsListPage lost eager={index<4} thumbnail hint (LCP nit, one-liner).
+Task 17: complete (commit 0faa3e3e, review Approved clean ✅; payload parity + dead-helper audit + both adjudications verified; vitest 66/66, repo check 12/12)
+=== P3 COMPLETE (starters/recipes/presets/assets/placements trios + tags polish; AdminConsoleClient slimmed of recipes/presets/official/templates/assets/placements views) ===
+Task 18: complete (commits c8ec66e8 + 321faebf [UI_KEYS lock], review Approved ✅; 26 zh keys fixed, 0 zhValues gaps, 185/185 in-scope t() keys covered, ~33 legacy-page keys deferred w/ inventory in report; vitest 68/68)
+T19 controller smoke PASS (final build via pm2): official trio zh incl. VisualPassportPanel backfill live; starters/recipes/presets/assets/placements/tags/users all light+zh, deep links OK, unknown->dashboard OK. Gotcha: get_page_text races locale hydration (use screenshots); one Chrome tab wedged on document_idle (stale tab, fresh tab fine).
+Task 19: complete. FINAL whole-branch review (fable): READY TO MERGE — all 8 cross-cutting checks PASS (presentation-only invariant holds [1 comment-only server file]; zero dangling refs; write-contract parity spot-verified; primitive coherence; routing/i18n discipline; all deferred Minors triaged DEFER). Fast-follows (8): assist body {gender,style} restore; detail deep-link ?limit= cap; requireReason:false unit test; assets eager hint; copy polish batch (presets Edit profile label, starters pill register, EngineeringDetails summary dedupe); scrim/flicker visual QA; TagChip on 3rd use + useDeferredLoad if touched again; ~33 legacy-page i18n keys with future page redesigns.
