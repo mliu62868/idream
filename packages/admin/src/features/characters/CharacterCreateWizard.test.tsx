@@ -31,7 +31,7 @@ describe("Character create wizard", () => {
   it("dispatches the canonical new subview to the wizard instead of Portfolio", () => {
     const html = renderToStaticMarkup(createElement(CharacterWorkspace, {
       view: { kind: "new" },
-      permissions: { read: true, writeProject: true, publishRelease: false, reviewRelease: false },
+      permissions: { read: true, writeProject: true, proposeRelease: true, publishRelease: false, reviewRelease: false },
     }));
     expect(html).toContain("data-testid=\"character-create-wizard\"");
     expect(html).not.toContain("Portfolio &amp; Projects");

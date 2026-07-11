@@ -26,6 +26,7 @@ import { cn } from "@/lib/utils";
 type Permissions = {
   read: boolean;
   writeProject: boolean;
+  proposeRelease: boolean;
   publishRelease: boolean;
   reviewRelease: boolean;
 };
@@ -184,7 +185,7 @@ function ProjectEditor({ data, permissions, onReload }: { data: CharacterWorkspa
     <div className="grid gap-5 xl:grid-cols-[1fr_320px]">
       <fieldset className="grid gap-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 sm:grid-cols-2" disabled={disabled}>
         <legend className="px-2 text-sm font-semibold">Strategy and release intent</legend>
-        <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Phase<select className={`${fieldClass} mt-1`} onChange={(event) => set("phase", event.target.value as ProjectDraft["phase"])} value={draft.phase}>{["idea", "planned", "producing", "qa", "launch_ready", "live_management", "retired"].map((phase) => <option key={phase}>{phase}</option>)}</select></label>
+        <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Phase<select className={`${fieldClass} mt-1`} onChange={(event) => set("phase", event.target.value as ProjectDraft["phase"])} value={draft.phase}>{["idea", "planned", "producing", "qa", "launch_ready", "live_management"].map((phase) => <option key={phase}>{phase}</option>)}</select></label>
         <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Owner ID<input className={`${fieldClass} mt-1`} onChange={(event) => set("ownerId", event.target.value || null)} value={draft.ownerId ?? ""} /></label>
         <label className="text-xs font-semibold text-[var(--ad-text-muted)] sm:col-span-2">Audience<textarea className={`${textAreaClass} mt-1`} onChange={(event) => set("audience", event.target.value)} value={draft.audience} /></label>
         <label className="text-xs font-semibold text-[var(--ad-text-muted)] sm:col-span-2">Companion need<textarea className={`${textAreaClass} mt-1`} onChange={(event) => set("companionNeed", event.target.value)} value={draft.companionNeed} /></label>
@@ -238,6 +239,7 @@ function ReleasePanel({ data, permissions, reload }: { data: CharacterWorkspaceD
     release.id !== current?.release.id && release.status === "superseded",
   );
   const [reason, setReason] = useState("Operator verified release evidence");
+  const [qaEvidenceRef, setQaEvidenceRef] = useState("");
   const [scheduledAt, setScheduledAt] = useState("");
   const [selectedRollbackSourceId, setSelectedRollbackSourceId] = useState("");
   const [confirmation, setConfirmation] = useState("");
@@ -275,6 +277,82 @@ function ReleasePanel({ data, permissions, reload }: { data: CharacterWorkspaceD
     ? selectedRollbackSourceId
     : rollbackSources[0]?.release.id ?? "";
   const rollbackSource = rollbackSources.find(({ release }) => release.id === rollbackSourceId);
+  const propose = async () => {
+    setBusy("propose");
+    setError(null);
+    try {
+      await adminV2Request(`/api/v2/admin/characters/${data.character.id}/releases`, {
+        method: "POST",
+        body: {
+          entityVersion: data.project.version,
+          qaEvidenceRef: qaEvidenceRef.trim(),
+          reason,
+          confirmation: confirmation.trim(),
+        },
+      });
+      setConfirmation("");
+      await reload();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not propose Release");
+    } finally {
+      setBusy(null);
+    }
+  };
+  const review = async (decision: "approved" | "changes_requested") => {
+    if (!candidate) return;
+    setBusy(decision);
+    setError(null);
+    try {
+      await adminV2Request(`/api/v2/admin/characters/${data.character.id}/releases/${candidate.release.id}/review`, {
+        method: "POST",
+        body: {
+          entityVersion: candidate.release.version,
+          decision,
+          reason,
+          confirmation: confirmation.trim(),
+        },
+      });
+      setConfirmation("");
+      await reload();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not review Release");
+    } finally {
+      setBusy(null);
+    }
+  };
+  const validate = async () => {
+    if (!candidate) return;
+    setBusy("validate");
+    setError(null);
+    try {
+      await adminV2Request(`/api/v2/admin/characters/${data.character.id}/releases/${candidate.release.id}/validation`, {
+        method: "POST",
+        body: {
+          entityVersion: candidate.release.version,
+          confirmation: confirmation.trim(),
+        },
+      });
+      setConfirmation("");
+      await reload();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not validate Release");
+    } finally {
+      setBusy(null);
+    }
+  };
+  const servingCommand = async (action: "pause" | "resume" | "retire") => {
+    if (!data.serving) return;
+    setBusy(action); setError(null);
+    try {
+      await adminV2Request(`/api/v2/admin/characters/${data.character.id}/commands/${action}`, {
+        method: "POST",
+        idempotencyKey: crypto.randomUUID(),
+        body: { entityVersion: data.serving.version, reason: { code: `operator_${action}`, summary: reason }, confirmation: confirmation.trim() },
+      });
+      setConfirmation(""); await reload();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : `Could not ${action} Character`); }
+    finally { setBusy(null); }
+  };
   return (
     <div className="grid gap-5 xl:grid-cols-[1fr_340px]">
       <div className="space-y-3">
@@ -312,6 +390,12 @@ function ReleasePanel({ data, permissions, reload }: { data: CharacterWorkspaceD
           Schedule at
           <input className={`${fieldClass} mt-1`} onChange={(event) => setScheduledAt(event.target.value)} type="datetime-local" value={scheduledAt} />
         </label>
+        {!candidate ? (
+          <label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">
+            Five-turn QA evidence reference
+            <input className={`${fieldClass} mt-1`} onChange={(event) => setQaEvidenceRef(event.target.value)} value={qaEvidenceRef} />
+          </label>
+        ) : null}
         <label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">
           Historical rollback source
           <select className={`${fieldClass} mt-1`} onChange={(event) => setSelectedRollbackSourceId(event.target.value)} value={rollbackSourceId}>
@@ -324,19 +408,26 @@ function ReleasePanel({ data, permissions, reload }: { data: CharacterWorkspaceD
           <input className={`${fieldClass} mt-1`} onChange={(event) => setConfirmation(event.target.value)} value={confirmation} />
         </label>
         <p className="mt-2 text-xs text-[var(--ad-text-muted)]">
-          Use character:release:action, for example {candidate ? `${data.character.id}:${candidate.release.id}:publish` : "when a candidate exists"}.
+          Use the exact target, for example {candidate ? `${data.character.id}:${candidate.release.id}:${candidate.release.status === "in_review" ? "approved" : "publish"}` : `${data.character.id}:propose-release`}.
         </p>
         {error ? <p className="mt-3 text-xs text-[var(--ad-red-text)]" role="alert">{error}</p> : null}
         <div className="mt-4 grid gap-2">
-          <WorkspaceButton disabled={!permissions.publishRelease || !candidate || Boolean(busy)} onClick={() => candidate && void command("publish", candidate.release.id, candidate.release.version)} tone="primary">
+          {!candidate ? <WorkspaceButton disabled={!permissions.proposeRelease || !qaEvidenceRef.trim() || confirmation !== `${data.character.id}:propose-release` || Boolean(busy)} onClick={() => void propose()}><Rocket className="h-4 w-4" /> Propose immutable Release</WorkspaceButton> : null}
+          {candidate?.release.status === "in_review" ? <><WorkspaceButton disabled={!permissions.reviewRelease || confirmation !== `${data.character.id}:${candidate.release.id}:approved` || Boolean(busy)} onClick={() => void review("approved")} tone="primary">Approve candidate</WorkspaceButton><WorkspaceButton disabled={!permissions.reviewRelease || confirmation !== `${data.character.id}:${candidate.release.id}:changes_requested` || Boolean(busy)} onClick={() => void review("changes_requested")}>Request changes</WorkspaceButton></> : null}
+          <WorkspaceButton disabled={!permissions.publishRelease || !candidate || candidate.release.status !== "approved" || confirmation !== `${data.character.id}:${candidate.release.id}:validate` || Boolean(busy)} onClick={() => void validate()}>
+            Validate pinned snapshot
+          </WorkspaceButton>
+          <WorkspaceButton disabled={!permissions.publishRelease || !candidate || candidate.release.status !== "approved" || candidate.release.readiness !== "ready" || Boolean(busy)} onClick={() => candidate && void command("publish", candidate.release.id, candidate.release.version)} tone="primary">
             <Rocket className="h-4 w-4" /> Publish candidate
           </WorkspaceButton>
-          <WorkspaceButton disabled={!permissions.publishRelease || !candidate || !scheduledAt || Boolean(busy)} onClick={() => candidate && void command("schedule", candidate.release.id, candidate.release.version)}>
+          <WorkspaceButton disabled={!permissions.publishRelease || !candidate || candidate.release.status !== "approved" || candidate.release.readiness !== "ready" || !scheduledAt || Boolean(busy)} onClick={() => candidate && void command("schedule", candidate.release.id, candidate.release.version)}>
             <Clock3 className="h-4 w-4" /> Schedule
           </WorkspaceButton>
           <WorkspaceButton disabled={!permissions.publishRelease || !rollbackSource || Boolean(busy)} onClick={() => rollbackSource && void command("rollback", rollbackSource.release.id, data.serving?.version ?? 0)} tone="danger">
             <RotateCcw className="h-4 w-4" /> Roll back to selected snapshot
           </WorkspaceButton>
+          {data.serving?.state === "live" ? <><WorkspaceButton disabled={!permissions.publishRelease || confirmation !== `${data.character.id}:pause` || Boolean(busy)} onClick={() => void servingCommand("pause")}>Pause serving</WorkspaceButton><WorkspaceButton disabled={!permissions.publishRelease || confirmation !== `${data.character.id}:retire` || Boolean(busy)} onClick={() => void servingCommand("retire")} tone="danger">Retire Character</WorkspaceButton></> : null}
+          {data.serving?.state === "paused" ? <WorkspaceButton disabled={!permissions.publishRelease || confirmation !== `${data.character.id}:resume` || Boolean(busy)} onClick={() => void servingCommand("resume")}>Resume serving</WorkspaceButton> : null}
         </div>
         {!permissions.publishRelease ? <p className="mt-3 text-xs text-[var(--ad-text-muted)]">Read-only: character.release.publish is not granted.</p> : null}
       </aside>

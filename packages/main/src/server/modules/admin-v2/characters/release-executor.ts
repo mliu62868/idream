@@ -87,7 +87,7 @@ function placementAssetId(value: Prisma.JsonValue): string | null {
     : null;
 }
 
-async function validateRelease(
+export async function validateCharacterReleaseSnapshot(
   tx: Prisma.TransactionClient,
   release: Awaited<
     ReturnType<
@@ -465,7 +465,7 @@ async function executeSchedule(
       "Only the expected approved Release can be scheduled",
     );
   }
-  const validation = await validateRelease(tx, release, policyVersion, now);
+  const validation = await validateCharacterReleaseSnapshot(tx, release, policyVersion, now);
   if (validation.failed.length > 0) {
     await tx.characterRelease.update({
       where: { id: release.id },
@@ -564,7 +564,7 @@ async function publishRelease(
       "Only the expected approved Release can be published",
     );
   }
-  const validation = await validateRelease(tx, release, policyVersion, now);
+  const validation = await validateCharacterReleaseSnapshot(tx, release, policyVersion, now);
   if (validation.failed.length > 0) {
     await tx.characterRelease.update({
       where: { id: release.id },
@@ -853,18 +853,25 @@ async function executeServingState(
           imageAssetId: resumeAssetId,
         },
   });
+  const payload = record(command.requestPayload);
+  if (pausing && payload.retireProject === true) {
+    await tx.characterProject.update({
+      where: { id: project.id },
+      data: { phase: "retired", activeKey: null, version: { increment: 1 } },
+    });
+  }
   await appendExecutionEvidence(tx, {
     command,
     commandType: command.commandType as ReleaseCommandType,
     releaseId: release.id,
     characterId: command.targetId,
     before: { servingState: serving.state, servingVersion: serving.version },
-    after: { servingState: nextState, servingVersion: serving.version + 1 },
+    after: { servingState: nextState, servingVersion: serving.version + 1, retired: pausing && payload.retireProject === true },
     eventType: pausing
       ? "character.serving.paused"
       : "character.serving.resumed",
     now,
-    result: { servingState: nextState },
+    result: { servingState: nextState, retired: pausing && payload.retireProject === true },
   });
   return release.id;
 }

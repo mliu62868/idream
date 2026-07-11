@@ -10,7 +10,7 @@ export const runtime = "nodejs";
 export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
   return adminV2Route(async () => {
-    await actorWithPermission(request, "character.project.write");
+    await actorWithPermission(request, "character.project.write", { characterId: id });
     return characterProjectDraftResumeSchema.parse(await getCharacterProjectDraftForResume(id));
   });
 }

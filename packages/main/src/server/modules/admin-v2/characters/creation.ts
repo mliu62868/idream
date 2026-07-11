@@ -163,6 +163,12 @@ export async function createCharacterProject(input: {
           activeKey: `official:${characterId}`,
         },
       });
+      await tx.characterServing.create({
+        data: {
+          characterId,
+          state: "inactive",
+        },
+      });
       await tx.characterRevision.create({
         data: {
           id: revisionId,

@@ -1061,3 +1061,128 @@ export async function recordCustomerCaseAction(input: {
     return updated;
   });
 }
+
+export async function waitCase(input: {
+  readonly caseId: string;
+  readonly actor: Actor;
+  readonly expectedVersion: number;
+  readonly reason: string;
+  readonly resumeAt?: Date;
+  readonly requestId: string;
+}) {
+  return prisma.$transaction(async (tx) => {
+    const current = await tx.adminCase.findUnique({ where: { id: input.caseId } });
+    if (!current) throw Errors.notFound("Case not found");
+    assertCaseScope(current, input.actor);
+    if (current.version !== input.expectedVersion) throw Errors.conflict("Case version changed");
+    if (!["new", "triaged", "in_progress", "reopened"].includes(current.status)) {
+      throw Errors.conflict("Only active Cases can enter waiting state");
+    }
+    const prior = current.resolution && typeof current.resolution === "object" && !Array.isArray(current.resolution)
+      ? current.resolution as Record<string, unknown>
+      : {};
+    const updated = await tx.adminCase.update({
+      where: { id: current.id, version: current.version },
+      data: {
+        status: "waiting",
+        resolution: toInputJson({
+          ...prior,
+          waiting: { reason: input.reason, resumeAt: input.resumeAt?.toISOString() ?? null, recordedAt: new Date().toISOString() },
+        }),
+        version: { increment: 1 },
+      },
+    });
+    await tx.adminAuditLog.create({ data: {
+      actorId: input.actor.id,
+      actorRole: input.actor.role,
+      action: "case.waiting.recorded",
+      targetType: "admin_case",
+      targetId: current.id,
+      reason: input.reason,
+      before: toInputJson({ status: current.status, version: current.version }),
+      after: toInputJson({ status: updated.status, version: updated.version, resumeAt: input.resumeAt ?? null }),
+      requestId: input.requestId,
+    } });
+    await tx.mainOutboxEvent.create({ data: {
+      eventType: "admin.case.waiting.recorded.v2",
+      aggregateType: "admin_case",
+      aggregateId: current.id,
+      payload: toInputJson({ caseId: current.id, version: updated.version, resumeAt: input.resumeAt?.toISOString() ?? null }),
+    } });
+    return updated;
+  });
+}
+
+export async function reopenOrRecurCase(input: {
+  readonly caseId: string;
+  readonly actor: Actor;
+  readonly expectedVersion: number;
+  readonly reason: string;
+  readonly requestId: string;
+  readonly reopenWindowMs?: number;
+}) {
+  return prisma.$transaction(async (tx) => {
+    const current = await tx.adminCase.findUnique({ where: { id: input.caseId } });
+    if (!current) throw Errors.notFound("Case not found");
+    assertCaseScope(current, input.actor);
+    if (current.version !== input.expectedVersion) throw Errors.conflict("Case version changed");
+    if (!["resolved", "closed"].includes(current.status)) throw Errors.conflict("Only terminal Cases can be reopened");
+    const activeKey = `${current.type}:${current.targetType}:${current.targetId}:${current.caseKey}`;
+    const existingActive = await tx.adminCase.findFirst({ where: { activeKey, id: { not: current.id } }, select: { id: true } });
+    if (existingActive) throw Errors.conflict("A recurrence of this Case is already active", { activeCaseId: existingActive.id });
+    const cutoff = Date.now() - (input.reopenWindowMs ?? 7 * 24 * 60 * 60 * 1_000);
+    const reopenSameCase = current.updatedAt.getTime() >= cutoff;
+    if (reopenSameCase) {
+      const updated = await tx.adminCase.update({
+        where: { id: current.id, version: current.version },
+        data: { status: "reopened", activeKey, verificationState: "pending", version: { increment: 1 } },
+      });
+      await tx.adminAuditLog.create({ data: {
+        actorId: input.actor.id,
+        actorRole: input.actor.role,
+        action: "case.reopened",
+        targetType: "admin_case",
+        targetId: current.id,
+        reason: input.reason,
+        before: toInputJson({ status: current.status, activeKey: current.activeKey, version: current.version }),
+        after: toInputJson({ status: updated.status, activeKey: updated.activeKey, version: updated.version }),
+        requestId: input.requestId,
+      } });
+      await tx.mainOutboxEvent.create({ data: { eventType: "admin.case.reopened.v2", aggregateType: "admin_case", aggregateId: current.id, payload: toInputJson({ caseId: current.id, version: updated.version }) } });
+      return { mode: "reopened" as const, adminCase: updated };
+    }
+    const recurrence = await tx.adminCase.create({ data: {
+      type: current.type,
+      targetType: current.targetType,
+      targetId: current.targetId,
+      caseKey: current.caseKey,
+      activeKey,
+      status: "new",
+      priority: current.priority,
+      ownerId: current.ownerId,
+      slaDueAt: current.slaDueAt ? new Date(Date.now() + Math.max(60_000, current.slaDueAt.getTime() - current.createdAt.getTime())) : null,
+      resolution: toInputJson({ recurrenceOfCaseId: current.id, recurrenceReason: input.reason }),
+      verificationState: "pending",
+    } });
+    await tx.caseEvidence.create({ data: {
+      caseId: recurrence.id,
+      sourceType: "case_recurrence",
+      sourceId: current.id,
+      snapshot: toInputJson({ priorCaseId: current.id, priorStatus: current.status, priorVersion: current.version, closedAt: current.updatedAt }),
+      occurredAt: new Date(),
+    } });
+    await tx.adminAuditLog.create({ data: {
+      actorId: input.actor.id,
+      actorRole: input.actor.role,
+      action: "case.recurrence.created",
+      targetType: "admin_case",
+      targetId: recurrence.id,
+      reason: input.reason,
+      before: toInputJson({ priorCaseId: current.id, status: current.status, version: current.version }),
+      after: toInputJson({ recurrenceCaseId: recurrence.id, status: recurrence.status, version: recurrence.version }),
+      requestId: input.requestId,
+    } });
+    await tx.mainOutboxEvent.create({ data: { eventType: "admin.case.recurrence.created.v2", aggregateType: "admin_case", aggregateId: recurrence.id, payload: toInputJson({ caseId: recurrence.id, priorCaseId: current.id, version: recurrence.version }) } });
+    return { mode: "recurrence" as const, adminCase: recurrence };
+  });
+}

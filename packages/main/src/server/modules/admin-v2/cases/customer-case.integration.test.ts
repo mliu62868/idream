@@ -3,7 +3,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import {
   backfillCustomerCases,
+  reopenOrRecurCase,
   recordCustomerCaseAction,
+  waitCase,
 } from "./service";
 import { getCustomer360, listCustomers } from "./customer-query";
 import { listCases } from "./query";
@@ -160,6 +162,15 @@ describe("Support and billing Case depth", () => {
     expect(updated).toMatchObject({ status: "in_progress", verificationState: "pending" });
     expect(updated.version).toBe(supportCase.version + 1);
     expect(await prisma.decisionRecord.count({ where: { sourceType: "admin_case", sourceId: supportCase.id } })).toBe(1);
+    const waiting = await waitCase({
+      caseId: supportCase.id,
+      actor: { id: actorId, role: "support" },
+      expectedVersion: updated.version,
+      reason: "Waiting for customer delivery diagnostics",
+      resumeAt: new Date(Date.now() + 60_000),
+      requestId: `case-wait-${suffix}`,
+    });
+    expect(waiting).toMatchObject({ status: "waiting", version: updated.version + 1 });
 
     await expect(
       recordCustomerCaseAction({
@@ -255,5 +266,32 @@ describe("Support and billing Case depth", () => {
       `http://localhost/api/v2/admin/customers/${customerId}`,
       { headers },
     ), customerId)).rejects.toMatchObject({ code: "forbidden" });
+  });
+
+  it("creates a linked recurrence when a terminal Case is outside its reopen window", async () => {
+    const prior = await prisma.adminCase.create({ data: {
+      id: `old-terminal-case-${suffix}`,
+      type: "support_request",
+      targetType: "user",
+      targetId: customerId,
+      caseKey: `old-terminal-${suffix}`,
+      activeKey: null,
+      status: "closed",
+      priority: "normal",
+      updatedAt: new Date(Date.now() - 60_000),
+    } });
+    const result = await reopenOrRecurCase({
+      caseId: prior.id,
+      actor: { id: actorId, role: "support" },
+      expectedVersion: prior.version,
+      reason: "Same issue recurred outside the configured reopen window",
+      requestId: `case-recurrence-${suffix}`,
+      reopenWindowMs: 1,
+    });
+    expect(result.mode).toBe("recurrence");
+    expect(result.adminCase).toMatchObject({ status: "new", caseKey: prior.caseKey });
+    await expect(prisma.caseEvidence.findFirst({
+      where: { caseId: result.adminCase.id, sourceType: "case_recurrence", sourceId: prior.id },
+    })).resolves.toBeTruthy();
   });
 });

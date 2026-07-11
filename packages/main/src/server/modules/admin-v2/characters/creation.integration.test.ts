@@ -84,6 +84,7 @@ describe("Character Project creation authority", () => {
     await prisma.controlPlaneCommand.deleteMany({ where: { actorId, commandType: "character.project.create" } });
     await prisma.characterRevision.deleteMany({ where: { projectId: { in: projectIds } } });
     await prisma.characterContentVersion.deleteMany({ where: { characterId: { in: characterIds } } });
+    await prisma.characterServing.deleteMany({ where: { characterId: { in: characterIds } } });
     await prisma.characterProject.deleteMany({ where: { id: { in: projectIds } } });
     await prisma.character.deleteMany({ where: { id: { in: characterIds } } });
     await prisma.user.deleteMany({ where: { id: { in: [actorId, deniedActorId] } } });
@@ -107,6 +108,7 @@ describe("Character Project creation authority", () => {
     });
     expect(await prisma.characterContentVersion.findMany({ where: { characterId } })).toHaveLength(1);
     expect(await prisma.characterRevision.findMany({ where: { projectId } })).toHaveLength(1);
+    expect(await prisma.characterServing.findUnique({ where: { characterId } })).toMatchObject({ state: "inactive", currentReleaseId: null, version: 1 });
     expect(await prisma.adminAuditLog.count({ where: { targetId: projectId, action: "character.project.created" } })).toBe(1);
     expect(await prisma.adminCollaborationActivity.count({ where: { targetId: projectId, kind: "status_change" } })).toBe(1);
     expect(await prisma.mainOutboxEvent.count({ where: { aggregateId: projectId, eventType: "character.project.created.v2" } })).toBe(1);

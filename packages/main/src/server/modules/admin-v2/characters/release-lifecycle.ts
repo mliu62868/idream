@@ -1,0 +1,162 @@
+import { prisma } from "@/server/lib/db";
+import { Errors } from "@/server/lib/errors";
+import { actorWithPermission } from "@/server/modules/admin/service";
+import { CHARACTER_RELEASE_POLICY_VERSION, validateCharacterReleaseSnapshot } from "./release-executor";
+import { characterReleaseSnapshotHash } from "./release-snapshot";
+import { toInputJson } from "../shared/prisma-json";
+
+export async function proposeCharacterRelease(input: {
+  request: Request;
+  characterId: string;
+  expectedProjectVersion: number;
+  qaEvidenceRef: string;
+  reason: string;
+}) {
+  const actor = await actorWithPermission(input.request, "character.release.propose", { characterId: input.characterId });
+  return prisma.$transaction(async (tx) => {
+    const project = await tx.characterProject.findFirst({ where: { characterId: input.characterId } });
+    if (!project) throw Errors.notFound("Character Project not found");
+    if (project.version !== input.expectedProjectVersion) throw Errors.conflict("Character Project changed before Release proposal");
+    const existing = await tx.characterRelease.findFirst({
+      where: { projectId: project.id, status: { in: ["draft", "validating", "in_review", "approved"] } },
+    });
+    if (existing) throw Errors.conflict("Character Project already has an active candidate Release", { releaseId: existing.id });
+    const character = await tx.character.findUnique({ where: { id: input.characterId }, include: { imageAsset: true } });
+    const revision = await tx.characterRevision.findFirst({ where: { projectId: project.id }, orderBy: { revision: "desc" } });
+    const profile = await tx.characterVisualProfile.findFirst({ where: { characterId: input.characterId, status: "active" }, orderBy: { version: "desc" } });
+    const referenceSet = profile ? await tx.referenceSetRevision.findFirst({ where: { visualProfileId: profile.id, status: "active" }, include: { references: true }, orderBy: { revision: "desc" } }) : null;
+    const route = profile ? await tx.generationRouteQualification.findFirst({ where: { style: profile.style, policyVersion: CHARACTER_RELEASE_POLICY_VERSION, result: "qualified", sampleCount: { gte: 40 }, identityMatch: { gte: 0.9 }, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] }, orderBy: { evaluatedAt: "desc" } }) : null;
+    const blockers = [
+      ...(!character ? ["character_missing"] : []),
+      ...(!revision ? ["revision_missing"] : []),
+      ...(!profile?.immutableHash ? ["active_visual_profile_missing_or_unsealed"] : []),
+      ...(!referenceSet?.snapshotHash || !referenceSet.references.length ? ["active_reference_set_missing_or_empty"] : []),
+      ...(!route ? ["qualified_generation_route_missing"] : []),
+      ...(!character?.imageAsset || character.imageAsset.deletedAt || character.imageAsset.safetyStatus !== "passed" ? ["approved_avatar_missing"] : []),
+    ];
+    if (blockers.length > 0) throw Errors.conflict("Character is not ready to propose a Release", { blockers });
+    const generationProvenance = {
+      routeFingerprint: route!.routeFingerprint,
+      generationProfileKey: route!.generationProfileKey,
+      generationProfileVersion: route!.generationProfileVersion,
+      workflowKey: route!.workflowKey,
+      workflowVersion: route!.workflowVersion,
+      matrixKey: route!.matrixKey,
+      visualProfileHash: profile!.immutableHash,
+      referenceSetHash: referenceSet!.snapshotHash,
+      characterQa: { status: "passed", evidenceRef: input.qaEvidenceRef },
+    };
+    const releasePlacementManifest = { placements: [{ slotKey: "character_avatar", assetId: character!.imageAsset!.id, slotVersion: 1 }] };
+    const snapshot = {
+      projectId: project.id,
+      revisionId: revision!.id,
+      characterContentVersionId: revision!.characterContentVersionId,
+      visualProfileId: profile!.id,
+      visualProfileVersion: profile!.version,
+      referenceSetRevisionId: referenceSet!.id,
+      generationProvenance,
+      releasePlacementManifest,
+    };
+    const release = await tx.characterRelease.create({ data: {
+      ...snapshot,
+      generationProvenance: toInputJson(generationProvenance),
+      releasePlacementManifest: toInputJson(releasePlacementManifest),
+      snapshotHash: characterReleaseSnapshotHash(snapshot),
+      status: "in_review",
+      readiness: "unknown",
+    } });
+    await tx.characterProject.update({ where: { id: project.id }, data: { phase: "qa", version: { increment: 1 } } });
+    await tx.adminAuditLog.create({ data: {
+      actorId: actor.id,
+      actorRole: actor.role,
+      action: "character.release.proposed",
+      targetType: "character_release",
+      targetId: release.id,
+      reason: input.reason,
+      after: toInputJson({ characterId: input.characterId, releaseId: release.id, snapshotHash: release.snapshotHash, status: release.status }),
+      requestId: input.request.headers.get("x-request-id"),
+    } });
+    await tx.adminCollaborationActivity.create({ data: { targetType: "character_release", targetId: release.id, kind: "status_change", actorId: actor.id, body: "Proposed immutable Character Release for review", metadata: toInputJson({ from: null, to: "in_review", characterId: input.characterId }), idempotencyKey: `character_release_proposed:${release.id}` } });
+    await tx.mainOutboxEvent.create({ data: { eventType: "character.release.proposed.v2", aggregateType: "character_release", aggregateId: release.id, payload: toInputJson({ characterId: input.characterId, releaseId: release.id, snapshotHash: release.snapshotHash, version: release.version }) } });
+    return release;
+  });
+}
+
+export async function validateCharacterRelease(input: {
+  request: Request;
+  characterId: string;
+  releaseId: string;
+  expectedVersion: number;
+}) {
+  const actor = await actorWithPermission(input.request, "character.release.publish", { characterId: input.characterId });
+  return prisma.$transaction(async (tx) => {
+    const release = await tx.characterRelease.findUnique({ where: { id: input.releaseId } });
+    if (!release) throw Errors.notFound("Character Release not found");
+    const project = await tx.characterProject.findUnique({ where: { id: release.projectId } });
+    if (!project || project.characterId !== input.characterId) throw Errors.notFound("Character Release not found for Character");
+    if (release.version !== input.expectedVersion) throw Errors.conflict("Character Release changed before validation");
+    if (release.status !== "approved") throw Errors.conflict("Only an approved Character Release can be validated");
+    const validation = await validateCharacterReleaseSnapshot(tx, release, CHARACTER_RELEASE_POLICY_VERSION, new Date());
+    const readiness = validation.failed.length === 0 ? "ready" : "blocked";
+    await tx.characterRelease.update({ where: { id: release.id }, data: { readiness } });
+    await tx.adminAuditLog.create({ data: {
+      actorId: actor.id,
+      actorRole: actor.role,
+      action: "character.release.validated",
+      targetType: "character_release",
+      targetId: release.id,
+      reason: `Release validation ${validation.run.result}`,
+      before: toInputJson({ readiness: release.readiness }),
+      after: toInputJson({ readiness, validationRunId: validation.run.id, snapshotHash: validation.run.snapshotHash, policyVersion: validation.run.policyVersion, failedChecks: validation.failed.map((check) => check.key) }),
+      requestId: input.request.headers.get("x-request-id"),
+    } });
+    await tx.mainOutboxEvent.create({ data: {
+      eventType: "character.release.validated.v2",
+      aggregateType: "character_release",
+      aggregateId: release.id,
+      payload: toInputJson({ characterId: input.characterId, releaseId: release.id, validationRunId: validation.run.id, result: validation.run.result, snapshotHash: validation.run.snapshotHash, policyVersion: validation.run.policyVersion }),
+    } });
+    return {
+      validationRunId: validation.run.id,
+      result: validation.run.result,
+      readiness,
+      snapshotHash: validation.run.snapshotHash,
+      policyVersion: validation.run.policyVersion,
+      checks: validation.checks,
+    };
+  });
+}
+
+export async function reviewCharacterRelease(input: {
+  request: Request;
+  characterId: string;
+  releaseId: string;
+  expectedVersion: number;
+  decision: "approved" | "changes_requested";
+  reason: string;
+}) {
+  const actor = await actorWithPermission(input.request, "character.release.review", { characterId: input.characterId });
+  return prisma.$transaction(async (tx) => {
+    const release = await tx.characterRelease.findUnique({ where: { id: input.releaseId } });
+    if (!release) throw Errors.notFound("Character Release not found");
+    const project = await tx.characterProject.findUnique({ where: { id: release.projectId } });
+    if (!project || project.characterId !== input.characterId) throw Errors.notFound("Character Release not found for Character");
+    if (release.version !== input.expectedVersion || release.status !== "in_review") throw Errors.conflict("Release changed or is not in review");
+    const status = input.decision === "approved" ? "approved" : "draft";
+    const updated = await tx.characterRelease.update({ where: { id: release.id, version: release.version }, data: { status, version: { increment: 1 } } });
+    await tx.characterProject.update({ where: { id: project.id }, data: { phase: input.decision === "approved" ? "launch_ready" : "producing", version: { increment: 1 } } });
+    await tx.adminAuditLog.create({ data: {
+      actorId: actor.id,
+      actorRole: actor.role,
+      action: `character.release.${input.decision}`,
+      targetType: "character_release",
+      targetId: release.id,
+      reason: input.reason,
+      before: toInputJson({ status: release.status, version: release.version }),
+      after: toInputJson({ status: updated.status, version: updated.version, snapshotHash: updated.snapshotHash }),
+      requestId: input.request.headers.get("x-request-id"),
+    } });
+    await tx.mainOutboxEvent.create({ data: { eventType: `character.release.${input.decision}.v2`, aggregateType: "character_release", aggregateId: release.id, payload: toInputJson({ characterId: input.characterId, releaseId: release.id, status: updated.status, version: updated.version }) } });
+    return updated;
+  });
+}

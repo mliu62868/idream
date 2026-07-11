@@ -56,10 +56,14 @@ export function StatusBadge({ value, tone }: { value: string; tone?: "good" | "w
 
 export function LoadingWorkspace({ label }: { label: string }) {
   return (
-    <div className="grid min-h-56 place-items-center rounded-xl bg-[var(--ad-surface)]" role="status">
-      <span className="inline-flex items-center gap-2 text-sm text-[var(--ad-text-muted)]">
-        <Loader2 className="h-4 w-4 animate-spin" /> {label}
-      </span>
+    <div aria-busy="true" aria-label={label} className="space-y-4 rounded-xl bg-[var(--ad-surface)] p-5" role="status">
+      <span className="inline-flex items-center gap-2 text-sm text-[var(--ad-text-muted)]"><Loader2 className="h-4 w-4 animate-spin" /> {label}</span>
+      <div aria-hidden="true" className="grid animate-pulse gap-3 sm:grid-cols-3">
+        <span className="h-16 rounded-md bg-black/[0.05]" />
+        <span className="h-16 rounded-md bg-black/[0.05]" />
+        <span className="h-16 rounded-md bg-black/[0.05]" />
+        <span className="h-24 rounded-md bg-black/[0.04] sm:col-span-3" />
+      </div>
     </div>
   );
 }

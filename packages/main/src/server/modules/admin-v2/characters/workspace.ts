@@ -309,6 +309,9 @@ export async function updateCharacterProjectDraft(input: {
   readonly reason: string;
   readonly requestId: string;
 }) {
+  if (input.phase === "retired") {
+    throw Errors.conflict("Retirement must use the verified Character retirement command");
+  }
   return prisma.$transaction(async (tx) => {
     const project = await tx.characterProject.findFirst({ where: { characterId: input.characterId } });
     if (!project) throw Errors.notFound("Character Project not found");

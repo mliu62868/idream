@@ -1,5 +1,5 @@
 "use client";
-import { useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Loader2 } from "lucide-react";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { GhostButton, PrimaryButton } from "./buttons";
@@ -25,11 +25,47 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
   const [nameInput, setNameInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const titleId = useId();
+  const descriptionId = useId();
+  const dialogRef = useRef<HTMLDivElement | null>(null);
 
   const requireReason = spec.requireReason ?? true;
   const nameOk = !spec.destructive || nameInput.trim() === spec.destructive.expectedName;
   const reasonOk = !requireReason || reason.trim().length >= 3;
   const canSubmit = !busy && reasonOk && nameOk;
+
+  useEffect(() => {
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const timer = window.setTimeout(() => {
+      dialogRef.current?.querySelector<HTMLElement>("input, button:not([disabled])")?.focus();
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      previousFocus?.focus();
+    };
+  }, []);
+
+  function handleDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape" && !busy) {
+      event.preventDefault();
+      onClose();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = [...(dialogRef.current?.querySelectorAll<HTMLElement>(
+      "button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex='-1'])",
+    ) ?? [])].filter((element) => !element.hasAttribute("hidden"));
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable.at(-1)!;
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
 
   async function submit() {
     setBusy(true);
@@ -46,10 +82,18 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/20 p-4">
-      <div className="w-full max-w-md rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6">
-        <h3 className="text-sm font-semibold text-[var(--ad-ink)]">{spec.title}</h3>
+      <div
+        aria-describedby={spec.summary ? descriptionId : undefined}
+        aria-labelledby={titleId}
+        aria-modal="true"
+        className="w-full max-w-md rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6"
+        onKeyDown={handleDialogKeyDown}
+        ref={dialogRef}
+        role="dialog"
+      >
+        <h3 className="text-sm font-semibold text-[var(--ad-ink)]" id={titleId}>{spec.title}</h3>
         {spec.summary ? (
-          <div className="mt-2 text-sm text-[var(--ad-text-muted)]">{spec.summary}</div>
+          <div className="mt-2 text-sm text-[var(--ad-text-muted)]" id={descriptionId}>{spec.summary}</div>
         ) : null}
         <div className="mt-4 space-y-3">
           {requireReason ? (
@@ -70,7 +114,7 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
               value={nameInput}
             />
           ) : null}
-          {error ? <p className="text-sm text-[var(--ad-red-text)]">{error}</p> : null}
+          {error ? <p className="text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}
         </div>
         <div className="mt-5 flex justify-end gap-2">
           <GhostButton disabled={busy} onClick={onClose}>

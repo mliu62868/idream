@@ -1,8 +1,7 @@
 import { incrementCounter, setGauge } from "@idream/shared";
 import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
-import type { PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
-import { deriveCreativeRunState } from "@/server/modules/admin/content-production-state";
 import { auditAdminCutoverInvariants } from "@/server/modules/admin-v2/reconciliation/invariants";
 
 const outboxQueues = [
@@ -33,7 +32,7 @@ export async function collectAdminOperationalMetrics(
     metricSnapshots,
     failedAttemptCount,
     unknownFailureCount,
-    creativeRuns,
+    creativeOutcomes,
   ] = await Promise.all([
     auditAdminCutoverInvariants(db, now),
     Promise.all(outboxQueues.map(async ({ queue, eventTypes }) => ({
@@ -77,20 +76,37 @@ export async function collectAdminOperationalMetrics(
         OR: [{ status: "unknown" }, { errorClass: null }, { errorClass: "unknown" }],
       },
     }),
-    db.contentProductionBatch.findMany({
-      select: {
-        status: true,
-        count: true,
-        items: {
-          select: {
-            id: true,
-            status: true,
-            job: { select: { id: true, status: true, errorCode: true, costDreamcoins: true } },
-            mediaAsset: { select: { id: true, safetyStatus: true, deletedAt: true } },
-          },
-        },
-      },
-    }),
+    db.$queryRaw<Array<{ outcome: string; count: bigint }>>(Prisma.sql`
+      WITH item_facts AS (
+        SELECT
+          b.id AS batch_id,
+          GREATEST(b.count, COUNT(i.id)::int) AS expected_count,
+          COUNT(i.id) FILTER (
+            WHERE a.id IS NOT NULL AND a."deletedAt" IS NULL AND a."safetyStatus" = 'passed'
+          )::int AS successful_count,
+          COUNT(i.id) FILTER (
+            WHERE NOT (a.id IS NOT NULL AND a."deletedAt" IS NULL AND a."safetyStatus" = 'passed')
+              AND (i.status IN ('failed', 'cancelled') OR j.status IN ('failed', 'blocked', 'refunded', 'cancelled'))
+          )::int AS failed_count
+        FROM content_production_batches b
+        LEFT JOIN content_production_items i ON i."batchId" = b.id
+        LEFT JOIN generation_jobs j ON j.id = i."jobId"
+        LEFT JOIN media_assets a ON a.id = i."mediaAssetId"
+        GROUP BY b.id, b.count
+      ), outcomes AS (
+        SELECT CASE
+          WHEN expected_count = 0 THEN 'pending'
+          WHEN expected_count - successful_count - failed_count > 0 THEN 'running'
+          WHEN successful_count = expected_count THEN 'succeeded'
+          WHEN successful_count > 0 THEN 'partially_succeeded'
+          ELSE 'failed'
+        END AS outcome
+        FROM item_facts
+      )
+      SELECT outcome, COUNT(*)::bigint AS count
+      FROM outcomes
+      GROUP BY outcome
+    `),
   ]);
 
   for (const { queue, oldest } of oldestByQueue) {
@@ -169,21 +185,7 @@ export async function collectAdminOperationalMetrics(
     failedAttemptCount === 0 ? 0 : unknownFailureCount / failedAttemptCount,
   );
 
-  const creativeOutcomeCounts = new Map<string, number>();
-  for (const run of creativeRuns) {
-    const outcome = deriveCreativeRunState({
-      legacyStatus: run.status,
-      expectedItemCount: run.count,
-      items: run.items.map((item) => ({
-        id: item.id,
-        status: item.status,
-        job: item.job,
-        asset: item.mediaAsset,
-      })),
-      ledgerEntries: [],
-    }).executionOutcome;
-    creativeOutcomeCounts.set(outcome, (creativeOutcomeCounts.get(outcome) ?? 0) + 1);
-  }
+  const creativeOutcomeCounts = new Map(creativeOutcomes.map((row) => [row.outcome, Number(row.count)]));
   for (const outcome of ["pending", "running", "succeeded", "partially_succeeded", "failed", "cancelled"]) {
     setGauge(
       "creative_run_outcome_total",

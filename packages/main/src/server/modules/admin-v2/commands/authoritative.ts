@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   adminCommandAcceptedSchema,
+  adminCommandRequestSchema,
   adminCommandHeadersSchema,
   caseCloseCommandRequestSchema,
   characterReleasePublishCommandRequestSchema,
@@ -389,6 +390,45 @@ export function rollbackCharacterRelease(request: Request, characterId: string, 
     }
     parsed.payload.sourceReleaseId = sourceReleaseId;
     return acceptCommand({ actor, parsed, definition: rollbackReleaseDefinition, targetId: characterId });
+  });
+}
+
+const servingPauseDefinition = {
+  commandType: "character.serving.pause",
+  targetType: "character_serving",
+  permission: "character.release.publish",
+  retryMode: "idempotent",
+} as const satisfies CommandDefinition;
+const servingResumeDefinition = {
+  ...servingPauseDefinition,
+  commandType: "character.serving.resume",
+} as const satisfies CommandDefinition;
+
+export function changeCharacterServingState(
+  request: Request,
+  characterId: string,
+  action: "pause" | "resume" | "retire",
+) {
+  return commandResponse(request, async () => {
+    const definition = action === "resume" ? servingResumeDefinition : servingPauseDefinition;
+    const actor = await actorWithPermission(request, definition.permission, { characterId });
+    const parsed = await parseCommand(request, adminCommandRequestSchema);
+    requireConfirmation(parsed.body.confirmation, `${characterId}:${action}`);
+    const serving = await prisma.characterServing.findUnique({ where: { characterId } });
+    if (!serving) throw Errors.notFound("Character Serving authority not found", { characterId });
+    if (serving.version !== parsed.body.entityVersion) {
+      return versionConflict(parsed.requestId, { characterId, state: serving.state, version: serving.version }, parsed.body.entityVersion);
+    }
+    if (action === "resume" ? serving.state !== "paused" : serving.state !== "live") {
+      throw new InvariantFailedError(
+        [{ code: "serving_state_invalid", message: `Character must be ${action === "resume" ? "paused" : "live"} before ${action}.` }],
+        `/admin/characters/${characterId}?tab=release`,
+      );
+    }
+    parsed.payload.retireProject = action === "retire";
+    parsed.payload.characterId = characterId;
+    parsed.payload.action = action;
+    return acceptCommand({ actor, parsed, definition, targetId: characterId });
   });
 }
 

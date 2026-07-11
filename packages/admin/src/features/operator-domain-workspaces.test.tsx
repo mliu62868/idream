@@ -6,7 +6,7 @@ import { parseAdminPath } from "@/components/admin/nav-config";
 
 describe("Character and Creative operator workspaces", () => {
   it("renders explicit effective-permission denial instead of attempting a hidden write", () => {
-    const html = renderToStaticMarkup(<CharacterWorkspace permissions={{ read: false, writeProject: false, publishRelease: false, reviewRelease: false }} view={{ kind: "list" }} />);
+    const html = renderToStaticMarkup(<CharacterWorkspace permissions={{ read: false, writeProject: false, proposeRelease: false, publishRelease: false, reviewRelease: false }} view={{ kind: "list" }} />);
     expect(html).toContain("No permission");
     expect(html).toContain("character.project.read");
   });
@@ -22,7 +22,7 @@ describe("Character and Creative operator workspaces", () => {
   });
 
   it("renders server-authority search controls while portfolio data is loading", () => {
-    const html = renderToStaticMarkup(<CharacterWorkspace permissions={{ read: true, writeProject: true, publishRelease: true, reviewRelease: true }} view={{ kind: "list" }} />);
+    const html = renderToStaticMarkup(<CharacterWorkspace permissions={{ read: true, writeProject: true, proposeRelease: true, publishRelease: true, reviewRelease: true }} view={{ kind: "list" }} />);
     expect(html).toContain("Search authority");
     expect(html).toContain("Loading release-attributed portfolio");
   });

@@ -2338,6 +2338,7 @@ function renderSection(
       return <CharacterWorkspace permissions={{
         read: ctx.permissions.has("character.project.read") && ctx.permissions.has("character.release.read") && ctx.permissions.has("character.performance.read"),
         writeProject: ctx.permissions.has("character.project.write"),
+        proposeRelease: ctx.permissions.has("character.release.propose"),
         publishRelease: ctx.permissions.has("character.release.publish"),
         reviewRelease: ctx.permissions.has("character.release.review"),
       }} view={subview} />;
