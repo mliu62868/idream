@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { renderPrometheusMetrics } from "@idream/shared";
 import { env } from "@/server/lib/env";
+import { collectAdminOperationalMetrics } from "@/server/observability/admin-operational-metrics";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -10,6 +11,7 @@ export async function GET(request: Request) {
   if (!supplied || !sameToken(supplied, env.INTERNAL_TOKEN)) {
     return new Response("Unauthorized", { status: 401 });
   }
+  await collectAdminOperationalMetrics();
   return new Response(renderPrometheusMetrics(), {
     headers: {
       "cache-control": "no-store",

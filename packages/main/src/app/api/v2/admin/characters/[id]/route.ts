@@ -10,6 +10,8 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
   const { id } = await context.params;
   return adminV2Route(async () => {
     await actorWithPermission(request, "character.project.read");
+    await actorWithPermission(request, "character.release.read");
+    await actorWithPermission(request, "character.performance.read");
     return characterWorkspaceDetailSchema.parse(await getCharacterWorkspace(id));
   });
 }

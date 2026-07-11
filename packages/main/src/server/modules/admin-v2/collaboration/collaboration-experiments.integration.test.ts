@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { POST as createExperimentRoute } from "@/app/api/v2/admin/experiments/route";
 import { POST as startExperimentRoute } from "@/app/api/v2/admin/experiments/[id]/commands/start/route";
-import { POST as activityRoute } from "@/app/api/v2/admin/collaboration/[targetType]/[targetId]/activity/route";
+import { GET as listActivityRoute, POST as activityRoute } from "@/app/api/v2/admin/collaboration/[targetType]/[targetId]/activity/route";
 import { PUT as watchRoute } from "@/app/api/v2/admin/collaboration/[targetType]/[targetId]/watch/route";
 import { GET as mentionsRoute } from "@/app/api/v2/admin/collaboration/mentions/route";
 import { POST as createViewRoute } from "@/app/api/v2/admin/saved-views/route";
@@ -13,6 +13,8 @@ describe("admin collaboration, saved views, and managed experiments", () => {
   const suffix = randomUUID();
   const adminId = `${suffix}-admin`;
   const analystId = `${suffix}-analyst`;
+  const supportId = `${suffix}-support`;
+  const reviewCaseId = `${suffix}-review-case`;
   const experimentKey = `managed-${suffix}`;
   let incidentId = "";
   const createdExperimentIds: string[] = [];
@@ -28,6 +30,7 @@ describe("admin collaboration, saved views, and managed experiments", () => {
     await prisma.user.createMany({ data: [
       { id: adminId, email: `${adminId}@example.test`, role: "admin", status: "active" },
       { id: analystId, email: `${analystId}@example.test`, role: "analyst", status: "active" },
+      { id: supportId, email: `${supportId}@example.test`, role: "support", status: "active" },
     ] });
     incidentId = (await prisma.opsIncident.create({ data: {
       signature: `collab-${suffix}`,
@@ -40,6 +43,15 @@ describe("admin collaboration, saved views, and managed experiments", () => {
       impact: {},
       mitigation: {},
     } })).id;
+    await prisma.adminCase.create({
+      data: {
+        id: reviewCaseId,
+        type: "content_report",
+        targetType: "character",
+        targetId: `${suffix}-target`,
+        caseKey: `${suffix}-review`,
+      },
+    });
   });
 
   afterAll(async () => {
@@ -50,8 +62,9 @@ describe("admin collaboration, saved views, and managed experiments", () => {
     await prisma.mainOutboxEvent.deleteMany({ where: { aggregateType: "experiment_definition", aggregateId: { in: createdExperimentIds } } });
     await prisma.experimentDefinition.deleteMany({ where: { id: { in: createdExperimentIds } } });
     await prisma.opsIncident.deleteMany({ where: { id: incidentId } });
+    await prisma.adminCase.deleteMany({ where: { id: reviewCaseId } });
     await prisma.adminUserPermission.deleteMany({ where: { userId: analystId } });
-    await prisma.user.deleteMany({ where: { id: { in: [adminId, analystId] } } });
+    await prisma.user.deleteMany({ where: { id: { in: [adminId, analystId, supportId] } } });
     await prisma.$disconnect();
   });
 
@@ -73,9 +86,9 @@ describe("admin collaboration, saved views, and managed experiments", () => {
   it("records comments, mentions, handoff/watch activity separately from immutable audit evidence", async () => {
     const context = { params: Promise.resolve({ targetType: "incident", targetId: incidentId }) };
     const request = (body: object) => new Request(`http://localhost/api/v2/admin/collaboration/incident/${incidentId}/activity`, { method: "POST", headers: headers(adminId, "admin", `activity-${suffix}`), body: JSON.stringify(body) });
-    const first = await activityRoute(request({ kind: "handoff", body: "Take over provider recovery", mentionedIds: [analystId], metadata: { shift: "west" } }), context);
+    const first = await activityRoute(request({ kind: "handoff", body: "Take over provider recovery", mentionedIds: [analystId, supportId], metadata: { shift: "west" } }), context);
     expect(first.status).toBe(201);
-    const replay = await activityRoute(request({ kind: "handoff", body: "Take over provider recovery", mentionedIds: [analystId], metadata: { shift: "west" } }), context);
+    const replay = await activityRoute(request({ kind: "handoff", body: "Take over provider recovery", mentionedIds: [analystId, supportId], metadata: { shift: "west" } }), context);
     expect((await replay.json()).data.duplicate).toBe(true);
     const collision = await activityRoute(request({ kind: "comment", body: "changed", mentionedIds: [], metadata: {} }), context);
     expect(collision.status).toBe(409);
@@ -83,9 +96,25 @@ describe("admin collaboration, saved views, and managed experiments", () => {
     expect(await watch.json()).toMatchObject({ ok: true, data: { watching: true, duplicate: false } });
     const hiddenMentions = await mentionsRoute(new Request("http://localhost/api/v2/admin/collaboration/mentions", { headers: headers(analystId, "analyst") }));
     expect(await hiddenMentions.json()).toMatchObject({ ok: true, data: { items: [] } });
+    const supportIncident = await listActivityRoute(
+      new Request(`http://localhost/api/v2/admin/collaboration/incident/${incidentId}/activity`, { headers: headers(supportId, "support") }),
+      context,
+    );
+    expect(supportIncident.status).toBe(403);
+    const supportCase = await activityRoute(
+      new Request(`http://localhost/api/v2/admin/collaboration/case/${reviewCaseId}/activity`, {
+        method: "POST",
+        headers: headers(supportId, "support", `support-case-${suffix}`),
+        body: JSON.stringify({ kind: "comment", body: "Out-of-scope review case", mentionedIds: [], metadata: {} }),
+      }),
+      { params: Promise.resolve({ targetType: "case", targetId: reviewCaseId }) },
+    );
+    expect(supportCase.status).toBe(403);
+    const supportMentions = await mentionsRoute(new Request("http://localhost/api/v2/admin/collaboration/mentions", { headers: headers(supportId, "support") }));
+    expect(await supportMentions.json()).toMatchObject({ ok: true, data: { items: [] } });
     await prisma.adminUserPermission.create({ data: { userId: analystId, permissionKey: "ops.incident.read", effect: "grant", reason: "integration permission scope", createdById: adminId } });
     const visibleMentions = await mentionsRoute(new Request("http://localhost/api/v2/admin/collaboration/mentions", { headers: headers(analystId, "analyst") }));
-    expect(await visibleMentions.json()).toMatchObject({ ok: true, data: { items: [{ targetId: incidentId, mentionedIds: [analystId] }] } });
+    expect(await visibleMentions.json()).toMatchObject({ ok: true, data: { items: [{ targetId: incidentId, mentionedIds: [analystId, supportId] }] } });
     expect(await prisma.adminAuditLog.count({ where: { targetId: incidentId, action: "collaboration.handoff" } })).toBe(0);
     expect(await prisma.adminCollaborationActivity.count({ where: { targetId: incidentId } })).toBe(2);
   });

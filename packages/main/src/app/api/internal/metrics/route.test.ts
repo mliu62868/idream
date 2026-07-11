@@ -12,9 +12,11 @@ describe("Main metrics exporter", () => {
       headers: { "x-internal-token": env.INTERNAL_TOKEN },
     }));
     expect(response.status).toBe(200);
-    await expect(response.text()).resolves.toContain(
-      'main_inbound_events_total{outcome="persisted"} 1',
-    );
+    const metrics = await response.text();
+    expect(metrics).toContain('main_inbound_events_total{outcome="persisted"} 1');
+    expect(metrics).toMatch(/admin_state_invariant_violation_total\{invariant="all"\} \d+/);
+    expect(metrics).toContain('main_outbox_pending_age_seconds{queue="generation_manifest"}');
+    expect(metrics).toContain('incident_detection_lag_seconds{severity="all"}');
     resetMetricsForTests();
   });
 });

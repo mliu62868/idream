@@ -11,6 +11,7 @@ describe("Admin cutover invariant report", () => {
   const userId = `invariant-user-${suffix}`;
   const jobId = `invariant-job-${suffix}`;
   const attemptId = `invariant-attempt-${suffix}`;
+  const supportRequestId = `invariant-support-${suffix}`;
 
   beforeAll(async () => {
     await prisma.user.create({ data: { id: userId, email: `${userId}@example.test` } });
@@ -49,10 +50,22 @@ describe("Admin cutover invariant report", () => {
         status: "open",
       },
     });
+    await prisma.supportRequest.create({
+      data: {
+        id: supportRequestId,
+        ticketId: `INV-${suffix}`,
+        userId,
+        category: "account",
+        subject: "Missing typed Case fixture",
+        description: "Intentionally violates the open Support Request Case invariant",
+        status: "open",
+      },
+    });
   });
 
   afterAll(async () => {
     await prisma.contentReport.deleteMany({ where: { id: reportId } });
+    await prisma.supportRequest.deleteMany({ where: { id: supportRequestId } });
     await prisma.character.deleteMany({ where: { id: characterId } });
     await prisma.generationAttempt.deleteMany({ where: { id: attemptId } });
     await prisma.generationJob.deleteMany({ where: { id: jobId } });
@@ -73,7 +86,7 @@ describe("Admin cutover invariant report", () => {
       expect.objectContaining({
         key: "open_source_without_case",
         status: "failed",
-        sampleIds: expect.arrayContaining([`report:${reportId}`]),
+        sampleIds: expect.arrayContaining([`report:${reportId}`, `support_request:${supportRequestId}`]),
       }),
       expect.objectContaining({
         key: "terminal_attempt_without_unique_terminal_event",

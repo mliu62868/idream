@@ -2335,7 +2335,7 @@ function renderSection(
     if (section.view === "placements") return <PlacementsSection view={subview} />;
     if (section.view === "official") {
       return <CharacterWorkspace permissions={{
-        read: ctx.permissions.has("character.project.read") && ctx.permissions.has("character.performance.read"),
+        read: ctx.permissions.has("character.project.read") && ctx.permissions.has("character.release.read") && ctx.permissions.has("character.performance.read"),
         writeProject: ctx.permissions.has("character.project.write"),
         publishRelease: ctx.permissions.has("character.release.publish"),
         reviewRelease: ctx.permissions.has("character.release.review"),

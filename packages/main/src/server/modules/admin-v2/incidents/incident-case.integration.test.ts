@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { renderPrometheusMetrics, resetMetricsForTests } from "@idream/shared";
 import { prisma } from "@/server/lib/db";
 import {
   backfillGenerationIncidents,
@@ -32,6 +31,8 @@ describe("Incident and P0 Review Case authority loops", () => {
   const attemptA = `incident-attempt-a-${suffix}`;
   const attemptB = `incident-attempt-b-${suffix}`;
   const incompleteAttempt = `incident-attempt-incomplete-${suffix}`;
+  const boundaryAttemptA = `incident-attempt-boundary-a-${suffix}`;
+  const boundaryAttemptB = `incident-attempt-boundary-b-${suffix}`;
   const targetId = `reported-target-${suffix}`;
   const reportA = `report-a-${suffix}`;
   const reportB = `report-b-${suffix}`;
@@ -102,6 +103,32 @@ describe("Incident and P0 Review Case authority loops", () => {
           errorClass: "gateway_timeout",
           errorSignature: "provider_timeout",
         },
+        {
+          id: boundaryAttemptA,
+          requestId: requestA,
+          attemptNo: 3,
+          provider: "comfyui",
+          profileKey: "portrait-v3",
+          workflowKey: "image-edit-v2",
+          status: "failed",
+          errorClass: "boundary_timeout",
+          errorSignature: `boundary-${suffix}`,
+          retryability: "operator_retry",
+          finishedAt: new Date("2026-07-11T10:00:00.999Z"),
+        },
+        {
+          id: boundaryAttemptB,
+          requestId: requestB,
+          attemptNo: 2,
+          provider: "comfyui",
+          profileKey: "portrait-v3",
+          workflowKey: "image-edit-v2",
+          status: "failed",
+          errorClass: "boundary_timeout",
+          errorSignature: `boundary-${suffix}`,
+          retryability: "operator_retry",
+          finishedAt: new Date("2026-07-11T10:00:01.001Z"),
+        },
       ],
     });
     await prisma.contentReport.createMany({
@@ -152,14 +179,14 @@ describe("Incident and P0 Review Case authority loops", () => {
     await prisma.caseEvidence.deleteMany({ where: { caseId: { in: cases.map((row) => row.id) } } });
     await prisma.adminCase.deleteMany({ where: { id: { in: cases.map((row) => row.id) } } });
     const occurrences = await prisma.opsIncidentOccurrence.findMany({
-      where: { attemptId: { in: [attemptA, attemptB, incompleteAttempt] } },
+      where: { attemptId: { in: [attemptA, attemptB, incompleteAttempt, boundaryAttemptA, boundaryAttemptB] } },
       select: { incidentId: true },
     });
     const incidentIds = [...new Set(occurrences.map((row) => row.incidentId))];
     await prisma.incidentActionPlan.deleteMany({ where: { incidentId: { in: incidentIds } } });
     await prisma.opsIncidentOccurrence.deleteMany({ where: { incidentId: { in: incidentIds } } });
     await prisma.opsIncident.deleteMany({ where: { id: { in: incidentIds } } });
-    await prisma.generationAttempt.deleteMany({ where: { id: { in: [attemptA, attemptB, incompleteAttempt] } } });
+    await prisma.generationAttempt.deleteMany({ where: { id: { in: [attemptA, attemptB, incompleteAttempt, boundaryAttemptA, boundaryAttemptB] } } });
     await prisma.generationJob.deleteMany({ where: { id: { in: [requestA, requestB] } } });
     await prisma.contentReport.deleteMany({ where: { id: { in: [reportA, reportB, terminalReport] } } });
     await prisma.user.deleteMany({ where: { id: { in: [adminId, supportId, userA, userB] } } });
@@ -167,14 +194,10 @@ describe("Incident and P0 Review Case authority loops", () => {
   });
 
   it("correlates stable failures, freezes the occurrence set, executes mitigation, verifies, and resolves", async () => {
-    resetMetricsForTests();
     const first = await correlateFailedGenerationAttempt(attemptA);
     createdIncidentIds.push(first.id);
     const second = await correlateFailedGenerationAttempt(attemptB);
     expect(second.id).toBe(first.id);
-    expect(renderPrometheusMetrics()).toContain(
-      "incident_detection_lag_seconds_count{severity=\"medium\"} 2",
-    );
     expect(second.impact).toMatchObject({ affectedRequests: 2, affectedUsers: 2 });
     expect(await prisma.opsIncidentOccurrence.count({ where: { incidentId: first.id } })).toBe(2);
 
@@ -241,6 +264,16 @@ describe("Incident and P0 Review Case authority loops", () => {
       version: 5,
       activeCorrelationKey: null,
     });
+  });
+
+  it("serializes cross-bucket correlation so concurrent failures cannot split one signature", async () => {
+    const [left, right] = await Promise.all([
+      correlateFailedGenerationAttempt(boundaryAttemptA, { joinGapMs: 1_000 }),
+      correlateFailedGenerationAttempt(boundaryAttemptB, { joinGapMs: 1_000 }),
+    ]);
+    createdIncidentIds.push(left.id);
+    expect(right.id).toBe(left.id);
+    expect(await prisma.opsIncidentOccurrence.count({ where: { incidentId: left.id } })).toBe(2);
   });
 
   it("reports insufficient historical evidence instead of inventing an Incident", async () => {

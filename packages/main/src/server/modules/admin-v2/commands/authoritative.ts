@@ -381,6 +381,12 @@ export function rollbackCharacterRelease(request: Request, characterId: string, 
         `/admin/characters/${characterId}?releaseId=${sourceReleaseId}`,
       );
     }
+    if (source.status !== "superseded") {
+      throw new InvariantFailedError(
+        [{ code: "rollback_source_not_superseded", message: "Rollback source must be a previously published superseded Release." }],
+        `/admin/characters/${characterId}?releaseId=${sourceReleaseId}`,
+      );
+    }
     parsed.payload.sourceReleaseId = sourceReleaseId;
     return acceptCommand({ actor, parsed, definition: rollbackReleaseDefinition, targetId: characterId });
   });

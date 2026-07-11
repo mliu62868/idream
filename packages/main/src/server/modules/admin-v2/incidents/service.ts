@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { observeHistogram } from "@idream/shared";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
@@ -122,6 +121,12 @@ export async function correlateFailedGenerationAttempt(
     const observedAt = attempt.finishedAt ?? attempt.createdAt;
     const joinGapMs = options.joinGapMs ?? DEFAULT_JOIN_GAP_MS;
     const cutoff = new Date(observedAt.getTime() - joinGapMs);
+    await tx.$queryRaw(Prisma.sql`
+      SELECT 1::int AS locked
+      FROM pg_advisory_xact_lock(
+        hashtextextended(${`${INCIDENT_SIGNATURE_VERSION}:${derived.signature}`}, 0)
+      )
+    `);
     let incident = await tx.opsIncident.findFirst({
       where: {
         signature: derived.signature,
@@ -197,14 +202,6 @@ export async function correlateFailedGenerationAttempt(
     const updated = await tx.opsIncident.findUniqueOrThrow({ where: { id: incident.id } });
     return { incident: { ...updated, impact }, observedAt, recorded: true as const };
   });
-  if (result.recorded) {
-    observeHistogram(
-      "incident_detection_lag_seconds",
-      "Lag from the first observed failure fact to durable Incident correlation",
-      { severity: result.incident.severity },
-      Math.max(0, Date.now() - result.observedAt.getTime()) / 1_000,
-    );
-  }
   return result.incident;
 }
 

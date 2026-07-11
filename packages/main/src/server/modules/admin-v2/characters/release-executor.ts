@@ -735,6 +735,12 @@ async function executeRollback(
       "rollback_source_not_found",
       "Rollback source Release does not exist",
     );
+  if (source.status !== "superseded") {
+    throw new ReleaseCommandError(
+      "rollback_source_not_superseded",
+      "Rollback source must be a previously published superseded Release",
+    );
+  }
   const project = await tx.characterProject.findUnique({
     where: { id: source.projectId },
   });

@@ -12,7 +12,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
-import { actorWithPermission } from "@/server/modules/admin/service";
+import { actorWithPermission, type AdminActor } from "@/server/modules/admin/service";
 import { canonicalJsonHash, requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 import { effectivePermissions } from "@/server/admin/effective-permissions";
 
@@ -29,9 +29,32 @@ function asRecord(value: Prisma.JsonValue | null): Record<string, unknown> {
     : {};
 }
 
-async function assertTarget(targetType: CollaborationTargetType, targetId: string) {
-  const exists = await targetDescriptors[targetType].exists(targetId);
-  if (!exists) throw Errors.notFound("Collaboration target was not found");
+async function targetAccess(
+  actor: AdminActor,
+  targetType: CollaborationTargetType,
+  targetId: string,
+): Promise<"allowed" | "forbidden" | "missing"> {
+  if (targetType === "case") {
+    const target = await prisma.adminCase.findUnique({ where: { id: targetId }, select: { type: true } });
+    if (!target) return "missing";
+    return actor.role === "support" && !["support_request", "billing_dispute"].includes(target.type)
+      ? "forbidden"
+      : "allowed";
+  }
+  if (targetType === "incident") {
+    const target = await prisma.opsIncident.findUnique({ where: { id: targetId }, select: { ownerId: true } });
+    if (!target) return "missing";
+    return actor.role === "support" && target.ownerId !== actor.id ? "forbidden" : "allowed";
+  }
+  return await targetDescriptors[targetType].exists(targetId) ? "allowed" : "missing";
+}
+
+async function assertTarget(actor: AdminActor, targetType: CollaborationTargetType, targetId: string) {
+  const access = await targetAccess(actor, targetType, targetId);
+  if (access === "missing") throw Errors.notFound("Collaboration target was not found");
+  if (access === "forbidden") {
+    throw Errors.forbidden("Collaboration target is outside the actor's effective permission scope");
+  }
 }
 
 function activityDto(row: Awaited<ReturnType<typeof prisma.adminCollaborationActivity.findFirstOrThrow>>) {
@@ -54,7 +77,7 @@ function activityDto(row: Awaited<ReturnType<typeof prisma.adminCollaborationAct
 export async function listActivity(request: Request, rawTargetType: string, targetId: string) {
   const targetType = collaborationTargetTypeSchema.parse(rawTargetType);
   const actor = await actorWithPermission(request, targetDescriptors[targetType].read);
-  await assertTarget(targetType, targetId);
+  await assertTarget(actor, targetType, targetId);
   const query = collaborationQuerySchema.parse(Object.fromEntries(new URL(request.url).searchParams));
   const cursor = query.cursor
     ? await prisma.adminCollaborationActivity.findFirst({ where: { id: query.cursor, targetType, targetId } })
@@ -84,7 +107,7 @@ export async function listActivity(request: Request, rawTargetType: string, targ
 export async function createActivity(request: Request, rawTargetType: string, targetId: string) {
   const targetType = collaborationTargetTypeSchema.parse(rawTargetType);
   const actor = await actorWithPermission(request, targetDescriptors[targetType].write);
-  await assertTarget(targetType, targetId);
+  await assertTarget(actor, targetType, targetId);
   const input = collaborationActivityCreateSchema.parse(await request.json());
   const key = requireIdempotencyKey(request);
   const hash = canonicalJsonHash({ targetType, targetId, input });
@@ -123,7 +146,7 @@ export async function createActivity(request: Request, rawTargetType: string, ta
 export async function setWatching(request: Request, rawTargetType: string, targetId: string) {
   const targetType = collaborationTargetTypeSchema.parse(rawTargetType);
   const actor = await actorWithPermission(request, targetDescriptors[targetType].read);
-  await assertTarget(targetType, targetId);
+  await assertTarget(actor, targetType, targetId);
   const input = collaborationWatchSchema.parse(await request.json());
   const key = requireIdempotencyKey(request);
   const hash = canonicalJsonHash({ targetType, targetId, input });
@@ -168,11 +191,12 @@ export async function listMentions(request: Request) {
     orderBy: { id: "desc" },
     take: query.limit + 1,
   });
-  const items = rows
-    .filter((row) => {
+  const visibleRows = (await Promise.all(rows.map(async (row) => {
       const targetType = collaborationTargetTypeSchema.safeParse(row.targetType);
-      return targetType.success && actorPermissions.has(targetDescriptors[targetType.data].read);
-    })
+      if (!targetType.success || !actorPermissions.has(targetDescriptors[targetType.data].read)) return null;
+      return await targetAccess(actor, targetType.data, row.targetId) === "allowed" ? row : null;
+    }))).filter((row): row is NonNullable<typeof row> => row !== null);
+  const items = visibleRows
     .slice(0, query.limit)
     .map(activityDto);
   return ok({ items, pageInfo: { hasNextPage: rows.length > query.limit, endCursor: rows.length > query.limit ? items.at(-1)?.id ?? null : null } });

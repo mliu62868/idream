@@ -170,20 +170,33 @@ const sqlChecks: readonly SqlInvariant[] = [
   },
   {
     key: "open_source_without_case",
-    description: "Every open Report or Appeal source record must have an active typed Review Case",
-    evidence: "content_reports/appeals left joined to admin_cases source target",
+    description: "Every open Report, Appeal, or Support Request source must have an active typed Case",
+    evidence: "source records joined through immutable case_evidence to an active subtype-matched admin_case",
     query: Prisma.sql`
       WITH violations AS (
         SELECT ('report:' || r.id) AS id FROM content_reports r
         WHERE r.status = 'open' AND NOT EXISTS (
-          SELECT 1 FROM admin_cases c WHERE c.type = 'review' AND c."targetType" = 'report'
-            AND c."targetId" = r.id AND c.status NOT IN ('closed', 'resolved')
+          SELECT 1 FROM case_evidence e
+          JOIN admin_cases c ON c.id = e."caseId"
+          WHERE e."sourceType" = 'content_report' AND e."sourceId" = r.id
+            AND c.type = 'content_report' AND c.status NOT IN ('closed', 'resolved')
         )
         UNION ALL
         SELECT ('appeal:' || a.id) AS id FROM appeals a
         WHERE a.status = 'open' AND NOT EXISTS (
-          SELECT 1 FROM admin_cases c WHERE c.type = 'review' AND c."targetType" = 'appeal'
-            AND c."targetId" = a.id AND c.status NOT IN ('closed', 'resolved')
+          SELECT 1 FROM case_evidence e
+          JOIN admin_cases c ON c.id = e."caseId"
+          WHERE e."sourceType" = 'appeal' AND e."sourceId" = a.id
+            AND c.type = 'appeal' AND c.status NOT IN ('closed', 'resolved')
+        )
+        UNION ALL
+        SELECT ('support_request:' || s.id) AS id FROM support_requests s
+        WHERE s.status IN ('received', 'open', 'waiting_on_user') AND NOT EXISTS (
+          SELECT 1 FROM case_evidence e
+          JOIN admin_cases c ON c.id = e."caseId"
+          WHERE e."sourceType" = 'support_request' AND e."sourceId" = s.id
+            AND c.type IN ('support_request', 'billing_dispute')
+            AND c.status NOT IN ('closed', 'resolved')
         )
       )
       SELECT id, count(*) OVER()::int AS total FROM violations ORDER BY id LIMIT 20

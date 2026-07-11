@@ -324,7 +324,7 @@ describe("Character Release command executor", () => {
     await prisma.$disconnect();
   });
 
-  it("accepts schedule and rollback through public Route Handler contracts", async () => {
+  it("accepts schedule but rejects rollback to a never-published draft", async () => {
     const schedule = await scheduleRoute(
       routeRequest(
         { entityVersion: 1, scheduledAt: "2030-01-02T00:00:00.000Z" },
@@ -349,30 +349,13 @@ describe("Character Release command executor", () => {
         }),
       },
     );
-    expect([schedule.status, rollback.status]).toEqual([202, 202]);
+    expect([schedule.status, rollback.status]).toEqual([202, 422]);
+    await expect(rollback.json()).resolves.toMatchObject({
+      error: { code: "invariant_failed", blockers: [{ code: "rollback_source_not_superseded" }] },
+    });
     expect(
-      await prisma.controlPlaneCommand.findMany({
-        where: {
-          id: {
-            in: [
-              (await schedule.json()).data.commandId,
-              (await rollback.json()).data.commandId,
-            ],
-          },
-        },
-        select: { commandType: true, targetType: true, requestPayload: true },
-        orderBy: { commandType: "asc" },
-      }),
-    ).toEqual([
-      expect.objectContaining({
-        commandType: "character.release.rollback",
-        targetType: "character_serving",
-      }),
-      expect.objectContaining({
-        commandType: "character.release.schedule",
-        targetType: "character_release",
-      }),
-    ]);
+      await prisma.controlPlaneCommand.findUnique({ where: { id: (await schedule.json()).data.commandId } }),
+    ).toMatchObject({ commandType: "character.release.schedule", targetType: "character_release" });
   });
 
   it("fails closed when the current validation policy has no matching route qualification", async () => {
