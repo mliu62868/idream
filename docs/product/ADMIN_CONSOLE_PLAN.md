@@ -4,6 +4,8 @@
 
 > **目标方案更新（2026-07-11）**：管理后台的目标定位、状态/指标真相、运营闭环、信息架构、API v2 与 admin/main 技术边界、优先级和渐进迁移，以 [`ADMIN_CONSOLE_FIRST_PRINCIPLES_REMEDIATION_PLAN.md`](./ADMIN_CONSOLE_FIRST_PRINCIPLES_REMEDIATION_PLAN.md) 为准。本文主体保留为 2026-06-28 的 v1/历史设计记录，仅继续作为已落地 permission、审计、高风险确认、审批、配置版本化与回滚约束的基线；文中的 P0/P1、阶段标签、v1 API 与 main 内 `/admin` 建议不再代表当前目标。实现事实只看 [`CURRENT_FUNCTIONAL_COVERAGE.md`](./CURRENT_FUNCTIONAL_COVERAGE.md)。
 
+> **当前实现边界**：`@idream/admin` 已是唯一 Admin 前端，通过签名、fail-closed HTTP BFF 调用 main `/api/v2/admin/*`；main 领域 command 执行 permission、version、confirmation、approval、Audit/Outbox 和不变量。Today、Character、Creative、Incident、Case、Customer、Metrics、Experiments 与 global search 已按 v2 边界落地。生产 read/write canary、legacy traffic=0 和观察窗口仍是切换 Gate，详见 [`ADR-11`](../architecture/15-admin-operating-system-authority-adr.md)。
+
 ## 1. 文档目的
 
 本文档定义 iDream 内部管理后台的产品范围、权限边界、核心模块、配置发布流程、数据模型建议和分期计划。它补齐 `BackendFeatureSpec.md` 里 “Admin/Ops” 只覆盖审核队列的问题，把管理后台升级为整个产品的控制面。

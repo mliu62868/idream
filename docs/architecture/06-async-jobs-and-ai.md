@@ -2,6 +2,8 @@
 
 更新日期：2026-06-28
 
+> 2026-07-11 authority 修正：Generation 的业务真相已按 ADR-11 拆为 Request → Attempt → TransportExecution → Artifact → Delivery；BullMQ job 只承载 transport，不是业务 outcome authority。以下旧 `generationJobId` 表述在兼容路径中仍可见，但新任务必须携带稳定 `requestId/attemptId/attemptNo`。
+
 本文件落地 Redis + BullMQ 跨服务任务总线与 ADR-6（AI provider 抽象），以及生成/聊天的异步流水线与 dreamcoin 预留结算。Chat Service 拥有 chat domain DB 和内部队列；Image/Video 仍使用主站到 AI worker 的跨服务队列。队列清单对齐 `BackendFeatureSpec §7` 与 `docs/research/SERVICE_INTEGRATION.md`。
 
 ## 1. 为什么异步
@@ -43,6 +45,14 @@ export interface JobQueue {
 每个 BullMQ `Worker` 从其队列拉 job → 按 queue 分发到 handler → 由 BullMQ 标记 completed/failed（失败按 `attempts` + backoff 重排，超限进 failed 死信）。并发安全由 BullMQ + Redis 原子操作保证，**无需 `SELECT ... FOR UPDATE SKIP LOCKED`**。
 
 **幂等**：每个 handler 必须可重入（如"生成已完成则跳过"、webhook 按 `provider_events` 去重、ledger 按 `sourceId` 去重）。
+
+Generation 额外遵循：
+
+- 每次真实 provider invocation 前由 main durable 写 `GenerationTransportExecution`；同一业务 Attempt 内 transport retry 只递增 `transportAttemptNo`。
+- 自动 transport retry 只允许 provider 声明 deterministic idempotency；ambiguous 且不可幂等的结果终止为 `unknown/non-replayable`。
+- gen 先持久化带 checksum、artifact、provider 与 cost 的 immutable completion manifest；main durable ACK 失败时只重投 manifest，不再次调用 provider。
+- Request cancelled 后的晚到 artifact 只能 archive/suppress，不 delivery、不改变 cancelled、不重复 capture/refund。
+- DreamcoinLedger 是 settlement authority；execution status 不承载 refunded 语义。
 
 ## 4. 队列清单与 handler
 

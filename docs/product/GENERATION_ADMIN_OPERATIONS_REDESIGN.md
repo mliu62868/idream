@@ -4,6 +4,8 @@
 
 状态：产品设计方案 / 待拆任务执行
 
+> **2026-07-11 authority 修正**：本文的 Profile/Recipe/Batch/Asset/Placement 产品方向继续有效；生成状态和运营闭环以 [`ADMIN_CONSOLE_FIRST_PRINCIPLES_REMEDIATION_PLAN.md`](./ADMIN_CONSOLE_FIRST_PRINCIPLES_REMEDIATION_PLAN.md) §10–11 与 [`ADR-11`](../architecture/15-admin-operating-system-authority-adr.md) 为准。当前实现已使用 Request（兼容物理表 `GenerationJob`）→ Attempt → TransportExecution → Artifact → Delivery，并以 DreamcoinLedger + SettlementLink 表达结算；`completed`、`refunded` 和 BullMQ job state 不再混作业务成功。
+
 适用范围：`/admin` 中图片生成相关的内置 profile 发布、生成任务、供应商健康、运营出图、素材管理和投放流程。
 
 ## 1. 结论
@@ -1125,3 +1127,12 @@ PATCH /api/v1/admin/content/placements/:id
 - 原始路径和 JSON 不进入默认视线。
 - 高风险动作必须有 reason 和 audit。
 - 列表页解决查找，详情页解决决策，工作台解决连续任务。
+
+## 18. 已落地的 v2 语义与取消纪律
+
+- `GenerationRequest.expectedOutputCount/deliveredOutputCount/status/finishedAt/version` 表达用户意图与最终业务结果；`completedAt` 只用于成功。
+- 业务 retry 新建 Attempt；BullMQ/provider transport retry 只增加 TransportExecution。provider 不支持 deterministic idempotency 时，ambiguous outcome 必须人工 reconciliation。
+- gen 先写 immutable completion manifest；main durable ACK 中断只重投 manifest。Request cancelled 后的晚到 artifact 只 archive/suppress。
+- Admin cancel command 使用 version、typed confirmation 和 idempotency；同一事务取消 Attempt、写 terminal event、计算 `captured-refunded` 差额、追加 refund ledger link、Audit、Outbox 和 Command。
+- Creative `0/N`、`1..N-1/N`、`N/N` 分别派生 failed、partially_succeeded、succeeded；review、placement 与 verification 独立推进。
+- Incident 是默认排障对象，支持 occurrence 聚类、action plan preview/execute、recovery verification、split/merge、postmortem close。

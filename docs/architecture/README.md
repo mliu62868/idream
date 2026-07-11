@@ -47,6 +47,7 @@ packages/main/prisma/schema.prisma + packages/*/src ← 代码（最终事实来
 | 11 | [11-testing.md](./11-testing.md) | L1–L4 测试策略与工具 | 所有工程 |
 | 12 | [12-roadmap.md](./12-roadmap.md) | 实施路线图与暂缓项 | PM、Lead |
 | 14 | [14-chat-service-tech-design.md](./14-chat-service-tech-design.md) | Chat Service 技术架构（服务拆分、权限边界、热路径、存储/记忆、服务目录/协议/pm2） | Lead、后端 |
+| 15 | [15-admin-operating-system-authority-adr.md](./15-admin-operating-system-authority-adr.md) | Admin v2 authority、命令/事件可靠性、渐进切换与回滚 ADR | Product、架构、后端、运营 |
 
 > 实现状态（已落地/暂缓）以 [`CURRENT_FUNCTIONAL_COVERAGE.md`](../product/CURRENT_FUNCTIONAL_COVERAGE.md) 为唯一事实来源；剩余工作执行计划见 [`REMAINING_WORK_EXECUTION_PLAN.md`](../product/REMAINING_WORK_EXECUTION_PLAN.md)。
 > 管理后台方案见 [ADMIN_CONSOLE_PLAN.md](../product/ADMIN_CONSOLE_PLAN.md)；生成（图片/视频/语音）契约见 [BackendFeatureSpec.md](../product/BackendFeatureSpec.md) §5.5。
@@ -66,7 +67,7 @@ packages/main/prisma/schema.prisma + packages/*/src ← 代码（最终事实来
 | 支付 | 抽象 `PaymentProvider`；**生产用加密货币**（推荐自托管 BTCPay Server，非托管/无 AUP 风险） | 见 02-ADR-4 |
 | 异步 | Redis/BullMQ + 常驻 pm2 worker；main↔chat 跨服务事件（outbox/inbox + 队列）；gen 图片/视频/finalizer 队列 | 见 06 |
 | AI | 抽象 `ChatModel`/`ImageModel`/`VideoModel`/`Voice`/`Moderation` | **自托管开源模型，经内部流水线 API（OpenAI 兼容）接入**，见 02-ADR-6 |
-| 管理后台 | `/admin` + `/api/v1/admin/*`（独立 `@idream/admin` web + `dispatchAdmin`） | 审核、用户、角色 CMS、生成配置、产品配置、计费排障、审计，见 `ADMIN_CONSOLE_PLAN.md` |
+| 管理后台 | 独立 `@idream/admin` web/BFF + main `/api/v2/admin/*` authority；v1 仅兼容观测 | Today、Character、Creative、Incident、Case、Metrics、系统控制面，见 ADR-11 |
 | 对象存储 | 抽象 `BlobStore`；S3 兼容（R2）/ 本地 fs（dev） | 签名 URL，见 02-ADR-8 |
 | 限流 | DB 令牌桶 / Redis（prod 推荐） | 见 02-ADR-9 |
 | 部署 | pm2 多进程（`ecosystem.config.js`，6+ 进程）；`output: standalone` 支持 Docker | 见 10 |
@@ -87,6 +88,7 @@ packages/main/prisma/schema.prisma + packages/*/src ← 代码（最终事实来
 | ADR-8 | **对象存储抽象 + S3 兼容(R2)/Vercel Blob(private)**，私有 + 签名 URL | 媒体资产私密、防盗链、成人 CDN 友好 |
 | ADR-9 | **限流：dev DB 令牌桶 / prod Upstash Redis** | 鉴权/生成/聊天端点必须限流，防滥用与成本失控 |
 | ADR-10 | **缓存：公开 SEO/目录用 Cache Components(`use cache`+`cacheTag`)，产品/鉴权 API 全动态** | Next 16 缓存模型；角色更新按 tag 失效 |
+| ADR-11 | **Admin 是领域 authority 上的决策执行系统**：shared contract + fail-closed BFF + command/outbox + shadow/canary cutover | 状态、指标、权限、审计和回滚都可独立证明 |
 
 ## 4. 不可妥协的合规底线（贯穿全文，P0）
 

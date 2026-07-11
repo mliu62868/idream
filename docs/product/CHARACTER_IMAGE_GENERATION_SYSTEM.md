@@ -10,6 +10,8 @@
 - `CHARACTER_IMAGE_GENERATION_FLOW_BLUEPRINT.md`
 - `docs/superpowers/specs/2026-07-07-image-generation-redesign-design.md` 的用户产品面
 
+> **Admin Release 实现补充（2026-07-11）**：`active CharacterVisualProfile`、sealed `ReferenceSetRevision` 与 `qualified GenerationRouteQualification` 是三个独立事实；只有三者与角色级 QA、精确 generation provenance 一起被 immutable Character Release snapshot 固定，才可显示 release ready。route 的 sampleCount 必须 ≥40、identityMatch ≥90%，policy/evaluator/expiry 漂移会使 readiness stale，但不会静默改写历史证据或自动下线当前 Serving。详见 [`ADR-11`](../architecture/15-admin-operating-system-authority-adr.md)。
+
 ## 1. 产品结论
 
 AI 陪伴产品的图片生成不是“输入 prompt，返回图片”。它的核心承诺是：
