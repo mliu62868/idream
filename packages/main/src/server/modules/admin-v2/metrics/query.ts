@@ -13,6 +13,7 @@ import { fail, ok } from "@/server/lib/http";
 import { actorWithPermission } from "@/server/modules/admin/service";
 import { canonicalSha256 } from "../shared/canonical-json";
 import { toInputJson } from "../shared/prisma-json";
+import { evaluateMetricCertification, REQUIRED_METRIC_QUALITY_CHECKS } from "./certification";
 import { evaluateCanonicalMetrics, type CanonicalMetricDataset } from "./engine";
 import { loadCanonicalMetricDataset, reconcileCanonicalMetricFacts } from "./projector";
 
@@ -43,20 +44,56 @@ function filterDatasetFrom(dataset: CanonicalMetricDataset, validFrom: Date): Ca
   };
 }
 
-function latestDataAt(dataset: CanonicalMetricDataset): Date | null {
-  const timestamps = [
-    ...dataset.signups.map((row) => row.occurredAt.getTime()),
-    ...dataset.chatExchanges.map((row) => row.occurredAt.getTime()),
-    ...dataset.generationDeliveries.map((row) => row.occurredAt.getTime()),
-    ...dataset.subscriptions.map((row) => Math.max(row.activeAt.getTime(), row.endedAt?.getTime() ?? 0)),
-  ];
-  return timestamps.length > 0 ? new Date(Math.max(...timestamps)) : null;
+function sourceFactEvidence(dataset: CanonicalMetricDataset, asOf: Date) {
+  const summarize = (dates: readonly Date[]) => ({
+    count: dates.length,
+    latestDataAt: dates.length === 0 ? null : new Date(Math.max(...dates.map((date) => date.getTime()))),
+  });
+  return new Map([
+    ["customer_signup_fact", summarize(dataset.signups.filter((row) => row.eligible && row.occurredAt <= asOf).map((row) => row.occurredAt))],
+    ["chat_exchange_fact", summarize(dataset.chatExchanges.filter((row) => row.eligible && row.occurredAt <= asOf).map((row) => row.occurredAt))],
+    ["generation_fulfillment_fact", summarize(dataset.generationDeliveries.filter((row) => row.eligible && row.occurredAt <= asOf).map((row) => row.occurredAt))],
+    ["subscription_lifecycle_fact", summarize(dataset.subscriptions.filter((row) => row.eligible && row.activeAt <= asOf).map((row) => row.endedAt && row.endedAt <= asOf ? row.endedAt : row.activeAt))],
+  ]);
+}
+
+function hasEvidence(value: unknown): boolean {
+  if (Array.isArray(value)) return value.length > 0;
+  if (value !== null && typeof value === "object") return Object.keys(value).length > 0;
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function validSnapshotData(snapshot: {
+  numeratorValue: number | null;
+  denominatorValue: number | null;
+  value: number | null;
+  sampleSize: number;
+  matureSampleSize: number;
+  immatureSampleSize: number;
+  maturity: string;
+}): boolean {
+  const nullableFinite = (value: number | null) => value === null || Number.isFinite(value);
+  return nullableFinite(snapshot.numeratorValue)
+    && nullableFinite(snapshot.denominatorValue)
+    && nullableFinite(snapshot.value)
+    && Number.isInteger(snapshot.sampleSize) && snapshot.sampleSize >= 0
+    && Number.isInteger(snapshot.matureSampleSize) && snapshot.matureSampleSize >= 0
+    && Number.isInteger(snapshot.immatureSampleSize) && snapshot.immatureSampleSize >= 0
+    && ["mature", "immature", "insufficient_data"].includes(snapshot.maturity)
+    && (snapshot.numeratorValue === null || snapshot.denominatorValue === null || snapshot.numeratorValue <= snapshot.denominatorValue);
 }
 
 async function qualityReport(db: PrismaClient, asOf: Date) {
-  const report = await reconcileCanonicalMetricFacts(db, { asOf });
-  const freshnessFailed = report.eventLagP95Ms !== null && report.eventLagP95Ms > FRESHNESS_SLO_MS;
-  const qualityState = report.qualityState === "certified" && !freshnessFailed ? "certified" as const : "invalid" as const;
+  const [report, eligibleSignups, eligibleExchanges, eligibleDeliveries, eligibleSubscriptions] = await Promise.all([
+    reconcileCanonicalMetricFacts(db, { asOf }),
+    db.customerSignupFact.count({ where: { eligible: true, occurredAt: { lte: asOf } } }),
+    db.chatExchangeFact.count({ where: { eligible: true, occurredAt: { lte: asOf } } }),
+    db.generationFulfillmentFact.count({ where: { eligible: true, occurredAt: { lte: asOf } } }),
+    db.subscriptionLifecycleFact.count({ where: { eligible: true, activeAt: { lte: asOf } } }),
+  ]);
+  const eligibleFactCount = eligibleSignups + eligibleExchanges + eligibleDeliveries + eligibleSubscriptions;
+  const freshnessFailed = report.eventLagP95Ms === null || report.eventLagP95Ms > FRESHNESS_SLO_MS;
+  const qualityState = report.qualityState === "certified" && !freshnessFailed && eligibleFactCount > 0 ? "certified" as const : "invalid" as const;
   return metricQualityReportSchema.parse({
     ...report,
     qualityState,
@@ -73,55 +110,106 @@ async function qualityReport(db: PrismaClient, asOf: Date) {
         observed: report.eventLagP95Ms,
         threshold: `<= ${FRESHNESS_SLO_MS}ms`,
       },
+      { key: "eligible_fact_presence", status: eligibleFactCount > 0 ? "passed" : "failed", observed: eligibleFactCount, threshold: "> 0" },
     ],
   });
 }
 
-function buildCards(input: {
+async function buildCards(input: {
+  db: PrismaClient;
   dataset: CanonicalMetricDataset;
   asOf: Date;
-  quality: Awaited<ReturnType<typeof qualityReport>>;
-}): MetricCard[] {
+  requireMetricSnapshot?: boolean;
+}): Promise<MetricCard[]> {
   const evaluation = evaluateCanonicalMetrics(input.dataset, input.asOf);
-  const latest = latestDataAt(input.dataset);
+  const metricKeys = Object.keys(evaluation.metrics);
+  const [definitionSnapshots, qualityChecks, metricSnapshots] = await Promise.all([
+    input.db.metricDefinitionSnapshot.findMany({
+      where: { OR: metricKeys.map((key) => ({ key, version: DEFINITION_BY_KEY.get(key)?.version ?? 1 })) },
+    }),
+    input.db.dataQualityCheck.findMany({
+      where: { checkKey: { in: [...REQUIRED_METRIC_QUALITY_CHECKS] }, checkedAt: { lte: input.asOf } },
+      orderBy: { checkedAt: "desc" },
+    }),
+    input.db.metricSnapshot.findMany({
+      where: { metricKey: { in: metricKeys }, asOf: { lte: input.asOf } },
+      orderBy: { asOf: "desc" },
+    }),
+  ]);
+  const definitionSnapshotByKey = new Map(definitionSnapshots.map((row) => [`${row.key}@${row.version}`, row]));
+  const latestMetricSnapshot = new Map<string, (typeof metricSnapshots)[number]>();
+  for (const snapshot of metricSnapshots) {
+    const key = `${snapshot.metricKey}@${snapshot.definitionVersion}`;
+    if (!latestMetricSnapshot.has(key)) latestMetricSnapshot.set(key, snapshot);
+  }
+  const sources = sourceFactEvidence(input.dataset, input.asOf);
   return Object.entries(evaluation.metrics).map(([key, result]) => {
     const definition = DEFINITION_BY_KEY.get(key);
     if (!definition) throw new Error(`Missing canonical metric definition for ${key}`);
-    const failedClosed = input.quality.qualityState === "invalid";
-    const qualityState = failedClosed ? "invalid" as const : definition.qualityState;
-    const decisionUse = failedClosed
-      ? "blocked" as const
-      : qualityState === "certified"
-        ? "allowed" as const
-        : qualityState === "directional"
-          ? "directional_only" as const
-          : "blocked" as const;
-    const qualityEvidence = failedClosed
-      ? input.quality.checks.filter((check) => check.status === "failed").map((check) => `${check.key}: ${check.observed} (${check.threshold})`)
-      : ["canonical-metrics-golden-dataset-v1", "all required data-quality gates passed"];
+    const identity = `${definition.key}@${definition.version}`;
+    const definitionSnapshot = definitionSnapshotByKey.get(identity);
+    const snapshot = latestMetricSnapshot.get(identity);
+    const metricQualityChecks = new Map<string, (typeof qualityChecks)[number]>();
+    for (const check of qualityChecks) {
+      if (metricQualityChecks.has(check.checkKey)) continue;
+      if (Array.isArray(check.metricKeys) && check.metricKeys.includes(definition.key)) {
+        metricQualityChecks.set(check.checkKey, check);
+      }
+    }
+    const certification = evaluateMetricCertification({
+      definition,
+      asOf: input.asOf,
+      requireMetricSnapshot: input.requireMetricSnapshot,
+      evidence: {
+        definitionSnapshot: definitionSnapshot ? {
+          queryHash: definitionSnapshot.queryHash,
+          definitionMatches: canonicalSha256(definitionSnapshot.definition) === canonicalSha256(definition),
+          qualityState: definitionSnapshot.qualityState,
+          effectiveAt: definitionSnapshot.effectiveAt,
+          lastValidatedAt: definitionSnapshot.lastValidatedAt,
+          hasEvidence: hasEvidence(definitionSnapshot.validationEvidence),
+        } : null,
+        qualityChecks: new Map([...metricQualityChecks].map(([checkKey, check]) => [checkKey, {
+          status: check.status,
+          checkedAt: check.checkedAt,
+          hasEvidence: hasEvidence(check.evidence),
+        }])),
+        metricSnapshot: snapshot ? {
+          definitionQueryHash: snapshot.definitionQueryHash,
+          qualityState: snapshot.qualityState,
+          publicationStatus: snapshot.publicationStatus,
+          asOf: snapshot.asOf,
+          latestDataAt: snapshot.latestDataAt,
+          hasEvidence: hasEvidence(snapshot.qualityEvidence),
+          dataValid: validSnapshotData(snapshot),
+        } : null,
+        sourceFacts: sources,
+      },
+    });
+    const usableSnapshot = certification.decisionUse !== "blocked" ? snapshot : null;
     return {
       key,
       definitionVersion: definition.version,
       publicationStatus: definition.publicationStatus,
       name: definition.name,
-      value: failedClosed ? null : result.value,
+      value: usableSnapshot?.value ?? null,
       unit: result.denominator === null ? "users" : "ratio",
       numeratorLabel: definition.numerator,
       denominatorLabel: definition.denominator,
-      numeratorValue: result.numerator,
-      denominatorValue: result.denominator,
-      sampleSize: result.sampleSize,
-      matureSampleSize: result.matureSampleSize,
-      immatureSampleSize: result.immatureSampleSize,
+      numeratorValue: usableSnapshot?.numeratorValue ?? result.numerator,
+      denominatorValue: usableSnapshot?.denominatorValue ?? result.denominator,
+      sampleSize: usableSnapshot?.sampleSize ?? result.sampleSize,
+      matureSampleSize: usableSnapshot?.matureSampleSize ?? result.matureSampleSize,
+      immatureSampleSize: usableSnapshot?.immatureSampleSize ?? result.immatureSampleSize,
       window: definition.window,
       timezone: "UTC",
-      maturity: result.maturity,
+      maturity: usableSnapshot ? usableSnapshot.maturity as MetricCard["maturity"] : result.maturity,
       asOf: input.asOf.toISOString(),
       validFrom: definition.validFrom,
-      latestDataAt: latest?.toISOString() ?? null,
-      qualityState,
-      decisionUse,
-      qualityEvidence,
+      latestDataAt: certification.latestDataAt?.toISOString() ?? null,
+      qualityState: certification.qualityState,
+      decisionUse: certification.decisionUse,
+      qualityEvidence: certification.evidence,
     };
   });
 }
@@ -129,10 +217,14 @@ function buildCards(input: {
 async function buildMetricDashboardData(db: PrismaClient, asOf: Date) {
   const rawDataset = await loadCanonicalMetricDataset(db);
   const dataset = filterDatasetFrom(rawDataset, factsValidFrom());
-  const quality = await qualityReport(db, asOf);
+  const liveQuality = await qualityReport(db, asOf);
+  const cards = await buildCards({ db, dataset, asOf });
+  const quality = cards.every((card) => card.decisionUse === "blocked")
+    ? { ...liveQuality, qualityState: "invalid" as const }
+    : liveQuality;
   return metricDashboardResponseSchema.parse({
     definitions: CANONICAL_DEFINITIONS,
-    cards: buildCards({ dataset, asOf, quality }),
+    cards,
     quality,
     asOf: asOf.toISOString(),
     freshness: quality.qualityState === "invalid"
@@ -176,10 +268,12 @@ export async function publishMetricRegistrySnapshots(db: PrismaClient) {
 
 export async function materializeMetricSnapshots(db: PrismaClient, asOf = new Date()) {
   await publishMetricRegistrySnapshots(db);
-  const dashboard = await buildMetricDashboardData(db, asOf);
+  const rawDataset = await loadCanonicalMetricDataset(db);
+  const dataset = filterDatasetFrom(rawDataset, factsValidFrom());
+  const quality = await qualityReport(db, asOf);
   const windowStart = new Date(asOf.getTime() - 7 * 24 * 60 * 60 * 1_000);
   await db.$transaction(async (tx) => {
-    for (const check of dashboard.quality.checks) {
+    for (const check of quality.checks) {
       await tx.dataQualityCheck.create({
         data: {
           checkKey: `metrics.${check.key}`,
@@ -187,14 +281,24 @@ export async function materializeMetricSnapshots(db: PrismaClient, asOf = new Da
           metricKeys: CANONICAL_DEFINITIONS.map((definition) => definition.key),
           observed: toInputJson({ value: check.observed }),
           threshold: toInputJson({ expression: check.threshold }),
-          evidence: toInputJson({ asOf: dashboard.asOf }),
+          evidence: toInputJson({ asOf: asOf.toISOString(), observed: check.observed, threshold: check.threshold }),
           windowStart,
           windowEnd: asOf,
           checkedAt: asOf,
         },
       });
     }
-    for (const card of dashboard.cards) {
+  });
+  const cards = await buildCards({ db, dataset, asOf, requireMetricSnapshot: false });
+  const dashboard = metricDashboardResponseSchema.parse({
+    definitions: CANONICAL_DEFINITIONS,
+    cards,
+    quality,
+    asOf: asOf.toISOString(),
+    freshness: quality.qualityState === "invalid" ? "degraded" : "fresh",
+  });
+  await db.$transaction(async (tx) => {
+    for (const card of cards) {
       const definition = DEFINITION_BY_KEY.get(card.key) as MetricDefinition;
       await tx.metricSnapshot.upsert({
         where: {

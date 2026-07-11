@@ -141,6 +141,9 @@ describe("experiment exposed-cohort analysis", () => {
       },
     ]);
     expect(analysis).toMatchObject({ significance: "unavailable", guardrailState: "blocked", minimumMaturePerArm: 100 });
+    expect(analysis.qualityEvidence).toContain(
+      "primary metric certification: blocked; requires the exact immutable registry snapshot and six fresh evidenced quality gates",
+    );
   });
 
   it("exposes the analysis only to experiment managers", async () => {

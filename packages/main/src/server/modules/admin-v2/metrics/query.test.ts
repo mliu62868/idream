@@ -54,7 +54,7 @@ describe("Admin v2 canonical metrics query", () => {
     } : undefined);
   }
 
-  it("returns version, cohort maturity, sample, asOf, freshness, quality, and NS-01 publication semantics", async () => {
+  it("fails closed when facts exist but no persisted certification authority exists", async () => {
     const response = await getMetricDashboard(request("/api/v2/admin/metrics?asOf=2026-08-20T00:00:00.000Z"));
     expect(response.status).toBe(200);
     const body = await response.json();
@@ -64,16 +64,17 @@ describe("Admin v2 canonical metrics query", () => {
     expect(byKey["activation.chat_24h"]).toMatchObject({
       numeratorValue: 0,
       denominatorValue: 1,
-      value: 0,
+      value: null,
       sampleSize: 1,
       matureSampleSize: 1,
       maturity: "mature",
       definitionVersion: 1,
       timezone: "UTC",
-      qualityState: "certified",
-      decisionUse: "allowed",
+      qualityState: "invalid",
+      decisionUse: "blocked",
     });
-    expect(byKey["conversion.paid_d30"]).toMatchObject({ numeratorValue: 0, denominatorValue: 1, value: 0 });
+    expect(byKey["activation.chat_24h"].qualityEvidence).toContain("definition_snapshot_missing");
+    expect(byKey["conversion.paid_d30"]).toMatchObject({ numeratorValue: 0, denominatorValue: 1, value: null });
     expect(byKey["retention.same_character_d1"]).toMatchObject({
       denominatorValue: 0,
       value: null,
@@ -82,36 +83,17 @@ describe("Admin v2 canonical metrics query", () => {
     expect(byKey["north_star.wpcu"]).toMatchObject({ publicationStatus: "official" });
     expect(byKey["north_star.wscu"]).toMatchObject({
       publicationStatus: "shadow",
-      qualityState: "directional",
-      decisionUse: "directional_only",
+      qualityState: "invalid",
+      decisionUse: "blocked",
     });
+    expect(parsed.quality.qualityState).toBe("invalid");
+    expect(parsed.freshness).toBe("degraded");
     expect(parsed.definitions.find((row) => row.key === "north_star.wscu")?.decisionGate).toBe("NS-01");
     expect(parsed.asOf).toBe("2026-08-20T00:00:00.000Z");
   });
 
-  it("fails closed for unauthenticated callers and for a data-quality leakage failure", async () => {
+  it("fails closed for unauthenticated callers", async () => {
     expect((await getMetricDashboard(request("/api/v2/admin/metrics", false))).status).toBe(401);
-
-    await prisma.customerSignupFact.create({
-      data: {
-        userId: `${prefix}-leak`,
-        sourceService: "test",
-        sourceEventId: `${prefix}-leak`,
-        environment: "production",
-        dataClass: "customer",
-        trustClass: "canonical",
-        actorIsInternal: true,
-        eligible: true,
-        occurredAt: new Date("2026-07-12T00:00:00Z"),
-        validFrom: new Date("2026-07-12T00:00:00Z"),
-      },
-    });
-    const response = await getMetricDashboard(request("/api/v2/admin/metrics?asOf=2026-08-20T00:00:00.000Z"));
-    const body = await response.json();
-    const parsed = metricDashboardResponseSchema.parse(body.data);
-    expect(parsed.quality).toMatchObject({ qualityState: "invalid", fixtureInternalLeakageCount: 1 });
-    expect(parsed.cards.every((card) => card.value === null && card.decisionUse === "blocked")).toBe(true);
-    await prisma.customerSignupFact.delete({ where: { userId: `${prefix}-leak` } });
   });
 
   it("publishes immutable registry snapshots and exposes the reconciliation quality report", async () => {

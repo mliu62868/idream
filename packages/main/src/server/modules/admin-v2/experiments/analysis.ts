@@ -1,4 +1,5 @@
 import {
+  ADMIN_METRIC_REGISTRY,
   experimentAnalysisResponseSchema,
   experimentVariantSchema,
   type ExperimentAnalysisResponse,
@@ -8,6 +9,7 @@ import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import { actorWithPermission } from "@/server/modules/admin/service";
+import { canonicalSha256 } from "../shared/canonical-json";
 
 const WINDOW_MS = 7 * 24 * 60 * 60 * 1_000;
 const PRIMARY_METRIC = "relationship.qce_activation.v1" as const;
@@ -17,8 +19,11 @@ const QUALITY_CHECK_KEYS = [
   "metrics.fixture_internal_leakage",
   "metrics.authoritative_join_coverage",
   "metrics.event_lag_p95",
+  "metrics.eligible_fact_presence",
 ] as const;
 const QUALITY_FRESHNESS_MS = 60 * 60 * 1_000;
+const PRIMARY_DEFINITION = ADMIN_METRIC_REGISTRY.find((definition) => definition.key === PRIMARY_METRIC)
+  ?? (() => { throw new Error(`Missing canonical experiment metric definition: ${PRIMARY_METRIC}`); })();
 
 function normalCdf(value: number) {
   const sign = value < 0 ? -1 : 1;
@@ -104,18 +109,38 @@ export async function analyzeExperiment(
       },
       orderBy: { occurredAt: "asc" },
     }),
-    db.metricDefinitionSnapshot.findFirst({
-      where: { key: PRIMARY_METRIC, qualityState: "certified", effectiveAt: { lte: asOf }, lastValidatedAt: { not: null } },
-      orderBy: { version: "desc" },
+    db.metricDefinitionSnapshot.findUnique({
+      where: { key_version: { key: PRIMARY_METRIC, version: PRIMARY_DEFINITION.version } },
     }),
     db.dataQualityCheck.findMany({
       where: { checkKey: { in: [...QUALITY_CHECK_KEYS] }, checkedAt: { lte: asOf, gte: new Date(asOf.getTime() - QUALITY_FRESHNESS_MS) } },
       orderBy: { checkedAt: "desc" },
     }),
   ]);
-  const latestQualityStatus = new Map<string, string>();
-  for (const check of qualityChecks) if (!latestQualityStatus.has(check.checkKey)) latestQualityStatus.set(check.checkKey, check.status);
-  const certifiedMetricGate = metricDefinition !== null && QUALITY_CHECK_KEYS.every((checkKey) => latestQualityStatus.get(checkKey) === "passed");
+  const latestQualityStatus = new Map<string, (typeof qualityChecks)[number]>();
+  for (const check of qualityChecks) {
+    if (!latestQualityStatus.has(check.checkKey) && Array.isArray(check.metricKeys) && check.metricKeys.includes(PRIMARY_METRIC)) {
+      latestQualityStatus.set(check.checkKey, check);
+    }
+  }
+  const definitionEvidence = metricDefinition?.validationEvidence;
+  const certifiedMetricGate = metricDefinition !== null
+    && metricDefinition.qualityState === "certified"
+    && metricDefinition.lastValidatedAt !== null
+    && metricDefinition.effectiveAt <= asOf
+    && metricDefinition.queryHash === PRIMARY_DEFINITION.queryHash
+    && canonicalSha256(metricDefinition.definition) === canonicalSha256(PRIMARY_DEFINITION)
+    && ((Array.isArray(definitionEvidence) && definitionEvidence.length > 0)
+      || (definitionEvidence !== null && typeof definitionEvidence === "object" && Object.keys(definitionEvidence).length > 0))
+    && QUALITY_CHECK_KEYS.every((checkKey) => {
+      const check = latestQualityStatus.get(checkKey);
+      return check?.status === "passed"
+        && Array.isArray(check.metricKeys)
+        && check.metricKeys.includes(PRIMARY_METRIC)
+        && check.evidence !== null
+        && typeof check.evidence === "object"
+        && Object.keys(check.evidence).length > 0;
+    });
   const assignmentKeys = new Set(assignments.map((assignment) => [
     assignment.experimentVersion,
     assignment.assignmentVersion,
@@ -234,7 +259,7 @@ export async function analyzeExperiment(
       "outcome requires at least five distinct eligible exchanges in one engagement session after first exposure",
       "anonymous exposures remain visible in exposedSubjects but are excluded from user QCE denominator",
       `assignment/exposure join gaps: ${assignmentJoinGaps}; any gap invalidates decision use`,
-      `primary metric certification: ${certifiedMetricGate ? "passed" : "blocked"}; requires an immutable certified definition and five fresh global quality gates`,
+      `primary metric certification: ${certifiedMetricGate ? "passed" : "blocked"}; requires the exact immutable registry snapshot and six fresh evidenced quality gates`,
       `independent guardrails configured: ${guardrails.length}; decision use remains blocked until variant-level certified guardrail facts are available`,
       `decision eligibility requires at least ${minimumMaturePerArm} mature exposed user subjects in every arm`,
       "95% intervals and two-sided p-values use a two-proportion normal approximation; production decisions remain blocked until all configured guardrails pass",

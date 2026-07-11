@@ -415,6 +415,10 @@ describe("Admin API v2 public contracts", () => {
     expect(ADMIN_METRIC_REGISTRY.find((definition) => definition.key === "north_star.wpcu")).toMatchObject({
       publicationStatus: "official",
       decisionGate: expect.stringContaining("NS-01"),
+      qualityState: "invalid",
+      decisionUse: "blocked",
+      lastValidatedAt: null,
+      validationEvidence: [],
     });
     for (const key of ["north_star.wscu", "guardrail.wscru", "business.wpscu"]) {
       expect(ADMIN_METRIC_REGISTRY.find((definition) => definition.key === key)).toMatchObject({
@@ -423,5 +427,10 @@ describe("Admin API v2 public contracts", () => {
         decisionUse: "directional_only",
       });
     }
+    expect(ADMIN_METRIC_REGISTRY.find((definition) => definition.key === "relationship.qce_activation.v1")).toMatchObject({
+      sourceFacts: ["experiment_exposure_fact", "chat_exchange_fact"],
+      qualityState: "invalid",
+      decisionUse: "blocked",
+    });
   });
 });
