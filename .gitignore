@@ -73,6 +73,7 @@ data/blob/
 coverage/
 test-results/
 playwright-report/
+.playwright-cli/
 .last-run.json
 
 # Local temp files
