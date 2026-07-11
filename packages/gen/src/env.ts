@@ -27,6 +27,13 @@ export const env = {
   get BULLMQ_PREFIX(): string {
     return process.env.BULLMQ_PREFIX ?? `idream:${process.env.APP_ENV ?? "development"}`;
   },
+  get MAIN_GENERATION_INGEST_URL(): string {
+    const base = process.env.MAIN_WEB_URL ?? "http://127.0.0.1:3000";
+    return `${base.replace(/\/$/, "")}/api/internal/generation/manifests/ingest`;
+  },
+  get INTERNAL_TOKEN(): string {
+    return process.env.INTERNAL_TOKEN ?? "";
+  },
   /** Root dir the mock blob store writes generated assets under. */
   get BLOB_ROOT(): string {
     return resolveLocalBlobRoot();

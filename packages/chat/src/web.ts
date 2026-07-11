@@ -10,6 +10,9 @@ import { env } from "./env.js";
 import { logger } from "./logger.js";
 import { dispatchChat, type ChatRequest } from "./router.js";
 import { createSseResponse } from "./stream.js";
+import { persistInboundEvent } from "./inbox.js";
+import { enqueue } from "./queue.js";
+import { CHAT_QUEUES, idempotencyKeys } from "@idream/shared/contracts";
 
 const BFF_TTL_MS = 30_000;
 const MAX_BODY_BYTES = 64 * 1024;
@@ -41,6 +44,21 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     if (!env.INTERNAL_TOKEN || token !== env.INTERNAL_TOKEN) {
       res.writeHead(401, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "unauthorized" }));
+      return;
+    }
+    if (url.pathname === "/internal/events/ingest" && req.method === "POST") {
+      const raw = await readBody(req);
+      const event = safeJson(raw);
+      const ack = await persistInboundEvent(event);
+      if (ack.acknowledged && ack.receiptId) {
+        await enqueue({
+          queue: CHAT_QUEUES.inboxConsume,
+          payload: { eventId: ack.receiptId },
+          dedupeKey: idempotencyKeys.chatInbox(ack.receiptId),
+        }).catch(() => undefined);
+      }
+      res.writeHead(ack.acknowledged ? 200 : 409, { "content-type": "application/json" });
+      res.end(JSON.stringify(ack));
       return;
     }
     const result = await dispatchChatAdmin({

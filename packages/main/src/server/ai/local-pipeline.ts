@@ -641,6 +641,12 @@ async function finalizeGenerationCompleted(
         errorCode: null,
       },
     });
+    if (payload.attemptId) {
+      await tx.mainOutboxEvent.updateMany({
+        where: { id: `generation_manifest_${payload.attemptId}` },
+        data: { status: "delivered", deliveredAt: new Date() },
+      });
+    }
     await appendGenerationEvent(tx, job.id, "completed", "Generation job completed", {
       assets: payload.assets.length,
       requested: job.outputCount,

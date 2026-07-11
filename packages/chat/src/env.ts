@@ -94,6 +94,10 @@ export const env = {
   get INTERNAL_TOKEN() {
     return process.env.INTERNAL_TOKEN ?? "";
   },
+  get MAIN_INTERNAL_INGEST_URL() {
+    const base = process.env.MAIN_WEB_URL ?? "http://127.0.0.1:3000";
+    return `${base.replace(/\/$/, "")}/api/internal/events/ingest`;
+  },
   get PORT() {
     return Number.parseInt(process.env.CHAT_PORT ?? "3100", 10);
   },

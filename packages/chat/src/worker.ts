@@ -13,7 +13,7 @@ import { logger } from "./logger.js";
 import { processGenerate } from "./generate.js";
 import { processMemoryExtract } from "./memory.js";
 import { deliverPendingOutbox } from "./outbox.js";
-import { consumeInbound, type InboundEvent } from "./inbox.js";
+import { consumeInbound, type InboundEvent, reprocessPendingInbox } from "./inbox.js";
 import { reconcile } from "./reconcile.js";
 import { pruneExpiredSegments } from "./maintain.js";
 
@@ -37,6 +37,10 @@ export function startWorker(): { close: () => Promise<void> } {
     runWorker(MAIN_TO_CHAT_QUEUE, async (job) => {
       await consumeInbound(job.payload as InboundEvent);
     }),
+
+    runWorker(CHAT_QUEUES.inboxConsume, async () => {
+      await reprocessPendingInbox();
+    }, { concurrency: 1 }),
   ];
 
   // Periodic convergence + housekeeping (single-instance, so timers are safe).

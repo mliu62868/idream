@@ -6299,6 +6299,11 @@ async function enqueueGenerationJob(job: {
   referenceAssetIds?: Prisma.JsonValue | null;
   referenceManifest?: Prisma.JsonValue | null;
 }) {
+  const attempt = await prisma.generationAttempt.upsert({
+    where: { requestId_attemptNo: { requestId: job.id, attemptNo: 1 } },
+    create: { requestId: job.id, attemptNo: 1, status: "queued" },
+    update: {},
+  });
   const controls = await internalGenerationControls(job);
   const modelCapabilities = modelCapabilitiesFromControls(controls);
   const referenceImages =
@@ -6318,6 +6323,8 @@ async function enqueueGenerationJob(job: {
     version: 1 as const,
     requestId: cryptoRandomId("gen_req"),
     generationJobId: job.id,
+    attemptId: attempt.id,
+    attemptNo: attempt.attemptNo,
     userId: job.userId,
     characterId: job.characterId,
     prompt: job.prompt ?? `${job.mode === "video" ? "Video" : "Image"} generation ${job.id}`,

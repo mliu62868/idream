@@ -4763,6 +4763,11 @@ export async function enqueueExistingGenerationJob(job: {
   seed?: string | null;
   referenceAssetIds?: Prisma.JsonValue | null;
 }) {
+  const attempt = await prisma.generationAttempt.upsert({
+    where: { requestId_attemptNo: { requestId: job.id, attemptNo: 1 } },
+    create: { requestId: job.id, attemptNo: 1, status: "queued" },
+    update: {},
+  });
   const controls = await internalExistingGenerationControls(job);
   const modelCapabilities = modelCapabilitiesFromControls(controls);
   const referenceImages =
@@ -4781,6 +4786,8 @@ export async function enqueueExistingGenerationJob(job: {
     version: 1 as const,
     requestId: `admin_requeue_${randomUUID()}`,
     generationJobId: job.id,
+    attemptId: attempt.id,
+    attemptNo: attempt.attemptNo,
     userId: job.userId,
     characterId: job.characterId,
     prompt: job.prompt ?? `${job.mode === "video" ? "Video" : "Image"} generation ${job.id}`,

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Pool } from "pg";
 import { createChatPrisma } from "../src/db.js";
-import { consumeInbound, reprocessPendingInbox } from "../src/inbox.js";
+import { consumeInbound, persistInboundEvent, reprocessPendingInbox } from "../src/inbox.js";
 import { reconcile } from "../src/reconcile.js";
 import { rollSessionLog, pruneExpiredSegments } from "../src/maintain.js";
 import { deleteSession, deleteAccount } from "../src/privacy.js";
@@ -42,6 +42,23 @@ afterAll(async () => {
 });
 
 describe("inbox (P0-4 main→chat, idempotent)", () => {
+  it("durably acknowledges an exact replay and quarantines a conflicting payload", async () => {
+    const event = {
+      sourceService: "main",
+      sourceEventId: "rel_durable_evt_1",
+      eventType: MAIN_TO_CHAT_EVENTS.entitlementUpdated,
+      schemaVersion: 1,
+      occurredAt: "2026-07-11T12:00:00.000Z",
+      aggregateType: "user",
+      aggregateId: USER,
+      payload: { userId: USER, tier: "premium" },
+    };
+    expect(await persistInboundEvent(event, prisma)).toMatchObject({ acknowledged: true, status: "persisted" });
+    expect(await persistInboundEvent(event, prisma)).toMatchObject({ acknowledged: true, status: "duplicate" });
+    expect(await persistInboundEvent({ ...event, payload: { ...event.payload, tier: "free" } }, prisma))
+      .toMatchObject({ acknowledged: false, status: "quarantined" });
+  });
+
   it("character.removed archives active sessions; re-consume is a no-op", async () => {
     const s = await prisma.chatSession.create({
       data: { id: "rel_s1", userId: USER, characterId: CHAR, status: "active" },

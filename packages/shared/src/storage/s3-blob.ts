@@ -112,6 +112,24 @@ export class S3CompatibleBlobStore {
     return { ok: true, data: { url: target.toString() } };
   }
 
+  async getPrivate(input: { key: string }): Promise<BlobProviderResult<{ body: Uint8Array; contentType: string | null }>> {
+    const signed = await this.signGetUrl({ key: input.key, expiresInSeconds: 60 });
+    if (!signed.ok) return signed;
+    try {
+      const response = await this.fetchImpl(signed.data.url);
+      if (!response.ok) return blobFailure(response.status === 404 ? "not_found" : "get_failed", response);
+      return {
+        ok: true,
+        data: {
+          body: new Uint8Array(await response.arrayBuffer()),
+          contentType: response.headers.get("content-type"),
+        },
+      };
+    } catch (error) {
+      return networkFailure("get_failed", error);
+    }
+  }
+
   async delete(input: {
     key: string;
   }): Promise<BlobProviderResult<{ deleted: true }>> {

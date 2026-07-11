@@ -6,16 +6,84 @@ import type { ChatPrismaClient } from "./db.js";
 import { chatPrisma } from "./db.js";
 import { deleteAccount } from "./privacy.js";
 import {
+  durableEventEnvelopeSchema,
+  type DurableEventEnvelope,
   MAIN_TO_CHAT_EVENTS,
   chatImageAcceptedPayloadSchema,
   chatImageCompletedPayloadSchema,
   chatImageFailedPayloadSchema,
 } from "@idream/shared/contracts";
+import { createHash } from "node:crypto";
 
 export interface InboundEvent {
   eventId: string;
   eventType: string;
   payload: Record<string, unknown>;
+}
+
+export async function persistInboundEvent(
+  rawEvent: unknown,
+  prisma: ChatPrismaClient = chatPrisma,
+): Promise<{ acknowledged: boolean; status: "persisted" | "duplicate" | "quarantined"; receiptId: string | null }> {
+  const event = durableEventEnvelopeSchema.parse(rawEvent);
+  const payloadHash = hashEvent(event);
+  const existing = await prisma.chatInboxEvent.findUnique({ where: { id: event.sourceEventId } });
+  if (existing) {
+    const metadata = durableMetadata(existing.payload);
+    if (metadata?.payloadHash === payloadHash) {
+      return { acknowledged: true, status: "duplicate", receiptId: existing.id };
+    }
+    await prisma.chatInboxEvent.update({
+      where: { id: existing.id },
+      data: { status: "quarantined", attempts: { increment: 1 } },
+    });
+    return { acknowledged: false, status: "quarantined", receiptId: existing.id };
+  }
+  await prisma.chatInboxEvent.create({
+    data: {
+      id: event.sourceEventId,
+      eventType: event.eventType,
+      payload: {
+        ...event.payload,
+        __durable: {
+          sourceService: event.sourceService,
+          payloadHash,
+          occurredAt: event.occurredAt,
+          aggregateType: event.aggregateType,
+          aggregateId: event.aggregateId,
+        },
+      } as never,
+    },
+  });
+  return { acknowledged: true, status: "persisted", receiptId: event.sourceEventId };
+}
+
+function hashEvent(event: DurableEventEnvelope): string {
+  return createHash("sha256")
+    .update(canonicalJson({
+      eventType: event.eventType,
+      schemaVersion: event.schemaVersion,
+      occurredAt: event.occurredAt,
+      aggregateType: event.aggregateType,
+      aggregateId: event.aggregateId,
+      payload: event.payload,
+    }))
+    .digest("hex");
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+}
+
+function durableMetadata(payload: unknown): { payloadHash?: string } | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const metadata = (payload as Record<string, unknown>).__durable;
+  return metadata && typeof metadata === "object" && !Array.isArray(metadata)
+    ? metadata as { payloadHash?: string }
+    : null;
 }
 
 /**

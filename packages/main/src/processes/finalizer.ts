@@ -10,6 +10,7 @@ import {
   reconcileStaleGenerationJobs,
 } from "@/server/ai/local-pipeline";
 import { logger } from "@/server/lib/logger";
+import { dispatchPendingGenerationManifests } from "@/server/ai/generation-manifest-ingest";
 
 const BUSY_DELAY_MS = 50;
 const IDLE_DELAY_MS = 1_000;
@@ -33,6 +34,7 @@ export async function runFinalizerLoop(): Promise<void> {
       logger.error({ err }, "finalizer drain failed");
     }
     await maybeReconcileStaleJobs();
+    await dispatchPendingGenerationManifests().catch((err) => logger.error({ err }, "generation manifest dispatch failed"));
     await sleep(processed > 0 ? BUSY_DELAY_MS : IDLE_DELAY_MS);
   }
 }

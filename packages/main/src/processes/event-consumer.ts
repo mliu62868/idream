@@ -7,8 +7,8 @@ import type { RedisOptions } from "ioredis";
 import type { Prisma } from "@prisma/client";
 import {
   MAIN_QUEUES,
-  MAIN_TO_CHAT_EVENTS,
   MAIN_TO_CHAT_QUEUE,
+  MAIN_TO_CHAT_EVENTS,
   CHAT_TO_MAIN_EVENTS,
   chatImageRequestedPayloadSchema,
   idempotencyKeys,
@@ -16,9 +16,10 @@ import {
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { logger } from "@/server/lib/logger";
-import { jobQueue } from "@/server/jobs/queue";
 import { createChatImageGenerationJob } from "@/server/modules/ourdream/service";
 import { findReusableChatImage } from "@/server/modules/ourdream/chat-image-reuse";
+import { jobQueue } from "@/server/jobs/queue";
+import { dispatchPendingChatEvents, recordMainToChatEvent } from "./chat-outbox";
 
 function redisOptions(): RedisOptions {
   const url = new URL(env.REDIS_URL);
@@ -37,6 +38,7 @@ interface InboundEvent {
   eventType: string;
   aggregateId: string;
   payload: Record<string, unknown>;
+  occurredAt?: string;
 }
 
 export async function applyChatEvent(event: InboundEvent): Promise<void> {
@@ -46,44 +48,36 @@ export async function applyChatEvent(event: InboundEvent): Promise<void> {
       const userId = String(event.payload.userId ?? "");
       const characterId = String(event.payload.characterId ?? "");
       if (userId && characterId) {
-        await prisma.recentChat
-          .upsert({
-            where: { sessionId: event.aggregateId },
-            create: { sessionId: event.aggregateId, userId, characterId, lastMessageAt: new Date() },
-            update: {},
-          })
-          .catch((err) => logger.error({ err, eventType: event.eventType, sessionId: event.aggregateId }, "recentChat projection failed"));
+        await prisma.recentChat.upsert({
+          where: { sessionId: event.aggregateId },
+          create: { sessionId: event.aggregateId, userId, characterId, lastMessageAt: eventTime(event) },
+          update: {},
+        });
       }
       return;
     }
     case CHAT_TO_MAIN_EVENTS.messageCompleted: {
       const characterId = String(event.payload.characterId ?? "");
       if (characterId) {
-        await prisma.characterStats
-          .update({
-            where: { characterId },
-            data: { chatsCount: { increment: 1 }, lastActivityAt: new Date() },
-          })
-          .catch(() => {});
+        await prisma.characterStats.updateMany({
+          where: { characterId },
+          data: { chatsCount: { increment: 1 }, lastActivityAt: eventTime(event) },
+        });
       }
       // Bump the projection's recency (upsert: tolerate a missed session.created).
       const sessionId = String(event.payload.sessionId ?? "");
       const userId = String(event.payload.userId ?? "");
       if (sessionId && userId && characterId) {
-        await prisma.recentChat
-          .upsert({
-            where: { sessionId },
-            create: { sessionId, userId, characterId, lastMessageAt: new Date(), status: "active" },
-            update: { lastMessageAt: new Date(), status: "active" },
-          })
-          .catch((err) => logger.error({ err, eventType: event.eventType, sessionId }, "recentChat projection failed"));
+        await prisma.recentChat.upsert({
+          where: { sessionId },
+          create: { sessionId, userId, characterId, lastMessageAt: eventTime(event), status: "active" },
+          update: { lastMessageAt: eventTime(event), status: "active" },
+        });
       }
       return;
     }
     case CHAT_TO_MAIN_EVENTS.sessionDeleted: {
-      await prisma.recentChat
-        .update({ where: { sessionId: event.aggregateId }, data: { status: "deleted" } })
-        .catch(() => {});
+      await prisma.recentChat.updateMany({ where: { sessionId: event.aggregateId }, data: { status: "deleted" } });
       return;
     }
     case CHAT_TO_MAIN_EVENTS.safetyFlagged: {
@@ -173,20 +167,81 @@ export async function applyChatEvent(event: InboundEvent): Promise<void> {
   }
 }
 
+function eventTime(event: InboundEvent): Date {
+  const occurredAt = event.occurredAt ? new Date(event.occurredAt) : new Date();
+  return Number.isNaN(occurredAt.getTime()) ? new Date() : occurredAt;
+}
+
+export async function dispatchPendingProductEvents(batch = 100): Promise<{ delivered: number; failed: number }> {
+  const rows = await prisma.mainOutboxEvent.findMany({
+    where: { eventType: "product.event.persisted.v2", status: "pending", nextRunAt: { lte: new Date() } },
+    orderBy: { createdAt: "asc" },
+    take: batch,
+  });
+  let delivered = 0;
+  let failed = 0;
+  for (const row of rows) {
+    const event = await prisma.analyticsEvent.findUnique({ where: { id: row.aggregateId } });
+    if (!event) continue;
+    const context = jsonRecord(event.context);
+    try {
+      await applyChatEvent({
+        eventId: event.sourceEventId ?? event.id,
+        eventType: event.name,
+        aggregateId: String(context.aggregateId ?? event.sourceEventId ?? event.id),
+        occurredAt: event.occurredAt?.toISOString(),
+        payload: jsonRecord(event.props),
+      });
+      await prisma.mainOutboxEvent.update({
+        where: { id: row.id },
+        data: { status: "delivered", deliveredAt: new Date() },
+      });
+      delivered += 1;
+    } catch (error) {
+      await prisma.mainOutboxEvent.update({
+        where: { id: row.id },
+        data: {
+          attempts: { increment: 1 },
+          nextRunAt: new Date(Date.now() + 30_000 * (row.attempts + 1)),
+          lastError: { message: error instanceof Error ? error.message : "projection failed" },
+        },
+      });
+      failed += 1;
+    }
+  }
+  return { delivered, failed };
+}
+
+function jsonRecord(value: Prisma.JsonValue | null): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
 async function enqueueChatCallback(input: {
   eventId: string;
   eventType: string;
   payload: Record<string, unknown>;
 }) {
-  await jobQueue.enqueue({
-    queue: MAIN_TO_CHAT_QUEUE,
-    payload: {
-      eventId: input.eventId,
-      eventType: input.eventType,
-      payload: input.payload,
-    } as Prisma.InputJsonValue,
-    dedupeKey: idempotencyKeys.chatInbox(input.eventId),
+  await recordMainToChatEvent({
+    eventId: input.eventId,
+    eventType: input.eventType,
+    aggregateId: input.eventId,
+    payload: input.payload,
   });
+  if (env.CHAT_SERVICE_URL) {
+    await dispatchPendingChatEvents().catch(() => undefined);
+  } else {
+    await jobQueue.enqueue({
+      queue: MAIN_TO_CHAT_QUEUE,
+      payload: {
+        eventId: input.eventId,
+        eventType: input.eventType,
+        payload: input.payload,
+      } as Prisma.InputJsonValue,
+      dedupeKey: idempotencyKeys.chatInbox(input.eventId),
+    });
+  }
 }
 
 function errorCode(error: unknown) {
@@ -228,6 +283,11 @@ export function startEventConsumer(): Worker {
   );
   worker.on("ready", () => logger.info("main-event-consumer ready"));
   worker.on("failed", (job, err) => logger.error({ jobId: job?.id, err }, "event consume failed"));
+  const projectionTimer = setInterval(() => {
+    dispatchPendingProductEvents().catch((err) => logger.error({ err }, "product event projection dispatch failed"));
+    dispatchPendingChatEvents().catch((err) => logger.error({ err }, "chat outbox dispatch failed"));
+  }, 5_000);
+  worker.on("closed", () => clearInterval(projectionTimer));
   return worker;
 }
 

@@ -135,6 +135,68 @@ describe("processImageGenerate", () => {
     ]);
   });
 
+  it("persists an immutable manifest and waits for main durable ACK before completing", async () => {
+    const enqueue = vi.fn(async (_: EnqueueInput) => {});
+    const acknowledgeCompletion = vi.fn(async () => {});
+    const providers = makeProviders();
+
+    await processImageGenerate(
+      imagePayload({ attemptId: "attempt_img_1", attemptNo: 1 }),
+      { enqueue, providers, acknowledgeCompletion },
+    );
+
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(providers.blob.putPrivate).toHaveBeenCalledTimes(3);
+    expect(providers.blob.putPrivate).toHaveBeenLastCalledWith(expect.objectContaining({
+      key: "gen/completion-manifests/attempt_img_1/completion.json",
+      contentType: "application/json",
+    }));
+    expect(acknowledgeCompletion).toHaveBeenCalledWith(expect.objectContaining({
+      manifestChecksum: expect.stringMatching(/^[a-f0-9]{64}$/),
+      manifest: expect.objectContaining({
+        attemptId: "attempt_img_1",
+        generationJobId: "job_img_1",
+        assets: expect.arrayContaining([expect.objectContaining({ ordinal: 0 })]),
+      }),
+    }));
+  });
+
+  it("replays a persisted manifest after an ACK interruption without invoking the provider again", async () => {
+    const enqueue = vi.fn(async (_: EnqueueInput) => {});
+    const acknowledgeCompletion = vi.fn(async () => {});
+    const manifest = {
+      version: 1 as const,
+      attemptId: "attempt_img_resume",
+      attemptNo: 1,
+      requestId: "req_img_1",
+      generationJobId: "job_img_1",
+      mode: "image" as const,
+      provider: "mock-image",
+      providerRequestId: null,
+      completedAt: "2026-07-11T12:00:00.000Z",
+      assets: [{ ordinal: 0, key: "gen/job_img_1/image-1.png", contentType: "image/png", width: 1024, height: 1024, providerKey: null }],
+      usage: { gpuSeconds: 1.2, model: "mock-image" },
+    };
+    const providers = makeProviders();
+    providers.blob.getPrivate = vi.fn(async () => ({
+      ok: true as const,
+      data: { body: new TextEncoder().encode(JSON.stringify(manifest)), contentType: "application/json" },
+    }));
+
+    await processImageGenerate(
+      imagePayload({ attemptId: manifest.attemptId, attemptNo: 1 }),
+      { enqueue, providers, acknowledgeCompletion },
+    );
+
+    expect(providers.image.generate).not.toHaveBeenCalled();
+    expect(providers.blob.putPrivate).not.toHaveBeenCalled();
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(acknowledgeCompletion).toHaveBeenCalledWith(expect.objectContaining({
+      manifestRef: `gen/completion-manifests/${manifest.attemptId}/completion.json`,
+      manifest,
+    }));
+  });
+
   it("hydrates reference image storage keys before calling the image provider", async () => {
     const enqueue = vi.fn(async (_: EnqueueInput) => {});
     const imageGenerate = vi.fn(async () => ({

@@ -7,7 +7,13 @@ import type { ChatPrismaClient } from "./db.js";
 import { chatPrisma } from "./db.js";
 import { createId } from "./id.js";
 import { enqueue } from "./queue.js";
-import { CHAT_QUEUES, MAIN_QUEUES, idempotencyKeys, CHAT_TO_MAIN_EVENTS } from "@idream/shared/contracts";
+import {
+  CHAT_QUEUES,
+  CHAT_TO_MAIN_EVENTS,
+  durableAckSchema,
+  type DurableEventEnvelope,
+} from "@idream/shared/contracts";
+import { env } from "./env.js";
 
 export type ChatToMainEventType =
   (typeof CHAT_TO_MAIN_EVENTS)[keyof typeof CHAT_TO_MAIN_EVENTS];
@@ -52,6 +58,7 @@ export async function scheduleOutboxDelivery(): Promise<void> {
 export async function deliverPendingOutbox(
   prisma: ChatPrismaClient = chatPrisma,
   batch = 100,
+  acknowledge: (event: DurableEventEnvelope) => Promise<void> = acknowledgeWithMain,
 ): Promise<{ delivered: number; failed: number }> {
   const now = new Date();
   const pending = await prisma.chatOutboxEvent.findMany({
@@ -64,17 +71,15 @@ export async function deliverPendingOutbox(
   let failed = 0;
   for (const row of pending) {
     try {
-      await enqueue({
-        queue: MAIN_QUEUES.mainInbound,
-        payload: {
-          eventId: row.id,
-          eventType: row.eventType,
-          aggregateType: row.aggregateType,
-          aggregateId: row.aggregateId,
-          occurredAt: row.createdAt.toISOString(),
-          payload: row.payload,
-        },
-        dedupeKey: idempotencyKeys.chatOutbox(row.id),
+      await acknowledge({
+        sourceService: "chat",
+        sourceEventId: row.id,
+        eventType: row.eventType,
+        schemaVersion: 1,
+        aggregateType: row.aggregateType,
+        aggregateId: row.aggregateId,
+        occurredAt: row.createdAt.toISOString(),
+        payload: row.payload as Record<string, unknown>,
       });
       await prisma.chatOutboxEvent.update({
         where: { id: row.id },
@@ -96,4 +101,18 @@ export async function deliverPendingOutbox(
     }
   }
   return { delivered, failed };
+}
+
+async function acknowledgeWithMain(event: DurableEventEnvelope): Promise<void> {
+  const response = await fetch(env.MAIN_INTERNAL_INGEST_URL, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-internal-token": env.INTERNAL_TOKEN,
+    },
+    body: JSON.stringify(event),
+  });
+  if (!response.ok) throw new Error(`main durable ingest returned ${response.status}`);
+  const ack = durableAckSchema.parse(await response.json());
+  if (!ack.acknowledged) throw new Error(`main did not durably acknowledge ${event.sourceEventId}`);
 }

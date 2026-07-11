@@ -5,7 +5,7 @@
 // pipeline logic ports 1:1.
 // INVARIANTS: blob.putPrivate is the ONLY persistence gen performs. No DB.
 import { Buffer } from "node:buffer";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ImageGeneratePayload } from "@idream/shared/contracts";
 import { S3CompatibleBlobStore, SafetyGatewayModerationProvider } from "@idream/shared";
@@ -90,6 +90,7 @@ export interface BlobStore {
     contentType: string;
   }): Promise<ProviderResult<{ key: string; size: number }>>;
   signGetUrl(input: { key: string; expiresInSeconds: number }): Promise<ProviderResult<{ url: string }>>;
+  getPrivate?(input: { key: string }): Promise<ProviderResult<{ body: Uint8Array; contentType: string | null }>>;
 }
 
 class MockImageModel implements ImageModel {
@@ -420,6 +421,25 @@ class MockBlobStore implements BlobStore {
         url: `https://mock-blob.idream.local/${encodeURIComponent(input.key)}?ttl=${input.expiresInSeconds}`,
       },
     };
+  }
+
+  async getPrivate(input: { key: string }) {
+    try {
+      return {
+        ok: true as const,
+        data: { body: new Uint8Array(await readFile(path.join(env.BLOB_ROOT, input.key))), contentType: "application/json" },
+      };
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+      return {
+        ok: false as const,
+        error: {
+          code: code === "ENOENT" ? "not_found" : "get_failed",
+          message: error instanceof Error ? error.message : "blob read failed",
+          retryable: code !== "ENOENT",
+        },
+      };
+    }
   }
 }
 

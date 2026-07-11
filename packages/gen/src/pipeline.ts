@@ -13,6 +13,7 @@
 //   - non-retryable error → enqueue generation.failed (terminal, refund main-side)
 import {
   type AiFinalizePayload,
+  type GenerationManifestIngest,
   idempotencyKeys,
   imageGeneratePayloadSchema,
   type ImageGeneratePayload,
@@ -26,6 +27,7 @@ import { assertGeneratedImageSanity, GeneratedImageSanityError } from "./generat
 import { type GenProviders, providers as defaultProviders } from "./providers";
 import type { EnqueueFn, JsonPayload } from "./queue";
 import { hydratedImageReferenceInputs } from "./reference-images";
+import { loadPersistedCompletionManifest, persistCompletionManifest } from "./completion-manifest";
 
 const placeholderImagePng = Uint8Array.from(
   Buffer.from(
@@ -39,6 +41,7 @@ export interface PipelineDeps {
   providers?: GenProviders;
   attemptsMade?: number;
   maxAttempts?: number;
+  acknowledgeCompletion?: (input: GenerationManifestIngest) => Promise<void>;
 }
 
 function asPayload(value: AiFinalizePayload): JsonPayload {
@@ -100,6 +103,7 @@ export async function processImageGenerate(
 ): Promise<void> {
   const payload = imageGeneratePayloadSchema.parse(rawPayload);
   const providers = deps.providers ?? defaultProviders;
+  if (await resumePersistedCompletion(payload, providers, deps)) return;
   const inputModeration = await providers.moderation.check({
     targetType: "text",
     content: `${payload.prompt} ${payload.negativePrompt ?? ""}`,
@@ -212,17 +216,35 @@ export async function processImageGenerate(
     return;
   }
 
-  await deps.enqueue({
-    queue: MAIN_QUEUES.aiFinalize,
-    payload: asPayload({
+  const completedPayload = {
+    version: 1 as const,
+    kind: "generation.completed" as const,
+    requestId: payload.requestId,
+    generationJobId: payload.generationJobId,
+    mode: "image" as const,
+    assets,
+    usage: { gpuSeconds: assets.length * 1.2, model: payload.model },
+  };
+  if (deps.acknowledgeCompletion) {
+    const ingest = await persistCompletionManifest(providers.blob, {
       version: 1,
-      kind: "generation.completed",
+      attemptId: payload.attemptId ?? `${payload.generationJobId}:1`,
+      attemptNo: payload.attemptNo ?? 1,
       requestId: payload.requestId,
       generationJobId: payload.generationJobId,
       mode: "image",
-      assets,
-      usage: { gpuSeconds: assets.length * 1.2, model: payload.model },
-    }),
+      provider: payload.model,
+      providerRequestId: null,
+      completedAt: new Date().toISOString(),
+      assets: assets.map((asset, ordinal) => ({ ordinal, ...asset })),
+      usage: completedPayload.usage,
+    });
+    await deps.acknowledgeCompletion(ingest);
+    return;
+  }
+  await deps.enqueue({
+    queue: MAIN_QUEUES.aiFinalize,
+    payload: asPayload(completedPayload),
     dedupeKey: idempotencyKeys.generationFinalize(payload.generationJobId, "completed"),
   });
 }
@@ -257,6 +279,7 @@ export async function processVideoGenerate(
 ): Promise<void> {
   const payload = videoGeneratePayloadSchema.parse(rawPayload);
   const providers = deps.providers ?? defaultProviders;
+  if (await resumePersistedCompletion(payload, providers, deps)) return;
   const inputModeration = await providers.moderation.check({
     targetType: "text",
     content: `${payload.prompt} ${payload.negativePrompt ?? ""}`,
@@ -321,26 +344,58 @@ export async function processVideoGenerate(
     return;
   }
 
-  await deps.enqueue({
-    queue: MAIN_QUEUES.aiFinalize,
-    payload: asPayload({
+  const completedPayload = {
+    version: 1 as const,
+    kind: "generation.completed" as const,
+    requestId: payload.requestId,
+    generationJobId: payload.generationJobId,
+    mode: "video" as const,
+    assets: [{
+      key: assetKey,
+      seconds: result.data.asset.seconds,
+      contentType,
+      providerKey: result.data.asset.key ?? null,
+    }],
+    usage: { gpuSeconds: payload.seconds * 2, model: payload.model },
+  };
+  if (deps.acknowledgeCompletion) {
+    const ingest = await persistCompletionManifest(providers.blob, {
       version: 1,
-      kind: "generation.completed",
+      attemptId: payload.attemptId ?? `${payload.generationJobId}:1`,
+      attemptNo: payload.attemptNo ?? 1,
       requestId: payload.requestId,
       generationJobId: payload.generationJobId,
       mode: "video",
-      assets: [
-        {
-          key: assetKey,
-          seconds: result.data.asset.seconds,
-          contentType,
-          providerKey: result.data.asset.key ?? null,
-        },
-      ],
-      usage: { gpuSeconds: payload.seconds * 2, model: payload.model },
-    }),
+      provider: payload.model,
+      providerRequestId: null,
+      completedAt: new Date().toISOString(),
+      assets: completedPayload.assets.map((asset, ordinal) => ({ ordinal, ...asset })),
+      usage: completedPayload.usage,
+    });
+    await deps.acknowledgeCompletion(ingest);
+    return;
+  }
+  await deps.enqueue({
+    queue: MAIN_QUEUES.aiFinalize,
+    payload: asPayload(completedPayload),
     dedupeKey: idempotencyKeys.generationFinalize(payload.generationJobId, "completed"),
   });
+}
+
+async function resumePersistedCompletion(
+  payload: ImageGeneratePayload | VideoGeneratePayload,
+  providers: GenProviders,
+  deps: PipelineDeps,
+): Promise<boolean> {
+  if (!deps.acknowledgeCompletion) return false;
+  const attemptId = payload.attemptId ?? `${payload.generationJobId}:1`;
+  const persisted = await loadPersistedCompletionManifest(providers.blob, attemptId);
+  if (!persisted) return false;
+  if (persisted.manifest.generationJobId !== payload.generationJobId) {
+    throw new Error(`completion manifest identity mismatch for ${attemptId}`);
+  }
+  await deps.acknowledgeCompletion(persisted);
+  return true;
 }
 
 async function videoAssetBody(

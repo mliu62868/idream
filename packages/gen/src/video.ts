@@ -7,6 +7,7 @@ import { logger } from "./logger";
 import { processVideoGenerate } from "./pipeline";
 import { assertProductionProviderReady } from "./providers";
 import { enqueue, runWorker } from "./queue";
+import { acknowledgeCompletionManifest } from "./completion-manifest";
 
 // Video generation is deferred (V1.1). In the intended deferred state the provider
 // is mock and there is nothing to consume — and asserting production readiness at
@@ -25,6 +26,7 @@ const worker = runWorker(GEN_QUEUES.videoGenerate, async (job) => {
     enqueue,
     attemptsMade: job.attemptsMade,
     maxAttempts: job.maxAttempts,
+    acknowledgeCompletion: acknowledgeCompletionManifest,
   });
 });
 
