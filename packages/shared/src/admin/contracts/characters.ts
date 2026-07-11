@@ -135,6 +135,7 @@ export const characterReleaseSchema = z
     releaseOwnedPlacements: z.array(releaseOwnedPlacementSchema).readonly(),
     snapshotHash: z.string().trim().min(1),
     policyVersion: z.string().trim().min(1),
+    legacy: z.boolean(),
     status: characterReleaseStatusSchema,
     publishedAt: adminIsoDateTimeSchema.nullable(),
     supersedesId: adminIdSchema.nullable(),
@@ -145,7 +146,7 @@ export const characterReleaseSchema = z
   })
   .strict()
   .superRefine((release, ctx) => {
-    if (release.status === "published" && release.publishedAt === null) {
+    if (release.status === "published" && !release.legacy && release.publishedAt === null) {
       ctx.addIssue({ code: "custom", path: ["publishedAt"], message: "Published releases need publishedAt" });
     }
   });

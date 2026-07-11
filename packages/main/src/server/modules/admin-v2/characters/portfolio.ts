@@ -110,6 +110,7 @@ function releaseDto(release: CharacterRelease) {
     releaseOwnedPlacements: placements,
     snapshotHash: release.snapshotHash,
     policyVersion: stringValue(provenance.policyVersion, "character-release-policy-v1"),
+    legacy: release.legacy,
     status: release.status,
     publishedAt: release.publishedAt?.toISOString() ?? null,
     supersedesId: release.supersedesId,
