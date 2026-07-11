@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { Errors } from "@/server/lib/errors";
 import { recordGenerationAttemptQueuedEvent } from "@/server/ai/generation-attempt-events";
+import { ensureGenerationSettlementLinks, linkGenerationLedgerEntry } from "@/server/ai/generation-settlement";
 import { claimControlPlaneCommand } from "../shared/control-plane-command";
 import { toInputJson } from "../shared/prisma-json";
 
@@ -77,20 +78,16 @@ async function appendRefund(
 ) {
   const job = await tx.generationJob.findUnique({ where: { id: input.jobId } });
   if (!job) throw Errors.notFound("Incident refund target Generation Request is missing");
-  const entries = await tx.dreamcoinLedger.findMany({
-    where: { sourceId: job.id, reason: { in: ["generation_spend", "refund"] } },
-    select: { delta: true, reason: true },
-  });
-  const spent = -entries.filter((entry) => entry.reason === "generation_spend").reduce((sum, entry) => sum + entry.delta, 0);
-  const refunded = entries.filter((entry) => entry.reason === "refund").reduce((sum, entry) => sum + entry.delta, 0);
-  const amount = Math.max(0, spent - refunded);
+  await tx.$queryRaw`SELECT id FROM "generation_jobs" WHERE id = ${job.id} FOR UPDATE`;
+  const settlement = await ensureGenerationSettlementLinks(tx, job.id);
+  const amount = settlement.refundable;
   if (amount === 0) return { jobId: job.id, amount: 0, alreadySettled: true };
   const idempotencyKey = `incident:${input.commandId}:refund:${job.id}`;
   const existing = await tx.dreamcoinLedger.findUnique({ where: { idempotencyKey } });
   if (existing) return { jobId: job.id, amount: existing.delta, alreadySettled: true };
   await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${job.userId} FOR UPDATE`;
   const balance = await tx.dreamcoinLedger.aggregate({ where: { userId: job.userId }, _sum: { delta: true } });
-  await tx.dreamcoinLedger.create({
+  const refund = await tx.dreamcoinLedger.create({
     data: {
       userId: job.userId,
       delta: amount,
@@ -100,10 +97,7 @@ async function appendRefund(
       idempotencyKey,
     },
   });
-  await tx.generationJob.updateMany({
-    where: { id: job.id, status: { in: ["failed", "blocked"] } },
-    data: { status: "refunded" },
-  });
+  await linkGenerationLedgerEntry(tx, refund);
   return { jobId: job.id, amount, alreadySettled: false };
 }
 
@@ -172,7 +166,7 @@ export async function executeIncidentActionPlanCommand(
           await recordGenerationAttemptQueuedEvent(tx, attempt);
           await tx.generationJob.update({
             where: { id: job.id },
-            data: { status: "queued", errorCode: null, completedAt: null },
+            data: { status: "queued", errorCode: null, completedAt: null, finishedAt: null, deliveredOutputCount: 0, version: { increment: 1 } },
           });
           await tx.mainOutboxEvent.upsert({
             where: { id: `incident_retry_${claimed.id}_${occurrence.id}` },

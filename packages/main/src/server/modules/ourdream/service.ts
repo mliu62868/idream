@@ -42,6 +42,7 @@ import {
   idempotencyKeys,
 } from "@idream/shared/contracts";
 import { appendCanonicalMetricEvent } from "@/server/modules/admin-v2/metrics/event-writer";
+import { linkGenerationLedgerEntry } from "@/server/ai/generation-settlement";
 import {
   clearSessionCookie,
   createAnonymousId,
@@ -6342,11 +6343,14 @@ async function appendLedger(
 ) {
   if (idempotencyKey) {
     const existing = await tx.dreamcoinLedger.findUnique({ where: { idempotencyKey } });
-    if (existing) return existing;
+    if (existing) {
+      await linkGenerationLedgerEntry(tx, existing);
+      return existing;
+    }
   }
   await lockUserLedger(tx, userId);
   const balance = await dreamcoinBalance(userId, tx);
-  return tx.dreamcoinLedger.create({
+  const created = await tx.dreamcoinLedger.create({
     data: {
       userId,
       delta,
@@ -6356,6 +6360,8 @@ async function appendLedger(
       idempotencyKey,
     },
   });
+  await linkGenerationLedgerEntry(tx, created);
+  return created;
 }
 
 async function lockUserLedger(tx: Prisma.TransactionClient, userId: string) {
@@ -6385,7 +6391,7 @@ async function failQueuedGeneration(
     }
     await tx.generationJob.update({
       where: { id: job.id },
-      data: { status: "failed", errorCode, completedAt: failedAt },
+      data: { status: "failed", errorCode, completedAt: null, finishedAt: failedAt, deliveredOutputCount: 0, version: { increment: 1 } },
     });
     const attempt = await tx.generationAttempt.findFirst({
       where: { requestId: job.id },

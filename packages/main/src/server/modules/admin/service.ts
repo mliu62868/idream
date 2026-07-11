@@ -9,6 +9,7 @@ import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import type { ImageGeneratePayload, VideoGeneratePayload } from "@/server/ai/schemas";
 import { imageReferenceInputsForGenerationJob } from "@/server/ai/reference-images";
+import { ensureGenerationSettlementLinks, linkGenerationLedgerEntry } from "@/server/ai/generation-settlement";
 import {
   recordGenerationAttemptEvent,
   recordGenerationAttemptQueuedEvent,
@@ -1074,6 +1075,7 @@ async function getGenerationJobDetail(request: Request, jobId: string) {
   const state = deriveGenerationJobState({
     status: job.status,
     completedAt: job.completedAt,
+    finishedAt: job.finishedAt,
     errorCode: job.errorCode,
     assets: job.assets,
     events: job.events,
@@ -1124,6 +1126,7 @@ async function requeueGenerationJob(request: Request, jobId: string) {
   const state = deriveGenerationJobState({
     status: job.status,
     completedAt: job.completedAt,
+    finishedAt: job.finishedAt,
     errorCode: job.errorCode,
     assets: job.assets,
     events: job.events,
@@ -1165,15 +1168,15 @@ async function discardGenerationJob(request: Request, jobId: string) {
   // Guard + refund inside one transaction, keyed on the same idempotency key the
   // generation pipeline uses, so a refund already issued elsewhere never doubles.
   const refundedNow = await prisma.$transaction(async (tx) => {
-    const alreadyRefunded = await tx.dreamcoinLedger.findFirst({
-      where: { sourceId: job.id, reason: "refund" },
-    });
-    const willRefund = !alreadyRefunded && job.costDreamcoins > 0;
+    await tx.$queryRaw`SELECT id FROM "generation_jobs" WHERE id = ${job.id} FOR UPDATE`;
+    const settlement = await ensureGenerationSettlementLinks(tx, job.id);
+    const amount = Math.min(job.costDreamcoins, settlement.refundable);
+    const willRefund = amount > 0;
     if (willRefund) {
       await appendLedger(
         tx,
         job.userId,
-        job.costDreamcoins,
+        amount,
         "refund",
         job.id,
         `generation:${job.id}:refund`,
@@ -1181,7 +1184,7 @@ async function discardGenerationJob(request: Request, jobId: string) {
     }
     await tx.generationJob.update({
       where: { id: job.id },
-      data: { status: "refunded", errorCode: job.errorCode ?? "discarded" },
+      data: { errorCode: job.errorCode ?? "discarded", version: { increment: 1 } },
     });
     return willRefund;
   });
@@ -1191,7 +1194,7 @@ async function discardGenerationJob(request: Request, jobId: string) {
     targetId: job.id,
     reason: body.reason,
     before: { status: job.status, errorCode: job.errorCode },
-    after: { status: "refunded", refunded: refundedNow },
+    after: { status: job.status, settlement: refundedNow ? "refunded" : "already_settled", refunded: refundedNow },
   });
   return ok({ discarded: true, refunded: refundedNow });
 }
@@ -1225,7 +1228,8 @@ async function deadLetterQueue(request: Request) {
       ledgerState: refundedIds.has(job.id) ? "refunded" : "reserved",
       retryEligibility: deriveGenerationJobState({
         status: job.status,
-        completedAt: job.completedAt,
+          completedAt: job.completedAt,
+          finishedAt: job.finishedAt,
         errorCode: job.errorCode,
         assets: job.assets,
         events: job.events,
@@ -1254,6 +1258,7 @@ async function requeueDeadLetterBatch(request: Request) {
     const retryEligibility = deriveGenerationJobState({
       status: job.status,
       completedAt: job.completedAt,
+      finishedAt: job.finishedAt,
       errorCode: job.errorCode,
       assets: job.assets,
       events: job.events,
@@ -1301,15 +1306,15 @@ async function discardDeadLetterBatch(request: Request) {
     // Re-check + refund inside the transaction, keyed idempotently so a refund
     // issued by the pipeline (or a concurrent discard) is never doubled.
     const didRefund = await prisma.$transaction(async (tx) => {
-      const alreadyRefunded = await tx.dreamcoinLedger.findFirst({
-        where: { sourceId: job.id, reason: "refund" },
-      });
-      const willRefund = !alreadyRefunded && job.costDreamcoins > 0;
+      await tx.$queryRaw`SELECT id FROM "generation_jobs" WHERE id = ${job.id} FOR UPDATE`;
+      const settlement = await ensureGenerationSettlementLinks(tx, job.id);
+      const amount = Math.min(job.costDreamcoins, settlement.refundable);
+      const willRefund = amount > 0;
       if (willRefund) {
         await appendLedger(
           tx,
           job.userId,
-          job.costDreamcoins,
+          amount,
           "refund",
           job.id,
           `generation:${job.id}:refund`,
@@ -1317,7 +1322,7 @@ async function discardDeadLetterBatch(request: Request) {
       }
       await tx.generationJob.update({
         where: { id: job.id },
-        data: { status: "refunded", errorCode: job.errorCode ?? "discarded" },
+        data: { errorCode: job.errorCode ?? "discarded", version: { increment: 1 } },
       });
       return willRefund;
     });
@@ -2287,7 +2292,7 @@ async function createProfileTestJob(request: Request, id: string) {
       const failedAt = new Date();
       await tx.generationJob.update({
         where: { id: job.id },
-        data: { status: "failed", errorCode: "queue_enqueue_failed", completedAt: failedAt },
+        data: { status: "failed", errorCode: "queue_enqueue_failed", completedAt: null, finishedAt: failedAt, deliveredOutputCount: 0, version: { increment: 1 } },
       });
       const attempt = await tx.generationAttempt.findFirst({
         where: { requestId: job.id },
@@ -4998,11 +5003,14 @@ async function appendLedger(
 ) {
   if (idempotencyKey) {
     const existing = await tx.dreamcoinLedger.findUnique({ where: { idempotencyKey } });
-    if (existing) return existing;
+    if (existing) {
+      await linkGenerationLedgerEntry(tx, existing);
+      return existing;
+    }
   }
   await lockUserLedger(tx, userId);
   const balance = await dreamcoinBalance(userId, tx);
-  return tx.dreamcoinLedger.create({
+  const created = await tx.dreamcoinLedger.create({
     data: {
       userId,
       delta,
@@ -5012,6 +5020,8 @@ async function appendLedger(
       idempotencyKey,
     },
   });
+  await linkGenerationLedgerEntry(tx, created);
+  return created;
 }
 
 async function lockUserLedger(tx: Prisma.TransactionClient, userId: string) {

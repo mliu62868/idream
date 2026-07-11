@@ -43,6 +43,7 @@ function hasValidArtifact(asset: { safetyStatus: string; deletedAt?: Date | null
 export function deriveGenerationTimeline(input: {
   status: string;
   completedAt: Date | null;
+  finishedAt?: Date | null;
   events: ReadonlyArray<GenerationJobEventFact>;
   moderationEvents: ReadonlyArray<GenerationModerationFact>;
   ledgerEntries: ReadonlyArray<GenerationLedgerFact>;
@@ -76,6 +77,7 @@ export function deriveGenerationTimeline(input: {
 export function deriveGenerationJobState(input: {
   status: string;
   completedAt: Date | null;
+  finishedAt?: Date | null;
   errorCode: string | null;
   assets: ReadonlyArray<{ id: string; safetyStatus: string; deletedAt?: Date | null }>;
   events: ReadonlyArray<GenerationJobEventFact>;
@@ -127,10 +129,7 @@ export function deriveGenerationJobState(input: {
 
   return {
     executionOutcome,
-    finishedAt: latestTerminalEvent?.createdAt ??
-      (["failed", "blocked", "cancelled", "completed", "refunded"].includes(input.status)
-        ? input.completedAt
-        : null),
+    finishedAt: latestTerminalEvent?.createdAt ?? input.finishedAt ?? (input.status === "completed" ? input.completedAt : null),
     terminalSource,
     terminalConflict: hasTerminalConflict,
     validArtifactCount: validArtifacts.length,

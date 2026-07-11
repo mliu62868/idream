@@ -25,6 +25,7 @@ import {
 } from "./schemas";
 import { hydratedImageReferenceInputs } from "./reference-images";
 import { recordGenerationAttemptEvent } from "./generation-attempt-events";
+import { ensureGenerationSettlementLinks, linkGenerationLedgerEntry } from "./generation-settlement";
 
 export const localAiQueueNames = [
   "ai.image.generate",
@@ -537,7 +538,22 @@ async function finalizeGenerationCompleted(
     await enqueueChatImageCompleted(job.id);
     return;
   }
-  if (["failed", "blocked", "refunded"].includes(job.status)) return;
+  if (["failed", "blocked", "cancelled", "refunded"].includes(job.status)) {
+    await prisma.$transaction(async (tx) => {
+      if (attemptId) {
+        await tx.generationArtifact.updateMany({
+          where: { attemptId },
+          data: { validationState: `late_after_${job.status}`, archiveState: "archived" },
+        });
+        await tx.mainOutboxEvent.updateMany({
+          where: { id: `generation_manifest_${attemptId}` },
+          data: { status: "delivered", deliveredAt: new Date() },
+        });
+      }
+      await appendGenerationEvent(tx, job.id, "late_artifact_archived", "Provider artifacts arrived after a terminal Request outcome and were suppressed", { attemptId: attemptId ?? null, requestStatus: job.status, assetCount: payload.assets.length });
+    });
+    return;
+  }
 
   await markGenerationModeratingOutput(job.id, payload.assets.length);
 
@@ -647,7 +663,10 @@ async function finalizeGenerationCompleted(
       data: {
         status: "completed",
         completedAt,
+        finishedAt: completedAt,
+        deliveredOutputCount: Math.min(job.outputCount, payload.assets.length),
         errorCode: null,
+        version: { increment: 1 },
       },
     });
     if (attemptId) {
@@ -1098,11 +1117,14 @@ async function refundGeneration(
   // don't charge a wallet on creation).
   const isDebitedJob = sourceType !== "content_production_item";
   await prisma.$transaction(async (tx) => {
-    if (cost > 0 && isDebitedJob) {
+    await tx.$queryRaw`SELECT id FROM "generation_jobs" WHERE id = ${jobId} FOR UPDATE`;
+    const settlement = isDebitedJob ? await ensureGenerationSettlementLinks(tx, jobId) : { refundable: 0 };
+    const refundAmount = Math.min(cost, settlement.refundable);
+    if (refundAmount > 0 && isDebitedJob) {
       await appendLedger(
         tx,
         userId,
-        cost,
+        refundAmount,
         "refund",
         jobId,
         `generation:${jobId}:refund`,
@@ -1110,7 +1132,7 @@ async function refundGeneration(
     }
     await tx.generationJob.update({
       where: { id: jobId },
-      data: { status, errorCode, completedAt: null },
+      data: { status, errorCode, completedAt: null, finishedAt: new Date(), deliveredOutputCount: 0, version: { increment: 1 } },
     });
     if (attemptId) {
       const attempt = await tx.generationAttempt.findFirstOrThrow({
@@ -1128,7 +1150,7 @@ async function refundGeneration(
           requestId: jobId,
           requestOutcome: status,
           errorCode,
-          refundAmount: cost > 0 && isDebitedJob ? cost : 0,
+          refundAmount,
         },
         errorCode,
         errorClass: attemptOutcome === "unknown" ? "ambiguous_provider_outcome" : undefined,
@@ -1142,7 +1164,7 @@ async function refundGeneration(
       errorCode,
     });
     await appendGenerationEvent(tx, jobId, "refunded", "Dreamcoins refunded", {
-      amount: cost,
+      amount: refundAmount,
     });
   });
 }
@@ -1174,7 +1196,10 @@ async function appendLedger(
 ) {
   if (idempotencyKey) {
     const existing = await tx.dreamcoinLedger.findUnique({ where: { idempotencyKey } });
-    if (existing) return existing;
+    if (existing) {
+      await linkGenerationLedgerEntry(tx, existing);
+      return existing;
+    }
   }
   await lockUserLedger(tx, userId);
   const aggregate = await tx.dreamcoinLedger.aggregate({
@@ -1182,7 +1207,7 @@ async function appendLedger(
     _sum: { delta: true },
   });
   const balance = aggregate._sum.delta ?? 0;
-  return tx.dreamcoinLedger.create({
+  const created = await tx.dreamcoinLedger.create({
     data: {
       userId,
       delta,
@@ -1192,6 +1217,8 @@ async function appendLedger(
       idempotencyKey,
     },
   });
+  await linkGenerationLedgerEntry(tx, created);
+  return created;
 }
 
 async function lockUserLedger(tx: Prisma.TransactionClient, userId: string) {

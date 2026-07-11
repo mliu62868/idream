@@ -168,7 +168,7 @@ export async function executeCreativeRetryCommand(
         attemptIds.push(attempt.id);
         await tx.generationJob.update({
           where: { id: item.job.id },
-          data: { status: "queued", errorCode: null, completedAt: null },
+          data: { status: "queued", errorCode: null, completedAt: null, finishedAt: null, deliveredOutputCount: 0, version: { increment: 1 } },
         });
         await tx.contentProductionItem.update({
           where: { id: item.id },

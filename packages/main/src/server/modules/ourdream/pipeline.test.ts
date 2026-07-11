@@ -125,6 +125,14 @@ describe("local AI service pipeline", () => {
     expectOk(completed);
     expect(completed.data.job.status).toBe("completed");
     expect(completed.data.assets).toHaveLength(2);
+    await expect(prisma.generationJob.findUnique({ where: { id: jobId } })).resolves.toMatchObject({
+      status: "completed",
+      deliveredOutputCount: 2,
+      version: 2,
+      finishedAt: expect.any(Date),
+      completedAt: expect.any(Date),
+    });
+    await expect(prisma.generationSettlementLink.count({ where: { requestId: jobId } })).resolves.toBe(1);
 
     const generateJob = await jobQueue.getByDedupeKey("ai.image.generate", `generation:${jobId}`);
     const finalizeJob = await jobQueue.getByDedupeKey(
@@ -185,6 +193,13 @@ describe("local AI service pipeline", () => {
     expect(poll.data.job.errorCode).toBe("asset_quality_failed");
     expect(await dreamcoinBalance(userId)).toBe(100);
     expect(await prisma.mediaAsset.count({ where: { sourceJobId: jobId } })).toBe(0);
+    await expect(prisma.generationJob.findUnique({ where: { id: jobId } })).resolves.toMatchObject({
+      status: "failed",
+      deliveredOutputCount: 0,
+      finishedAt: expect.any(Date),
+      completedAt: null,
+    });
+    await expect(prisma.generationSettlementLink.count({ where: { requestId: jobId } })).resolves.toBe(2);
   });
 
   it("settles async character preview as failed when the worker throws on its final attempt", async () => {

@@ -2724,12 +2724,16 @@ describe("dead-letter operations console", () => {
     await createUser({ id: owner });
     await makeJob(`${P}dl-dc-failed`, owner, "failed", 8);
     await makeJob(`${P}dl-dc-refunded`, owner, "blocked", 8);
+    await prisma.dreamcoinLedger.createMany({ data: [
+      { id: `${P}dl-dc-spend-failed`, userId: owner, delta: -8, balanceAfter: -8, reason: "generation_spend", sourceId: `${P}dl-dc-failed` },
+      { id: `${P}dl-dc-spend-refunded`, userId: owner, delta: -8, balanceAfter: -16, reason: "generation_spend", sourceId: `${P}dl-dc-refunded` },
+    ] });
     await prisma.dreamcoinLedger.create({
       data: {
         id: `${P}dl-dc-refund`,
         userId: owner,
         delta: 8,
-        balanceAfter: 8,
+        balanceAfter: -8,
         reason: "refund",
         sourceId: `${P}dl-dc-refunded`,
       },

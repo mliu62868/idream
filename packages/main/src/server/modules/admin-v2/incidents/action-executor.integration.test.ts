@@ -48,6 +48,16 @@ describe("Incident action-plan durable executor", () => {
         idempotencyKey: `incident-action-spend-${suffix}`,
       },
     });
+    await prisma.dreamcoinLedger.create({
+      data: {
+        userId: userIds[0],
+        delta: 5,
+        balanceAfter: 93,
+        reason: "refund",
+        sourceId: jobIds[0],
+        idempotencyKey: `incident-action-partial-refund-${suffix}`,
+      },
+    });
     await prisma.generationAttempt.createMany({
       data: [
         { id: attemptIds[0], requestId: jobIds[0], attemptNo: 1, provider: "refund-provider", profileKey: refundProfileKey, workflowKey: "refund-workflow", status: "failed", errorClass: "provider_error", errorSignature: `refund-${suffix}`, retryability: "not_retryable", finishedAt: new Date() },
@@ -75,6 +85,7 @@ describe("Incident action-plan durable executor", () => {
     await prisma.opsIncidentOccurrence.deleteMany({ where: { incidentId: { in: incidentIds } } });
     await prisma.opsIncident.deleteMany({ where: { id: { in: incidentIds } } });
     await prisma.generationAttempt.deleteMany({ where: { id: { in: attemptIds } } });
+    await prisma.generationSettlementLink.deleteMany({ where: { requestId: { in: jobIds } } });
     await prisma.dreamcoinLedger.deleteMany({ where: { sourceId: { in: jobIds } } });
     await prisma.generationJob.deleteMany({ where: { id: { in: jobIds } } });
     await prisma.generationProviderRoute.deleteMany({ where: { profileKey: pauseProfileKey } });
@@ -110,10 +121,11 @@ describe("Incident action-plan durable executor", () => {
 
   it("settles only the outstanding captured spend", async () => {
     await expect(execute("refund", attemptIds[0])).resolves.toMatchObject({ status: "succeeded" });
-    await expect(prisma.dreamcoinLedger.findFirst({
-      where: { sourceId: jobIds[0], reason: "refund" },
-    })).resolves.toMatchObject({ delta: 12 });
-    await expect(prisma.generationJob.findUnique({ where: { id: jobIds[0] } })).resolves.toMatchObject({ status: "refunded" });
+    const refunds = await prisma.dreamcoinLedger.findMany({ where: { sourceId: jobIds[0], reason: "refund" } });
+    expect(refunds.reduce((sum, entry) => sum + entry.delta, 0)).toBe(12);
+    expect(refunds).toEqual(expect.arrayContaining([expect.objectContaining({ delta: 7 })]));
+    await expect(prisma.generationSettlementLink.count({ where: { requestId: jobIds[0] } })).resolves.toBe(3);
+    await expect(prisma.generationJob.findUnique({ where: { id: jobIds[0] } })).resolves.toMatchObject({ status: "failed" });
   });
 
   it("pauses the exact provider route from the Incident signature", async () => {

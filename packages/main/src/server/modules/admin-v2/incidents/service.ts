@@ -256,13 +256,13 @@ function eligibleOccurrenceIds(
   occurrences: ReadonlyArray<{
     id: string;
     attempt: FailedAttemptSource | null;
-    hasCapturedSpend: boolean;
-    hasRefund: boolean;
+    capturedSpend: number;
+    refunded: number;
   }>,
 ) {
   if (action === "refund") {
     return occurrences
-      .filter((row) => row.hasCapturedSpend && !row.hasRefund)
+      .filter((row) => row.capturedSpend > row.refunded)
       .map((row) => row.id)
       .sort();
   }
@@ -300,12 +300,8 @@ async function occurrenceSnapshot(incidentId: string) {
   return occurrences.map((row) => ({
     id: row.id,
     attempt: row.attemptId ? attemptsById.get(row.attemptId) ?? null : null,
-    hasCapturedSpend: ledger.some(
-      (entry) => entry.sourceId === row.requestId && entry.reason === "generation_spend" && entry.delta < 0,
-    ),
-    hasRefund: ledger.some(
-      (entry) => entry.sourceId === row.requestId && entry.reason === "refund" && entry.delta > 0,
-    ),
+    capturedSpend: -ledger.filter((entry) => entry.sourceId === row.requestId && entry.reason === "generation_spend" && entry.delta < 0).reduce((sum, entry) => sum + entry.delta, 0),
+    refunded: ledger.filter((entry) => entry.sourceId === row.requestId && entry.reason === "refund" && entry.delta > 0).reduce((sum, entry) => sum + entry.delta, 0),
   }));
 }
 

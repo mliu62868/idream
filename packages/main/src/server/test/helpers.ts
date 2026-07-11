@@ -405,6 +405,7 @@ export async function purgeTestData(prefix: string) {
     where: { OR: [{ id: sw }, { inviterId: sw }, { inviteeId: sw }, { code: sw }] },
   });
   await prisma.follow.deleteMany({ where: { OR: [{ followerId: sw }, { followeeId: sw }] } });
+  await prisma.generationSettlementLink.deleteMany({ where: { requestId: sw } });
 
   // Characters cascade: stats, tags, likes, submissions, chat sessions, messages.
   await prisma.character.deleteMany({ where: { OR: [{ id: sw }, { creatorId: sw }] } });

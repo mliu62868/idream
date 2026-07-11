@@ -516,6 +516,7 @@ model GenerationJob {
   recipeVersion          Int?
   orientation            String?
   outputCount            Int                     @default(1)
+  deliveredOutputCount   Int                     @default(0)
   status                 String                  @default("queued") // enum: queued | moderating_input | running | moderating_output | completed | failed | blocked | refunded
   costDreamcoins         Int                     @default(0)
   provider               String?
@@ -526,6 +527,8 @@ model GenerationJob {
   createdAt              DateTime                @default(now())
   updatedAt              DateTime                @updatedAt
   completedAt            DateTime?
+  finishedAt             DateTime?
+  version                Int                     @default(1)
   user                   User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
   character              Character?              @relation(fields: [characterId], references: [id], onDelete: SetNull)
   referenceSetRevision   ReferenceSetRevision?   @relation(fields: [referenceSetRevisionId], references: [id], onDelete: SetNull)
