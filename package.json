@@ -24,7 +24,7 @@
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test --concurrency=1",
-    "check": "turbo run lint typecheck build",
+    "check": "bun run lint && bun run typecheck && bun run build",
     "dev": "bun run --filter @idream/main dev",
     "dev:admin": "bun run --filter @idream/admin dev",
     "pm2:start": "pm2 start ecosystem.config.js",
