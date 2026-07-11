@@ -33,4 +33,23 @@ describe("admin v2 client", () => {
     });
     expect(schema.parse).toHaveBeenCalledWith({ id: "case-1" });
   });
+
+  it("forwards PUT watch mutations through the Admin HTTP BFF with idempotency", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      void input;
+      void init;
+      return Response.json({ ok: true, data: { watching: true } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await adminV2Request("/api/v2/admin/collaboration/incident/incident-1/watch", {
+      method: "PUT",
+      idempotencyKey: "watch-1",
+      body: { watching: true },
+    });
+
+    const [, init] = fetchMock.mock.calls[0] ?? [];
+    expect(init?.method).toBe("PUT");
+    expect(new Headers(init?.headers).get("idempotency-key")).toBe("watch-1");
+  });
 });

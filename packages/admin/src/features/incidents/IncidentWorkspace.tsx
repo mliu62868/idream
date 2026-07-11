@@ -9,6 +9,13 @@ import {
   type OpsIncident,
 } from "@idream/shared/admin";
 import { adminV2Request, setWorkspaceUrl } from "@/lib/admin-v2-api";
+import { CollaborationPanel } from "@/features/collaboration/CollaborationPanel";
+import { SavedViewsControl } from "@/features/collaboration/SavedViewsControl";
+import {
+  incidentQueryFromSavedState,
+  incidentSavedState,
+  type SavedViewRecord,
+} from "@/features/collaboration/saved-views";
 import { buildIncidentQuery, type IncidentQueryDraft } from "./query";
 import {
   EmptyWorkspace,
@@ -57,6 +64,7 @@ export function IncidentWorkspace({ canManage }: { canManage: boolean }) {
   const [query, setQuery] = useState<IncidentQueryDraft>(() => queryFromLocation());
   const [list, setList] = useState<IncidentList | null>(null);
   const [selectedId, setSelectedId] = useState(() => valueFromLocation("incident"));
+  const [selectedSavedViewId, setSelectedSavedViewId] = useState(() => valueFromLocation("savedView"));
   const [detail, setDetail] = useState<IncidentDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -114,14 +122,16 @@ export function IncidentWorkspace({ canManage }: { canManage: boolean }) {
   function applyFilters(event?: FormEvent) {
     event?.preventDefault();
     const next = { ...query, cursor: undefined };
+    setSelectedSavedViewId(null);
     setQuery(next);
-    updateUrl(next, selectedId);
+    updateUrl(next, selectedId, null);
     void loadList(next);
   }
 
   function clearFilters() {
+    setSelectedSavedViewId(null);
     setQuery(initialQuery);
-    updateUrl(initialQuery, selectedId);
+    updateUrl(initialQuery, selectedId, null);
     void loadList(initialQuery);
   }
 
@@ -129,8 +139,20 @@ export function IncidentWorkspace({ canManage }: { canManage: boolean }) {
     detailRequestId.current += 1;
     setSelectedId(id);
     setDetail(null);
-    updateUrl(query, id);
+    updateUrl(query, id, selectedSavedViewId);
   }
+
+  const applySavedView = useCallback((view: SavedViewRecord) => {
+    const next = incidentQueryFromSavedState(view.queryState);
+    setSelectedSavedViewId(view.id);
+    setQuery(next);
+    updateUrl(next, selectedId, view.id);
+    void loadList(next);
+  }, [loadList, selectedId]);
+
+  const selectSavedView = useCallback((id: string | null) => {
+    setSelectedSavedViewId(id);
+  }, []);
 
   async function mutate(label: string, execute: () => Promise<unknown>) {
     setBusy(true);
@@ -165,6 +187,14 @@ export function IncidentWorkspace({ canManage }: { canManage: boolean }) {
           </p>
         ) : null}
       </header>
+
+      <SavedViewsControl
+        currentState={incidentSavedState(query)}
+        onApply={applySavedView}
+        onSelectedChange={selectSavedView}
+        scope="incident"
+        selectedId={selectedSavedViewId}
+      />
 
       <form className="grid gap-3 rounded-xl bg-[var(--ad-surface)] p-4 md:grid-cols-2 xl:grid-cols-[minmax(240px,1fr)_repeat(3,180px)_auto]" onSubmit={applyFilters}>
         <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
@@ -276,6 +306,7 @@ function IncidentInspector({ busy, canManage, detail, onClose, onMutate }: {
         <section className="space-y-3 border-t border-[var(--ad-border)] pt-5" aria-labelledby="incident-verification-title"><h4 className="text-sm font-semibold" id="incident-verification-title">Recovery verification</h4><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Evidence reference<input className={fieldClass} onChange={(event) => setEvidence(event.target.value)} placeholder="monitor, dashboard, or runbook reference" value={evidence} /></label><p className="text-xs leading-5 text-[var(--ad-text-muted)]">Passing records all five required checks: success rate, signature growth, backlog, failed-request plan, and settlement.</p><div className="flex flex-wrap gap-2"><WorkspaceButton disabled={busy || !canVerify || !evidence.trim()} onClick={() => void onMutate("Recovery verification recorded", () => adminV2Request(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/verification`, { method: "POST", body: { entityVersion: incident.version, state: "passed", evidenceRefs: [evidence.trim()], checks: { successRateRecovered: true, signatureGrowthStopped: true, backlogRecovering: true, failedRequestPlanComplete: true, settlementReconciled: true } } }))}><CheckCircle2 className="h-4 w-4" />Mark recovery verified</WorkspaceButton><WorkspaceButton disabled={busy || !canResolve || reason.trim().length < 3} tone="primary" onClick={() => void onMutate("Incident resolve command accepted", () => adminV2Request(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/commands/resolve`, { method: "POST", idempotencyKey: resolveIdempotencyKey, body: { entityVersion: incident.version, reason: { code: "recovery_verified", summary: reason.trim() }, confirmation: `${incident.id}:resolve` } }))}>Resolve incident</WorkspaceButton></div>{!canVerify ? <p className="text-xs text-[var(--ad-yellow-text)]"><AlertTriangle className="mr-1 inline h-3.5 w-3.5" />Execute mitigation before verification.</p> : null}</section>
           </>
         ) : <p className="rounded-md bg-[var(--ad-surface-subtle)] p-3 text-sm text-[var(--ad-text-muted)]">Read access only. Incident actions require <code>ops.incident.manage</code>.</p>}
+        <CollaborationPanel canWrite={canManage} targetId={incident.id} targetType="incident" />
       </div>
     </aside>
   );
@@ -292,18 +323,23 @@ function Stat({ label, value }: { label: string; value: React.ReactNode }) {
 function queryFromLocation(): IncidentQueryDraft {
   if (typeof window === "undefined") return initialQuery;
   const params = new URLSearchParams(window.location.search);
-  return { ...initialQuery, search: params.get("search") ?? "", status: params.get("status") ?? "", severity: params.get("severity") ?? "", ownerId: params.get("ownerId") ?? "" };
+  return { ...initialQuery, search: params.get("search") ?? "", status: params.get("status") ?? "", severity: params.get("severity") ?? "", ownerId: params.get("ownerId") ?? "", limit: boundedLimit(params.get("limit"), initialQuery.limit) };
 }
 
 function valueFromLocation(key: string) {
   return typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get(key);
 }
 
-function updateUrl(query: IncidentQueryDraft, selectedId: string | null) {
+function updateUrl(query: IncidentQueryDraft, selectedId: string | null, savedViewId: string | null) {
   const params = new URLSearchParams(buildIncidentQuery({ ...query, cursor: undefined }));
-  params.delete("limit");
   if (selectedId) params.set("incident", selectedId);
+  if (savedViewId) params.set("savedView", savedViewId);
   setWorkspaceUrl(params);
+}
+
+function boundedLimit(value: string | null, fallback: number) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 200 ? parsed : fallback;
 }
 
 function message(error: unknown) {

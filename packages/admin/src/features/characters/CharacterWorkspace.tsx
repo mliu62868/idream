@@ -10,6 +10,7 @@ import {
 import { ArrowLeft, Clock3, RefreshCcw, Rocket, RotateCcw, Save, ShieldAlert } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { AdminSubview } from "@/components/admin/nav-config";
+import { CollaborationPanel } from "@/features/collaboration/CollaborationPanel";
 import {
   EmptyWorkspace,
   LoadingWorkspace,
@@ -197,6 +198,9 @@ function ProjectEditor({ data, permissions, onReload }: { data: CharacterWorkspa
         {message ? <p className="mt-4 rounded-md bg-[var(--ad-yellow-bg)] p-3 text-xs text-[var(--ad-yellow-text)]" role={state === "Failed to save" ? "alert" : "status"}>{message}</p> : null}
         {state === "Conflict" ? <div className="mt-3"><WorkspaceButton onClick={() => void onReload()}><RefreshCcw className="h-4 w-4" /> Load server revision</WorkspaceButton></div> : null}
       </aside>
+      <div className="xl:col-span-2">
+        <CollaborationPanel canWrite={permissions.writeProject} targetId={data.project.id} targetType="character_project" />
+      </div>
     </div>
   );
 }

@@ -5,6 +5,7 @@ export type CaseQueryDraft = {
   status: string;
   priority: string;
   ownerId: string;
+  sort: "updated_desc" | "updated_asc";
   cursor?: string;
   limit: number;
 };
@@ -17,6 +18,7 @@ export function buildCaseQuery(query: CaseQueryDraft) {
   append(params, "status", query.status);
   append(params, "priority", query.priority);
   append(params, "ownerId", query.ownerId);
+  append(params, "sort", query.sort);
   append(params, "cursor", query.cursor);
   params.set("limit", String(query.limit));
   return params.toString();

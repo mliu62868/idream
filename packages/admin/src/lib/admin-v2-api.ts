@@ -27,7 +27,7 @@ export class AdminV2RequestError extends Error {
 export async function adminV2Request<T>(
   path: string,
   options: {
-    method?: "GET" | "POST" | "PATCH";
+    method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
     body?: unknown;
     idempotencyKey?: string;
     ifMatch?: number;

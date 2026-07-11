@@ -9,6 +9,13 @@ import {
   type OperationsCase,
 } from "@idream/shared/admin";
 import { adminV2Request, setWorkspaceUrl } from "@/lib/admin-v2-api";
+import { CollaborationPanel } from "@/features/collaboration/CollaborationPanel";
+import { SavedViewsControl } from "@/features/collaboration/SavedViewsControl";
+import {
+  caseQueryFromSavedState,
+  caseSavedState,
+  type SavedViewRecord,
+} from "@/features/collaboration/saved-views";
 import { buildCaseQuery, type CaseQueryDraft } from "./query";
 import {
   EmptyWorkspace,
@@ -47,6 +54,7 @@ const initialQuery: CaseQueryDraft = {
   status: "",
   priority: "",
   ownerId: "",
+  sort: "updated_desc",
   limit: 30,
 };
 
@@ -54,6 +62,7 @@ export function CaseWorkspace({ canAssign, canDecide }: { canAssign: boolean; ca
   const [query, setQuery] = useState<CaseQueryDraft>(() => queryFromLocation());
   const [list, setList] = useState<CaseList | null>(null);
   const [selectedId, setSelectedId] = useState(() => valueFromLocation("case"));
+  const [selectedSavedViewId, setSelectedSavedViewId] = useState(() => valueFromLocation("savedView"));
   const [detail, setDetail] = useState<CaseDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -110,22 +119,25 @@ export function CaseWorkspace({ canAssign, canDecide }: { canAssign: boolean; ca
   function applyFilters(event?: FormEvent) {
     event?.preventDefault();
     const next = { ...query, cursor: undefined };
+    setSelectedSavedViewId(null);
     setQuery(next);
-    updateUrl(next, selectedId);
+    updateUrl(next, selectedId, null);
     void loadList(next);
   }
 
   function selectView(view: string) {
     const next = { ...query, view, cursor: undefined };
+    setSelectedSavedViewId(null);
     setQuery(next);
-    updateUrl(next, selectedId);
+    updateUrl(next, selectedId, null);
     void loadList(next);
   }
 
   function clearFilters() {
     const next = { ...initialQuery, view: query.view };
+    setSelectedSavedViewId(null);
     setQuery(next);
-    updateUrl(next, selectedId);
+    updateUrl(next, selectedId, null);
     void loadList(next);
   }
 
@@ -133,8 +145,20 @@ export function CaseWorkspace({ canAssign, canDecide }: { canAssign: boolean; ca
     detailRequestId.current += 1;
     setSelectedId(id);
     setDetail(null);
-    updateUrl(query, id);
+    updateUrl(query, id, selectedSavedViewId);
   }
+
+  const applySavedView = useCallback((view: SavedViewRecord) => {
+    const next = caseQueryFromSavedState(view.queryState);
+    setSelectedSavedViewId(view.id);
+    setQuery(next);
+    updateUrl(next, selectedId, view.id);
+    void loadList(next);
+  }, [loadList, selectedId]);
+
+  const selectSavedView = useCallback((id: string | null) => {
+    setSelectedSavedViewId(id);
+  }, []);
 
   async function mutate(label: string, execute: () => Promise<unknown>) {
     setBusy(true);
@@ -162,11 +186,20 @@ export function CaseWorkspace({ canAssign, canDecide }: { canAssign: boolean; ca
 
       <CaseTabs active={query.view} onChange={selectView} />
 
-      <form className="grid gap-3 rounded-xl bg-[var(--ad-surface)] p-4 md:grid-cols-2 xl:grid-cols-[minmax(220px,1fr)_repeat(3,170px)_auto]" onSubmit={applyFilters}>
+      <SavedViewsControl
+        currentState={caseSavedState(query)}
+        onApply={applySavedView}
+        onSelectedChange={selectSavedView}
+        scope="case"
+        selectedId={selectedSavedViewId}
+      />
+
+      <form className="grid gap-3 rounded-xl bg-[var(--ad-surface)] p-4 md:grid-cols-2 xl:grid-cols-[minmax(220px,1fr)_repeat(4,150px)_auto]" onSubmit={applyFilters}>
         <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Search all cases<input className={fieldClass} onChange={(event) => setQuery({ ...query, search: event.target.value })} placeholder="target or case key" value={query.search} /></label>
         <Select label="Type" onChange={(type) => setQuery({ ...query, type })} options={["", "content_report", "appeal", "support_request", "billing_dispute"]} value={query.type} />
         <Select label="Status" onChange={(status) => setQuery({ ...query, status })} options={["", "new", "triaged", "in_progress", "waiting", "resolved", "closed", "reopened"]} value={query.status} />
         <Select label="Priority" onChange={(priority) => setQuery({ ...query, priority })} options={["", "urgent", "high", "normal", "low"]} value={query.priority} />
+        <Select label="Sort" onChange={(sort) => setQuery({ ...query, sort: sort as CaseQueryDraft["sort"] })} options={["updated_desc", "updated_asc"]} value={query.sort} />
         <div className="flex items-end gap-2"><WorkspaceButton tone="primary" type="submit">Apply</WorkspaceButton>{filtered ? <WorkspaceButton onClick={clearFilters}>Clear</WorkspaceButton> : null}</div>
       </form>
 
@@ -196,7 +229,7 @@ function CaseTabs({ active, onChange }: { active: string; onChange: (view: strin
     refs.current[next]?.focus();
     onChange(views[next]);
   }
-  return <div aria-label="Case saved views" className="flex gap-1 overflow-x-auto rounded-lg bg-[var(--ad-surface-subtle)] p-1" role="tablist">{views.map((view, index) => <button aria-selected={active === view} className={`min-h-11 shrink-0 rounded-md px-3 text-sm font-semibold transition ${active === view ? "bg-[var(--ad-surface)] text-[var(--ad-ink)] shadow-sm" : "text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]"}`} key={view} onClick={() => onChange(view)} onKeyDown={(event) => onKeyDown(event, index)} ref={(node) => { refs.current[index] = node; }} role="tab" tabIndex={active === view ? 0 : -1} type="button">{view.replaceAll("_", " ")}</button>)}</div>;
+  return <div aria-label="Case queue views" className="flex gap-1 overflow-x-auto rounded-lg bg-[var(--ad-surface-subtle)] p-1" role="tablist">{views.map((view, index) => <button aria-selected={active === view} className={`min-h-11 shrink-0 rounded-md px-3 text-sm font-semibold transition ${active === view ? "bg-[var(--ad-surface)] text-[var(--ad-ink)] shadow-sm" : "text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]"}`} key={view} onClick={() => onChange(view)} onKeyDown={(event) => onKeyDown(event, index)} ref={(node) => { refs.current[index] = node; }} role="tab" tabIndex={active === view ? 0 : -1} type="button">{view.replaceAll("_", " ")}</button>)}</div>;
 }
 
 function CaseRow({ active, adminCase, onSelect, referenceTime }: { active: boolean; adminCase: OperationsCase; onSelect: () => void; referenceTime: string }) {
@@ -230,12 +263,14 @@ function CaseInspector({ busy, canAssign, canDecide, detail, onClose, onMutate }
       {canDecide ? <section className="space-y-4 border-t border-[var(--ad-border)] pt-5" aria-labelledby="case-decision-title"><h4 className="text-sm font-semibold" id="case-decision-title">Decision and verification</h4><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Decision<input className={fieldClass} onChange={(event) => setDecision(event.target.value)} placeholder="approve, reject, refund, restore…" value={decision} /></label><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Resolution summary<textarea className={textAreaClass} onChange={(event) => setSummary(event.target.value)} value={summary} /></label><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Evidence IDs (comma separated)<input className={fieldClass} onChange={(event) => setEvidenceRefs(event.target.value)} value={evidenceRefs} /></label><div className="flex flex-wrap gap-2"><WorkspaceButton disabled={busy || !decision.trim() || !summary.trim() || refs.length === 0} onClick={() => void onMutate("Case decision recorded", () => adminV2Request(`/api/v2/admin/cases/${encodeURIComponent(adminCase.id)}/decisions`, { method: "POST", body: { entityVersion: adminCase.version, decision: decision.trim(), summary: summary.trim(), evidenceRefs: refs } }))}><ClipboardCheck className="h-4 w-4" />Record decision</WorkspaceButton><WorkspaceButton disabled={busy || !adminCase.resolutionSummary || refs.length === 0} onClick={() => void onMutate("Downstream outcome verified", () => adminV2Request(`/api/v2/admin/cases/${encodeURIComponent(adminCase.id)}/verification`, { method: "POST", body: { entityVersion: adminCase.version, state: "passed", evidenceRefs: refs } }))}><CheckCircle2 className="h-4 w-4" />Verify outcome</WorkspaceButton></div>
         <div className="rounded-md bg-[var(--ad-surface-subtle)] p-3"><code className="block break-all text-xs">{closeConfirmation}</code><label className="mt-3 grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Type confirmation<input className={fieldClass} onChange={(event) => setConfirmation(event.target.value)} value={confirmation} /></label><div className="mt-3"><WorkspaceButton disabled={busy || !canClose || confirmation !== closeConfirmation || reason.trim().length < 3} tone="danger" onClick={() => void onMutate("Case close command accepted", () => adminV2Request(`/api/v2/admin/cases/${encodeURIComponent(adminCase.id)}/commands/close`, { method: "POST", idempotencyKey: closeIdempotencyKey, body: { entityVersion: adminCase.version, reason: { code: "outcome_verified", summary: reason.trim() }, confirmation } }))}>Close case</WorkspaceButton></div></div>
       </section> : <p className="rounded-md bg-[var(--ad-surface-subtle)] p-3 text-sm text-[var(--ad-text-muted)]">Read access only. Decisions require <code>case.decide</code>.</p>}
+      <CollaborationPanel canWrite={canAssign} targetId={adminCase.id} targetType="case" />
     </div></aside>;
 }
 
 function Select({ label, onChange, options, value }: { label: string; onChange: (value: string) => void; options: string[]; value: string }) { return <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{label}<select className={fieldClass} onChange={(event) => onChange(event.target.value)} value={value}>{options.map((option) => <option key={option || "all"} value={option}>{option ? option.replaceAll("_", " ") : "All"}</option>)}</select></label>; }
 function Stat({ label, value }: { label: string; value: ReactNode }) { return <div><dt className="text-[10px] font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">{label}</dt><dd className="mt-1 truncate font-mono text-sm text-[var(--ad-ink)]" title={typeof value === "string" ? value : undefined}>{value}</dd></div>; }
-function queryFromLocation(): CaseQueryDraft { if (typeof window === "undefined") return initialQuery; const params = new URLSearchParams(window.location.search); const view = params.get("view"); return { ...initialQuery, view: views.includes(view as (typeof views)[number]) ? view ?? "mine" : "mine", search: params.get("search") ?? "", type: params.get("type") ?? "", status: params.get("status") ?? "", priority: params.get("priority") ?? "", ownerId: params.get("ownerId") ?? "" }; }
+function queryFromLocation(): CaseQueryDraft { if (typeof window === "undefined") return initialQuery; const params = new URLSearchParams(window.location.search); const view = params.get("view"); const sort = params.get("sort"); return { ...initialQuery, view: views.includes(view as (typeof views)[number]) ? view ?? "mine" : "mine", search: params.get("search") ?? "", type: params.get("type") ?? "", status: params.get("status") ?? "", priority: params.get("priority") ?? "", ownerId: params.get("ownerId") ?? "", sort: sort === "updated_asc" ? "updated_asc" : "updated_desc", limit: boundedLimit(params.get("limit"), initialQuery.limit) }; }
 function valueFromLocation(key: string) { return typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get(key); }
-function updateUrl(query: CaseQueryDraft, selectedId: string | null) { const params = new URLSearchParams(buildCaseQuery({ ...query, cursor: undefined })); params.delete("limit"); if (selectedId) params.set("case", selectedId); setWorkspaceUrl(params); }
+function updateUrl(query: CaseQueryDraft, selectedId: string | null, savedViewId: string | null) { const params = new URLSearchParams(buildCaseQuery({ ...query, cursor: undefined })); if (selectedId) params.set("case", selectedId); if (savedViewId) params.set("savedView", savedViewId); setWorkspaceUrl(params); }
+function boundedLimit(value: string | null, fallback: number) { const parsed = Number(value); return Number.isInteger(parsed) && parsed >= 1 && parsed <= 200 ? parsed : fallback; }
 function message(error: unknown) { return error instanceof Error ? error.message : "Case operation failed"; }

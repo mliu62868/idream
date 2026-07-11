@@ -11,11 +11,12 @@ describe("case workspace query", () => {
         status: "",
         priority: "urgent",
         ownerId: "",
+        sort: "updated_asc",
         cursor: "case_42",
         limit: 50,
       }),
     ).toBe(
-      "view=overdue&search=character_7&type=content_report&priority=urgent&cursor=case_42&limit=50",
+      "view=overdue&search=character_7&type=content_report&priority=urgent&sort=updated_asc&cursor=case_42&limit=50",
     );
   });
 });
