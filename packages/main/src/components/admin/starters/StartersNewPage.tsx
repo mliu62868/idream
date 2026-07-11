@@ -5,11 +5,14 @@ import { apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { FormPage, FormSection, Field, FormFooter, INPUT_CLASS, TEXTAREA_CLASS } from "@/components/admin/ui/FormPage";
 import { GhostButton, PrimaryButton } from "@/components/admin/ui/buttons";
-import { SCOPES, STARTERS_LIST, starterPayload, tagsFromText, type StarterDraft } from "./starters-api";
+import { SCOPES, STARTER_GENDERS, STARTER_STYLES, STARTERS_LIST, starterPayload, tagsFromText, type StarterDraft } from "./starters-api";
 
 const EMPTY_DRAFT: StarterDraft = {
   name: "", summary: "", gender: "", style: "",
-  scope: "built_in", tags: "", sortOrder: "0", reason: "",
+  scope: "built_in", tags: "", sortOrder: "0",
+  creativeBrief: "", archetype: "", relationship: "", personality: "",
+  speakingStyle: "", firstMessage: "", exampleDialogue: "",
+  appearanceNotes: "", visualBrief: "", reason: "Create starter template draft",
 };
 
 // SPEC: 全屏新建页 —— 基本信息→分类→摘要与标签→提交；AI 辅助一句话灵感填充。
@@ -32,7 +35,10 @@ export function StartersNewPage() {
     setAssisting(true);
     setError(null);
     try {
-      const data = await apiWrite<{ description: string; advancedDetails: { personality: string } }>(
+      const data = await apiWrite<{
+        description: string;
+        advancedDetails: { personality: string; speakingStyle: string; firstMessage: string; visualBrief: string };
+      }>(
         "/api/v1/admin/content/character-assist", "POST", { seed: seed.trim() },
       );
       const summary = data.description.slice(0, 200);
@@ -40,6 +46,11 @@ export function StartersNewPage() {
       const existing = tagsFromText(draft.tags);
       patch({
         summary,
+        creativeBrief: seed.trim(),
+        personality: data.advancedDetails.personality,
+        speakingStyle: data.advancedDetails.speakingStyle,
+        firstMessage: data.advancedDetails.firstMessage,
+        visualBrief: data.advancedDetails.visualBrief,
         tags: [...new Set([...existing, ...traits])].slice(0, 12).join(", "),
       });
     } catch (assistError) {
@@ -49,14 +60,14 @@ export function StartersNewPage() {
     }
   }
 
-  const canSubmit = !creating && draft.name.trim().length >= 1 && draft.reason.trim().length >= 3;
+  const canSubmit = !creating && draft.name.trim().length >= 1;
 
   async function create() {
     setCreating(true);
     setError(null);
     try {
       const created = await apiWrite<{ item?: { id?: string } }>(
-        STARTERS_LIST, "POST", starterPayload(draft),
+        STARTERS_LIST, "POST", starterPayload({ ...draft, reason: EMPTY_DRAFT.reason }),
       );
       const newId = created.item?.id;
       window.location.href = newId
@@ -100,10 +111,14 @@ export function StartersNewPage() {
       </FormSection>
       <FormSection title={t("Category")}>
         <Field label={t("Gender")}>
-          <input className={INPUT_CLASS} onChange={(e) => patch({ gender: e.target.value })} value={draft.gender} />
+          <select className={INPUT_CLASS} onChange={(e) => patch({ gender: e.target.value })} value={draft.gender}>
+            {STARTER_GENDERS.map((item) => <option key={item || "any"} value={item}>{item ? value(item) : "Any gender"}</option>)}
+          </select>
         </Field>
         <Field label={t("Style")}>
-          <input className={INPUT_CLASS} onChange={(e) => patch({ style: e.target.value })} value={draft.style} />
+          <select className={INPUT_CLASS} onChange={(e) => patch({ style: e.target.value })} value={draft.style}>
+            {STARTER_STYLES.map((item) => <option key={item || "any"} value={item}>{item ? value(item) : "Any style"}</option>)}
+          </select>
         </Field>
       </FormSection>
       <FormSection title={t("Description & tags")}>
@@ -114,17 +129,41 @@ export function StartersNewPage() {
           <input className={INPUT_CLASS} onChange={(e) => patch({ tags: e.target.value })} value={draft.tags} />
         </Field>
       </FormSection>
+      <FormSection title="Reusable persona">
+        <Field full label="Creative brief">
+          <textarea className={TEXTAREA_CLASS} onChange={(e) => patch({ creativeBrief: e.target.value })} value={draft.creativeBrief} />
+        </Field>
+        <Field label="Archetype">
+          <input className={INPUT_CLASS} onChange={(e) => patch({ archetype: e.target.value })} value={draft.archetype} />
+        </Field>
+        <Field label="Relationship">
+          <input className={INPUT_CLASS} onChange={(e) => patch({ relationship: e.target.value })} value={draft.relationship} />
+        </Field>
+        <Field full label="Personality">
+          <textarea className={TEXTAREA_CLASS} onChange={(e) => patch({ personality: e.target.value })} value={draft.personality} />
+        </Field>
+        <Field full label="Speaking style">
+          <textarea className={TEXTAREA_CLASS} onChange={(e) => patch({ speakingStyle: e.target.value })} value={draft.speakingStyle} />
+        </Field>
+        <Field full label="First message">
+          <textarea className={TEXTAREA_CLASS} onChange={(e) => patch({ firstMessage: e.target.value })} value={draft.firstMessage} />
+        </Field>
+        <Field full label="Example dialogue">
+          <textarea className={TEXTAREA_CLASS} onChange={(e) => patch({ exampleDialogue: e.target.value })} value={draft.exampleDialogue} />
+        </Field>
+      </FormSection>
+      <FormSection title="Reusable visual direction">
+        <Field full label="Appearance anchors">
+          <textarea className={TEXTAREA_CLASS} onChange={(e) => patch({ appearanceNotes: e.target.value })} value={draft.appearanceNotes} />
+        </Field>
+        <Field full label="Art direction">
+          <textarea className={TEXTAREA_CLASS} onChange={(e) => patch({ visualBrief: e.target.value })} value={draft.visualBrief} />
+        </Field>
+      </FormSection>
       <FormFooter error={error}>
-        <input
-          aria-label={t("Reason (≥3)")}
-          className={`${INPUT_CLASS} max-w-xs`}
-          onChange={(e) => patch({ reason: e.target.value })}
-          placeholder={t("Reason (≥3)")}
-          value={draft.reason}
-        />
         <PrimaryButton disabled={!canSubmit} onClick={() => void create()}>
           {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-          {t("Create character template")}
+          Save template draft
         </PrimaryButton>
       </FormFooter>
     </FormPage>

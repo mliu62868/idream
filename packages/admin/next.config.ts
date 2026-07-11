@@ -3,6 +3,7 @@ import path from "node:path";
 
 const projectRoot = path.resolve(process.cwd());
 const workspaceRoot = path.resolve(projectRoot, "..", "..");
+const mainWebURL = (process.env.MAIN_WEB_URL ?? "http://127.0.0.1:3000").replace(/\/$/, "");
 
 const nextConfig: NextConfig = {
   allowedDevOrigins: ["127.0.0.1"],
@@ -22,6 +23,14 @@ const nextConfig: NextConfig = {
   transpilePackages: ["@idream/shared"],
   turbopack: {
     root: workspaceRoot,
+  },
+  async rewrites() {
+    return [
+      {
+        source: "/images/:path*",
+        destination: `${mainWebURL}/images/:path*`,
+      },
+    ];
   },
 };
 

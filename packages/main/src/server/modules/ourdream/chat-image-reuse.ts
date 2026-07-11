@@ -2,9 +2,14 @@ import type { Prisma } from "@prisma/client";
 import type { ChatImageRequestedPayload } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
 import { igrep, type IgrepCandidate } from "@/server/lib/igrep";
+import { imageOrientationForDimensions } from "@/server/modules/ourdream/generation-dimensions";
 
 const REUSABLE_CHAT_PURPOSE = "character_chat";
 const REUSABLE_STATUSES = ["approved", "published"] as const;
+const REUSE_PAGE_SIZE = 100;
+const REUSE_MIN_SCORE = 2.8;
+const REUSE_MIN_MATCHED_TOKENS = 2;
+const REUSE_MIN_QUERY_COVERAGE = 0.4;
 
 const reusableAssetInclude = {
   sourceJob: { select: { prompt: true, orientation: true, profileId: true } },
@@ -43,59 +48,86 @@ export type ReusableChatImageMatch = {
 export async function findReusableChatImage(
   payload: ChatImageRequestedPayload,
 ): Promise<ReusableChatImageMatch | null> {
-  const query = payload.promptHint?.trim() || payload.conversationContext?.trim() || "";
-  if (!query.trim()) return null;
+  // An edit request is about transforming the user's last image. A generic
+  // pre-generated scene may be textually similar, but it cannot preserve that
+  // source image, so it must always continue through img2img generation.
+  if (payload.controls.sourceImageAssetId) return null;
 
-  const assets = await prisma.mediaAsset.findMany({
-    where: {
-      type: "image",
-      deletedAt: null,
-      safetyStatus: { in: ["passed", "unknown"] },
-      productionItems: {
-        some: {
-          status: { in: [...REUSABLE_STATUSES] },
-          batch: {
-            purpose: REUSABLE_CHAT_PURPOSE,
-            targetType: "character",
-            targetId: payload.characterId,
+  const queries = reusableImageQueries(payload);
+  if (queries.length === 0) return null;
+
+  let cursor: string | undefined;
+  let best: ReusableChatImageMatch | null = null;
+  do {
+    const assets = await prisma.mediaAsset.findMany({
+      where: {
+        type: "image",
+        deletedAt: null,
+        safetyStatus: { in: ["passed", "unknown"] },
+        productionItems: {
+          some: {
+            status: { in: [...REUSABLE_STATUSES] },
+            batch: {
+              purpose: REUSABLE_CHAT_PURPOSE,
+              targetType: "character",
+              targetId: payload.characterId,
+            },
           },
         },
       },
-    },
-    include: reusableAssetInclude,
-    orderBy: { createdAt: "desc" },
-    take: 100,
-  });
+      include: reusableAssetInclude,
+      orderBy: { id: "asc" },
+      take: REUSE_PAGE_SIZE,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+    });
 
-  const candidates: Array<IgrepCandidate<ReusableChatImageMatch>> = assets.map((asset) => {
-    const tags = assetTags(asset);
-    const description = assetDescription(asset);
-    return {
-      item: {
-        asset,
-        score: 0,
-        matchedFields: [],
-        tags,
-        description,
-      },
-      fields: [
-        { name: "tags", text: tags.join(" "), weight: 4 },
-        { name: "description", text: description ?? "", weight: 3 },
-        { name: "operatorBrief", text: asset.productionItems.map((item) => item.batch.brief ?? "").join(" "), weight: 2 },
-        { name: "sourcePrompt", text: asset.sourceJob?.prompt ?? asset.prompt ?? "", weight: 1 },
-        { name: "batch", text: asset.productionItems.map((item) => item.batch.title).join(" "), weight: 1 },
-      ],
-    };
-  });
+    const candidates: Array<IgrepCandidate<ReusableChatImageMatch>> = assets
+      .filter((asset) => isReusableAssetEligible(asset, payload.controls.orientation))
+      .map((asset) => {
+        const tags = assetTags(asset);
+        const description = assetDescription(asset);
+        return {
+          item: {
+            asset,
+            score: 0,
+            matchedFields: [],
+            tags,
+            description,
+          },
+          fields: [
+            { name: "tags", text: tags.join(" "), weight: 4 },
+            { name: "description", text: description ?? "", weight: 3 },
+            {
+              name: "operatorBrief",
+              text: asset.productionItems.map((item) => item.batch.brief ?? "").join(" "),
+              weight: 2,
+            },
+            { name: "sourcePrompt", text: asset.sourceJob?.prompt ?? asset.prompt ?? "", weight: 1 },
+            { name: "batch", text: asset.productionItems.map((item) => item.batch.title).join(" "), weight: 1 },
+          ],
+        };
+      });
 
-  const [match] = igrep(query, candidates, { minScore: 2.8, limit: 1 });
-  if (!match) return null;
+    for (const query of queries) {
+      const match = igrep(query, candidates, { minScore: REUSE_MIN_SCORE }).find(
+        (candidate) =>
+          candidate.matchedTokenCount >= REUSE_MIN_MATCHED_TOKENS &&
+          candidate.queryCoverage >= REUSE_MIN_QUERY_COVERAGE,
+      );
+      if (match && (!best || match.score > best.score)) {
+        best = {
+          ...match.item,
+          score: match.score,
+          matchedFields: match.matchedFields,
+        };
+      }
+    }
 
-  return {
-    ...match.item,
-    score: match.score,
-    matchedFields: match.matchedFields,
-  };
+    cursor = assets.at(-1)?.id;
+    if (assets.length < REUSE_PAGE_SIZE) break;
+  } while (cursor);
+
+  return best;
 }
 
 export function isReusablePlatformAssetWhere(userId: string): Prisma.MediaAssetWhereInput {
@@ -130,6 +162,31 @@ function assetDescription(asset: { metadata: Prisma.JsonValue; prompt: string | 
 
 function platformAssetMetadata(asset: { metadata: Prisma.JsonValue }) {
   return jsonRecord(jsonRecord(asset.metadata).platformAsset);
+}
+
+function reusableImageQueries(payload: ChatImageRequestedPayload): string[] {
+  const prompt = payload.promptHint?.trim();
+  const contextLines = payload.conversationContext?.split("\n") ?? [];
+  const lastUserLine = [...contextLines]
+    .reverse()
+    .find((line) => /^user\s*:/i.test(line))
+    ?.replace(/^user\s*:\s*/i, "")
+    .trim();
+  return [...new Set([prompt, lastUserLine].filter((value): value is string => Boolean(value)))];
+}
+
+function isReusableAssetEligible(asset: ReusableChatImageAsset, requestedOrientation: string) {
+  // Asset review state and production history may diverge (for example, a
+  // published production item can later have its asset rejected or archived).
+  // Both sides must explicitly remain reusable.
+  const platformStatus = stringValue(platformAssetMetadata(asset).status);
+  if (!platformStatus || !REUSABLE_STATUSES.some((status) => status === platformStatus)) {
+    return false;
+  }
+
+  const assetOrientation =
+    asset.sourceJob?.orientation ?? imageOrientationForDimensions(asset.width, asset.height);
+  return !assetOrientation || !requestedOrientation || assetOrientation === requestedOrientation;
 }
 
 function jsonRecord(value: unknown): Record<string, unknown> {

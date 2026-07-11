@@ -51,6 +51,7 @@ const placementSlotSchema = z.enum([
 
 const placementStatusSchema = z.enum(["draft", "scheduled", "published", "paused", "archived"]);
 const assetReviewStatusSchema = z.enum(["draft", "generated", "approved", "rejected", "published", "archived"]);
+const consistencyModeSchema = z.enum(["strict", "balanced", "creative"]);
 
 const optionalText = (max: number) =>
   z.preprocess(
@@ -69,7 +70,13 @@ const productionBatchCreateSchema = z.object({
   orientation: optionalText(20),
   count: z.number().int().min(1).max(24).default(4),
   brief: optionalText(2_000),
+  consistencyMode: consistencyModeSchema.default("balanced"),
   reason: optionalText(2_000),
+});
+
+const productionEstimateSchema = productionBatchCreateSchema.pick({
+  profileId: true,
+  count: true,
 });
 
 const itemReviewSchema = z.object({
@@ -182,6 +189,21 @@ export async function listProductionBatches(request: Request) {
   return ok({ items: batches.map(productionBatchDTO) });
 }
 
+export async function estimateProductionBatch(request: Request) {
+  await actorWithPermission(request, "content.asset.read");
+  const body = productionEstimateSchema.parse(await jsonBody(request));
+  const profile = await resolveProductionProfile(body.profileId);
+  const perItemCostDreamcoins = await generationCostDreamcoins(
+    "image",
+    1,
+    profile.costMultiplier ?? 1,
+  );
+  return ok({
+    perItemCostDreamcoins,
+    totalCostDreamcoins: perItemCostDreamcoins * body.count,
+  });
+}
+
 export type ProductionBatchCreateInput = z.infer<typeof productionBatchCreateSchema>;
 
 // NOTE: takes `request` + full `AdminActor` (not just `actor: {id}`) because writeAudit()
@@ -195,6 +217,7 @@ export async function createProductionBatchCore(
   const profile = await resolveProductionProfile(body.profileId);
   const recipe = await resolveProductionRecipe(body.recipeId, body.targetType);
   const target = await resolveProductionTarget(body.targetType, body.targetId);
+  const visualProfile = await resolveProductionVisualProfile(body.targetType, body.targetId);
   const presets = await prisma.generationPreset.findMany({
     where: { id: { in: body.presetIds }, scope: "built_in", status: "active" },
   });
@@ -224,13 +247,25 @@ export async function createProductionBatchCore(
     recipeBody: recipe.body,
     presetFragment,
     brief: body.brief,
+    visualProfile,
+    consistencyMode: body.consistencyMode,
   });
   const controls = productionControls({
     orientation,
     dimensions,
     profile,
     presets,
+    visualProfile,
+    consistencyMode: body.consistencyMode,
   });
+  const referenceAssetIds = visualProfile
+    ? Array.from(
+        new Set([
+          ...jsonStringArray(visualProfile.anchorAssetIds),
+          ...jsonStringArray(visualProfile.referenceAssetIds),
+        ]),
+      )
+    : [];
   const perItemCostDreamcoins = await generationCostDreamcoins(
     "image",
     1,
@@ -272,9 +307,14 @@ export async function createProductionBatchCore(
         data: {
           userId: actor.id,
           characterId: body.targetType === "character" ? body.targetId ?? null : null,
+          visualProfileId: visualProfile?.id,
+          visualProfileVersion: visualProfile?.version,
+          consistencyMode: visualProfile ? body.consistencyMode : null,
+          seed: visualProfile?.defaultSeed,
+          referenceAssetIds: visualProfile ? toInputJson(referenceAssetIds) : undefined,
           mode: "image",
           prompt,
-          negativePrompt: recipe.negativeBase,
+          negativePrompt: productionNegativePrompt(recipe.negativeBase, visualProfile?.negativeIdentityPrompt),
           controls: toInputJson(controls),
           presetIds: toInputJson(body.presetIds),
           model: profile.workflowKey ?? profile.pipelineModel,
@@ -295,6 +335,7 @@ export async function createProductionBatchCore(
             targetType: body.targetType,
             targetId: body.targetId ?? null,
             itemIndex,
+            consistencyMode: visualProfile ? body.consistencyMode : null,
           }),
         },
       });
@@ -484,7 +525,7 @@ export async function regenerateProductionItem(request: Request, id: string) {
   }
   const sourceItem = await prisma.contentProductionItem.findUnique({
     where: { id },
-    include: { batch: true },
+    include: { batch: true, job: true },
   });
   if (!sourceItem) throw Errors.notFound("Production item not found");
   const profile = await resolveProductionProfile(
@@ -497,6 +538,12 @@ export async function regenerateProductionItem(request: Request, id: string) {
     sourceItem.batch.recipeVersion ?? undefined,
   );
   const target = await resolveProductionTarget(sourceItem.batch.targetType, sourceItem.batch.targetId ?? undefined);
+  const visualProfile = await resolveProductionVisualProfile(
+    sourceItem.batch.targetType,
+    sourceItem.batch.targetId ?? undefined,
+  );
+  const consistencyMode =
+    consistencyModeSchema.safeParse(sourceItem.job?.consistencyMode).data ?? "balanced";
   const presetIds = jsonStringArray(sourceItem.batch.presetIds);
   const presets = await prisma.generationPreset.findMany({
     where: { id: { in: presetIds }, scope: "built_in", status: "active" },
@@ -510,14 +557,31 @@ export async function regenerateProductionItem(request: Request, id: string) {
     defaultWidth: profile.defaultWidth,
     defaultHeight: profile.defaultHeight,
   });
-  const controls = productionControls({ orientation, dimensions, profile, presets });
+  const controls = productionControls({
+    orientation,
+    dimensions,
+    profile,
+    presets,
+    visualProfile,
+    consistencyMode,
+  });
   const prompt = productionPrompt({
     purpose: sourceItem.batch.purpose as z.infer<typeof productionPurposeSchema>,
     target,
     recipeBody: recipe.body,
     presetFragment: presetPromptFragment(presetIds, presets),
     brief: body.brief ?? sourceItem.batch.brief ?? undefined,
+    visualProfile,
+    consistencyMode,
   });
+  const referenceAssetIds = visualProfile
+    ? Array.from(
+        new Set([
+          ...jsonStringArray(visualProfile.anchorAssetIds),
+          ...jsonStringArray(visualProfile.referenceAssetIds),
+        ]),
+      )
+    : [];
   const perItemCostDreamcoins = await generationCostDreamcoins(
     "image",
     1,
@@ -549,9 +613,14 @@ export async function regenerateProductionItem(request: Request, id: string) {
       data: {
         userId: actor.id,
         characterId: sourceItem.batch.targetType === "character" ? sourceItem.batch.targetId : null,
+        visualProfileId: visualProfile?.id,
+        visualProfileVersion: visualProfile?.version,
+        consistencyMode: visualProfile ? consistencyMode : null,
+        seed: visualProfile?.defaultSeed,
+        referenceAssetIds: visualProfile ? toInputJson(referenceAssetIds) : undefined,
         mode: "image",
         prompt,
-        negativePrompt: recipe.negativeBase,
+        negativePrompt: productionNegativePrompt(recipe.negativeBase, visualProfile?.negativeIdentityPrompt),
         controls: toInputJson(controls),
         presetIds: toInputJson(presetIds),
         model: profile.workflowKey ?? profile.pipelineModel,
@@ -993,16 +1062,47 @@ async function resolveProductionTarget(targetType: string, targetId?: string) {
   return { type: targetType, id: targetId, label: targetId, detail: "" };
 }
 
+async function resolveProductionVisualProfile(targetType: string, targetId?: string) {
+  if (targetType !== "character" || !targetId) return null;
+  return prisma.characterVisualProfile.findFirst({
+    where: { characterId: targetId, status: "active" },
+    orderBy: { version: "desc" },
+    select: {
+      id: true,
+      version: true,
+      identityPrompt: true,
+      negativeIdentityPrompt: true,
+      defaultSeed: true,
+      anchorAssetIds: true,
+      referenceAssetIds: true,
+    },
+  });
+}
+
+function productionConsistencyPrompt(mode: z.infer<typeof consistencyModeSchema>) {
+  if (mode === "strict") {
+    return "Identity consistency: strict; preserve the locked face, hairstyle, body type, and signature traits.";
+  }
+  if (mode === "creative") {
+    return "Identity consistency: creative; explore composition and styling while preserving the core locked identity.";
+  }
+  return "Identity consistency: balanced; preserve the locked identity while allowing the requested scene, pose, outfit, and lighting.";
+}
+
 function productionPrompt(input: {
   purpose: z.infer<typeof productionPurposeSchema>;
   target: Awaited<ReturnType<typeof resolveProductionTarget>>;
   recipeBody: string;
   presetFragment: string;
   brief?: string;
+  visualProfile: Awaited<ReturnType<typeof resolveProductionVisualProfile>>;
+  consistencyMode: z.infer<typeof consistencyModeSchema>;
 }) {
   return [
     `Production purpose: ${purposeLabel(input.purpose)}.`,
     input.target ? `Target ${input.target.type}: ${input.target.label}. ${input.target.detail}` : "",
+    input.visualProfile ? `Locked identity: ${input.visualProfile.identityPrompt}` : "",
+    input.visualProfile ? productionConsistencyPrompt(input.consistencyMode) : "",
     `Recipe: ${input.recipeBody}`,
     input.presetFragment ? `Presets: ${input.presetFragment}` : "",
     input.brief ? `Operator brief: ${input.brief}` : "",
@@ -1032,7 +1132,15 @@ function productionControls(input: {
     defaultHeight: number;
   };
   presets: Array<{ id: string; type: string }>;
+  visualProfile: Awaited<ReturnType<typeof resolveProductionVisualProfile>>;
+  consistencyMode: z.infer<typeof consistencyModeSchema>;
 }) {
+  const anchorAssetIds = input.visualProfile
+    ? jsonStringArray(input.visualProfile.anchorAssetIds)
+    : [];
+  const referenceAssetIds = input.visualProfile
+    ? jsonStringArray(input.visualProfile.referenceAssetIds)
+    : [];
   return pruneUndefined({
     orientation: input.orientation,
     model: input.profile.profileKey,
@@ -1043,9 +1151,24 @@ function productionControls(input: {
     posePresetId: presetIdForType(input.presets, "pose"),
     outfitPresetId: presetIdForType(input.presets, "outfit"),
     modePresetId: presetIdForType(input.presets, "mode"),
+    consistencyMode: input.visualProfile ? input.consistencyMode : undefined,
+    visualIdentity: input.visualProfile
+      ? {
+          visualProfileId: input.visualProfile.id,
+          visualProfileVersion: input.visualProfile.version,
+          consistencyMode: input.consistencyMode,
+          anchorAssetIds,
+          referenceAssetIds,
+          seed: input.visualProfile.defaultSeed,
+        }
+      : undefined,
     contentProduction: true,
     sdcpp: input.profile.runner === "sd_cpp" ? sdcppProfileRuntimeConfig(input.profile) : undefined,
   });
+}
+
+function productionNegativePrompt(base: string | null, identity: string | null | undefined) {
+  return [base?.trim(), identity?.trim()].filter(Boolean).join(", ") || null;
 }
 
 function presetIdForType(presets: Array<{ id: string; type: string }>, type: string) {
@@ -1239,6 +1362,19 @@ async function syncPlacementTarget(
       data: { imageAssetId: placement.mediaAssetId },
     });
     if (updated.count !== 1) throw Errors.notFound("Placement target character not found");
+    const activeVisualProfile = await db.characterVisualProfile.findFirst({
+      where: { characterId: placement.targetId, status: "active" },
+      orderBy: { version: "desc" },
+      select: { id: true, anchorAssetIds: true, referenceAssetIds: true },
+    });
+    if (activeVisualProfile) {
+      const field = placement.slot === "character_avatar" ? "anchorAssetIds" : "referenceAssetIds";
+      const currentIds = jsonStringArray(activeVisualProfile[field]);
+      await db.characterVisualProfile.update({
+        where: { id: activeVisualProfile.id },
+        data: { [field]: toInputJson(Array.from(new Set([...currentIds, placement.mediaAssetId]))) },
+      });
+    }
     return;
   }
   if (placement.slot === "template_cover") {
@@ -1314,6 +1450,7 @@ export function productionBatchDTO(batch: ProductionBatchWithItems) {
     failedItems: batch.failedItems,
     approvedItems: batch.approvedItems,
     estimatedCostDreamcoins: batch.estimatedCostDreamcoins,
+    consistencyMode: batch.items[0]?.job?.consistencyMode ?? null,
     status: batch.status,
     createdById: batch.createdById,
     createdByEmail: batch.createdBy.email,
@@ -1352,6 +1489,7 @@ function productionItemDTO(
           profileVersion: item.job.profileVersion,
           recipeId: item.job.recipeId,
           recipeVersion: item.job.recipeVersion,
+          consistencyMode: item.job.consistencyMode,
           createdAt: item.job.createdAt,
           completedAt: item.job.completedAt,
         }

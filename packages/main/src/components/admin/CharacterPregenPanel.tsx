@@ -8,10 +8,13 @@
 //         固定文案自动填充（非 VisualPassportPanel 式手输确认）——运营人员按包/按项点按钮即可。
 // INVARIANTS: 只有 approved 素材可投放（服务端 assertApprovedAsset）；chat 包无对应 avatar/hero slot，
 //             不提供投放按钮。
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { CheckCircle2, Loader2, RefreshCcw, UploadCloud, XCircle } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { AssetImage } from "@/components/admin/ui/AssetImage";
+import { INPUT_CLASS, TEXTAREA_CLASS } from "@/components/admin/ui/FormPage";
 import { cn } from "@/lib/utils";
 
 type PregenJob = {
@@ -81,6 +84,7 @@ type PregenPlacement = {
 
 type PackKey = "cover" | "hero" | "chat";
 type PlacementSlot = "character_avatar" | "character_hero";
+type ReviewDraft = { tags: string; description: string };
 
 const PACKS: { pack: PackKey; label: string }[] = [
   { pack: "cover", label: "Generate cover pack (×4)" },
@@ -110,6 +114,7 @@ export function CharacterPregenPanel({ characterId }: { characterId: string }) {
   const [packError, setPackError] = useState<string | null>(null);
   const [itemBusyId, setItemBusyId] = useState<string | null>(null);
   const [itemError, setItemError] = useState<string | null>(null);
+  const [reviewDrafts, setReviewDrafts] = useState<Record<string, ReviewDraft>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -150,13 +155,19 @@ export function CharacterPregenPanel({ characterId }: { characterId: string }) {
     }
   }
 
-  async function reviewItem(itemId: string, decision: "approve" | "reject") {
+  async function reviewItem(
+    itemId: string,
+    decision: "approve" | "reject",
+    draft?: ReviewDraft,
+  ) {
     setItemBusyId(itemId);
     setItemError(null);
     try {
       await apiWrite(`/api/v1/admin/content/production/items/${itemId}/${decision}`, "POST", {
         reason: "pregen review",
         confirmation: itemId,
+        tags: draft?.tags.split(",").map((tag) => tag.trim()).filter(Boolean) ?? [],
+        description: draft?.description.trim() || undefined,
       });
       await load();
     } catch (error) {
@@ -283,6 +294,8 @@ export function CharacterPregenPanel({ characterId }: { characterId: string }) {
                 onPlace={placeItem}
                 onReview={reviewItem}
                 placements={placements}
+                reviewDrafts={reviewDrafts}
+                setReviewDrafts={setReviewDrafts}
                 t={t}
                 valueLabel={valueLabel}
               />
@@ -300,14 +313,18 @@ function BatchCard({
   itemBusyId,
   onReview,
   onPlace,
+  reviewDrafts,
+  setReviewDrafts,
   t,
   valueLabel,
 }: {
   batch: PregenBatch;
   placements: PregenPlacement[];
   itemBusyId: string | null;
-  onReview: (itemId: string, decision: "approve" | "reject") => Promise<void>;
+  onReview: (itemId: string, decision: "approve" | "reject", draft?: ReviewDraft) => Promise<void>;
   onPlace: (item: PregenItem, slot: PlacementSlot) => Promise<void>;
+  reviewDrafts: Record<string, ReviewDraft>;
+  setReviewDrafts: React.Dispatch<React.SetStateAction<Record<string, ReviewDraft>>>;
   t: (key: string, vars?: Record<string, string | number>) => string;
   valueLabel: (key: string) => string;
 }) {
@@ -342,74 +359,127 @@ function BatchCard({
               )
             : undefined;
           const busy = itemBusyId === item.id;
+          const reviewDraft = reviewDrafts[item.id] ?? {
+            tags: item.tags.join(", "),
+            description: "",
+          };
+          const updateReviewDraft = (patch: Partial<ReviewDraft>) => {
+            setReviewDrafts((current) => ({
+              ...current,
+              [item.id]: { ...reviewDraft, ...patch },
+            }));
+          };
           return (
             <div
-              className="rounded-lg flex flex-wrap items-center justify-between gap-2 border border-[var(--ad-border)] bg-black/[0.03] px-3 py-2"
+              className="rounded-lg grid gap-3 border border-[var(--ad-border)] bg-black/[0.03] p-3 md:grid-cols-[96px_minmax(0,1fr)]"
               key={item.id}
             >
-              <div className="flex items-center gap-2 text-xs">
-                <span
-                  className={cn("inline-flex items-center px-2 py-0.5", itemStatusBadgeClass(item.status))}
-                >
-                  {valueLabel(item.status)}
-                </span>
-                <span className="text-[var(--ad-text-muted)]">#{item.itemIndex}</span>
-                {item.asset?.thumbnailUrl ? (
-                  <span className="max-w-[220px] truncate text-[var(--ad-text-muted)]">
-                    {item.asset.promptSummary ?? item.asset.id}
+              {item.asset ? (
+                <Link aria-label={t("Image Library")} href={`/admin/content/assets/${item.asset.id}`}>
+                  <AssetImage
+                    asset={{ url: item.asset.url, thumbnailUrl: item.asset.thumbnailUrl ?? "" }}
+                    compact
+                  />
+                </Link>
+              ) : (
+                <div className="grid h-24 w-24 place-items-center bg-black/[0.04] text-xs text-[var(--ad-text-muted)]">
+                  {t("Loading…")}
+                </div>
+              )}
+              <div className="min-w-0 space-y-3">
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span
+                    className={cn("inline-flex items-center px-2 py-0.5", itemStatusBadgeClass(item.status))}
+                  >
+                    {valueLabel(item.status)}
                   </span>
-                ) : null}
-              </div>
-              <div className="flex items-center gap-2">
+                  <span className="text-[var(--ad-text-muted)]">#{item.itemIndex}</span>
+                  {item.asset ? (
+                    <span className="max-w-[320px] truncate text-[var(--ad-text-muted)]">
+                      {item.asset.promptSummary ?? item.asset.id}
+                    </span>
+                  ) : null}
+                </div>
                 {item.status === "generated" ? (
-                  <>
-                    <button
-                      className="rounded-md inline-flex h-8 items-center gap-1.5 border border-[var(--ad-border)] px-2 text-xs font-medium text-[var(--ad-green-text)] hover:border-[var(--ad-green-text)]/20 disabled:opacity-50"
-                      disabled={busy}
-                      onClick={() => void onReview(item.id, "approve")}
-                      type="button"
-                    >
-                      {busy ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <CheckCircle2 className="h-3.5 w-3.5" />
-                      )}
-                      {t("Approve")}
-                    </button>
-                    <button
-                      className="rounded-md inline-flex h-8 items-center gap-1.5 border border-[var(--ad-border)] px-2 text-xs font-medium text-[var(--ad-red-text)] hover:border-[var(--ad-red-text)]/20 disabled:opacity-50"
-                      disabled={busy}
-                      onClick={() => void onReview(item.id, "reject")}
-                      type="button"
-                    >
-                      {busy ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <XCircle className="h-3.5 w-3.5" />
-                      )}
-                      {t("Reject")}
-                    </button>
-                  </>
+                  <div className="grid gap-2 lg:grid-cols-2">
+                    <label className="text-xs text-[var(--ad-text-muted)]">
+                      <span>{t("Tags")}</span>
+                      <input
+                        className={cn(INPUT_CLASS, "mt-1")}
+                        onChange={(event) => updateReviewDraft({ tags: event.target.value })}
+                        placeholder="selfie, sunset, beach"
+                        value={reviewDraft.tags}
+                      />
+                    </label>
+                    <label className="text-xs text-[var(--ad-text-muted)]">
+                      <span>{t("Description")}</span>
+                      <textarea
+                        className={cn(TEXTAREA_CLASS, "mt-1 min-h-20")}
+                        onChange={(event) => updateReviewDraft({ description: event.target.value })}
+                        value={reviewDraft.description}
+                      />
+                    </label>
+                  </div>
                 ) : null}
-                {item.status === "approved" && item.mediaAssetId && placementSlot ? (
-                  placedElsewhere ? (
-                    <span className="text-xs text-[var(--ad-green-text)]">{t("Placed")}</span>
-                  ) : (
-                    <button
-                      className="rounded-md inline-flex h-8 items-center gap-1.5 border border-[var(--ad-border)] px-2 text-xs font-medium text-[var(--ad-text)] hover:border-[var(--ad-ink)] disabled:opacity-50"
-                      disabled={busy}
-                      onClick={() => void onPlace(item, placementSlot)}
-                      type="button"
+                <div className="flex flex-wrap items-center gap-2">
+                  {item.status === "generated" ? (
+                    <>
+                      <button
+                        className="rounded-md inline-flex h-8 items-center gap-1.5 border border-[var(--ad-border)] px-2 text-xs font-medium text-[var(--ad-green-text)] hover:border-[var(--ad-green-text)]/20 disabled:opacity-50"
+                        disabled={busy}
+                        onClick={() => void onReview(item.id, "approve", reviewDraft)}
+                        type="button"
+                      >
+                        {busy ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <CheckCircle2 className="h-3.5 w-3.5" />
+                        )}
+                        {t("Approve")}
+                      </button>
+                      <button
+                        className="rounded-md inline-flex h-8 items-center gap-1.5 border border-[var(--ad-border)] px-2 text-xs font-medium text-[var(--ad-red-text)] hover:border-[var(--ad-red-text)]/20 disabled:opacity-50"
+                        disabled={busy}
+                        onClick={() => void onReview(item.id, "reject", reviewDraft)}
+                        type="button"
+                      >
+                        {busy ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <XCircle className="h-3.5 w-3.5" />
+                        )}
+                        {t("Reject")}
+                      </button>
+                    </>
+                  ) : null}
+                  {item.status === "approved" && item.mediaAssetId && placementSlot ? (
+                    placedElsewhere ? (
+                      <span className="text-xs text-[var(--ad-green-text)]">{t("Placed")}</span>
+                    ) : (
+                      <button
+                        className="rounded-md inline-flex h-8 items-center gap-1.5 border border-[var(--ad-border)] px-2 text-xs font-medium text-[var(--ad-text)] hover:border-[var(--ad-ink)] disabled:opacity-50"
+                        disabled={busy}
+                        onClick={() => void onPlace(item, placementSlot)}
+                        type="button"
+                      >
+                        {busy ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <UploadCloud className="h-3.5 w-3.5" />
+                        )}
+                        {t("Publish placement")}
+                      </button>
+                    )
+                  ) : null}
+                  {item.mediaAssetId ? (
+                    <Link
+                      className="text-xs font-medium text-[var(--ad-text)] underline underline-offset-4"
+                      href={`/admin/content/assets/${item.mediaAssetId}`}
                     >
-                      {busy ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <UploadCloud className="h-3.5 w-3.5" />
-                      )}
-                      {t("Publish placement")}
-                    </button>
-                  )
-                ) : null}
+                      {t("Image Library")}
+                    </Link>
+                  ) : null}
+                </div>
               </div>
             </div>
           );

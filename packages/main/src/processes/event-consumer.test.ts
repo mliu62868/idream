@@ -12,6 +12,7 @@ import {
   runQueuedGenerationJobs,
 } from "@/server/test/helpers";
 import { applyChatEvent } from "./event-consumer";
+import { findReusableChatImage } from "@/server/modules/ourdream/chat-image-reuse";
 
 const P = "zt-chatimg-";
 
@@ -413,6 +414,52 @@ describe("applyChatEvent", () => {
         tags: ["sunset", "beach", "selfie"],
       },
     });
+    const distractorAssets = Array.from({ length: 100 }, (_, index) => ({
+      id: `${P}reuse-asset-${String(index).padStart(3, "0")}-${suffix}`,
+      ownerId: operatorId,
+      characterId,
+      type: "image",
+      url: "/images/ourdream/card-sarah-mercer.webp",
+      thumbnailUrl: "/images/ourdream/card-sarah-mercer.webp",
+      width: 512,
+      height: 640,
+      visibility: "public_pack",
+      safetyStatus: "passed",
+      prompt: "unrelated studio portrait",
+      metadata: {
+        platformAsset: {
+          status: "approved",
+          purpose: "character_chat",
+          tags: ["studio", "portrait"],
+          description: "Unrelated studio portrait.",
+        },
+      },
+    }));
+    await prisma.mediaAsset.createMany({ data: distractorAssets });
+    await prisma.contentProductionItem.createMany({
+      data: distractorAssets.map((distractor, index) => ({
+        id: `${P}reuse-item-${String(index).padStart(3, "0")}-${suffix}`,
+        batchId: batch.id,
+        mediaAssetId: distractor.id,
+        itemIndex: index + 1,
+        status: "approved",
+        tags: ["studio", "portrait"],
+      })),
+    });
+    const setAssetStatus = (status: string) =>
+      prisma.mediaAsset.update({
+        where: { id: asset.id },
+        data: {
+          metadata: {
+            platformAsset: {
+              status,
+              purpose: "character_chat",
+              tags: ["sunset", "beach", "selfie"],
+              description: "Candid sunset beach selfie in warm light.",
+            },
+          },
+        },
+      });
 
     await applyChatEvent({
       eventId: `${P}reuse-evt-${suffix}`,
@@ -445,13 +492,59 @@ describe("applyChatEvent", () => {
     );
     expect(snapshot).toBeTruthy();
     const callback = snapshot?.payload as {
-      payload?: { mediaAssetId?: string; generationJobId?: string | null; reused?: boolean };
+      payload?: { mediaAssetId?: string; generationJobId?: string | null; reused?: boolean; summary?: string };
     } | null;
     expect(callback?.payload).toMatchObject({
       mediaAssetId: asset.id,
       generationJobId: null,
       reused: true,
+      summary: "Candid sunset beach selfie in warm light.",
     });
+
+    const request = {
+      version: 1 as const,
+      kind: "chat.image.requested" as const,
+      requestId: `${P}reuse-eligibility-req-${suffix}`,
+      attachmentId: `${P}reuse-eligibility-att-${suffix}`,
+      sessionId: `${P}reuse-eligibility-sess-${suffix}`,
+      messageId: `${P}reuse-eligibility-msg-${suffix}`,
+      userId,
+      characterId,
+      promptHint: "send me a sunset beach selfie",
+      conversationContext: "user: send me a sunset beach selfie",
+      controls: { orientation: "4:5", outputCount: 1 },
+    };
+
+    await setAssetStatus("archived");
+    await expect(findReusableChatImage(request)).resolves.toBeNull();
+
+    await setAssetStatus("rejected");
+    await expect(findReusableChatImage(request)).resolves.toBeNull();
+
+    await setAssetStatus("approved");
+    await expect(
+      findReusableChatImage({
+        ...request,
+        promptHint: "send a photo",
+        conversationContext: "user: send me a sunset beach selfie",
+      }),
+    ).resolves.toMatchObject({ asset: { id: asset.id } });
+    await expect(
+      findReusableChatImage({
+        ...request,
+        promptHint: "sunset portrait",
+        conversationContext: "user: sunset portrait",
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      findReusableChatImage({
+        ...request,
+        controls: { ...request.controls, sourceImageAssetId: asset.id },
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      findReusableChatImage({ ...request, controls: { orientation: "1:1", outputCount: 1 } }),
+    ).resolves.toBeNull();
   });
 
   it("maps a transient image-request failure to a retryable 'failed' status, not 'rejected'", async () => {

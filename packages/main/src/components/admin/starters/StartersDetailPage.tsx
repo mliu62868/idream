@@ -11,8 +11,11 @@ import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
 import {
   SCOPES,
+  STARTER_GENDERS,
+  STARTER_STYLES,
   STARTERS_LIST,
   starterPayload,
+  starterTextField,
   type Starter,
   type StarterDraft,
 } from "./starters-api";
@@ -32,6 +35,17 @@ function draftFromRow(row: Starter): StarterDraft {
     scope: (scopes.includes(row.scope) ? row.scope : SCOPES[0]) as StarterDraft["scope"],
     tags: row.tags.join(", "),
     sortOrder: String(row.sortOrder),
+    creativeBrief: starterTextField(row.advancedDetails, "creativeBrief"),
+    archetype: starterTextField(row.advancedDetails, "archetype"),
+    relationship: starterTextField(row.advancedDetails, "relationship"),
+    personality: starterTextField(row.advancedDetails, "personality"),
+    speakingStyle: starterTextField(row.advancedDetails, "speakingStyle"),
+    firstMessage: starterTextField(row.advancedDetails, "firstMessage"),
+    exampleDialogue: starterTextField(row.advancedDetails, "exampleDialogue"),
+    appearanceNotes: starterTextField(row.appearance, "notes"),
+    visualBrief:
+      starterTextField(row.appearance, "visualBrief") ||
+      starterTextField(row.advancedDetails, "visualBrief"),
     reason: "",
   };
 }
@@ -210,18 +224,22 @@ export function StartersDetailPage({ id }: { id: string }) {
           </FormSection>
           <FormSection title={t("Category")}>
             <Field label={t("Gender")}>
-              <input
+              <select
                 className={INPUT_CLASS}
                 onChange={(event) => updateDraft("gender", event.target.value)}
                 value={draft.gender}
-              />
+              >
+                {STARTER_GENDERS.map((item) => <option key={item || "any"} value={item}>{item ? value(item) : "Any gender"}</option>)}
+              </select>
             </Field>
             <Field label={t("Style")}>
-              <input
+              <select
                 className={INPUT_CLASS}
                 onChange={(event) => updateDraft("style", event.target.value)}
                 value={draft.style}
-              />
+              >
+                {STARTER_STYLES.map((item) => <option key={item || "any"} value={item}>{item ? value(item) : "Any style"}</option>)}
+              </select>
             </Field>
           </FormSection>
           <FormSection title={t("Description & tags")}>
@@ -239,6 +257,19 @@ export function StartersDetailPage({ id }: { id: string }) {
                 value={draft.tags}
               />
             </Field>
+          </FormSection>
+          <FormSection title="Reusable persona">
+            <Field full label="Creative brief"><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("creativeBrief", event.target.value)} value={draft.creativeBrief} /></Field>
+            <Field label="Archetype"><input className={INPUT_CLASS} onChange={(event) => updateDraft("archetype", event.target.value)} value={draft.archetype} /></Field>
+            <Field label="Relationship"><input className={INPUT_CLASS} onChange={(event) => updateDraft("relationship", event.target.value)} value={draft.relationship} /></Field>
+            <Field full label="Personality"><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("personality", event.target.value)} value={draft.personality} /></Field>
+            <Field full label="Speaking style"><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("speakingStyle", event.target.value)} value={draft.speakingStyle} /></Field>
+            <Field full label="First message"><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("firstMessage", event.target.value)} value={draft.firstMessage} /></Field>
+            <Field full label="Example dialogue"><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("exampleDialogue", event.target.value)} value={draft.exampleDialogue} /></Field>
+          </FormSection>
+          <FormSection title="Reusable visual direction">
+            <Field full label="Appearance anchors"><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("appearanceNotes", event.target.value)} value={draft.appearanceNotes} /></Field>
+            <Field full label="Art direction"><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("visualBrief", event.target.value)} value={draft.visualBrief} /></Field>
           </FormSection>
         </>
       ) : (
@@ -276,6 +307,15 @@ export function StartersDetailPage({ id }: { id: string }) {
                   </span>
                 ))
               )}
+            </div>
+          </DetailSection>
+
+          <DetailSection title="Reusable character foundation">
+            <div className="grid gap-5 md:grid-cols-2">
+              <div><p className="text-xs text-[var(--ad-text-muted)]">Creative brief</p><p className="mt-1 whitespace-pre-wrap text-sm text-[var(--ad-text)]">{starterTextField(row.advancedDetails, "creativeBrief") || "—"}</p></div>
+              <div><p className="text-xs text-[var(--ad-text-muted)]">Personality</p><p className="mt-1 whitespace-pre-wrap text-sm text-[var(--ad-text)]">{starterTextField(row.advancedDetails, "personality") || "—"}</p></div>
+              <div><p className="text-xs text-[var(--ad-text-muted)]">First message</p><p className="mt-1 whitespace-pre-wrap text-sm text-[var(--ad-text)]">{starterTextField(row.advancedDetails, "firstMessage") || "—"}</p></div>
+              <div><p className="text-xs text-[var(--ad-text-muted)]">Visual direction</p><p className="mt-1 whitespace-pre-wrap text-sm text-[var(--ad-text)]">{starterTextField(row.appearance, "visualBrief") || starterTextField(row.advancedDetails, "visualBrief") || "—"}</p></div>
             </div>
           </DetailSection>
 

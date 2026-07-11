@@ -1,16 +1,33 @@
 import { describe, expect, it } from "vitest";
 import { starterPayload } from "./starters-api";
 
+const creativeFields = {
+  creativeBrief: "",
+  archetype: "",
+  relationship: "",
+  personality: "",
+  speakingStyle: "",
+  firstMessage: "",
+  exampleDialogue: "",
+  appearanceNotes: "",
+  visualBrief: "",
+};
+
 describe("starterPayload", () => {
   it("trims fields, keeps scope/reason as-is", () => {
     expect(
       starterPayload({
         name: " Luna ", summary: " short bio ", gender: " female ", style: " anime ",
-        scope: "built_in", tags: "cute, elf ,, ", sortOrder: "3", reason: " ok3 ",
+        scope: "built_in", tags: "cute, elf ,, ", sortOrder: "3", reason: " ok3 ", ...creativeFields,
       }),
     ).toEqual({
       name: "Luna", summary: "short bio", gender: "female", style: "anime",
       scope: "built_in", tags: ["cute", "elf"], sortOrder: 3, reason: "ok3",
+      appearance: { notes: "", visualBrief: "" },
+      advancedDetails: {
+        creativeBrief: "", archetype: "", relationship: "", personality: "",
+        speakingStyle: "", firstMessage: "", exampleDialogue: "", visualBrief: "",
+      },
     });
   });
 
@@ -19,7 +36,7 @@ describe("starterPayload", () => {
     expect(
       starterPayload({
         name: "A", summary: "", gender: "", style: "",
-        scope: "community", tags: many, sortOrder: "0", reason: "abc",
+        scope: "community", tags: many, sortOrder: "0", reason: "abc", ...creativeFields,
       }).tags,
     ).toEqual(Array.from({ length: 12 }, (_, i) => `tag${i}`));
   });
@@ -27,7 +44,7 @@ describe("starterPayload", () => {
   it("falls back to sortOrder 0 on garbage, drops empty optional fields", () => {
     const payload = starterPayload({
       name: "A", summary: "", gender: "", style: "",
-      scope: "built_in", tags: "", sortOrder: "x", reason: "abc",
+      scope: "built_in", tags: "", sortOrder: "x", reason: "abc", ...creativeFields,
     });
     expect(payload.sortOrder).toBe(0);
     expect(payload.summary).toBeUndefined();

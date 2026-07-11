@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ZodError } from "zod";
 import { prisma } from "@/server/lib/db";
 import { AppError } from "@/server/lib/errors";
-import { createCharacter, createUser, purgeTestData } from "@/server/test/helpers";
+import { createCharacter, createMedia, createUser, purgeTestData } from "@/server/test/helpers";
 import {
   createOfficialCharacter,
   listOfficialCharacters,
@@ -101,7 +101,7 @@ describe("official character CMS", () => {
     expect(listResult.status).toBe(403);
   });
 
-  it("creates an official character as approved/public with source=official", async () => {
+  it("creates an official character as a private draft with source=official", async () => {
     const admin = await seedActor("admin", "create");
     const result = await call(
       createOfficialCharacter(
@@ -131,8 +131,8 @@ describe("official character CMS", () => {
       visualProfiles: { id: string; version: number; status: string; createdFrom: string }[];
     };
     expect(character.source).toBe("official");
-    expect(character.status).toBe("approved");
-    expect(character.visibility).toBe("public");
+    expect(character.status).toBe("draft");
+    expect(character.visibility).toBe("private");
     expect(character.systemPrompt).toBeTruthy();
     expect(character.visualProfiles).toHaveLength(1);
     expect(character.visualProfiles[0]).toMatchObject({
@@ -306,6 +306,59 @@ describe("official character CMS", () => {
     );
     const id = (created.data?.character as { id: string }).id;
 
+    const incomplete = await call(
+      setOfficialState(
+        makeRequest("POST", `/${id}/state`, {
+          userId: admin,
+          role: "admin",
+          body: { status: "approved", reason: "should not release incomplete draft" },
+        }),
+        id,
+      ),
+    );
+    expect(incomplete.status).toBe(400);
+
+    const media = await createMedia({ id: `${P}release-media`, ownerId: admin, visibility: "public" });
+    await updateOfficialCharacter(
+      makeRequest("PATCH", `/${id}`, {
+        userId: admin,
+        role: "admin",
+        body: {
+          tags: ["complete"],
+          appearance: { visualBrief: "Warm cinematic portrait with a stable silhouette." },
+          advancedDetails: {
+            personality: "composed, observant",
+            firstMessage: "You made it. Sit down and tell me what happened.",
+            visualBrief: "Warm cinematic portrait with a stable silhouette.",
+          },
+          reason: "complete release fields",
+        },
+      }),
+      id,
+    );
+    const activeProfile = await prisma.characterVisualProfile.findFirstOrThrow({
+      where: { characterId: id, status: "active" },
+    });
+    await prisma.characterVisualProfile.update({
+      where: { id: activeProfile.id },
+      data: { anchorAssetIds: [media.id] },
+    });
+    await prisma.character.update({ where: { id }, data: { imageAssetId: media.id } });
+
+    // draft -> approved (first public release)
+    const published = await call(
+      setOfficialState(
+        makeRequest("POST", `/${id}/state`, {
+          userId: admin,
+          role: "admin",
+          body: { status: "approved", reason: "ready for first release" },
+        }),
+        id,
+      ),
+    );
+    expect(published.ok).toBe(true);
+    expect(published.data?.character).toMatchObject({ status: "approved", visibility: "public" });
+
     // approved -> archived (disappears from public feed)
     const archived = await call(
       setOfficialState(
@@ -337,6 +390,6 @@ describe("official character CMS", () => {
     const audits = await prisma.adminAuditLog.count({
       where: { action: "content.official.publish", targetId: id },
     });
-    expect(audits).toBe(2);
+    expect(audits).toBe(3);
   });
 });

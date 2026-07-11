@@ -1400,6 +1400,26 @@ describe("generation config control plane", () => {
       visibility: "public",
       status: "approved",
     });
+    await prisma.characterVisualProfile.create({
+      data: {
+        id: `${P}production-visual-profile-v1`,
+        characterId: character.id,
+        version: 1,
+        status: "active",
+        style: "realistic",
+        identityPrompt: "same adult woman, amber eyes, long dark hair",
+        negativeIdentityPrompt: "different face, different hair color",
+        faceTraits: {},
+        hairTraits: {},
+        bodyTraits: {},
+        signatureTraits: {},
+        styleTraits: {},
+        anchorAssetIds: [],
+        referenceAssetIds: [],
+        adapterRefs: {},
+        createdFrom: "test",
+      },
+    });
     await prisma.generationModelProfile.create({
       data: {
         id: `${P}production-profile-v1`,
@@ -1477,6 +1497,7 @@ describe("generation config control plane", () => {
         orientation: "4:5",
         count: 2,
         brief: "Two cover candidates",
+        consistencyMode: "strict",
         reason: "seed production batch",
       },
     });
@@ -1505,6 +1526,18 @@ describe("generation config control plane", () => {
       userId: admin,
       profileId: `${P}production-profile`,
       recipeId: `${P}production-recipe`,
+      visualProfileId: `${P}production-visual-profile-v1`,
+      visualProfileVersion: 1,
+      consistencyMode: "strict",
+    });
+    expect(jobs[0]?.prompt).toContain("Locked identity: same adult woman");
+    expect(jobs[0]?.negativePrompt).toContain("different face");
+    expect(jobs[0]?.controls).toMatchObject({
+      consistencyMode: "strict",
+      visualIdentity: expect.objectContaining({
+        visualProfileId: `${P}production-visual-profile-v1`,
+        visualProfileVersion: 1,
+      }),
     });
     expect(jobs[0]?.sourceMeta).toMatchObject({
       batchId: created.data.batch.id,

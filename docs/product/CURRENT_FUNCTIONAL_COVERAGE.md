@@ -1,12 +1,31 @@
 # iDream 当前功能覆盖审计
 
-更新日期：2026-07-05
+更新日期：2026-07-10
 
 ## 结论
 
 这份文档是当前代码态的功能覆盖表，覆盖的是“用户能否完整使用”和“有没有测试证据”。它补充并修正 `ProductFeatureMap.md` 里 2026-06-13 的旧状态描述。
 
 当前状态：**本地产品闭环可用，内部 pipeline 6/6 通过；当前目标仍是内部演示/受控 beta，公开上线仍被真实生产依赖阻断**。
+
+## 2026-07-10 角色运营项目工作台
+
+- 官方角色创建由“创建即 approved/public”改为 `draft/private`；首次发布是独立操作，并由服务端强制检查 tags、Persona、首条消息、视觉方向、active Visual Identity、参考图和已发布角色图。下架同步切为 `archived/private`。
+- 官方角色库由大卡网格改为高密度运营表，提供服务端搜索、性别/风格/状态筛选、分页、总数、完成度、视觉版本/参考图、表现、更新时间与下一步动作；种子角色图通过 admin → main image rewrite 正常展示。
+- 新建角色改为 Brief → Persona → Visual direction → Review 四步私有草稿向导，支持浏览器自动保存、Starter 带入、结构化 AI 共创（名称候选、简介、性格、说话风格、首条消息、视觉方向）和用户侧首条消息预览。
+- 角色详情改为项目工作区：Overview / Persona / Visual Identity / Assets / Preview / Performance / History；发布按钮受完成度门槛约束。Assets 同时挂载预生成包和 Creative Production Studio，后者携带 `characterId` 并覆盖旧 session draft 的角色选择。
+- Visual Identity 默认展示身份锁、参考数量、质量/一致性分；结构化 traits 收进 details，内部 typed token 改为清晰的“激活新版本”勾选。发布 avatar/hero placement 会把素材同步加入 active Visual Identity 的 anchor/reference 池。
+- Character Starter 新建默认 inactive 草稿，补齐可复用 Persona/视觉方向字段，Gender/Style 改为稳定枚举，并可在官方角色向导直接选择。
+- 验收：main/admin typecheck 通过；focused Vitest 95/95 通过；`admin-console.test.ts` 59/59 包含生产/placement 联动；main/admin production build 均通过；真实 Admin 浏览器验证列表、新建步骤、详情 tabs、Visual Identity、Assets、`?characterId=` 图片生产交接，未写入业务数据。证据见 `.codex/design-qa/character-workspace-qa.md`。
+
+## 2026-07-10 角色图片资产池与聊天复用闭环
+
+- 管理台「图片生产 → 为角色生成」继续作为角色资产运营入口：可创建 cover / hero / chat 图片包、看图审核、发布头像/主图，并进入图片库继续维护素材。
+- 预生成审核卡补齐实际缩略图、`tags` 与 `description` 编辑；审核通过时元数据与素材一并入库，作为聊天检索的高权重字段。
+- `character_chat` 素材继续按角色边界通过 iGrep 加权字段检索（tags > description > batch brief > source prompt），并以 cursor 分页覆盖完整角色素材池；高相关命中直接完成聊天附件，不创建 `GenerationJob`、不重复扣币，未命中保持原生图链路。
+- 复用资格加严：只接受 approved/published、未归档、画幅一致的角色聊天素材；`edit_last_image` 带源图的 img2img 请求永不复用预生成图。复用完成事件携带运营描述（无描述时用 tags），供下一轮聊天的图片记忆上下文使用。
+- 相关度门槛不只看加权分：还要求至少 2 个查询 token 命中且 query coverage ≥ 40%；`promptHint` 与最近一条用户话语分别检索，避免“发张照片”覆盖掉上下文里的“海边日落自拍”，也避免只撞中一个泛化 tag 就误复用。
+- 校验：全仓 lint、typecheck 与 iGrep/画幅纯函数 smoke 通过；新增集成断言覆盖复用 summary、101 张跨页命中、near-miss 阴性、最近用户上下文补全、归档/拒绝排除、img2img 排除与画幅排除。本轮 Vitest 因受限执行环境无法连接本机 PostgreSQL `127.0.0.1:5433`（`EPERM`）而未启动；`bun run check` 的 lint/typecheck 阶段通过，Next 16/Turbopack build 因同一环境禁止 CSS 子进程绑定本地端口而中止（`Operation not permitted`），待正常本机环境复跑。
 
 ## 2026-07-08 P5 能力深化 + 验收落地（最新）
 

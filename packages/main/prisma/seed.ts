@@ -20,13 +20,6 @@ const DEV_USER_ID = "seed-dev-user";
 const SUPPORT_USER_ID = "seed-support-user";
 const OPS_USER_ID = "seed-ops-user";
 const ANALYST_USER_ID = "seed-analyst-user";
-const Z_IMAGE_SOURCE_MODEL_PATH =
-  "/Users/kk/Downloads/models/pornmasterZImage_turboV35Bf16.safetensors";
-const Z_IMAGE_LLM_PATH =
-  "/Users/kk/.localai/models/z-image-components/Qwen3-4B-Instruct-2507-Q4_K_M.gguf";
-const Z_IMAGE_VAE_PATH =
-  "/Users/kk/.localai/models/z-image-components/split_files/vae/ae.safetensors";
-const SDCPP_CLI_PATH = "/Users/kk/bin/sd-cli";
 const KREA2_TEXT_ENCODER_PATH =
   "/Users/kk/.localai/models/krea2/text_encoders/Qwen3VL-4B-Instruct-Q4_K_M.gguf";
 const KREA2_VAE_PATH = "/Users/kk/.localai/models/krea2/vae/wan_2.1_vae.safetensors";
@@ -789,21 +782,21 @@ async function seedAdminControlPlane() {
       profileKey: "profile_image_default_v1",
       label: "Default image",
       mode: "image",
-      runner: "sd_cpp",
-      pipelineModel: "pornmaster-zimage-turbo",
-      sourceModelPath: Z_IMAGE_SOURCE_MODEL_PATH,
+      runner: "comfyui",
+      pipelineModel: "redcraft-krea2-comfyui",
+      workflowKey: "redcraft-krea2-txt2img",
+      sourceModelPath: REDCRAFT_KREA2_MODEL_PATH,
       convertedModelPath: null,
       modelFormat: "safetensors",
       runnerConfig: {
-        cliPath: SDCPP_CLI_PATH,
-        llmPath: Z_IMAGE_LLM_PATH,
-        vaePath: Z_IMAGE_VAE_PATH,
-        apiModelId: "pornmaster-zimage-turbo",
+        modelPath: REDCRAFT_KREA2_MODEL_PATH,
+        apiModelId: "redcraft-krea2-comfyui",
+        workflowPath: REDCRAFT_COMFYUI_WORKFLOW_PATH,
         capabilities: {
           textToImage: true,
           stableSeed: true,
           referenceImages: false,
-          initImage: true,
+          initImage: false,
           lora: false,
         },
       },
@@ -829,21 +822,21 @@ async function seedAdminControlPlane() {
       profileKey: "profile_image_default_v1",
       label: "Default image",
       mode: "image",
-      runner: "sd_cpp",
-      pipelineModel: "pornmaster-zimage-turbo",
-      sourceModelPath: Z_IMAGE_SOURCE_MODEL_PATH,
+      runner: "comfyui",
+      pipelineModel: "redcraft-krea2-comfyui",
+      workflowKey: "redcraft-krea2-txt2img",
+      sourceModelPath: REDCRAFT_KREA2_MODEL_PATH,
       convertedModelPath: null,
       modelFormat: "safetensors",
       runnerConfig: {
-        cliPath: SDCPP_CLI_PATH,
-        llmPath: Z_IMAGE_LLM_PATH,
-        vaePath: Z_IMAGE_VAE_PATH,
-        apiModelId: "pornmaster-zimage-turbo",
+        modelPath: REDCRAFT_KREA2_MODEL_PATH,
+        apiModelId: "redcraft-krea2-comfyui",
+        workflowPath: REDCRAFT_COMFYUI_WORKFLOW_PATH,
         capabilities: {
           textToImage: true,
           stableSeed: true,
           referenceImages: false,
-          initImage: true,
+          initImage: false,
           lora: false,
         },
       },
@@ -872,21 +865,21 @@ async function seedAdminControlPlane() {
       profileKey: "profile_image_premium_v1",
       label: "Premium image",
       mode: "image",
-      runner: "sd_cpp",
-      pipelineModel: "pornmaster-zimage-turbo",
-      sourceModelPath: Z_IMAGE_SOURCE_MODEL_PATH,
+      runner: "comfyui",
+      pipelineModel: "redcraft-krea2-comfyui",
+      workflowKey: "redcraft-krea2-txt2img",
+      sourceModelPath: REDCRAFT_KREA2_MODEL_PATH,
       convertedModelPath: null,
       modelFormat: "safetensors",
       runnerConfig: {
-        cliPath: SDCPP_CLI_PATH,
-        llmPath: Z_IMAGE_LLM_PATH,
-        vaePath: Z_IMAGE_VAE_PATH,
-        apiModelId: "pornmaster-zimage-turbo",
+        modelPath: REDCRAFT_KREA2_MODEL_PATH,
+        apiModelId: "redcraft-krea2-comfyui",
+        workflowPath: REDCRAFT_COMFYUI_WORKFLOW_PATH,
         capabilities: {
           textToImage: true,
           stableSeed: true,
           referenceImages: false,
-          initImage: true,
+          initImage: false,
           lora: false,
         },
       },
@@ -912,21 +905,21 @@ async function seedAdminControlPlane() {
       profileKey: "profile_image_premium_v1",
       label: "Premium image",
       mode: "image",
-      runner: "sd_cpp",
-      pipelineModel: "pornmaster-zimage-turbo",
-      sourceModelPath: Z_IMAGE_SOURCE_MODEL_PATH,
+      runner: "comfyui",
+      pipelineModel: "redcraft-krea2-comfyui",
+      workflowKey: "redcraft-krea2-txt2img",
+      sourceModelPath: REDCRAFT_KREA2_MODEL_PATH,
       convertedModelPath: null,
       modelFormat: "safetensors",
       runnerConfig: {
-        cliPath: SDCPP_CLI_PATH,
-        llmPath: Z_IMAGE_LLM_PATH,
-        vaePath: Z_IMAGE_VAE_PATH,
-        apiModelId: "pornmaster-zimage-turbo",
+        modelPath: REDCRAFT_KREA2_MODEL_PATH,
+        apiModelId: "redcraft-krea2-comfyui",
+        workflowPath: REDCRAFT_COMFYUI_WORKFLOW_PATH,
         capabilities: {
           textToImage: true,
           stableSeed: true,
           referenceImages: false,
-          initImage: true,
+          initImage: false,
           lora: false,
         },
       },

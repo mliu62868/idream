@@ -1,21 +1,55 @@
 "use client";
+
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Plus } from "lucide-react";
+import { ChevronLeft, ChevronRight, ImageIcon, Plus } from "lucide-react";
 import { apiGet } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { FilterBar } from "@/components/admin/ui/FilterBar";
-import { CardGrid, EntityCard } from "@/components/admin/ui/CardGrid";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
-import { PrimaryButton } from "@/components/admin/ui/buttons";
+import { GhostButton, PrimaryButton } from "@/components/admin/ui/buttons";
+import { StatusPill } from "@/components/admin/ui/StatusPill";
+import { cn } from "@/lib/utils";
 import {
-  characterThumbnails, GENDERS, OFFICIAL_LIST, STYLES,
-  visualReferenceCount, type OfficialRow, type ThumbAsset,
+  characterReadiness,
+  characterThumbnails,
+  GENDERS,
+  OFFICIAL_LIST,
+  STYLES,
+  visualReferenceCount,
+  type OfficialRow,
+  type ThumbAsset,
+  visualSourceImage,
 } from "./official-api";
 
-// SPEC: 官方角色列表页 —— 搜索/筛选 + 卡片网格（头像、名字、风格·年龄、参考图数、状态）。
-// INTENT: 浏览页只浏览；创建在 /new，详情在 /<id>（spec §7 列表页）。
+type ListResponse = {
+  items: OfficialRow[];
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+};
+
+function formatDate(value: string): string {
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(
+    new Date(value),
+  );
+}
+
+function nextAction(row: OfficialRow, readiness: ReturnType<typeof characterReadiness>): string {
+  if (row.status === "archived") return "Review and restore";
+  const next = readiness.missing[0];
+  if (next === "Core profile") return "Complete profile";
+  if (next === "Persona") return "Write persona";
+  if (next === "Visual direction") return "Add visual brief";
+  if (next === "Visual identity") return "Lock identity";
+  if (next === "Reference images") return "Add references";
+  if (next === "Published artwork") return "Create artwork";
+  if (row.status === "draft") return "Review for release";
+  return "Open workspace";
+}
+
 export function OfficialListPage() {
   const { t, value } = useAdminI18n();
   const [rows, setRows] = useState<OfficialRow[]>([]);
@@ -26,111 +60,172 @@ export function OfficialListPage() {
   const [gender, setGender] = useState("all");
   const [style, setStyle] = useState("all");
   const [status, setStatus] = useState("all");
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+
+  const query = useMemo(() => {
+    const params = new URLSearchParams({ page: String(page), limit: "24" });
+    if (search.trim()) params.set("search", search.trim());
+    if (gender !== "all") params.set("gender", gender);
+    if (style !== "all") params.set("style", style);
+    if (status !== "all") params.set("status", status);
+    return params.toString();
+  }, [gender, page, search, status, style]);
 
   const reload = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const data = await apiGet<{ items: OfficialRow[] }>(OFFICIAL_LIST);
+      const [data, assets] = await Promise.all([
+        apiGet<ListResponse>(`${OFFICIAL_LIST}?${query}`),
+        apiGet<{ items: ThumbAsset[] }>("/api/v1/admin/content/assets?status=approved&limit=100"),
+      ]);
       setRows(data.items);
-      // 缩略图尽力而为：拿一页已审核资产做 characterId → 图 的映射，失败不阻塞列表。
-      try {
-        const assets = await apiGet<{ items: ThumbAsset[] }>(
-          "/api/v1/admin/content/assets?status=approved&limit=100",
-        );
-        setThumbs(characterThumbnails(assets.items));
-      } catch {
-        setThumbs(new Map());
-      }
+      setTotal(data.total);
+      setTotalPages(data.totalPages);
+      setThumbs(characterThumbnails(assets.items));
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : t("Request failed"));
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [query, t]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void reload();
-    }, 0);
+    const timer = window.setTimeout(() => void reload(), search.trim() ? 220 : 0);
     return () => window.clearTimeout(timer);
-  }, [reload]);
+  }, [reload, search]);
 
-  const filtered = useMemo(
-    () =>
-      rows.filter(
-        (row) =>
-          (search.trim() === "" || row.name.toLowerCase().includes(search.trim().toLowerCase())) &&
-          (gender === "all" || row.gender === gender) &&
-          (style === "all" || row.style === style) &&
-          (status === "all" || row.status === status),
-      ),
-    [rows, search, gender, style, status],
-  );
+  function updateFilter(callback: () => void) {
+    setPage(1);
+    callback();
+  }
 
   const allOption = { value: "all", label: t("All") };
+
   return (
     <div>
       <PageHeader
         action={
           <Link href="/admin/content/official/new">
             <PrimaryButton>
-              <Plus className="h-4 w-4" /> {t("New official character")}
+              <Plus className="h-4 w-4" /> New character project
             </PrimaryButton>
           </Link>
         }
-        purpose={t("Manage official character profiles and publishing.")}
+        purpose="Run official characters from private draft through visual production, preview, and publishing."
         title={t("Official Characters")}
       />
-      <FilterBar
-        onSearch={setSearch}
-        search={search}
-        searchPlaceholder={t("Search by name")}
-        selects={[
-          { name: t("Gender"), value: gender, onChange: setGender,
-            options: [allOption, ...GENDERS.map((g) => ({ value: g, label: value(g) }))] },
-          { name: t("Style"), value: style, onChange: setStyle,
-            options: [allOption, ...STYLES.map((s) => ({ value: s, label: value(s) }))] },
-          { name: t("Status"), value: status, onChange: setStatus,
-            options: [allOption,
-              { value: "approved", label: value("approved") },
-              { value: "draft", label: value("draft") },
-              { value: "archived", label: value("archived") }] },
-        ]}
-      />
-      {error ? <p className="mb-4 text-sm text-[var(--ad-red-text)]">{error}</p> : null}
+
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <FilterBar
+          onSearch={(value) => updateFilter(() => setSearch(value))}
+          search={search}
+          searchPlaceholder="Search name or character ID"
+          selects={[
+            { name: t("Gender"), value: gender, onChange: (value) => updateFilter(() => setGender(value)), options: [allOption, ...GENDERS.map((item) => ({ value: item, label: value(item) }))] },
+            { name: t("Style"), value: style, onChange: (value) => updateFilter(() => setStyle(value)), options: [allOption, ...STYLES.map((item) => ({ value: item, label: value(item) }))] },
+            { name: t("Status"), value: status, onChange: (value) => updateFilter(() => setStatus(value)), options: [allOption, { value: "draft", label: "Draft" }, { value: "approved", label: value("approved") }, { value: "archived", label: value("archived") }] },
+          ]}
+        />
+        <p className="text-xs tabular-nums text-[var(--ad-text-muted)]">{total} characters</p>
+      </div>
+
+      {error ? <p role="alert" className="mb-4 text-sm text-[var(--ad-red-text)]">{error}</p> : null}
+
       {loading ? (
-        <p className="text-sm text-[var(--ad-text-muted)]">{t("Loading…")}</p>
-      ) : filtered.length === 0 ? (
+        <div aria-label="Loading characters" className="space-y-2">
+          {[0, 1, 2, 3, 4].map((item) => <div className="h-16 animate-pulse rounded-lg bg-black/[0.04]" key={item} />)}
+        </div>
+      ) : rows.length === 0 ? (
         <EmptyState
-          action={
-            <Link href="/admin/content/official/new">
-              <PrimaryButton>
-                <Plus className="h-4 w-4" /> {t("New official character")}
-              </PrimaryButton>
-            </Link>
-          }
-          hint={t("Create the first official character to get started.")}
-          title={t("No official characters yet.")}
+          action={<Link href="/admin/content/official/new"><PrimaryButton><Plus className="h-4 w-4" /> New character project</PrimaryButton></Link>}
+          hint="Create a private draft, then complete its persona, visual identity, artwork, and preview."
+          title="No character projects match these filters."
         />
       ) : (
-        <CardGrid>
-          {filtered.map((row) => (
-            <EntityCard
-              href={`/admin/content/official/${row.id}`}
-              image={thumbs.get(row.id)}
-              key={row.id}
-              meta={
-                <span>
-                  {value(row.style)} · {row.age} · {visualReferenceCount(row)} {t("reference images")}
-                </span>
-              }
-              status={row.status}
-              title={row.name}
-            />
-          ))}
-        </CardGrid>
+        <section className="overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[980px] border-collapse text-left">
+              <thead className="bg-black/[0.025] text-[11px] uppercase tracking-wide text-[var(--ad-text-muted)]">
+                <tr>
+                  <th className="border-b border-[var(--ad-border)] px-4 py-3 font-semibold">Character</th>
+                  <th className="border-b border-[var(--ad-border)] px-3 py-3 font-semibold">Stage</th>
+                  <th className="border-b border-[var(--ad-border)] px-3 py-3 font-semibold">Readiness</th>
+                  <th className="border-b border-[var(--ad-border)] px-3 py-3 font-semibold">Visuals</th>
+                  <th className="border-b border-[var(--ad-border)] px-3 py-3 font-semibold">Performance</th>
+                  <th className="border-b border-[var(--ad-border)] px-3 py-3 font-semibold">Updated</th>
+                  <th className="border-b border-[var(--ad-border)] px-4 py-3 text-right font-semibold">Next step</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) => {
+                  const thumbnail = thumbs.get(row.id) ?? visualSourceImage(row) ?? undefined;
+                  const readiness = characterReadiness(row, Boolean(row.imageAssetId));
+                  return (
+                    <tr className="border-b border-[var(--ad-border)] last:border-0 hover:bg-black/[0.018]" key={row.id}>
+                      <td className="px-4 py-3">
+                        <div className="flex min-w-0 items-center gap-3">
+                          <div className="grid h-12 w-10 shrink-0 place-items-center overflow-hidden rounded-md bg-black/[0.04] text-sm font-semibold text-[var(--ad-text-muted)]">
+                            {thumbnail ? (
+                              // eslint-disable-next-line @next/next/no-img-element -- admin blob URLs are not compatible with next/image optimization
+                              <img alt={row.name} className="h-full w-full object-cover" loading="lazy" src={thumbnail} />
+                            ) : row.name.slice(0, 1).toUpperCase()}
+                          </div>
+                          <div className="min-w-0">
+                            <Link className="block max-w-[280px] truncate text-sm font-semibold text-[var(--ad-ink)] hover:underline" href={`/admin/content/official/${row.id}`} title={row.name}>
+                              {row.name}
+                            </Link>
+                            <p className="mt-1 text-xs text-[var(--ad-text-muted)]">{value(row.style)} · {row.age} · {value(row.gender)}</p>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-3 py-3"><StatusPill status={row.status} /></td>
+                      <td className="px-3 py-3">
+                        <div className="flex items-center gap-2">
+                          <progress
+                            aria-label={`${readiness.score}% ready`}
+                            className={cn("h-1.5 w-20 overflow-hidden rounded-full accent-[var(--ad-ink)]", readiness.score >= 80 && "accent-[var(--ad-green-text)]")}
+                            max={100}
+                            value={readiness.score}
+                          />
+                          <span className="text-xs tabular-nums text-[var(--ad-text)]">{readiness.score}%</span>
+                        </div>
+                        <p className="mt-1 max-w-[180px] truncate text-[11px] text-[var(--ad-text-muted)]" title={readiness.missing.join(", ")}>{readiness.missing[0] ? `Next: ${readiness.missing[0]}` : "Ready for release"}</p>
+                      </td>
+                      <td className="px-3 py-3">
+                        <div className="flex items-center gap-2 text-xs text-[var(--ad-text)]"><ImageIcon className="h-3.5 w-3.5 text-[var(--ad-text-muted)]" /> {visualReferenceCount(row)} references</div>
+                        <p className="mt-1 text-[11px] text-[var(--ad-text-muted)]">Identity v{row.visualProfile?.version ?? "—"}</p>
+                      </td>
+                      <td className="px-3 py-3 text-xs tabular-nums text-[var(--ad-text)]">
+                        <span>{row.stats?.chatsCount.toLocaleString() ?? "—"} chats</span>
+                        <span className="ml-2 text-[var(--ad-text-muted)]">{row.stats?.likesCount.toLocaleString() ?? "—"} likes</span>
+                      </td>
+                      <td className="px-3 py-3 text-xs text-[var(--ad-text-muted)]">{formatDate(row.updatedAt)}</td>
+                      <td className="px-4 py-3 text-right">
+                        <Link className="inline-flex h-8 items-center rounded-md border border-[var(--ad-border)] px-3 text-xs font-medium text-[var(--ad-text)] hover:border-[var(--ad-ink)]" href={`/admin/content/official/${row.id}`}>
+                          {nextAction(row, readiness)}
+                        </Link>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
       )}
+
+      {totalPages > 1 ? (
+        <div className="mt-4 flex items-center justify-between gap-3">
+          <p className="text-xs tabular-nums text-[var(--ad-text-muted)]">Page {page} of {totalPages}</p>
+          <div className="flex gap-2">
+            <GhostButton disabled={page <= 1 || loading} onClick={() => setPage((current) => Math.max(1, current - 1))}><ChevronLeft className="h-4 w-4" /> Previous</GhostButton>
+            <GhostButton disabled={page >= totalPages || loading} onClick={() => setPage((current) => Math.min(totalPages, current + 1))}>Next <ChevronRight className="h-4 w-4" /></GhostButton>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

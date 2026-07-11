@@ -149,7 +149,7 @@ test("admin web loads all control-plane sections and filters users", async ({ pa
     { path: "/admin/ops/providers", heading: "Provider Health", evidence: "Provider health & cost" },
     { path: "/admin/moderation", heading: "Moderation", evidence: "Reports" },
     { path: "/admin/content", heading: "Featured", evidence: "Featured curation" },
-    { path: "/admin/content/production", heading: "Image Production", evidence: "Create production batch" },
+    { path: "/admin/content/production", heading: "Image Production", evidence: "Creative directions" },
     { path: "/admin/content/assets", heading: "Image Library", evidence: "Purpose" },
     { path: "/admin/content/placements", heading: "Placements", evidence: "Slot" },
     { path: "/admin/content/official", heading: "Official Characters", evidence: "Create official character" },

@@ -49,11 +49,13 @@ import {
   listCharacterPregenBatches,
 } from "./characters/pregen";
 import { setCharacterChatTools } from "./characters/chat-tools";
+import { generateProductionDirections } from "./production-directions";
 import {
   approveProductionItem,
   bulkPatchContentAssets,
   createPlacement,
   createProductionBatch,
+  estimateProductionBatch,
   getContentAsset,
   getProductionBatch,
   listContentAssets,
@@ -626,6 +628,12 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
     if (!action && method === "PUT") return putFeaturedCharacters(request);
   }
   if (resource === "content" && id === "production") {
+    if (action === "directions" && !child && method === "POST") {
+      return generateProductionDirections(request);
+    }
+    if (action === "estimate" && !child && method === "POST") {
+      return estimateProductionBatch(request);
+    }
     if (action === "batches" && !child && method === "GET") return listProductionBatches(request);
     if (action === "batches" && !child && method === "POST") return createProductionBatch(request);
     if (action === "batches" && child && !grandchild && method === "GET") {
@@ -3810,6 +3818,15 @@ async function listContentCharacters(request: Request) {
       visibility: true,
       creatorId: true,
       createdAt: true,
+      imageAsset: {
+        select: { id: true, url: true, thumbnailUrl: true },
+      },
+      visualProfiles: {
+        where: { status: "active" },
+        orderBy: { version: "desc" },
+        take: 1,
+        select: { id: true, version: true, status: true, style: true },
+      },
       stats: { select: { chatsCount: true, likesCount: true, viewsCount: true } },
     },
   });

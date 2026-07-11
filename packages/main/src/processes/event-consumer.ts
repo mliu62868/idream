@@ -125,6 +125,7 @@ export async function applyChatEvent(event: InboundEvent): Promise<void> {
               reused: true,
               reuseScore: reusable.score,
               matchedFields: reusable.matchedFields,
+              summary: reusable.description ?? (reusable.tags.join(", ") || undefined),
             },
           });
           return;

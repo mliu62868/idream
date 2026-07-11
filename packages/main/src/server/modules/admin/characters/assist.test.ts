@@ -13,7 +13,16 @@ const P = "zt-assist-";
 type CallResult = {
   status: number;
   ok: boolean;
-  data: { description?: string; advancedDetails?: { personality?: string } } | undefined;
+  data: {
+    description?: string;
+    nameIdeas?: string[];
+    advancedDetails?: {
+      personality?: string;
+      speakingStyle?: string;
+      firstMessage?: string;
+      visualBrief?: string;
+    };
+  } | undefined;
   errorCode: string | undefined;
 };
 
@@ -58,7 +67,7 @@ afterAll(async () => {
 });
 
 describe("character AI assist", () => {
-  it("returns non-empty description + personality for an admin", async () => {
+  it("returns a structured creative draft for an admin", async () => {
     const result = await call(
       generateCharacterDraft(
         makeRequest({
@@ -72,6 +81,10 @@ describe("character AI assist", () => {
     expect(result.ok).toBe(true);
     expect((result.data?.description ?? "").length).toBeGreaterThan(0);
     expect((result.data?.advancedDetails?.personality ?? "").length).toBeGreaterThan(0);
+    expect((result.data?.advancedDetails?.speakingStyle ?? "").length).toBeGreaterThan(0);
+    expect((result.data?.advancedDetails?.firstMessage ?? "").length).toBeGreaterThan(0);
+    expect((result.data?.advancedDetails?.visualBrief ?? "").length).toBeGreaterThan(0);
+    expect((result.data?.nameIdeas ?? []).length).toBeGreaterThan(0);
   });
 
   it("rejects roles without content.official.write (403)", async () => {

@@ -1,23 +1,41 @@
 import { describe, expect, it } from "vitest";
 import { characterThumbnails, officialPayload } from "./official-api";
 
+const creativeFields = {
+  creativeBrief: "",
+  archetype: "",
+  relationship: "",
+  personality: "",
+  speakingStyle: "",
+  backstory: "",
+  firstMessage: "",
+  exampleDialogue: "",
+  appearanceNotes: "",
+  visualBrief: "",
+};
+
 describe("officialPayload", () => {
   it("trims, parses age, splits tags, keeps reason", () => {
     expect(
       officialPayload({
         name: " Luna ", age: "24", gender: "female", style: "realistic",
-        description: " desc ", tags: "cute, elf ,, ", reason: " ok3 ",
+        description: " desc ", tags: "cute, elf ,, ", reason: " ok3 ", ...creativeFields,
       }),
     ).toEqual({
       name: "Luna", age: 24, gender: "female", style: "realistic",
       description: "desc", tags: ["cute", "elf"], reason: "ok3",
+      appearance: { notes: "", visualBrief: "" },
+      advancedDetails: {
+        creativeBrief: "", archetype: "", relationship: "", personality: "",
+        speakingStyle: "", backstory: "", firstMessage: "", exampleDialogue: "", visualBrief: "",
+      },
     });
   });
   it("falls back to age 18 on garbage", () => {
     expect(
       officialPayload({
         name: "A", age: "x", gender: "male", style: "anime",
-        description: "d", tags: "", reason: "abc",
+        description: "d", tags: "", reason: "abc", ...creativeFields,
       }).age,
     ).toBe(18);
   });

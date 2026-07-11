@@ -20,6 +20,8 @@ describe("igrep", () => {
     expect(matches[0]).toMatchObject({
       item: "strong",
       matchedFields: expect.arrayContaining(["tags", "description"]),
+      matchedTokenCount: 3,
+      queryCoverage: 0.5,
     });
   });
 
@@ -32,5 +34,20 @@ describe("igrep", () => {
     ]);
 
     expect(matches[0]?.item).toBe("rain");
+  });
+
+  it("reports query coverage so callers can reject one-token near misses", () => {
+    const [match] = igrep("beach portrait", [
+      {
+        item: "partial",
+        fields: [{ name: "tags", text: "beach", weight: 4 }],
+      },
+    ]);
+
+    expect(match).toMatchObject({
+      item: "partial",
+      matchedTokenCount: 1,
+      queryCoverage: 0.5,
+    });
   });
 });

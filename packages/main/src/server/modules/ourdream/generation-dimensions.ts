@@ -1,6 +1,16 @@
-export const imageOrientations = ["1:1", "4:5", "3:4", "9:16", "16:9"] as const;
+const imageOrientationDefinitions = [
+  { value: "1:1", ratio: 1 },
+  { value: "4:5", ratio: 4 / 5 },
+  { value: "3:4", ratio: 3 / 4 },
+  { value: "9:16", ratio: 9 / 16 },
+  { value: "16:9", ratio: 16 / 9 },
+] as const;
 
-export type ImageOrientation = (typeof imageOrientations)[number];
+export type ImageOrientation = (typeof imageOrientationDefinitions)[number]["value"];
+
+export const imageOrientations = imageOrientationDefinitions.map(
+  (definition) => definition.value,
+) as [ImageOrientation, ...ImageOrientation[]];
 
 type Dimensions = {
   width: number;
@@ -23,18 +33,25 @@ export function dimensionsForImageOrientation(input: {
 }): Dimensions {
   const base = snapDimension(Math.min(input.defaultWidth, input.defaultHeight));
   const orientation = normalizeImageOrientation(input.orientation);
-  switch (orientation) {
-    case "16:9":
-      return { width: snapDimension((base * 16) / 9), height: base };
-    case "9:16":
-      return { width: base, height: snapDimension((base * 16) / 9) };
-    case "4:5":
-      return { width: base, height: snapDimension((base * 5) / 4) };
-    case "3:4":
-      return { width: base, height: snapDimension((base * 4) / 3) };
-    case "1:1":
-      return { width: base, height: base };
-  }
+  const ratio = imageOrientationDefinitions.find(
+    (definition) => definition.value === orientation,
+  )?.ratio ?? 1;
+  return ratio >= 1
+    ? { width: snapDimension(base * ratio), height: base }
+    : { width: base, height: snapDimension(base / ratio) };
+}
+
+export function imageOrientationForDimensions(
+  width: number | null,
+  height: number | null,
+  tolerance = 0.03,
+): ImageOrientation | null {
+  if (!width || !height) return null;
+  const ratio = width / height;
+  const closest = imageOrientationDefinitions.reduce((best, item) =>
+    Math.abs(item.ratio - ratio) < Math.abs(best.ratio - ratio) ? item : best,
+  );
+  return Math.abs(closest.ratio - ratio) <= tolerance ? closest.value : null;
 }
 
 function snapDimension(value: number) {

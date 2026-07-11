@@ -13,6 +13,8 @@ export type IgrepMatch<T> = {
   item: T;
   score: number;
   matchedFields: string[];
+  matchedTokenCount: number;
+  queryCoverage: number;
 };
 
 export function igrep<T>(
@@ -29,6 +31,7 @@ export function igrep<T>(
   for (const candidate of candidates) {
     let score = 0;
     const matchedFields = new Set<string>();
+    const matchedQueryTokens = new Set<string>();
 
     for (const field of candidate.fields) {
       const text = field.text.trim();
@@ -37,7 +40,10 @@ export function igrep<T>(
       const fieldTokens = tokenize(text);
       let tokenHits = 0;
       for (const token of queryTokens) {
-        if (fieldTokens.has(token)) tokenHits += 1;
+        if (fieldTokens.has(token)) {
+          tokenHits += 1;
+          matchedQueryTokens.add(token);
+        }
       }
       if (tokenHits > 0) {
         score += tokenHits * weight;
@@ -57,6 +63,8 @@ export function igrep<T>(
         item: candidate.item,
         score: Number(normalizedScore.toFixed(3)),
         matchedFields: [...matchedFields],
+        matchedTokenCount: matchedQueryTokens.size,
+        queryCoverage: Number((matchedQueryTokens.size / queryTokens.size).toFixed(3)),
       });
     }
   }

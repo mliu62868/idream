@@ -5,7 +5,15 @@
 // without any env set. Config comes from packages/gen/.env (see .env.example),
 // loaded here non-overriding so injected vars still win.
 import { resolveLocalBlobRoot } from "@idream/shared/storage/local-blob";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import "dotenv/config";
+
+const bundledWorkflowDir = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "workflows",
+);
 
 export const env = {
   /** Redis for BullMQ. GEN_REDIS_URL wins, else shared REDIS_URL, else local. */
@@ -114,6 +122,6 @@ export const env = {
   },
   /** Directory of workflow descriptor JSON files (see ./backend/workflow.ts). */
   get GEN_WORKFLOW_DIR(): string {
-    return process.env.GEN_WORKFLOW_DIR ?? "packages/gen/workflows";
+    return process.env.GEN_WORKFLOW_DIR ?? bundledWorkflowDir;
   },
 } as const;

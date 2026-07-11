@@ -10,7 +10,7 @@
 // INVARIANTS: 文案面向运营，不出现 LoRA/CFG/adapterRefs 等生成模型接线术语；锚点/参考图池本面板
 //             只读展示，不提供编辑（池编辑属 P3 素材联动范畴）。
 import { useCallback, useEffect, useState } from "react";
-import { History, Loader2, RefreshCcw, Save } from "lucide-react";
+import { Check, History, ImageIcon, Loader2, RefreshCcw, Save } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { cn } from "@/lib/utils";
@@ -53,6 +53,17 @@ function statusBadgeClass(status: string): string {
   if (status === "active") return "bg-[var(--ad-green-bg)] text-[var(--ad-green-text)]";
   if (status === "archived") return "bg-black/[0.05] text-[var(--ad-text-muted)]";
   return "bg-[var(--ad-yellow-bg)] text-[var(--ad-yellow-text)]";
+}
+
+function itemCount(value: unknown): number {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+function creationSourceLabel(value: string): string {
+  if (value === "generation_bootstrap" || value === "admin_official_create") return "Initial setup";
+  if (value === "admin_official_update") return "Profile update";
+  if (value === "admin_passport_edit") return "Visual identity edit";
+  return "System update";
 }
 
 export function VisualPassportPanel({ characterId }: { characterId: string }) {
@@ -149,7 +160,7 @@ export function VisualPassportPanel({ characterId }: { characterId: string }) {
                         {valueLabel(item.status)}
                       </span>
                     </td>
-                    <td className="py-1.5 pr-3 text-[var(--ad-text-muted)]">{item.createdFrom}</td>
+                    <td className="py-1.5 pr-3 text-[var(--ad-text-muted)]">{creationSourceLabel(item.createdFrom)}</td>
                     <td className="py-1.5 pr-3 text-[var(--ad-text-muted)]">
                       {new Date(item.createdAt).toLocaleString()}
                     </td>
@@ -163,31 +174,41 @@ export function VisualPassportPanel({ characterId }: { characterId: string }) {
 
       {active ? (
         <div className="mt-4">
-          <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">
-            {t("Active version traits (read-only)")}
-            <span
-              className={cn(
-                "inline-flex items-center px-2 py-0.5 normal-case tracking-normal",
-                active.identitySource === "derived"
-                  ? "bg-sky-500/15 text-sky-300"
-                  : "bg-black/[0.05] text-[var(--ad-text)]",
-              )}
-            >
-              {active.identitySource === "derived" ? t("Derived from traits") : t("Hand-authored")}
-            </span>
-            {active.identityStale ? (
-              <span className="inline-flex items-center px-2 py-0.5 normal-case tracking-normal bg-[var(--ad-yellow-bg)] text-[var(--ad-yellow-text)]">
-                {t("Stale — traits changed since this was derived")}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">
+              Active visual identity
+            </h3>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded-md bg-black/[0.05] px-2 py-1 text-xs text-[var(--ad-text)]">
+                {active.identitySource === "derived" ? t("Derived from traits") : t("Hand-authored")}
               </span>
-            ) : null}
-          </h3>
-          <div className="mt-2 grid gap-2 md:grid-cols-3">
-            <TraitBlock label={t("Face traits")} value={active.faceTraits} />
-            <TraitBlock label={t("Hair traits")} value={active.hairTraits} />
-            <TraitBlock label={t("Body traits")} value={active.bodyTraits} />
-            <TraitBlock label={t("Signature traits")} value={active.signatureTraits} />
-            <TraitBlock label={t("Style traits")} value={active.styleTraits} />
+              {active.identityStale ? (
+                <span className="rounded-md bg-[var(--ad-yellow-bg)] px-2 py-1 text-xs text-[var(--ad-yellow-text)]">
+                  {t("Stale — traits changed since this was derived")}
+                </span>
+              ) : null}
+            </div>
           </div>
+          <div className="mt-3 grid gap-px overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[var(--ad-border)] sm:grid-cols-4">
+            <IdentityMetric label="Anchor images" value={itemCount(active.anchorAssetIds)} />
+            <IdentityMetric label="Reference images" value={itemCount(active.referenceAssetIds)} />
+            <IdentityMetric label="Quality score" value={active.qualityScore ?? "—"} />
+            <IdentityMetric label="Consistency score" value={active.consistencyScore ?? "—"} />
+          </div>
+          <div className="mt-3 rounded-lg bg-black/[0.03] p-4">
+            <p className="text-xs font-semibold text-[var(--ad-text-muted)]">Identity lock</p>
+            <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-[var(--ad-text)]">{active.identityPrompt}</p>
+          </div>
+          <details className="mt-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3">
+            <summary className="cursor-pointer text-xs font-semibold text-[var(--ad-text-muted)]">Structured trait details</summary>
+            <div className="mt-3 grid gap-2 md:grid-cols-3">
+              <TraitBlock label={t("Face traits")} value={active.faceTraits} />
+              <TraitBlock label={t("Hair traits")} value={active.hairTraits} />
+              <TraitBlock label={t("Body traits")} value={active.bodyTraits} />
+              <TraitBlock label={t("Signature traits")} value={active.signatureTraits} />
+              <TraitBlock label={t("Style traits")} value={active.styleTraits} />
+            </div>
+          </details>
         </div>
       ) : null}
 
@@ -198,6 +219,17 @@ export function VisualPassportPanel({ characterId }: { characterId: string }) {
         onMinted={() => void load()}
       />
     </section>
+  );
+}
+
+function IdentityMetric({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="bg-[var(--ad-surface)] p-3">
+      <div className="flex items-center gap-1.5 text-[11px] text-[var(--ad-text-muted)]">
+        <ImageIcon className="h-3.5 w-3.5" /> {label}
+      </div>
+      <div className="mt-2 text-lg font-semibold tabular-nums text-[var(--ad-ink)]">{value}</div>
+    </div>
   );
 }
 
@@ -233,7 +265,7 @@ function MintVersionForm({
     (active?.style as (typeof STYLES)[number] | undefined) ?? "realistic",
   );
   const [reason, setReason] = useState("");
-  const [confirmation, setConfirmation] = useState("");
+  const [confirmed, setConfirmed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
@@ -248,7 +280,7 @@ function MintVersionForm({
         style,
         defaultSeed: defaultSeed.trim() || undefined,
         reason: reason.trim(),
-        confirmation: confirmation.trim(),
+        confirmation: confirmed ? confirmationToken(characterId) : "",
       });
       onMinted();
     } catch (error) {
@@ -261,59 +293,47 @@ function MintVersionForm({
   const canSubmit =
     !submitting &&
     reason.trim().length >= 3 &&
-    confirmation.trim() === confirmationToken(characterId);
+    confirmed;
 
   return (
     <div className="mt-4 border-t border-[var(--ad-border)] pt-4">
-      <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">
-        {t("Mint new version")}
-      </h3>
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">Create visual identity version</h3>
+      <p className="mt-1 text-xs leading-relaxed text-[var(--ad-text-muted)]">
+        Adjust the identity lock, create a new active version, then use the Assets tab to generate comparison images.
+      </p>
       <div className="mt-2 grid gap-3 md:grid-cols-2">
-        <textarea
-          className={textareaClass}
-          onChange={(event) => setIdentityPrompt(event.target.value)}
-          placeholder={t("Identity prompt (leave blank to derive from traits)")}
-          value={identityPrompt}
-        />
-        <textarea
-          className={textareaClass}
-          onChange={(event) => setNegativeIdentityPrompt(event.target.value)}
-          placeholder={t("Negative identity prompt")}
-          value={negativeIdentityPrompt}
-        />
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-medium text-[var(--ad-text-muted)]">Identity lock</span>
+          <textarea className={textareaClass} onChange={(event) => setIdentityPrompt(event.target.value)} placeholder={t("Identity prompt (leave blank to derive from traits)")} value={identityPrompt} />
+        </label>
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-medium text-[var(--ad-text-muted)]">What must not change</span>
+          <textarea className={textareaClass} onChange={(event) => setNegativeIdentityPrompt(event.target.value)} placeholder={t("Negative identity prompt")} value={negativeIdentityPrompt} />
+        </label>
       </div>
-      <div className="mt-3 grid gap-3 md:grid-cols-4">
-        <select
-          className={cn(inputClass, "appearance-none")}
-          onChange={(event) => setStyle(event.target.value as (typeof STYLES)[number])}
-          value={style}
-        >
-          {STYLES.map((value) => (
-            <option key={value} value={value}>
-              {valueLabel(value)}
-            </option>
-          ))}
-        </select>
-        <input
-          className={inputClass}
-          onChange={(event) => setDefaultSeed(event.target.value)}
-          placeholder={t("Default seed")}
-          value={defaultSeed}
-        />
-        <input
-          className={inputClass}
-          onChange={(event) => setReason(event.target.value)}
-          placeholder={t("Reason (≥3, for audit)")}
-          value={reason}
-        />
-        <input
-          aria-label={t("Visual profile confirmation")}
-          className={cn(inputClass, "font-mono")}
-          onChange={(event) => setConfirmation(event.target.value)}
-          placeholder={t("Type {token} to confirm", { token: confirmationToken(characterId) })}
-          value={confirmation}
-        />
+      <div className="mt-3 grid gap-3 md:grid-cols-3">
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-medium text-[var(--ad-text-muted)]">Visual style</span>
+          <select className={cn(inputClass, "appearance-none")} onChange={(event) => setStyle(event.target.value as (typeof STYLES)[number])} value={style}>
+            {STYLES.map((value) => <option key={value} value={value}>{valueLabel(value)}</option>)}
+          </select>
+        </label>
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-medium text-[var(--ad-text-muted)]">Consistency seed</span>
+          <input className={inputClass} onChange={(event) => setDefaultSeed(event.target.value)} value={defaultSeed} />
+        </label>
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-medium text-[var(--ad-text-muted)]">Change note</span>
+          <input className={inputClass} onChange={(event) => setReason(event.target.value)} placeholder="What changed and why" value={reason} />
+        </label>
       </div>
+      <label className="mt-3 flex cursor-pointer items-start gap-3 rounded-lg border border-[var(--ad-border)] p-3">
+        <input checked={confirmed} className="mt-0.5 h-4 w-4" onChange={(event) => setConfirmed(event.target.checked)} type="checkbox" />
+        <span>
+          <span className="flex items-center gap-1.5 text-sm font-medium text-[var(--ad-ink)]"><Check className="h-4 w-4" /> Activate this as a new identity version</span>
+          <span className="mt-1 block text-xs leading-relaxed text-[var(--ad-text-muted)]">The previous active version remains in history. Existing artwork is not deleted.</span>
+        </span>
+      </label>
       <div className="mt-3 flex items-center gap-3">
         <button
           className="inline-flex h-10 items-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
@@ -322,7 +342,7 @@ function MintVersionForm({
           type="button"
         >
           {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-          {t("Mint new version")}
+          Create and activate version
         </button>
         {submitError ? <p className="text-xs text-[var(--ad-red-text)]">{submitError}</p> : null}
       </div>

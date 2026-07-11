@@ -102,6 +102,7 @@ export async function createTemplate(request: Request): Promise<Response> {
       tags: toInputJson(body.tags),
       coverAssetId: body.coverAssetId ?? null,
       sortOrder: body.sortOrder,
+      isActive: false,
       createdById: actor.id,
     },
   });

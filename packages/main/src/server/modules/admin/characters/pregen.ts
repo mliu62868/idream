@@ -65,6 +65,7 @@ export async function createCharacterPregenBatch(request: Request, characterId: 
     orientation: undefined,
     count: body.count ?? pack.count,
     brief: body.brief,
+    consistencyMode: "balanced",
     reason: body.reason,
   };
   return createProductionBatchCore(request, actor, input);

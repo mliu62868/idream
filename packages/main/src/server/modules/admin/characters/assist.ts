@@ -1,4 +1,4 @@
-// AI 辅助生成：一句话 seed → 角色 description + personality 草稿（CHARACTER_MANAGEMENT_PLAN §8 后置增强）。
+// AI 辅助生成：一句话 seed → 可分区编辑的角色创作底稿。
 // 仅产出建议，不落库；admin 在 UI 里二次编辑后再走 official/template 的创建流。
 // 硬底线：生成结果与 seed 一并过 moderation，blocked → 403（守未成年拦截）。
 import { z } from "zod";
@@ -24,6 +24,14 @@ async function aggregate(messages: ChatMessage[]): Promise<string> {
   return text.trim();
 }
 
+function nameIdeasFromText(value: string): string[] {
+  return value
+    .split(/\r?\n|,/)
+    .map((item) => item.replace(/^[-*\d.)\s]+/, "").trim())
+    .filter(Boolean)
+    .slice(0, 3);
+}
+
 // POST /api/v1/admin/content/character-assist
 export async function generateCharacterDraft(request: Request): Promise<Response> {
   await actorWithPermission(request, "content.official.write");
@@ -31,7 +39,7 @@ export async function generateCharacterDraft(request: Request): Promise<Response
   const traits = [body.gender, body.style].filter(Boolean).join(", ");
   const context = traits ? `${body.seed} (${traits})` : body.seed;
 
-  const [description, personality] = await Promise.all([
+  const [description, personality, speakingStyle, firstMessage, visualBrief, rawNameIdeas] = await Promise.all([
     aggregate([
       {
         role: "system",
@@ -48,17 +56,55 @@ export async function generateCharacterDraft(request: Request): Promise<Response
       },
       { role: "user", content: context },
     ]),
+    aggregate([
+      {
+        role: "system",
+        content:
+          "Describe this ADULT (18+) AI companion's speaking style in 2 concise sentences. Cover rhythm, vocabulary, warmth, and one distinctive verbal habit. Prose only.",
+      },
+      { role: "user", content: context },
+    ]),
+    aggregate([
+      {
+        role: "system",
+        content:
+          "Write the first message this ADULT (18+) AI companion sends when meeting the user. 2-4 sentences, immediately playable, no headings or quotation marks.",
+      },
+      { role: "user", content: context },
+    ]),
+    aggregate([
+      {
+        role: "system",
+        content:
+          "Write a concise visual art direction for this ADULT (18+) character. Include face, hair, silhouette, wardrobe, signature detail, palette, and lighting. Prose only.",
+      },
+      { role: "user", content: context },
+    ]),
+    aggregate([
+      {
+        role: "system",
+        content:
+          "Suggest exactly 3 distinctive character names for this ADULT (18+) AI companion. One name per line, names only.",
+      },
+      { role: "user", content: context },
+    ]),
   ]);
+
+  const nameIdeas = nameIdeasFromText(rawNameIdeas);
 
   const moderation = await moderateText(
     "character_assist",
     "draft",
-    `${body.seed} ${description} ${personality}`,
+    `${body.seed} ${description} ${personality} ${speakingStyle} ${firstMessage} ${visualBrief} ${nameIdeas.join(" ")}`,
     "input",
   );
   if (moderation.status === "blocked") {
     throw Errors.forbidden("Generated draft failed safety checks", moderation);
   }
 
-  return ok({ description, advancedDetails: { personality } });
+  return ok({
+    description,
+    nameIdeas,
+    advancedDetails: { personality, speakingStyle, firstMessage, visualBrief },
+  });
 }

@@ -322,12 +322,20 @@ export function ReviewQueueView() {
               ))}
               {visibleItems.length === 0 ? (
                 <tr>
-                  <td className="px-3 py-8 text-center text-sm text-[var(--ad-text-muted)]" colSpan={7}>
-                    {loading
-                      ? t("Loading…")
-                      : activeFilterCount > 0
-                        ? t("No submissions match filters")
-                        : t("Empty")}
+                  <td className="px-3 py-10 text-center" colSpan={7}>
+                    {loading ? (
+                      <span className="text-sm text-[var(--ad-text-muted)]">{t("Loading…")}</span>
+                    ) : activeFilterCount > 0 ? (
+                      <div>
+                        <p className="text-sm font-semibold text-[var(--ad-ink)]">{t("No submissions match filters")}</p>
+                        <button className="mt-2 text-xs text-[var(--ad-text-muted)] underline underline-offset-4" onClick={() => setFilters(DEFAULT_FILTERS)} type="button">{t("Reset filters")}</button>
+                      </div>
+                    ) : (
+                      <div>
+                        <p className="text-sm font-semibold text-[var(--ad-ink)]">Review queue is clear</p>
+                        <p className="mt-1 text-xs text-[var(--ad-text-muted)]">New pending character submissions will appear here with their report context and decision actions.</p>
+                      </div>
+                    )}
                   </td>
                 </tr>
               ) : null}

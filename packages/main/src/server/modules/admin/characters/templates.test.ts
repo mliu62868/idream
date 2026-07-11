@@ -64,7 +64,7 @@ async function setupAdmin(suffix: string) {
 }
 
 describe("character template library service (feature B)", () => {
-  it("creates with default scope=built_in and isActive=true, stamps createdById + audit", async () => {
+  it("creates an inactive built-in draft, stamps createdById + audit", async () => {
     const admin = await setupAdmin("create");
     const result = await call(createTemplate, {
       userId: admin,
@@ -82,7 +82,7 @@ describe("character template library service (feature B)", () => {
     expect(result.status).toBe(200);
     expect(result.data.template).toMatchObject({
       scope: "built_in",
-      isActive: true,
+      isActive: false,
       sortOrder: 0,
       createdById: admin,
       name: "Cyber Muse",
@@ -130,20 +130,20 @@ describe("character template library service (feature B)", () => {
     });
     const id = created.data.template.id as string;
 
+    const online = await call((req) => setTemplateActive(req, id), {
+      userId: admin,
+      role: "admin",
+      body: { active: true, reason: "publish template", confirmation: id },
+    });
+    expect(online.status).toBe(200);
+    expect(online.data.template.isActive).toBe(true);
+
     const offline = await call((req) => setTemplateActive(req, id), {
       userId: admin,
       role: "admin",
       body: { active: false, reason: "take offline", confirmation: id },
     });
-    expect(offline.status).toBe(200);
     expect(offline.data.template.isActive).toBe(false);
-
-    const online = await call((req) => setTemplateActive(req, id), {
-      userId: admin,
-      role: "admin",
-      body: { active: true, reason: "back online", confirmation: id },
-    });
-    expect(online.data.template.isActive).toBe(true);
 
     expect(
       await prisma.adminAuditLog.count({ where: { action: "content.template.active", targetId: id } }),
@@ -168,7 +168,7 @@ describe("character template library service (feature B)", () => {
     expect(rejected.code).toBe("bad_request");
     expect(
       await prisma.characterTemplate.findUniqueOrThrow({ where: { id }, select: { isActive: true } }),
-    ).toEqual({ isActive: true });
+    ).toEqual({ isActive: false });
   });
 
   it("listActiveTemplates returns only active, ordered by sortOrder, and needs no admin perm", async () => {
@@ -183,10 +183,10 @@ describe("character template library service (feature B)", () => {
       role: "admin",
       body: { name: "Hidden One", sortOrder: 1, reason: "seed hidden" },
     });
-    await call((req) => setTemplateActive(req, hidden.data.template.id), {
+    await call((req) => setTemplateActive(req, active.data.template.id), {
       userId: admin,
       role: "admin",
-      body: { active: false, reason: "hide it", confirmation: hidden.data.template.id },
+      body: { active: true, reason: "publish it", confirmation: active.data.template.id },
     });
 
     // 公开路由：不传任何 admin 身份也能读。

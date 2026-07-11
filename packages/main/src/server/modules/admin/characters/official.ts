@@ -1,15 +1,16 @@
 // SPEC: 官方角色 CMS 服务层（CHARACTER_MANAGEMENT_PLAN §A / Feature A）。
 //       admin 凭 content.official.write 在后台生产 / 编辑 / 上下架官方角色。
-//       官方角色 source="official"，跳过用户侧审核（直接 approved+public），但仍过 moderation。
+//       官方角色 source="official"，先进入 draft/private 的内部制作阶段，运营完成资料、视觉与素材后
+//       再通过 state 端点发布为 approved/public；仍复用既有 moderation 与审计。
 // INTENT: 复用 admin/service 与 ourdream 既有 helper，保持与 F2 内容治理一致的审计/门控语义。
 // INVARIANTS:
 //   - 所有 handler 经 actorWithPermission(req, "content.official.write") 门控（含 list）。
-//   - create 强制 source="official" / status="approved" / visibility="public"。
+//   - create 强制 source="official" / status="draft" / visibility="private"。
 //   - update / setState 仅作用于 source==="official" 的角色，否则 404。
 //   - 两条硬底线不得绕过：age>=18（zod min(18)）+ moderation blocked → forbidden。
 //   - 文本（name/description/advancedDetails）变更必重新 moderate 并重算 systemPrompt。
 // EXAMPLE: POST /api/v1/admin/content/official { name, age:24, gender, style, description, reason }
-//          → ok({ character }) with source="official", status="approved".
+//          → ok({ character }) with source="official", status="draft".
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { buildCharacterSystemPrompt } from "@idream/shared";
@@ -108,46 +109,104 @@ function tagLabels(character: { tags: { tag: { label: string } }[] }): string[] 
   return character.tags.map((link) => link.tag.label);
 }
 
+function jsonRecord(value: Prisma.JsonValue): Record<string, Prisma.JsonValue> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, Prisma.JsonValue>)
+    : {};
+}
+
+function jsonStringArray(value: Prisma.JsonValue): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function releaseCheckMissing(character: Prisma.CharacterGetPayload<{ include: typeof officialInclude }>): string[] {
+  const advanced = jsonRecord(character.advancedDetails);
+  const appearance = jsonRecord(character.appearance);
+  const visualProfile = character.visualProfiles[0];
+  const missing: string[] = [];
+  if (tagLabels(character).length === 0) missing.push("tags");
+  if (typeof advanced.personality !== "string" || !advanced.personality.trim()) missing.push("personality");
+  if (typeof advanced.firstMessage !== "string" || !advanced.firstMessage.trim()) missing.push("first message");
+  const visualBrief =
+    typeof appearance.visualBrief === "string" && appearance.visualBrief.trim()
+      ? appearance.visualBrief
+      : typeof advanced.visualBrief === "string"
+        ? advanced.visualBrief
+        : "";
+  if (!visualBrief.trim()) missing.push("visual direction");
+  if (!visualProfile) missing.push("visual identity");
+  const referenceCount = visualProfile
+    ? jsonStringArray(visualProfile.anchorAssetIds).length + jsonStringArray(visualProfile.referenceAssetIds).length
+    : 0;
+  if (referenceCount === 0) missing.push("reference images");
+  if (!character.imageAssetId) missing.push("published artwork");
+  return missing;
+}
+
 export async function listOfficialCharacters(request: Request): Promise<Response> {
   await actorWithPermission(request, OFFICIAL_PERMISSION);
   const url = new URL(request.url);
   const search = url.searchParams.get("search")?.trim();
   const status = url.searchParams.get("status") ?? undefined;
-  const where: Prisma.CharacterWhereInput = { source: "official", deletedAt: null, status };
+  const gender = url.searchParams.get("gender") ?? undefined;
+  const style = url.searchParams.get("style") ?? undefined;
+  const page = clampInt(url.searchParams.get("page"), 1, 10_000, 1);
+  const limit = clampInt(url.searchParams.get("limit"), 1, 100, 24);
+  const where: Prisma.CharacterWhereInput = {
+    source: "official",
+    deletedAt: null,
+    status,
+    gender,
+    style,
+  };
   if (search) {
-    where.OR = [{ id: { contains: search } }, { name: { contains: search } }];
+    where.OR = [
+      { id: { contains: search, mode: "insensitive" } },
+      { name: { contains: search, mode: "insensitive" } },
+    ];
   }
-  const items = await prisma.character.findMany({
-    where,
-    orderBy: { createdAt: "desc" },
-    take: clampInt(url.searchParams.get("limit"), 1, 100, 60),
-    select: {
-      id: true,
-      name: true,
-      age: true,
-      description: true,
-      gender: true,
-      style: true,
-      status: true,
-      visibility: true,
-      createdAt: true,
-      tags: { include: { tag: true } },
-      stats: { select: { chatsCount: true, likesCount: true, viewsCount: true } },
-      visualProfiles: {
-        where: { status: "active" },
-        orderBy: { version: "desc" },
-        take: 1,
-        select: {
-          id: true,
-          version: true,
-          status: true,
-          style: true,
-          anchorAssetIds: true,
-          referenceAssetIds: true,
+  const [total, items] = await prisma.$transaction([
+    prisma.character.count({ where }),
+    prisma.character.findMany({
+      where,
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+      skip: (page - 1) * limit,
+      take: limit,
+      select: {
+        id: true,
+        name: true,
+        age: true,
+        description: true,
+        gender: true,
+        style: true,
+        status: true,
+        visibility: true,
+        appearance: true,
+        advancedDetails: true,
+        imageAssetId: true,
+        createdAt: true,
+        updatedAt: true,
+        tags: { include: { tag: true } },
+        stats: { select: { chatsCount: true, likesCount: true, viewsCount: true } },
+        visualProfiles: {
+          where: { status: "active" },
+          orderBy: { version: "desc" },
+          take: 1,
+          select: {
+            id: true,
+            version: true,
+            status: true,
+            style: true,
+            qualityScore: true,
+            consistencyScore: true,
+            faceTraits: true,
+            anchorAssetIds: true,
+            referenceAssetIds: true,
+          },
         },
       },
-    },
-  });
+    }),
+  ]);
   return ok({
     items: items.map((item) => {
       const [visualProfile] = item.visualProfiles;
@@ -158,6 +217,10 @@ export async function listOfficialCharacters(request: Request): Promise<Response
         visualProfile: visualProfile ?? null,
       };
     }),
+    page,
+    limit,
+    total,
+    totalPages: Math.max(1, Math.ceil(total / limit)),
   });
 }
 
@@ -196,8 +259,8 @@ export async function createOfficialCharacter(request: Request): Promise<Respons
         description: body.description,
         systemPrompt,
         source: "official",
-        status: "approved",
-        visibility: "public",
+        status: "draft",
+        visibility: "private",
         style: body.style,
         gender: body.gender,
         appearance: toInputJson(body.appearance),
@@ -347,12 +410,24 @@ export async function setOfficialState(request: Request, id: string): Promise<Re
   const actor = await actorWithPermission(request, OFFICIAL_PERMISSION);
   const body = stateSchema.parse(await jsonBody(request));
 
-  const existing = await prisma.character.findUnique({ where: { id } });
+  const existing = await prisma.character.findUnique({ where: { id }, include: officialInclude });
   if (!existing || existing.source !== "official" || existing.deletedAt) {
     throw Errors.notFound("Official character not found");
   }
+  if (body.status === "approved" && existing.status === "draft") {
+    const missing = releaseCheckMissing(existing);
+    if (missing.length > 0) {
+      throw Errors.badRequest("Character release checks are incomplete", { missing });
+    }
+  }
 
-  const after = await prisma.character.update({ where: { id }, data: { status: body.status } });
+  const after = await prisma.character.update({
+    where: { id },
+    data:
+      body.status === "approved"
+        ? { status: "approved", visibility: "public" }
+        : { status: "archived", visibility: "private" },
+  });
   await writeAudit(request, actor, {
     action: "content.official.publish",
     targetType: "character",

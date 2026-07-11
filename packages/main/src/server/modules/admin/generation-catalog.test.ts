@@ -98,6 +98,36 @@ describe("generation catalog (admin, read-only)", () => {
     expect(Object.keys(res.data.workflow.apiPrompt).length).toBeGreaterThan(0);
   });
 
+  it("keeps enabled local image profiles bound to matching workflow descriptors", async () => {
+    const admin = await setupActor("admin", "profile-workflows");
+    const res = await callWorkflows({ userId: admin, role: "admin" });
+    expect(res.status).toBe(200);
+
+    const workflows = new Map(
+      (res.data.items as Array<Record<string, unknown>>).map((item) => [
+        item.workflowKey,
+        item.backendKind,
+      ]),
+    );
+    const profiles = await prisma.generationModelProfile.findMany({
+      where: {
+        mode: "image",
+        enabled: true,
+        status: "active",
+        runner: { in: ["comfyui", "sd_cpp"] },
+      },
+      select: { profileKey: true, runner: true, workflowKey: true },
+    });
+
+    expect(profiles.length).toBeGreaterThan(0);
+    for (const profile of profiles) {
+      expect(profile.workflowKey, `${profile.profileKey} is missing workflowKey`).toBeTruthy();
+      expect(workflows.get(profile.workflowKey ?? ""), profile.profileKey).toBe(
+        profile.runner === "sd_cpp" ? "sdcpp" : "comfyui",
+      );
+    }
+  });
+
   it("404s for an unknown workflowKey", async () => {
     const admin = await setupActor("admin", "404");
     const res = await callWorkflowDetail("does-not-exist", { userId: admin, role: "admin" });
