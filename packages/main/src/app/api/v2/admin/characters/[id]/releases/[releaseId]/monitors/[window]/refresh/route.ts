@@ -13,7 +13,7 @@ export async function POST(
 ) {
   const { id, releaseId, window } = await context.params;
   return adminV2Route(async () => {
-    await actorWithPermission(request, "character.release.read");
+    await actorWithPermission(request, "character.release.review");
     if (window !== "24h" && window !== "72h") throw Errors.badRequest("Monitor window must be 24h or 72h");
     const body = characterReleaseMonitorRefreshRequestSchema.parse(await request.json());
     return refreshCharacterReleaseMonitor({

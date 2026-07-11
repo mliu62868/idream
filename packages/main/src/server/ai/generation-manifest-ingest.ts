@@ -172,10 +172,10 @@ function finalizePayload(input: GenerationManifestIngest) {
 
 export async function dispatchPendingGenerationManifests(batch = 100): Promise<number> {
   const now = new Date();
-  const pendingWhere = {
+  const pendingWhere: Prisma.MainOutboxEventWhereInput = {
     eventType: "generation.manifest.accepted.v1",
     status: { in: ["pending", "dispatched"] },
-  } as const;
+  };
   const [oldestPending, rows] = await Promise.all([
     prisma.mainOutboxEvent.findFirst({
       where: pendingWhere,

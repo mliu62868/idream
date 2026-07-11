@@ -2338,6 +2338,7 @@ function renderSection(
         read: ctx.permissions.has("character.project.read") && ctx.permissions.has("character.performance.read"),
         writeProject: ctx.permissions.has("character.project.write"),
         publishRelease: ctx.permissions.has("character.release.publish"),
+        reviewRelease: ctx.permissions.has("character.release.review"),
       }} view={subview} />;
     }
     if (section.view === "templates") return <StartersSection view={subview} />;

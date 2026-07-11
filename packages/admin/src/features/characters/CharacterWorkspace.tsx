@@ -25,6 +25,7 @@ type Permissions = {
   read: boolean;
   writeProject: boolean;
   publishRelease: boolean;
+  reviewRelease: boolean;
 };
 
 type ProjectDraft = Pick<CharacterWorkspaceDetail["project"],
@@ -224,12 +225,24 @@ function PreviewDiff({ data }: { data: CharacterWorkspaceDetail }) {
 function ReleasePanel({ data, permissions, reload }: { data: CharacterWorkspaceDetail; permissions: Permissions; reload: () => Promise<void> }) {
   const candidate = data.releases.find(({ release }) => !["published", "superseded", "withdrawn"].includes(release.status));
   const current = data.releases.find(({ release }) => release.id === data.serving?.currentReleaseId);
+  const rollbackSources = data.releases.filter(({ release }) =>
+    release.id !== current?.release.id && release.status === "superseded",
+  );
   const [reason, setReason] = useState("Operator verified release evidence");
   const [scheduledAt, setScheduledAt] = useState("");
+  const [selectedRollbackSourceId, setSelectedRollbackSourceId] = useState("");
+  const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
   const command = async (kind: "publish" | "schedule" | "rollback", releaseId: string, version: number) => {
-    setBusy(kind); setError(null);
+    const expectedConfirmation = `${data.character.id}:${releaseId}:${kind}`;
+    if (confirmation.trim() !== expectedConfirmation) {
+      setError(`Type ${expectedConfirmation} to confirm this high-risk action.`);
+      return;
+    }
+    setBusy(kind);
+    setError(null);
     try {
       await adminV2Request(`/api/v2/admin/characters/${data.character.id}/releases/${releaseId}/commands/${kind}`, {
         method: "POST",
@@ -237,20 +250,92 @@ function ReleasePanel({ data, permissions, reload }: { data: CharacterWorkspaceD
         body: {
           entityVersion: version,
           reason: { code: `operator_${kind}`, summary: reason },
+          confirmation: confirmation.trim(),
           ...(kind === "schedule" ? { scheduledAt: new Date(scheduledAt).toISOString() } : {}),
         },
       });
+      setConfirmation("");
       await reload();
-    } catch (cause) { setError(cause instanceof Error ? cause.message : `Could not ${kind} release`); }
-    finally { setBusy(null); }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : `Could not ${kind} release`);
+    } finally {
+      setBusy(null);
+    }
   };
-  return <div className="grid gap-5 xl:grid-cols-[1fr_340px]">
-    <div className="space-y-3">{data.releases.length === 0 ? <EmptyWorkspace filtered={false} onClear={() => undefined} /> : data.releases.map(({ release, checks }) => <article className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" key={release.id}><div className="flex flex-wrap items-center gap-2"><strong className="font-mono text-xs">{release.id}</strong><StatusBadge value={release.status} /><StatusBadge value={release.readiness} />{release.id === data.serving?.currentReleaseId ? <StatusBadge tone="good" value="serving now" /> : null}</div><p className="mt-3 text-xs text-[var(--ad-text-muted)]">Snapshot {release.snapshotHash.slice(0, 16)} · release v{release.version} · content {release.characterContentVersionId}</p><div className="mt-3 grid gap-2 sm:grid-cols-2">{checks.map((check) => <div className="flex items-center justify-between rounded bg-black/[0.03] px-3 py-2 text-xs" key={check.checkKey}><span>{check.checkKey}</span><StatusBadge value={check.result} /></div>)}</div></article>)}</div>
-    <aside className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"><h3 className="font-semibold">Release action</h3><label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">Reason<textarea className={`${textAreaClass} mt-1`} onChange={(event) => setReason(event.target.value)} value={reason} /></label><label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">Schedule at<input className={`${fieldClass} mt-1`} onChange={(event) => setScheduledAt(event.target.value)} type="datetime-local" value={scheduledAt} /></label>{error ? <p className="mt-3 text-xs text-[var(--ad-red-text)]" role="alert">{error}</p> : null}<div className="mt-4 grid gap-2"><WorkspaceButton disabled={!permissions.publishRelease || !candidate || Boolean(busy)} onClick={() => candidate && void command("publish", candidate.release.id, candidate.release.version)} tone="primary"><Rocket className="h-4 w-4" /> Publish candidate</WorkspaceButton><WorkspaceButton disabled={!permissions.publishRelease || !candidate || !scheduledAt || Boolean(busy)} onClick={() => candidate && void command("schedule", candidate.release.id, candidate.release.version)}><Clock3 className="h-4 w-4" /> Schedule</WorkspaceButton><WorkspaceButton disabled={!permissions.publishRelease || !current || Boolean(busy)} onClick={() => current && void command("rollback", current.release.id, data.serving?.version ?? 0)} tone="danger"><RotateCcw className="h-4 w-4" /> Roll back snapshot</WorkspaceButton></div>{!permissions.publishRelease ? <p className="mt-3 text-xs text-[var(--ad-text-muted)]">Read-only: character.release.publish is not granted.</p> : null}</aside>
-  </div>;
+  const rollbackSourceId = rollbackSources.some(({ release }) => release.id === selectedRollbackSourceId)
+    ? selectedRollbackSourceId
+    : rollbackSources[0]?.release.id ?? "";
+  const rollbackSource = rollbackSources.find(({ release }) => release.id === rollbackSourceId);
+  return (
+    <div className="grid gap-5 xl:grid-cols-[1fr_340px]">
+      <div className="space-y-3">
+        {data.releases.length === 0
+          ? <EmptyWorkspace filtered={false} onClear={() => undefined} />
+          : data.releases.map(({ release, checks }) => (
+            <article className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" key={release.id}>
+              <div className="flex flex-wrap items-center gap-2">
+                <strong className="font-mono text-xs">{release.id}</strong>
+                <StatusBadge value={release.status} />
+                <StatusBadge value={release.readiness} />
+                {release.id === data.serving?.currentReleaseId ? <StatusBadge tone="good" value="serving now" /> : null}
+              </div>
+              <p className="mt-3 text-xs text-[var(--ad-text-muted)]">
+                Snapshot {release.snapshotHash.slice(0, 16)} · release v{release.version} · content {release.characterContentVersionId}
+              </p>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                {checks.map((check) => (
+                  <div className="flex items-center justify-between rounded bg-black/[0.03] px-3 py-2 text-xs" key={check.checkKey}>
+                    <span>{check.checkKey}</span>
+                    <StatusBadge value={check.result} />
+                  </div>
+                ))}
+              </div>
+            </article>
+          ))}
+      </div>
+      <aside className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
+        <h3 className="font-semibold">Release action</h3>
+        <label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">
+          Reason
+          <textarea className={`${textAreaClass} mt-1`} onChange={(event) => setReason(event.target.value)} value={reason} />
+        </label>
+        <label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">
+          Schedule at
+          <input className={`${fieldClass} mt-1`} onChange={(event) => setScheduledAt(event.target.value)} type="datetime-local" value={scheduledAt} />
+        </label>
+        <label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">
+          Historical rollback source
+          <select className={`${fieldClass} mt-1`} onChange={(event) => setSelectedRollbackSourceId(event.target.value)} value={rollbackSourceId}>
+            <option value="">No superseded release available</option>
+            {rollbackSources.map(({ release }) => <option key={release.id} value={release.id}>{release.id}</option>)}
+          </select>
+        </label>
+        <label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">
+          Exact confirmation
+          <input className={`${fieldClass} mt-1`} onChange={(event) => setConfirmation(event.target.value)} value={confirmation} />
+        </label>
+        <p className="mt-2 text-xs text-[var(--ad-text-muted)]">
+          Use character:release:action, for example {candidate ? `${data.character.id}:${candidate.release.id}:publish` : "when a candidate exists"}.
+        </p>
+        {error ? <p className="mt-3 text-xs text-[var(--ad-red-text)]" role="alert">{error}</p> : null}
+        <div className="mt-4 grid gap-2">
+          <WorkspaceButton disabled={!permissions.publishRelease || !candidate || Boolean(busy)} onClick={() => candidate && void command("publish", candidate.release.id, candidate.release.version)} tone="primary">
+            <Rocket className="h-4 w-4" /> Publish candidate
+          </WorkspaceButton>
+          <WorkspaceButton disabled={!permissions.publishRelease || !candidate || !scheduledAt || Boolean(busy)} onClick={() => candidate && void command("schedule", candidate.release.id, candidate.release.version)}>
+            <Clock3 className="h-4 w-4" /> Schedule
+          </WorkspaceButton>
+          <WorkspaceButton disabled={!permissions.publishRelease || !rollbackSource || Boolean(busy)} onClick={() => rollbackSource && void command("rollback", rollbackSource.release.id, data.serving?.version ?? 0)} tone="danger">
+            <RotateCcw className="h-4 w-4" /> Roll back to selected snapshot
+          </WorkspaceButton>
+        </div>
+        {!permissions.publishRelease ? <p className="mt-3 text-xs text-[var(--ad-text-muted)]">Read-only: character.release.publish is not granted.</p> : null}
+      </aside>
+    </div>
+  );
 }
 
-function MonitorPanel({ data, reload }: { data: CharacterWorkspaceDetail; reload: () => Promise<void> }) {
+function MonitorPanel({ data, permissions, reload }: { data: CharacterWorkspaceDetail; permissions: Permissions; reload: () => Promise<void> }) {
   const current = data.releases.find(({ release }) => release.id === data.serving?.currentReleaseId);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -261,7 +346,7 @@ function MonitorPanel({ data, reload }: { data: CharacterWorkspaceDetail; reload
     finally { setBusy(false); }
   };
   if (!current) return <EmptyWorkspace filtered={false} onClear={() => undefined} />;
-  return <div><div className="mb-4 flex flex-wrap gap-2"><WorkspaceButton disabled={busy} onClick={() => void refresh("24h")}><RefreshCcw className="h-4 w-4" /> Refresh 24h</WorkspaceButton><WorkspaceButton disabled={busy} onClick={() => void refresh("72h")}><RefreshCcw className="h-4 w-4" /> Refresh 72h</WorkspaceButton></div>{error ? <p className="mb-4 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}<div className="grid gap-4 lg:grid-cols-2">{(["24h", "72h"] as const).map((window) => { const monitor = current.monitors.find((item) => item.window === window); return <article className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" key={window}><div className="flex items-center justify-between"><h3 className="font-semibold">{window} guardrail</h3><StatusBadge value={monitor?.status ?? "pending"} /></div>{monitor ? <><dl className="mt-4 grid grid-cols-2 gap-3 text-xs">{Object.entries(monitor.observed).map(([key, value]) => <div key={key}><dt className="text-[var(--ad-text-muted)]">{key}</dt><dd className="mt-1 font-semibold">{String(value ?? "Unavailable")}</dd></div>)}</dl><p className="mt-4 text-xs text-[var(--ad-text-muted)]">Recommendation: {String(monitor.verification.recommendation ?? "continue_monitoring")}</p></> : <p className="mt-4 text-sm text-[var(--ad-text-muted)]">No observation yet. Refresh once the release is published.</p>}</article>; })}</div></div>;
+  return <div><div className="mb-4 flex flex-wrap gap-2"><WorkspaceButton disabled={busy || !permissions.reviewRelease} onClick={() => void refresh("24h")}><RefreshCcw className="h-4 w-4" /> Refresh 24h</WorkspaceButton><WorkspaceButton disabled={busy || !permissions.reviewRelease} onClick={() => void refresh("72h")}><RefreshCcw className="h-4 w-4" /> Refresh 72h</WorkspaceButton></div>{!permissions.reviewRelease ? <p className="mb-4 text-xs text-[var(--ad-text-muted)]">Read-only: character.release.review is not granted.</p> : null}{error ? <p className="mb-4 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}<div className="grid gap-4 lg:grid-cols-2">{(["24h", "72h"] as const).map((window) => { const monitor = current.monitors.find((item) => item.window === window); return <article className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" key={window}><div className="flex items-center justify-between"><h3 className="font-semibold">{window} guardrail</h3><StatusBadge value={monitor?.status ?? "pending"} /></div>{monitor ? <><dl className="mt-4 grid grid-cols-2 gap-3 text-xs">{Object.entries(monitor.observed).map(([key, value]) => <div key={key}><dt className="text-[var(--ad-text-muted)]">{key}</dt><dd className="mt-1 font-semibold">{String(value ?? "Unavailable")}</dd></div>)}</dl><p className="mt-4 text-xs text-[var(--ad-text-muted)]">Recommendation: {String(monitor.verification.recommendation ?? "continue_monitoring")}</p></> : <p className="mt-4 text-sm text-[var(--ad-text-muted)]">No observation yet. Refresh once the release is published.</p>}</article>; })}</div></div>;
 }
 
 function PerformancePanel({ data }: { data: CharacterWorkspaceDetail }) {
@@ -283,7 +368,7 @@ function CharacterDetail({ id, permissions }: { id: string; permissions: Permiss
   if (loading) return <LoadingWorkspace label="Loading Character Project, Release and Monitor evidence" />;
   if (!data) return <section className="rounded-xl bg-[var(--ad-red-bg)] p-5" role="alert">{error ?? "Character not found"} <button className="ml-2 underline" onClick={() => void load()} type="button">Retry</button></section>;
   const onTabKey = (event: KeyboardEvent<HTMLButtonElement>, current: number) => { if (!event.key.startsWith("Arrow")) return; event.preventDefault(); const next = (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length; setTab(tabs[next]); document.getElementById(`character-tab-${tabs[next]}`)?.focus(); };
-  return <section aria-labelledby="character-workspace-title"><Link className="inline-flex min-h-11 items-center gap-2 text-sm text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]" href="/admin/characters"><ArrowLeft className="h-4 w-4" /> Portfolio</Link><div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-xs uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">Character Project · {data.project.id}</p><h1 className="mt-1 text-2xl font-semibold" id="character-workspace-title">{data.character.name}</h1><div className="mt-2 flex flex-wrap gap-2"><StatusBadge value={data.project.phase} /><StatusBadge value={data.serving?.state ?? "inactive"} /><StatusBadge value={data.character.visibility} /></div></div><p className="text-xs text-[var(--ad-text-muted)]">Project v{data.project.version} · Serving v{data.serving?.version ?? 0}</p></div>{error ? <p className="mt-4" role="alert">{error}</p> : null}<div className="mt-6 flex gap-1 overflow-x-auto border-b border-[var(--ad-border)]" role="tablist" aria-label="Character workspace">{tabs.map((item, index) => <button aria-controls={`character-panel-${item}`} aria-selected={tab === item} className={cn("min-h-11 shrink-0 border-b-2 px-3 text-sm capitalize focus-visible:outline focus-visible:outline-2", tab === item ? "border-[var(--ad-ink)] font-semibold text-[var(--ad-ink)]" : "border-transparent text-[var(--ad-text-muted)]")} id={`character-tab-${item}`} key={item} onClick={() => { setTab(item); const query = new URLSearchParams({ tab: item }); setWorkspaceUrl(query); }} onKeyDown={(event) => onTabKey(event, index)} role="tab" tabIndex={tab === item ? 0 : -1} type="button">{item}</button>)}</div><div className="mt-5" id={`character-panel-${tab}`} role="tabpanel" aria-labelledby={`character-tab-${tab}`}>{tab === "project" ? <ProjectEditor data={data} key={data.project.version} onReload={load} permissions={permissions} /> : tab === "preview" ? <PreviewDiff data={data} /> : tab === "release" ? <ReleasePanel data={data} permissions={permissions} reload={load} /> : tab === "monitor" ? <MonitorPanel data={data} reload={load} /> : <PerformancePanel data={data} />}</div></section>;
+  return <section aria-labelledby="character-workspace-title"><Link className="inline-flex min-h-11 items-center gap-2 text-sm text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]" href="/admin/characters"><ArrowLeft className="h-4 w-4" /> Portfolio</Link><div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-xs uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">Character Project · {data.project.id}</p><h1 className="mt-1 text-2xl font-semibold" id="character-workspace-title">{data.character.name}</h1><div className="mt-2 flex flex-wrap gap-2"><StatusBadge value={data.project.phase} /><StatusBadge value={data.serving?.state ?? "inactive"} /><StatusBadge value={data.character.visibility} /></div></div><p className="text-xs text-[var(--ad-text-muted)]">Project v{data.project.version} · Serving v{data.serving?.version ?? 0}</p></div>{error ? <p className="mt-4" role="alert">{error}</p> : null}<div className="mt-6 flex gap-1 overflow-x-auto border-b border-[var(--ad-border)]" role="tablist" aria-label="Character workspace">{tabs.map((item, index) => <button aria-controls={`character-panel-${item}`} aria-selected={tab === item} className={cn("min-h-11 shrink-0 border-b-2 px-3 text-sm capitalize focus-visible:outline focus-visible:outline-2", tab === item ? "border-[var(--ad-ink)] font-semibold text-[var(--ad-ink)]" : "border-transparent text-[var(--ad-text-muted)]")} id={`character-tab-${item}`} key={item} onClick={() => { setTab(item); const query = new URLSearchParams({ tab: item }); setWorkspaceUrl(query); }} onKeyDown={(event) => onTabKey(event, index)} role="tab" tabIndex={tab === item ? 0 : -1} type="button">{item}</button>)}</div><div className="mt-5" id={`character-panel-${tab}`} role="tabpanel" aria-labelledby={`character-tab-${tab}`}>{tab === "project" ? <ProjectEditor data={data} key={data.project.version} onReload={load} permissions={permissions} /> : tab === "preview" ? <PreviewDiff data={data} /> : tab === "release" ? <ReleasePanel data={data} permissions={permissions} reload={load} /> : tab === "monitor" ? <MonitorPanel data={data} permissions={permissions} reload={load} /> : <PerformancePanel data={data} />}</div></section>;
 }
 
 export function CharacterWorkspace({ view, permissions }: { view: AdminSubview; permissions: Permissions }) {

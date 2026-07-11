@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { characterWorkspaceDetailSchema } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
+import { POST as refreshReleaseMonitor } from "@/app/api/v2/admin/characters/[id]/releases/[releaseId]/monitors/[window]/refresh/route";
 import { getCharacterWorkspace, updateCharacterProjectDraft } from "./workspace";
 
 describe("Character operator workspace", () => {
@@ -12,8 +13,19 @@ describe("Character operator workspace", () => {
   const revisionId = `workspace-revision-${suffix}`;
   const releaseId = `workspace-release-${suffix}`;
   const requestId = `workspace-request-${suffix}`;
+  const readOnlyActorId = `workspace-readonly-${suffix}`;
 
   beforeAll(async () => {
+    await prisma.user.create({ data: { id: readOnlyActorId, email: `${readOnlyActorId}@example.test`, role: "user" } });
+    await prisma.adminUserPermission.create({
+      data: {
+        userId: readOnlyActorId,
+        permissionKey: "character.release.read",
+        effect: "grant",
+        reason: "Verify monitor refresh remains a review-only command",
+        createdById: readOnlyActorId,
+      },
+    });
     await prisma.character.create({
       data: {
         id: characterId,
@@ -81,6 +93,7 @@ describe("Character operator workspace", () => {
   });
 
   afterAll(async () => {
+    await prisma.adminUserPermission.deleteMany({ where: { userId: readOnlyActorId } });
     await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: projectId } });
     await prisma.adminAuditLog.deleteMany({ where: { requestId } });
     await prisma.characterServing.deleteMany({ where: { characterId } });
@@ -89,6 +102,7 @@ describe("Character operator workspace", () => {
     await prisma.characterContentVersion.deleteMany({ where: { characterId } });
     await prisma.characterProject.deleteMany({ where: { id: projectId } });
     await prisma.character.deleteMany({ where: { id: characterId } });
+    await prisma.user.deleteMany({ where: { id: readOnlyActorId } });
     await prisma.$disconnect();
   });
 
@@ -143,5 +157,21 @@ describe("Character operator workspace", () => {
       phase: "launch_ready",
       version: 2,
     });
+  });
+
+  it("does not let a read-only release grant refresh monitor authority", async () => {
+    const response = await refreshReleaseMonitor(
+      new Request(`http://localhost/api/v2/admin/characters/${characterId}/releases/${releaseId}/monitors/24h/refresh`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-idream-user-id": readOnlyActorId,
+          "x-idream-role": "user",
+        },
+        body: JSON.stringify({ entityVersion: 1 }),
+      }),
+      { params: Promise.resolve({ id: characterId, releaseId, window: "24h" }) },
+    );
+    expect(response.status).toBe(403);
   });
 });
