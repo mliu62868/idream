@@ -84,7 +84,7 @@ export const navItems: NavItem[] = [
   item({ id: "content/placements", label: "Placements", href: "/admin/creative/placements", icon: Bookmark, group: "Creative Studio", permissions: ["content.asset.read", "content.placement.write"] }),
 
   item({ id: "cases", label: "Cases", href: "/admin/cases?view=mine", icon: Ticket, group: "Customer Operations", permissions: ["case.read"] }),
-  item({ id: "users", label: "Customers", href: "/admin/customers", icon: Users, group: "Customer Operations", permissions: ["user.read"] }),
+  item({ id: "users", label: "Customers", href: "/admin/customers", icon: Users, group: "Customer Operations", permissions: ["customer.read"] }),
   item({ id: "billing", label: "Billing Operations", href: "/admin/customer-ops/billing", icon: BadgeDollarSign, group: "Customer Operations", permissions: ["billing.read"] }),
   item({ id: "compliance", label: "Account Requests", href: "/admin/customer-ops/account-requests", icon: ShieldAlert, group: "Customer Operations", permissions: ["compliance.read"] }),
 

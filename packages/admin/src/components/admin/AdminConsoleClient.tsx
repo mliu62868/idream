@@ -81,6 +81,8 @@ import {
 import type { AdminShellSignals } from "@/components/admin/shell-signals";
 import { IncidentWorkspace } from "@/features/incidents/IncidentWorkspace";
 import { CaseWorkspace } from "@/features/cases/CaseWorkspace";
+import { CustomerWorkspace } from "@/features/customers/CustomerWorkspace";
+import { GlobalAdminSearch } from "@/features/search/GlobalAdminSearch";
 import { CharacterWorkspace } from "@/features/characters/CharacterWorkspace";
 import { CreativeRunWorkspace } from "@/features/creative/CreativeRunWorkspace";
 
@@ -892,6 +894,7 @@ export function AdminConsoleClient({
                 <p className="truncate text-[11px] text-[var(--ad-text-muted)]">{actor.id} · {t(workModeLabel(workMode))}</p>
               </div>
               <div className="grid gap-2 sm:grid-cols-[1fr_auto] lg:ml-auto lg:flex lg:items-center">
+                <GlobalAdminSearch />
                 <div className="flex h-9 min-w-0 items-center gap-2 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 lg:w-[260px]">
                   <Search className="h-4 w-4 shrink-0 text-[var(--ad-text-muted)]" />
                   <input
@@ -1315,8 +1318,7 @@ async function fetchSection(
     };
   }
   if (sectionId === "users") {
-    const payload = await apiGet<{ items: Row[] }>("/api/v1/admin/users");
-    return { kind: "users", rows: payload.items };
+    return { kind: "users", rows: [] };
   }
   if (sectionId === "billing") {
     const [ledger, subscriptions, reconciliation] = await Promise.all([
@@ -2262,14 +2264,7 @@ function renderSection(
     );
   }
   if (section.kind === "users") {
-    return (
-      <UsersView
-        openAction={ctx.openAction}
-        permissionForm={ctx.permissionForm}
-        rows={section.rows}
-        setPermissionForm={ctx.setPermissionForm}
-      />
-    );
+    return <CustomerWorkspace />;
   }
   if (section.kind === "billing") {
     return (
@@ -4862,7 +4857,7 @@ function ModerationView({
   );
 }
 
-function UsersView({
+export function UsersView({
   rows,
   openAction,
   permissionForm,

@@ -72,7 +72,7 @@ describe("admin navigation information architecture", () => {
 describe("permission and work-mode navigation", () => {
   it("never exposes a section without one of its effective permissions", () => {
     const supportPermissions = new Set([
-      "dashboard.read", "case.read", "support.request.read", "user.read", "billing.read", "audit.read",
+      "dashboard.read", "case.read", "support.request.read", "customer.read", "billing.read", "audit.read",
     ]);
     const groups = navGroupsForPermissions(supportPermissions, "support");
     const ids = groups.flatMap((group) => group.items.map((item) => item.id));

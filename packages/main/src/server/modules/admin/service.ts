@@ -21,7 +21,7 @@ import {
   resolvePermissions,
   type PermissionKey,
 } from "@/server/admin/permissions";
-import { effectivePermissions } from "@/server/admin/effective-permissions";
+import { effectiveCharacterIdsForPermission, effectivePermissions } from "@/server/admin/effective-permissions";
 import { getAuthCtx, requireUser, type ActorRole } from "@/server/lib/auth";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
@@ -4426,7 +4426,11 @@ async function chatOpsModerationEvents(request: Request) {
   });
 }
 
-export async function actorWithPermission(request: Request, permission: PermissionKey): Promise<AdminActor> {
+export async function actorWithPermission(
+  request: Request,
+  permission: PermissionKey,
+  resource?: { readonly characterId?: string },
+): Promise<AdminActor> {
   const bff = await verifyAdminBffRequest(request);
   if (!bff.ok) {
     throw Errors.unauthorized("Admin BFF authentication failed", { reason: bff.reason });
@@ -4436,6 +4440,15 @@ export async function actorWithPermission(request: Request, permission: Permissi
   const effective = await effectivePermissions(user.id, user.role);
   if (!effective.has(permission)) {
     throw Errors.forbidden("Missing admin permission", { permission });
+  }
+  if (resource?.characterId && permission.startsWith("character.")) {
+    const allowedCharacterIds = await effectiveCharacterIdsForPermission(user.id, user.role, permission);
+    if (allowedCharacterIds !== null && !allowedCharacterIds.has(resource.characterId)) {
+      throw Errors.forbidden("Character is outside the effective permission scope", {
+        permission,
+        characterId: resource.characterId,
+      });
+    }
   }
   return { id: user.id, role: user.role };
 }

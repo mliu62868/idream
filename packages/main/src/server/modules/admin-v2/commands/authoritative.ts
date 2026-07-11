@@ -282,7 +282,7 @@ const publishReleaseDefinition = {
 
 export function publishCharacterRelease(request: Request, characterId: string, releaseId: string) {
   return commandResponse(request, async () => {
-    const actor = await actorWithPermission(request, publishReleaseDefinition.permission);
+    const actor = await actorWithPermission(request, publishReleaseDefinition.permission, { characterId });
     const parsed = await parseCommand(request, characterReleasePublishCommandRequestSchema);
     requireConfirmation(parsed.body.confirmation, `${characterId}:${releaseId}:publish`);
     const release = await prisma.characterRelease.findUnique({ where: { id: releaseId } });
@@ -324,7 +324,7 @@ const scheduleReleaseDefinition = {
 
 export function scheduleCharacterRelease(request: Request, characterId: string, releaseId: string) {
   return commandResponse(request, async () => {
-    const actor = await actorWithPermission(request, scheduleReleaseDefinition.permission);
+    const actor = await actorWithPermission(request, scheduleReleaseDefinition.permission, { characterId });
     const parsed = await parseCommand(request, characterReleaseScheduleCommandRequestSchema);
     requireConfirmation(parsed.body.confirmation, `${characterId}:${releaseId}:schedule`);
     const release = await prisma.characterRelease.findUnique({ where: { id: releaseId } });
@@ -357,7 +357,7 @@ const rollbackReleaseDefinition = {
 
 export function rollbackCharacterRelease(request: Request, characterId: string, sourceReleaseId: string) {
   return commandResponse(request, async () => {
-    const actor = await actorWithPermission(request, rollbackReleaseDefinition.permission);
+    const actor = await actorWithPermission(request, rollbackReleaseDefinition.permission, { characterId });
     const parsed = await parseCommand(request, characterReleaseRollbackCommandRequestSchema);
     requireConfirmation(parsed.body.confirmation, `${characterId}:${sourceReleaseId}:rollback`);
     const source = await prisma.characterRelease.findUnique({ where: { id: sourceReleaseId } });

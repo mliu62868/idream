@@ -436,35 +436,11 @@ export async function executeIncidentActionPlan(input: {
           }),
           expectedVersion: input.expectedVersion,
           retryMode: "idempotent",
-          status: "succeeded",
-          attemptCount: 1,
-          result: toInputJson({ action: plan.action, eligibleIds, skippedIds }),
-          finishedAt: new Date(),
+          status: "accepted",
+          attemptCount: 0,
+          result: toInputJson({ action: plan.action, eligibleIds, skippedIds, executionState: "accepted" }),
         },
       });
-      await tx.controlPlaneCommandAttempt.create({
-        data: { commandId: command.id, attemptNo: 1, status: "succeeded", finishedAt: new Date() },
-      });
-      const fanoutTargets = ["retry_eligible", "refund"].includes(plan.action)
-        ? eligibleIds.map((occurrenceId) => ({ occurrenceId, eligibleOccurrenceIds: [occurrenceId] }))
-        : [{ occurrenceId: null, eligibleOccurrenceIds: eligibleIds }];
-      for (const target of fanoutTargets) {
-        await tx.mainOutboxEvent.create({
-          data: {
-            eventType: `incident.action.${plan.action}.requested.v2`,
-            aggregateType: "ops_incident",
-            aggregateId: incident.id,
-            payload: toInputJson({
-              incidentId: incident.id,
-              actionPlanId: plan.id,
-              occurrenceId: target.occurrenceId,
-              eligibleOccurrenceIds: target.eligibleOccurrenceIds,
-              targetVersion: plan.targetVersion,
-              commandId: command.id,
-            }),
-          },
-        });
-      }
       const mitigation = {
         ...asRecord(incident.mitigation),
         activeActionPlan: {
@@ -484,10 +460,10 @@ export async function executeIncidentActionPlan(input: {
         data: {
           actorId: input.actor.id,
           actorRole: input.actor.role,
-          action: "incident.action_plan.executed",
+          action: "incident.action_plan.accepted",
           targetType: "ops_incident",
           targetId: incident.id,
-          reason: `Executed frozen ${plan.action} plan`,
+          reason: `Accepted frozen ${plan.action} plan for durable execution`,
           before: toInputJson({ status: incident.status, version: incident.version }),
           after: toInputJson({ status: "mitigating", version: incident.version + 1, actionPlanId: plan.id }),
           requestId,

@@ -17,7 +17,7 @@ function ifMatchVersion(request: Request): number | null {
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
   return adminV2Route(async () => {
-    const actor = await actorWithPermission(request, "character.project.write");
+    const actor = await actorWithPermission(request, "character.project.write", { characterId: id });
     const body = characterProjectDraftPatchRequestSchema.parse(await request.json());
     const headerVersion = ifMatchVersion(request);
     if (headerVersion !== null && headerVersion !== body.entityVersion) {

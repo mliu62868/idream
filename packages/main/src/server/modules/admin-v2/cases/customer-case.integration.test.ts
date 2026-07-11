@@ -5,7 +5,7 @@ import {
   backfillCustomerCases,
   recordCustomerCaseAction,
 } from "./service";
-import { getCustomer360 } from "./customer-query";
+import { getCustomer360, listCustomers } from "./customer-query";
 import { listCases } from "./query";
 
 describe("Support and billing Case depth", () => {
@@ -190,6 +190,26 @@ describe("Support and billing Case depth", () => {
       limit: 1,
     });
     expect(first.data.items[0].type).toBe("billing_dispute");
+  });
+
+  it("lists Customer operational summaries with server-side search and cursor state", async () => {
+    const response = await listCustomers(new Request(
+      `http://localhost/api/v2/admin/customers?search=${encodeURIComponent("Case Customer")}&status=active&limit=1`,
+      { headers },
+    ));
+    const body = await response.json();
+    expect(body.data).toMatchObject({
+      items: [expect.objectContaining({
+        id: customerId,
+        displayName: "Case Customer",
+        balanceDreamcoins: 500,
+        activeCaseCount: 2,
+        subscriptionStatus: "active",
+      })],
+      pageInfo: { hasNextPage: false, endCursor: null },
+      query: { search: "Case Customer", status: "active", limit: 1, cursor: null },
+      freshness: "fresh",
+    });
   });
 
   it("returns a permission-gated authoritative Customer 360 read model", async () => {

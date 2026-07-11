@@ -249,7 +249,11 @@ export async function dispatchCreativeRetryOutbox(
 ) {
   const rows = await db.mainOutboxEvent.findMany({
     where: {
-      eventType: { in: ["creative.retry.dispatch.v2", "creative.generation.dispatch.v2"] },
+      eventType: { in: [
+        "creative.retry.dispatch.v2",
+        "creative.generation.dispatch.v2",
+        "incident.retry.dispatch.v2",
+      ] },
       status: { in: ["pending", "dispatched"] },
       nextRunAt: { lte: new Date() },
     },

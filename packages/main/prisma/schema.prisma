@@ -1325,6 +1325,24 @@ model AdminUserPermission {
   @@map("admin_user_permissions")
 }
 
+model AdminUserGrantBundle {
+  id          String    @id @default(cuid())
+  userId      String
+  bundleKey   String
+  scope       Json?
+  reason      String
+  createdById String
+  expiresAt   DateTime?
+  revokedAt   DateTime?
+  revokedById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([userId, bundleKey])
+  @@index([userId, revokedAt, expiresAt])
+  @@map("admin_user_grant_bundles")
+}
+
 model SupportConsentGrant {
   id          String   @id @default(cuid())
   userId      String

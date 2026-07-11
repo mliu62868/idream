@@ -2,6 +2,35 @@ import { z } from "zod";
 import { adminIdSchema, adminIsoDateTimeSchema } from "./common";
 import { operationsCaseSchema } from "./cases";
 
+export const customerListItemSchema = z.object({
+  id: adminIdSchema,
+  email: z.string().email(),
+  displayName: z.string().nullable(),
+  status: z.string().min(1),
+  createdAt: adminIsoDateTimeSchema,
+  balanceDreamcoins: z.number().int(),
+  activeCaseCount: z.number().int().nonnegative(),
+  failedGenerationCount30d: z.number().int().nonnegative(),
+  subscriptionStatus: z.string().nullable(),
+  lastActiveAt: adminIsoDateTimeSchema.nullable(),
+}).strict();
+
+export const customerListResponseSchema = z.object({
+  items: z.array(customerListItemSchema).readonly(),
+  pageInfo: z.object({
+    endCursor: z.string().nullable(),
+    hasNextPage: z.boolean(),
+  }).strict(),
+  query: z.object({
+    search: z.string(),
+    status: z.string(),
+    limit: z.number().int().positive(),
+    cursor: z.string().nullable(),
+  }).strict(),
+  asOf: adminIsoDateTimeSchema,
+  freshness: z.literal("fresh"),
+}).strict();
+
 export const customer360Schema = z
   .object({
     customer: z
@@ -65,3 +94,5 @@ export const customer360Schema = z
   .strict();
 
 export type Customer360 = z.infer<typeof customer360Schema>;
+export type CustomerListItem = z.infer<typeof customerListItemSchema>;
+export type CustomerListResponse = z.infer<typeof customerListResponseSchema>;

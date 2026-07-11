@@ -7,6 +7,10 @@ import {
   executeIncidentActionPlan,
   previewIncidentActionPlan,
 } from "./service";
+import {
+  executeIncidentActionPlanCommand,
+  verifyIncidentActionPlanCommands,
+} from "./action-executor";
 import { verifyIncidentRecovery } from "./workflow";
 import {
   assignReviewCase,
@@ -166,8 +170,16 @@ describe("Incident and P0 Review Case authority loops", () => {
   });
 
   afterAll(async () => {
+    const actionCommandIds = (await prisma.controlPlaneCommand.findMany({
+      where: { actorId: adminId },
+      select: { id: true },
+    })).map((row) => row.id);
+    await prisma.generationAttemptEvent.deleteMany({
+      where: { attempt: { sourceCommandId: { in: actionCommandIds } } },
+    });
+    await prisma.generationAttempt.deleteMany({ where: { sourceCommandId: { in: actionCommandIds } } });
     await prisma.controlPlaneCommandAttempt.deleteMany({
-      where: { commandId: { in: (await prisma.controlPlaneCommand.findMany({ where: { actorId: adminId }, select: { id: true } })).map((row) => row.id) } },
+      where: { commandId: { in: actionCommandIds } },
     });
     await prisma.controlPlaneCommand.deleteMany({ where: { actorId: adminId } });
     await prisma.adminAuditLog.deleteMany({ where: { actorId: adminId } });
@@ -223,12 +235,39 @@ describe("Incident and P0 Review Case authority loops", () => {
       confirmation: `${first.id}:${plan.id}:retry_eligible`,
       idempotencyKey: `execute-${suffix}`,
     });
-    expect(executed.status).toBe("succeeded");
+    expect(executed.status).toBe("accepted");
     expect(
       await prisma.mainOutboxEvent.count({
-        where: { aggregateId: first.id, eventType: "incident.action.retry_eligible.requested.v2" },
+        where: { aggregateId: first.id, eventType: { startsWith: "incident.action.retry_eligible" } },
+      }),
+    ).toBe(0);
+    const running = await executeIncidentActionPlanCommand(prisma, {
+      commandId: executed.id,
+      workerId: `incident-action-worker-${suffix}`,
+    });
+    expect(running.status).toBe("verifying");
+    expect(
+      await prisma.mainOutboxEvent.count({
+        where: { aggregateId: first.id, eventType: "incident.retry.dispatch.v2" },
       }),
     ).toBe(2);
+    expect(
+      await prisma.mainOutboxEvent.count({
+        where: { aggregateId: first.id, eventType: "incident.action.retry_eligible.started.v2" },
+      }),
+    ).toBe(1);
+    const retryAttempts = await prisma.generationAttempt.findMany({
+      where: { sourceCommandId: executed.id },
+    });
+    expect(retryAttempts).toHaveLength(2);
+    await prisma.generationAttempt.updateMany({
+      where: { sourceCommandId: executed.id },
+      data: { status: "succeeded", finishedAt: new Date() },
+    });
+    expect(await verifyIncidentActionPlanCommands(prisma)).toMatchObject({ succeeded: 1, failed: 0 });
+    expect(await prisma.controlPlaneCommand.findUniqueOrThrow({ where: { id: executed.id } })).toMatchObject({
+      status: "succeeded",
+    });
 
     const verified = await verifyIncidentRecovery({
       incidentId: first.id,

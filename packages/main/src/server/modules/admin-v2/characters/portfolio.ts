@@ -19,6 +19,7 @@ import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import { actorWithPermission } from "@/server/modules/admin/service";
+import { effectiveCharacterIdsForPermission } from "@/server/admin/effective-permissions";
 import { toInputJson } from "../shared/prisma-json";
 import { evaluateCharacterPerformance } from "./performance";
 
@@ -293,8 +294,13 @@ async function changeMarkers(
   }));
 }
 
-async function filteredCharacterIds(db: PrismaClient, query: CharacterPortfolioQuery) {
+async function filteredCharacterIds(
+  db: PrismaClient,
+  query: CharacterPortfolioQuery,
+  authorizedCharacterIds: readonly string[] | null = null,
+) {
   const filters: string[][] = [];
+  if (authorizedCharacterIds !== null) filters.push([...authorizedCharacterIds]);
   if (query.search) {
     filters.push((await db.character.findMany({
       where: {
@@ -346,10 +352,10 @@ async function filteredCharacterIds(db: PrismaClient, query: CharacterPortfolioQ
 export async function listCharacterPortfolioData(
   db: PrismaClient,
   query: CharacterPortfolioQuery,
-  input: { readonly asOf?: Date; readonly assignedActorId?: string } = {},
+  input: { readonly asOf?: Date; readonly assignedActorId?: string; readonly authorizedCharacterIds?: readonly string[] | null } = {},
 ) {
   const asOf = input.asOf ?? new Date();
-  const characterIds = await filteredCharacterIds(db, query);
+  const characterIds = await filteredCharacterIds(db, query, input.authorizedCharacterIds ?? null);
   const projects = await db.characterProject.findMany({
     where: {
       phase: query.phase,
@@ -536,13 +542,14 @@ export async function createCharacterPortfolioDecision(
 export async function listCharacterPortfolio(request: Request) {
   const actor = await actorWithPermission(request, "character.performance.read");
   const query = characterPortfolioQuerySchema.parse(Object.fromEntries(new URL(request.url).searchParams));
+  const scope = await effectiveCharacterIdsForPermission(actor.id, actor.role, "character.performance.read");
   return ok(await listCharacterPortfolioData(prisma, query, {
-    assignedActorId: actor.role === "user" ? actor.id : undefined,
+    authorizedCharacterIds: scope === null ? null : [...scope],
   }), { headers: { "cache-control": "no-store" } });
 }
 
 export async function recordCharacterPortfolioDecision(request: Request, characterId: string) {
-  const actor = await actorWithPermission(request, "character.project.write");
+  const actor = await actorWithPermission(request, "character.project.write", { characterId });
   const body = characterPortfolioDecisionRequestSchema.parse(await request.json());
   const decision = await createCharacterPortfolioDecision(prisma, {
     characterId,

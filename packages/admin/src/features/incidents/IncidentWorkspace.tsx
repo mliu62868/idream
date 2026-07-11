@@ -271,6 +271,13 @@ function IncidentInspector({ busy, canManage, detail, onClose, onMutate }: {
   const [resolveIdempotencyKey] = useState(() => crypto.randomUUID());
   const [confirmation, setConfirmation] = useState("");
   const [evidence, setEvidence] = useState("");
+  const [recoveryChecks, setRecoveryChecks] = useState({
+    successRateRecovered: false,
+    signatureGrowthStopped: false,
+    backlogRecovering: false,
+    failedRequestPlanComplete: false,
+    settlementReconciled: false,
+  });
 
   const expectedPlanConfirmation = plan ? `${incident.id}:${plan.id}:${plan.action}` : "";
   const canVerify = ["mitigating", "monitoring"].includes(incident.status);
@@ -303,7 +310,85 @@ function IncidentInspector({ busy, canManage, detail, onClose, onMutate }: {
               {plan ? <div className="rounded-md bg-[var(--ad-yellow-bg)] p-3 text-sm"><p><strong>{plan.eligibleIds?.length ?? plan.eligibleOccurrenceIds?.length ?? 0}</strong> eligible · <strong>{plan.skippedIds?.length ?? plan.skippedOccurrenceIds?.length ?? 0}</strong> skipped</p><code className="mt-2 block break-all text-xs">{expectedPlanConfirmation}</code><label className="mt-3 grid gap-1 text-xs font-semibold">Type confirmation<input className={fieldClass} onChange={(event) => setConfirmation(event.target.value)} value={confirmation} /></label><div className="mt-3"><WorkspaceButton disabled={busy || confirmation !== expectedPlanConfirmation} tone="danger" onClick={() => void onMutate("Mitigation plan executed", () => adminV2Request(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/action-plans/${encodeURIComponent(plan.id)}/execute`, { method: "POST", idempotencyKey: planIdempotencyKey, body: { entityVersion: incident.version, confirmation } }))}>Execute frozen plan</WorkspaceButton></div></div> : null}
             </section>
 
-        <section className="space-y-3 border-t border-[var(--ad-border)] pt-5" aria-labelledby="incident-verification-title"><h4 className="text-sm font-semibold" id="incident-verification-title">Recovery verification</h4><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Evidence reference<input className={fieldClass} onChange={(event) => setEvidence(event.target.value)} placeholder="monitor, dashboard, or runbook reference" value={evidence} /></label><p className="text-xs leading-5 text-[var(--ad-text-muted)]">Passing records all five required checks: success rate, signature growth, backlog, failed-request plan, and settlement.</p><div className="flex flex-wrap gap-2"><WorkspaceButton disabled={busy || !canVerify || !evidence.trim()} onClick={() => void onMutate("Recovery verification recorded", () => adminV2Request(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/verification`, { method: "POST", body: { entityVersion: incident.version, state: "passed", evidenceRefs: [evidence.trim()], checks: { successRateRecovered: true, signatureGrowthStopped: true, backlogRecovering: true, failedRequestPlanComplete: true, settlementReconciled: true } } }))}><CheckCircle2 className="h-4 w-4" />Mark recovery verified</WorkspaceButton><WorkspaceButton disabled={busy || !canResolve || reason.trim().length < 3} tone="primary" onClick={() => void onMutate("Incident resolve command accepted", () => adminV2Request(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/commands/resolve`, { method: "POST", idempotencyKey: resolveIdempotencyKey, body: { entityVersion: incident.version, reason: { code: "recovery_verified", summary: reason.trim() }, confirmation: `${incident.id}:resolve` } }))}>Resolve incident</WorkspaceButton></div>{!canVerify ? <p className="text-xs text-[var(--ad-yellow-text)]"><AlertTriangle className="mr-1 inline h-3.5 w-3.5" />Execute mitigation before verification.</p> : null}</section>
+            <section
+              aria-labelledby="incident-verification-title"
+              className="space-y-3 border-t border-[var(--ad-border)] pt-5"
+            >
+              <h4 className="text-sm font-semibold" id="incident-verification-title">Recovery verification</h4>
+              <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
+                Evidence reference
+                <input
+                  className={fieldClass}
+                  onChange={(event) => setEvidence(event.target.value)}
+                  placeholder="monitor, dashboard, or runbook reference"
+                  value={evidence}
+                />
+              </label>
+              <fieldset className="grid gap-2 rounded-md bg-[var(--ad-surface-subtle)] p-3">
+                <legend className="px-1 text-xs font-semibold">Required observed checks</legend>
+                {([
+                  ["successRateRecovered", "Success rate recovered for the required window"],
+                  ["signatureGrowthStopped", "Failure signature stopped growing"],
+                  ["backlogRecovering", "Backlog is recovering"],
+                  ["failedRequestPlanComplete", "Every failed request has a retry or terminal plan"],
+                  ["settlementReconciled", "Spend and refunds are reconciled"],
+                ] as const).map(([key, label]) => (
+                  <label className="flex min-h-9 items-center gap-2 text-xs" key={key}>
+                    <input
+                      checked={recoveryChecks[key]}
+                      onChange={(event) => setRecoveryChecks((current) => ({
+                        ...current,
+                        [key]: event.target.checked,
+                      }))}
+                      type="checkbox"
+                    />
+                    {label}
+                  </label>
+                ))}
+              </fieldset>
+              <div className="flex flex-wrap gap-2">
+                <WorkspaceButton
+                  disabled={busy || !canVerify || !evidence.trim() || !Object.values(recoveryChecks).every(Boolean)}
+                  onClick={() => void onMutate(
+                    "Recovery verification recorded",
+                    () => adminV2Request(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/verification`, {
+                      method: "POST",
+                      body: {
+                        entityVersion: incident.version,
+                        state: "passed",
+                        evidenceRefs: [evidence.trim()],
+                        checks: recoveryChecks,
+                      },
+                    }),
+                  )}
+                >
+                  <CheckCircle2 className="h-4 w-4" />Mark recovery verified
+                </WorkspaceButton>
+                <WorkspaceButton
+                  disabled={busy || !canResolve || reason.trim().length < 3}
+                  onClick={() => void onMutate(
+                    "Incident resolve command accepted",
+                    () => adminV2Request(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/commands/resolve`, {
+                      method: "POST",
+                      idempotencyKey: resolveIdempotencyKey,
+                      body: {
+                        entityVersion: incident.version,
+                        reason: { code: "recovery_verified", summary: reason.trim() },
+                        confirmation: `${incident.id}:resolve`,
+                      },
+                    }),
+                  )}
+                  tone="primary"
+                >
+                  Resolve incident
+                </WorkspaceButton>
+              </div>
+              {!canVerify ? (
+                <p className="text-xs text-[var(--ad-yellow-text)]">
+                  <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />Execute mitigation before verification.
+                </p>
+              ) : null}
+            </section>
           </>
         ) : <p className="rounded-md bg-[var(--ad-surface-subtle)] p-3 text-sm text-[var(--ad-text-muted)]">Read access only. Incident actions require <code>ops.incident.manage</code>.</p>}
         <CollaborationPanel canWrite={canManage} targetId={incident.id} targetType="incident" />

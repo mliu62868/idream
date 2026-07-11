@@ -10,6 +10,10 @@ import {
   executeCreativeRetryCommand,
   verifyCreativeRetryCommands,
 } from "@/server/modules/admin-v2/creative/retry-executor";
+import {
+  executeIncidentActionPlanCommand,
+  verifyIncidentActionPlanCommands,
+} from "@/server/modules/admin-v2/incidents/action-executor";
 
 const COMMAND_TYPES = [
   "character.release.schedule",
@@ -18,6 +22,7 @@ const COMMAND_TYPES = [
   "character.serving.pause",
   "character.serving.resume",
   "incident.resolve",
+  "incident.action_plan.execute",
   "case.close",
   "chat.session_release.migrate",
   "creative.run.retry_failed",
@@ -52,6 +57,8 @@ export async function drainAdminCommands(
   for (const command of commands) {
     const result = command.commandType === "creative.run.retry_failed"
       ? await executeCreativeRetryCommand(db, { commandId: command.id, workerId: input.workerId })
+      : command.commandType === "incident.action_plan.execute"
+      ? await executeIncidentActionPlanCommand(db, { commandId: command.id, workerId: input.workerId })
       : CHARACTER_COMMAND_TYPES.has(command.commandType)
       ? await executeCharacterReleaseCommand(db, {
           commandId: command.id,
@@ -64,7 +71,8 @@ export async function drainAdminCommands(
   }
   const dispatched = await dispatchCreativeRetryOutbox(db, { limit: input.limit });
   const verified = await verifyCreativeRetryCommands(db, { limit: input.limit });
-  return { examined: commands.length, succeeded, failed, verifying, dispatched, verified };
+  const incidentActions = await verifyIncidentActionPlanCommands(db, { limit: input.limit });
+  return { examined: commands.length, succeeded, failed, verifying, dispatched, verified, incidentActions };
 }
 
 export const drainCharacterReleaseCommands = drainAdminCommands;
