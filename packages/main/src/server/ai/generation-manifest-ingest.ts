@@ -7,6 +7,7 @@ import {
 import { prisma } from "@/server/lib/db";
 import { jobQueue } from "@/server/jobs/queue";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
+import { recordGenerationAttemptEvent } from "./generation-attempt-events";
 
 export async function ingestGenerationManifest(
   rawInput: unknown,
@@ -61,17 +62,30 @@ export async function ingestGenerationManifest(
         requestId: input.manifest.generationJobId,
         attemptNo: input.manifest.attemptNo,
         provider: input.manifest.provider,
-        status: "succeeded",
+        status: "running",
         completionManifestRef: input.manifestRef,
-        startedAt: new Date(input.manifest.completedAt),
-        finishedAt: new Date(input.manifest.completedAt),
       },
       update: {
         provider: input.manifest.provider,
-        status: "succeeded",
+        status: "running",
         completionManifestRef: input.manifestRef,
-        finishedAt: new Date(input.manifest.completedAt),
       },
+    });
+    await recordGenerationAttemptEvent(tx, {
+      eventId: `${attempt.id}:manifest-ingested`,
+      attemptId: attempt.id,
+      eventType: "generation.attempt.manifest_ingested.v1",
+      occurredAt: new Date(input.manifest.completedAt),
+      payload: {
+        requestId: input.manifest.generationJobId,
+        manifestRef: input.manifestRef,
+        manifestChecksum: input.manifestChecksum,
+        provider: input.manifest.provider,
+        providerRequestId: input.manifest.providerRequestId,
+        assetCount: input.manifest.assets.length,
+      },
+      status: "running",
+      completionManifestRef: input.manifestRef,
     });
     const createdReceipt = await tx.inboundEventReceipt.create({
       data: {

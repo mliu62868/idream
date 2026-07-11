@@ -320,6 +320,13 @@ describe("image generation service contract", () => {
     expect(poll.data.job.status).toBe("failed");
     expect(await dreamcoinBalance(userId)).toBe(100);
     expect(await jobQueue.getByDedupeKey("ai.image.generate", `generation:${jobId}`)).toBeNull();
+    const attempt = await prisma.generationAttempt.findFirstOrThrow({ where: { requestId: jobId } });
+    expect(attempt).toMatchObject({ status: "failed", terminalSequence: expect.any(Number) });
+    expect(await prisma.generationAttemptEvent.findMany({
+      where: { attemptId: attempt.id, terminalScope: "terminal" },
+    })).toEqual([
+      expect.objectContaining({ outcome: "failed", eventType: "generation.attempt.failed.v1" }),
+    ]);
   });
 
   it("returns a same-origin download URL for local private storage", async () => {

@@ -25,6 +25,7 @@ import {
   videoGeneratePayloadSchema,
 } from "./schemas";
 import { hydratedImageReferenceInputs } from "./reference-images";
+import { recordGenerationAttemptEvent } from "./generation-attempt-events";
 
 export const localAiQueueNames = [
   "ai.image.generate",
@@ -530,6 +531,8 @@ async function finalizeGenerationCompleted(
     where: { id: payload.generationJobId },
   });
   if (!job) return;
+  const attempt = await resolveGenerationAttemptForFinalize(job.id, payload.attemptId);
+  const attemptId = attempt?.id;
   await removeGenerationWorkQueueJob(job.id, job.mode);
   if (job.status === "completed") {
     await enqueueChatImageCompleted(job.id);
@@ -648,15 +651,25 @@ async function finalizeGenerationCompleted(
         errorCode: null,
       },
     });
-    if (payload.attemptId) {
-      await tx.generationAttempt.updateMany({
-        where: { id: payload.attemptId, requestId: job.id },
-        data: { status: "succeeded", finishedAt: completedAt },
+    if (attemptId) {
+      await recordGenerationAttemptEvent(tx, {
+        eventId: `${attemptId}:terminal`,
+        attemptId,
+        eventType: "generation.attempt.succeeded.v1",
+        outcome: "succeeded",
+        occurredAt: completedAt,
+        payload: {
+          requestId: job.id,
+          assetCount: payload.assets.length,
+          expectedOutputCount: job.outputCount,
+          completionManifestChecksum: payload.completionManifestChecksum ?? null,
+        },
+        completionManifestRef: payload.completionManifestRef ?? null,
       });
     }
-    if (payload.attemptId) {
+    if (attemptId) {
       await tx.mainOutboxEvent.updateMany({
-        where: { id: `generation_manifest_${payload.attemptId}` },
+        where: { id: `generation_manifest_${attemptId}` },
         data: { status: "delivered", deliveredAt: new Date() },
       });
     }
@@ -680,9 +693,9 @@ async function finalizeGenerationCompleted(
       orderBy: { createdAt: "asc" },
       select: { id: true },
     });
-    const attemptArtifacts = payload.attemptId
+    const attemptArtifacts = attemptId
       ? await tx.generationArtifact.findMany({
-        where: { attemptId: payload.attemptId },
+        where: { attemptId },
         orderBy: { ordinal: "asc" },
       })
       : [];
@@ -733,15 +746,15 @@ async function finalizeGenerationCompleted(
       });
     }
     await appendLocalCanonicalProductEvent(tx, {
-      sourceEventId: `ai-usage:${payload.attemptId ?? job.id}:v2`,
+      sourceEventId: `ai-usage:${attemptId ?? job.id}:v2`,
       eventType: "ai.usage.recorded.v2",
       occurredAt: completedAt,
       userId: job.userId,
       context: { characterId: job.characterId, characterReleaseId: null },
       payload: {
-        invocationId: payload.attemptId ?? job.id,
+        invocationId: attemptId ?? job.id,
         requestId: job.id,
-        ...(payload.attemptId ? { attemptId: payload.attemptId } : {}),
+        ...(attemptId ? { attemptId } : {}),
         userId: job.userId,
         provider: job.provider ?? "local-pipeline",
         model: job.model ?? (typeof payload.usage.model === "string" ? payload.usage.model : "unknown"),
@@ -817,6 +830,7 @@ async function finalizeGenerationFailed(
     where: { id: payload.generationJobId },
   });
   if (!job) return;
+  const attempt = await resolveGenerationAttemptForFinalize(job.id, payload.attemptId);
   await removeGenerationWorkQueueJob(job.id, job.mode);
   if (["completed", "blocked", "refunded"].includes(job.status)) return;
   await refundGeneration(
@@ -826,7 +840,7 @@ async function finalizeGenerationFailed(
     "failed",
     payload.error.code,
     job.sourceType,
-    payload.attemptId,
+    attempt?.id,
   );
   await enqueueChatImageFailed(job.id, "failed", payload.error.code);
 }
@@ -838,6 +852,7 @@ async function finalizeGenerationBlocked(
     where: { id: payload.generationJobId },
   });
   if (!job) return;
+  const attempt = await resolveGenerationAttemptForFinalize(job.id, payload.attemptId);
   await removeGenerationWorkQueueJob(job.id, job.mode);
   if (["completed", "blocked", "refunded"].includes(job.status)) return;
   await prisma.moderationEvent.create({
@@ -858,9 +873,24 @@ async function finalizeGenerationBlocked(
     "blocked",
     payload.policyCode,
     job.sourceType,
-    payload.attemptId,
+    attempt?.id,
   );
   await enqueueChatImageFailed(job.id, "blocked", payload.policyCode);
+}
+
+async function resolveGenerationAttemptForFinalize(jobId: string, suppliedAttemptId?: string) {
+  const attempt = suppliedAttemptId
+    ? await prisma.generationAttempt.findFirst({
+        where: { id: suppliedAttemptId, requestId: jobId },
+      })
+    : await prisma.generationAttempt.findFirst({
+        where: { requestId: jobId },
+        orderBy: { attemptNo: "desc" },
+      });
+  if (suppliedAttemptId && !attempt) {
+    throw new Error(`Generation Attempt ${suppliedAttemptId} does not belong to Request ${jobId}`);
+  }
+  return attempt;
 }
 
 async function removeGenerationWorkQueueJob(jobId: string, mode: string) {
@@ -1026,9 +1056,18 @@ async function markGenerationRunning(generationJobId: string, attemptId?: string
       data: { status: "running", errorCode: null },
     });
     if (attemptId) {
-      await tx.generationAttempt.updateMany({
-        where: { id: attemptId, requestId: generationJobId, status: "queued" },
-        data: { status: "running", startedAt: new Date() },
+      const attempt = await tx.generationAttempt.findFirstOrThrow({
+        where: { id: attemptId, requestId: generationJobId },
+      });
+      const startedAt = attempt.startedAt ?? new Date();
+      await recordGenerationAttemptEvent(tx, {
+        eventId: `${attemptId}:running`,
+        attemptId,
+        eventType: "generation.attempt.running.v1",
+        occurredAt: startedAt,
+        payload: { requestId: generationJobId },
+        status: "running",
+        startedAt,
       });
     }
     await appendGenerationEvent(tx, generationJobId, "running", "Provider generation started", {});
@@ -1114,14 +1153,24 @@ async function refundGeneration(
       data: { status, errorCode, completedAt: new Date() },
     });
     if (attemptId) {
-      await tx.generationAttempt.updateMany({
+      const attempt = await tx.generationAttempt.findFirstOrThrow({
         where: { id: attemptId, requestId: jobId },
-        data: {
-          status: "failed",
+      });
+      const finishedAt = attempt.finishedAt ?? new Date();
+      await recordGenerationAttemptEvent(tx, {
+        eventId: `${attemptId}:terminal`,
+        attemptId,
+        eventType: "generation.attempt.failed.v1",
+        outcome: "failed",
+        occurredAt: finishedAt,
+        payload: {
+          requestId: jobId,
+          requestOutcome: status,
           errorCode,
-          retryability: status === "failed" ? "retryable" : "not_retryable",
-          finishedAt: new Date(),
+          refundAmount: cost > 0 && isDebitedJob ? cost : 0,
         },
+        errorCode,
+        retryability: status === "failed" ? "retryable" : "not_retryable",
       });
     }
     await markProductionItemFailed(tx, jobId);

@@ -32,6 +32,7 @@ beforeEach(async () => {
   await prisma.inboundEventReceipt.deleteMany({ where: { sourceService: "gen", sourceEventId: attemptId } });
   await prisma.generationArtifact.deleteMany({ where: { attemptId } });
   await prisma.generationTransportExecution.deleteMany({ where: { attemptId } });
+  await prisma.generationAttemptEvent.deleteMany({ where: { attemptId } });
   await prisma.generationAttempt.deleteMany({ where: { id: attemptId } });
 });
 
@@ -52,9 +53,16 @@ describe("generation completion manifest durable ingest", () => {
     expect(await prisma.inboundEventReceipt.count({ where: { sourceService: "gen", sourceEventId: attemptId } })).toBe(1);
     expect(await prisma.generationAttempt.findUnique({ where: { id: attemptId } })).toMatchObject({
       requestId: manifest.generationJobId,
-      status: "succeeded",
+      status: "running",
       completionManifestRef: input.manifestRef,
     });
+    expect(await prisma.generationAttemptEvent.findMany({ where: { attemptId } })).toEqual([
+      expect.objectContaining({
+        sequence: 1,
+        eventType: "generation.attempt.manifest_ingested.v1",
+        outcome: null,
+      }),
+    ]);
     expect(await prisma.generationTransportExecution.count({ where: { attemptId } })).toBe(1);
     expect(await prisma.generationArtifact.count({ where: { attemptId } })).toBe(1);
     expect(await prisma.mainOutboxEvent.findUnique({ where: { id: outboxId } })).toMatchObject({

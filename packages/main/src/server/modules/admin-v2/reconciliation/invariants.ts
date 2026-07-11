@@ -111,6 +111,24 @@ const sqlChecks: readonly SqlInvariant[] = [
     `,
   },
   {
+    key: "terminal_attempt_without_unique_terminal_event",
+    description: "Every terminal Attempt requires exactly one matching attempt-linked terminal event",
+    evidence: "GenerationAttempt terminal status/terminalSequence joined to immutable GenerationAttemptEvent terminal authority",
+    query: Prisma.sql`
+      SELECT a.id, count(*) OVER()::int AS total
+      FROM generation_attempts a
+      WHERE a.status IN ('succeeded', 'failed', 'cancelled', 'unknown')
+        AND NOT EXISTS (
+          SELECT 1 FROM generation_attempt_events e
+          WHERE e."attemptId" = a.id
+            AND e."terminalScope" = 'terminal'
+            AND e.outcome = a.status
+            AND e.sequence = a."terminalSequence"
+        )
+      ORDER BY a.id LIMIT 20
+    `,
+  },
+  {
     key: "succeeded_request_delivery_count_mismatch",
     description: "Succeeded generation Requests must deliver exactly their expected output count",
     evidence: "latest succeeded GenerationAttempt requestId joined to GenerationJob.outputCount and delivered rows",
@@ -250,14 +268,6 @@ async function runSqlCheck(db: PrismaClient, check: SqlInvariant): Promise<Admin
 
 export async function auditAdminCutoverInvariants(db: PrismaClient, asOf = new Date()) {
   const checks = await Promise.all(sqlChecks.map((check) => runSqlCheck(db, check)));
-  checks.splice(6, 0, {
-    key: "terminal_attempt_without_unique_terminal_event",
-    description: "Every terminal Attempt requires exactly one attempt-linked terminal event",
-    status: "unavailable",
-    violationCount: null,
-    sampleIds: [],
-    evidence: "GenerationJobEvent is job-linked, not attempt-linked; the current schema cannot prove this invariant without guessing",
-  });
   const totalViolations = checks.reduce((sum, check) => sum + (check.violationCount ?? 0), 0);
   const unavailableChecks = checks.filter((check) => check.status === "unavailable").length;
   const qualityState = totalViolations === 0 && unavailableChecks === 0 ? "certified" as const : "invalid" as const;

@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { Errors } from "@/server/lib/errors";
 import { enqueueGenerationAttempt } from "@/server/modules/admin/service";
+import { recordGenerationAttemptQueuedEvent } from "@/server/ai/generation-attempt-events";
 import { claimControlPlaneCommand } from "../shared/control-plane-command";
 import { toInputJson } from "../shared/prisma-json";
 
@@ -163,6 +164,7 @@ export async function executeCreativeRetryCommand(
           },
           update: {},
         });
+        await recordGenerationAttemptQueuedEvent(tx, attempt);
         attemptIds.push(attempt.id);
         await tx.generationJob.update({
           where: { id: item.job.id },

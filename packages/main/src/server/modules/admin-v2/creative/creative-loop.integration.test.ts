@@ -12,6 +12,7 @@ import {
   verifyCreativeRetryCommands,
 } from "./retry-executor";
 import { jobQueue } from "@/server/jobs/queue";
+import { recordGenerationAttemptEvent } from "@/server/ai/generation-attempt-events";
 
 describe("Creative retry through verified placement", () => {
   const suffix = randomUUID();
@@ -204,9 +205,14 @@ describe("Creative retry through verified placement", () => {
           metadata: {},
         },
       });
-      await tx.generationAttempt.update({
-        where: { id: retryAttempts[0].id },
-        data: { status: "succeeded", finishedAt: new Date() },
+      const succeededAt = new Date();
+      await recordGenerationAttemptEvent(tx, {
+        eventId: `${retryAttempts[0].id}:terminal`,
+        attemptId: retryAttempts[0].id,
+        eventType: "generation.attempt.succeeded.v1",
+        outcome: "succeeded",
+        occurredAt: succeededAt,
+        payload: { requestId: jobId, source: "creative_loop_fixture" },
       });
       await tx.generationJob.update({
         where: { id: jobId },

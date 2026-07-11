@@ -10,6 +10,10 @@ import type {
   VideoGeneratePayload,
 } from "@/server/ai/schemas";
 import { imageReferenceInputsForGenerationJob } from "@/server/ai/reference-images";
+import {
+  recordGenerationAttemptEvent,
+  recordGenerationAttemptQueuedEvent,
+} from "@/server/ai/generation-attempt-events";
 import { dispatchAdmin } from "@/server/modules/admin/service";
 import {
   ensureReviewCaseForAppeal,
@@ -6280,6 +6284,7 @@ async function failQueuedGeneration(
   error: unknown,
 ) {
   await prisma.$transaction(async (tx) => {
+    const failedAt = new Date();
     if (job.costDreamcoins > 0) {
       await appendLedger(
         tx,
@@ -6292,8 +6297,24 @@ async function failQueuedGeneration(
     }
     await tx.generationJob.update({
       where: { id: job.id },
-      data: { status: "failed", errorCode, completedAt: new Date() },
+      data: { status: "failed", errorCode, completedAt: failedAt },
     });
+    const attempt = await tx.generationAttempt.findFirst({
+      where: { requestId: job.id },
+      orderBy: { attemptNo: "desc" },
+    });
+    if (attempt) {
+      await recordGenerationAttemptEvent(tx, {
+        eventId: `${attempt.id}:terminal`,
+        attemptId: attempt.id,
+        eventType: "generation.attempt.failed.v1",
+        outcome: "failed",
+        occurredAt: failedAt,
+        payload: { requestId: job.id, errorCode, stage: "queue_enqueue" },
+        errorCode,
+        retryability: "retryable",
+      });
+    }
     await appendGenerationEvent(tx, job.id, "failed", "Generation queue enqueue failed", {
       errorCode,
       message: error instanceof Error ? error.message : String(error),
@@ -6339,10 +6360,14 @@ async function enqueueGenerationJob(job: {
   referenceAssetIds?: Prisma.JsonValue | null;
   referenceManifest?: Prisma.JsonValue | null;
 }) {
-  const attempt = await prisma.generationAttempt.upsert({
-    where: { requestId_attemptNo: { requestId: job.id, attemptNo: 1 } },
-    create: { requestId: job.id, attemptNo: 1, status: "queued" },
-    update: {},
+  const attempt = await prisma.$transaction(async (tx) => {
+    const row = await tx.generationAttempt.upsert({
+      where: { requestId_attemptNo: { requestId: job.id, attemptNo: 1 } },
+      create: { requestId: job.id, attemptNo: 1, status: "queued" },
+      update: {},
+    });
+    await recordGenerationAttemptQueuedEvent(tx, row);
+    return row;
   });
   const controls = await internalGenerationControls(job);
   const modelCapabilities = modelCapabilitiesFromControls(controls);

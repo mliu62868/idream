@@ -1539,6 +1539,7 @@ model GenerationAttempt {
   startedAt             DateTime?
   finishedAt            DateTime?
   createdAt             DateTime  @default(now())
+  events                GenerationAttemptEvent[]
 
   @@unique([requestId, attemptNo])
   @@unique([sourceCommandId, creativeRunItemId])
@@ -1546,6 +1547,25 @@ model GenerationAttempt {
   @@index([errorSignature, status])
   @@index([sourceCommandId, status])
   @@map("generation_attempts")
+}
+
+model GenerationAttemptEvent {
+  id            String            @id
+  attemptId     String
+  sequence      Int
+  eventType     String
+  outcome       String?
+  terminalScope String?
+  occurredAt    DateTime
+  payload       Json
+  payloadHash   String
+  createdAt     DateTime          @default(now())
+  attempt       GenerationAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+
+  @@unique([attemptId, sequence])
+  @@unique([attemptId, terminalScope])
+  @@index([eventType, occurredAt])
+  @@map("generation_attempt_events")
 }
 
 model GenerationTransportExecution {

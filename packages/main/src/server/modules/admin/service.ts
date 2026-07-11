@@ -9,6 +9,10 @@ import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import type { ImageGeneratePayload, VideoGeneratePayload } from "@/server/ai/schemas";
 import { imageReferenceInputsForGenerationJob } from "@/server/ai/reference-images";
+import {
+  recordGenerationAttemptEvent,
+  recordGenerationAttemptQueuedEvent,
+} from "@/server/ai/generation-attempt-events";
 import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
 import { jobQueue } from "@/server/jobs/queue";
 import {
@@ -2279,10 +2283,27 @@ async function createProfileTestJob(request: Request, id: string) {
     await enqueueExistingGenerationJob(job);
   } catch (error) {
     await prisma.$transaction(async (tx) => {
+      const failedAt = new Date();
       await tx.generationJob.update({
         where: { id: job.id },
-        data: { status: "failed", errorCode: "queue_enqueue_failed", completedAt: new Date() },
+        data: { status: "failed", errorCode: "queue_enqueue_failed", completedAt: failedAt },
       });
+      const attempt = await tx.generationAttempt.findFirst({
+        where: { requestId: job.id },
+        orderBy: { attemptNo: "desc" },
+      });
+      if (attempt) {
+        await recordGenerationAttemptEvent(tx, {
+          eventId: `${attempt.id}:terminal`,
+          attemptId: attempt.id,
+          eventType: "generation.attempt.failed.v1",
+          outcome: "failed",
+          occurredAt: failedAt,
+          payload: { requestId: job.id, errorCode: "queue_enqueue_failed" },
+          errorCode: "queue_enqueue_failed",
+          retryability: "retryable",
+        });
+      }
       await appendAdminGenerationEvent(tx, job.id, "failed", "Admin test job enqueue failed", {
         error: error instanceof Error ? error.message : String(error),
       });
@@ -4826,13 +4847,17 @@ export async function enqueueGenerationAttempt(
   job: ExistingGenerationJob,
   suppliedAttempt?: { readonly attemptId: string; readonly attemptNo: number },
 ) {
-  const attempt = suppliedAttempt
-    ? await prisma.generationAttempt.findUniqueOrThrow({ where: { id: suppliedAttempt.attemptId } })
-    : await prisma.generationAttempt.upsert({
-        where: { requestId_attemptNo: { requestId: job.id, attemptNo: 1 } },
-        create: { requestId: job.id, attemptNo: 1, status: "queued" },
-        update: {},
-      });
+  const attempt = await prisma.$transaction(async (tx) => {
+    const row = suppliedAttempt
+      ? await tx.generationAttempt.findUniqueOrThrow({ where: { id: suppliedAttempt.attemptId } })
+      : await tx.generationAttempt.upsert({
+          where: { requestId_attemptNo: { requestId: job.id, attemptNo: 1 } },
+          create: { requestId: job.id, attemptNo: 1, status: "queued" },
+          update: {},
+        });
+    await recordGenerationAttemptQueuedEvent(tx, row);
+    return row;
+  });
   if (attempt.requestId !== job.id || (suppliedAttempt && attempt.attemptNo !== suppliedAttempt.attemptNo)) {
     throw Errors.conflict("Generation Attempt does not belong to the requested generation authority");
   }
