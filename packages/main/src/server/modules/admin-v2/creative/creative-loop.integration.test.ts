@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { POST as retryFailed } from "@/app/api/v2/admin/creative/runs/[id]/commands/retry-failed/route";
 import { GET as getRun } from "@/app/api/v2/admin/creative/runs/[id]/route";
+import { GET as listRuns } from "@/app/api/v2/admin/creative/runs/route";
 import { POST as decideItem } from "@/app/api/v2/admin/creative/runs/[id]/items/[itemId]/decisions/route";
 import { POST as publishPlacement } from "@/app/api/v2/admin/creative/runs/[id]/placements/route";
 import { POST as verifyPlacement } from "@/app/api/v2/admin/creative/runs/[id]/placements/[placementId]/verification/route";
@@ -311,6 +312,14 @@ describe("Creative retry through verified placement", () => {
       assetId,
       reviewDecisionId: expect.any(String),
       placementVersionId: placementId,
+    });
+    const listResponse = await listRuns(request(`/api/v2/admin/creative/runs?search=${runId}&limit=10`));
+    const listBody = await listResponse.json();
+    expect(listResponse.status, JSON.stringify(listBody)).toBe(200);
+    expect(listBody).toMatchObject({
+      data: {
+        items: [{ id: runId, executionOutcome: "succeeded", verificationState: "passed" }],
+      },
     });
   });
 });

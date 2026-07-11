@@ -462,6 +462,7 @@ export async function listCreativeRuns(input: {
   readonly requestUrl: string;
   readonly actor: AdminActor;
 }) {
+  void input.actor;
   const query = creativeRunQuerySchema.parse(Object.fromEntries(new URL(input.requestUrl).searchParams));
   const roots = await prisma.contentProductionBatch.findMany({
     where: {
@@ -480,15 +481,66 @@ export async function listCreativeRuns(input: {
     },
     orderBy: { id: "asc" },
     take: Math.min(200, query.limit * 4 + 1),
-    select: { id: true },
+    include: {
+      items: {
+        include: {
+          job: { include: { assets: { include: { placements: true } } } },
+          mediaAsset: { include: { placements: true } },
+        },
+        orderBy: { itemIndex: "asc" },
+      },
+    },
   });
-  const details = await Promise.all(roots.map(({ id }) => getCreativeRunDetail({ runId: id, actor: input.actor })));
-  const filtered = details.filter((detail) => !query.executionOutcome || detail.executionOutcome === query.executionOutcome);
+  const allJobIds = roots.flatMap((run) => run.items.flatMap((item) => item.jobId ? [item.jobId] : []));
+  const allLedgerFacts = await ledgerFacts(allJobIds);
+  const summaries = roots.map((run) => {
+    const jobIds = new Set(run.items.flatMap((item) => item.jobId ? [item.jobId] : []));
+    const state = deriveCreativeRunState({
+      legacyStatus: run.status,
+      expectedItemCount: run.totalItems,
+      items: run.items.map((item) => {
+        const asset = item.mediaAsset ?? item.job?.assets[0] ?? null;
+        return {
+          id: item.id,
+          status: item.status,
+          job: item.job ? {
+            id: item.job.id,
+            status: item.job.status,
+            errorCode: item.job.errorCode,
+            costDreamcoins: item.job.costDreamcoins,
+          } : null,
+          asset: asset ? { id: asset.id, safetyStatus: asset.safetyStatus, deletedAt: asset.deletedAt } : null,
+          placements: asset?.placements.map((placement) => ({
+            status: placement.status,
+            verificationState: placement.verificationState as "pending" | "verifying" | "passed" | "failed" | "overridden",
+          })) ?? [],
+        };
+      }),
+      ledgerEntries: allLedgerFacts.filter((fact) => fact.sourceId !== null && jobIds.has(fact.sourceId)),
+    });
+    return {
+      id: run.id,
+      purpose: run.purpose,
+      target: { type: run.targetType, id: run.targetId ?? run.id },
+      ownerId: run.ownerId,
+      dueAt: run.dueAt?.toISOString() ?? null,
+      priority: run.priority,
+      lifecycleState: run.lifecycleState,
+      workflowStage: run.workflowStage,
+      executionOutcome: state.executionOutcome,
+      reviewState: state.reviewState,
+      deploymentState: state.deploymentState,
+      counts: state.counts,
+      verificationState: run.verificationState === "failed" ? "failed" : state.verificationState,
+      version: run.version,
+      createdAt: run.createdAt.toISOString(),
+      updatedAt: run.updatedAt.toISOString(),
+    };
+  });
+  const filtered = summaries.filter((summary) => !query.executionOutcome || summary.executionOutcome === query.executionOutcome);
   const page = filtered.slice(0, query.limit);
   return creativeRunListResponseSchema.parse({
-    items: page.map((detail) => Object.fromEntries(
-      Object.entries(detail).filter(([key]) => key !== "title" && key !== "items"),
-    )),
+    items: page,
     pageInfo: {
       endCursor: filtered.length > query.limit || roots.length === Math.min(200, query.limit * 4 + 1)
         ? page.at(-1)?.id ?? null
