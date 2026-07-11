@@ -5,29 +5,8 @@
       "dependsOn": ["^build"],
       "outputs": [".next/**", "!.next/cache/**", "dist/**"]
     },
-    "@idream/admin#build": {
-      "dependsOn": ["^build"],
-      "inputs": [
-        "$TURBO_DEFAULT$",
-        "../main/prisma/schema.prisma",
-        "../main/src/components/admin/**",
-        "../main/src/lib/**",
-        "../main/src/server/**"
-      ],
-      "outputs": [".next/**", "!.next/cache/**", "dist/**"]
-    },
     "typecheck": {
       "dependsOn": ["^build"]
-    },
-    "@idream/admin#typecheck": {
-      "dependsOn": ["^build"],
-      "inputs": [
-        "$TURBO_DEFAULT$",
-        "../main/prisma/schema.prisma",
-        "../main/src/components/admin/**",
-        "../main/src/lib/**",
-        "../main/src/server/**"
-      ]
     },
     "lint": {},
     "test": {
