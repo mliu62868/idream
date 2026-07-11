@@ -8,7 +8,7 @@ import {
   waitCase,
 } from "./service";
 import { getCustomer360, listCustomers } from "./customer-query";
-import { listCases } from "./query";
+import { getCaseDetail, listCases } from "./query";
 
 describe("Support and billing Case depth", () => {
   const suffix = randomUUID();
@@ -19,6 +19,7 @@ describe("Support and billing Case depth", () => {
   const planId = `support-plan-${suffix}`;
   const subscriptionId = `support-subscription-${suffix}`;
   const ledgerId = `support-ledger-${suffix}`;
+  const incidentId = `support-incident-${suffix}`;
   const headers = {
     "x-idream-user-id": actorId,
     "x-idream-role": "support",
@@ -98,6 +99,7 @@ describe("Support and billing Case depth", () => {
     await prisma.decisionRecord.deleteMany({ where: { sourceType: "admin_case", sourceId: { in: caseIds } } });
     await prisma.caseEvidence.deleteMany({ where: { caseId: { in: caseIds } } });
     await prisma.adminCase.deleteMany({ where: { id: { in: caseIds } } });
+    await prisma.opsIncident.deleteMany({ where: { id: incidentId } });
     await prisma.supportRequest.deleteMany({ where: { id: { in: [supportRequestId, billingRequestId] } } });
     await prisma.dreamcoinLedger.deleteMany({ where: { id: ledgerId } });
     await prisma.subscription.deleteMany({ where: { id: subscriptionId } });
@@ -172,11 +174,25 @@ describe("Support and billing Case depth", () => {
     });
     expect(waiting).toMatchObject({ status: "waiting", version: updated.version + 1 });
 
+    await prisma.opsIncident.create({ data: { id: incidentId, signature: `support-signature-${suffix}`, signatureVersion: "generation-error-v1", status: "triaged", severity: "medium", firstSeen: new Date(), lastSeen: new Date(), impact: {}, mitigation: {} } });
+    const escalated = await recordCustomerCaseAction({
+      caseId: supportCase.id,
+      actor: { id: actorId, role: "support" },
+      expectedVersion: waiting.version,
+      action: "incident_escalated",
+      summary: "Escalated the shared generation failure signature.",
+      evidenceRefs: [evidence.id],
+      outcomeRef: incidentId,
+      requestId: `case-incident-${suffix}`,
+    });
+    const detailResponse = await getCaseDetail(new Request(`http://localhost/api/v2/admin/cases/${supportCase.id}`, { headers }), supportCase.id);
+    expect((await detailResponse.json()).data.case.relatedIncidentIds).toEqual([incidentId]);
+
     await expect(
       recordCustomerCaseAction({
         caseId: supportCase.id,
         actor: { id: actorId, role: "support" },
-        expectedVersion: updated.version,
+        expectedVersion: escalated.version,
         action: "ledger_reconciled",
         summary: "Wrong subtype action.",
         evidenceRefs: [evidence.id],

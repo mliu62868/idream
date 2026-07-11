@@ -23,6 +23,18 @@ export async function caseDto(row: Awaited<ReturnType<typeof prisma.adminCase.fi
   const resolution = record(row.resolution);
   const verification = record(resolution.verification as Prisma.JsonValue | null);
   const relatedCaseIds: string[] = [];
+  const relatedIncidentCandidates = new Set<string>();
+  const actions = Array.isArray(resolution.actions) ? resolution.actions : [];
+  for (const action of actions) {
+    const value = record(action as Prisma.JsonValue);
+    if (value.action === "incident_escalated" && typeof value.outcomeRef === "string") {
+      relatedIncidentCandidates.add(value.outcomeRef.startsWith("incident:") ? value.outcomeRef.slice("incident:".length) : value.outcomeRef);
+    }
+  }
+  for (const item of evidence) {
+    if (item.sourceType === "ops_incident") relatedIncidentCandidates.add(item.sourceId);
+  }
+  if (typeof resolution.recurrenceOfCaseId === "string") relatedCaseIds.push(resolution.recurrenceOfCaseId);
   if (row.type === "appeal") {
     const appealEvidence = evidence.find((item) => item.sourceType === "appeal");
     const appealSnapshot = record(appealEvidence?.snapshot ?? null);
@@ -40,6 +52,9 @@ export async function caseDto(row: Awaited<ReturnType<typeof prisma.adminCase.fi
       }
     }
   }
+  const relatedIncidents = relatedIncidentCandidates.size > 0
+    ? await prisma.opsIncident.findMany({ where: { id: { in: [...relatedIncidentCandidates] } }, select: { id: true } })
+    : [];
   return {
     id: row.id,
     type: row.type,
@@ -64,8 +79,8 @@ export async function caseDto(row: Awaited<ReturnType<typeof prisma.adminCase.fi
             overrideReason: typeof verification.overrideReason === "string" ? verification.overrideReason : null,
           }
         : null,
-    relatedIncidentIds: [],
-    relatedCaseIds,
+    relatedIncidentIds: relatedIncidents.map((incident) => incident.id).sort(),
+    relatedCaseIds: [...new Set(relatedCaseIds)].sort(),
     version: row.version,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),

@@ -1006,12 +1006,19 @@ export async function recordCustomerCaseAction(input: {
     const currentResolution = current.resolution && typeof current.resolution === "object" && !Array.isArray(current.resolution)
       ? current.resolution as Record<string, unknown>
       : {};
+    let canonicalOutcomeRef = input.outcomeRef;
+    if (input.action === "incident_escalated") {
+      const incidentId = input.outcomeRef.startsWith("incident:") ? input.outcomeRef.slice("incident:".length) : input.outcomeRef;
+      const incident = await tx.opsIncident.findUnique({ where: { id: incidentId }, select: { id: true } });
+      if (!incident) throw Errors.badRequest("Incident escalation outcomeRef must identify an existing Incident");
+      canonicalOutcomeRef = `incident:${incident.id}`;
+    }
     const priorActions = Array.isArray(currentResolution.actions) ? currentResolution.actions : [];
     const action = {
       action: input.action,
       summary: input.summary,
       evidenceRefs: [...input.evidenceRefs],
-      outcomeRef: input.outcomeRef,
+      outcomeRef: canonicalOutcomeRef,
       actorId: input.actor.id,
       performedAt: new Date().toISOString(),
     };
@@ -1034,7 +1041,7 @@ export async function recordCustomerCaseAction(input: {
         ownerId: input.actor.id,
         successCriteria: ["action_outcome_verified"],
         guardrails: ["typed_subtype_action", "evidence_preserved"],
-        outcome: toInputJson({ outcomeRef: input.outcomeRef, verificationState: "pending" }),
+        outcome: toInputJson({ outcomeRef: canonicalOutcomeRef, verificationState: "pending" }),
       },
     });
     await tx.adminAuditLog.create({
