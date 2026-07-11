@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { METRIC_PRODUCT_EVENTS } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
 import {
   api,
@@ -754,6 +755,130 @@ describe("feed, community, policies, analytics", () => {
       where: { userId, name: "custom_event" },
     });
     expect(row).not.toBeNull();
+  });
+
+  it("records Character exposure with server-resolved live Release attribution", async () => {
+    const userId = `${P}exposure-user`;
+    const characterId = `${P}exposure-character`;
+    const contentVersionId = `${P}exposure-content-v1`;
+    const projectId = `${P}exposure-project`;
+    const releaseId = `${P}exposure-release-v1`;
+    const exposureId = `${P}exposure-impression`;
+    await createUser({ id: userId });
+    await createCharacter({ id: characterId, creatorId: userId });
+    await prisma.characterContentVersion.create({
+      data: {
+        id: contentVersionId,
+        characterId,
+        version: 1,
+        contentHash: `${P}exposure-content-hash`,
+        personaSnapshot: {},
+        openingSnapshot: {},
+        appearanceSnapshot: {},
+        sourceType: "test",
+      },
+    });
+    await prisma.characterProject.create({
+      data: {
+        id: projectId,
+        characterId,
+        ownerId: userId,
+        phase: "live_management",
+        audience: {},
+        successCriteria: [],
+      },
+    });
+    await prisma.characterRelease.create({
+      data: {
+        id: releaseId,
+        projectId,
+        revisionId: `${P}exposure-revision-v1`,
+        characterContentVersionId: contentVersionId,
+        generationProvenance: {},
+        releasePlacementManifest: {},
+        snapshotHash: `${P}exposure-release-hash`,
+        status: "published",
+        publishedAt: new Date(),
+      },
+    });
+    await prisma.characterServing.create({
+      data: {
+        id: `${P}exposure-serving`,
+        characterId,
+        currentReleaseId: releaseId,
+        state: "live",
+      },
+    });
+
+    const forged = await api("POST", "events/track", {
+      userId,
+      ageGate: true,
+      body: {
+        name: METRIC_PRODUCT_EVENTS.characterExposureRecorded,
+        props: {
+          exposureId,
+          eventType: "eligible_impression",
+          parentExposureId: null,
+          journeyId: `${P}exposure-journey`,
+          characterId,
+          characterContentVersionId: `${P}forged-content`,
+          characterReleaseId: `${P}forged-release`,
+          placementId: "community.leaderboard",
+          visibleRatio: 0.75,
+          visibleDurationMs: 500,
+        },
+      },
+    });
+    expectError(forged, 400, "bad_request");
+
+    const body = {
+      name: METRIC_PRODUCT_EVENTS.characterExposureRecorded,
+      props: {
+        exposureId,
+        eventType: "eligible_impression",
+        parentExposureId: null,
+        journeyId: `${P}exposure-journey`,
+        characterId,
+        placementId: "community.leaderboard",
+        visibleRatio: 0.75,
+        visibleDurationMs: 500,
+      },
+    };
+    const recorded = await api("POST", "events/track", { userId, ageGate: true, body });
+    expectOk(recorded);
+    const replayed = await api("POST", "events/track", { userId, ageGate: true, body });
+    expectOk(replayed);
+    expect(replayed.data.event.id).toBe(recorded.data.event.id);
+
+    const event = await prisma.analyticsEvent.findUniqueOrThrow({
+      where: {
+        sourceService_sourceEventId: {
+          sourceService: "main",
+          sourceEventId: `character_exposure:${exposureId}`,
+        },
+      },
+    });
+    expect(event).toMatchObject({
+      userId,
+      anonymousId: null,
+      name: METRIC_PRODUCT_EVENTS.characterExposureRecorded,
+      schemaVersion: 2,
+      dataClass: "customer",
+      trustClass: "typed_client",
+      props: expect.objectContaining({
+        characterId,
+        characterContentVersionId: contentVersionId,
+        characterReleaseId: releaseId,
+      }),
+    });
+    await expect(prisma.mainOutboxEvent.count({ where: { aggregateId: event.id } })).resolves.toBe(1);
+
+    await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: event.id } });
+    await prisma.analyticsEvent.delete({ where: { id: event.id } });
+    await prisma.characterServing.delete({ where: { characterId } });
+    await prisma.characterRelease.delete({ where: { id: releaseId } });
+    await prisma.characterProject.delete({ where: { id: projectId } });
+    await prisma.characterContentVersion.delete({ where: { id: contentVersionId } });
   });
 
   it("creates a tracked support request for a signed-in adult user", async () => {

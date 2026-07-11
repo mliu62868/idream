@@ -17,6 +17,7 @@ import { ZodError } from "zod";
 import { env } from "@/server/lib/env";
 import { prisma } from "@/server/lib/db";
 import { projectCanonicalMetricEvent } from "../metrics/projector";
+import { classifyCustomerMetricActor } from "../metrics/event-classification";
 import { ingestProductEvent } from "../shared/product-event-store";
 import { toInputJson } from "../shared/prisma-json";
 
@@ -190,6 +191,12 @@ export async function recordExperimentExposure(
     eligible: true,
     surface: input.surface,
   } as const;
+  const classification = assignment.subjectType === "user"
+    ? await classifyCustomerMetricActor(db, assignment.subjectId)
+    : {
+        dataClass: "customer" as const,
+        actor: { type: "anonymous", anonymousId: assignment.subjectId, isInternal: false },
+      };
   const ingested = await ingestProductEvent(db, {
     sourceService: "main-experiment-runtime",
     sourceEventId: input.exposureId,
@@ -197,14 +204,9 @@ export async function recordExperimentExposure(
     schemaVersion: 2,
     occurredAt: new Date(input.occurredAt),
     environment: options.environment,
-    dataClass: "customer",
+    dataClass: classification.dataClass,
     trustClass: "typed_client",
-    actor: {
-      isInternal: false,
-      ...(assignment.subjectType === "user"
-        ? { userId: assignment.subjectId }
-        : { anonymousId: assignment.subjectId }),
-    },
+    actor: classification.actor,
     context: { surface: input.surface },
     payload,
   });

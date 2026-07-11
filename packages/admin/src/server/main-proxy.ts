@@ -1,4 +1,6 @@
 import { incrementCounter, observeHistogram } from "@idream/shared";
+import { BFF_HEADER, BFF_USER_HEADER, signBffContext } from "@idream/shared/bff";
+import { randomUUID } from "node:crypto";
 
 const mainWebURL = (process.env.MAIN_WEB_URL ?? "http://127.0.0.1:3000").replace(/\/$/, "");
 
@@ -35,17 +37,47 @@ export async function proxyToMain(request: Request, pathname: string): Promise<R
 
   const headers = new Headers(request.headers);
   for (const name of requestHopByHopHeaders) headers.delete(name);
+  headers.delete(BFF_HEADER);
+  headers.delete(BFF_USER_HEADER);
   headers.set("x-forwarded-host", incomingURL.host);
   headers.set("x-forwarded-proto", incomingURL.protocol.replace(":", ""));
+  if (!headers.has("x-request-id")) headers.set("x-request-id", randomUUID());
+
+  const body =
+    request.method === "GET" || request.method === "HEAD"
+      ? null
+      : new Uint8Array(await request.arrayBuffer());
+  const signingSecret = process.env.ADMIN_BFF_SIGNING_SECRET;
+  if (signingSecret) {
+    const signedPath = `${upstreamURL.pathname}${upstreamURL.search}`;
+    const { signature, context } = signBffContext({
+      secret: signingSecret,
+      userId: "admin-bff",
+      method: request.method,
+      path: signedPath,
+      body: body ? Buffer.from(body).toString("base64") : "",
+    });
+    headers.set(BFF_HEADER, signature);
+    headers.set(BFF_USER_HEADER, JSON.stringify(context));
+  } else if (process.env.APP_ENV === "production") {
+    recordProxyMetrics(request.method, "configuration_error", surface, startedAt);
+    return Response.json(
+      {
+        ok: false,
+        error: {
+          code: "admin_bff_signing_unconfigured",
+          message: "Admin authority transport is not configured",
+        },
+      },
+      { status: 503 },
+    );
+  }
 
   try {
     const upstream = await fetch(upstreamURL, {
       method: request.method,
       headers,
-      body:
-        request.method === "GET" || request.method === "HEAD"
-          ? undefined
-          : await request.arrayBuffer(),
+      body: body ?? undefined,
       cache: "no-store",
       redirect: "manual",
     });

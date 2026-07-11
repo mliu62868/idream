@@ -2765,6 +2765,14 @@ export function assessLaunchReadiness(
     minLength: 32,
     remediation: "Set CHAT_BFF_SIGNING_SECRET to the same shared secret used by packages/chat.",
   });
+  addRequiredCheck(checks, env, {
+    id: "admin-bff-signing-secret",
+    area: "Admin",
+    key: "ADMIN_BFF_SIGNING_SECRET",
+    label: "Admin BFF signing secret",
+    minLength: 32,
+    remediation: "Set ADMIN_BFF_SIGNING_SECRET to the same shared secret used by packages/admin.",
+  });
   addChatServiceChecks(checks, env);
   addChatServiceProbeCheck(checks, env, chatServiceProbe, now);
   addChatModelProbeCheck(checks, env, chatModelProbe, now);

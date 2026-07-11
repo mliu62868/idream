@@ -114,6 +114,18 @@ describe("ourdream API dispatcher", () => {
       { cookie: cookieHeader(accepted.cookies) },
     );
     expect(signup.status).toBe(200);
+    const signedUpUser = await prisma.user.findUniqueOrThrow({ where: { email: testEmail } });
+    await expect(prisma.analyticsEvent.findUnique({
+      where: {
+        sourceService_sourceEventId: {
+          sourceService: "main",
+          sourceEventId: `signup:${signedUpUser.id}`,
+        },
+      },
+    })).resolves.toMatchObject({
+      name: "customer.signup.completed.v2",
+      userId: signedUpUser.id,
+    });
 
     const cookies = cookieHeader([...accepted.cookies, ...signup.cookies]);
     const checkout = await call(
@@ -123,6 +135,20 @@ describe("ourdream API dispatcher", () => {
       { cookie: cookies },
     );
     expect(checkout.status).toBe(200);
+    const activeSubscription = await prisma.subscription.findFirstOrThrow({
+      where: { userId: signedUpUser.id, status: "active" },
+    });
+    await expect(prisma.analyticsEvent.findUnique({
+      where: {
+        sourceService_sourceEventId: {
+          sourceService: "main",
+          sourceEventId: `subscription:${activeSubscription.id}:activated`,
+        },
+      },
+    })).resolves.toMatchObject({
+      name: "subscription.activated.v2",
+      userId: signedUpUser.id,
+    });
 
     const generation = await call(
       "POST",

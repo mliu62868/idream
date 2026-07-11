@@ -402,6 +402,7 @@ describe("Incident and P0 Review Case authority loops", () => {
     expect(incidentBody.data.activity.length).toBeGreaterThanOrEqual(3);
     expect(caseBody.data.case).toMatchObject({ id: caseId, status: "closed", reportCount: 2 });
     expect(caseBody.data.evidence).toHaveLength(2);
+    expect(caseBody.data.evidence.every((item: Record<string, unknown>) => !("snapshot" in item))).toBe(true);
     expect(caseBody.data.decisions).toHaveLength(1);
     expect(caseBody.data.activity.length).toBeGreaterThanOrEqual(4);
 

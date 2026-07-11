@@ -1,7 +1,8 @@
-import { setGauge } from "@idream/shared";
+import { incrementCounter, setGauge } from "@idream/shared";
 import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import type { PrismaClient } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
+import { deriveCreativeRunState } from "@/server/modules/admin/content-production-state";
 import { auditAdminCutoverInvariants } from "@/server/modules/admin-v2/reconciliation/invariants";
 
 const outboxQueues = [
@@ -10,13 +11,19 @@ const outboxQueues = [
   { queue: "generation_manifest", eventTypes: ["generation.manifest.accepted.v1"] },
 ] as const;
 
-const activeCaseStatuses = ["new", "triaged", "investigating", "waiting", "actioning", "verifying"];
+const activeCaseStatuses = ["new", "triaged", "in_progress", "waiting", "reopened"];
 const activeIncidentStatuses = ["detected", "triaged", "mitigating", "monitoring"];
 
 export async function collectAdminOperationalMetrics(
   db: PrismaClient = prisma,
   now = new Date(),
 ) {
+  incrementCounter(
+    "admin_audit_transaction_failure_total",
+    "Admin domain transactions containing an atomic Audit row that rolled back",
+    { operation: "all" },
+    0,
+  );
   const [
     invariants,
     oldestByQueue,
@@ -26,6 +33,7 @@ export async function collectAdminOperationalMetrics(
     metricSnapshots,
     failedAttemptCount,
     unknownFailureCount,
+    creativeRuns,
   ] = await Promise.all([
     auditAdminCutoverInvariants(db, now),
     Promise.all(outboxQueues.map(async ({ queue, eventTypes }) => ({
@@ -67,6 +75,20 @@ export async function collectAdminOperationalMetrics(
       where: {
         status: { in: ["failed", "unknown"] },
         OR: [{ status: "unknown" }, { errorClass: null }, { errorClass: "unknown" }],
+      },
+    }),
+    db.contentProductionBatch.findMany({
+      select: {
+        status: true,
+        count: true,
+        items: {
+          select: {
+            id: true,
+            status: true,
+            job: { select: { id: true, status: true, errorCode: true, costDreamcoins: true } },
+            mediaAsset: { select: { id: true, safetyStatus: true, deletedAt: true } },
+          },
+        },
       },
     }),
   ]);
@@ -146,6 +168,30 @@ export async function collectAdminOperationalMetrics(
     {},
     failedAttemptCount === 0 ? 0 : unknownFailureCount / failedAttemptCount,
   );
+
+  const creativeOutcomeCounts = new Map<string, number>();
+  for (const run of creativeRuns) {
+    const outcome = deriveCreativeRunState({
+      legacyStatus: run.status,
+      expectedItemCount: run.count,
+      items: run.items.map((item) => ({
+        id: item.id,
+        status: item.status,
+        job: item.job,
+        asset: item.mediaAsset,
+      })),
+      ledgerEntries: [],
+    }).executionOutcome;
+    creativeOutcomeCounts.set(outcome, (creativeOutcomeCounts.get(outcome) ?? 0) + 1);
+  }
+  for (const outcome of ["pending", "running", "succeeded", "partially_succeeded", "failed", "cancelled"]) {
+    setGauge(
+      "creative_run_outcome_total",
+      "Current Creative Runs grouped by canonical execution outcome",
+      { outcome },
+      creativeOutcomeCounts.get(outcome) ?? 0,
+    );
+  }
 
   return invariants;
 }

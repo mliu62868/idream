@@ -108,6 +108,7 @@ const EnvSchema = z.object({
   // enables the BFF and must not silently change local callback delivery.
   CHAT_DURABLE_INGEST_URL: z.string().url().optional(),
   CHAT_BFF_SIGNING_SECRET: z.string().optional(),
+  ADMIN_BFF_SIGNING_SECRET: z.string().min(32).optional(),
 }).superRefine((value, ctx) => {
   if (
     value.APP_ENV === "production" &&
@@ -118,6 +119,13 @@ const EnvSchema = z.object({
       code: "custom",
       path: ["BETTER_AUTH_URL"],
       message: "BETTER_AUTH_URL must be a public HTTPS origin in production",
+    });
+  }
+  if (value.APP_ENV === "production" && !isProductionBuild && !value.ADMIN_BFF_SIGNING_SECRET) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["ADMIN_BFF_SIGNING_SECRET"],
+      message: "ADMIN_BFF_SIGNING_SECRET is required in production",
     });
   }
 });

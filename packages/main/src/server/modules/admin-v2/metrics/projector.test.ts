@@ -163,10 +163,31 @@ describe("canonical metric fact projector", () => {
     for (const event of events) {
       await expect(projectCanonicalMetricEvent(prisma, event)).resolves.toMatchObject({ status: "applied" });
     }
+    await projectCanonicalMetricEvent(prisma, {
+      ...common,
+      id: `${prefix}-canonical-subscription-ended`,
+      sourceEventId: `${prefix}-subscription-ended`,
+      name: "subscription.ended.v2",
+      occurredAt: new Date("2026-07-03T00:00:00Z"),
+      props: { subscriptionId: `${prefix}-sub`, userId, reason: "test_end" },
+    });
+    await projectCanonicalMetricEvent(prisma, {
+      ...common,
+      id: `${prefix}-canonical-subscription-reactivated`,
+      sourceEventId: `${prefix}-subscription-reactivated`,
+      name: "subscription.activated.v2",
+      occurredAt: new Date("2026-07-04T00:00:00Z"),
+      props: { subscriptionId: `${prefix}-sub`, userId, planId: "premium-monthly" },
+    });
 
     const data = await loadCanonicalMetricDataset(prisma, { userIds: [userId] });
     expect(data.signups).toHaveLength(1);
-    expect(data.subscriptions).toEqual([expect.objectContaining({ subscriptionId: `${prefix}-sub`, eligible: true })]);
+    expect(data.subscriptions).toEqual([expect.objectContaining({
+      subscriptionId: `${prefix}-sub`,
+      eligible: true,
+      activeAt: new Date("2026-07-02T00:00:00Z"),
+      endedAt: null,
+    })]);
     expect(data.generationDeliveries).toEqual([expect.objectContaining({ requestId: `${prefix}-request`, eligible: true })]);
 
     const report = await reconcileCanonicalMetricFacts(prisma, { sourceEventPrefix: prefix });

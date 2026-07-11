@@ -11,10 +11,42 @@ import { authHrefForTarget } from "./authRedirect";
 // INTENT: 只覆盖有公开渲染面的 campaign 槽位；feed_card/homepage_strip 等无渲染面槽位不造埋点（诚实数据）。
 export const PLACEMENT_IMPRESSION_EVENT = "placement_impression";
 export const PLACEMENT_CLICK_EVENT = "placement_click";
+export const CHARACTER_EXPOSURE_EVENT = "character.exposure.recorded.v2";
+
+function clientEventId(prefix: string) {
+  const suffix = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return `${prefix}-${suffix}`;
+}
 
 function trackPlacementEvent(name: string, placementId: string, slot: string) {
   if (typeof window === "undefined") return;
   const payload = JSON.stringify({ name, props: { placementId, slot } });
+  if (typeof navigator.sendBeacon === "function") {
+    navigator.sendBeacon("/api/v1/events/track", new Blob([payload], { type: "application/json" }));
+    return;
+  }
+  void fetch("/api/v1/events/track", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: payload,
+    keepalive: true,
+  }).catch(() => {});
+}
+
+function trackCharacterExposure(props: {
+  characterId: string;
+  eventType: "eligible_impression" | "detail_view";
+  exposureId: string;
+  journeyId: string;
+  parentExposureId: string | null;
+  placementId: string;
+  visibleDurationMs: number;
+  visibleRatio: number;
+}) {
+  if (typeof window === "undefined") return;
+  const payload = JSON.stringify({ name: CHARACTER_EXPOSURE_EVENT, props });
   if (typeof navigator.sendBeacon === "function") {
     navigator.sendBeacon("/api/v1/events/track", new Blob([payload], { type: "application/json" }));
     return;
@@ -133,6 +165,7 @@ export function CommunityWorkspace() {
   const [focusedCollectionId, setFocusedCollectionId] = useState("");
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(true);
+  const [characterJourneyId] = useState(() => clientEventId("community-journey"));
 
   const query = useMemo(() => {
     const params = new URLSearchParams({ release });
@@ -503,52 +536,13 @@ export function CommunityWorkspace() {
               <CharacterSkeletons />
             ) : characters.length > 0 ? (
               characters.map((character) => (
-                <article
-                  className="overflow-hidden rounded-[14px] bg-[rgb(18,18,18)]"
-                  data-testid="community-character-card"
+                <CommunityCharacterCard
+                  character={character}
+                  journeyId={characterJourneyId}
                   key={character.id}
-                >
-                  <Link
-                    aria-label={character.title}
-                    className="relative block aspect-[4/5]"
-                    href={`/characters/${character.id}`}
-                  >
-                    <Image
-                      alt=""
-                      className="object-cover object-top"
-                      fill
-                      sizes="260px"
-                      src={character.image}
-                      unoptimized={isPrivateMediaUrl(character.image)}
-                    />
-                  </Link>
-                  <div className="p-4">
-                    <h2 className="line-clamp-2 text-[16px] font-black uppercase leading-5">
-                      {character.title}
-                    </h2>
-                    <p className="mt-1 text-[12px] font-medium text-[rgb(170,170,170)]">
-                      {character.likes} likes · {character.chats} chats
-                    </p>
-                    <div className="mt-4 flex gap-2">
-                      <button
-                        className="inline-flex h-9 flex-1 items-center justify-center gap-2 rounded-full bg-white text-[12px] font-black text-[rgb(13,13,13)]"
-                        onClick={() => follow(character.creatorId)}
-                        type="button"
-                      >
-                        <HeartHandshake className="h-4 w-4" />
-                        Follow
-                      </button>
-                      <button
-                        aria-label={`Report ${character.title}`}
-                        className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[rgb(36,36,36)] text-white"
-                        onClick={() => report(character.id)}
-                        type="button"
-                      >
-                        <Flag className="h-4 w-4" />
-                      </button>
-                    </div>
-                  </div>
-                </article>
+                  onFollow={follow}
+                  onReport={report}
+                />
               ))
             ) : (
               <p
@@ -624,6 +618,128 @@ export function CommunityWorkspace() {
         </section>
       </div>
     </section>
+  );
+}
+
+function CommunityCharacterCard({
+  character,
+  journeyId,
+  onFollow,
+  onReport,
+}: {
+  character: CommunityCharacter;
+  journeyId: string;
+  onFollow: (creatorId?: string | null) => Promise<void>;
+  onReport: (characterId: string) => Promise<void>;
+}) {
+  const cardRef = useRef<HTMLElement | null>(null);
+  const impressionIdRef = useRef(clientEventId("character-impression"));
+  const impressionRecordedRef = useRef(false);
+  const detailRecordedRef = useRef(false);
+
+  useEffect(() => {
+    const node = cardRef.current;
+    if (!node || typeof IntersectionObserver === "undefined") return;
+    let timer: number | null = null;
+    let visibleRatio = 0;
+    const clearEligibilityTimer = () => {
+      if (timer !== null) window.clearTimeout(timer);
+      timer = null;
+    };
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        visibleRatio = entry.intersectionRatio;
+        if (!entry.isIntersecting || entry.intersectionRatio < 0.5) {
+          clearEligibilityTimer();
+          return;
+        }
+        if (impressionRecordedRef.current || timer !== null) return;
+        timer = window.setTimeout(() => {
+          timer = null;
+          if (visibleRatio < 0.5 || impressionRecordedRef.current) return;
+          impressionRecordedRef.current = true;
+          trackCharacterExposure({
+            characterId: character.id,
+            eventType: "eligible_impression",
+            exposureId: impressionIdRef.current,
+            journeyId,
+            parentExposureId: null,
+            placementId: "community.leaderboard",
+            visibleDurationMs: 500,
+            visibleRatio,
+          });
+        }, 500);
+      },
+      { threshold: [0, 0.5, 1] },
+    );
+    observer.observe(node);
+    return () => {
+      clearEligibilityTimer();
+      observer.disconnect();
+    };
+  }, [character.id, journeyId]);
+
+  function recordDetailView() {
+    if (!impressionRecordedRef.current || detailRecordedRef.current) return;
+    detailRecordedRef.current = true;
+    trackCharacterExposure({
+      characterId: character.id,
+      eventType: "detail_view",
+      exposureId: clientEventId("character-detail"),
+      journeyId,
+      parentExposureId: impressionIdRef.current,
+      placementId: "community.leaderboard",
+      visibleDurationMs: 0,
+      visibleRatio: 1,
+    });
+  }
+
+  return (
+    <article
+      className="overflow-hidden rounded-[14px] bg-[rgb(18,18,18)]"
+      data-testid="community-character-card"
+      ref={cardRef}
+    >
+      <Link
+        aria-label={character.title}
+        className="relative block aspect-[4/5]"
+        href={`/characters/${character.id}`}
+        onClick={recordDetailView}
+      >
+        <Image
+          alt=""
+          className="object-cover object-top"
+          fill
+          sizes="260px"
+          src={character.image}
+          unoptimized={isPrivateMediaUrl(character.image)}
+        />
+      </Link>
+      <div className="p-4">
+        <h2 className="line-clamp-2 text-[16px] font-black uppercase leading-5">{character.title}</h2>
+        <p className="mt-1 text-[12px] font-medium text-[rgb(170,170,170)]">
+          {character.likes} likes · {character.chats} chats
+        </p>
+        <div className="mt-4 flex gap-2">
+          <button
+            className="inline-flex h-9 flex-1 items-center justify-center gap-2 rounded-full bg-white text-[12px] font-black text-[rgb(13,13,13)]"
+            onClick={() => void onFollow(character.creatorId)}
+            type="button"
+          >
+            <HeartHandshake className="h-4 w-4" />
+            Follow
+          </button>
+          <button
+            aria-label={`Report ${character.title}`}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[rgb(36,36,36)] text-white"
+            onClick={() => void onReport(character.id)}
+            type="button"
+          >
+            <Flag className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+    </article>
   );
 }
 

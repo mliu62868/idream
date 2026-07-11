@@ -55,6 +55,7 @@ const productionEnv = {
   AGE_VERIFICATION_PROVIDER: "gocam",
   CHAT_SERVICE_URL: "https://chat.ourdream.internal",
   CHAT_BFF_SIGNING_SECRET: "production-chat-bff-secret-0123456789",
+  ADMIN_BFF_SIGNING_SECRET: "production-admin-bff-secret-0123456789",
   CHAT_SERVICE_PROBE_REPORT: ".tmp/launch-chat-service-probe.json",
   PRODUCT_CONFIG_PROBE_REPORT: ".tmp/launch-product-config-probe.json",
   PUBLIC_CATALOG_PROBE_REPORT: ".tmp/public-catalog-probe.json",

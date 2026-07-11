@@ -27,6 +27,7 @@ import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
+import { verifyAdminBffRequest } from "@/server/modules/admin-v2/shared/admin-bff";
 import { redeemCodeHash, redeemCodeHashCandidates } from "@/server/lib/redeem-codes";
 import { dimensionsForImageOrientation } from "@/server/modules/ourdream/generation-dimensions";
 import {
@@ -4426,6 +4427,10 @@ async function chatOpsModerationEvents(request: Request) {
 }
 
 export async function actorWithPermission(request: Request, permission: PermissionKey): Promise<AdminActor> {
+  const bff = await verifyAdminBffRequest(request);
+  if (!bff.ok) {
+    throw Errors.unauthorized("Admin BFF authentication failed", { reason: bff.reason });
+  }
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
   const effective = await effectivePermissions(user.id, user.role);

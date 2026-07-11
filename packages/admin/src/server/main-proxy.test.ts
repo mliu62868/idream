@@ -1,20 +1,39 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderPrometheusMetrics, resetMetricsForTests } from "@idream/shared";
+import { BFF_HEADER, BFF_USER_HEADER, verifyBffContext, type BffContext } from "@idream/shared/bff";
 import { proxyToMain } from "./main-proxy";
+
+const SIGNING_SECRET = "admin-bff-test-secret-at-least-32-characters";
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   resetMetricsForTests();
 });
 
 describe("Admin main HTTP proxy", () => {
   it("forwards method, query, cookie, and body without hop-by-hop headers", async () => {
+    vi.stubEnv("ADMIN_BFF_SIGNING_SECRET", SIGNING_SECRET);
     const fetchMock = vi.fn(async (target: URL, init: RequestInit) => {
       expect(target.toString()).toBe("http://127.0.0.1:3000/api/v1/admin/users?status=active");
       expect(init.method).toBe("POST");
       expect(new Headers(init.headers).get("cookie")).toBe("idream_admin_session=token");
       expect(new Headers(init.headers).get("host")).toBeNull();
-      expect(new TextDecoder().decode(init.body as ArrayBuffer)).toBe('{"status":"active"}');
+      const forwardedBody = new TextDecoder().decode(init.body as Uint8Array);
+      expect(forwardedBody).toBe('{"status":"active"}');
+      const headers = new Headers(init.headers);
+      expect(headers.get("x-request-id")).toMatch(/^[0-9a-f-]{36}$/);
+      const context = JSON.parse(headers.get(BFF_USER_HEADER) ?? "null") as BffContext;
+      expect(context.userId).toBe("admin-bff");
+      expect(verifyBffContext({
+        secret: SIGNING_SECRET,
+        signature: headers.get(BFF_HEADER) ?? "",
+        context,
+        method: "POST",
+        path: "/api/v1/admin/users?status=active",
+        body: Buffer.from(forwardedBody).toString("base64"),
+        now: context.authTime,
+      })).toEqual({ ok: true });
       return new Response('{"ok":true}', {
         status: 202,
         headers: { "content-type": "application/json", "set-cookie": "admin=renewed; Path=/" },
@@ -45,6 +64,24 @@ describe("Admin main HTTP proxy", () => {
     expect(renderPrometheusMetrics()).toContain(
       'admin_legacy_v1_requests_total{method="POST",outcome="completed"} 1',
     );
+  });
+
+  it("fails closed in production before contacting main when service HMAC is unconfigured", async () => {
+    vi.stubEnv("APP_ENV", "production");
+    vi.stubEnv("ADMIN_BFF_SIGNING_SECRET", "");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await proxyToMain(
+      new Request("https://admin.example/api/v2/admin/today"),
+      "/api/v2/admin/today",
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "admin_bff_signing_unconfigured" },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("fails closed when main authority is unavailable", async () => {

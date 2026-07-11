@@ -19,6 +19,8 @@ describe("Main metrics exporter", () => {
     expect(metrics).toContain('incident_detection_lag_seconds{severity="all"}');
     expect(metrics).toContain('admin_inbox_open_total{source="case"}');
     expect(metrics).toContain("generation_unknown_failure_rate ");
+    expect(metrics).toContain('creative_run_outcome_total{outcome="failed"}');
+    expect(metrics).toContain('admin_audit_transaction_failure_total{operation="all"} 0');
     resetMetricsForTests();
   });
 });

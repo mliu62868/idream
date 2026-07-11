@@ -1,5 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
+import { incrementCounter } from "@idream/shared";
+import { recordGenerationAttemptQueuedEvent } from "@/server/ai/generation-attempt-events";
 import { dimensionsForImageOrientation } from "@/server/modules/ourdream/generation-dimensions";
 import { generationCostDreamcoins } from "@/server/lib/generation-pricing";
 import { prisma } from "@/server/lib/db";
@@ -8,7 +10,6 @@ import { ok } from "@/server/lib/http";
 import {
   actorWithPermission,
   clampInt,
-  enqueueExistingGenerationJob,
   jsonBody,
   toInputJson,
   writeAudit,
@@ -16,10 +17,10 @@ import {
 } from "./service";
 import {
   deriveCreativeRunState,
-  markProductionItemFailed,
   refreshContentProductionBatchStats,
   type CreativeRunLedgerFact,
 } from "./content-production-state";
+import { dispatchCreativeRetryOutbox } from "@/server/modules/admin-v2/creative/retry-executor";
 
 const productionPurposeSchema = z.enum([
   "character_cover",
@@ -52,6 +53,7 @@ const placementSlotSchema = z.enum([
 ]);
 
 const placementStatusSchema = z.enum(["draft", "scheduled", "published", "paused", "archived"]);
+const releaseOwnedPlacementSlots = new Set(["character_avatar", "character_hero"]);
 const assetReviewStatusSchema = z.enum(["draft", "generated", "approved", "rejected", "published", "archived"]);
 const consistencyModeSchema = z.enum(["strict", "balanced", "creative"]);
 
@@ -279,7 +281,7 @@ export async function createProductionBatchCore(
     profile.costMultiplier ?? 1,
   );
 
-  const batch = await prisma.$transaction(async (tx) => {
+  const batch = await auditedTransaction("content.production.batch.create", async (tx) => {
     const createdBatch = await tx.contentProductionBatch.create({
       data: {
         title,
@@ -360,49 +362,59 @@ export async function createProductionBatchCore(
         purpose: body.purpose,
       });
       await appendProductionJobEvent(tx, job.id, "queued", "Content production job queued", {});
+      const attempt = await tx.generationAttempt.create({
+        data: {
+          requestId: job.id,
+          attemptNo: 1,
+          provider: job.provider,
+          profileKey: job.profileId,
+          profileVersion: job.profileVersion,
+          status: "queued",
+          creativeRunItemId: item.id,
+        },
+      });
+      await recordGenerationAttemptQueuedEvent(tx, attempt);
+      await tx.mainOutboxEvent.create({
+        data: {
+          id: `creative_initial_${createdBatch.id}_${item.id}`,
+          eventType: "creative.generation.dispatch.v2",
+          aggregateType: "creative_run",
+          aggregateId: createdBatch.id,
+          payload: toInputJson({
+            runId: createdBatch.id,
+            itemId: item.id,
+            generationJobId: job.id,
+            attemptId: attempt.id,
+            attemptNo: attempt.attemptNo,
+          }),
+        },
+      });
     }
 
     await refreshContentProductionBatchStats(tx, createdBatch.id);
+    await tx.adminAuditLog.create({
+      data: {
+        actorId: actor.id,
+        actorRole: actor.role,
+        action: "content.production.batch.create",
+        targetType: "content_production_batch",
+        targetId: createdBatch.id,
+        reason: body.reason,
+        after: toInputJson({
+          purpose: createdBatch.purpose,
+          count: createdBatch.totalItems,
+          profileId: createdBatch.profileId,
+          recipeId: createdBatch.recipeId,
+        }),
+        requestId: request.headers.get("x-request-id"),
+      },
+    });
     return tx.contentProductionBatch.findUniqueOrThrow({
       where: { id: createdBatch.id },
       include: productionBatchInclude,
     });
   });
-
-  for (const job of batch.items.map((item) => item.job).filter((job): job is NonNullable<typeof job> => Boolean(job))) {
-    try {
-      await enqueueExistingGenerationJob(job);
-    } catch (error) {
-      await prisma.$transaction(async (tx) => {
-        await tx.generationJob.update({
-          where: { id: job.id },
-          data: {
-            status: "failed",
-            errorCode: "queue_enqueue_failed",
-            completedAt: new Date(),
-          },
-        });
-        await markProductionItemFailed(tx, job.id);
-        await appendProductionJobEvent(tx, job.id, "failed", "Content production enqueue failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-      throw Errors.internal("Generation queue unavailable", { jobId: job.id });
-    }
-  }
-
-  await writeAudit(request, actor, {
-    action: "content.production.batch.create",
-    targetType: "content_production_batch",
-    targetId: batch.id,
-    reason: body.reason,
-    after: {
-      purpose: batch.purpose,
-      count: batch.totalItems,
-      profileId: batch.profileId,
-      recipeId: batch.recipeId,
-    },
-  });
+  await dispatchCreativeRetryOutbox(prisma, { limit: body.count });
   return ok({ batch: productionBatchDTO(batch) }, { status: 202 });
 }
 
@@ -433,14 +445,14 @@ export async function approveProductionItem(request: Request, id: string) {
   const asset = item.mediaAsset ?? item.job?.assets[0] ?? null;
   if (!asset) throw Errors.badRequest("Production item has no generated asset to approve");
 
-  const updated = await prisma.$transaction(async (tx) => {
+  const updated = await auditedTransaction("content.production.item.approve", async (tx) => {
     await tx.contentProductionItem.update({
       where: { id },
       data: {
         mediaAssetId: asset.id,
-      status: "approved",
-      reviewNote: body.reviewNote,
-      rating: body.rating,
+        status: "approved",
+        reviewNote: body.reviewNote,
+        rating: body.rating,
         tags: toInputJson(body.tags),
         reviewedById: actor.id,
         reviewedAt: new Date(),
@@ -455,6 +467,15 @@ export async function approveProductionItem(request: Request, id: string) {
       sourceBatchId: item.batchId,
     });
     await refreshContentProductionBatchStats(tx, item.batchId);
+    await tx.adminAuditLog.create({
+      data: transactionAuditData(request, actor, {
+        action: "content.production.item.approve",
+        targetType: "content_production_item",
+        targetId: id,
+        reason: body.reason,
+        after: { mediaAssetId: asset.id, tags: body.tags, rating: body.rating ?? null },
+      }),
+    });
     return tx.contentProductionItem.findUniqueOrThrow({
       where: { id },
       include: {
@@ -463,17 +484,6 @@ export async function approveProductionItem(request: Request, id: string) {
         mediaAsset: true,
       },
     });
-  });
-  await writeAudit(request, actor, {
-    action: "content.production.item.approve",
-    targetType: "content_production_item",
-    targetId: id,
-    reason: body.reason,
-    after: {
-      mediaAssetId: asset.id,
-      tags: body.tags,
-      rating: body.rating ?? null,
-    },
   });
   return ok({ item: productionItemDTO(updated) });
 }
@@ -486,7 +496,7 @@ export async function rejectProductionItem(request: Request, id: string) {
   }
   const item = await itemWithAsset(id);
   const asset = item.mediaAsset ?? item.job?.assets[0] ?? null;
-  const updated = await prisma.$transaction(async (tx) => {
+  const updated = await auditedTransaction("content.production.item.reject", async (tx) => {
     await tx.contentProductionItem.update({
       where: { id },
       data: {
@@ -510,6 +520,15 @@ export async function rejectProductionItem(request: Request, id: string) {
       });
     }
     await refreshContentProductionBatchStats(tx, item.batchId);
+    await tx.adminAuditLog.create({
+      data: transactionAuditData(request, actor, {
+        action: "content.production.item.reject",
+        targetType: "content_production_item",
+        targetId: id,
+        reason: body.reason,
+        after: { mediaAssetId: asset?.id ?? null, tags: body.tags },
+      }),
+    });
     return tx.contentProductionItem.findUniqueOrThrow({
       where: { id },
       include: {
@@ -519,195 +538,27 @@ export async function rejectProductionItem(request: Request, id: string) {
       },
     });
   });
-  await writeAudit(request, actor, {
-    action: "content.production.item.reject",
-    targetType: "content_production_item",
-    targetId: id,
-    reason: body.reason,
-    after: { mediaAssetId: asset?.id ?? null, tags: body.tags },
-  });
   return ok({ item: productionItemDTO(updated) });
 }
 
-export async function regenerateProductionItem(request: Request, id: string) {
-  const actor = await actorWithPermission(request, "content.production.write");
+export async function regenerateProductionItem(request: Request, id: string): Promise<Response> {
+  await actorWithPermission(request, "content.production.write");
   const body = itemRegenerateSchema.parse(await jsonBody(request));
   if (body.confirmation !== id) {
     throw Errors.badRequest("Confirmation did not match production item");
   }
   const sourceItem = await prisma.contentProductionItem.findUnique({
     where: { id },
-    include: { batch: true, job: true },
+    select: { batchId: true },
   });
   if (!sourceItem) throw Errors.notFound("Production item not found");
-  const profile = await resolveProductionProfile(
-    sourceItem.batch.profileId ?? "",
-    sourceItem.batch.profileVersion ?? undefined,
+  throw Errors.conflict(
+    "Legacy item regeneration is disabled; retry the frozen failed set through the Creative Run command",
+    {
+      code: "creative_run_command_required",
+      repairPath: `/admin/creative/runs/${sourceItem.batchId}`,
+    },
   );
-  const recipe = await resolveProductionRecipe(
-    sourceItem.batch.recipeId ?? undefined,
-    sourceItem.batch.targetType,
-    sourceItem.batch.recipeVersion ?? undefined,
-  );
-  const target = await resolveProductionTarget(sourceItem.batch.targetType, sourceItem.batch.targetId ?? undefined);
-  const visualProfile = await resolveProductionVisualProfile(
-    sourceItem.batch.targetType,
-    sourceItem.batch.targetId ?? undefined,
-  );
-  const consistencyMode =
-    consistencyModeSchema.safeParse(sourceItem.job?.consistencyMode).data ?? "balanced";
-  const presetIds = jsonStringArray(sourceItem.batch.presetIds);
-  const presets = await prisma.generationPreset.findMany({
-    where: { id: { in: presetIds }, scope: "built_in", status: "active" },
-  });
-  const orientation =
-    sourceItem.batch.orientation ??
-    jsonStringArray(profile.allowedOrientations)[0] ??
-    "4:5";
-  const dimensions = dimensionsForImageOrientation({
-    orientation,
-    defaultWidth: profile.defaultWidth,
-    defaultHeight: profile.defaultHeight,
-  });
-  const controls = productionControls({
-    orientation,
-    dimensions,
-    profile,
-    presets,
-    visualProfile,
-    consistencyMode,
-  });
-  const prompt = productionPrompt({
-    purpose: sourceItem.batch.purpose as z.infer<typeof productionPurposeSchema>,
-    target,
-    recipeBody: recipe.body,
-    presetFragment: presetPromptFragment(presetIds, presets),
-    brief: body.brief ?? sourceItem.batch.brief ?? undefined,
-    visualProfile,
-    consistencyMode,
-  });
-  const referenceAssetIds = visualProfile
-    ? Array.from(
-        new Set([
-          ...jsonStringArray(visualProfile.anchorAssetIds),
-          ...jsonStringArray(visualProfile.referenceAssetIds),
-        ]),
-      )
-    : [];
-  const perItemCostDreamcoins = await generationCostDreamcoins(
-    "image",
-    1,
-    profile.costMultiplier ?? 1,
-  );
-
-  const batch = await prisma.$transaction(async (tx) => {
-    await tx.contentProductionItem.update({
-      where: { id },
-      data: { status: "regenerate_requested", reviewNote: body.reason },
-    });
-    await tx.contentProductionBatch.update({
-      where: { id: sourceItem.batchId },
-      data: { estimatedCostDreamcoins: { increment: perItemCostDreamcoins } },
-    });
-    const maxIndex = await tx.contentProductionItem.aggregate({
-      where: { batchId: sourceItem.batchId },
-      _max: { itemIndex: true },
-    });
-    const item = await tx.contentProductionItem.create({
-      data: {
-        batchId: sourceItem.batchId,
-        itemIndex: (maxIndex._max.itemIndex ?? sourceItem.itemIndex) + 1,
-        status: "queued",
-        tags: [],
-      },
-    });
-    const job = await tx.generationJob.create({
-      data: {
-        userId: actor.id,
-        characterId: sourceItem.batch.targetType === "character" ? sourceItem.batch.targetId : null,
-        visualProfileId: visualProfile?.id,
-        visualProfileVersion: visualProfile?.version,
-        consistencyMode: visualProfile ? consistencyMode : null,
-        seed: visualProfile?.defaultSeed,
-        referenceAssetIds: visualProfile ? toInputJson(referenceAssetIds) : undefined,
-        mode: "image",
-        prompt,
-        negativePrompt: productionNegativePrompt(recipe.negativeBase, visualProfile?.negativeIdentityPrompt),
-        controls: toInputJson(controls),
-        presetIds: toInputJson(presetIds),
-        model: profile.workflowKey ?? profile.pipelineModel,
-        profileId: profile.profileKey,
-        profileVersion: profile.version,
-        recipeId: recipe.recipeKey,
-        recipeVersion: recipe.version,
-        orientation,
-        outputCount: 1,
-        status: "queued",
-        costDreamcoins: perItemCostDreamcoins,
-        provider: profile.runner,
-        sourceType: "content_production_item",
-        sourceId: item.id,
-        sourceMeta: toInputJson({
-          batchId: sourceItem.batchId,
-          purpose: sourceItem.batch.purpose,
-          targetType: sourceItem.batch.targetType,
-          targetId: sourceItem.batch.targetId,
-          itemIndex: item.itemIndex,
-          variantOf: id,
-        }),
-      },
-    });
-    await tx.contentProductionItem.update({
-      where: { id: item.id },
-      data: { jobId: job.id },
-    });
-    await appendProductionJobEvent(tx, job.id, "created", "Content production variation accepted", {
-      batchId: sourceItem.batchId,
-      itemId: item.id,
-      variantOf: id,
-    });
-    await appendProductionJobEvent(tx, job.id, "queued", "Content production variation queued", {});
-    await refreshContentProductionBatchStats(tx, sourceItem.batchId);
-    return tx.contentProductionBatch.findUniqueOrThrow({
-      where: { id: sourceItem.batchId },
-      include: productionBatchInclude,
-    });
-  });
-
-  const queuedJob = batch.items
-    .map((item) => item.job)
-    .filter((job): job is NonNullable<typeof job> => Boolean(job))
-    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
-  if (queuedJob) {
-    try {
-      await enqueueExistingGenerationJob(queuedJob);
-    } catch (error) {
-      await prisma.$transaction(async (tx) => {
-        await tx.generationJob.update({
-          where: { id: queuedJob.id },
-          data: {
-            status: "failed",
-            errorCode: "queue_enqueue_failed",
-            completedAt: new Date(),
-          },
-        });
-        await markProductionItemFailed(tx, queuedJob.id);
-        await appendProductionJobEvent(tx, queuedJob.id, "failed", "Content production variation enqueue failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-      throw Errors.internal("Generation queue unavailable", { jobId: queuedJob.id });
-    }
-  }
-
-  await writeAudit(request, actor, {
-    action: "content.production.item.regenerate",
-    targetType: "content_production_item",
-    targetId: id,
-    reason: body.reason,
-    after: { batchId: sourceItem.batchId, jobId: queuedJob?.id ?? null },
-  });
-  return ok({ batch: productionBatchDTO(batch) }, { status: 202 });
 }
 
 export async function listContentAssets(request: Request) {
@@ -896,10 +747,11 @@ export async function listPlacements(request: Request) {
 export async function createPlacement(request: Request) {
   const actor = await actorWithPermission(request, "content.placement.write");
   const body = placementCreateSchema.parse(await jsonBody(request));
+  assertLegacyPlacementAuthority(body.slot);
   await assertApprovedAsset(body.mediaAssetId);
   const scheduledAt = parseOptionalDate(body.scheduledAt);
   validatePlacementTarget(body.slot, body.targetType);
-  const placement = await prisma.$transaction(async (tx) => {
+  const placement = await auditedTransaction("content.placement.create", async (tx) => {
     if (body.status === "published") {
       await archiveCurrentPlacement(tx, body.slot, body.targetType, body.targetId);
     }
@@ -920,23 +772,25 @@ export async function createPlacement(request: Request) {
       await syncPlacementTarget(tx, created);
       await markPlacementItemPublished(tx, created.mediaAssetId);
     }
+    await tx.adminAuditLog.create({
+      data: transactionAuditData(request, actor, {
+        action: body.status === "published" ? "content.placement.publish" : "content.placement.create",
+        targetType: "media_asset_placement",
+        targetId: created.id,
+        reason: body.reason,
+        after: {
+          mediaAssetId: created.mediaAssetId,
+          slot: created.slot,
+          targetType: created.targetType,
+          targetId: created.targetId,
+          status: created.status,
+        },
+      }),
+    });
     return tx.mediaAssetPlacement.findUniqueOrThrow({
       where: { id: created.id },
       include: placementInclude,
     });
-  });
-  await writeAudit(request, actor, {
-    action: body.status === "published" ? "content.placement.publish" : "content.placement.create",
-    targetType: "media_asset_placement",
-    targetId: placement.id,
-    reason: body.reason,
-    after: {
-      mediaAssetId: placement.mediaAssetId,
-      slot: placement.slot,
-      targetType: placement.targetType,
-      targetId: placement.targetId,
-      status: placement.status,
-    },
   });
   return ok({ placement: placementDTO(placement) });
 }
@@ -949,9 +803,10 @@ export async function patchPlacement(request: Request, id: string) {
   }
   const before = await prisma.mediaAssetPlacement.findUnique({ where: { id } });
   if (!before) throw Errors.notFound("Placement not found");
+  assertLegacyPlacementAuthority(before.slot);
   if (body.status === "published") await assertApprovedAsset(before.mediaAssetId);
   const scheduledAt = parseOptionalDate(body.scheduledAt);
-  const placement = await prisma.$transaction(async (tx) => {
+  const placement = await auditedTransaction("content.placement.update", async (tx) => {
     if (body.status === "published") {
       await archiveCurrentPlacement(tx, before.slot, before.targetType, before.targetId, id);
     }
@@ -970,30 +825,84 @@ export async function patchPlacement(request: Request, id: string) {
       await syncPlacementTarget(tx, updated);
       await markPlacementItemPublished(tx, updated.mediaAssetId);
     }
+    await tx.adminAuditLog.create({
+      data: transactionAuditData(request, actor, {
+        action: body.status ? `content.placement.${body.status}` : "content.placement.update",
+        targetType: "media_asset_placement",
+        targetId: id,
+        reason: body.reason,
+        before: {
+          status: before.status,
+          mediaAssetId: before.mediaAssetId,
+          slot: before.slot,
+          targetId: before.targetId,
+        },
+        after: {
+          status: updated.status,
+          mediaAssetId: updated.mediaAssetId,
+          slot: updated.slot,
+          targetId: updated.targetId,
+        },
+      }),
+    });
     return tx.mediaAssetPlacement.findUniqueOrThrow({
       where: { id },
       include: placementInclude,
     });
   });
-  await writeAudit(request, actor, {
-    action: body.status ? `content.placement.${body.status}` : "content.placement.update",
-    targetType: "media_asset_placement",
-    targetId: id,
-    reason: body.reason,
-    before: {
-      status: before.status,
-      mediaAssetId: before.mediaAssetId,
-      slot: before.slot,
-      targetId: before.targetId,
-    },
-    after: {
-      status: placement.status,
-      mediaAssetId: placement.mediaAssetId,
-      slot: placement.slot,
-      targetId: placement.targetId,
-    },
-  });
   return ok({ placement: placementDTO(placement) });
+}
+
+function transactionAuditData(
+  request: Request,
+  actor: AdminActor,
+  input: {
+    action: string;
+    targetType: string;
+    targetId: string;
+    reason?: string;
+    before?: unknown;
+    after?: unknown;
+  },
+) {
+  return {
+    actorId: actor.id,
+    actorRole: actor.role,
+    action: input.action,
+    targetType: input.targetType,
+    targetId: input.targetId,
+    reason: input.reason,
+    before: input.before === undefined ? undefined : toInputJson(input.before),
+    after: input.after === undefined ? undefined : toInputJson(input.after),
+    requestId: request.headers.get("x-request-id"),
+  };
+}
+
+async function auditedTransaction<T>(
+  operation: string,
+  callback: (tx: Prisma.TransactionClient) => Promise<T>,
+) {
+  try {
+    return await prisma.$transaction(callback);
+  } catch (error) {
+    incrementCounter(
+      "admin_audit_transaction_failure_total",
+      "Admin domain transactions containing an atomic Audit row that rolled back",
+      { operation },
+    );
+    throw error;
+  }
+}
+
+function assertLegacyPlacementAuthority(slot: string) {
+  if (!releaseOwnedPlacementSlots.has(slot)) return;
+  throw Errors.conflict(
+    "Character avatar and hero placements are owned by immutable Character Release commands",
+    {
+      code: "character_release_authority_required",
+      repairPath: "/admin/characters",
+    },
+  );
 }
 
 async function resolveProductionProfile(profileId: string, version?: number) {

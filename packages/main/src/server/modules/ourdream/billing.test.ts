@@ -91,6 +91,16 @@ describe("checkout (auto-confirm) activates entitlements + grants coins", () => 
         where: { userId, name: "subscription_started" },
       }),
     ).toBe(1);
+    const subscription = await prisma.subscription.findFirstOrThrow({ where: { userId } });
+    expect(
+      await prisma.analyticsEvent.count({
+        where: {
+          userId,
+          name: "subscription.activated.v2",
+          sourceEventId: `subscription:${subscription.id}:activated`,
+        },
+      }),
+    ).toBe(1);
 
     // Premium gate now opens: a custom prompt no longer returns 402.
     const charId = `${P}char-checkout`;

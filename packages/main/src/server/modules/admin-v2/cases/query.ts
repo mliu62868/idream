@@ -222,7 +222,6 @@ export async function getCaseDetail(request: Request, caseId: string) {
               : `${row.sourceType} ${row.sourceId}`,
         occurredAt: row.occurredAt.toISOString(),
         access: "full",
-        snapshot: row.snapshot,
       };
     }),
     decisions,

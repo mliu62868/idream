@@ -34,7 +34,14 @@ import {
 } from "@/server/modules/admin-v2/characters/release-snapshot";
 import { proxyChatRequest } from "@/server/bff/chat-proxy";
 import { jobQueue } from "@/server/jobs/queue";
-import { MAIN_TO_CHAT_QUEUE, MAIN_TO_CHAT_EVENTS, idempotencyKeys } from "@idream/shared/contracts";
+import {
+  MAIN_TO_CHAT_QUEUE,
+  MAIN_TO_CHAT_EVENTS,
+  METRIC_PRODUCT_EVENTS,
+  characterExposureRecordedV2Schema,
+  idempotencyKeys,
+} from "@idream/shared/contracts";
+import { appendCanonicalMetricEvent } from "@/server/modules/admin-v2/metrics/event-writer";
 import {
   clearSessionCookie,
   createAnonymousId,
@@ -303,6 +310,24 @@ const redeemSchema = z.object({
 const eventSchema = z.object({
   name: z.string().trim().min(1).max(120),
   props: z.record(z.string(), z.unknown()).default({}),
+});
+
+const characterExposureClientSchema = z.object({
+  exposureId: z.string().min(1),
+  eventType: z.enum(["eligible_impression", "detail_view"]),
+  parentExposureId: z.string().min(1).nullable().default(null),
+  journeyId: z.string().min(1),
+  characterId: z.string().min(1),
+  placementId: z.string().min(1).nullable(),
+  visibleRatio: z.number().min(0).max(1),
+  visibleDurationMs: z.number().int().nonnegative(),
+}).strict().superRefine((event, ctx) => {
+  if (event.eventType === "eligible_impression" && event.parentExposureId !== null) {
+    ctx.addIssue({ code: "custom", path: ["parentExposureId"], message: "Impressions are exposure roots" });
+  }
+  if (event.eventType === "detail_view" && event.parentExposureId === null) {
+    ctx.addIssue({ code: "custom", path: ["parentExposureId"], message: "Detail views require an exposure chain" });
+  }
 });
 
 const supportRequestSchema = z.object({
@@ -646,6 +671,14 @@ async function signup(request: Request) {
         );
       }
     }
+    await appendCanonicalMetricEvent(tx, {
+      sourceEventId: `signup:${created.id}`,
+      eventType: METRIC_PRODUCT_EVENTS.customerSignupCompleted,
+      occurredAt: created.createdAt,
+      userId: created.id,
+      context: { source: "credential_signup" },
+      payload: { userId: created.id },
+    });
     return created;
   });
 
@@ -4594,6 +4627,61 @@ async function policies() {
 async function track(request: Request) {
   const ctx = await getAuthCtx(request);
   const body = eventSchema.parse(await jsonBody(request));
+  if (body.name === METRIC_PRODUCT_EVENTS.characterExposureRecorded) {
+    requireAgeGate(ctx);
+    const exposure = characterExposureClientSchema.parse(body.props);
+    if (!ctx.userId && !ctx.anonymousId) {
+      throw Errors.badRequest("Character exposure needs an authenticated or anonymous subject");
+    }
+    const authority = await prisma.character.findFirst({
+      where: {
+        id: exposure.characterId,
+        deletedAt: null,
+        visibility: "public",
+        status: "approved",
+      },
+      select: { id: true },
+    });
+    if (!authority) throw Errors.notFound("Live Character not found");
+    const serving = await prisma.characterServing.findUnique({
+      where: { characterId: authority.id },
+    });
+    if (!serving || serving.state !== "live" || !serving.currentReleaseId) {
+      throw Errors.conflict("Character has no live Release attribution");
+    }
+    const release = await prisma.characterRelease.findFirst({
+      where: { id: serving.currentReleaseId, status: "published" },
+    });
+    if (!release) throw Errors.conflict("Character Serving points to a non-published Release");
+    const contentVersion = await prisma.characterContentVersion.findUnique({
+      where: { id: release.characterContentVersionId },
+      select: { id: true, characterId: true },
+    });
+    if (!contentVersion || contentVersion.characterId !== authority.id) {
+      throw Errors.conflict("Character Release attribution is inconsistent");
+    }
+    const payload = characterExposureRecordedV2Schema.parse({
+      ...exposure,
+      userId: ctx.userId ?? null,
+      anonymousId: ctx.userId ? null : (ctx.anonymousId ?? null),
+      characterContentVersionId: contentVersion.id,
+      characterReleaseId: release.id,
+    });
+    const event = await prisma.$transaction((tx) => appendCanonicalMetricEvent(tx, {
+      sourceEventId: `character_exposure:${payload.exposureId}`,
+      eventType: METRIC_PRODUCT_EVENTS.characterExposureRecorded,
+      occurredAt: new Date(),
+      userId: payload.userId,
+      anonymousId: payload.anonymousId,
+      trustClass: "typed_client",
+      context: {
+        servingVersion: serving.version,
+        servingState: serving.state,
+      },
+      payload,
+    }));
+    return ok({ event });
+  }
   const event = await trackEvent(body.name, body.props, ctx);
   return ok({ event });
 }
@@ -6799,12 +6887,31 @@ async function activateSubscriptionInTx(
   // entitlementMap max-merges both tiers, so the old tier's exclusive perks linger. Cancel
   // any other active sub and drop its subscription-sourced entitlements; the new plan's
   // syncSubscriptionEntitlements below re-establishes the authoritative set.
+  const superseded = await tx.subscription.findMany({
+    where: { userId, status: "active", planId: { not: planId } },
+    select: { id: true, userId: true },
+  });
+  const endedAt = new Date();
   const supersededCount = await tx.subscription.updateMany({
     where: { userId, status: "active", planId: { not: planId } },
     data: { status: "canceled", cancelAtPeriodEnd: false },
   });
   if (supersededCount.count > 0) {
     await tx.entitlement.deleteMany({ where: { userId, source: "subscription" } });
+    for (const previous of superseded) {
+      await appendCanonicalMetricEvent(tx, {
+        sourceEventId: `subscription:${previous.id}:ended:${providerSubscriptionId}`,
+        eventType: METRIC_PRODUCT_EVENTS.subscriptionEnded,
+        occurredAt: endedAt,
+        userId: previous.userId,
+        context: { source: "plan_switch" },
+        payload: {
+          subscriptionId: previous.id,
+          userId: previous.userId,
+          reason: "superseded_by_plan_switch",
+        },
+      });
+    }
   }
   const currentPeriodEnd = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30);
   const subscription = await tx.subscription.create({
@@ -6826,6 +6933,14 @@ async function activateSubscriptionInTx(
     subscription.id,
     `subscription:grant:${providerSubscriptionId}`,
   );
+  await appendCanonicalMetricEvent(tx, {
+    sourceEventId: `subscription:${subscription.id}:activated`,
+    eventType: METRIC_PRODUCT_EVENTS.subscriptionActivated,
+    occurredAt: subscription.createdAt,
+    userId,
+    context: { providerSubscriptionId },
+    payload: { subscriptionId: subscription.id, userId, planId },
+  });
   return { subscription, created: true };
 }
 

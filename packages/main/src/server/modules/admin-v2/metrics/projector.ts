@@ -318,33 +318,44 @@ async function applyEvent(tx: Transaction, event: MetricProductEvent): Promise<M
   }
   if (event.name === METRIC_PRODUCT_EVENTS.subscriptionActivated) {
     const payload = subscriptionActivatedV2Schema.parse(event.props);
-    const fact = await tx.subscriptionLifecycleFact.upsert({
+    const existing = await tx.subscriptionLifecycleFact.findUnique({
       where: { subscriptionId: payload.subscriptionId },
-      create: {
-        subscriptionId: payload.subscriptionId,
-        userId: payload.userId,
-        planId: payload.planId,
-        activatedSourceService: event.sourceService,
-        activatedSourceEventId: event.sourceEventId,
-        environment: event.environment,
-        dataClass: event.dataClass,
-        trustClass: event.trustClass,
-        eligible: true,
-        activeAt: event.occurredAt,
-        validFrom: event.occurredAt,
-      },
-      update: {
-        userId: payload.userId,
-        planId: payload.planId,
-        activatedSourceService: event.sourceService,
-        activatedSourceEventId: event.sourceEventId,
-        activeAt: event.occurredAt,
-        endedAt: null,
-        endedSourceService: null,
-        endedSourceEventId: null,
-        eligible: true,
-      },
     });
+    const fact = existing
+      ? await tx.subscriptionLifecycleFact.update({
+          where: { id: existing.id },
+          data: {
+            userId: payload.userId,
+            planId: payload.planId,
+            ...(event.occurredAt < existing.activeAt
+              ? {
+                  activatedSourceService: event.sourceService,
+                  activatedSourceEventId: event.sourceEventId,
+                  activeAt: event.occurredAt,
+                  validFrom: event.occurredAt,
+                }
+              : {}),
+            endedAt: null,
+            endedSourceService: null,
+            endedSourceEventId: null,
+            eligible: true,
+          },
+        })
+      : await tx.subscriptionLifecycleFact.create({
+          data: {
+            subscriptionId: payload.subscriptionId,
+            userId: payload.userId,
+            planId: payload.planId,
+            activatedSourceService: event.sourceService,
+            activatedSourceEventId: event.sourceEventId,
+            environment: event.environment,
+            dataClass: event.dataClass,
+            trustClass: event.trustClass,
+            eligible: true,
+            activeAt: event.occurredAt,
+            validFrom: event.occurredAt,
+          },
+      });
     return { status: "applied", factType: "subscription_lifecycle", factId: fact.id };
   }
   if (event.name === METRIC_PRODUCT_EVENTS.subscriptionEnded) {

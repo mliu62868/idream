@@ -274,6 +274,7 @@ describe("image generation service contract", () => {
     const poll = await api("GET", `generation/jobs/${jobId}`, { userId, ageGate: true });
     expectOk(poll);
     expect(poll.data.job.status).toBe("failed");
+    expect(poll.data.job.completedAt).toBeNull();
     expect(poll.data.job.errorCode).toBe("stale_timeout");
     expect(await dreamcoinBalance(userId)).toBe(100);
   });
@@ -318,6 +319,7 @@ describe("image generation service contract", () => {
     const poll = await api("GET", `generation/jobs/${jobId}`, { userId, ageGate: true });
     expectOk(poll);
     expect(poll.data.job.status).toBe("failed");
+    expect(poll.data.job.completedAt).toBeNull();
     expect(await dreamcoinBalance(userId)).toBe(100);
     expect(await jobQueue.getByDedupeKey("ai.image.generate", `generation:${jobId}`)).toBeNull();
     const attempt = await prisma.generationAttempt.findFirstOrThrow({ where: { requestId: jobId } });

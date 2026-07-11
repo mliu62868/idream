@@ -9,8 +9,7 @@ import {
 import { jobQueue } from "@/server/jobs/queue";
 import type { QueueJob } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
-import { env } from "@/server/lib/env";
-import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
+import { appendCanonicalMetricEvent } from "@/server/modules/admin-v2/metrics/event-writer";
 import { providers } from "@/server/providers";
 import {
   markProductionItemFailed,
@@ -779,48 +778,7 @@ async function appendLocalCanonicalProductEvent(
     payload: Readonly<Record<string, unknown>>;
   },
 ) {
-  const actor = { userId: input.userId, isInternal: false };
-  const hash = canonicalSha256({
-    eventType: input.eventType,
-    schemaVersion: 2,
-    occurredAt: input.occurredAt,
-    environment: env.APP_ENV,
-    dataClass: "customer",
-    trustClass: "canonical",
-    actor,
-    context: input.context,
-    payload: input.payload,
-  });
-  const event = await tx.analyticsEvent.upsert({
-    where: { sourceService_sourceEventId: { sourceService: "main", sourceEventId: input.sourceEventId } },
-    create: {
-      userId: input.userId,
-      name: input.eventType,
-      props: toInputJson(input.payload),
-      sourceService: "main",
-      sourceEventId: input.sourceEventId,
-      payloadHash: hash,
-      schemaVersion: 2,
-      occurredAt: input.occurredAt,
-      environment: env.APP_ENV,
-      dataClass: "customer",
-      trustClass: "canonical",
-      actor: toInputJson(actor),
-      context: toInputJson(input.context),
-    },
-    update: {},
-  });
-  await tx.mainOutboxEvent.upsert({
-    where: { id: `product_metric_${input.sourceEventId.replaceAll(":", "_")}` },
-    create: {
-      id: `product_metric_${input.sourceEventId.replaceAll(":", "_")}`,
-      eventType: "product.event.persisted.v2",
-      aggregateType: "product_event",
-      aggregateId: event.id,
-      payload: toInputJson({ eventId: event.id, sourceService: "main", sourceEventId: input.sourceEventId, eventType: input.eventType, schemaVersion: 2 }),
-    },
-    update: {},
-  });
+  await appendCanonicalMetricEvent(tx, input);
 }
 
 async function finalizeGenerationFailed(
@@ -1150,7 +1108,7 @@ async function refundGeneration(
     }
     await tx.generationJob.update({
       where: { id: jobId },
-      data: { status, errorCode, completedAt: new Date() },
+      data: { status, errorCode, completedAt: null },
     });
     if (attemptId) {
       const attempt = await tx.generationAttempt.findFirstOrThrow({

@@ -1557,6 +1557,39 @@ describe("generation config control plane", () => {
       targetType: "character",
       targetId: character.id,
     });
+    const initialAttempts = await prisma.generationAttempt.findMany({
+      where: { requestId: { in: jobs.map((job) => job.id) } },
+      orderBy: [{ requestId: "asc" }, { attemptNo: "asc" }],
+    });
+    expect(initialAttempts).toHaveLength(2);
+    expect(initialAttempts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ attemptNo: 1, status: "queued", creativeRunItemId: itemIds[0] }),
+        expect.objectContaining({ attemptNo: 1, status: "queued", creativeRunItemId: itemIds[1] }),
+      ]),
+    );
+    const initialAttemptEvents = await prisma.generationAttemptEvent.findMany({
+      where: { attemptId: { in: initialAttempts.map((attempt) => attempt.id) } },
+    });
+    expect(initialAttemptEvents).toHaveLength(2);
+    expect(initialAttemptEvents.every((event) => event.eventType === "generation.attempt.queued.v1")).toBe(true);
+    const dispatchRows = await prisma.mainOutboxEvent.findMany({
+      where: {
+        aggregateId: created.data.batch.id,
+        eventType: "creative.generation.dispatch.v2",
+      },
+    });
+    expect(dispatchRows).toHaveLength(2);
+    expect(dispatchRows.every((row) => row.status === "delivered" && row.deliveredAt)).toBe(true);
+    await expect(
+      prisma.adminAuditLog.findFirst({
+        where: {
+          actorId: admin,
+          action: "content.production.batch.create",
+          targetId: created.data.batch.id,
+        },
+      }),
+    ).resolves.toBeTruthy();
 
     await runQueuedGenerationJobs(12);
 
@@ -1610,6 +1643,23 @@ describe("generation config control plane", () => {
       },
     });
     expectOk(reject);
+    const legacyRetry = await api(
+      "POST",
+      `admin/content/production/items/${rejectItemId}/regenerate`,
+      {
+        userId: admin,
+        role: "admin",
+        body: {
+          reason: "attempt legacy regeneration",
+          confirmation: rejectItemId,
+        },
+      },
+    );
+    expectError(legacyRetry, 409, "conflict");
+    expect(legacyRetry.error?.details).toMatchObject({
+      code: "creative_run_command_required",
+      repairPath: `/admin/creative/runs/${created.data.batch.id}`,
+    });
 
     const assetId = approve.data.item.asset.id as string;
     const assets = await api("GET", "admin/content/assets", {
@@ -1636,7 +1686,7 @@ describe("generation config control plane", () => {
       role: "admin",
       body: {
         mediaAssetId: assetId,
-        slot: "character_avatar",
+        slot: "feed_card",
         targetType: "character",
         targetId: character.id,
         status: "published",
@@ -1646,12 +1696,9 @@ describe("generation config control plane", () => {
     expectOk(placement);
     expect(placement.data.placement).toMatchObject({
       mediaAssetId: assetId,
-      slot: "character_avatar",
+      slot: "feed_card",
       targetId: character.id,
       status: "published",
-    });
-    await expect(prisma.character.findUnique({ where: { id: character.id } })).resolves.toMatchObject({
-      imageAssetId: assetId,
     });
 
     const audits = await prisma.adminAuditLog.findMany({
@@ -1777,7 +1824,7 @@ describe("generation config control plane", () => {
     expectError(missing, 400);
   });
 
-  it("pregen cover pack publishes to character avatar end to end (P3 acceptance)", async () => {
+  it("prevents the legacy pregen placement path from bypassing Character Release authority", async () => {
     const admin = await setupActor("admin", "pregen-e2e");
     const character = await createCharacter({
       id: `${P}pregen-e2e-character`,
@@ -1883,22 +1930,21 @@ describe("generation config control plane", () => {
         reason: "stage pregen cover for publish",
       },
     });
-    expectOk(placementCreate);
-    const placementId = placementCreate.data.placement.id as string;
-
-    const publish = await api("PATCH", `admin/content/placements/${placementId}`, {
-      userId: admin,
-      role: "admin",
-      body: { status: "published", reason: "publish pregen cover", confirmation: placementId },
+    expectError(placementCreate, 409, "conflict");
+    expect(placementCreate.error?.details).toMatchObject({
+      code: "character_release_authority_required",
+      repairPath: "/admin/characters",
     });
-    expectOk(publish);
 
     await expect(prisma.character.findUnique({ where: { id: character.id } })).resolves.toMatchObject({
-      imageAssetId: mediaAssetId,
+      imageAssetId: null,
     });
     await expect(prisma.contentProductionItem.findUnique({ where: { id: item.id } })).resolves.toMatchObject({
-      status: "published",
+      status: "approved",
     });
+    await expect(prisma.mediaAssetPlacement.count({
+      where: { mediaAssetId, slot: "character_avatar" },
+    })).resolves.toBe(0);
   });
 
   it("does not credit the operator's ledger when a production job fails or is blocked", async () => {

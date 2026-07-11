@@ -249,7 +249,7 @@ export async function dispatchCreativeRetryOutbox(
 ) {
   const rows = await db.mainOutboxEvent.findMany({
     where: {
-      eventType: "creative.retry.dispatch.v2",
+      eventType: { in: ["creative.retry.dispatch.v2", "creative.generation.dispatch.v2"] },
       status: { in: ["pending", "dispatched"] },
       nextRunAt: { lte: new Date() },
     },
@@ -264,13 +264,13 @@ export async function dispatchCreativeRetryOutbox(
     const attemptId = typeof payload.attemptId === "string" ? payload.attemptId : null;
     const attemptNo = typeof payload.attemptNo === "number" ? payload.attemptNo : null;
     try {
-      if (!generationJobId || !attemptId || !attemptNo) throw new Error("Creative retry outbox payload is invalid");
+      if (!generationJobId || !attemptId || !attemptNo) throw new Error("Creative generation outbox payload is invalid");
       const [job, attempt] = await Promise.all([
         db.generationJob.findUnique({ where: { id: generationJobId } }),
         db.generationAttempt.findUnique({ where: { id: attemptId } }),
       ]);
       if (!job || !attempt || attempt.attemptNo !== attemptNo) {
-        throw new Error("Creative retry generation authority is missing");
+        throw new Error("Creative generation authority is missing");
       }
       await enqueueGenerationAttempt(job, { attemptId, attemptNo });
       await db.mainOutboxEvent.update({
@@ -285,7 +285,7 @@ export async function dispatchCreativeRetryOutbox(
           status: "pending",
           attempts: { increment: 1 },
           nextRunAt: new Date(Date.now() + 30_000),
-          lastError: toInputJson({ message: error instanceof Error ? error.message : "Creative retry dispatch failed" }),
+          lastError: toInputJson({ message: error instanceof Error ? error.message : "Creative generation dispatch failed" }),
         },
       });
       failed += 1;
