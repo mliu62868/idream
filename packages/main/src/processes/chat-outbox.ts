@@ -1,4 +1,5 @@
 import { durableAckSchema, MAIN_TO_CHAT_EVENTS, type DurableEventEnvelope } from "@idream/shared/contracts";
+import { setGauge } from "@idream/shared";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
@@ -37,15 +38,30 @@ export async function dispatchPendingChatEvents(
   batch = 100,
   deliver: (event: DurableEventEnvelope) => Promise<void> = deliverToChat,
 ): Promise<{ delivered: number; failed: number }> {
-  const rows = await prisma.mainOutboxEvent.findMany({
-    where: {
-      status: "pending",
-      nextRunAt: { lte: new Date() },
-      eventType: { in: Object.values(MAIN_TO_CHAT_EVENTS) },
-    },
-    orderBy: { createdAt: "asc" },
-    take: batch,
-  });
+  const now = new Date();
+  const eventTypes = Object.values(MAIN_TO_CHAT_EVENTS);
+  const [oldestPending, rows] = await Promise.all([
+    prisma.mainOutboxEvent.findFirst({
+      where: { status: "pending", eventType: { in: eventTypes } },
+      orderBy: { createdAt: "asc" },
+      select: { createdAt: true },
+    }),
+    prisma.mainOutboxEvent.findMany({
+      where: {
+        status: "pending",
+        nextRunAt: { lte: now },
+        eventType: { in: eventTypes },
+      },
+      orderBy: { createdAt: "asc" },
+      take: batch,
+    }),
+  ]);
+  setGauge(
+    "main_outbox_pending_age_seconds",
+    "Age of the oldest pending Main outbox event",
+    { queue: "chat" },
+    oldestPending ? Math.max(0, now.getTime() - oldestPending.createdAt.getTime()) / 1_000 : 0,
+  );
   let delivered = 0;
   let failed = 0;
   for (const row of rows) {

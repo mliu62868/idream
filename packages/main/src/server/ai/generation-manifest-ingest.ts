@@ -4,7 +4,7 @@ import {
   generationManifestIngestSchema,
   type GenerationManifestIngest,
 } from "@idream/shared/contracts";
-import { incrementCounter } from "@idream/shared";
+import { incrementCounter, setGauge } from "@idream/shared";
 import { prisma } from "@/server/lib/db";
 import { jobQueue } from "@/server/jobs/queue";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
@@ -171,15 +171,29 @@ function finalizePayload(input: GenerationManifestIngest) {
 }
 
 export async function dispatchPendingGenerationManifests(batch = 100): Promise<number> {
-  const rows = await prisma.mainOutboxEvent.findMany({
-    where: {
-      eventType: "generation.manifest.accepted.v1",
-      status: { in: ["pending", "dispatched"] },
-      nextRunAt: { lte: new Date() },
-    },
-    orderBy: { createdAt: "asc" },
-    take: batch,
-  });
+  const now = new Date();
+  const pendingWhere = {
+    eventType: "generation.manifest.accepted.v1",
+    status: { in: ["pending", "dispatched"] },
+  } as const;
+  const [oldestPending, rows] = await Promise.all([
+    prisma.mainOutboxEvent.findFirst({
+      where: pendingWhere,
+      orderBy: { createdAt: "asc" },
+      select: { createdAt: true },
+    }),
+    prisma.mainOutboxEvent.findMany({
+      where: { ...pendingWhere, nextRunAt: { lte: now } },
+      orderBy: { createdAt: "asc" },
+      take: batch,
+    }),
+  ]);
+  setGauge(
+    "main_outbox_pending_age_seconds",
+    "Age of the oldest pending Main outbox event",
+    { queue: "generation_manifest" },
+    oldestPending ? Math.max(0, now.getTime() - oldestPending.createdAt.getTime()) / 1_000 : 0,
+  );
   let dispatched = 0;
   for (const row of rows) {
     try {

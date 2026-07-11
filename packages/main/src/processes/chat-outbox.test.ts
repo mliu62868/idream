@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { renderPrometheusMetrics, resetMetricsForTests } from "@idream/shared";
 import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
 import {
@@ -10,6 +11,7 @@ import {
 const eventId = "durable_main_chat_event_1";
 
 beforeEach(async () => {
+  resetMetricsForTests();
   await prisma.mainOutboxEvent.deleteMany({ where: { id: eventId } });
 });
 
@@ -35,6 +37,9 @@ describe("main to chat durable outbox", () => {
       if (event.sourceEventId === eventId) throw new Error("chat down");
     });
     expect(first.failed).toBe(1);
+    expect(renderPrometheusMetrics()).toMatch(
+      /main_outbox_pending_age_seconds\{queue="chat"\} \d+(?:\.\d+)?/,
+    );
     expect(await prisma.mainOutboxEvent.findUnique({ where: { id: eventId } })).toMatchObject({
       status: "pending",
       attempts: 1,

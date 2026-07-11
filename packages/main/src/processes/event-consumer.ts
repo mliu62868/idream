@@ -5,6 +5,7 @@
 import { Worker } from "bullmq";
 import type { RedisOptions } from "ioredis";
 import type { Prisma } from "@prisma/client";
+import { setGauge } from "@idream/shared";
 import {
   MAIN_QUEUES,
   MAIN_TO_CHAT_QUEUE,
@@ -246,11 +247,25 @@ function eventTime(event: InboundEvent): Date {
 }
 
 export async function dispatchPendingProductEvents(batch = 100): Promise<{ delivered: number; failed: number }> {
-  const rows = await prisma.mainOutboxEvent.findMany({
-    where: { eventType: "product.event.persisted.v2", status: "pending", nextRunAt: { lte: new Date() } },
-    orderBy: { createdAt: "asc" },
-    take: batch,
-  });
+  const now = new Date();
+  const [oldestPending, rows] = await Promise.all([
+    prisma.mainOutboxEvent.findFirst({
+      where: { eventType: "product.event.persisted.v2", status: "pending" },
+      orderBy: { createdAt: "asc" },
+      select: { createdAt: true },
+    }),
+    prisma.mainOutboxEvent.findMany({
+      where: { eventType: "product.event.persisted.v2", status: "pending", nextRunAt: { lte: now } },
+      orderBy: { createdAt: "asc" },
+      take: batch,
+    }),
+  ]);
+  setGauge(
+    "main_outbox_pending_age_seconds",
+    "Age of the oldest pending Main outbox event",
+    { queue: "product_event" },
+    oldestPending ? Math.max(0, now.getTime() - oldestPending.createdAt.getTime()) / 1_000 : 0,
+  );
   let delivered = 0;
   let failed = 0;
   for (const row of rows) {
