@@ -1,4 +1,8 @@
-import { adminInvariantReportSchema, type AdminInvariantCheck } from "@idream/shared";
+import {
+  adminInvariantReportSchema,
+  setGauge,
+  type AdminInvariantCheck,
+} from "@idream/shared";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { ok } from "@/server/lib/http";
@@ -271,6 +275,20 @@ export async function auditAdminCutoverInvariants(db: PrismaClient, asOf = new D
   const totalViolations = checks.reduce((sum, check) => sum + (check.violationCount ?? 0), 0);
   const unavailableChecks = checks.filter((check) => check.status === "unavailable").length;
   const qualityState = totalViolations === 0 && unavailableChecks === 0 ? "certified" as const : "invalid" as const;
+  for (const check of checks) {
+    setGauge(
+      "admin_state_invariant_violation_total",
+      "Current Admin cutover invariant violations",
+      { invariant: check.key },
+      check.violationCount ?? 0,
+    );
+  }
+  setGauge(
+    "admin_state_invariant_violation_total",
+    "Current Admin cutover invariant violations",
+    { invariant: "all" },
+    totalViolations,
+  );
   return adminInvariantReportSchema.parse({
     asOf: asOf.toISOString(),
     qualityState,

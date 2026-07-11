@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { renderPrometheusMetrics, resetMetricsForTests } from "@idream/shared";
 import { prisma } from "@/server/lib/db";
 import { auditAdminCutoverInvariants } from "./invariants";
 
@@ -60,6 +61,7 @@ describe("Admin cutover invariant report", () => {
   });
 
   it("reports concrete violations, including real-time missing terminal event counts", async () => {
+    resetMetricsForTests();
     const report = await auditAdminCutoverInvariants(prisma, new Date("2026-07-11T12:00:00.000Z"));
     expect(report).toMatchObject({ qualityState: "invalid", decisionUse: "blocked" });
     expect(report.checks).toEqual(expect.arrayContaining([
@@ -79,5 +81,13 @@ describe("Admin cutover invariant report", () => {
         sampleIds: expect.arrayContaining([attemptId]),
       }),
     ]));
+    const metrics = renderPrometheusMetrics();
+    expect(metrics).toContain(
+      `admin_state_invariant_violation_total{invariant="all"} ${report.totalViolations}`,
+    );
+    expect(metrics).toContain(
+      "admin_state_invariant_violation_total{invariant=\"terminal_attempt_without_unique_terminal_event\"} 1",
+    );
+    resetMetricsForTests();
   });
 });
