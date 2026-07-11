@@ -1,4 +1,5 @@
 import path from "node:path";
+import { existsSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { resolveLocalBlobPath, resolveLocalBlobRoot } from "./local-blob";
 
@@ -26,7 +27,7 @@ describe("local blob paths", () => {
 function findWorkspaceRoot(start: string) {
   let current = path.resolve(start);
   while (true) {
-    if (path.basename(current) === "idream") return current;
+    if (existsSync(path.join(current, "turbo.json"))) return current;
     const parent = path.dirname(current);
     if (parent === current) return path.resolve(start);
     current = parent;

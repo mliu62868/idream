@@ -12,9 +12,11 @@
 // EXAMPLE: POST /api/v1/admin/content/official { name, age:24, gender, style, description, reason }
 //          → ok({ character }) with source="official", status="draft".
 import type { Prisma } from "@prisma/client";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { buildCharacterSystemPrompt } from "@idream/shared";
 import { prisma } from "@/server/lib/db";
+import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import {
@@ -29,6 +31,8 @@ import {
   createActiveCharacterVisualProfileVersion,
   moderateText,
 } from "@/server/modules/ourdream/service";
+import { acceptControlPlaneCommand } from "@/server/modules/admin-v2/shared/control-plane-command";
+import { executeCharacterReleaseCommand } from "@/server/modules/admin-v2/characters/release-executor";
 
 const OFFICIAL_PERMISSION = "content.official.write" as const;
 
@@ -77,7 +81,11 @@ function slugify(value: string): string {
 }
 
 // 整体替换该角色的 CharacterTag：先清空，再按 slug upsert Tag 并连接。
-async function syncTags(tx: Prisma.TransactionClient, characterId: string, tags: string[]) {
+async function syncTags(
+  tx: Prisma.TransactionClient,
+  characterId: string,
+  tags: string[],
+) {
   await tx.characterTag.deleteMany({ where: { characterId } });
   const seen = new Set<string>();
   for (const raw of tags) {
@@ -105,45 +113,15 @@ const officialInclude = {
   },
 } satisfies Prisma.CharacterInclude;
 
-function tagLabels(character: { tags: { tag: { label: string } }[] }): string[] {
+function tagLabels(character: {
+  tags: { tag: { label: string } }[];
+}): string[] {
   return character.tags.map((link) => link.tag.label);
 }
 
-function jsonRecord(value: Prisma.JsonValue): Record<string, Prisma.JsonValue> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, Prisma.JsonValue>)
-    : {};
-}
-
-function jsonStringArray(value: Prisma.JsonValue): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-}
-
-function releaseCheckMissing(character: Prisma.CharacterGetPayload<{ include: typeof officialInclude }>): string[] {
-  const advanced = jsonRecord(character.advancedDetails);
-  const appearance = jsonRecord(character.appearance);
-  const visualProfile = character.visualProfiles[0];
-  const missing: string[] = [];
-  if (tagLabels(character).length === 0) missing.push("tags");
-  if (typeof advanced.personality !== "string" || !advanced.personality.trim()) missing.push("personality");
-  if (typeof advanced.firstMessage !== "string" || !advanced.firstMessage.trim()) missing.push("first message");
-  const visualBrief =
-    typeof appearance.visualBrief === "string" && appearance.visualBrief.trim()
-      ? appearance.visualBrief
-      : typeof advanced.visualBrief === "string"
-        ? advanced.visualBrief
-        : "";
-  if (!visualBrief.trim()) missing.push("visual direction");
-  if (!visualProfile) missing.push("visual identity");
-  const referenceCount = visualProfile
-    ? jsonStringArray(visualProfile.anchorAssetIds).length + jsonStringArray(visualProfile.referenceAssetIds).length
-    : 0;
-  if (referenceCount === 0) missing.push("reference images");
-  if (!character.imageAssetId) missing.push("published artwork");
-  return missing;
-}
-
-export async function listOfficialCharacters(request: Request): Promise<Response> {
+export async function listOfficialCharacters(
+  request: Request,
+): Promise<Response> {
   await actorWithPermission(request, OFFICIAL_PERMISSION);
   const url = new URL(request.url);
   const search = url.searchParams.get("search")?.trim();
@@ -187,7 +165,9 @@ export async function listOfficialCharacters(request: Request): Promise<Response
         createdAt: true,
         updatedAt: true,
         tags: { include: { tag: true } },
-        stats: { select: { chatsCount: true, likesCount: true, viewsCount: true } },
+        stats: {
+          select: { chatsCount: true, likesCount: true, viewsCount: true },
+        },
         visualProfiles: {
           where: { status: "active" },
           orderBy: { version: "desc" },
@@ -224,7 +204,9 @@ export async function listOfficialCharacters(request: Request): Promise<Response
   });
 }
 
-export async function createOfficialCharacter(request: Request): Promise<Response> {
+export async function createOfficialCharacter(
+  request: Request,
+): Promise<Response> {
   const actor = await actorWithPermission(request, OFFICIAL_PERMISSION);
   const body = createSchema.parse(await jsonBody(request));
 
@@ -285,7 +267,10 @@ export async function createOfficialCharacter(request: Request): Promise<Respons
     });
     await tx.characterStats.create({ data: { characterId: created.id } });
     await syncTags(tx, created.id, body.tags);
-    return tx.character.findUniqueOrThrow({ where: { id: created.id }, include: officialInclude });
+    return tx.character.findUniqueOrThrow({
+      where: { id: created.id },
+      include: officialInclude,
+    });
   });
 
   await writeAudit(request, actor, {
@@ -293,16 +278,26 @@ export async function createOfficialCharacter(request: Request): Promise<Respons
     targetType: "character",
     targetId: character.id,
     reason: body.reason,
-    after: { name: character.name, status: character.status, source: character.source },
+    after: {
+      name: character.name,
+      status: character.status,
+      source: character.source,
+    },
   });
   return ok({ character });
 }
 
-export async function updateOfficialCharacter(request: Request, id: string): Promise<Response> {
+export async function updateOfficialCharacter(
+  request: Request,
+  id: string,
+): Promise<Response> {
   const actor = await actorWithPermission(request, OFFICIAL_PERMISSION);
   const body = updateSchema.parse(await jsonBody(request));
 
-  const existing = await prisma.character.findUnique({ where: { id }, include: officialInclude });
+  const existing = await prisma.character.findUnique({
+    where: { id },
+    include: officialInclude,
+  });
   if (!existing || existing.source !== "official" || existing.deletedAt) {
     throw Errors.notFound("Official character not found");
   }
@@ -320,7 +315,9 @@ export async function updateOfficialCharacter(request: Request, id: string): Pro
   };
 
   const textChanged =
-    body.name !== undefined || body.description !== undefined || body.advancedDetails !== undefined;
+    body.name !== undefined ||
+    body.description !== undefined ||
+    body.advancedDetails !== undefined;
   const visualIdentityChanged =
     body.name !== undefined ||
     body.age !== undefined ||
@@ -368,21 +365,28 @@ export async function updateOfficialCharacter(request: Request, id: string): Pro
       await syncTags(tx, id, body.tags);
     }
     if (visualIdentityChanged) {
-      await createActiveCharacterVisualProfileVersion(tx, {
-        id,
-        name: next.name,
-        age: next.age,
-        description: next.description,
-        style: next.style,
-        gender: next.gender,
-        appearance: next.appearance as Prisma.JsonValue,
-        advancedDetails: next.advancedDetails as Prisma.JsonValue,
-        imageAssetId: existing.imageAssetId,
-      }, {
-        createdFrom: "admin_official_update",
-      });
+      await createActiveCharacterVisualProfileVersion(
+        tx,
+        {
+          id,
+          name: next.name,
+          age: next.age,
+          description: next.description,
+          style: next.style,
+          gender: next.gender,
+          appearance: next.appearance as Prisma.JsonValue,
+          advancedDetails: next.advancedDetails as Prisma.JsonValue,
+          imageAssetId: existing.imageAssetId,
+        },
+        {
+          createdFrom: "admin_official_update",
+        },
+      );
     }
-    return tx.character.findUniqueOrThrow({ where: { id }, include: officialInclude });
+    return tx.character.findUniqueOrThrow({
+      where: { id },
+      include: officialInclude,
+    });
   });
 
   await writeAudit(request, actor, {
@@ -406,35 +410,116 @@ export async function updateOfficialCharacter(request: Request, id: string): Pro
   return ok({ character });
 }
 
-export async function setOfficialState(request: Request, id: string): Promise<Response> {
+export async function setOfficialState(
+  request: Request,
+  id: string,
+): Promise<Response> {
   const actor = await actorWithPermission(request, OFFICIAL_PERMISSION);
+  // V1 is only an adapter after the v2 authority cutover. Re-check the stronger
+  // release permission so legacy content.write grants cannot indirectly publish.
+  await actorWithPermission(request, "character.release.publish");
   const body = stateSchema.parse(await jsonBody(request));
 
-  const existing = await prisma.character.findUnique({ where: { id }, include: officialInclude });
+  const existing = await prisma.character.findUnique({
+    where: { id },
+    include: officialInclude,
+  });
   if (!existing || existing.source !== "official" || existing.deletedAt) {
     throw Errors.notFound("Official character not found");
   }
-  if (body.status === "approved") {
-    const missing = releaseCheckMissing(existing);
-    if (missing.length > 0) {
-      throw Errors.badRequest("Character release checks are incomplete", { missing });
-    }
+  const serving = await prisma.characterServing.findUnique({
+    where: { characterId: id },
+  });
+  if (!serving) {
+    throw Errors.badRequest(
+      "Character has not completed the v2 Release backfill",
+      {
+        repairDeepLink: `/admin/characters/${id}?tab=overview`,
+      },
+    );
   }
 
-  const after = await prisma.character.update({
-    where: { id },
-    data:
-      body.status === "approved"
-        ? { status: "approved", visibility: "public" }
-        : { status: "archived", visibility: "private" },
-  });
-  await writeAudit(request, actor, {
-    action: "content.official.publish",
-    targetType: "character",
-    targetId: id,
+  let commandType:
+    | "character.release.publish"
+    | "character.serving.pause"
+    | "character.serving.resume";
+  let target: { type: string; id: string };
+  let expectedVersion: number;
+  if (body.status === "archived") {
+    commandType = "character.serving.pause";
+    target = { type: "character_serving", id };
+    expectedVersion = serving.version;
+  } else if (serving.state === "paused" && serving.currentReleaseId) {
+    commandType = "character.serving.resume";
+    target = { type: "character_serving", id };
+    expectedVersion = serving.version;
+  } else {
+    const candidateId = serving.scheduledReleaseId;
+    const candidate = candidateId
+      ? await prisma.characterRelease.findUnique({ where: { id: candidateId } })
+      : await prisma.characterRelease.findFirst({
+          where: {
+            projectId: {
+              in: (
+                await prisma.characterProject.findMany({
+                  where: { characterId: id },
+                  select: { id: true },
+                })
+              ).map((project) => project.id),
+            },
+            status: "approved",
+          },
+          orderBy: { createdAt: "desc" },
+        });
+    if (!candidate) {
+      throw Errors.badRequest(
+        "V1 publish requires an approved v2 Release candidate",
+        {
+          repairDeepLink: `/admin/characters/${id}?tab=overview`,
+        },
+      );
+    }
+    commandType = "character.release.publish";
+    target = { type: "character_release", id: candidate.id };
+    expectedVersion = candidate.version;
+  }
+
+  const requestId = request.headers.get("x-request-id")?.trim() || randomUUID();
+  const accepted = await acceptControlPlaneCommand(prisma, {
+    environment: env.APP_ENV,
+    actor,
+    idempotencyKey:
+      request.headers.get("idempotency-key")?.trim() ||
+      `v1-official-state:${id}:${expectedVersion}:${body.status}`,
+    commandType,
+    target,
+    expectedVersion,
+    payload: { reason: body.reason, legacyAdapter: "official.state.v1" },
+    retryMode: "idempotent",
     reason: body.reason,
-    before: { status: existing.status },
-    after: { status: after.status },
+    requestId,
   });
-  return ok({ character: { id: after.id, status: after.status, visibility: after.visibility } });
+  const executed = await executeCharacterReleaseCommand(prisma, {
+    commandId: accepted.commandId,
+    workerId: `v1-inline:${requestId}`,
+  });
+  if (executed.status !== "succeeded") {
+    const command = await prisma.controlPlaneCommand.findUnique({
+      where: { id: accepted.commandId },
+    });
+    throw Errors.badRequest("Authoritative Character Release command failed", {
+      commandId: accepted.commandId,
+      error: command?.error ?? { code: executed.errorCode ?? "unknown" },
+      repairDeepLink: `/admin/characters/${id}?tab=overview`,
+    });
+  }
+  const after = await prisma.character.findUniqueOrThrow({ where: { id } });
+  return ok({
+    character: {
+      id: after.id,
+      status: after.status,
+      visibility: after.visibility,
+    },
+    commandId: accepted.commandId,
+  });
 }

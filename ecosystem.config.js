@@ -120,5 +120,17 @@ module.exports = {
         ...mainRedisEnv,
       },
     },
+    // medium · async — authoritative Admin command execution and lease recovery
+    {
+      name: "admin-command-worker",
+      cwd: dir("packages/main"),
+      script: "node_modules/tsx/dist/cli.mjs",
+      args: "src/processes/admin-command-worker.ts",
+      exec_mode: "fork",
+      instances: 1,
+      env: {
+        ...mainRedisEnv,
+      },
+    },
   ],
 };

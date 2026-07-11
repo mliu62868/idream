@@ -7,6 +7,8 @@ import {
   approvalBindingSchema,
   ADMIN_METRIC_REGISTRY,
   characterProjectSchema,
+  characterReleaseRollbackCommandRequestSchema,
+  characterReleaseScheduleCommandRequestSchema,
   characterReleaseSchema,
   creativeRunSchema,
   deriveCreativeExecutionOutcome,
@@ -118,6 +120,27 @@ describe("Admin API v2 public contracts", () => {
         ...fixture,
         visualIdentity: { ...fixture.visualIdentity, anchorAssetId: null },
       }).success,
+    ).toBe(false);
+  });
+
+  it("requires an exact future-shaped timestamp for schedule and rejects extra rollback payload", () => {
+    const base = {
+      entityVersion: 3,
+      reason: { code: "operator_verified", summary: "Verified release command" },
+      confirmation: "character:release:schedule",
+    };
+    expect(
+      characterReleaseScheduleCommandRequestSchema.safeParse({
+        ...base,
+        scheduledAt: "2026-07-20T12:00:00.000Z",
+      }).success,
+    ).toBe(true);
+    expect(
+      characterReleaseScheduleCommandRequestSchema.safeParse({ ...base, scheduledAt: "tomorrow" }).success,
+    ).toBe(false);
+    expect(characterReleaseRollbackCommandRequestSchema.safeParse(base).success).toBe(true);
+    expect(
+      characterReleaseRollbackCommandRequestSchema.safeParse({ ...base, sourceReleaseId: "hidden-body-target" }).success,
     ).toBe(false);
   });
 

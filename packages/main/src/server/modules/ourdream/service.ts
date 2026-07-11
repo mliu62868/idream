@@ -19,6 +19,10 @@ import {
   type IdentityTraits,
 } from "@/server/modules/ourdream/identity-assembler";
 import { isReusablePlatformAssetWhere } from "@/server/modules/ourdream/chat-image-reuse";
+import {
+  characterVisualProfileSnapshotHash,
+  referenceSetSnapshotHash,
+} from "@/server/modules/admin-v2/characters/release-snapshot";
 import { proxyChatRequest } from "@/server/bff/chat-proxy";
 import { jobQueue } from "@/server/jobs/queue";
 import { MAIN_TO_CHAT_QUEUE, MAIN_TO_CHAT_EVENTS, idempotencyKeys } from "@idream/shared/contracts";
@@ -1697,14 +1701,15 @@ export function characterVisualProfileCreateData(input: {
     style: toTraitRecord(styleTraits),
   };
   const { identityPrompt, traitsHash } = assembleIdentityPrompt(traits);
+  const negativeIdentityPrompt =
+    "different face, different hairstyle, different eye color, identity drift, inconsistent age presentation";
   return {
     characterId: input.characterId,
     version: input.version,
     status: input.status,
     style: input.style,
     identityPrompt,
-    negativeIdentityPrompt:
-      "different face, different hairstyle, different eye color, identity drift, inconsistent age presentation",
+    negativeIdentityPrompt,
     faceTraits: toInputJson(faceTraits),
     hairTraits: toInputJson(hairTraits),
     bodyTraits: toInputJson(bodyTraits),
@@ -1716,6 +1721,20 @@ export function characterVisualProfileCreateData(input: {
     adapterRefs: toInputJson({
       identity: { traitsHash, assemblerVersion: IDENTITY_ASSEMBLER_VERSION, source: "derived" },
     }),
+    immutableHash: characterVisualProfileSnapshotHash({
+      version: input.version,
+      style: input.style,
+      identityPrompt,
+      negativeIdentityPrompt,
+      faceTraits,
+      hairTraits,
+      bodyTraits,
+      signatureTraits,
+      styleTraits,
+      anchorAssetIds: input.anchorAssetIds,
+      referenceAssetIds: input.referenceAssetIds ?? [],
+    }),
+    evidenceState: "candidate",
     createdFrom: input.createdFrom,
   };
 }
@@ -2355,6 +2374,9 @@ async function createReferenceSetRevision(
     select: { id: true },
   });
   const existingAssetIds = new Set(existingAssets.map((asset) => asset.id));
+  const availableReferences = proposedReferences.filter((reference) =>
+    existingAssetIds.has(reference.mediaAssetId),
+  );
   const latest = await tx.referenceSetRevision.aggregate({
     where: { visualProfileId: profile.id },
     _max: { revision: true },
@@ -2370,10 +2392,14 @@ async function createReferenceSetRevision(
       status: "active",
       selectorVersion: "v1",
       createdFrom,
+      snapshotHash: referenceSetSnapshotHash({
+        visualProfileId: profile.id,
+        revision: (latest._max.revision ?? 0) + 1,
+        selectorVersion: "v1",
+        references: availableReferences,
+      }),
       references: {
-        create: proposedReferences
-          .filter((reference) => existingAssetIds.has(reference.mediaAssetId))
-          .map((reference) => ({
+        create: availableReferences.map((reference) => ({
             ...reference,
             selectorVersion: "v1",
           })),

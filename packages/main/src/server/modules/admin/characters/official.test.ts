@@ -6,7 +6,18 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ZodError } from "zod";
 import { prisma } from "@/server/lib/db";
 import { AppError } from "@/server/lib/errors";
-import { createCharacter, createMedia, createUser, purgeTestData } from "@/server/test/helpers";
+import {
+  createCharacter,
+  createMedia,
+  createUser,
+  purgeTestData,
+} from "@/server/test/helpers";
+import {
+  characterReleaseSnapshotHash,
+  characterVisualProfileSnapshotHash,
+  referenceSetSnapshotHash,
+} from "@/server/modules/admin-v2/characters/release-snapshot";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "@/server/modules/admin-v2/characters/release-executor";
 import {
   createOfficialCharacter,
   listOfficialCharacters,
@@ -45,14 +56,31 @@ async function call(handler: Promise<Response>): Promise<CallResult> {
   try {
     const res = await handler;
     const text = await res.text();
-    const json = text ? (JSON.parse(text) as { ok?: boolean; data?: Record<string, unknown> }) : null;
-    return { status: res.status, ok: Boolean(json?.ok), data: json?.data, errorCode: undefined };
+    const json = text
+      ? (JSON.parse(text) as { ok?: boolean; data?: Record<string, unknown> })
+      : null;
+    return {
+      status: res.status,
+      ok: Boolean(json?.ok),
+      data: json?.data,
+      errorCode: undefined,
+    };
   } catch (error) {
     if (error instanceof AppError) {
-      return { status: error.status, ok: false, data: undefined, errorCode: error.code };
+      return {
+        status: error.status,
+        ok: false,
+        data: undefined,
+        errorCode: error.code,
+      };
     }
     if (error instanceof ZodError) {
-      return { status: 400, ok: false, data: undefined, errorCode: "bad_request" };
+      return {
+        status: 400,
+        ok: false,
+        data: undefined,
+        errorCode: "bad_request",
+      };
     }
     throw error;
   }
@@ -96,7 +124,9 @@ describe("official character CMS", () => {
     expect(result.errorCode).toBe("forbidden");
 
     const listResult = await call(
-      listOfficialCharacters(makeRequest("GET", "", { userId: ops, role: "ops" })),
+      listOfficialCharacters(
+        makeRequest("GET", "", { userId: ops, role: "ops" }),
+      ),
     );
     expect(listResult.status).toBe(403);
   });
@@ -128,7 +158,12 @@ describe("official character CMS", () => {
       visibility: string;
       systemPrompt: string | null;
       tags: { tag: { slug: string } }[];
-      visualProfiles: { id: string; version: number; status: string; createdFrom: string }[];
+      visualProfiles: {
+        id: string;
+        version: number;
+        status: string;
+        createdFrom: string;
+      }[];
     };
     expect(character.source).toBe("official");
     expect(character.status).toBe("draft");
@@ -160,7 +195,10 @@ describe("official character CMS", () => {
       visualProfile: { version: number; status: string } | null;
     }[];
     const listed = items.find((c) => c.id === character.id);
-    expect(listed?.visualProfile).toMatchObject({ version: 1, status: "active" });
+    expect(listed?.visualProfile).toMatchObject({
+      version: 1,
+      status: "active",
+    });
   });
 
   it("versions the visual profile when official identity fields change", async () => {
@@ -189,7 +227,8 @@ describe("official character CMS", () => {
           userId: admin,
           role: "admin",
           body: {
-            description: "An official companion with silver hair and amber eyes.",
+            description:
+              "An official companion with silver hair and amber eyes.",
             reason: "refresh visual identity",
           },
         }),
@@ -202,7 +241,9 @@ describe("official character CMS", () => {
       where: { characterId: id },
       orderBy: { version: "asc" },
     });
-    expect(profiles.map((profile) => [profile.version, profile.status])).toEqual([
+    expect(
+      profiles.map((profile) => [profile.version, profile.status]),
+    ).toEqual([
       [1, "archived"],
       [2, "active"],
     ]);
@@ -257,14 +298,22 @@ describe("official character CMS", () => {
   it("returns 404 when updating a non-official (user) character", async () => {
     const admin = await seedActor("admin", "update404");
     const userChar = `${P}user-char`;
-    await createCharacter({ id: userChar, name: "User Character", visibility: "public", status: "approved" });
+    await createCharacter({
+      id: userChar,
+      name: "User Character",
+      visibility: "public",
+      status: "approved",
+    });
 
     const result = await call(
       updateOfficialCharacter(
         makeRequest("PATCH", `/${userChar}`, {
           userId: admin,
           role: "admin",
-          body: { description: "trying to hijack a user character", reason: "should 404" },
+          body: {
+            description: "trying to hijack a user character",
+            reason: "should 404",
+          },
         }),
         userChar,
       ),
@@ -298,7 +347,8 @@ describe("official character CMS", () => {
             age: 26,
             gender: "female",
             style: "realistic",
-            description: "An official companion used to verify publish/archive.",
+            description:
+              "An official companion used to verify publish/archive.",
             reason: "seed for state toggle",
           },
         }),
@@ -311,21 +361,30 @@ describe("official character CMS", () => {
         makeRequest("POST", `/${id}/state`, {
           userId: admin,
           role: "admin",
-          body: { status: "approved", reason: "should not release incomplete draft" },
+          body: {
+            status: "approved",
+            reason: "should not release incomplete draft",
+          },
         }),
         id,
       ),
     );
     expect(incomplete.status).toBe(400);
 
-    const media = await createMedia({ id: `${P}release-media`, ownerId: admin, visibility: "public" });
+    const media = await createMedia({
+      id: `${P}release-media`,
+      ownerId: admin,
+      visibility: "public",
+    });
     await updateOfficialCharacter(
       makeRequest("PATCH", `/${id}`, {
         userId: admin,
         role: "admin",
         body: {
           tags: ["complete"],
-          appearance: { visualBrief: "Warm cinematic portrait with a stable silhouette." },
+          appearance: {
+            visualBrief: "Warm cinematic portrait with a stable silhouette.",
+          },
           advancedDetails: {
             personality: "composed, observant",
             firstMessage: "You made it. Sit down and tell me what happened.",
@@ -341,9 +400,145 @@ describe("official character CMS", () => {
     });
     await prisma.characterVisualProfile.update({
       where: { id: activeProfile.id },
-      data: { anchorAssetIds: [media.id] },
+      data: {
+        anchorAssetIds: [media.id],
+        immutableHash: characterVisualProfileSnapshotHash({
+          ...activeProfile,
+          anchorAssetIds: [media.id],
+        }),
+        evidenceState: "qualified",
+      },
     });
-    await prisma.character.update({ where: { id }, data: { imageAssetId: media.id } });
+    await prisma.character.update({
+      where: { id },
+      data: { imageAssetId: media.id },
+    });
+
+    const contentVersion = await prisma.characterContentVersion.create({
+      data: {
+        id: `${P}publish-content`,
+        characterId: id,
+        version: 1,
+        contentHash: `${P}publish-content-hash`,
+        personaSnapshot: {
+          systemPrompt: "Stay in persona.",
+          description: "Complete release.",
+        },
+        openingSnapshot: {
+          firstMessage: "You made it. Sit down and tell me what happened.",
+        },
+        appearanceSnapshot: { style: "realistic" },
+        sourceType: "test",
+      },
+    });
+    const project = await prisma.characterProject.create({
+      data: {
+        id: `${P}publish-project`,
+        characterId: id,
+        phase: "launch_ready",
+        audience: { segment: "test" },
+        successCriteria: ["healthy release"],
+        activeKey: `official:${id}`,
+      },
+    });
+    const revision = await prisma.characterRevision.create({
+      data: {
+        id: `${P}publish-revision`,
+        projectId: project.id,
+        revision: 1,
+        characterContentVersionId: contentVersion.id,
+        projectSnapshot: {},
+      },
+    });
+    const referenceSet = await prisma.referenceSetRevision.create({
+      data: {
+        id: `${P}publish-reference-set`,
+        visualProfileId: activeProfile.id,
+        revision: 1,
+        status: "active",
+        selectorVersion: "v2",
+        snapshotHash: referenceSetSnapshotHash({
+          visualProfileId: activeProfile.id,
+          revision: 1,
+          selectorVersion: "v2",
+          references: [
+            {
+              mediaAssetId: media.id,
+              position: 0,
+              role: "primary_face",
+              weight: 1,
+            },
+          ],
+        }),
+        createdFrom: "test",
+        references: {
+          create: {
+            mediaAssetId: media.id,
+            position: 0,
+            role: "primary_face",
+            selectionReason: "test evidence",
+          },
+        },
+      },
+    });
+    const routeFingerprint = `${P}publish-route`;
+    await prisma.generationRouteQualification.create({
+      data: {
+        routeFingerprint,
+        generationProfileKey: "portrait",
+        generationProfileVersion: 1,
+        workflowKey: "identity",
+        workflowVersion: 1,
+        style: "realistic",
+        matrixKey: "default-character",
+        sampleCount: 40,
+        passCount: 38,
+        identityMatch: 0.95,
+        result: "qualified",
+        evidence: { reviewer: admin },
+        policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+      },
+    });
+    const generationProvenance = {
+      routeFingerprint,
+      generationProfileKey: "portrait",
+      generationProfileVersion: 1,
+      workflowKey: "identity",
+      workflowVersion: 1,
+      characterQa: { status: "passed", evidenceRef: `${P}publish-qa` },
+    };
+    const releasePlacementManifest = {
+      placements: [
+        { slotKey: "character_avatar", slotVersion: 1, assetId: media.id },
+      ],
+    };
+    const releaseSnapshot = {
+      projectId: project.id,
+      revisionId: revision.id,
+      characterContentVersionId: contentVersion.id,
+      visualProfileId: activeProfile.id,
+      visualProfileVersion: activeProfile.version,
+      referenceSetRevisionId: referenceSet.id,
+      generationProvenance,
+      releasePlacementManifest,
+    };
+    const release = await prisma.characterRelease.create({
+      data: {
+        id: `${P}publish-release`,
+        ...releaseSnapshot,
+        snapshotHash: characterReleaseSnapshotHash(releaseSnapshot),
+        status: "approved",
+        readiness: "ready",
+      },
+    });
+    await prisma.characterServing.create({
+      data: {
+        characterId: id,
+        state: "inactive",
+        scheduledReleaseId: release.id,
+        scheduledAt: new Date(),
+      },
+    });
 
     // draft -> approved (first public release)
     const published = await call(
@@ -357,7 +552,10 @@ describe("official character CMS", () => {
       ),
     );
     expect(published.ok).toBe(true);
-    expect(published.data?.character).toMatchObject({ status: "approved", visibility: "public" });
+    expect(published.data?.character).toMatchObject({
+      status: "approved",
+      visibility: "public",
+    });
 
     // approved -> archived (disappears from public feed)
     const archived = await call(
@@ -371,38 +569,47 @@ describe("official character CMS", () => {
       ),
     );
     expect(archived.ok).toBe(true);
-    expect((archived.data?.character as { status: string }).status).toBe("archived");
+    expect((archived.data?.character as { status: string }).status).toBe(
+      "archived",
+    );
 
-    await prisma.character.update({ where: { id }, data: { imageAssetId: null } });
-    const invalidRepublish = await call(
+    await prisma.character.update({
+      where: { id },
+      data: { imageAssetId: null },
+    });
+    const resumedFromAuthority = await call(
       setOfficialState(
         makeRequest("POST", `/${id}/state`, {
           userId: admin,
           role: "admin",
-          body: { status: "approved", reason: "must revalidate archived release" },
+          body: {
+            status: "approved",
+            reason: "resume the pinned release snapshot",
+          },
         }),
         id,
       ),
     );
-    expect(invalidRepublish.status).toBe(400);
-    await prisma.character.update({ where: { id }, data: { imageAssetId: media.id } });
-
-    // archived -> approved (back live)
-    const republished = await call(
-      setOfficialState(
-        makeRequest("POST", `/${id}/state`, {
-          userId: admin,
-          role: "admin",
-          body: { status: "approved", reason: "bring back live" },
-        }),
-        id,
-      ),
-    );
-    expect(republished.ok).toBe(true);
-    expect((republished.data?.character as { status: string }).status).toBe("approved");
+    expect(resumedFromAuthority.ok).toBe(true);
+    expect(
+      (resumedFromAuthority.data?.character as { status: string }).status,
+    ).toBe("approved");
+    expect(
+      (await prisma.character.findUniqueOrThrow({ where: { id } }))
+        .imageAssetId,
+    ).toBe(media.id);
 
     const audits = await prisma.adminAuditLog.count({
-      where: { action: "content.official.publish", targetId: id },
+      where: {
+        actorId: admin,
+        action: {
+          in: [
+            "character.release.publish.executed",
+            "character.serving.pause.executed",
+            "character.serving.resume.executed",
+          ],
+        },
+      },
     });
     expect(audits).toBe(3);
   });

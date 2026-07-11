@@ -4,6 +4,8 @@ import {
   adminCommandHeadersSchema,
   caseCloseCommandRequestSchema,
   characterReleasePublishCommandRequestSchema,
+  characterReleaseRollbackCommandRequestSchema,
+  characterReleaseScheduleCommandRequestSchema,
   creativeRunRetryFailedCommandRequestSchema,
   incidentResolveCommandRequestSchema,
   type AdminCommandRequest,
@@ -21,6 +23,7 @@ import {
   acceptControlPlaneCommand,
   IdempotencyConflictError,
 } from "../shared/control-plane-command";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "../characters/release-executor";
 
 type JsonObject = Record<string, unknown>;
 
@@ -248,7 +251,7 @@ const publishReleaseDefinition = {
   commandType: "character.release.publish",
   targetType: "character_release",
   permission: "character.release.publish",
-  retryMode: "non_replayable",
+  retryMode: "idempotent",
 } as const satisfies CommandDefinition;
 
 export function publishCharacterRelease(request: Request, characterId: string, releaseId: string) {
@@ -271,13 +274,89 @@ export function publishCharacterRelease(request: Request, characterId: string, r
     });
     const blockers: Array<{ code: string; message: string }> = [];
     if (release.status !== "approved") blockers.push({ code: "release_not_approved", message: "Release must be approved before publish." });
-    if (!validation || validation.result !== "passed" || validation.snapshotHash !== release.snapshotHash) {
+    if (
+      !validation ||
+      validation.result !== "passed" ||
+      validation.snapshotHash !== release.snapshotHash ||
+      validation.policyVersion !== CHARACTER_RELEASE_POLICY_VERSION
+    ) {
       blockers.push({ code: "release_validation_stale", message: "A passing validation for the current snapshot is required." });
     }
     if (blockers.length > 0) {
       throw new InvariantFailedError(blockers, `/admin/characters/${characterId}?releaseId=${releaseId}`);
     }
     return acceptCommand({ actor, parsed, definition: publishReleaseDefinition, targetId: releaseId });
+  });
+}
+
+const scheduleReleaseDefinition = {
+  commandType: "character.release.schedule",
+  targetType: "character_release",
+  permission: "character.release.publish",
+  retryMode: "idempotent",
+} as const satisfies CommandDefinition;
+
+export function scheduleCharacterRelease(request: Request, characterId: string, releaseId: string) {
+  return commandResponse(request, async () => {
+    const actor = await actorWithPermission(request, scheduleReleaseDefinition.permission);
+    const parsed = await parseCommand(request, characterReleaseScheduleCommandRequestSchema);
+    requireConfirmation(parsed.body.confirmation, `${characterId}:${releaseId}:schedule`);
+    const release = await prisma.characterRelease.findUnique({ where: { id: releaseId } });
+    if (!release) throw Errors.notFound("Character release not found", { releaseId });
+    const project = await prisma.characterProject.findUnique({ where: { id: release.projectId } });
+    if (!project || project.characterId !== characterId) {
+      throw Errors.notFound("Character release not found for character", { characterId, releaseId });
+    }
+    if (release.version !== parsed.body.entityVersion) {
+      return versionConflict(parsed.requestId, { id: release.id, status: release.status, version: release.version }, parsed.body.entityVersion);
+    }
+    const scheduledAt = new Date(parsed.body.scheduledAt);
+    if (release.status !== "approved" || scheduledAt.getTime() <= Date.now()) {
+      throw new InvariantFailedError(
+        [{ code: "release_not_schedulable", message: "Release must be approved and scheduled in the future." }],
+        `/admin/characters/${characterId}?releaseId=${releaseId}`,
+      );
+    }
+    parsed.payload.scheduledAt = parsed.body.scheduledAt;
+    return acceptCommand({ actor, parsed, definition: scheduleReleaseDefinition, targetId: releaseId });
+  });
+}
+
+const rollbackReleaseDefinition = {
+  commandType: "character.release.rollback",
+  targetType: "character_serving",
+  permission: "character.release.publish",
+  retryMode: "idempotent",
+} as const satisfies CommandDefinition;
+
+export function rollbackCharacterRelease(request: Request, characterId: string, sourceReleaseId: string) {
+  return commandResponse(request, async () => {
+    const actor = await actorWithPermission(request, rollbackReleaseDefinition.permission);
+    const parsed = await parseCommand(request, characterReleaseRollbackCommandRequestSchema);
+    requireConfirmation(parsed.body.confirmation, `${characterId}:${sourceReleaseId}:rollback`);
+    const source = await prisma.characterRelease.findUnique({ where: { id: sourceReleaseId } });
+    if (!source) throw Errors.notFound("Rollback source Release not found", { sourceReleaseId });
+    const project = await prisma.characterProject.findUnique({ where: { id: source.projectId } });
+    if (!project || project.characterId !== characterId) {
+      throw Errors.notFound("Rollback source Release not found for character", { characterId, sourceReleaseId });
+    }
+    const serving = await prisma.characterServing.findUnique({ where: { characterId } });
+    if (!serving) throw Errors.notFound("Character serving authority not found", { characterId });
+    if (serving.version !== parsed.body.entityVersion) {
+      return versionConflict(
+        parsed.requestId,
+        { characterId, currentReleaseId: serving.currentReleaseId, version: serving.version },
+        parsed.body.entityVersion,
+      );
+    }
+    if (serving.currentReleaseId === sourceReleaseId) {
+      throw new InvariantFailedError(
+        [{ code: "rollback_source_is_current", message: "Rollback source is already serving." }],
+        `/admin/characters/${characterId}?releaseId=${sourceReleaseId}`,
+      );
+    }
+    parsed.payload.sourceReleaseId = sourceReleaseId;
+    return acceptCommand({ actor, parsed, definition: rollbackReleaseDefinition, targetId: characterId });
   });
 }
 

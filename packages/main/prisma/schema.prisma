@@ -248,6 +248,8 @@ model CharacterVisualProfile {
   adapterRefs            Json
   qualityScore           Float?
   consistencyScore       Float?
+  immutableHash          String?
+  evidenceState          String                 @default("legacy_candidate")
   createdFrom            String
   createdAt              DateTime               @default(now())
   updatedAt              DateTime               @updatedAt
@@ -296,6 +298,7 @@ model ReferenceSetRevision {
   selectorVersion     String                             @default("v1")
   createdFrom         String
   availableAtSnapshot DateTime                           @default(now())
+  snapshotHash        String?
   createdAt           DateTime                           @default(now())
   visualProfile       CharacterVisualProfile             @relation(fields: [visualProfileId], references: [id], onDelete: Cascade)
   references          CharacterVisualReferenceSnapshot[]
@@ -1364,12 +1367,14 @@ model CharacterRelease {
   projectId                 String
   revisionId                String
   characterContentVersionId String
-  visualProfileId           String
-  visualProfileVersion      Int
-  referenceSetRevisionId    String
+  visualProfileId           String?
+  visualProfileVersion      Int?
+  referenceSetRevisionId    String?
   generationProvenance      Json
   releasePlacementManifest  Json
   snapshotHash              String
+  readiness                 String    @default("unknown")
+  legacy                    Boolean   @default(false)
   status                    String    @default("draft")
   publishedAt               DateTime?
   supersedesId              String?
@@ -1378,7 +1383,7 @@ model CharacterRelease {
   createdAt                 DateTime  @default(now())
   updatedAt                 DateTime  @updatedAt
 
-  @@unique([projectId, snapshotHash])
+  @@index([projectId, snapshotHash])
   @@index([projectId, status])
   @@index([characterContentVersionId])
   @@index([visualProfileId, visualProfileVersion])
@@ -1425,6 +1430,24 @@ model ReleaseCheckResult {
 
   @@unique([validationRunId, checkKey])
   @@map("release_check_results")
+}
+
+model CharacterReleaseEvent {
+  id          String   @id @default(cuid())
+  releaseId   String
+  characterId String
+  type        String
+  actorId     String?
+  commandId   String?  @unique
+  reason      String?
+  fromState   Json
+  toState     Json
+  evidence    Json
+  occurredAt  DateTime @default(now())
+
+  @@index([releaseId, occurredAt])
+  @@index([characterId, occurredAt])
+  @@map("character_release_events")
 }
 
 model ReleaseMonitor {
@@ -1694,6 +1717,7 @@ model ControlPlaneCommand {
   actorId             String
   requestId           String
   requestHash         String
+  requestPayload      Json
   expectedVersion     Int?
   approvalId          String?
   retryMode           String    @default("non_replayable")
@@ -1714,6 +1738,47 @@ model ControlPlaneCommand {
   @@index([status, leaseExpiresAt])
   @@index([targetType, targetId, createdAt])
   @@map("control_plane_commands")
+}
+
+model AdminBackfillRun {
+  id          String    @id @default(cuid())
+  domain      String
+  mode        String
+  status      String    @default("running")
+  cursor      String?
+  stopAtId    String?
+  batchSize   Int
+  optionsHash String
+  before      Json
+  after       Json
+  summary     Json
+  report      Json?
+  reportHash  String?
+  startedAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  finishedAt  DateTime?
+
+  @@index([domain, status, updatedAt])
+  @@map("admin_backfill_runs")
+}
+
+model AdminBackfillItem {
+  id             String   @id @default(cuid())
+  runId          String
+  entityType     String
+  entityId       String
+  classification String
+  action         String
+  before         Json
+  after          Json
+  mismatches     Json
+  checksum       String
+  applied        Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  @@unique([runId, entityType, entityId])
+  @@index([entityType, entityId, createdAt])
+  @@map("admin_backfill_items")
 }
 
 model ControlPlaneCommandAttempt {

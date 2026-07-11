@@ -36,6 +36,16 @@
 
 本批次是方案的可运行第一阶段，不代表 90 天蓝图全部 cutover：历史 backfill/shadow、四个已接收 command 的领域 executor 与结果 verification、Character/Creative 等剩余领域接入 Today、Case/Incident 全工作流、canonical metric facts、Admin BFF 源码解耦和生产 canary 仍按 `REMAINING_WORK_EXECUTION_PLAN.md` 推进；这些能力完成前不得宣布 §24/§24.5 的最终 Go。
 
+## 2026-07-11 管理后台修复实施批次 2（Character Release / Visual Identity M3 vertical slice）
+
+- Character/Release/Visual Identity 历史迁移已具备持久化 dry-run、keyset cursor、batch pause/resume、幂等 apply/reapply 与 before/after/mismatch hash report。所有 Character 获得不可变 ContentVersion；官方角色获得 Project/Revision/Serving。approved/public 历史角色保持 live，不因迁移自动下线；缺失 exact Visual/Reference/Route/QA 证据时明确为 `legacy + readiness=blocked` 并进入 reconciliation。
+- Visual Identity 历史引用只在真实 MediaAsset 存在时形成 candidate 和 immutable ReferenceSet snapshot；旧 quality/consistency 分数不会反推 `GenerationRouteQualification=qualified`。新 profile/reference snapshot 同步写 immutable hash，发布门要求当前 policy 下完全匹配 route fingerprint、至少 40 samples 与 Identity Match ≥90%。
+- Character command executor 已覆盖 schedule/publish/rollback，以及 V1 adapter 所需的 pause/resume。schedule/publish 每次重跑 fresh ValidationRun；publish 在一个事务中完成 Serving pointer swap、旧 Release supersede、legacy Character projection、ReleaseEvent、Audit、Outbox、24h/72h monitor 与 command verification。rollback 克隆完整历史 snapshot 为新 Release，不重激活旧行。
+- V1 `setOfficialState` 已退出独立写 authority：它重新检查 release permission，接受同一 `ControlPlaneCommand` 并调用同一 executor。schedule/rollback v2 Route Handler 与常驻 Admin command worker 已接线。
+- 迁移已通过 fresh deploy/redeploy，以及 560f7900 当前 schema 显式 baseline applied 后的 forward deploy/redeploy；反例覆盖 dry-run 无副作用、断点续跑/重跑无重复、legacy incomplete 保持 live、tampered snapshot、policy drift、跨版本冲突与完整 rollback。证据见 [`2026-07-11-admin-phase2-character-release-backfill.md`](../product-audits/2026-07-11-admin-phase2-character-release-backfill.md)。
+
+本纵切仍不等于完整 Character Phase 2/3 cutover：Project autosave/conflict UI、真实 preview diff/Portfolio、qualification eval/stale dispatcher、Chat Session release pin/migration 和 monitor fact collector 仍待完成。
+
 ## 2026-07-10 角色运营项目工作台
 
 - 官方角色创建由“创建即 approved/public”改为 `draft/private`；首次发布是独立操作，并由服务端强制检查 tags、Persona、首条消息、视觉方向、active Visual Identity、参考图和已发布角色图。下架同步切为 `archived/private`。

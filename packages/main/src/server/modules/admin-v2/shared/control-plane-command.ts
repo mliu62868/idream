@@ -81,6 +81,7 @@ export async function acceptControlPlaneCommand(
           actorId: input.actor.id,
           requestId: input.requestId,
           requestHash,
+          requestPayload: toInputJson(input.payload),
           expectedVersion: input.expectedVersion,
           approvalId: input.approvalId,
           retryMode: input.retryMode ?? "non_replayable",

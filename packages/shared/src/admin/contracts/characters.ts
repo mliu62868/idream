@@ -12,6 +12,12 @@ import {
 } from "./common";
 
 export const characterReleasePublishCommandRequestSchema = adminCommandRequestSchema;
+export const characterReleaseScheduleCommandRequestSchema = adminCommandRequestSchema.extend({
+  scheduledAt: adminIsoDateTimeSchema,
+});
+// The URL identifies the immutable historical Release; entityVersion is the
+// CharacterServing version because rollback swaps that authority pointer.
+export const characterReleaseRollbackCommandRequestSchema = adminCommandRequestSchema;
 
 export const characterProjectPhaseSchema = z.enum([
   "idea",
@@ -186,4 +192,10 @@ export type CharacterPortfolioItem = z.infer<typeof characterPortfolioItemSchema
 export type CharacterPortfolioQuery = z.infer<typeof characterPortfolioQuerySchema>;
 export type CharacterReleasePublishCommandRequest = z.infer<
   typeof characterReleasePublishCommandRequestSchema
+>;
+export type CharacterReleaseScheduleCommandRequest = z.infer<
+  typeof characterReleaseScheduleCommandRequestSchema
+>;
+export type CharacterReleaseRollbackCommandRequest = z.infer<
+  typeof characterReleaseRollbackCommandRequestSchema
 >;

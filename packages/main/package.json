@@ -48,6 +48,8 @@
     "db:studio": "prisma studio",
     "start:finalizer": "tsx src/processes/finalizer.ts",
     "start:event-consumer": "tsx src/processes/event-consumer.ts",
+    "start:admin-command-worker": "tsx src/processes/admin-command-worker.ts",
+    "admin:backfill:characters": "tsx src/processes/admin-character-backfill.ts",
     "probe:age": "tsx src/server/probe-age-verification.ts",
     "probe:blob": "tsx src/server/probe-blob-storage.ts",
     "probe:catalog": "tsx src/server/probe-public-catalog.ts",
