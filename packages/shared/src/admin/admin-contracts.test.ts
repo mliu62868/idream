@@ -111,6 +111,7 @@ describe("Admin API v2 public contracts", () => {
       snapshotHash: "sha256:release",
       policyVersion: "release-policy-v2",
       status: "approved",
+      legacy: false,
       publishedAt: null,
       supersedesId: null,
       rollbackOfReleaseId: null,
