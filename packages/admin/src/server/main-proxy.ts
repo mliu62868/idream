@@ -28,6 +28,7 @@ const responseHopByHopHeaders = [
 
 export async function proxyToMain(request: Request, pathname: string): Promise<Response> {
   const startedAt = performance.now();
+  const surface = proxySurface(pathname);
   const incomingURL = new URL(request.url);
   const upstreamURL = new URL(pathname, `${mainWebURL}/`);
   upstreamURL.search = incomingURL.search;
@@ -50,14 +51,14 @@ export async function proxyToMain(request: Request, pathname: string): Promise<R
     });
     const responseHeaders = new Headers(upstream.headers);
     for (const name of responseHopByHopHeaders) responseHeaders.delete(name);
-    recordProxyMetrics(request.method, upstream.status < 500 ? "completed" : "upstream_error", startedAt);
+    recordProxyMetrics(request.method, upstream.status < 500 ? "completed" : "upstream_error", surface, startedAt);
     return new Response(upstream.body, {
       status: upstream.status,
       statusText: upstream.statusText,
       headers: responseHeaders,
     });
   } catch {
-    recordProxyMetrics(request.method, "unavailable", startedAt);
+    recordProxyMetrics(request.method, "unavailable", surface, startedAt);
     return Response.json(
       {
         ok: false,
@@ -71,8 +72,16 @@ export async function proxyToMain(request: Request, pathname: string): Promise<R
   }
 }
 
-function recordProxyMetrics(method: string, outcome: string, startedAt: number) {
-  const labels = { method, outcome };
+function proxySurface(pathname: string) {
+  if (pathname.startsWith("/api/v1/admin")) return "legacy_v1";
+  if (pathname.startsWith("/api/v2/admin")) return "admin_v2";
+  if (pathname.startsWith("/api/admin-auth")) return "auth";
+  if (pathname.startsWith("/user-content")) return "media";
+  return "other";
+}
+
+function recordProxyMetrics(method: string, outcome: string, surface: string, startedAt: number) {
+  const labels = { method, outcome, surface };
   incrementCounter(
     "admin_http_requests_total",
     "Requests handled by the Admin HTTP BFF",
@@ -84,4 +93,11 @@ function recordProxyMetrics(method: string, outcome: string, startedAt: number) 
     labels,
     Math.max(0, performance.now() - startedAt) / 1_000,
   );
+  if (surface === "legacy_v1") {
+    incrementCounter(
+      "admin_legacy_v1_requests_total",
+      "Legacy Admin v1 BFF requests used for sunset observation",
+      { method, outcome },
+    );
+  }
 }
