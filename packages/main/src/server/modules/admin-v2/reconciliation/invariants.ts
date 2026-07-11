@@ -8,6 +8,11 @@ import { prisma } from "@/server/lib/db";
 import { ok } from "@/server/lib/http";
 import { actorWithPermission } from "@/server/modules/admin/service";
 import { CHARACTER_RELEASE_POLICY_VERSION } from "../characters/release-executor";
+import {
+  characterReleaseSnapshotHash,
+  characterVisualProfileSnapshotHash,
+  referenceSetSnapshotHash,
+} from "../characters/release-snapshot";
 
 interface ViolationRow {
   id: string;
@@ -21,6 +26,26 @@ interface SqlInvariant {
   readonly query: Prisma.Sql;
 }
 
+type InvariantDb = Pick<
+  PrismaClient,
+  | "$queryRaw"
+  | "character"
+  | "characterServing"
+  | "characterRelease"
+  | "characterProject"
+  | "characterRevision"
+  | "characterContentVersion"
+  | "characterVisualProfile"
+  | "referenceSetRevision"
+>;
+
+type ServingPointer = {
+  readonly servingId: string;
+  readonly characterId: string;
+  readonly pointer: "current" | "scheduled";
+  readonly releaseId: string;
+};
+
 const sqlChecks: readonly SqlInvariant[] = [
   {
     key: "official_public_character_without_current_serving_release",
@@ -33,36 +58,6 @@ const sqlChecks: readonly SqlInvariant[] = [
       WHERE c.source = 'official' AND c.visibility = 'public' AND c.status = 'approved'
         AND c."deletedAt" IS NULL AND s."currentReleaseId" IS NULL
       ORDER BY c.id LIMIT 20
-    `,
-  },
-  {
-    key: "serving_release_cross_character",
-    description: "Serving pointers must not reference another Character's Release",
-    evidence: "CharacterServing pointer -> CharacterRelease -> CharacterProject.characterId",
-    query: Prisma.sql`
-      SELECT (s.id || ':' || r.id) AS id, count(*) OVER()::int AS total
-      FROM character_serving s
-      JOIN character_releases r ON r.id IN (s."currentReleaseId", s."scheduledReleaseId")
-      JOIN character_projects p ON p.id = r."projectId"
-      WHERE p."characterId" <> s."characterId"
-      ORDER BY s.id LIMIT 20
-    `,
-  },
-  {
-    key: "current_release_incomplete_manifest",
-    description: "Current Releases must be published immutable snapshots with complete manifests",
-    evidence: "current CharacterRelease required snapshot/content/visual/reference/placement fields",
-    query: Prisma.sql`
-      SELECT r.id, count(*) OVER()::int AS total
-      FROM character_serving s
-      JOIN character_releases r ON r.id = s."currentReleaseId"
-      WHERE r.status <> 'published' OR length(r."snapshotHash") = 0
-        OR r."characterContentVersionId" IS NULL
-        OR r."visualProfileId" IS NULL OR r."visualProfileVersion" IS NULL
-        OR r."referenceSetRevisionId" IS NULL
-        OR jsonb_typeof(r."generationProvenance") <> 'object'
-        OR jsonb_typeof(r."releasePlacementManifest") <> 'object'
-      ORDER BY r.id LIMIT 20
     `,
   },
   {
@@ -101,20 +96,6 @@ const sqlChecks: readonly SqlInvariant[] = [
     `,
   },
   {
-    key: "current_release_missing_exact_identity_or_reference",
-    description: "Current non-legacy Releases require exact Identity and ReferenceSet revisions",
-    evidence: "CharacterRelease immutable visualProfile version and referenceSetRevisionId",
-    query: Prisma.sql`
-      SELECT r.id, count(*) OVER()::int AS total
-      FROM character_serving s
-      JOIN character_releases r ON r.id = s."currentReleaseId"
-      WHERE r.legacy = false AND (
-        r."visualProfileId" IS NULL OR r."visualProfileVersion" IS NULL OR r."referenceSetRevisionId" IS NULL
-      )
-      ORDER BY r.id LIMIT 20
-    `,
-  },
-  {
     key: "terminal_attempt_without_unique_terminal_event",
     description: "Every terminal Attempt requires exactly one matching attempt-linked terminal event",
     evidence: "GenerationAttempt terminal status/terminalSequence joined to immutable GenerationAttemptEvent terminal authority",
@@ -145,6 +126,35 @@ const sqlChecks: readonly SqlInvariant[] = [
       GROUP BY a."requestId", j."outputCount"
       HAVING count(d.id) <> j."outputCount"
       ORDER BY a."requestId" LIMIT 20
+    `,
+  },
+  {
+    key: "partial_request_delivery_count_mismatch",
+    description: "Partial generation Requests must deliver at least one but fewer than the expected outputs",
+    evidence: "GenerationJob expected count and actual delivered rows reconciled to the partial GenerationFulfillmentFact",
+    query: Prisma.sql`
+      WITH partial_counts AS (
+        SELECT
+          f."requestId" AS id,
+          f."expectedOutputCount" AS fact_expected,
+          f."deliveredOutputCount" AS fact_delivered,
+          j."outputCount" AS request_expected,
+          count(d.id)::int AS actual_delivered
+        FROM generation_fulfillment_facts f
+        LEFT JOIN generation_jobs j ON j.id = f."requestId"
+        LEFT JOIN generation_deliveries d
+          ON d."requestId" = f."requestId" AND d.status = 'delivered'
+        WHERE f.outcome = 'partial'
+        GROUP BY f."requestId", f."expectedOutputCount", f."deliveredOutputCount", j."outputCount"
+      ), violations AS (
+        SELECT id FROM partial_counts
+        WHERE request_expected IS NULL
+          OR fact_expected <> request_expected
+          OR fact_delivered <> actual_delivered
+          OR NOT (actual_delivered > 0 AND actual_delivered < request_expected)
+      )
+      SELECT id, count(*) OVER()::int AS total
+      FROM violations ORDER BY id LIMIT 20
     `,
   },
   {
@@ -270,7 +280,342 @@ const sqlChecks: readonly SqlInvariant[] = [
   },
 ];
 
-async function runSqlCheck(db: PrismaClient, check: SqlInvariant): Promise<AdminInvariantCheck> {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+
+function hasCompleteGenerationProvenance(value: unknown) {
+  if (!isRecord(value) || !isRecord(value.characterQa)) return false;
+  return isNonEmptyString(value.routeFingerprint)
+    && isNonEmptyString(value.matrixKey)
+    && isNonEmptyString(value.generationProfileKey)
+    && isPositiveInteger(value.generationProfileVersion)
+    && isNonEmptyString(value.workflowKey)
+    && isPositiveInteger(value.workflowVersion)
+    && value.characterQa.status === "passed"
+    && isNonEmptyString(value.characterQa.evidenceRef);
+}
+
+function hasCompletePlacementManifest(value: unknown) {
+  if (!isRecord(value) || !Array.isArray(value.placements) || value.placements.length === 0) {
+    return false;
+  }
+  const placementsAreComplete = value.placements.every((placement) =>
+    isRecord(placement)
+      && isNonEmptyString(placement.slotKey)
+      && isNonEmptyString(placement.assetId)
+      && isPositiveInteger(placement.slotVersion),
+  );
+  return placementsAreComplete && value.placements.some((placement) =>
+    isRecord(placement) && placement.slotKey === "character_avatar",
+  );
+}
+
+interface ViolationAccumulator {
+  count: number;
+  sampleIds: string[];
+}
+
+interface ServingRow {
+  readonly id: string;
+  readonly characterId: string;
+  readonly currentReleaseId: string | null;
+  readonly scheduledReleaseId: string | null;
+}
+
+interface ServingReleaseViolations {
+  readonly characterOrphan: ViolationAccumulator;
+  readonly releaseOrphan: ViolationAccumulator;
+  readonly crossCharacter: ViolationAccumulator;
+  readonly joinInvalid: ViolationAccumulator;
+  readonly currentIdentityInvalid: ViolationAccumulator;
+  readonly scheduledIdentityInvalid: ViolationAccumulator;
+  readonly currentManifestInvalid: ViolationAccumulator;
+  readonly scheduledManifestInvalid: ViolationAccumulator;
+}
+
+function emptyAccumulator(): ViolationAccumulator {
+  return { count: 0, sampleIds: [] };
+}
+
+function recordViolation(accumulator: ViolationAccumulator, id: string) {
+  accumulator.count += 1;
+  if (accumulator.sampleIds.includes(id)) return;
+  accumulator.sampleIds.push(id);
+  accumulator.sampleIds.sort();
+  if (accumulator.sampleIds.length > 20) accumulator.sampleIds.pop();
+}
+
+function invariantCheck(
+  key: string,
+  description: string,
+  evidence: string,
+  violations: ViolationAccumulator,
+): AdminInvariantCheck {
+  return {
+    key,
+    description,
+    status: violations.count === 0 ? "passed" : "failed",
+    violationCount: violations.count,
+    sampleIds: violations.sampleIds,
+    evidence,
+  };
+}
+
+async function inspectServingReleaseBatch(
+  db: InvariantDb,
+  servingRows: readonly ServingRow[],
+  violations: ServingReleaseViolations,
+) {
+  const characterIds = [...new Set(servingRows.map((serving) => serving.characterId))];
+  const characters = await db.character.findMany({
+    where: { id: { in: characterIds } },
+    select: { id: true },
+  });
+  const existingCharacterIds = new Set(characters.map((character) => character.id));
+  for (const serving of servingRows) {
+    if (!existingCharacterIds.has(serving.characterId)) {
+      recordViolation(violations.characterOrphan, `${serving.id}:${serving.characterId}`);
+    }
+  }
+  const pointers: ServingPointer[] = servingRows.flatMap((serving) => {
+    const result: ServingPointer[] = [];
+    if (serving.currentReleaseId) {
+      result.push({
+        servingId: serving.id,
+        characterId: serving.characterId,
+        pointer: "current",
+        releaseId: serving.currentReleaseId,
+      });
+    }
+    if (serving.scheduledReleaseId) {
+      result.push({
+        servingId: serving.id,
+        characterId: serving.characterId,
+        pointer: "scheduled",
+        releaseId: serving.scheduledReleaseId,
+      });
+    }
+    return result;
+  });
+  const releaseIds = [...new Set(pointers.map((pointer) => pointer.releaseId))];
+  const releases = await db.characterRelease.findMany({
+    where: { id: { in: releaseIds } },
+  });
+  const releaseById = new Map(releases.map((release) => [release.id, release]));
+  const projectIds = [...new Set(releases.map((release) => release.projectId))];
+  const revisionIds = [...new Set(releases.map((release) => release.revisionId))];
+  const contentIds = [...new Set(releases.map((release) => release.characterContentVersionId))];
+  const profileIds = [...new Set(releases.flatMap((release) =>
+    release.visualProfileId ? [release.visualProfileId] : [],
+  ))];
+  const referenceSetIds = [...new Set(releases.flatMap((release) =>
+    release.referenceSetRevisionId ? [release.referenceSetRevisionId] : [],
+  ))];
+  const [projects, revisions, contents, profiles, referenceSets] = await Promise.all([
+    db.characterProject.findMany({ where: { id: { in: projectIds } } }),
+    db.characterRevision.findMany({ where: { id: { in: revisionIds } } }),
+    db.characterContentVersion.findMany({ where: { id: { in: contentIds } } }),
+    db.characterVisualProfile.findMany({ where: { id: { in: profileIds } } }),
+    db.referenceSetRevision.findMany({
+      where: { id: { in: referenceSetIds } },
+      include: {
+        references: {
+          include: { mediaAsset: { select: { deletedAt: true } } },
+          orderBy: { position: "asc" },
+        },
+      },
+    }),
+  ]);
+  const projectById = new Map(projects.map((row) => [row.id, row]));
+  const revisionById = new Map(revisions.map((row) => [row.id, row]));
+  const contentById = new Map(contents.map((row) => [row.id, row]));
+  const profileById = new Map(profiles.map((row) => [row.id, row]));
+  const referenceSetById = new Map(referenceSets.map((row) => [row.id, row]));
+
+  for (const pointer of pointers) {
+    const release = releaseById.get(pointer.releaseId);
+    if (!release) {
+      recordViolation(
+        violations.releaseOrphan,
+        `${pointer.servingId}:${pointer.pointer}:${pointer.releaseId}`,
+      );
+      continue;
+    }
+    const project = projectById.get(release.projectId);
+    const revision = revisionById.get(release.revisionId);
+    const content = contentById.get(release.characterContentVersionId);
+    if (project && project.characterId !== pointer.characterId) {
+      recordViolation(violations.crossCharacter, release.id);
+    }
+    if (
+      !project
+      || !revision
+      || !content
+      || revision.projectId !== release.projectId
+      || revision.characterContentVersionId !== release.characterContentVersionId
+      || content.characterId !== project.characterId
+    ) {
+      recordViolation(violations.joinInvalid, release.id);
+    }
+
+    {
+      const profile = release.visualProfileId
+        ? profileById.get(release.visualProfileId)
+        : undefined;
+      const referenceSet = release.referenceSetRevisionId
+        ? referenceSetById.get(release.referenceSetRevisionId)
+        : undefined;
+      const profileIsExact = Boolean(
+        project
+        && profile
+        && release.visualProfileVersion === profile.version
+        && profile.characterId === project.characterId
+        && isNonEmptyString(profile.immutableHash)
+        && profile.immutableHash === characterVisualProfileSnapshotHash(profile),
+      );
+      const referenceIsExact = Boolean(
+        profile
+        && referenceSet
+        && referenceSet.visualProfileId === profile.id
+        && referenceSet.references.length > 0
+        && referenceSet.references.every((reference) => reference.mediaAsset.deletedAt === null)
+        && isNonEmptyString(referenceSet.snapshotHash)
+        && referenceSet.snapshotHash === referenceSetSnapshotHash({
+          visualProfileId: referenceSet.visualProfileId,
+          revision: referenceSet.revision,
+          selectorVersion: referenceSet.selectorVersion,
+          references: referenceSet.references,
+        }),
+      );
+      if (!profileIsExact || !referenceIsExact) {
+        recordViolation(
+          pointer.pointer === "current"
+            ? violations.currentIdentityInvalid
+            : violations.scheduledIdentityInvalid,
+          release.id,
+        );
+      }
+    }
+
+    const snapshotHash = characterReleaseSnapshotHash({
+      projectId: release.projectId,
+      revisionId: release.revisionId,
+      characterContentVersionId: release.characterContentVersionId,
+      visualProfileId: release.visualProfileId,
+      visualProfileVersion: release.visualProfileVersion,
+      referenceSetRevisionId: release.referenceSetRevisionId,
+      generationProvenance: release.generationProvenance,
+      releasePlacementManifest: release.releasePlacementManifest,
+    });
+    const manifestIsComplete = hasCompleteGenerationProvenance(release.generationProvenance)
+      && hasCompletePlacementManifest(release.releasePlacementManifest)
+      && isNonEmptyString(release.snapshotHash)
+      && release.snapshotHash === snapshotHash
+      && (pointer.pointer === "current"
+        ? release.status === "published"
+        : release.status === "approved");
+    if (!manifestIsComplete) {
+      recordViolation(
+        pointer.pointer === "current"
+          ? violations.currentManifestInvalid
+          : violations.scheduledManifestInvalid,
+        release.id,
+      );
+    }
+  }
+}
+
+async function runServingReleaseChecks(db: InvariantDb): Promise<AdminInvariantCheck[]> {
+  const violations: ServingReleaseViolations = {
+    characterOrphan: emptyAccumulator(),
+    releaseOrphan: emptyAccumulator(),
+    crossCharacter: emptyAccumulator(),
+    joinInvalid: emptyAccumulator(),
+    currentIdentityInvalid: emptyAccumulator(),
+    scheduledIdentityInvalid: emptyAccumulator(),
+    currentManifestInvalid: emptyAccumulator(),
+    scheduledManifestInvalid: emptyAccumulator(),
+  };
+  let afterId: string | undefined;
+  while (true) {
+    const servingRows = await db.characterServing.findMany({
+      where: afterId ? { id: { gt: afterId } } : undefined,
+      orderBy: { id: "asc" },
+      take: 250,
+      select: {
+        id: true,
+        characterId: true,
+        currentReleaseId: true,
+        scheduledReleaseId: true,
+      },
+    });
+    if (servingRows.length === 0) break;
+    await inspectServingReleaseBatch(db, servingRows, violations);
+    afterId = servingRows.at(-1)?.id;
+  }
+
+  return [
+    invariantCheck(
+      "serving_character_pointer_orphan",
+      "Every CharacterServing row must resolve to an existing Character",
+      "CharacterServing.characterId existence required before validating its NOT VALID foreign key",
+      violations.characterOrphan,
+    ),
+    invariantCheck(
+      "serving_release_pointer_orphan",
+      "Serving pointers must resolve to an existing CharacterRelease",
+      "CharacterServing current/scheduled pointer existence checked without inner-join elision",
+      violations.releaseOrphan,
+    ),
+    invariantCheck(
+      "serving_release_cross_character",
+      "Serving pointers must not reference another Character's Release",
+      "CharacterServing pointer -> CharacterRelease -> CharacterProject.characterId",
+      violations.crossCharacter,
+    ),
+    invariantCheck(
+      "serving_release_revision_content_join_invalid",
+      "Serving Releases require exact Project, Revision, and CharacterContentVersion joins",
+      "Release revision/project/content IDs and Character ownership checked as one authority chain",
+      violations.joinInvalid,
+    ),
+    invariantCheck(
+      "current_release_missing_exact_identity_or_reference",
+      "Current Releases require exact immutable Identity and non-empty ReferenceSet snapshots",
+      "VisualProfile character/version/canonical immutableHash and ReferenceSet canonical snapshotHash",
+      violations.currentIdentityInvalid,
+    ),
+    invariantCheck(
+      "scheduled_release_missing_exact_identity_or_reference",
+      "Scheduled Releases require exact immutable Identity and non-empty ReferenceSet snapshots",
+      "VisualProfile character/version/canonical immutableHash and ReferenceSet canonical snapshotHash",
+      violations.scheduledIdentityInvalid,
+    ),
+    invariantCheck(
+      "current_release_incomplete_manifest",
+      "Current Releases must be published immutable snapshots with complete provenance and placement manifests",
+      "Canonical Release snapshotHash plus required provenance, QA, avatar placement, and slot identity",
+      violations.currentManifestInvalid,
+    ),
+    invariantCheck(
+      "scheduled_release_incomplete_manifest",
+      "Scheduled Releases must be immutable snapshots with complete provenance and placement manifests",
+      "Canonical Release snapshotHash plus required provenance, QA, avatar placement, and slot identity",
+      violations.scheduledManifestInvalid,
+    ),
+  ];
+}
+
+async function runSqlCheck(db: InvariantDb, check: SqlInvariant): Promise<AdminInvariantCheck> {
   const rows = await db.$queryRaw<ViolationRow[]>(check.query);
   const count = rows[0]?.total ?? 0;
   return {
@@ -283,8 +628,12 @@ async function runSqlCheck(db: PrismaClient, check: SqlInvariant): Promise<Admin
   };
 }
 
-export async function auditAdminCutoverInvariants(db: PrismaClient, asOf = new Date()) {
-  const checks = await Promise.all(sqlChecks.map((check) => runSqlCheck(db, check)));
+export async function auditAdminCutoverInvariants(db: InvariantDb, asOf = new Date()) {
+  const [sqlResults, releaseResults] = await Promise.all([
+    Promise.all(sqlChecks.map((check) => runSqlCheck(db, check))),
+    runServingReleaseChecks(db),
+  ]);
+  const checks = [...sqlResults, ...releaseResults];
   const totalViolations = checks.reduce((sum, check) => sum + (check.violationCount ?? 0), 0);
   const unavailableChecks = checks.filter((check) => check.status === "unavailable").length;
   const qualityState = totalViolations === 0 && unavailableChecks === 0 ? "certified" as const : "invalid" as const;

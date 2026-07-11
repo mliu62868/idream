@@ -183,6 +183,7 @@ model Character {
   visualProfiles CharacterVisualProfile[]
   looks          CharacterLook[]
   likes          CharacterLike[]
+  serving        CharacterServing?
 
   @@index([visibility, status])
   @@index([source, visibility, status])
@@ -1433,6 +1434,8 @@ model CharacterRelease {
   version                   Int       @default(1)
   createdAt                 DateTime  @default(now())
   updatedAt                 DateTime  @updatedAt
+  currentServing   CharacterServing? @relation("CurrentCharacterServing")
+  scheduledServing CharacterServing? @relation("ScheduledCharacterServing")
 
   @@index([projectId, snapshotHash])
   @@index([projectId, status])
@@ -1452,6 +1455,9 @@ model CharacterServing {
   version            Int       @default(1)
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
+  character        Character         @relation(fields: [characterId], references: [id], onDelete: Cascade, onUpdate: Cascade, map: "character_serving_characterId_fkey")
+  currentRelease   CharacterRelease? @relation("CurrentCharacterServing", fields: [currentReleaseId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "character_serving_currentReleaseId_fkey")
+  scheduledRelease CharacterRelease? @relation("ScheduledCharacterServing", fields: [scheduledReleaseId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "character_serving_scheduledReleaseId_fkey")
 
   @@index([state, scheduledAt])
   @@map("character_serving")

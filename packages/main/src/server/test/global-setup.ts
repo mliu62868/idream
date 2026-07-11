@@ -62,6 +62,24 @@ async function resetSchema(url: string) {
   }
 }
 
+async function alignDeferrableAuthorityConstraints(url: string) {
+  const client = new pg.Client({ connectionString: postgresUrl(url) });
+  await client.connect();
+  try {
+    for (const constraint of [
+      "character_serving_characterId_fkey",
+      "character_serving_currentReleaseId_fkey",
+      "character_serving_scheduledReleaseId_fkey",
+    ]) {
+      await client.query(
+        `ALTER TABLE "character_serving" ALTER CONSTRAINT ${quoteIdentifier(constraint)} DEFERRABLE INITIALLY IMMEDIATE`,
+      );
+    }
+  } finally {
+    await client.end();
+  }
+}
+
 export default async function setup() {
   const childEnv = {
     ...process.env,
@@ -74,6 +92,7 @@ export default async function setup() {
 
   const options = { stdio: "inherit" as const, env: childEnv };
   execFileSync("node", ["scripts/db-push.mjs"], options);
+  await alignDeferrableAuthorityConstraints(DATABASE_URL);
   execFileSync("npx", ["tsx", "prisma/seed.ts"], options);
 
   const redis = new IORedis(process.env.REDIS_URL ?? "redis://127.0.0.1:6379/15");
