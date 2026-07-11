@@ -56,6 +56,49 @@ export async function ingestGenerationManifest(
       });
       return { acknowledged: false, status: "quarantined" as const, receiptId: quarantined.id };
     }
+    if (existingAttempt?.status === "cancelled") {
+      const createdReceipt = await tx.inboundEventReceipt.create({ data: {
+        sourceService: "gen",
+        sourceEventId: input.manifest.attemptId,
+        payloadHash: input.manifestChecksum,
+        processingState: "processed",
+        processedAt: new Date(),
+      } });
+      await tx.generationTransportExecution.upsert({
+        where: { attemptId_transportAttemptNo: { attemptId: existingAttempt.id, transportAttemptNo: input.manifest.transportAttemptNo } },
+        create: {
+          attemptId: existingAttempt.id,
+          transportAttemptNo: input.manifest.transportAttemptNo,
+          providerRequestId: input.manifest.providerRequestId,
+          idempotencyKey: input.manifest.providerIdempotencyKey ?? existingAttempt.id,
+          status: "succeeded",
+          manifestRef: input.manifestRef,
+          finishedAt: new Date(input.manifest.completedAt),
+        },
+        update: { status: "succeeded", manifestRef: input.manifestRef, finishedAt: new Date(input.manifest.completedAt) },
+      });
+      for (const asset of input.manifest.assets) {
+        await tx.generationArtifact.upsert({
+          where: { attemptId_ordinal: { attemptId: existingAttempt.id, ordinal: asset.ordinal } },
+          create: {
+            attemptId: existingAttempt.id,
+            ordinal: asset.ordinal,
+            providerRef: asset.providerKey,
+            manifestChecksum: input.manifestChecksum,
+            validationState: "late_after_cancel",
+            archiveState: "archived",
+          },
+          update: { validationState: "late_after_cancel", archiveState: "archived" },
+        });
+      }
+      await tx.generationJobEvent.create({ data: {
+        jobId: input.manifest.generationJobId,
+        type: "late_artifact_archived",
+        message: "Provider artifacts arrived after cancellation and were archived without delivery",
+        metadata: toInputJson({ attemptId: existingAttempt.id, manifestRef: input.manifestRef, assetCount: input.manifest.assets.length }),
+      } });
+      return { acknowledged: true, status: "persisted" as const, receiptId: createdReceipt.id };
+    }
     const attempt = await tx.generationAttempt.upsert({
       where: { id: input.manifest.attemptId },
       create: {
@@ -83,6 +126,8 @@ export async function ingestGenerationManifest(
         manifestChecksum: input.manifestChecksum,
         provider: input.manifest.provider,
         providerRequestId: input.manifest.providerRequestId,
+        transportAttemptNo: input.manifest.transportAttemptNo,
+        providerIdempotencyKey: input.manifest.providerIdempotencyKey ?? input.manifest.attemptId,
         assetCount: input.manifest.assets.length,
       },
       status: "running",
@@ -98,17 +143,17 @@ export async function ingestGenerationManifest(
       },
     });
     await tx.generationTransportExecution.upsert({
-      where: { attemptId_transportAttemptNo: { attemptId: attempt.id, transportAttemptNo: 1 } },
+      where: { attemptId_transportAttemptNo: { attemptId: attempt.id, transportAttemptNo: input.manifest.transportAttemptNo } },
       create: {
         attemptId: attempt.id,
-        transportAttemptNo: 1,
+        transportAttemptNo: input.manifest.transportAttemptNo,
         providerRequestId: input.manifest.providerRequestId,
-        idempotencyKey: attempt.id,
+        idempotencyKey: input.manifest.providerIdempotencyKey ?? attempt.id,
         status: "succeeded",
         manifestRef: input.manifestRef,
         finishedAt: new Date(input.manifest.completedAt),
       },
-      update: { status: "succeeded", manifestRef: input.manifestRef, finishedAt: new Date(input.manifest.completedAt) },
+      update: { status: "succeeded", providerRequestId: input.manifest.providerRequestId, manifestRef: input.manifestRef, finishedAt: new Date(input.manifest.completedAt) },
     });
     for (const asset of input.manifest.assets) {
       await tx.generationArtifact.upsert({

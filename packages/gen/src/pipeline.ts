@@ -14,6 +14,7 @@
 import {
   type AiFinalizePayload,
   type GenerationManifestIngest,
+  type GenerationTransportExecutionEvent,
   idempotencyKeys,
   imageGeneratePayloadSchema,
   type ImageGeneratePayload,
@@ -24,7 +25,7 @@ import {
 import { mockVideoMp4Bytes } from "@idream/shared";
 import { env } from "./env";
 import { assertGeneratedImageSanity, GeneratedImageSanityError } from "./generated-image-sanity";
-import { type GenProviders, providers as defaultProviders } from "./providers";
+import { type GenProviders, type ImageModel, type ProviderFailure, type VideoModel, providers as defaultProviders } from "./providers";
 import type { EnqueueFn, JsonPayload } from "./queue";
 import { hydratedImageReferenceInputs } from "./reference-images";
 import { loadPersistedCompletionManifest, persistCompletionManifest } from "./completion-manifest";
@@ -42,6 +43,7 @@ export interface PipelineDeps {
   attemptsMade?: number;
   maxAttempts?: number;
   acknowledgeCompletion?: (input: GenerationManifestIngest) => Promise<void>;
+  recordTransportExecution?: (input: GenerationTransportExecutionEvent) => Promise<void>;
 }
 
 function asPayload(value: AiFinalizePayload): JsonPayload {
@@ -53,6 +55,7 @@ async function enqueueGenerationFailed(
   payload: ImageGeneratePayload | VideoGeneratePayload,
   code: string,
   message: string,
+  terminal: { attemptOutcome?: "failed" | "unknown"; retryability?: "retryable" | "not_retryable" | "operator_retry" } = {},
 ): Promise<void> {
   await deps.enqueue({
     queue: MAIN_QUEUES.aiFinalize,
@@ -64,7 +67,13 @@ async function enqueueGenerationFailed(
       attemptId: payload.attemptId,
       attemptNo: payload.attemptNo,
       mode: payload.kind,
-      error: { code, message, retryable: false },
+      error: {
+        code,
+        message,
+        retryable: false,
+        attemptOutcome: terminal.attemptOutcome ?? "failed",
+        retryability: terminal.retryability ?? "retryable",
+      },
     }),
     dedupeKey: idempotencyKeys.generationFinalize(payload.generationJobId, "failed"),
   });
@@ -99,6 +108,42 @@ function isFinalAttempt(deps: PipelineDeps) {
   const attemptsMade = deps.attemptsMade ?? 0;
   const maxAttempts = deps.maxAttempts ?? 1;
   return attemptsMade + 1 >= maxAttempts;
+}
+
+function transportIdentity(payload: ImageGeneratePayload | VideoGeneratePayload, deps: PipelineDeps) {
+  const attemptId = payload.attemptId ?? `${payload.generationJobId}:1`;
+  return {
+    attemptId,
+    attemptNo: payload.attemptNo ?? 1,
+    transportAttemptNo: (deps.attemptsMade ?? 0) + 1,
+    idempotencyKey: `generation:${attemptId}:provider`,
+  };
+}
+
+function canAutomaticallyRetry(model: ImageModel | VideoModel, error: ProviderFailure) {
+  const capabilities = model.retryCapabilities;
+  return error.retryable && capabilities?.deterministicIdempotencyKey === true && capabilities.retryableFailureCodes.includes(error.code);
+}
+
+async function recordTransport(
+  deps: PipelineDeps,
+  payload: ImageGeneratePayload | VideoGeneratePayload,
+  provider: string,
+  status: "running" | "failed" | "unknown",
+  error: { code: string; message: string } | null = null,
+) {
+  if (!deps.recordTransportExecution) return;
+  const identity = transportIdentity(payload, deps);
+  await deps.recordTransportExecution({
+    version: 1,
+    ...identity,
+    generationJobId: payload.generationJobId,
+    provider,
+    providerRequestId: null,
+    status,
+    occurredAt: new Date().toISOString(),
+    error,
+  });
 }
 
 export async function processImageGenerate(
@@ -136,21 +181,35 @@ export async function processImageGenerate(
     payload.referenceImages,
     providers.blob,
   );
-  const result = await providers.image.generate({
+  const imageModel = providers.image;
+  const imageProvider = payload.model ?? "image-provider";
+  const imageTransport = transportIdentity(payload, deps);
+  await recordTransport(deps, payload, imageProvider, "running");
+  const result = await imageModel.generate({
     prompt: payload.prompt,
     count: payload.count,
     seed: payload.seed,
     negativePrompt: payload.negativePrompt,
     model: payload.model,
     controls: payload.controls,
-    requestId: payload.requestId,
+    requestId: imageTransport.idempotencyKey,
     orientation: payload.orientation,
     ...(referenceImages.length > 0 ? { referenceImages } : {}),
   });
 
   if (!result.ok) {
-    // Retryable → throw so the queue re-attempts. Terminal → finalize as failed.
-    if (result.error.retryable && !isFinalAttempt(deps)) throw new Error(result.error.message);
+    const safeRetry = canAutomaticallyRetry(imageModel, result.error);
+    const ambiguous = result.error.retryable && !safeRetry && ["timeout", "internal"].includes(result.error.code);
+    try {
+      await recordTransport(deps, payload, imageProvider, ambiguous ? "unknown" : "failed", result.error);
+    } catch (recordError) {
+      if (safeRetry && !isFinalAttempt(deps)) throw recordError;
+    }
+    if (safeRetry && !isFinalAttempt(deps)) throw new Error(result.error.message);
+    if (ambiguous) {
+      await enqueueGenerationFailed(deps, payload, "ambiguous_non_replayable", result.error.message, { attemptOutcome: "unknown", retryability: "not_retryable" });
+      return;
+    }
     if (result.error.code === "content_blocked") {
       await enqueueGenerationBlocked(deps, payload, result.error.code, result.error.message, "provider");
       return;
@@ -236,6 +295,8 @@ export async function processImageGenerate(
       version: 1,
       attemptId: payload.attemptId ?? `${payload.generationJobId}:1`,
       attemptNo: payload.attemptNo ?? 1,
+      transportAttemptNo: imageTransport.transportAttemptNo,
+      providerIdempotencyKey: imageTransport.idempotencyKey,
       requestId: payload.requestId,
       generationJobId: payload.generationJobId,
       mode: "image",
@@ -310,18 +371,33 @@ export async function processVideoGenerate(
     return;
   }
 
-  const result = await providers.video.generate({
+  const videoModel = providers.video;
+  const videoProvider = payload.model ?? "video-provider";
+  const videoTransport = transportIdentity(payload, deps);
+  await recordTransport(deps, payload, videoProvider, "running");
+  const result = await videoModel.generate({
     prompt: payload.prompt,
     seconds: payload.seconds,
     seed: payload.seed,
     negativePrompt: payload.negativePrompt,
     model: payload.model,
     controls: payload.controls,
-    requestId: payload.requestId,
+    requestId: videoTransport.idempotencyKey,
   });
 
   if (!result.ok) {
-    if (result.error.retryable && !isFinalAttempt(deps)) throw new Error(result.error.message);
+    const safeRetry = canAutomaticallyRetry(videoModel, result.error);
+    const ambiguous = result.error.retryable && !safeRetry && ["timeout", "internal"].includes(result.error.code);
+    try {
+      await recordTransport(deps, payload, videoProvider, ambiguous ? "unknown" : "failed", result.error);
+    } catch (recordError) {
+      if (safeRetry && !isFinalAttempt(deps)) throw recordError;
+    }
+    if (safeRetry && !isFinalAttempt(deps)) throw new Error(result.error.message);
+    if (ambiguous) {
+      await enqueueGenerationFailed(deps, payload, "ambiguous_non_replayable", result.error.message, { attemptOutcome: "unknown", retryability: "not_retryable" });
+      return;
+    }
     if (result.error.code === "content_blocked") {
       await enqueueGenerationBlocked(deps, payload, result.error.code, result.error.message, "provider");
       return;
@@ -371,6 +447,8 @@ export async function processVideoGenerate(
       version: 1,
       attemptId: payload.attemptId ?? `${payload.generationJobId}:1`,
       attemptNo: payload.attemptNo ?? 1,
+      transportAttemptNo: videoTransport.transportAttemptNo,
+      providerIdempotencyKey: videoTransport.idempotencyKey,
       requestId: payload.requestId,
       generationJobId: payload.generationJobId,
       mode: "video",

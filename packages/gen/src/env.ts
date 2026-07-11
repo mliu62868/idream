@@ -31,6 +31,10 @@ export const env = {
     const base = process.env.MAIN_WEB_URL ?? "http://127.0.0.1:3000";
     return `${base.replace(/\/$/, "")}/api/internal/generation/manifests/ingest`;
   },
+  get MAIN_GENERATION_TRANSPORT_URL(): string {
+    const base = process.env.MAIN_WEB_URL ?? "http://127.0.0.1:3000";
+    return `${base.replace(/\/$/, "")}/api/internal/generation/transports`;
+  },
   get INTERNAL_TOKEN(): string {
     return process.env.INTERNAL_TOKEN ?? "";
   },

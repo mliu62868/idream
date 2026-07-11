@@ -799,6 +799,7 @@ async function finalizeGenerationFailed(
     payload.error.code,
     job.sourceType,
     attempt?.id,
+    { attemptOutcome: payload.error.attemptOutcome, retryability: payload.error.retryability },
   );
   await enqueueChatImageFailed(job.id, "failed", payload.error.code);
 }
@@ -1090,6 +1091,7 @@ async function refundGeneration(
   errorCode: string,
   sourceType: string,
   attemptId?: string,
+  terminal: { attemptOutcome?: "failed" | "unknown"; retryability?: "retryable" | "not_retryable" | "operator_retry" } = {},
 ) {
   // INVARIANT: content_production jobs are never debited, so they must never be
   // credited on refund — their costDreamcoins is record-keeping only (ops batches
@@ -1115,11 +1117,12 @@ async function refundGeneration(
         where: { id: attemptId, requestId: jobId },
       });
       const finishedAt = attempt.finishedAt ?? new Date();
+      const attemptOutcome = terminal.attemptOutcome ?? "failed";
       await recordGenerationAttemptEvent(tx, {
         eventId: `${attemptId}:terminal`,
         attemptId,
-        eventType: "generation.attempt.failed.v1",
-        outcome: "failed",
+        eventType: `generation.attempt.${attemptOutcome}.v1`,
+        outcome: attemptOutcome,
         occurredAt: finishedAt,
         payload: {
           requestId: jobId,
@@ -1128,7 +1131,10 @@ async function refundGeneration(
           refundAmount: cost > 0 && isDebitedJob ? cost : 0,
         },
         errorCode,
-        retryability: status === "failed" ? "retryable" : "not_retryable",
+        errorClass: attemptOutcome === "unknown" ? "ambiguous_provider_outcome" : undefined,
+        errorSignature: attemptOutcome === "unknown" ? `ambiguous_provider_outcome:${errorCode}` : undefined,
+        retryability: terminal.retryability ?? (status === "failed" ? "retryable" : "not_retryable"),
+        operatorGuidance: attemptOutcome === "unknown" ? "Reconcile the provider request before any business retry." : undefined,
       });
     }
     await markProductionItemFailed(tx, jobId);

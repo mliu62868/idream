@@ -32,6 +32,8 @@ export const generationCompletionManifestSchema = z.object({
   version: z.literal(1),
   attemptId: z.string().min(1),
   attemptNo: z.number().int().positive(),
+  transportAttemptNo: z.number().int().positive().default(1),
+  providerIdempotencyKey: z.string().min(1).optional(),
   requestId: z.string().min(1),
   generationJobId: z.string().min(1),
   mode: z.enum(["image", "video"]),
@@ -40,6 +42,20 @@ export const generationCompletionManifestSchema = z.object({
   completedAt: z.string().datetime(),
   assets: z.array(generationManifestAssetSchema).min(1),
   usage: z.record(z.string(), z.unknown()),
+});
+
+export const generationTransportExecutionEventSchema = z.object({
+  version: z.literal(1),
+  attemptId: z.string().min(1),
+  attemptNo: z.number().int().positive(),
+  generationJobId: z.string().min(1),
+  transportAttemptNo: z.number().int().positive(),
+  provider: z.string().min(1),
+  providerRequestId: z.string().nullable(),
+  idempotencyKey: z.string().min(1),
+  status: z.enum(["running", "failed", "unknown"]),
+  occurredAt: z.string().datetime(),
+  error: z.object({ code: z.string().min(1), message: z.string().min(1) }).nullable().default(null),
 });
 
 export const generationManifestIngestSchema = z.object({
@@ -52,6 +68,7 @@ export type DurableEventEnvelope = z.infer<typeof durableEventEnvelopeSchema>;
 export type DurableAck = z.infer<typeof durableAckSchema>;
 export type GenerationCompletionManifest = z.infer<typeof generationCompletionManifestSchema>;
 export type GenerationManifestIngest = z.infer<typeof generationManifestIngestSchema>;
+export type GenerationTransportExecutionEvent = z.infer<typeof generationTransportExecutionEventSchema>;
 
 export function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);

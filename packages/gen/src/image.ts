@@ -7,6 +7,7 @@ import { processImageGenerate } from "./pipeline";
 import { assertProductionProviderReady } from "./providers";
 import { enqueue, runWorker } from "./queue";
 import { acknowledgeCompletionManifest } from "./completion-manifest";
+import { recordTransportExecution } from "./transport-execution";
 
 assertProductionProviderReady("image");
 
@@ -16,6 +17,7 @@ const worker = runWorker(GEN_QUEUES.imageGenerate, async (job) => {
     attemptsMade: job.attemptsMade,
     maxAttempts: job.maxAttempts,
     acknowledgeCompletion: acknowledgeCompletionManifest,
+    recordTransportExecution,
   });
 });
 

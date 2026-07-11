@@ -11,6 +11,8 @@ const manifest = {
   version: 1 as const,
   attemptId,
   attemptNo: 1,
+  transportAttemptNo: 2,
+  providerIdempotencyKey: `generation:${attemptId}:provider`,
   requestId: "provider_request_1",
   generationJobId: "durable_manifest_job_1",
   mode: "image" as const,
@@ -68,7 +70,10 @@ describe("generation completion manifest durable ingest", () => {
         outcome: null,
       }),
     ]);
-    expect(await prisma.generationTransportExecution.count({ where: { attemptId } })).toBe(1);
+    expect(await prisma.generationTransportExecution.findUnique({ where: { attemptId_transportAttemptNo: { attemptId, transportAttemptNo: 2 } } })).toMatchObject({
+      status: "succeeded",
+      idempotencyKey: manifest.providerIdempotencyKey,
+    });
     expect(await prisma.generationArtifact.count({ where: { attemptId } })).toBe(1);
     expect(await prisma.mainOutboxEvent.findUnique({ where: { id: outboxId } })).toMatchObject({
       eventType: "generation.manifest.accepted.v1",
@@ -83,5 +88,35 @@ describe("generation completion manifest durable ingest", () => {
     });
     expect(result).toEqual({ acknowledged: false, status: "quarantined", receiptId: null });
     expect(await prisma.generationAttempt.findUnique({ where: { id: attemptId } })).toBeNull();
+  });
+
+  it("archives late artifacts without delivery when the business Attempt is cancelled", async () => {
+    const suffix = crypto.randomUUID();
+    const userId = `late-user-${suffix}`;
+    const jobId = `late-job-${suffix}`;
+    const cancelledAttemptId = `late-attempt-${suffix}`;
+    const lateManifest = { ...manifest, attemptId: cancelledAttemptId, generationJobId: jobId, requestId: `late-provider-${suffix}`, providerIdempotencyKey: `generation:${cancelledAttemptId}:provider` };
+    const lateOutboxId = `generation_manifest_${cancelledAttemptId}`;
+    try {
+      await prisma.user.create({ data: { id: userId, email: `${userId}@idream.internal`, status: "active" } });
+      await prisma.generationJob.create({ data: { id: jobId, userId, mode: "image", controls: {}, presetIds: [], status: "cancelled" } });
+      await prisma.generationAttempt.create({ data: { id: cancelledAttemptId, requestId: jobId, attemptNo: 1, status: "cancelled", finishedAt: new Date() } });
+      const input = { manifestRef: `gen/completion-manifests/${cancelledAttemptId}/completion.json`, manifestChecksum: generationManifestChecksum(lateManifest), manifest: lateManifest };
+      await expect(ingestGenerationManifest(input)).resolves.toMatchObject({ acknowledged: true, status: "persisted" });
+      await expect(prisma.generationArtifact.findMany({ where: { attemptId: cancelledAttemptId } })).resolves.toEqual([expect.objectContaining({ validationState: "late_after_cancel", archiveState: "archived", assetId: null })]);
+      await expect(prisma.generationDelivery.count({ where: { requestId: jobId } })).resolves.toBe(0);
+      await expect(prisma.mainOutboxEvent.findUnique({ where: { id: lateOutboxId } })).resolves.toBeNull();
+      await expect(prisma.generationJob.findUnique({ where: { id: jobId } })).resolves.toMatchObject({ status: "cancelled", completedAt: null });
+    } finally {
+      await prisma.mainOutboxEvent.deleteMany({ where: { id: lateOutboxId } });
+      await prisma.inboundEventReceipt.deleteMany({ where: { sourceService: "gen", sourceEventId: cancelledAttemptId } });
+      await prisma.generationJobEvent.deleteMany({ where: { jobId } });
+      await prisma.generationArtifact.deleteMany({ where: { attemptId: cancelledAttemptId } });
+      await prisma.generationTransportExecution.deleteMany({ where: { attemptId: cancelledAttemptId } });
+      await prisma.generationAttemptEvent.deleteMany({ where: { attemptId: cancelledAttemptId } });
+      await prisma.generationAttempt.deleteMany({ where: { id: cancelledAttemptId } });
+      await prisma.generationJob.deleteMany({ where: { id: jobId } });
+      await prisma.user.deleteMany({ where: { id: userId } });
+    }
   });
 });

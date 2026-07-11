@@ -441,6 +441,8 @@ export const aiFinalizePayloadSchema = z.discriminatedUnion("kind", [
         code: z.string(),
         message: z.string(),
         retryable: z.boolean(),
+        attemptOutcome: z.enum(["failed", "unknown"]).optional(),
+        retryability: z.enum(["retryable", "not_retryable", "operator_retry"]).optional(),
       }),
     })
     .passthrough(),

@@ -62,6 +62,7 @@ function videoPayload(overrides: Partial<VideoGeneratePayload> = {}): VideoGener
 function makeProviders(over: Partial<GenProviders> = {}): GenProviders {
   return {
     image: {
+      retryCapabilities: { deterministicIdempotencyKey: true, retryableFailureCodes: ["rate_limited", "overloaded", "timeout", "internal"] },
       generate: vi.fn(async () => ({
         ok: true as const,
         data: {
@@ -73,6 +74,7 @@ function makeProviders(over: Partial<GenProviders> = {}): GenProviders {
       })),
     },
     video: {
+      retryCapabilities: { deterministicIdempotencyKey: true, retryableFailureCodes: ["rate_limited", "overloaded", "timeout", "internal"] },
       generate: vi.fn(async () => ({
         ok: true as const,
         data: { asset: { key: "mock/videos/seed_v1.mp4", seconds: 6 } },
@@ -168,6 +170,8 @@ describe("processImageGenerate", () => {
       version: 1 as const,
       attemptId: "attempt_img_resume",
       attemptNo: 1,
+      transportAttemptNo: 1,
+      providerIdempotencyKey: "generation:attempt_img_resume:provider",
       requestId: "req_img_1",
       generationJobId: "job_img_1",
       mode: "image" as const,
@@ -404,8 +408,10 @@ describe("processImageGenerate", () => {
 
   it("throws (lets the queue retry) on a retryable provider error", async () => {
     const enqueue = vi.fn(async (_: EnqueueInput) => {});
+    const recordTransportExecution = vi.fn(async () => {});
     const providers = makeProviders({
       image: {
+        retryCapabilities: { deterministicIdempotencyKey: true, retryableFailureCodes: ["rate_limited"] },
         generate: vi.fn(async () => ({
           ok: false as const,
           error: { code: "rate_limited", message: "try again", retryable: true },
@@ -419,9 +425,39 @@ describe("processImageGenerate", () => {
         providers,
         attemptsMade: 0,
         maxAttempts: 3,
+        recordTransportExecution,
       }),
     ).rejects.toThrow("try again");
     expect(enqueue).not.toHaveBeenCalled();
+    expect(recordTransportExecution).toHaveBeenNthCalledWith(1, expect.objectContaining({ transportAttemptNo: 1, status: "running", idempotencyKey: "generation:job_img_1:1:provider" }));
+    expect(recordTransportExecution).toHaveBeenNthCalledWith(2, expect.objectContaining({ transportAttemptNo: 1, status: "failed" }));
+  });
+
+  it("does not replay an ambiguous invocation when the provider lacks deterministic idempotency", async () => {
+    const enqueue = vi.fn(async (_: EnqueueInput) => {});
+    const recordTransportExecution = vi.fn(async () => {});
+    const providers = makeProviders({
+      image: {
+        generate: vi.fn(async () => ({ ok: false as const, error: { code: "timeout", message: "provider outcome unknown", retryable: true } })),
+      },
+    });
+
+    await processImageGenerate(imagePayload({ attemptId: "attempt-non-replayable", attemptNo: 1 }), {
+      enqueue,
+      providers,
+      attemptsMade: 0,
+      maxAttempts: 3,
+      recordTransportExecution,
+    });
+
+    expect(providers.image.generate).toHaveBeenCalledTimes(1);
+    expect(recordTransportExecution).toHaveBeenLastCalledWith(expect.objectContaining({ status: "unknown", transportAttemptNo: 1 }));
+    expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      payload: expect.objectContaining({
+        kind: "generation.failed",
+        error: expect.objectContaining({ code: "ambiguous_non_replayable", attemptOutcome: "unknown", retryability: "not_retryable" }),
+      }),
+    }));
   });
 
   it("enqueues generation.failed when retryable errors hit the final attempt", async () => {

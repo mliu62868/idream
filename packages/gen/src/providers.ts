@@ -23,7 +23,15 @@ export type ProviderResult<T> =
   | { ok: true; data: T }
   | { ok: false; error: ProviderFailure };
 
+export interface ProviderRetryCapabilities {
+  readonly deterministicIdempotencyKey: boolean;
+  readonly retryableFailureCodes: readonly string[];
+}
+
+const retryablePipelineCategories = new Set(["rate_limited", "overloaded", "timeout", "internal"]);
+
 export interface ImageModel {
+  readonly retryCapabilities?: ProviderRetryCapabilities;
   generate(input: {
     prompt: string;
     count: number;
@@ -49,6 +57,7 @@ export interface ImageModel {
 }
 
 export interface VideoModel {
+  readonly retryCapabilities?: ProviderRetryCapabilities;
   generate(input: {
     prompt: string;
     seconds: number;
@@ -94,6 +103,7 @@ export interface BlobStore {
 }
 
 class MockImageModel implements ImageModel {
+  readonly retryCapabilities = { deterministicIdempotencyKey: true, retryableFailureCodes: [...retryablePipelineCategories] } as const;
   async generate(input: Parameters<ImageModel["generate"]>[0]) {
     const count = Math.max(1, Math.min(input.count, 4));
     const seed = input.seed ?? "mock";
@@ -111,6 +121,7 @@ class MockImageModel implements ImageModel {
 }
 
 class MockVideoModel implements VideoModel {
+  readonly retryCapabilities = { deterministicIdempotencyKey: true, retryableFailureCodes: [...retryablePipelineCategories] } as const;
   async generate(input: Parameters<VideoModel["generate"]>[0]) {
     return {
       ok: true as const,
@@ -148,8 +159,6 @@ class MockModerationProvider implements ModerationProvider {
     };
   }
 }
-
-const retryablePipelineCategories = new Set(["rate_limited", "overloaded", "timeout", "internal"]);
 
 const pipelineResponseSchema = {
   parse(value: unknown, requestedCount: number) {
@@ -196,6 +205,7 @@ const pipelineResponseSchema = {
 };
 
 class PipelineImageModel implements ImageModel {
+  readonly retryCapabilities = { deterministicIdempotencyKey: true, retryableFailureCodes: [...retryablePipelineCategories] } as const;
   async generate(input: Parameters<ImageModel["generate"]>[0]) {
     const endpoint = pipelineEndpoint("/images/generations");
     if (!endpoint) {
@@ -338,6 +348,7 @@ const pipelineVideoResponseSchema = {
 };
 
 class PipelineVideoModel implements VideoModel {
+  readonly retryCapabilities = { deterministicIdempotencyKey: true, retryableFailureCodes: [...retryablePipelineCategories] } as const;
   async generate(input: Parameters<VideoModel["generate"]>[0]) {
     const endpoint = pipelineEndpoint("/videos/generations");
     if (!endpoint) {
