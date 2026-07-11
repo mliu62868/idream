@@ -1,20 +1,28 @@
 import {
-  savedViewQueryStateSchema,
-  type CollaborationTargetType,
+  savedViewListResponseSchema,
+  savedViewMutationResponseSchema,
+  type SavedView,
   type SavedViewQueryState,
 } from "@idream/shared/admin";
 import type { CaseQueryDraft } from "@/features/cases/query";
 import type { IncidentQueryDraft } from "@/features/incidents/query";
 
-export type SavedViewRecord = {
-  id: string;
-  scope: CollaborationTargetType;
-  label: string;
-  queryState: SavedViewQueryState;
-  version: number;
-  createdAt: string;
-  updatedAt: string;
-};
+export type SavedViewRecord = SavedView;
+
+export function applySavedView(
+  view: SavedViewRecord,
+  onSelectedChange: (id: string | null) => void,
+  onApply: (view: SavedViewRecord) => void,
+) {
+  onSelectedChange(view.id);
+  onApply(view);
+}
+
+export function withoutSavedViewParam(search: string) {
+  const params = new URLSearchParams(search);
+  params.delete("savedView");
+  return params;
+}
 
 export function incidentSavedState(query: IncidentQueryDraft): SavedViewQueryState {
   return {
@@ -57,36 +65,8 @@ export function caseQueryFromSavedState(state: SavedViewQueryState): CaseQueryDr
   };
 }
 
-export const savedViewListSchema = { parse: parseSavedViewList };
-export const savedViewMutationSchema = { parse: parseSavedViewMutation };
-
-function parseSavedViewList(value: unknown): { items: SavedViewRecord[] } {
-  const record = asRecord(value);
-  if (!Array.isArray(record.items)) throw new Error("Saved View authority returned an invalid list");
-  return { items: record.items.map(parseSavedView) };
-}
-
-function parseSavedViewMutation(value: unknown): { view: SavedViewRecord; duplicate: boolean } {
-  const record = asRecord(value);
-  if (typeof record.duplicate !== "boolean") throw new Error("Saved View authority returned an invalid mutation response");
-  return { view: parseSavedView(record.view), duplicate: record.duplicate };
-}
-
-function parseSavedView(value: unknown): SavedViewRecord {
-  const record = asRecord(value);
-  if (typeof record.id !== "string" || !["character_project", "creative_run", "case", "incident"].includes(String(record.scope)) || typeof record.label !== "string" || !Number.isInteger(record.version) || Number(record.version) < 1 || typeof record.createdAt !== "string" || typeof record.updatedAt !== "string") {
-    throw new Error("Saved View authority returned an invalid record");
-  }
-  return {
-    id: record.id,
-    scope: record.scope as CollaborationTargetType,
-    label: record.label,
-    queryState: savedViewQueryStateSchema.parse(record.queryState),
-    version: Number(record.version),
-    createdAt: record.createdAt,
-    updatedAt: record.updatedAt,
-  };
-}
+export const savedViewListSchema = savedViewListResponseSchema;
+export const savedViewMutationSchema = savedViewMutationResponseSchema;
 
 function allowedFilter(value: unknown, allowed: readonly string[], fallback = "") {
   return typeof value === "string" && allowed.includes(value) ? value : fallback;
@@ -94,9 +74,4 @@ function allowedFilter(value: unknown, allowed: readonly string[], fallback = ""
 
 function stringFilter(value: unknown) {
   return typeof value === "string" ? value : "";
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Saved View authority returned an invalid response");
-  return value as Record<string, unknown>;
 }

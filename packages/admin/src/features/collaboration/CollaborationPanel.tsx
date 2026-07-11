@@ -1,7 +1,10 @@
 "use client";
 
 import {
+  collaborationActivityListResponseSchema,
   collaborationActivitySchema,
+  collaborationWatchResponseSchema,
+  type CollaborationActivityListResponse,
   type CollaborationTargetType,
 } from "@idream/shared/admin";
 import { Bell, BellOff, MessageCircle, RefreshCcw, Send } from "lucide-react";
@@ -11,12 +14,7 @@ import { WorkspaceButton, fieldClass, textAreaClass } from "@/features/operation
 
 type Activity = ReturnType<typeof collaborationActivitySchema.parse>;
 
-type ActivityList = {
-  items: Activity[];
-  watching: boolean;
-  pageInfo: { hasNextPage: boolean; endCursor: string | null };
-  asOf: string;
-};
+type ActivityList = CollaborationActivityListResponse;
 
 type ActivityKind = "comment" | "handoff" | "checklist";
 
@@ -60,10 +58,10 @@ export function CollaborationPanel({
       if (cursor) query.set("cursor", cursor);
       const response = await adminV2Request<ActivityList>(
         `/api/v2/admin/collaboration/${targetType}/${encodeURIComponent(targetId)}/activity?${query}`,
-        { schema: activityListSchema },
+        { schema: collaborationActivityListResponseSchema },
       );
       if (currentRequest !== requestId.current) return;
-      setItems((current) => cursor ? [...current, ...response.items] : response.items);
+      setItems((current) => cursor ? [...current, ...response.items] : [...response.items]);
       setWatching(response.watching);
       setPageInfo(response.pageInfo);
       setAccessRestricted(false);
@@ -100,7 +98,7 @@ export function CollaborationPanel({
           method: "PUT",
           idempotencyKey: crypto.randomUUID(),
           body: { watching: next },
-          schema: watchResponseSchema,
+          schema: collaborationWatchResponseSchema,
         },
       );
       setWatching(response.watching);
@@ -198,34 +196,6 @@ export function CollaborationPanel({
 
 export function parseMentionIds(value: string) {
   return [...new Set(value.split(",").map((item) => item.trim()).filter(Boolean))].slice(0, 50);
-}
-
-const activityListSchema = { parse: parseActivityList };
-const watchResponseSchema = { parse: parseWatchResponse };
-
-function parseActivityList(value: unknown): ActivityList {
-  const record = asRecord(value, "Collaboration response");
-  const pageInfo = asRecord(record.pageInfo, "Collaboration page info");
-  if (!Array.isArray(record.items) || typeof record.watching !== "boolean" || typeof record.asOf !== "string" || typeof pageInfo.hasNextPage !== "boolean" || !(typeof pageInfo.endCursor === "string" || pageInfo.endCursor === null)) {
-    throw new Error("Collaboration authority returned an invalid response");
-  }
-  return {
-    items: record.items.map((item) => collaborationActivitySchema.parse(item)),
-    watching: record.watching,
-    pageInfo: { hasNextPage: pageInfo.hasNextPage, endCursor: pageInfo.endCursor },
-    asOf: record.asOf,
-  };
-}
-
-function parseWatchResponse(value: unknown) {
-  const record = asRecord(value, "Watch response");
-  if (typeof record.watching !== "boolean") throw new Error("Watch authority returned an invalid response");
-  return { watching: record.watching };
-}
-
-function asRecord(value: unknown, label: string): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
-  return value as Record<string, unknown>;
 }
 
 function message(cause: unknown, fallback: string) {

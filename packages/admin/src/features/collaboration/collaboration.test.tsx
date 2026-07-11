@@ -2,10 +2,12 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { CollaborationPanel, parseMentionIds } from "./CollaborationPanel";
 import {
+  applySavedView,
   caseQueryFromSavedState,
   caseSavedState,
   incidentQueryFromSavedState,
   incidentSavedState,
+  withoutSavedViewParam,
 } from "./saved-views";
 
 describe("Admin collaboration UI", () => {
@@ -35,5 +37,16 @@ describe("Admin collaboration UI", () => {
   it("fails closed to supported filters when a saved view contains stale values", () => {
     expect(incidentQueryFromSavedState({ search: "", filters: { severity: "catastrophic" }, sort: { field: "id", direction: "asc" }, pageSize: 25 }).severity).toBe("");
     expect(caseQueryFromSavedState({ search: "", filters: { view: "deleted_view" }, sort: { field: "updated_at", direction: "asc" }, pageSize: 25 }).view).toBe("mine");
+  });
+
+  it("applies an updated Saved View and clears stale URL selection without losing filters", () => {
+    const selected: string[] = [];
+    const applied: string[] = [];
+    const now = new Date().toISOString();
+    const view = { id: "view-2", scope: "incident" as const, label: "Critical", queryState: { search: "", filters: { severity: "critical" }, sort: { field: "id", direction: "asc" as const }, pageSize: 30 }, version: 2, createdAt: now, updatedAt: now };
+    applySavedView(view, (id) => { if (id) selected.push(id); }, (next) => applied.push(next.id));
+    expect(selected).toEqual(["view-2"]);
+    expect(applied).toEqual(["view-2"]);
+    expect(withoutSavedViewParam("?severity=critical&savedView=view-1&limit=30").toString()).toBe("severity=critical&limit=30");
   });
 });

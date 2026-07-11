@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { adminCursorQuerySchema, adminIdSchema, adminIsoDateTimeSchema } from "./common";
+import { adminCursorQuerySchema, adminIdSchema, adminIsoDateTimeSchema, adminPageInfoSchema } from "./common";
 
 export const collaborationTargetTypeSchema = z.enum([
   "character_project",
@@ -64,5 +64,30 @@ export const collaborationActivitySchema = z.object({
 
 export const collaborationQuerySchema = adminCursorQuerySchema.pick({ cursor: true, limit: true });
 
+export const savedViewSchema = z.object({
+  id: adminIdSchema,
+  scope: collaborationTargetTypeSchema,
+  label: z.string().trim().min(1).max(80),
+  queryState: savedViewQueryStateSchema,
+  version: z.number().int().positive(),
+  createdAt: adminIsoDateTimeSchema,
+  updatedAt: adminIsoDateTimeSchema,
+}).strict();
+
+export const savedViewListResponseSchema = z.object({ items: z.array(savedViewSchema).readonly() }).strict();
+export const savedViewMutationResponseSchema = z.object({ view: savedViewSchema, duplicate: z.boolean() }).strict();
+export const savedViewUpdateResponseSchema = z.object({ view: savedViewSchema }).strict();
+
+export const collaborationActivityListResponseSchema = z.object({
+  items: z.array(collaborationActivitySchema).readonly(),
+  watching: z.boolean(),
+  pageInfo: adminPageInfoSchema,
+  asOf: adminIsoDateTimeSchema,
+}).strict();
+
+export const collaborationWatchResponseSchema = z.object({ watching: z.boolean(), duplicate: z.boolean() }).strict();
+
 export type SavedViewQueryState = z.infer<typeof savedViewQueryStateSchema>;
 export type CollaborationTargetType = z.infer<typeof collaborationTargetTypeSchema>;
+export type SavedView = z.infer<typeof savedViewSchema>;
+export type CollaborationActivityListResponse = z.infer<typeof collaborationActivityListResponseSchema>;

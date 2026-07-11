@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { experimentDefinitionCreateSchema, savedViewQueryStateSchema } from "./index";
+import {
+  collaborationActivityListResponseSchema,
+  collaborationWatchResponseSchema,
+  experimentDefinitionCreateSchema,
+  savedViewMutationResponseSchema,
+  savedViewQueryStateSchema,
+} from "./index";
 
 describe("admin collaboration and experiment contracts", () => {
   it("rejects unbounded or client-only saved view query state", () => {
@@ -19,5 +25,13 @@ describe("admin collaboration and experiment contracts", () => {
     expect(experimentDefinitionCreateSchema.safeParse(base).success).toBe(true);
     expect(experimentDefinitionCreateSchema.safeParse({ ...base, variants: [{ key: "control", allocationBps: 9_000 }, { key: "treatment", allocationBps: 500 }] }).success).toBe(false);
     expect(experimentDefinitionCreateSchema.safeParse({ ...base, metrics: { ...base.metrics, guardrails: [] } }).success).toBe(false);
+  });
+
+  it("owns collaboration and Saved View authority response contracts", () => {
+    const now = new Date().toISOString();
+    const activity = { id: "activity-1", targetType: "incident", targetId: "incident-1", kind: "comment", actorId: "admin-1", body: "Investigating", mentionedIds: [], metadata: {}, parentId: null, createdAt: now };
+    expect(collaborationActivityListResponseSchema.parse({ items: [activity], watching: true, pageInfo: { hasNextPage: false, endCursor: null }, asOf: now }).items).toHaveLength(1);
+    expect(collaborationWatchResponseSchema.parse({ watching: true, duplicate: false }).watching).toBe(true);
+    expect(savedViewMutationResponseSchema.parse({ view: { id: "view-1", scope: "incident", label: "Mine", queryState: { search: "", filters: {}, sort: { field: "id", direction: "asc" }, pageSize: 30 }, version: 1, createdAt: now, updatedAt: now }, duplicate: false }).view.version).toBe(1);
   });
 });

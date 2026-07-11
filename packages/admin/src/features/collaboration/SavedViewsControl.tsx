@@ -1,14 +1,20 @@
 "use client";
 
-import type { CollaborationTargetType, SavedViewQueryState } from "@idream/shared/admin";
+import {
+  savedViewUpdateResponseSchema,
+  type CollaborationTargetType,
+  type SavedViewQueryState,
+} from "@idream/shared/admin";
 import { Bookmark, RefreshCcw, Save } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { WorkspaceButton, fieldClass } from "@/features/operations/WorkspaceUi";
-import { AdminV2RequestError, adminV2Request } from "@/lib/admin-v2-api";
+import { AdminV2RequestError, adminV2Request, setWorkspaceUrl } from "@/lib/admin-v2-api";
 import {
+  applySavedView,
   savedViewListSchema,
   savedViewMutationSchema,
   type SavedViewRecord,
+  withoutSavedViewParam,
 } from "./saved-views";
 
 export function SavedViewsControl({
@@ -31,21 +37,30 @@ export function SavedViewsControl({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
+  const clearSelection = useCallback(() => {
+    onSelectedChange(null);
+    setLabel("");
+    setNotice(null);
+    if (typeof window !== "undefined") {
+      setWorkspaceUrl(withoutSavedViewParam(window.location.search));
+    }
+  }, [onSelectedChange]);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const response = await adminV2Request(`/api/v2/admin/saved-views?scope=${scope}`, { schema: savedViewListSchema });
-      setViews(response.items);
+      setViews([...response.items]);
       const selected = response.items.find((view) => view.id === selectedId);
       if (selected) setLabel(selected.label);
-      else if (selectedId) onSelectedChange(null);
+      else if (selectedId) clearSelection();
     } catch (cause) {
       setError(message(cause, "Saved Views could not be loaded"));
     } finally {
       setLoading(false);
     }
-  }, [onSelectedChange, scope, selectedId]);
+  }, [clearSelection, scope, selectedId]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0);
@@ -54,13 +69,12 @@ export function SavedViewsControl({
 
   const select = (id: string) => {
     const view = views.find((item) => item.id === id);
-    onSelectedChange(view?.id ?? null);
     if (view) {
+      applySavedView(view, onSelectedChange, onApply);
       setLabel(view.label);
       setNotice(`Applied ${view.label}.`);
       setError(null);
-      onApply(view);
-    }
+    } else clearSelection();
   };
 
   const saveNew = async () => {
@@ -76,8 +90,7 @@ export function SavedViewsControl({
         schema: savedViewMutationSchema,
       });
       await load();
-      onSelectedChange(response.view.id);
-      onApply(response.view);
+      applySavedView(response.view, onSelectedChange, onApply);
       setLabel(response.view.label);
       setNotice(`Saved ${response.view.label}.`);
     } catch (cause) {
@@ -100,6 +113,7 @@ export function SavedViewsControl({
         schema: savedViewUpdateResponseSchema,
       });
       setViews((items) => items.map((item) => item.id === response.view.id ? response.view : item));
+      applySavedView(response.view, onSelectedChange, onApply);
       setNotice(`Updated ${response.view.label}.`);
     } catch (cause) {
       if (cause instanceof AdminV2RequestError && cause.status === 409) {
@@ -128,14 +142,6 @@ export function SavedViewsControl({
     </section>
   );
 }
-
-const savedViewUpdateResponseSchema = {
-  parse(value: unknown) {
-    if (!value || typeof value !== "object" || Array.isArray(value) || !("view" in value)) throw new Error("Saved View authority returned an invalid update response");
-    const mutation = savedViewMutationSchema.parse({ view: value.view, duplicate: false });
-    return { view: mutation.view };
-  },
-};
 
 function message(cause: unknown, fallback: string) {
   return cause instanceof Error ? cause.message : fallback;
