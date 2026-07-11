@@ -1,18 +1,17 @@
 "use client";
 
 // SPEC: 生成质量 + 增长洞察面板（ADMIN_PHASE3_DESIGN §5.1/§5.3 的 UI）。
-//   - 留存 cohort 表 + Analytics CSV 导出（浏览器下载）。
+//   - Phase 0 hides invalid legacy retention values and export.
 //   - 按 profile id 查健康度 + 跑 dry-run。
 // INTENT: 自取数、无 props；样式对齐 TagsView。
-import { useEffect, useState } from "react";
-import { Activity, Download, Loader2, RefreshCcw } from "lucide-react";
+import { useState } from "react";
+import { Activity, AlertTriangle, Loader2 } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
 
 const inputClass =
   "rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]";
 
-type RetentionRow = { cohort: string; size: number; d1: number; d7: number; d1Rate: number; d7Rate: number };
 type Health = {
   metrics: {
     total: number;
@@ -43,101 +42,18 @@ export function InsightsView() {
 
 function RetentionSection() {
   const { t } = useAdminI18n();
-  const [rows, setRows] = useState<RetentionRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [exporting, setExporting] = useState(false);
-
-  async function load() {
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await apiGet<{ items: RetentionRow[] }>("/api/v1/admin/analytics/retention");
-      setRows(data.items);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Load failed");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => void load(), 0);
-    return () => window.clearTimeout(timer);
-  }, []);
-
-  async function exportCsv() {
-    setExporting(true);
-    setError(null);
-    try {
-      const data = await apiGet<{ csv: string }>("/api/v1/admin/analytics/export");
-      const blob = new Blob([data.csv], { type: "text/csv" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "analytics-export.csv";
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Export failed");
-    } finally {
-      setExporting(false);
-    }
-  }
 
   return (
-    <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
-      <div className="flex items-center justify-between border-b border-[var(--ad-border)] p-3">
-        <h2 className="text-sm font-semibold">{t("Retention cohorts (D1 / D7)")}</h2>
-        <div className="flex items-center gap-2">
-          <button
-            className="rounded-md inline-flex h-9 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm disabled:opacity-50"
-            disabled={exporting}
-            onClick={() => void exportCsv()}
-            type="button"
-          >
-            {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-            {t("Export CSV")}
-          </button>
-          <button
-            className="rounded-md inline-flex h-9 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm disabled:opacity-50"
-            disabled={loading}
-            onClick={() => void load()}
-            type="button"
-          >
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-            {t("Refresh")}
-          </button>
+    <section className="rounded-lg border border-[var(--ad-yellow-text)]/25 bg-[var(--ad-yellow-bg)] p-4" role="status">
+      <div className="flex items-start gap-3">
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--ad-yellow-text)]" />
+        <div>
+          <h2 className="text-sm font-semibold text-[var(--ad-yellow-text)]">{t("D1 / D7 retention · invalid for decisions")}</h2>
+          <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
+            {t("Legacy v1 measures any activity inside cumulative 1/7-day windows, not exact calendar-day return. Values and export are unavailable until Metric Registry v2 is certified.")}
+          </p>
         </div>
       </div>
-      {error ? <p className="px-3 py-2 text-xs text-[var(--ad-red-text)]">{error}</p> : null}
-      <table className="w-full text-left text-sm">
-        <thead className="border-b border-[var(--ad-border)] text-xs text-[var(--ad-text-muted)]">
-          <tr>
-            <th className="px-3 py-2 font-medium">{t("cohort")}</th>
-            <th className="px-3 py-2 font-medium">{t("size")}</th>
-            <th className="px-3 py-2 font-medium">D1</th>
-            <th className="px-3 py-2 font-medium">D7</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={row.cohort} className="border-b border-[var(--ad-border)]">
-              <td className="px-3 py-2 font-mono text-xs">{row.cohort}</td>
-              <td className="px-3 py-2">{row.size}</td>
-              <td className="px-3 py-2">{row.d1Rate}% ({row.d1})</td>
-              <td className="px-3 py-2">{row.d7Rate}% ({row.d7})</td>
-            </tr>
-          ))}
-          {rows.length === 0 && !loading ? (
-            <tr>
-              <td className="px-3 py-6 text-center text-xs text-[var(--ad-text-muted)]" colSpan={4}>
-                {t("No cohorts in window.")}
-              </td>
-            </tr>
-          ) : null}
-        </tbody>
-      </table>
     </section>
   );
 }

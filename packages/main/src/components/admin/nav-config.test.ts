@@ -1,44 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { navItems, normalizeSection, NAV_GROUP_ORDER } from "./nav-config";
+import {
+  ADMIN_WORKSPACES,
+  adminEntryRedirect,
+  defaultWorkModeForRole,
+  navGroupsForPermissions,
+  navItems,
+  normalizeSection,
+  parseAdminPath,
+  sectionIsPermitted,
+  type WorkMode,
+} from "./nav-config";
 
-describe("nav-config (baseline SSoT)", () => {
-  it("has unique section ids", () => {
-    const ids = navItems.map((item) => item.id);
-    expect(new Set(ids).size).toBe(ids.length);
-  });
-
-  it("every href matches /admin/<id> (dashboard = /admin)", () => {
-    for (const item of navItems) {
-      const expected = item.id === "dashboard" ? "/admin" : `/admin/${item.id}`;
-      expect(item.href).toBe(expected);
-    }
-  });
-
-  it("normalizeSection returns each known id unchanged", () => {
-    for (const item of navItems) {
-      expect(normalizeSection(item.id)).toBe(item.id);
-    }
-  });
-
-  it("normalizeSection aliases generation/models to generation/config", () => {
-    expect(normalizeSection("generation/models")).toBe("generation/config");
-  });
-
-  it("normalizeSection falls back to dashboard for unknown ids", () => {
-    expect(normalizeSection("nope/nope")).toBe("dashboard");
-  });
-
-  it("NAV_GROUP_ORDER lists each group once, in first-seen order", () => {
-    expect(new Set(NAV_GROUP_ORDER).size).toBe(NAV_GROUP_ORDER.length);
-    expect(NAV_GROUP_ORDER[0]).toBe("Daily");
-  });
-});
-
-import { configSliceForSection } from "./nav-config";
-
-// Frozen snapshot of the pre-redesign section ids — none may be lost.
 const ORIGINAL_IDS = [
-  "dashboard", "generation/jobs", "generation/config", "generation/dead-letter",
+  "dashboard", "generation/jobs", "generation/config", "generation/recipes", "generation/presets", "generation/dead-letter",
   "ops/providers", "generation/backends", "generation/workflows", "generation/metrics",
   "content/production", "content/assets", "content/placements", "content",
   "content/official", "content/templates", "content/tags", "content/review-queue",
@@ -47,119 +21,83 @@ const ORIGINAL_IDS = [
   "approvals", "audit-log",
 ];
 
-function idsInGroup(group: string) {
-  return navItems.filter((item) => item.group === group).map((item) => item.id);
-}
-
-describe("nav-config (redesigned IA)", () => {
-  it("keeps every original screen (nothing lost in migration)", () => {
-    const ids = new Set(navItems.map((item) => item.id));
-    for (const id of ORIGINAL_IDS) expect(ids.has(id)).toBe(true);
+describe("admin navigation information architecture", () => {
+  it("preserves every legacy capability exactly once inside the seven workspaces", () => {
+    expect(navItems.map((item) => item.id).sort()).toEqual([...ORIGINAL_IDS].sort());
+    expect(new Set(navItems.map((item) => item.id)).size).toBe(ORIGINAL_IDS.length);
+    expect(new Set(navItems.map((item) => item.group))).toEqual(new Set(ADMIN_WORKSPACES));
   });
 
-  it("orders groups as Daily followed by the 7 folded groups (guided nav re-tier)", () => {
-    expect(NAV_GROUP_ORDER).toEqual([
-      "Daily", "CharacterConfig", "Operations", "Media", "Business", "Insights", "GenerationOps", "Engineering", "System",
-    ]);
-  });
-
-  it("puts each concept in exactly one declared home", () => {
-    expect(idsInGroup("CharacterConfig")).toEqual([
-      "content/templates", "content/tags",
-    ]);
-    expect(idsInGroup("Operations")).toEqual(["generation/config", "generation/recipes", "generation/presets"]);
-    expect(idsInGroup("GenerationOps")).toEqual([
-      "generation/jobs", "generation/dead-letter", "generation/backends", "ops/providers",
-    ]);
-    expect(idsInGroup("Engineering")).toEqual(["generation/workflows", "generation/metrics"]);
-    expect(idsInGroup("Media")).toEqual([
-      "content/assets", "content/placements", "cms",
-    ]);
-  });
-
-  it("uses distinct icons within each pipeline group", () => {
-    for (const group of ["CharacterConfig", "Operations", "Media"]) {
-      const icons = navItems.filter((i) => i.group === group).map((i) => i.icon);
-      expect(new Set(icons).size).toBe(icons.length);
-    }
-  });
-
-  it("maps generation config sections to slices", () => {
-    expect(configSliceForSection("generation/config")).toBe("profiles");
-    expect(configSliceForSection("generation/recipes")).toBeNull();
-    expect(configSliceForSection("generation/presets")).toBeNull();
-    expect(configSliceForSection("content/tags")).toBeNull();
-  });
-});
-
-import { NAV_DAILY, NAV_FOLDED_GROUPS } from "./nav-config";
-
-describe("nav-config tiers (guided nav)", () => {
-  it("pins exactly the 7 daily items in order", () => {
-    expect(NAV_DAILY.map((i) => i.id)).toEqual([
-      "dashboard", "content/review-queue", "moderation",
-      "content/official", "content/production", "content", "support",
-    ]);
-  });
-  it("every daily item has tier daily; every folded item has tier folded", () => {
-    for (const i of NAV_DAILY) expect(i.tier).toBe("daily");
-    for (const g of NAV_FOLDED_GROUPS) for (const i of g.items) expect(i.tier).toBe("folded");
-  });
-  it("loses nothing — daily + folded covers all 34 nav ids exactly once", () => {
-    const ids = [...NAV_DAILY, ...NAV_FOLDED_GROUPS.flatMap((g) => g.items)].map((i) => i.id);
-    expect(new Set(ids).size).toBe(ids.length);
-    expect(ids.length).toBe(navItems.length);
-    expect(new Set(ids)).toEqual(new Set(navItems.map((i) => i.id)));
-  });
-  it("orders folded groups with Engineering + System last", () => {
-    const names = NAV_FOLDED_GROUPS.map((g) => g.group);
-    expect(names).toEqual([
-      "CharacterConfig", "Operations", "Media", "Business", "Insights", "GenerationOps", "Engineering", "System",
-    ]);
-  });
-});
-
-import { parseAdminPath } from "./nav-config";
-
-describe("parseAdminPath (list/new/detail subviews)", () => {
-  const SUBVIEW_IDS = [
-    "content/official", "content/templates", "generation/recipes",
-    "generation/presets", "content/assets", "content/placements",
-  ];
-
-  it("known section ids resolve to list view", () => {
+  it("publishes canonical workspace URLs while retaining each legacy URL", () => {
     for (const item of navItems) {
-      expect(parseAdminPath(item.id)).toEqual({ sectionId: item.id, view: { kind: "list" } });
+      expect(item.href).toMatch(/^\/admin\/(today|characters|creative|cases|customers|customer-ops|growth|ops|system)/);
+      expect(item.legacyHref).toBe(item.id === "dashboard" ? "/admin" : `/admin/${item.id}`);
     }
   });
 
-  it("<section>/new resolves to new view for every subview section", () => {
-    for (const id of SUBVIEW_IDS) {
-      expect(parseAdminPath(`${id}/new`)).toEqual({ sectionId: id, view: { kind: "new" } });
+  it("maps canonical routes and query-backed saved views onto legacy implementations", () => {
+    expect(parseAdminPath("today")).toEqual({ sectionId: "dashboard", view: { kind: "list" } });
+    expect(parseAdminPath("characters/new")).toEqual({ sectionId: "content/official", view: { kind: "new" } });
+    expect(parseAdminPath("characters/char-1")).toEqual({ sectionId: "content/official", view: { kind: "detail", id: "char-1" } });
+    expect(parseAdminPath("cases?view=support").sectionId).toBe("support");
+    expect(parseAdminPath("growth/offers?view=promo").sectionId).toBe("promo");
+    expect(parseAdminPath("ops/recipes?view=presets").sectionId).toBe("generation/presets");
+    expect(parseAdminPath("growth/merchandising?view=announcements").sectionId).toBe("announcements");
+  });
+
+  it("keeps every legacy path executable during migration", () => {
+    for (const id of ORIGINAL_IDS) expect(normalizeSection(id)).toBe(id);
+    expect(normalizeSection("generation/models")).toBe("generation/config");
+  });
+
+  it("redirects only entry aliases and preserves query state", () => {
+    expect(adminEntryRedirect([], { view: "mine", severity: ["p0", "p1"] })).toBe(
+      "/admin/today?view=mine&severity=p0&severity=p1",
+    );
+    expect(adminEntryRedirect(["inbox"], { view: "unassigned" })).toBe(
+      "/admin/today?view=unassigned",
+    );
+    expect(adminEntryRedirect(["users"], {})).toBeNull();
+  });
+});
+
+describe("permission and work-mode navigation", () => {
+  it("never exposes a section without one of its effective permissions", () => {
+    const supportPermissions = new Set([
+      "dashboard.read", "support.request.read", "user.read", "billing.read", "audit.read",
+    ]);
+    const groups = navGroupsForPermissions(supportPermissions, "support");
+    const ids = groups.flatMap((group) => group.items.map((item) => item.id));
+
+    expect(ids).toContain("support");
+    expect(ids).toContain("users");
+    expect(ids).not.toContain("generation/config");
+    expect(ids).not.toContain("pricing");
+    for (const id of ids) expect(sectionIsPermitted(id, supportPermissions)).toBe(true);
+  });
+
+  it("uses work mode only to reorder permitted workspaces, never to grant access", () => {
+    const permissions = new Set(navItems.flatMap((item) => item.permissions));
+    const expectedIds = new Set(navItems.map((item) => item.id));
+    const modes: WorkMode[] = [
+      "character_producer", "creative_operator", "platform_ops", "support",
+      "moderator", "growth_analyst", "admin",
+    ];
+
+    for (const mode of modes) {
+      const groups = navGroupsForPermissions(permissions, mode);
+      expect(new Set(groups.flatMap((group) => group.items.map((item) => item.id)))).toEqual(expectedIds);
     }
+    expect(navGroupsForPermissions(permissions, "support")[0]?.group).toBe("Today");
+    expect(navGroupsForPermissions(permissions, "support")[1]?.group).toBe("Customer Operations");
+    expect(navGroupsForPermissions(permissions, "platform_ops")[1]?.group).toBe("Platform Operations");
   });
 
-  it("<section>/<id> resolves to detail view with the id", () => {
-    for (const id of SUBVIEW_IDS) {
-      expect(parseAdminPath(`${id}/abc123`)).toEqual({
-        sectionId: id,
-        view: { kind: "detail", id: "abc123" },
-      });
-    }
-  });
-
-  it("extra segments on non-subview sections fall back to dashboard", () => {
-    expect(parseAdminPath("users/abc")).toEqual({
-      sectionId: "dashboard",
-      view: { kind: "list" },
-    });
-    expect(parseAdminPath("nope/nope/nope")).toEqual({
-      sectionId: "dashboard",
-      view: { kind: "list" },
-    });
-  });
-
-  it("keeps the generation/models alias working", () => {
-    expect(parseAdminPath("generation/models").sectionId).toBe("generation/config");
+  it("derives conservative default modes from existing auth roles", () => {
+    expect(defaultWorkModeForRole("moderator")).toBe("moderator");
+    expect(defaultWorkModeForRole("support")).toBe("support");
+    expect(defaultWorkModeForRole("ops")).toBe("platform_ops");
+    expect(defaultWorkModeForRole("analyst")).toBe("growth_analyst");
+    expect(defaultWorkModeForRole("admin")).toBe("admin");
   });
 });

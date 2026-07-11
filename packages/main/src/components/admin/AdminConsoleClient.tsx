@@ -31,7 +31,6 @@ import {
   UploadCloud,
   Workflow,
   X,
-  type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { apiDelete, apiForm, apiGet, apiWrite, formatApiError, type ApiEnvelope } from "@/components/admin/api";
@@ -50,6 +49,7 @@ import { ComplianceView } from "@/components/admin/ComplianceView";
 import { InsightsView } from "@/components/admin/InsightsView";
 import { AnnouncementsView } from "@/components/admin/AnnouncementsView";
 import { ExperimentsView } from "@/components/admin/ExperimentsView";
+import { TodayView, type TodayLegacyData } from "@/components/admin/today/TodayView";
 import { PlacementsSection } from "@/components/admin/placements/PlacementsSection";
 import { ImageProductionView } from "@/components/admin/ImageProductionView";
 import { OperatorFlow, type OperatorFlowItem } from "@/components/admin/generation/OperatorFlow";
@@ -70,12 +70,15 @@ import {
   navItems,
   parseAdminPath,
   configSliceForSection,
-  NAV_DAILY,
-  NAV_FOLDED_GROUPS,
+  defaultWorkModeForRole,
+  navGroupsForPermissions,
+  sectionIsPermitted,
   type AdminSubview,
   type ConfigSlice,
   type NavItem,
+  type WorkMode,
 } from "@/components/admin/nav-config";
+import type { AdminShellSignals } from "@/components/admin/shell-signals";
 
 type Actor = {
   id: string;
@@ -86,6 +89,8 @@ type AdminConsoleClientProps = {
   actor: Actor | null;
   initialSection: string;
   initialAccess: boolean;
+  initialPermissions: string[];
+  shellSignals: AdminShellSignals;
   // dev-only：展示退出按钮以便切换内置账号。
   devLogout?: boolean;
 };
@@ -142,15 +147,7 @@ type PlaintextAccessResult = {
   };
 };
 
-type DashboardData = {
-  metrics: {
-    users: { active: number; suspended: number };
-    generation: { queued: number; failed: number; blocked: number; successRate: number };
-    moderation: { openReports: number };
-    billing: { activeSubscriptions: number };
-  };
-  featureFlags: Row[];
-};
+type DashboardData = TodayLegacyData;
 
 type ConfigData = {
   profiles: Row[];
@@ -169,7 +166,13 @@ type ReconciliationData = {
 
 type AnalyticsData = {
   window: { from: string; to: string };
-  funnel: { signups: number; activatedUsers: number; payingUsers: number; conversionRate: number };
+  funnel: {
+    signups: number;
+    activatedUsers: number | null;
+    payingUsers: number;
+    conversionRate: number | null;
+    qualityState?: "certified" | "directional" | "invalid" | "stale";
+  };
   generation: { total: number; completed: number; failed: number; blocked: number };
   economy: { coinsGranted: number; coinsSpent: number; net: number; byReason: Row[] };
   topEvents: Row[];
@@ -612,16 +615,35 @@ const schedulerOptions = [
 
 // SPEC: localStorage key for which folded sidebar nav groups the operator last expanded.
 const NAV_GROUPS_STORAGE_KEY = "idream.admin.openNavGroups";
+const WORK_MODE_STORAGE_KEY = "idream.admin.workMode";
+const WORK_MODE_OPTIONS: Array<{ value: WorkMode; label: string }> = [
+  { value: "admin", label: "Admin" },
+  { value: "character_producer", label: "Character producer" },
+  { value: "creative_operator", label: "Creative operator" },
+  { value: "platform_ops", label: "Platform ops" },
+  { value: "support", label: "Support" },
+  { value: "moderator", label: "Moderator" },
+  { value: "growth_analyst", label: "Growth analyst" },
+];
 
 export function AdminConsoleClient({
   actor,
   initialSection,
   initialAccess,
+  initialPermissions,
+  shellSignals,
   devLogout = false,
 }: AdminConsoleClientProps) {
   const sidebarNavRef = useRef<HTMLElement | null>(null);
   const { sectionId, view: subview } = parseAdminPath(initialSection);
   const activeItem = navItems.find((item) => item.id === sectionId) ?? navItems[0];
+  const permissions = useMemo(() => new Set(initialPermissions), [initialPermissions]);
+  const canAccessActiveSection = sectionIsPermitted(sectionId, permissions);
+  const [workMode, setWorkMode] = useState<WorkMode>(() => defaultWorkModeForRole(actor?.role));
+  const navGroups = useMemo(
+    () => navGroupsForPermissions(permissions, workMode),
+    [permissions, workMode],
+  );
   const [data, setData] = useState<SectionData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -664,8 +686,21 @@ export function AdminConsoleClient({
     storeAdminLocale(locale);
   }, [locale, localeReady]);
 
+  useEffect(() => {
+    if (actor?.role !== "admin") return;
+    const frame = window.requestAnimationFrame(() => {
+      try {
+        const stored = window.localStorage.getItem(WORK_MODE_STORAGE_KEY) as WorkMode | null;
+        if (WORK_MODE_OPTIONS.some((option) => option.value === stored)) setWorkMode(stored ?? "admin");
+      } catch {
+        // Storage is a preference only; authorization is always server-derived.
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [actor?.role]);
+
   async function load(nextChatOpsFilters: ChatOpsFilters = chatOpsFilters) {
-    if (!initialAccess) return;
+    if (!initialAccess || !canAccessActiveSection) return;
     setLoading(true);
     setError(null);
     try {
@@ -684,7 +719,7 @@ export function AdminConsoleClient({
     return () => window.clearTimeout(timer);
     // sectionId is derived from the route; load should run when the route changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sectionId, initialAccess]);
+  }, [sectionId, initialAccess, canAccessActiveSection]);
 
   function openAction(action: PendingAction) {
     setReason("");
@@ -831,23 +866,22 @@ export function AdminConsoleClient({
             </div>
           </div>
           <nav ref={sidebarNavRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
-            <p className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-normal text-[var(--ad-text-muted)]">
-              {t("Daily")}
-            </p>
-            {NAV_DAILY.map((item) => (
-              <NavLink active={item.id === sectionId} item={item} key={item.id} />
-            ))}
-            <div className="mt-3 border-t border-[var(--ad-border)] pt-3">
-              {NAV_FOLDED_GROUPS.map(({ group, items }) => {
-                // Progressive disclosure: collapsed unless the operator opened it, or
-                // it holds the active item (auto-revealed without persisting the toggle).
-                // The group holding the active item is force-open; its header is inert —
-                // a real toggle there only mutates persisted openGroups without visibly
-                // collapsing (open stays true), silently corrupting the saved state.
-                const forcedOpen = activeItem.group === group;
-                const open = openGroups.has(group) || forcedOpen;
+            {navGroups.map(({ group, items }, groupIndex) => {
+              if (group === "Today") {
                 return (
-                  <div key={group}>
+                  <div className="pb-2" key={group}>
+                    {items.map((item) => (
+                      <NavLink active={item.id === sectionId} item={item} key={item.id} />
+                    ))}
+                  </div>
+                );
+              }
+              // Progressive disclosure: collapsed unless the operator opened it, or
+              // it holds the active item (auto-revealed without persisting the toggle).
+              const forcedOpen = activeItem.group === group;
+              const open = openGroups.has(group) || forcedOpen;
+              return (
+                <div className={cn(groupIndex === 1 && "border-t border-[var(--ad-border)] pt-3")} key={group}>
                     <button
                       aria-disabled={forcedOpen}
                       aria-expanded={open}
@@ -868,10 +902,9 @@ export function AdminConsoleClient({
                           <NavLink active={item.id === sectionId} item={item} key={item.id} />
                         ))
                       : null}
-                  </div>
-                );
-              })}
-            </div>
+                </div>
+              );
+            })}
           </nav>
         </aside>
 
@@ -880,7 +913,7 @@ export function AdminConsoleClient({
             <div className="grid gap-3 px-4 py-3 md:px-6 lg:flex lg:min-h-14 lg:items-center">
               <div className="min-w-0">
                 <h1 className="text-base font-semibold md:text-lg">{t(activeItem.label)}</h1>
-                <p className="truncate text-[11px] text-[var(--ad-text-muted)]">{actor.id}</p>
+                <p className="truncate text-[11px] text-[var(--ad-text-muted)]">{actor.id} · {t(workModeLabel(workMode))}</p>
               </div>
               <div className="grid gap-2 sm:grid-cols-[1fr_auto] lg:ml-auto lg:flex lg:items-center">
                 <div className="flex h-9 min-w-0 items-center gap-2 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 lg:w-[260px]">
@@ -895,6 +928,29 @@ export function AdminConsoleClient({
                   />
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
+                  {actor.role === "admin" ? (
+                    <label className="inline-flex h-9 items-center gap-2 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)]">
+                      <span className="sr-only">{t("Work mode")}</span>
+                      <select
+                        aria-label={t("Work mode")}
+                        className="h-full bg-transparent text-sm outline-none"
+                        onChange={(event) => {
+                          const nextMode = event.target.value as WorkMode;
+                          setWorkMode(nextMode);
+                          try {
+                            window.localStorage.setItem(WORK_MODE_STORAGE_KEY, nextMode);
+                          } catch {
+                            // Preference persistence failure must not affect authorization.
+                          }
+                        }}
+                        value={workMode}
+                      >
+                        {WORK_MODE_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>{t(option.label)}</option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
                   <label className="inline-flex h-9 items-center gap-2 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)]">
                     <Languages className="h-4 w-4 text-[var(--ad-text-muted)]" />
                     <span className="sr-only">{t("Language")}</span>
@@ -932,8 +988,9 @@ export function AdminConsoleClient({
                 </div>
               </div>
             </div>
+            <ShellSignalBar signals={shellSignals} />
             <nav className="flex gap-2 overflow-x-auto border-t border-[var(--ad-border)] px-4 py-2 md:px-6 lg:hidden">
-              {navItems.map((item) => {
+              {navGroups.flatMap((group) => group.items).map((item) => {
                 const Icon = item.icon;
                 const active = item.id === sectionId;
                 return (
@@ -973,7 +1030,21 @@ export function AdminConsoleClient({
                 {actionStatus}
               </div>
             ) : null}
-            {loading && !filteredData ? (
+            {!canAccessActiveSection ? (
+              <section
+                aria-labelledby="admin-section-denied-title"
+                className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6"
+                data-testid="admin-section-permission-denied"
+              >
+                <div className="flex items-center gap-3">
+                  <Ban className="h-5 w-5 text-[var(--ad-red-text)]" />
+                  <h2 className="text-base font-semibold" id="admin-section-denied-title">{t("No permission for this workspace")}</h2>
+                </div>
+                <p className="mt-2 text-sm text-[var(--ad-text-muted)]">
+                  {t("Your effective permission keys do not include this capability. Navigation updates after a permission change and refresh.")}
+                </p>
+              </section>
+            ) : loading && !filteredData ? (
               <div className="flex h-48 items-center justify-center text-[var(--ad-text-muted)]">
                 <Loader2 className="mr-2 h-5 w-5 animate-spin" />
                 {t("Loading")}
@@ -998,6 +1069,8 @@ export function AdminConsoleClient({
                   void load(next);
                 },
                 reload: () => void load(),
+                permissions,
+                workMode,
               })
             )}
           </div>
@@ -1154,6 +1227,41 @@ export function AdminConsoleClient({
     </main>
     </AdminI18nProvider>
   );
+}
+
+function ShellSignalBar({ signals }: { signals: AdminShellSignals }) {
+  const { t } = useAdminI18n();
+  const signalItems = [
+    { key: "environment", label: "Environment", value: signals.environment },
+    { key: "data-class", label: "Data class", value: signals.dataClass },
+    { key: "fixtures", label: "Fixtures", value: signals.fixtureState },
+    { key: "timezone", label: "Product timezone", value: signals.productTimezone },
+    { key: "freshness", label: "Freshness", value: signals.freshness.label },
+  ];
+
+  return (
+    <div
+      aria-label={t("Data provenance")}
+      className="flex gap-2 overflow-x-auto border-t border-[var(--ad-border)] px-4 py-2 md:px-6"
+      data-testid="admin-shell-signals"
+      role="status"
+    >
+      {signalItems.map((signal) => (
+        <span
+          className="shrink-0 rounded-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-2.5 py-1 text-[10px] text-[var(--ad-text-muted)]"
+          data-signal={signal.key}
+          key={signal.key}
+        >
+          <span className="font-semibold uppercase">{t(signal.label)}</span>{" "}
+          <span className="text-[var(--ad-ink)]">{t(signal.value)}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function workModeLabel(mode: WorkMode) {
+  return WORK_MODE_OPTIONS.find((option) => option.value === mode)?.label ?? "Admin";
 }
 
 // SPEC: shared sidebar link markup for both the pinned daily section and the
@@ -2132,10 +2240,14 @@ function renderSection(
     setChatOpsFilters: (value: ChatOpsFilters) => void;
     applyChatOpsFilters: (value: ChatOpsFilters) => void;
     reload: () => void | Promise<void>;
+    permissions: ReadonlySet<string>;
+    workMode: WorkMode;
   },
 ) {
   if (!section) return null;
-  if (section.kind === "dashboard") return <DashboardView data={section.data} />;
+  if (section.kind === "dashboard") {
+    return <TodayView data={section.data} permissions={ctx.permissions} workMode={ctx.workMode} />;
+  }
   if (section.kind === "jobs") return <JobsView rows={section.rows} openAction={ctx.openAction} />;
   if (section.kind === "config") {
     return (
@@ -2261,106 +2373,6 @@ function renderSection(
     );
   }
   return <AuditView rows={section.rows} />;
-}
-
-// SPEC: guided Dashboard — three stacked sections, top to bottom: attention (what needs
-//       you), task launcher (what you probably want to do), health (the old metrics grid).
-// INTENT: replace the cold metrics dump with a landing that answers "what needs me / what do
-//         I want to do" first; health stays available but de-emphasized. Zero new API — the
-//         2 counts DashboardData doesn't carry (pending submissions, open tickets) are fetched
-//         client-side from list endpoints that already exist and are used elsewhere.
-// INVARIANTS: fetch failure/empty never blocks the panel — null counts render "—", the two
-//             DashboardData-sourced attention tiles always show regardless of fetch state.
-function DashboardView({ data }: { data: DashboardData }) {
-  const { t } = useAdminI18n();
-  const [pending, setPending] = useState<{ submissions: number | null; tickets: number | null }>({
-    submissions: null,
-    tickets: null,
-  });
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const [rq, sup] = await Promise.all([
-          apiGet<{ items: unknown[] }>("/api/v1/admin/content/review-queue?status=pending"),
-          apiGet<{ items: unknown[] }>("/api/v1/admin/support/requests?status=active"),
-        ]);
-        if (!cancelled) setPending({ submissions: rq.items.length, tickets: sup.items.length });
-      } catch {
-        if (!cancelled) setPending({ submissions: null, tickets: null });
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  return (
-    <div className="space-y-6">
-      <section className="space-y-3">
-        <h2 className="text-sm font-semibold text-[var(--ad-ink)]">{t("Needs your attention")}</h2>
-        <div className="rounded-lg grid gap-px overflow-hidden border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
-          <Metric
-            href="/admin/generation/jobs"
-            label="Failed/blocked jobs"
-            meta="Handle"
-            value={data.metrics.generation.failed + data.metrics.generation.blocked}
-          />
-          <Metric
-            href="/admin/moderation"
-            label="Open reports"
-            meta="Handle"
-            value={data.metrics.moderation.openReports}
-          />
-          <Metric
-            href="/admin/content/review-queue"
-            label="Pending submissions"
-            meta="Handle"
-            value={pending.submissions === null ? "—" : pending.submissions}
-          />
-          <Metric
-            href="/admin/support"
-            label="Open tickets"
-            meta="Handle"
-            value={pending.tickets === null ? "—" : pending.tickets}
-          />
-        </div>
-      </section>
-
-      <section className="space-y-3">
-        <h2 className="text-sm font-semibold text-[var(--ad-ink)]">{t("Common tasks")}</h2>
-        <div className="grid gap-3 md:grid-cols-3">
-          <TaskCard href="/admin/content/official" icon={ShieldCheck} label="Add official character" />
-          <TaskCard href="/admin/content/production" icon={Play} label="Batch generate images" />
-          <TaskCard href="/admin/content/review-queue" icon={ClipboardCheck} label="Go to review queue" />
-        </div>
-      </section>
-
-      <section className="space-y-3">
-        <h2 className="text-xs font-semibold uppercase text-[var(--ad-text-muted)]">{t("Health overview")}</h2>
-        <div className="rounded-lg grid gap-px overflow-hidden border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
-          <Metric
-            label="Users"
-            value={data.metrics.users.active}
-            meta={t("{count} suspended", { count: data.metrics.users.suspended })}
-          />
-          <Metric
-            label="Generation"
-            value={`${data.metrics.generation.successRate}%`}
-            meta={t("{count} queued", { count: data.metrics.generation.queued })}
-          />
-          <Metric label="Moderation" value={data.metrics.moderation.openReports} meta="open reports" />
-          <Metric label="Billing" value={data.metrics.billing.activeSubscriptions} meta="active subscriptions" />
-        </div>
-        <DataTable
-          columns={["key", "enabled", "rolloutPercent", "version"]}
-          rows={data.featureFlags}
-          title="Feature Flags"
-        />
-      </section>
-    </div>
-  );
 }
 
 function JobsView({
@@ -5415,12 +5427,12 @@ function AnalyticsView({ data }: { data: AnalyticsData }) {
       </p>
       <div className="rounded-lg grid gap-px overflow-hidden border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
         <Metric label="Signups" value={data.funnel.signups} meta="new users" />
-        <Metric label="Activated" value={data.funnel.activatedUsers} meta="generated ≥1" />
+        <Metric label="Activated" value="Invalid" meta="invalid for decisions · definition v1" />
         <Metric label="Paying" value={data.funnel.payingUsers} meta="subscribed" />
         <Metric
           label="Conversion"
-          value={`${data.funnel.conversionRate}%`}
-          meta="paying / signups"
+          value="Invalid"
+          meta="invalid for decisions · mixed cohort/window"
         />
       </div>
       <div className="rounded-lg grid gap-px overflow-hidden border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
@@ -6815,24 +6827,6 @@ function Metric({
   }
 
   return <div className="bg-[var(--ad-surface)] p-4">{body}</div>;
-}
-
-// SPEC: Dashboard "常用任务" launcher card — icon + label + a chevron "go" affordance.
-function TaskCard({ href, icon: Icon, label }: { href: string; icon: LucideIcon; label: string }) {
-  const { t } = useAdminI18n();
-
-  return (
-    <Link
-      className="rounded-lg group flex items-center gap-3 border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 transition-colors hover:border-[var(--ad-border)] hover:bg-black/[0.04]"
-      href={href}
-    >
-      <span className="flex h-9 w-9 shrink-0 items-center justify-center bg-black/[0.05] text-[var(--ad-ink)]">
-        <Icon className="h-4 w-4" />
-      </span>
-      <span className="flex-1 text-sm font-medium text-[var(--ad-ink)]">{t(label)}</span>
-      <ChevronRight className="h-4 w-4 shrink-0 text-[var(--ad-text-muted)] transition-transform group-hover:translate-x-0.5 group-hover:text-[var(--ad-ink)]" />
-    </Link>
-  );
 }
 
 function IconAction({

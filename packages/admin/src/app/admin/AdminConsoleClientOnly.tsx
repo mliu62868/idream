@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import type { ComponentType } from "react";
+import type { AdminShellSignals } from "@/components/admin/shell-signals";
 
 type AdminActor = {
   id: string;
@@ -12,6 +13,8 @@ type AdminConsoleClientOnlyProps = {
   actor: AdminActor | null;
   initialSection: string;
   initialAccess: boolean;
+  initialPermissions: string[];
+  shellSignals: AdminShellSignals;
   devLogout?: boolean;
 };
 
