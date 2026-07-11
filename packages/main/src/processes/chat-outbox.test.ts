@@ -1,7 +1,11 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
-import { dispatchPendingChatEvents, recordMainToChatEvent } from "./chat-outbox";
+import {
+  dispatchPendingChatEvents,
+  durableChatIngressEnabled,
+  recordMainToChatEvent,
+} from "./chat-outbox";
 
 const eventId = "durable_main_chat_event_1";
 
@@ -14,6 +18,11 @@ afterAll(async () => {
 });
 
 describe("main to chat durable outbox", () => {
+  it("requires an explicit durable ingest endpoint instead of inferring cutover from the BFF URL", () => {
+    expect(durableChatIngressEnabled(undefined)).toBe(false);
+    expect(durableChatIngressEnabled("https://chat.internal/internal/events/ingest")).toBe(true);
+  });
+
   it("keeps the row pending on ingest failure and delivers after durable ACK", async () => {
     await recordMainToChatEvent({
       eventId,

@@ -73,9 +73,17 @@ export async function dispatchPendingChatEvents(
   return { delivered, failed };
 }
 
+export function durableChatIngressEnabled(
+  durableIngestUrl: string | undefined = env.CHAT_DURABLE_INGEST_URL,
+): boolean {
+  return Boolean(durableIngestUrl?.trim());
+}
+
 async function deliverToChat(event: DurableEventEnvelope): Promise<void> {
-  if (!env.CHAT_SERVICE_URL) throw new Error("CHAT_SERVICE_URL is required for durable chat delivery");
-  const response = await fetch(`${env.CHAT_SERVICE_URL.replace(/\/$/, "")}/internal/events/ingest`, {
+  if (!env.CHAT_DURABLE_INGEST_URL) {
+    throw new Error("CHAT_DURABLE_INGEST_URL is required for durable chat delivery");
+  }
+  const response = await fetch(env.CHAT_DURABLE_INGEST_URL, {
     method: "POST",
     headers: { "content-type": "application/json", "x-internal-token": env.INTERNAL_TOKEN },
     body: JSON.stringify(event),

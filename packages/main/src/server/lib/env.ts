@@ -104,6 +104,9 @@ const EnvSchema = z.object({
   // reverse-proxies /api/v1/chat/* to the chat service with a signed BFF context
   // instead of handling chat in-process. Unset ⇒ monolith chat (dev/test).
   CHAT_SERVICE_URL: z.string().url().optional(),
+  // Opt-in cutover flag for main→chat durable ACK. CHAT_SERVICE_URL alone only
+  // enables the BFF and must not silently change local callback delivery.
+  CHAT_DURABLE_INGEST_URL: z.string().url().optional(),
   CHAT_BFF_SIGNING_SECRET: z.string().optional(),
 }).superRefine((value, ctx) => {
   if (

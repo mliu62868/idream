@@ -19,7 +19,11 @@ import { logger } from "@/server/lib/logger";
 import { createChatImageGenerationJob } from "@/server/modules/ourdream/service";
 import { findReusableChatImage } from "@/server/modules/ourdream/chat-image-reuse";
 import { jobQueue } from "@/server/jobs/queue";
-import { dispatchPendingChatEvents, recordMainToChatEvent } from "./chat-outbox";
+import {
+  dispatchPendingChatEvents,
+  durableChatIngressEnabled,
+  recordMainToChatEvent,
+} from "./chat-outbox";
 
 function redisOptions(): RedisOptions {
   const url = new URL(env.REDIS_URL);
@@ -229,7 +233,7 @@ async function enqueueChatCallback(input: {
     aggregateId: input.eventId,
     payload: input.payload,
   });
-  if (env.CHAT_SERVICE_URL) {
+  if (durableChatIngressEnabled()) {
     await dispatchPendingChatEvents().catch(() => undefined);
   } else {
     await jobQueue.enqueue({
@@ -285,7 +289,9 @@ export function startEventConsumer(): Worker {
   worker.on("failed", (job, err) => logger.error({ jobId: job?.id, err }, "event consume failed"));
   const projectionTimer = setInterval(() => {
     dispatchPendingProductEvents().catch((err) => logger.error({ err }, "product event projection dispatch failed"));
-    dispatchPendingChatEvents().catch((err) => logger.error({ err }, "chat outbox dispatch failed"));
+    if (durableChatIngressEnabled()) {
+      dispatchPendingChatEvents().catch((err) => logger.error({ err }, "chat outbox dispatch failed"));
+    }
   }, 5_000);
   worker.on("closed", () => clearInterval(projectionTimer));
   return worker;
