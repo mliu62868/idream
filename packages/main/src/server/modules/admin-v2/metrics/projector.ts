@@ -1,6 +1,7 @@
 import {
   METRIC_PRODUCT_EVENTS,
   aiUsageRecordedV2Schema,
+  characterExposureRecordedV2Schema,
   chatExchangeCompletedV2Schema,
   chatExchangeCorrectionV2Schema,
   customerSignupCompletedV2Schema,
@@ -137,6 +138,75 @@ async function applyEvent(tx: Transaction, event: MetricProductEvent): Promise<M
       update: {},
     });
     return { status: "applied", factType: "experiment_exposure", factId: fact.id };
+  }
+  if (event.name === METRIC_PRODUCT_EVENTS.characterExposureRecorded) {
+    const payload = characterExposureRecordedV2Schema.parse(event.props);
+    const eligibleContext = event.environment === "production" &&
+      event.dataClass === "customer" &&
+      (event.trustClass === "typed_client" || event.trustClass === "canonical") &&
+      !actorIsInternal(event);
+    const eligibleImpression = payload.eventType !== "eligible_impression" ||
+      (payload.visibleRatio >= 0.5 && payload.visibleDurationMs >= 500);
+    if (!eligibleContext || !eligibleImpression) return { status: "skipped", reason: "ineligible_data" };
+
+    const [contentVersion, release, parent] = await Promise.all([
+      tx.characterContentVersion.findUnique({ where: { id: payload.characterContentVersionId } }),
+      payload.characterReleaseId
+        ? tx.characterRelease.findUnique({ where: { id: payload.characterReleaseId } })
+        : Promise.resolve(null),
+      payload.parentExposureId
+        ? tx.characterExposureFact.findUnique({ where: { exposureId: payload.parentExposureId } })
+        : Promise.resolve(null),
+    ]);
+    if (!contentVersion || contentVersion.characterId !== payload.characterId) {
+      return { status: "skipped", reason: "invalid_content_version_attribution" };
+    }
+    if (payload.characterReleaseId && (
+      !release ||
+      release.characterContentVersionId !== payload.characterContentVersionId
+    )) {
+      return { status: "skipped", reason: "invalid_release_attribution" };
+    }
+    if (payload.eventType === "detail_view" && (
+      !parent ||
+      parent.eventType !== "eligible_impression" ||
+      parent.journeyId !== payload.journeyId ||
+      parent.characterId !== payload.characterId ||
+      parent.characterContentVersionId !== payload.characterContentVersionId ||
+      parent.characterReleaseId !== payload.characterReleaseId ||
+      parent.placementId !== payload.placementId
+    )) {
+      return { status: "skipped", reason: "invalid_exposure_chain" };
+    }
+    const fact = await tx.characterExposureFact.upsert({
+      where: { exposureId: payload.exposureId },
+      create: {
+        exposureId: payload.exposureId,
+        sourceService: event.sourceService,
+        sourceEventId: event.sourceEventId,
+        userId: payload.userId,
+        anonymousId: payload.anonymousId,
+        journeyId: payload.journeyId,
+        characterId: payload.characterId,
+        characterContentVersionId: payload.characterContentVersionId,
+        characterReleaseId: payload.characterReleaseId,
+        placementId: payload.placementId,
+        eventType: payload.eventType,
+        parentExposureId: payload.parentExposureId,
+        visibleRatio: payload.visibleRatio,
+        visibleDurationMs: payload.visibleDurationMs,
+        environment: event.environment,
+        dataClass: event.dataClass,
+        trustClass: event.trustClass,
+        actorIsInternal: false,
+        eligible: true,
+        occurredAt: event.occurredAt,
+        validFrom: event.occurredAt,
+        coverageState: payload.characterReleaseId === null ? "exact_unattributed" : "exact",
+      },
+      update: {},
+    });
+    return { status: "applied", factType: "character_exposure", factId: fact.id };
   }
   if (!isEligibleServerOutcome(event)) {
     return { status: "skipped", reason: "ineligible_data" };

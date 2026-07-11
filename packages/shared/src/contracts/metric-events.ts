@@ -76,6 +76,33 @@ export const experimentExposedV2Schema = z.object({
   surface: z.string().min(1),
 });
 
+export const characterExposureRecordedV2Schema = z
+  .object({
+    exposureId: z.string().min(1),
+    eventType: z.enum(["eligible_impression", "detail_view"]),
+    parentExposureId: z.string().min(1).nullable().default(null),
+    userId: z.string().min(1).nullable().default(null),
+    anonymousId: z.string().min(1).nullable().default(null),
+    journeyId: z.string().min(1),
+    characterId: z.string().min(1),
+    characterContentVersionId: z.string().min(1),
+    characterReleaseId: z.string().min(1).nullable(),
+    placementId: z.string().min(1).nullable(),
+    visibleRatio: z.number().min(0).max(1),
+    visibleDurationMs: z.number().int().nonnegative(),
+  })
+  .superRefine((event, ctx) => {
+    if (event.userId === null && event.anonymousId === null) {
+      ctx.addIssue({ code: "custom", path: ["userId"], message: "An exposure needs a user or anonymous subject" });
+    }
+    if (event.eventType === "eligible_impression" && event.parentExposureId !== null) {
+      ctx.addIssue({ code: "custom", path: ["parentExposureId"], message: "Impressions are exposure roots" });
+    }
+    if (event.eventType === "detail_view" && event.parentExposureId === null) {
+      ctx.addIssue({ code: "custom", path: ["parentExposureId"], message: "Detail views require an exposure chain" });
+    }
+  });
+
 export const METRIC_PRODUCT_EVENTS = {
   chatExchangeCompleted: "chat.exchange.completed.v2",
   chatExchangeCorrected: "chat.exchange.corrected.v2",
@@ -85,8 +112,10 @@ export const METRIC_PRODUCT_EVENTS = {
   generationDeliveryCompleted: "generation.delivery.completed.v2",
   aiUsageRecorded: "ai.usage.recorded.v2",
   experimentExposed: "experiment.exposed.v2",
+  characterExposureRecorded: "character.exposure.recorded.v2",
 } as const;
 
 export type ChatExchangeCompletedV2 = z.infer<typeof chatExchangeCompletedV2Schema>;
 export type ChatExchangeCorrectionV2 = z.infer<typeof chatExchangeCorrectionV2Schema>;
 export type ExperimentExposedV2 = z.infer<typeof experimentExposedV2Schema>;
+export type CharacterExposureRecordedV2 = z.infer<typeof characterExposureRecordedV2Schema>;

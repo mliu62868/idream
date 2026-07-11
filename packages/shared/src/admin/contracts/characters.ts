@@ -52,6 +52,24 @@ export const characterReleaseStatusSchema = z.enum([
   "withdrawn",
 ]);
 export const characterServingStateSchema = z.enum(["inactive", "live", "paused", "retired"]);
+export const characterPortfolioDecisionSchema = z.enum([
+  "Promote",
+  "Maintain",
+  "Improve",
+  "Pause",
+  "Retire",
+]);
+export const characterPerformanceWindowSchema = z.enum(["7d", "28d"]);
+export const characterPerformanceMaturitySchema = z.enum([
+  "mature",
+  "immature",
+  "insufficient_data",
+]);
+export const characterPerformanceQualitySchema = z.enum([
+  "certified",
+  "directional",
+  "invalid",
+]);
 
 export const characterProjectSchema = z
   .object({
@@ -160,17 +178,149 @@ export const characterServingSchema = z
     }
   });
 
+export const characterContributionMarginSchema = z
+  .object({
+    valueMicros: z.number().int().nullable(),
+    currency: z.string().trim().length(3).nullable(),
+    attributedRevenueMicros: z.number().int().nonnegative().nullable(),
+    refundMicros: z.number().int().nonnegative().nullable(),
+    creditMicros: z.number().int().nonnegative().nullable(),
+    variableCostMicros: z.number().int().nonnegative().nullable(),
+    qualityState: characterPerformanceQualitySchema,
+    evidence: z.array(z.string().trim().min(1)).min(1).readonly(),
+  })
+  .strict()
+  .superRefine((margin, ctx) => {
+    if (margin.qualityState === "invalid" && margin.valueMicros !== null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["valueMicros"],
+        message: "Invalid contribution margin must fail closed with valueMicros=null",
+      });
+    }
+    if (margin.valueMicros !== null && margin.currency === null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["currency"],
+        message: "A contribution margin value requires an audited currency",
+      });
+    }
+  });
+
+const nullableRateSchema = z.number().min(0).max(1).nullable();
+
 export const characterPerformanceSummarySchema = z
   .object({
-    window: z.enum(["7d", "28d"]),
+    characterContentVersionId: adminIdSchema,
+    characterReleaseId: adminIdSchema,
+    placementId: adminIdSchema.nullable(),
+    window: characterPerformanceWindowSchema,
+    windowStart: adminIsoDateTimeSchema,
+    windowEnd: adminIsoDateTimeSchema,
+    eligibleImpressions: z.number().int().nonnegative(),
+    detailViews: z.number().int().nonnegative(),
+    firstSuccessfulExchanges: z.number().int().nonnegative(),
+    qceCount: z.number().int().nonnegative(),
+    relationshipActivations: z.number().int().nonnegative(),
+    sameCharacterD7EligiblePairs: z.number().int().nonnegative(),
+    sameCharacterD7Returns: z.number().int().nonnegative(),
+    paidAttributions: z.number().int().nonnegative(),
+    detailCtr: nullableRateSchema,
+    chatStartRate: nullableRateSchema,
+    qceRate: nullableRateSchema,
+    sameCharacterD7: nullableRateSchema,
     sampleSize: z.number().int().nonnegative(),
-    maturity: z.enum(["mature", "immature", "insufficient_data"]),
-    eligibleImpressions: z.number().int().nonnegative().nullable(),
-    chatStartRate: z.number().min(0).max(1).nullable(),
-    qceRate: z.number().min(0).max(1).nullable(),
-    sameCharacterD7: z.number().min(0).max(1).nullable(),
-    contributionMarginMicros: z.number().int().nullable(),
+    maturity: characterPerformanceMaturitySchema,
+    qualityState: characterPerformanceQualitySchema,
+    coverageState: z.enum(["exact", "partial", "unavailable", "invalid"]),
     latestDataAt: adminIsoDateTimeSchema.nullable(),
+    evidence: z.array(z.string().trim().min(1)).min(1).readonly(),
+    contributionMargin: characterContributionMarginSchema,
+  })
+  .strict()
+  .superRefine((summary, ctx) => {
+    const cohortPairs: ReadonlyArray<readonly [number, number, string]> = [
+      [summary.detailViews, summary.eligibleImpressions, "detailViews"],
+      [summary.firstSuccessfulExchanges, summary.detailViews, "firstSuccessfulExchanges"],
+      [summary.qceCount, summary.firstSuccessfulExchanges, "qceCount"],
+      [summary.sameCharacterD7Returns, summary.sameCharacterD7EligiblePairs, "sameCharacterD7Returns"],
+    ];
+    for (const [numerator, denominator, field] of cohortPairs) {
+      if (numerator > denominator) {
+        ctx.addIssue({
+          code: "custom",
+          path: [field],
+          message: "Numerator must belong to the denominator cohort",
+        });
+      }
+    }
+    if (summary.qualityState === "invalid") {
+      for (const field of ["detailCtr", "chatStartRate", "qceRate", "sameCharacterD7"] as const) {
+        if (summary[field] !== null) {
+          ctx.addIssue({
+            code: "custom",
+            path: [field],
+            message: "Invalid performance must fail closed with rate=null",
+          });
+        }
+      }
+    }
+  });
+
+export const characterReleaseChangeMarkerSchema = z
+  .object({
+    currentReleaseId: adminIdSchema,
+    previousReleaseId: adminIdSchema.nullable(),
+    changedAt: adminIsoDateTimeSchema,
+    window: characterPerformanceWindowSchema,
+    comparable: z.boolean(),
+    qceRateDelta: z.number().min(-1).max(1).nullable(),
+    sameCharacterD7Delta: z.number().min(-1).max(1).nullable(),
+    contributionMarginDeltaMicros: z.number().int().nullable(),
+    evidence: z.array(z.string().trim().min(1)).min(1).readonly(),
+  })
+  .strict()
+  .superRefine((marker, ctx) => {
+    if (!marker.comparable && [marker.qceRateDelta, marker.sameCharacterD7Delta, marker.contributionMarginDeltaMicros]
+      .some((value) => value !== null)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["comparable"],
+        message: "Non-comparable release changes cannot expose numeric deltas",
+      });
+    }
+  });
+
+export const characterPortfolioDecisionRecordSchema = z
+  .object({
+    id: adminIdSchema,
+    characterId: adminIdSchema,
+    releaseId: adminIdSchema,
+    decision: characterPortfolioDecisionSchema,
+    question: z.string().trim().min(1),
+    evidenceRefs: z.array(z.string().trim().min(1)).min(1).readonly(),
+    evidenceLevel: z.enum(["observational", "attribution", "causal"]),
+    confidence: z.number().min(0).max(1).nullable(),
+    ownerId: adminIdSchema,
+    successCriteria: z.array(z.string().trim().min(1)).min(1).readonly(),
+    guardrails: z.array(z.string().trim().min(1)).readonly(),
+    reviewAt: adminIsoDateTimeSchema.nullable(),
+    outcome: z.record(z.string(), z.unknown()).nullable(),
+    createdAt: adminIsoDateTimeSchema,
+  })
+  .strict();
+
+export const characterPortfolioDecisionRequestSchema = z
+  .object({
+    releaseId: adminIdSchema,
+    decision: characterPortfolioDecisionSchema,
+    question: z.string().trim().min(3).max(1_000),
+    evidenceRefs: z.array(z.string().trim().min(1)).min(1).max(100),
+    evidenceLevel: z.enum(["observational", "attribution", "causal"]),
+    confidence: z.number().min(0).max(1).nullable().default(null),
+    successCriteria: z.array(z.string().trim().min(1)).min(1).max(50),
+    guardrails: z.array(z.string().trim().min(1)).max(50).default([]),
+    reviewAt: adminIsoDateTimeSchema.nullable().default(null),
   })
   .strict();
 
@@ -185,7 +335,9 @@ export const characterPortfolioItemSchema = z
     readiness: adminReadinessSchema,
     verificationState: adminVerificationStateSchema.optional(),
     priority: adminPrioritySchema,
-    performance: characterPerformanceSummarySchema.nullable(),
+    performance: z.array(characterPerformanceSummarySchema).readonly(),
+    changeMarkers: z.array(characterReleaseChangeMarkerSchema).readonly(),
+    latestDecision: characterPortfolioDecisionRecordSchema.nullable(),
     operationalState: operationalStateViewSchema,
   })
   .strict();
@@ -195,15 +347,67 @@ export const characterPortfolioQuerySchema = adminCursorQuerySchema.extend({
   servingState: characterServingStateSchema.optional(),
   readiness: adminReadinessSchema.optional(),
   ownerId: adminIdSchema.optional(),
+  decision: characterPortfolioDecisionSchema.optional(),
+  placementId: adminIdSchema.optional(),
+  sort: z.enum(["project_id_asc"]).default("project_id_asc"),
 });
 
 export const characterPortfolioResponseSchema = adminListResponseSchema(characterPortfolioItemSchema);
+
+export const characterPerformanceBackfillRequestSchema = z
+  .object({
+    source: z.string().trim().min(1).max(120),
+    kind: z.enum(["funnel", "variable_cost"]),
+    dryRun: z.boolean().default(true),
+    batchSize: z.number().int().min(1).max(1_000).default(200),
+    cursor: z.string().trim().min(1).nullable().default(null),
+  })
+  .strict();
+
+export const characterPerformanceBackfillResponseSchema = z.object({
+  runId: adminIdSchema,
+  status: z.enum(["paused", "completed"]),
+  dryRun: z.boolean(),
+  scannedCount: z.number().int().nonnegative(),
+  wouldApplyCount: z.number().int().nonnegative(),
+  appliedCount: z.number().int().nonnegative(),
+  skippedCount: z.number().int().nonnegative(),
+  mismatchCount: z.number().int().nonnegative(),
+  nextCursor: z.string().nullable(),
+  before: z.record(z.string(), z.number().int().nonnegative()),
+  after: z.record(z.string(), z.number().int().nonnegative()),
+  mismatches: z.array(z.record(z.string(), z.unknown())).readonly(),
+}).strict();
+
+export const characterPerformanceReconciliationSchema = z.object({
+  scannedFunnelRows: z.number().int().nonnegative(),
+  impossibleFunnelRows: z.number().int().nonnegative(),
+  missingReleaseRows: z.number().int().nonnegative(),
+  nonExactFunnelRows: z.number().int().nonnegative(),
+  relevantCostAuthorities: z.number().int().nonnegative(),
+  projectedCostAuthorities: z.number().int().nonnegative(),
+  missingVariableCostFacts: z.number().int().nonnegative(),
+  unauditedEconomicsFacts: z.number().int().nonnegative(),
+  partialEconomicsFacts: z.number().int().nonnegative(),
+  cashRevenueAuthorityState: z.literal("unavailable"),
+  refundAuthorityState: z.literal("unavailable"),
+  creditAuthorityState: z.literal("unavailable"),
+  qualityState: z.enum(["directional", "invalid"]),
+}).strict();
 
 export type CharacterProject = z.infer<typeof characterProjectSchema>;
 export type CharacterRelease = z.infer<typeof characterReleaseSchema>;
 export type CharacterServing = z.infer<typeof characterServingSchema>;
 export type CharacterPortfolioItem = z.infer<typeof characterPortfolioItemSchema>;
 export type CharacterPortfolioQuery = z.infer<typeof characterPortfolioQuerySchema>;
+export type CharacterPerformanceSummary = z.infer<typeof characterPerformanceSummarySchema>;
+export type CharacterPerformanceWindow = z.infer<typeof characterPerformanceWindowSchema>;
+export type CharacterContributionMargin = z.infer<typeof characterContributionMarginSchema>;
+export type CharacterPortfolioDecision = z.infer<typeof characterPortfolioDecisionSchema>;
+export type CharacterPortfolioDecisionRequest = z.infer<typeof characterPortfolioDecisionRequestSchema>;
+export type CharacterPortfolioDecisionRecord = z.infer<typeof characterPortfolioDecisionRecordSchema>;
+export type CharacterPerformanceBackfillRequest = z.infer<typeof characterPerformanceBackfillRequestSchema>;
+export type CharacterPerformanceReconciliation = z.infer<typeof characterPerformanceReconciliationSchema>;
 export type CharacterReleasePublishCommandRequest = z.infer<
   typeof characterReleasePublishCommandRequestSchema
 >;

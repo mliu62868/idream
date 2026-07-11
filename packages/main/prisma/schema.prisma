@@ -1742,8 +1742,10 @@ model DecisionRecord {
   id              String    @id @default(cuid())
   sourceType      String
   sourceId        String
+  releaseId       String?
   question        String
   evidenceRefs    Json
+  evidenceLevel   String    @default("observational")
   decision        String
   confidence      Float?
   ownerId         String
@@ -1755,6 +1757,7 @@ model DecisionRecord {
   updatedAt       DateTime  @updatedAt
 
   @@index([sourceType, sourceId, createdAt])
+  @@index([sourceType, sourceId, releaseId, createdAt])
   @@index([ownerId, reviewAt])
   @@map("decision_records")
 }
@@ -2080,6 +2083,8 @@ model CharacterExposureFact {
   characterContentVersionId String
   characterReleaseId        String?
   placementId               String?
+  eventType                 String   @default("eligible_impression")
+  parentExposureId          String?
   visibleRatio              Float
   visibleDurationMs         Int
   environment               String
@@ -2094,6 +2099,7 @@ model CharacterExposureFact {
 
   @@unique([sourceService, sourceEventId])
   @@index([characterId, characterReleaseId, placementId, occurredAt])
+  @@index([parentExposureId, eventType])
   @@index([journeyId, characterId, placementId])
   @@map("character_exposure_facts")
 }
@@ -2140,26 +2146,53 @@ model CompanionEngagementDaily {
 }
 
 model CharacterFunnelDaily {
-  id                        String   @id @default(cuid())
-  characterId               String
-  characterContentVersionId String
-  characterReleaseId        String?
-  placementId               String?
-  productDay                DateTime @db.Date
-  metricVersion             Int      @default(1)
-  eligibleImpressions       Int      @default(0)
-  detailViews               Int      @default(0)
-  firstSuccessfulExchanges  Int      @default(0)
-  qceCount                  Int      @default(0)
-  relationshipActivations   Int      @default(0)
-  sameCharacterD7Returns    Int      @default(0)
-  paidAttributions          Int      @default(0)
-  coverageState             String   @default("exact")
-  updatedAt                 DateTime @updatedAt
+  id                           String    @id @default(cuid())
+  characterId                  String
+  characterContentVersionId    String
+  characterReleaseId           String?
+  placementId                  String?
+  productDay                   DateTime  @db.Date
+  metricVersion                Int       @default(1)
+  eligibleImpressions          Int       @default(0)
+  detailViews                  Int       @default(0)
+  firstSuccessfulExchanges     Int       @default(0)
+  qceCount                     Int       @default(0)
+  relationshipActivations      Int       @default(0)
+  sameCharacterD7EligiblePairs Int       @default(0)
+  sameCharacterD7Returns       Int       @default(0)
+  paidAttributions             Int       @default(0)
+  coverageState                String    @default("exact")
+  projectionVersion            Int       @default(1)
+  latestDataAt                 DateTime?
+  sourceEvidence               Json      @default("[]")
+  updatedAt                    DateTime  @updatedAt
 
   @@unique([characterContentVersionId, characterReleaseId, placementId, productDay, metricVersion])
   @@index([characterId, productDay])
   @@map("character_funnel_daily")
+}
+
+model CharacterEconomicsFact {
+  id                        String   @id @default(cuid())
+  characterId               String
+  characterContentVersionId String
+  characterReleaseId        String
+  placementId               String?
+  kind                      String
+  amountMicros              BigInt
+  currency                  String
+  authorityType             String
+  authorityId               String
+  attributionMethod         String
+  auditState                String   @default("audited")
+  coverageState             String   @default("exact")
+  occurredAt                DateTime
+  createdAt                 DateTime @default(now())
+
+  @@unique([authorityType, authorityId, kind])
+  @@index([characterId, characterContentVersionId, characterReleaseId, placementId, occurredAt])
+  @@index([auditState, coverageState, occurredAt])
+  @@map("character_economics_facts")
 }
 
 model MetricSnapshot {

@@ -53,6 +53,16 @@
 
 这仍不是 Metrics Cutover：生产权威历史回放尚未执行，两个完整成熟 cohort 的 shadow observation 尚未形成；Character Performance by release/placement、Contribution Margin、Portfolio、实验管理 UI、guardrail/显著性评估和生产样本成熟度仍待完成。在这些证据成熟前，canonical API 可计算或 directional lift 可见不等于经营指标已获生产认证。
 
+## 2026-07-11 管理后台修复实施批次 3（Character Performance / Portfolio）
+
+- Character Performance v2 现已提供 `/api/v2/admin/characters/portfolio` 的服务端 search/filter/keyset cursor，按精确 `CharacterContentVersion + CharacterRelease + placement` 展示 7d/28d funnel、样本成熟度、质量证据和 matched post-release change marker；`character.performance.read` 与 producer assigned-character scope 在服务端执行，不依赖前端裁剪。
+- `character.exposure.recorded.v2` 新增 eligible-impression/detail-view chain 投影；detail 必须引用同 journey/character/content version/release/placement 的 eligible impression。缺 release 的历史曝光保持 `exact_unattributed`，不会按当前 Serving pointer 猜回填。
+- Portfolio 决策支持 Promote/Maintain/Improve/Pause/Retire，并把 release、问题、evidence refs/level、owner、success criteria、guardrails、review date 写入 append-only `DecisionRecord` 与同事务 Audit；决策记录不隐式修改 Serving authority。
+- Character funnel 与 AI variable-cost fact 提供 dry-run、cursor-resume、幂等 backfill 和 reconciliation。由 Chat 历史只能重建 release aggregate、不能恢复 placement/exposure chain/D7 cohort 的行明确标为 partial，不会升级成 exact。
+- Contribution Margin 严格 fail closed：新增 audited `CharacterEconomicsFact`，可投影带 pricing version 的 exact-release `AiUsageFact` 成本；当前 Checkout/Subscription 没有 captured cash、refund、credit 与 Character attribution authority，因此 API 固定返回 `valueMicros=null + qualityState=invalid` 和缺失证据，不以 Plan 价格或 dreamcoin 消耗估算现金收入。
+
+本纵切仍不是生产 Portfolio/经营认证：需要 Payment capture/refund/credit canonical authority 与 7d attribution、生产 exposure/detail/journey 事件覆盖、完整 D7 cohort/placement projector、生产 backfill/reconciliation、两个成熟 shadow 窗口和浏览器 UI 验收。当前 API 的 exact fixture/golden 证明计算与 fail-closed 语义，不代表真实生产样本已成熟。
+
 ## 2026-07-11 管理后台修复实施批次 2（Character Release / Visual Identity M3 vertical slice）
 
 - Character/Release/Visual Identity 历史迁移已具备持久化 dry-run、keyset cursor、batch pause/resume、幂等 apply/reapply 与 before/after/mismatch hash report。所有 Character 获得不可变 ContentVersion；官方角色获得 Project/Revision/Serving。approved/public 历史角色保持 live，不因迁移自动下线；缺失 exact Visual/Reference/Route/QA 证据时明确为 `legacy + readiness=blocked` 并进入 reconciliation。
