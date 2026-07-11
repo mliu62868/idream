@@ -332,6 +332,7 @@ describe("Admin API v2 authoritative command routes", () => {
     const approval = await prisma.adminActionRequest.create({
       data: {
         requestedById: adminId,
+        approvedById: `independent-approver-${suffix}`,
         permissionKey: "ops.incident.manage",
         action: "incident.resolve",
         targetType: "ops_incident",

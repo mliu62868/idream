@@ -12,7 +12,6 @@ import {
   incidentResolveCommandRequestSchema,
   type AdminCommandRequest,
 } from "@idream/shared/admin";
-import type { Prisma } from "@prisma/client";
 import { ZodError, type ZodType } from "zod";
 import { prisma } from "@/server/lib/db";
 import { AppError, Errors } from "@/server/lib/errors";
@@ -20,7 +19,6 @@ import { fail, ok } from "@/server/lib/http";
 import { env } from "@/server/lib/env";
 import { actorWithPermission } from "@/server/modules/admin/service";
 import type { PermissionKey } from "@/server/admin/permissions";
-import { canonicalSha256 } from "../shared/canonical-json";
 import {
   acceptControlPlaneCommand,
   IdempotencyConflictError,
@@ -113,47 +111,6 @@ function requireConfirmation(actual: string | undefined, expected: string) {
   }
 }
 
-function jsonRecord(value: Prisma.JsonValue): JsonObject | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as JsonObject)
-    : null;
-}
-
-async function validateApproval(input: {
-  readonly approvalId?: string;
-  readonly definition: CommandDefinition;
-  readonly targetId: string;
-  readonly expectedVersion: number;
-  readonly payload: JsonObject;
-}) {
-  if (!input.approvalId) return;
-  const approval = await prisma.adminActionRequest.findUnique({ where: { id: input.approvalId } });
-  if (!approval || approval.status !== "approved") {
-    throw Errors.forbidden("Approval is missing, expired, or not approved", {
-      approvalId: input.approvalId,
-    });
-  }
-  const binding = jsonRecord(approval.payload);
-  const expiresAt = typeof binding?.expiresAt === "string" ? new Date(binding.expiresAt) : null;
-  const matches =
-    approval.action === input.definition.commandType &&
-    approval.targetType === input.definition.targetType &&
-    approval.targetId === input.targetId &&
-    binding?.commandType === input.definition.commandType &&
-    binding?.targetType === input.definition.targetType &&
-    binding?.targetId === input.targetId &&
-    binding?.payloadHash === canonicalSha256(input.payload) &&
-    binding?.expectedVersion === input.expectedVersion &&
-    expiresAt !== null &&
-    Number.isFinite(expiresAt.getTime()) &&
-    expiresAt.getTime() > Date.now();
-  if (!matches) {
-    throw Errors.forbidden("Approval is not bound to this canonical command request", {
-      approvalId: input.approvalId,
-    });
-  }
-}
-
 async function acceptCommand(input: {
   readonly actor: { readonly id: string; readonly role: string };
   readonly parsed: ParsedCommand<AdminCommandRequest>;
@@ -161,13 +118,6 @@ async function acceptCommand(input: {
   readonly targetId: string;
   readonly executeInline?: boolean;
 }) {
-  await validateApproval({
-    approvalId: input.parsed.body.approvalId,
-    definition: input.definition,
-    targetId: input.targetId,
-    expectedVersion: input.parsed.body.entityVersion,
-    payload: input.parsed.payload,
-  });
   const accepted = await acceptControlPlaneCommand(prisma, {
     environment: env.APP_ENV,
     actor: input.actor,
@@ -177,6 +127,7 @@ async function acceptCommand(input: {
     expectedVersion: input.parsed.body.entityVersion,
     payload: input.parsed.payload,
     approvalId: input.parsed.body.approvalId,
+    approvalPermissionKey: input.definition.permission,
     retryMode: input.definition.retryMode,
     reason: reasonText(input.parsed.body.reason),
     requestId: input.parsed.requestId,

@@ -10,6 +10,7 @@ import {
   reconcileExpiredCommandLeases,
 } from "./control-plane-command";
 import { ingestProductEvent } from "./product-event-store";
+import { canonicalSha256 } from "./canonical-json";
 
 describe("Admin v2 command reliability", () => {
   beforeEach(async () => {
@@ -20,6 +21,7 @@ describe("Admin v2 command reliability", () => {
     await prisma.inboundEventReceipt.deleteMany();
     await prisma.analyticsEvent.deleteMany({ where: { sourceService: "admin-test" } });
     await prisma.adminAuditLog.deleteMany({ where: { actorId: "admin-v2-test" } });
+    await prisma.adminActionRequest.deleteMany({ where: { requestedById: "approval-requester" } });
   });
 
   afterAll(async () => {
@@ -102,6 +104,50 @@ describe("Admin v2 command reliability", () => {
         target: { type: "creative_run", id: "run-2" },
       }),
     ).rejects.toBeInstanceOf(IdempotencyConflictError);
+  });
+
+  it("atomically consumes a canonically bound approval so concurrent commands cannot both pass", async () => {
+    const payload = { reason: { code: "verified", summary: "Recovery evidence passed" }, confirmation: "incident-approval:resolve" };
+    const approval = await prisma.adminActionRequest.create({ data: {
+      requestedById: "approval-requester",
+      approvedById: "independent-approver",
+      permissionKey: "ops.incident.manage",
+      action: "incident.resolve",
+      targetType: "ops_incident",
+      targetId: "incident-approval",
+      status: "approved",
+      decidedAt: new Date(),
+      payload: {
+        commandType: "incident.resolve",
+        targetType: "ops_incident",
+        targetId: "incident-approval",
+        payloadHash: canonicalSha256(payload),
+        expectedVersion: 9,
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+    } });
+    const base = {
+      environment: "test",
+      actor: { id: "approval-requester", role: "admin" },
+      commandType: "incident.resolve",
+      target: { type: "ops_incident", id: "incident-approval" },
+      expectedVersion: 9,
+      payload,
+      approvalId: approval.id,
+      approvalPermissionKey: "ops.incident.manage",
+      retryMode: "idempotent" as const,
+      reason: "Independent approval granted",
+      requestId: randomUUID(),
+    };
+
+    const results = await Promise.allSettled([
+      acceptControlPlaneCommand(prisma, { ...base, idempotencyKey: randomUUID() }),
+      acceptControlPlaneCommand(prisma, { ...base, idempotencyKey: randomUUID() }),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    await expect(prisma.adminActionRequest.findUnique({ where: { id: approval.id } })).resolves.toMatchObject({ status: "consumed" });
+    await expect(prisma.controlPlaneCommand.count({ where: { approvalId: approval.id } })).resolves.toBe(1);
   });
 
   it("reclaims an expired lease when retry budget remains and fails closed when exhausted", async () => {

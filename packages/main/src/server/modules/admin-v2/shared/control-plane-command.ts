@@ -2,6 +2,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { incrementCounter, observeHistogram } from "@idream/shared";
 import { canonicalSha256 } from "./canonical-json";
 import { toInputJson } from "./prisma-json";
+import { Errors } from "@/server/lib/errors";
 
 export interface CanonicalCommandRequest {
   readonly commandType: string;
@@ -9,6 +10,7 @@ export interface CanonicalCommandRequest {
   readonly expectedVersion?: number;
   readonly payload: unknown;
   readonly approvalId?: string;
+  readonly approvalPermissionKey?: string;
   readonly retryMode?: "idempotent" | "non_replayable";
 }
 
@@ -41,8 +43,49 @@ export function canonicalRequestHash(input: CanonicalCommandRequest): string {
     expectedVersion: input.expectedVersion ?? null,
     payload: input.payload,
     approvalId: input.approvalId ?? null,
+    approvalPermissionKey: input.approvalPermissionKey ?? null,
     retryMode: input.retryMode ?? "non_replayable",
   });
+}
+
+function jsonRecord(value: Prisma.JsonValue): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+async function consumeBoundApproval(tx: Prisma.TransactionClient, input: AcceptControlPlaneCommandInput) {
+  if (!input.approvalId) return;
+  const approval = await tx.adminActionRequest.findUnique({ where: { id: input.approvalId } });
+  const binding = approval ? jsonRecord(approval.payload) : null;
+  const expiresAt = typeof binding?.expiresAt === "string" ? new Date(binding.expiresAt) : null;
+  const matches =
+    approval?.status === "approved" &&
+    approval.requestedById === input.actor.id &&
+    approval.approvedById !== null &&
+    approval.approvedById !== input.actor.id &&
+    approval.permissionKey === input.approvalPermissionKey &&
+    approval.action === input.commandType &&
+    approval.targetType === input.target.type &&
+    approval.targetId === input.target.id &&
+    binding?.commandType === input.commandType &&
+    binding?.targetType === input.target.type &&
+    binding?.targetId === input.target.id &&
+    binding?.payloadHash === canonicalSha256(input.payload) &&
+    binding?.expectedVersion === input.expectedVersion &&
+    expiresAt !== null &&
+    Number.isFinite(expiresAt.getTime()) &&
+    expiresAt.getTime() > Date.now();
+  if (!matches) {
+    throw Errors.forbidden("Approval is missing, consumed, expired, or not bound to this canonical command request", { approvalId: input.approvalId });
+  }
+  const consumed = await tx.adminActionRequest.updateMany({
+    where: { id: input.approvalId, status: "approved" },
+    data: { status: "consumed" },
+  });
+  if (consumed.count !== 1) {
+    throw Errors.forbidden("Approval was already consumed by another command", { approvalId: input.approvalId });
+  }
 }
 
 async function resolveExisting(
@@ -78,6 +121,7 @@ export async function acceptControlPlaneCommand(
 
     try {
       const result = await db.$transaction(async (tx) => {
+        await consumeBoundApproval(tx, input);
         const command = await tx.controlPlaneCommand.create({
           data: {
             scope,
