@@ -10,11 +10,23 @@ const outboxQueues = [
   { queue: "generation_manifest", eventTypes: ["generation.manifest.accepted.v1"] },
 ] as const;
 
+const activeCaseStatuses = ["new", "triaged", "investigating", "waiting", "actioning", "verifying"];
+const activeIncidentStatuses = ["detected", "triaged", "mitigating", "monitoring"];
+
 export async function collectAdminOperationalMetrics(
   db: PrismaClient = prisma,
   now = new Date(),
 ) {
-  const [invariants, oldestByQueue, incidents] = await Promise.all([
+  const [
+    invariants,
+    oldestByQueue,
+    incidents,
+    openCases,
+    openIncidents,
+    metricSnapshots,
+    failedAttemptCount,
+    unknownFailureCount,
+  ] = await Promise.all([
     auditAdminCutoverInvariants(db, now),
     Promise.all(outboxQueues.map(async ({ queue, eventTypes }) => ({
       queue,
@@ -31,6 +43,31 @@ export async function collectAdminOperationalMetrics(
       orderBy: { createdAt: "desc" },
       take: 1_000,
       select: { severity: true, firstSeen: true, createdAt: true },
+    }),
+    db.adminCase.findMany({
+      where: { status: { in: activeCaseStatuses } },
+      select: { ownerId: true, slaDueAt: true, createdAt: true },
+    }),
+    db.opsIncident.findMany({
+      where: { status: { in: activeIncidentStatuses } },
+      select: { ownerId: true, slaDueAt: true, firstSeen: true },
+    }),
+    db.metricSnapshot.findMany({
+      orderBy: [{ asOf: "desc" }, { id: "desc" }],
+      take: 5_000,
+      select: {
+        metricKey: true,
+        definitionVersion: true,
+        qualityState: true,
+        latestDataAt: true,
+      },
+    }),
+    db.generationAttempt.count({ where: { status: { in: ["failed", "unknown"] } } }),
+    db.generationAttempt.count({
+      where: {
+        status: { in: ["failed", "unknown"] },
+        OR: [{ status: "unknown" }, { errorClass: null }, { errorClass: "unknown" }],
+      },
     }),
   ]);
 
@@ -65,6 +102,50 @@ export async function collectAdminOperationalMetrics(
       lag,
     );
   }
+
+  const inboxes = [
+    { source: "case", rows: openCases.map((row) => ({ ownerId: row.ownerId, slaDueAt: row.slaDueAt, openedAt: row.createdAt })) },
+    { source: "incident", rows: openIncidents.map((row) => ({ ownerId: row.ownerId, slaDueAt: row.slaDueAt, openedAt: row.firstSeen })) },
+  ];
+  for (const inbox of inboxes) {
+    setGauge("admin_inbox_open_total", "Open Admin Inbox work items", { source: inbox.source }, inbox.rows.length);
+    setGauge("admin_inbox_unowned_total", "Unowned Admin Inbox work items", { source: inbox.source }, inbox.rows.filter((row) => row.ownerId === null).length);
+    setGauge("admin_inbox_sla_breached_total", "Admin Inbox work items past SLA", { source: inbox.source }, inbox.rows.filter((row) => row.slaDueAt !== null && row.slaDueAt < now).length);
+    const oldest = inbox.rows.reduce<Date | null>((value, row) => value === null || row.openedAt < value ? row.openedAt : value, null);
+    setGauge("admin_inbox_oldest_age_seconds", "Age of the oldest open Admin Inbox work item", { source: inbox.source }, oldest ? Math.max(0, now.getTime() - oldest.getTime()) / 1_000 : 0);
+  }
+
+  const latestMetricSnapshots = new Map<string, (typeof metricSnapshots)[number]>();
+  for (const snapshot of metricSnapshots) {
+    const key = `${snapshot.metricKey}@${snapshot.definitionVersion}`;
+    if (!latestMetricSnapshots.has(key)) latestMetricSnapshots.set(key, snapshot);
+  }
+  for (const snapshot of latestMetricSnapshots.values()) {
+    const labels = { metric: snapshot.metricKey, version: snapshot.definitionVersion };
+    if (snapshot.latestDataAt) {
+      setGauge(
+        "metric_freshness_seconds",
+        "Age of the newest canonical fact represented by the latest Metric Snapshot",
+        labels,
+        Math.max(0, now.getTime() - snapshot.latestDataAt.getTime()) / 1_000,
+      );
+    }
+    for (const state of ["certified", "directional", "invalid"] as const) {
+      setGauge(
+        "metric_data_quality_state",
+        "Latest Metric Snapshot data quality state as a one-hot gauge",
+        { ...labels, state },
+        snapshot.qualityState === state ? 1 : 0,
+      );
+    }
+  }
+
+  setGauge(
+    "generation_unknown_failure_rate",
+    "Share of failed or unknown Generation Attempts without a classified failure",
+    {},
+    failedAttemptCount === 0 ? 0 : unknownFailureCount / failedAttemptCount,
+  );
 
   return invariants;
 }
