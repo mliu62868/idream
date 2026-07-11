@@ -24,6 +24,9 @@ function verificationState(status: string) {
 
 export async function getControlPlaneCommand(request: Request, commandId: string) {
   try {
+    // Authenticate before looking up the target so unauthenticated callers
+    // cannot use 401/404 differences to enumerate command identifiers.
+    await actorWithPermission(request, "dashboard.read");
     const command = await prisma.controlPlaneCommand.findUnique({ where: { id: commandId } });
     if (!command) throw Errors.notFound("Admin command not found", { commandId });
     await actorWithPermission(request, readPermission(command.targetType));
