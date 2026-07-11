@@ -482,3 +482,119 @@ export async function executeIncidentActionPlan(input: {
     throw error;
   }
 }
+
+export async function splitIncidentOccurrences(input: {
+  readonly incidentId: string;
+  readonly expectedVersion: number;
+  readonly occurrenceIds: readonly string[];
+  readonly actor: { readonly id: string; readonly role: string };
+  readonly reason: string;
+  readonly requestId: string;
+}) {
+  const selectedIds = [...new Set(input.occurrenceIds)].sort();
+  if (selectedIds.length === 0) throw Errors.badRequest("Select at least one Incident occurrence to split");
+  return prisma.$transaction(async (tx) => {
+    const source = await tx.opsIncident.findUnique({ where: { id: input.incidentId } });
+    if (!source) throw Errors.notFound("Incident not found");
+    if (source.version !== input.expectedVersion) throw Errors.conflict("Incident changed before split");
+    if (![...OPEN_INCIDENT_STATUSES].includes(source.status as (typeof OPEN_INCIDENT_STATUSES)[number])) throw Errors.conflict("Only active Incidents can be split");
+    const allOccurrences = await tx.opsIncidentOccurrence.findMany({ where: { incidentId: source.id }, orderBy: [{ observedAt: "asc" }, { id: "asc" }] });
+    const selected = allOccurrences.filter((row) => selectedIds.includes(row.id));
+    if (selected.length !== selectedIds.length) throw Errors.conflict("One or more selected occurrences no longer belong to the Incident");
+    if (selected.length === allOccurrences.length) throw Errors.badRequest("Split must leave at least one occurrence on the source Incident");
+    const splitSignature = canonicalSha256({ sourceSignature: source.signature, occurrenceIds: selectedIds, correctionVersion: "manual-split-v1" });
+    const createdId = randomUUID();
+    const created = await tx.opsIncident.create({ data: {
+      id: createdId,
+      signature: splitSignature,
+      signatureVersion: `${source.signatureVersion}+manual-split-v1`,
+      activeCorrelationKey: `manual-split:${createdId}`,
+      status: "triaged",
+      severity: source.severity,
+      ownerId: source.ownerId,
+      firstSeen: selected[0].observedAt,
+      lastSeen: selected.at(-1)!.observedAt,
+      slaDueAt: source.slaDueAt,
+      impact: {},
+      mitigation: toInputJson({ ...asRecord(source.mitigation), splitFromIncidentId: source.id, splitReason: input.reason }),
+      suspectedCause: source.suspectedCause,
+      confidence: source.confidence,
+    } });
+    const moved = await tx.opsIncidentOccurrence.updateMany({ where: { id: { in: selectedIds }, incidentId: source.id }, data: { incidentId: created.id } });
+    if (moved.count !== selectedIds.length) throw Errors.conflict("Incident occurrence set changed during split");
+    await tx.opsIncidentOccurrenceAssignment.createMany({ data: selected.map((row) => ({ occurrenceId: row.id, fromIncidentId: source.id, toIncidentId: created.id, action: "split", actorId: input.actor.id, reason: input.reason })) });
+    const remaining = allOccurrences.filter((row) => !selectedIds.includes(row.id));
+    await tx.opsIncident.update({ where: { id: source.id }, data: { firstSeen: remaining[0].observedAt, lastSeen: remaining.at(-1)!.observedAt, version: { increment: 1 } } });
+    await refreshIncidentImpact(tx, source.id);
+    await refreshIncidentImpact(tx, created.id);
+    await tx.adminAuditLog.create({ data: { actorId: input.actor.id, actorRole: input.actor.role, action: "incident.split", targetType: "ops_incident", targetId: source.id, reason: input.reason, before: toInputJson({ version: source.version, occurrenceCount: allOccurrences.length }), after: toInputJson({ version: source.version + 1, createdIncidentId: created.id, movedOccurrenceIds: selectedIds }), requestId: input.requestId } });
+    await tx.mainOutboxEvent.create({ data: { eventType: "ops.incident.split.v2", aggregateType: "ops_incident", aggregateId: source.id, payload: toInputJson({ sourceIncidentId: source.id, createdIncidentId: created.id, movedOccurrenceIds: selectedIds }) } });
+    return { sourceIncidentId: source.id, createdIncidentId: created.id, movedOccurrenceIds: selectedIds };
+  });
+}
+
+export async function mergeIncidents(input: {
+  readonly targetIncidentId: string;
+  readonly expectedVersion: number;
+  readonly sources: readonly { readonly incidentId: string; readonly version: number }[];
+  readonly actor: { readonly id: string; readonly role: string };
+  readonly reason: string;
+  readonly requestId: string;
+}) {
+  const sourceVersions = new Map(input.sources.map((source) => [source.incidentId, source.version]));
+  const sourceIds = [...sourceVersions.keys()].filter((id) => id !== input.targetIncidentId).sort();
+  if (sourceIds.length === 0) throw Errors.badRequest("Select at least one different Incident to merge");
+  return prisma.$transaction(async (tx) => {
+    const rows = await tx.opsIncident.findMany({ where: { id: { in: [input.targetIncidentId, ...sourceIds] } } });
+    const target = rows.find((row) => row.id === input.targetIncidentId);
+    if (!target) throw Errors.notFound("Merge target Incident not found");
+    if (target.version !== input.expectedVersion) throw Errors.conflict("Merge target changed before execution");
+    if (![...OPEN_INCIDENT_STATUSES].includes(target.status as (typeof OPEN_INCIDENT_STATUSES)[number])) throw Errors.conflict("Merge target must be an active Incident");
+    const sources = sourceIds.map((id) => rows.find((row) => row.id === id));
+    if (sources.some((row) => !row)) throw Errors.notFound("One or more merge source Incidents were not found");
+    for (const source of sources) {
+      if (source!.version !== sourceVersions.get(source!.id)) throw Errors.conflict("A merge source changed before execution", { incidentId: source!.id });
+      if (["merged", "closed"].includes(source!.status)) throw Errors.conflict("Terminal merged or closed Incidents cannot be merge sources", { incidentId: source!.id });
+    }
+    const occurrences = await tx.opsIncidentOccurrence.findMany({ where: { incidentId: { in: sourceIds } } });
+    for (const source of sources) {
+      const sourceOccurrences = occurrences.filter((row) => row.incidentId === source!.id);
+      await tx.opsIncidentOccurrence.updateMany({ where: { incidentId: source!.id }, data: { incidentId: target.id } });
+      if (sourceOccurrences.length > 0) await tx.opsIncidentOccurrenceAssignment.createMany({ data: sourceOccurrences.map((row) => ({ occurrenceId: row.id, fromIncidentId: source!.id, toIncidentId: target.id, action: "merge", actorId: input.actor.id, reason: input.reason })) });
+      await tx.opsIncident.update({ where: { id: source!.id }, data: { status: "merged", activeCorrelationKey: null, mitigation: toInputJson({ ...asRecord(source!.mitigation), mergedIntoIncidentId: target.id, mergeReason: input.reason }), version: { increment: 1 } } });
+    }
+    const firstSeen = sources.reduce((value, row) => row!.firstSeen < value ? row!.firstSeen : value, target.firstSeen);
+    const lastSeen = sources.reduce((value, row) => row!.lastSeen > value ? row!.lastSeen : value, target.lastSeen);
+    await tx.opsIncident.update({ where: { id: target.id }, data: { firstSeen, lastSeen, version: { increment: 1 } } });
+    await refreshIncidentImpact(tx, target.id);
+    await tx.adminAuditLog.create({ data: { actorId: input.actor.id, actorRole: input.actor.role, action: "incident.merged", targetType: "ops_incident", targetId: target.id, reason: input.reason, before: toInputJson({ version: target.version }), after: toInputJson({ version: target.version + 1, sourceIncidentIds: sourceIds, movedOccurrenceCount: occurrences.length }), requestId: input.requestId } });
+    await tx.mainOutboxEvent.create({ data: { eventType: "ops.incident.merged.v2", aggregateType: "ops_incident", aggregateId: target.id, payload: toInputJson({ targetIncidentId: target.id, sourceIncidentIds: sourceIds, movedOccurrenceIds: occurrences.map((row) => row.id) }) } });
+    return { targetIncidentId: target.id, mergedIncidentIds: sourceIds, movedOccurrenceCount: occurrences.length };
+  });
+}
+
+export async function closeIncidentWithPostmortem(input: {
+  readonly incidentId: string;
+  readonly expectedVersion: number;
+  readonly actor: { readonly id: string; readonly role: string };
+  readonly summary: string;
+  readonly rootCause: string;
+  readonly contributingFactors: readonly string[];
+  readonly correctiveActions: readonly string[];
+  readonly evidenceRefs: readonly string[];
+  readonly reason: string;
+  readonly requestId: string;
+}) {
+  return prisma.$transaction(async (tx) => {
+    const incident = await tx.opsIncident.findUnique({ where: { id: input.incidentId } });
+    if (!incident) throw Errors.notFound("Incident not found");
+    if (incident.version !== input.expectedVersion) throw Errors.conflict("Incident changed before close");
+    if (incident.status !== "resolved") throw Errors.conflict("Incident must be resolved before postmortem close");
+    if (!["passed", "overridden"].includes(incident.verificationState)) throw Errors.conflict("Recovery verification is required before close");
+    const postmortem = await tx.incidentPostmortem.create({ data: { incidentId: incident.id, summary: input.summary, rootCause: input.rootCause, contributingFactors: [...input.contributingFactors], correctiveActions: [...input.correctiveActions], evidenceRefs: [...input.evidenceRefs], createdById: input.actor.id } });
+    const closed = await tx.opsIncident.update({ where: { id: incident.id }, data: { status: "closed", activeCorrelationKey: null, version: { increment: 1 }, mitigation: toInputJson({ ...asRecord(incident.mitigation), postmortemId: postmortem.id }) } });
+    await tx.adminAuditLog.create({ data: { actorId: input.actor.id, actorRole: input.actor.role, action: "incident.closed_with_postmortem", targetType: "ops_incident", targetId: incident.id, reason: input.reason, before: toInputJson({ status: incident.status, version: incident.version }), after: toInputJson({ status: closed.status, version: closed.version, postmortemId: postmortem.id, evidenceRefs: input.evidenceRefs }), requestId: input.requestId } });
+    await tx.mainOutboxEvent.create({ data: { eventType: "ops.incident.closed.v2", aggregateType: "ops_incident", aggregateId: incident.id, payload: toInputJson({ incidentId: incident.id, postmortemId: postmortem.id, version: closed.version }) } });
+    return { incident: closed, postmortem };
+  });
+}

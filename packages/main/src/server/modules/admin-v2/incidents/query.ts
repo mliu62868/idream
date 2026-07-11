@@ -98,7 +98,7 @@ export async function getIncidentDetail(request: Request, incidentId: string) {
   if (actor.role === "support" && incident.ownerId !== actor.id) {
     throw Errors.forbidden("Incident is outside the actor's assigned scope");
   }
-  const [occurrences, actionPlans, activity] = await Promise.all([
+  const [occurrences, actionPlans, activity, postmortem] = await Promise.all([
     prisma.opsIncidentOccurrence.findMany({
       where: { incidentId },
       orderBy: [{ observedAt: "desc" }, { id: "desc" }],
@@ -113,7 +113,12 @@ export async function getIncidentDetail(request: Request, incidentId: string) {
       orderBy: { createdAt: "desc" },
       take: 100,
     }),
+    prisma.incidentPostmortem.findUnique({ where: { incidentId } }),
   ]);
+  const occurrenceAssignments = await prisma.opsIncidentOccurrenceAssignment.findMany({
+    where: { occurrenceId: { in: occurrences.map((row) => row.id) } },
+    orderBy: { createdAt: "asc" },
+  });
   return ok({
     incident: incidentDto(incident),
     occurrences: occurrences.map((row) => ({
@@ -123,6 +128,15 @@ export async function getIncidentDetail(request: Request, incidentId: string) {
       attemptId: row.attemptId,
       transportExecutionId: row.transportExecutionId,
       observedAt: row.observedAt.toISOString(),
+      assignmentHistory: occurrenceAssignments.filter((assignment) => assignment.occurrenceId === row.id).map((assignment) => ({
+        id: assignment.id,
+        fromIncidentId: assignment.fromIncidentId,
+        toIncidentId: assignment.toIncidentId,
+        action: assignment.action,
+        actorId: assignment.actorId,
+        reason: assignment.reason,
+        createdAt: assignment.createdAt.toISOString(),
+      })),
     })),
     actionPlans: actionPlans.map((row) => ({
       id: row.id,
@@ -137,6 +151,16 @@ export async function getIncidentDetail(request: Request, incidentId: string) {
       createdBy: row.createdById,
       createdAt: row.createdAt.toISOString(),
     })),
+    postmortem: postmortem ? {
+      id: postmortem.id,
+      summary: postmortem.summary,
+      rootCause: postmortem.rootCause,
+      contributingFactors: postmortem.contributingFactors,
+      correctiveActions: postmortem.correctiveActions,
+      evidenceRefs: postmortem.evidenceRefs,
+      createdById: postmortem.createdById,
+      createdAt: postmortem.createdAt.toISOString(),
+    } : null,
     activity,
   });
 }

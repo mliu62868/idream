@@ -1714,6 +1714,37 @@ model OpsIncidentOccurrence {
   @@map("ops_incident_occurrences")
 }
 
+model OpsIncidentOccurrenceAssignment {
+  id             String   @id @default(cuid())
+  occurrenceId   String
+  fromIncidentId String
+  toIncidentId   String
+  action         String
+  actorId        String
+  reason         String
+  createdAt      DateTime @default(now())
+
+  @@index([occurrenceId, createdAt])
+  @@index([fromIncidentId, createdAt])
+  @@index([toIncidentId, createdAt])
+  @@map("ops_incident_occurrence_assignments")
+}
+
+model IncidentPostmortem {
+  id                  String   @id @default(cuid())
+  incidentId          String   @unique
+  summary             String
+  rootCause           String
+  contributingFactors Json
+  correctiveActions   Json
+  evidenceRefs        Json
+  createdById         String
+  createdAt           DateTime @default(now())
+
+  @@index([createdById, createdAt])
+  @@map("incident_postmortems")
+}
+
 model IncidentActionPlan {
   id              String   @id @default(cuid())
   incidentId      String

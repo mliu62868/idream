@@ -36,8 +36,10 @@ type IncidentDetail = {
     requestId: string;
     attemptId: string | null;
     observedAt: string;
+    assignmentHistory: Array<{ id: string; fromIncidentId: string; toIncidentId: string; action: string; reason: string; createdAt: string }>;
   }>;
   actionPlans: IncidentPlan[];
+  postmortem: { id: string; summary: string; rootCause: string; contributingFactors: string[]; correctiveActions: string[]; evidenceRefs: string[]; createdById: string; createdAt: string } | null;
   activity: Array<{ id: string; action: string; reason: string | null; createdAt: string }>;
 };
 
@@ -271,6 +273,12 @@ function IncidentInspector({ busy, canManage, detail, onClose, onMutate }: {
   const [resolveIdempotencyKey] = useState(() => crypto.randomUUID());
   const [confirmation, setConfirmation] = useState("");
   const [evidence, setEvidence] = useState("");
+  const [selectedOccurrenceIds, setSelectedOccurrenceIds] = useState<string[]>([]);
+  const [mergeSources, setMergeSources] = useState("");
+  const [postmortemSummary, setPostmortemSummary] = useState("");
+  const [rootCause, setRootCause] = useState("");
+  const [contributingFactors, setContributingFactors] = useState("");
+  const [correctiveActions, setCorrectiveActions] = useState("");
   const [recoveryChecks, setRecoveryChecks] = useState({
     successRateRecovered: false,
     signatureGrowthStopped: false,
@@ -282,6 +290,15 @@ function IncidentInspector({ busy, canManage, detail, onClose, onMutate }: {
   const expectedPlanConfirmation = plan ? `${incident.id}:${plan.id}:${plan.action}` : "";
   const canVerify = ["mitigating", "monitoring"].includes(incident.status);
   const canResolve = incident.status === "monitoring" && ["passed", "overridden"].includes(incident.recoveryVerification.state);
+  const splitIds = [...selectedOccurrenceIds].sort();
+  const splitConfirmation = `${incident.id}:split:${splitIds.join(",")}`;
+  const mergeSourceRecords = mergeSources.split(",").map((item) => item.trim()).filter(Boolean).flatMap((item) => {
+    const [incidentId, version] = item.split("@");
+    const parsedVersion = Number(version);
+    return incidentId && Number.isInteger(parsedVersion) && parsedVersion > 0 ? [{ incidentId, version: parsedVersion }] : [];
+  });
+  const mergeSourceIds = [...new Set(mergeSourceRecords.map((source) => source.incidentId).filter((id) => id !== incident.id))].sort();
+  const mergeConfirmation = `${incident.id}:merge:${mergeSourceIds.join(",")}`;
 
   return (
     <aside aria-labelledby="incident-detail-title" className="rounded-xl bg-[var(--ad-surface)] shadow-[0_18px_50px_rgb(45_42_34/0.08)] xl:sticky xl:top-40">
@@ -293,7 +310,7 @@ function IncidentInspector({ busy, canManage, detail, onClose, onMutate }: {
       <div className="space-y-5 p-5">
         <section aria-labelledby="incident-impact-title"><h4 className="text-sm font-semibold" id="incident-impact-title">Impact and recovery</h4><dl className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4"><Stat label="Requests" value={incident.impact.affectedRequests} /><Stat label="Users" value={incident.impact.affectedUsers} /><Stat label="Occurrences" value={detail.occurrences.length} /><Stat label="Verification" value={incident.recoveryVerification.state} /></dl></section>
 
-        <details className="rounded-lg bg-[var(--ad-surface-subtle)] p-4" open><summary className="cursor-pointer text-sm font-semibold">Occurrences ({detail.occurrences.length})</summary><ul className="mt-3 max-h-48 space-y-2 overflow-y-auto">{detail.occurrences.map((occurrence) => <li className="flex items-center justify-between gap-3 border-b border-[var(--ad-border)] pb-2 text-xs last:border-0" key={occurrence.id}><span className="truncate font-mono">{occurrence.requestId}</span><RelativeTime referenceTime={incident.updatedAt} value={occurrence.observedAt} /></li>)}</ul></details>
+        <details className="rounded-lg bg-[var(--ad-surface-subtle)] p-4" open><summary className="cursor-pointer text-sm font-semibold">Occurrences ({detail.occurrences.length})</summary><ul className="mt-3 max-h-48 space-y-2 overflow-y-auto">{detail.occurrences.map((occurrence) => <li className="flex items-center justify-between gap-3 border-b border-[var(--ad-border)] pb-2 text-xs last:border-0" key={occurrence.id}>{canManage ? <input aria-label={`Select occurrence ${occurrence.id}`} checked={selectedOccurrenceIds.includes(occurrence.id)} onChange={(event) => setSelectedOccurrenceIds((current) => event.target.checked ? [...current, occurrence.id] : current.filter((id) => id !== occurrence.id))} type="checkbox" /> : null}<span className="min-w-0 flex-1 truncate font-mono">{occurrence.requestId}{occurrence.assignmentHistory.length > 0 ? ` · reassigned ${occurrence.assignmentHistory.length}×` : ""}</span><RelativeTime referenceTime={incident.updatedAt} value={occurrence.observedAt} /></li>)}</ul></details>
 
         {canManage ? (
           <>
@@ -309,6 +326,8 @@ function IncidentInspector({ busy, canManage, detail, onClose, onMutate }: {
               <WorkspaceButton disabled={busy || (action === "rollback" && !targetVersion.trim())} onClick={() => void onMutate("Frozen mitigation preview created", async () => { const next = await adminV2Request<IncidentPlan>(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/action-plans/preview`, { method: "POST", body: { action, targetVersion: action === "rollback" ? targetVersion : undefined } }); setPlan(next); setPlanIdempotencyKey(crypto.randomUUID()); })}>Preview eligible scope</WorkspaceButton>
               {plan ? <div className="rounded-md bg-[var(--ad-yellow-bg)] p-3 text-sm"><p><strong>{plan.eligibleIds?.length ?? plan.eligibleOccurrenceIds?.length ?? 0}</strong> eligible · <strong>{plan.skippedIds?.length ?? plan.skippedOccurrenceIds?.length ?? 0}</strong> skipped</p><code className="mt-2 block break-all text-xs">{expectedPlanConfirmation}</code><label className="mt-3 grid gap-1 text-xs font-semibold">Type confirmation<input className={fieldClass} onChange={(event) => setConfirmation(event.target.value)} value={confirmation} /></label><div className="mt-3"><WorkspaceButton disabled={busy || confirmation !== expectedPlanConfirmation} tone="danger" onClick={() => void onMutate("Mitigation plan executed", () => adminV2Request(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/action-plans/${encodeURIComponent(plan.id)}/execute`, { method: "POST", idempotencyKey: planIdempotencyKey, body: { entityVersion: incident.version, confirmation } }))}>Execute frozen plan</WorkspaceButton></div></div> : null}
             </section>
+
+            <section className="space-y-3 border-t border-[var(--ad-border)] pt-5" aria-labelledby="incident-correlation-title"><h4 className="text-sm font-semibold" id="incident-correlation-title">Correlation corrections</h4><p className="text-xs text-[var(--ad-text-muted)]">Split preserves an immutable assignment history. Merge sources use <code>incidentId@version</code>, comma separated.</p><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Merge sources<input className={fieldClass} onChange={(event) => setMergeSources(event.target.value)} value={mergeSources} /></label><div className="flex flex-wrap gap-2"><WorkspaceButton disabled={busy || splitIds.length === 0 || splitIds.length >= detail.occurrences.length || confirmation !== splitConfirmation || reason.trim().length < 3} onClick={() => void onMutate("Selected occurrences split into a new Incident", () => adminV2Request(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/commands/split`, { method: "POST", body: { entityVersion: incident.version, occurrenceIds: splitIds, reason: reason.trim(), confirmation } }))}>Split selected</WorkspaceButton><WorkspaceButton disabled={busy || mergeSourceIds.length === 0 || confirmation !== mergeConfirmation || reason.trim().length < 3} onClick={() => void onMutate("Incidents merged with assignment history", () => adminV2Request(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/commands/merge`, { method: "POST", body: { entityVersion: incident.version, sources: mergeSourceRecords, reason: reason.trim(), confirmation } }))}>Merge sources</WorkspaceButton></div><code className="block break-all text-xs">{splitIds.length > 0 ? splitConfirmation : mergeConfirmation}</code></section>
 
             <section
               aria-labelledby="incident-verification-title"
@@ -389,6 +408,7 @@ function IncidentInspector({ busy, canManage, detail, onClose, onMutate }: {
                 </p>
               ) : null}
             </section>
+            {incident.status === "resolved" ? <section className="space-y-3 border-t border-[var(--ad-border)] pt-5" aria-labelledby="incident-postmortem-title"><h4 className="text-sm font-semibold" id="incident-postmortem-title">Postmortem and close</h4><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Summary<textarea className={textAreaClass} onChange={(event) => setPostmortemSummary(event.target.value)} value={postmortemSummary} /></label><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Root cause<textarea className={textAreaClass} onChange={(event) => setRootCause(event.target.value)} value={rootCause} /></label><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Contributing factors (one per line)<textarea className={textAreaClass} onChange={(event) => setContributingFactors(event.target.value)} value={contributingFactors} /></label><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Corrective actions (one per line)<textarea className={textAreaClass} onChange={(event) => setCorrectiveActions(event.target.value)} value={correctiveActions} /></label><code className="block text-xs">{incident.id}:close</code><WorkspaceButton disabled={busy || postmortemSummary.trim().length < 10 || rootCause.trim().length < 3 || !correctiveActions.trim() || !evidence.trim() || confirmation !== `${incident.id}:close` || reason.trim().length < 3} onClick={() => void onMutate("Postmortem recorded and Incident closed", () => adminV2Request(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/commands/close`, { method: "POST", body: { entityVersion: incident.version, summary: postmortemSummary.trim(), rootCause: rootCause.trim(), contributingFactors: contributingFactors.split("\n").map((item) => item.trim()).filter(Boolean), correctiveActions: correctiveActions.split("\n").map((item) => item.trim()).filter(Boolean), evidenceRefs: [evidence.trim()], reason: reason.trim(), confirmation } }))} tone="primary">Record postmortem and close</WorkspaceButton></section> : null}
           </>
         ) : <p className="rounded-md bg-[var(--ad-surface-subtle)] p-3 text-sm text-[var(--ad-text-muted)]">Read access only. Incident actions require <code>ops.incident.manage</code>.</p>}
         <CollaborationPanel canWrite={canManage} targetId={incident.id} targetType="incident" />
