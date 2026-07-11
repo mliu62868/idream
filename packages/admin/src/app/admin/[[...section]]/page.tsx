@@ -1,13 +1,10 @@
 import type { Metadata } from "next";
+import { adminBootstrapSchema, type AdminBootstrap } from "@idream/shared/admin";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { AdminDevLogin } from "@/components/admin/AdminDevLogin";
 import { adminEntryRedirect } from "@/components/admin/nav-config";
-import { deriveAdminShellSignals } from "@/components/admin/shell-signals";
-import { effectivePermissions } from "@/server/admin/effective-permissions";
-import { getAuthCtx } from "@/server/lib/auth";
-import { devLoginEnabled } from "@/server/admin/dev-login";
-import { DEV_ADMIN_ACCOUNT_HINTS } from "@/server/admin/dev-login-accounts";
+import { proxyToMain } from "../../../server/main-proxy";
 import { AdminConsoleClientOnly } from "../AdminConsoleClientOnly";
 
 export const dynamic = "force-dynamic";
@@ -35,33 +32,52 @@ export default async function AdminPage({ params, searchParams }: AdminPageProps
   if (entryRedirect) redirect(entryRedirect);
 
   const headerList = await headers();
-  const ctx = await getAuthCtx(
-    new Request("http://localhost/admin", {
-      headers: headerList,
-    }),
-  );
-  const permissions = await effectivePermissions(ctx.userId, ctx.role);
-  const canReadDashboard = permissions.has("dashboard.read");
+  const bootstrap = await loadBootstrap(headerList);
+  if (!bootstrap) return <AdminAuthorityUnavailable />;
 
   // 本地开发：无后台权限时给出内置账号的快捷登录，而非裸的 access denied。
-  if (!canReadDashboard && devLoginEnabled()) {
+  if (!bootstrap.canReadDashboard && bootstrap.devLogin.enabled) {
     return (
       <AdminDevLogin
-        accounts={DEV_ADMIN_ACCOUNT_HINTS}
-        actor={ctx.userId ? { id: ctx.userId, role: ctx.role ?? "user" } : null}
+        accounts={bootstrap.devLogin.accounts}
+        actor={bootstrap.actor}
       />
     );
   }
 
   return (
     <AdminConsoleClientOnly
-      actor={ctx.userId ? { id: ctx.userId, role: ctx.role ?? "user" } : null}
-      initialAccess={canReadDashboard}
-      initialPermissions={[...permissions]}
+      actor={bootstrap.actor}
+      initialAccess={bootstrap.canReadDashboard}
+      initialPermissions={bootstrap.permissions}
       initialSection={withSearchParams(section.join("/"), query)}
-      shellSignals={deriveAdminShellSignals(process.env)}
-      devLogout={devLoginEnabled()}
+      shellSignals={bootstrap.shellSignals}
+      devLogout={bootstrap.devLogin.enabled}
     />
+  );
+}
+
+async function loadBootstrap(requestHeaders: Headers): Promise<AdminBootstrap | null> {
+  const response = await proxyToMain(
+    new Request("http://admin.local/api/v2/admin/bootstrap", { headers: requestHeaders }),
+    "/api/v2/admin/bootstrap",
+  );
+  if (!response.ok) return null;
+  const envelope = await response.json() as { data?: { bootstrap?: unknown } };
+  const parsed = adminBootstrapSchema.safeParse(envelope.data?.bootstrap);
+  return parsed.success ? parsed.data : null;
+}
+
+function AdminAuthorityUnavailable() {
+  return (
+    <main className="grid min-h-screen place-items-center bg-[var(--ad-canvas)] p-6 text-[var(--ad-ink)]">
+      <section className="max-w-md rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6">
+        <h1 className="text-lg font-semibold">Admin authority unavailable</h1>
+        <p className="mt-2 text-sm text-[var(--ad-text-muted)]">
+          The control plane could not verify identity, permissions, and data provenance. No admin data or actions are available until the authority service recovers.
+        </p>
+      </section>
+    </main>
   );
 }
 

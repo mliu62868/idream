@@ -2,7 +2,13 @@
 
 import { useState } from "react";
 import { Loader2, LogIn, ShieldCheck, UserCog } from "lucide-react";
-import type { DevAdminAccountHint } from "@/server/admin/dev-login-accounts";
+
+type DevAdminAccountHint = {
+  username: string;
+  password: string;
+  label: string;
+  role: "user" | "moderator" | "support" | "ops" | "analyst" | "admin";
+};
 
 type AdminDevLoginProps = {
   accounts: DevAdminAccountHint[];

@@ -5,3 +5,4 @@ export * from "./incidents";
 export * from "./cases";
 export * from "./metrics";
 export * from "./today";
+export * from "./bootstrap";

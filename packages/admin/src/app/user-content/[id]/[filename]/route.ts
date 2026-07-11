@@ -1,4 +1,4 @@
-import { dispatchV1 } from "@/server/modules/ourdream/service";
+import { proxyToMain } from "../../../../server/main-proxy";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -11,10 +11,9 @@ type UserContentRouteContext = {
 };
 
 export async function GET(request: Request, context: UserContentRouteContext) {
-  const { id } = await context.params;
-  return dispatchV1(request, ["media", decodeRouteId(id), "content"]);
-}
-
-function decodeRouteId(token: string) {
-  return Buffer.from(token, "base64url").toString("utf8");
+  const { id, filename } = await context.params;
+  return proxyToMain(
+    request,
+    `/user-content/${encodeURIComponent(id)}/${encodeURIComponent(filename)}`,
+  );
 }
