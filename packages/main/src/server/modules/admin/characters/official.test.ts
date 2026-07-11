@@ -373,6 +373,20 @@ describe("official character CMS", () => {
     expect(archived.ok).toBe(true);
     expect((archived.data?.character as { status: string }).status).toBe("archived");
 
+    await prisma.character.update({ where: { id }, data: { imageAssetId: null } });
+    const invalidRepublish = await call(
+      setOfficialState(
+        makeRequest("POST", `/${id}/state`, {
+          userId: admin,
+          role: "admin",
+          body: { status: "approved", reason: "must revalidate archived release" },
+        }),
+        id,
+      ),
+    );
+    expect(invalidRepublish.status).toBe(400);
+    await prisma.character.update({ where: { id }, data: { imageAssetId: media.id } });
+
     // archived -> approved (back live)
     const republished = await call(
       setOfficialState(

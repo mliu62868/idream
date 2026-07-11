@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { ADMIN_PERMISSION_KEYS } from "@idream/shared/admin/permissions";
 import { type FormEvent, type ReactNode, type WheelEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -390,44 +391,6 @@ type PermissionForm = {
   permissionKey: string;
   effect: "grant" | "revoke" | "clear";
 };
-
-const PERMISSION_KEYS = [
-  "dashboard.read",
-  "user.read",
-  "user.status.write",
-  "user.role.write",
-  "content.read",
-  "content.takedown.write",
-  "content.official.write",
-  "content.template.write",
-  "content.tag.write",
-  "content.production.write",
-  "content.asset.read",
-  "content.asset.review",
-  "content.placement.write",
-  "generation.job.read",
-  "generation.job.requeue",
-  "generation.config.read",
-  "generation.config.write",
-  "safety.review.read",
-  "safety.review.write",
-  "billing.read",
-  "billing.ledger.adjust",
-  "config.feature_flag.write",
-  "config.pricing.write",
-  "ops.queue.read",
-  "ops.deadletter.write",
-  "support.plaintext.view",
-  "audit.read",
-  "analytics.export",
-  "growth.promo.read",
-  "growth.promo.write",
-  "chat.ops.read",
-  "admin.approval.review",
-  "content.cms.write",
-  "compliance.read",
-  "compliance.write",
-];
 
 const textIdentityCapabilities = {
   textToImage: true,
@@ -4876,7 +4839,7 @@ function UsersView({
             }
             value={permissionForm.permissionKey}
           >
-            {PERMISSION_KEYS.map((key) => (
+            {ADMIN_PERMISSION_KEYS.map((key) => (
               <option key={key} value={key}>
                 {key}
               </option>

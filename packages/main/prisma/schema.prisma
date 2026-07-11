@@ -1695,6 +1695,7 @@ model ControlPlaneCommand {
   requestHash         String
   expectedVersion     Int?
   approvalId          String?
+  retryMode           String    @default("non_replayable")
   status              String    @default("accepted")
   result              Json?
   error               Json?

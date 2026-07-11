@@ -45,6 +45,9 @@ describe("Admin v2 command reliability", () => {
     expect(canonicalRequestHash({ ...base, expectedVersion: 8 })).not.toBe(
       canonicalRequestHash(base),
     );
+    expect(canonicalRequestHash({ ...base, retryMode: "idempotent" })).not.toBe(
+      canonicalRequestHash(base),
+    );
   });
 
   it("replays the same idempotent command without duplicating command, audit, or outbox effects", async () => {
@@ -110,17 +113,32 @@ describe("Admin v2 command reliability", () => {
       ...base,
       idempotencyKey: randomUUID(),
       maxAttempts: 2,
+      retryMode: "idempotent",
     });
     const exhausted = await acceptControlPlaneCommand(prisma, {
       ...base,
       idempotencyKey: randomUUID(),
       maxAttempts: 1,
+      retryMode: "idempotent",
+    });
+    const nonReplayable = await acceptControlPlaneCommand(prisma, {
+      ...base,
+      idempotencyKey: randomUUID(),
+      maxAttempts: 2,
     });
 
     expect(
       await claimControlPlaneCommand(prisma, {
         commandId: retryable.commandId,
         workerId: "worker-a",
+        leaseMs: 1_000,
+        now: new Date("2026-07-11T12:00:00.000Z"),
+      }),
+    ).toMatchObject({ status: "running", attemptCount: 1 });
+    expect(
+      await claimControlPlaneCommand(prisma, {
+        commandId: nonReplayable.commandId,
+        workerId: "worker-c",
         leaseMs: 1_000,
         now: new Date("2026-07-11T12:00:00.000Z"),
       }),
@@ -142,6 +160,14 @@ describe("Admin v2 command reliability", () => {
     expect(
       await prisma.controlPlaneCommand.findUniqueOrThrow({ where: { id: exhausted.commandId } }),
     ).toMatchObject({ status: "failed", needsReconciliation: true, leaseOwner: null });
+    expect(
+      await prisma.controlPlaneCommand.findUniqueOrThrow({ where: { id: nonReplayable.commandId } }),
+    ).toMatchObject({
+      status: "failed",
+      needsReconciliation: true,
+      leaseOwner: null,
+      error: expect.objectContaining({ code: "lease_expired_non_replayable" }),
+    });
   });
 });
 

@@ -1,5 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { canonicalSha256 } from "./canonical-json";
+import { toInputJson } from "./prisma-json";
 
 export interface CanonicalCommandRequest {
   readonly commandType: string;
@@ -7,6 +8,7 @@ export interface CanonicalCommandRequest {
   readonly expectedVersion?: number;
   readonly payload: unknown;
   readonly approvalId?: string;
+  readonly retryMode?: "idempotent" | "non_replayable";
 }
 
 export interface AcceptControlPlaneCommandInput extends CanonicalCommandRequest {
@@ -31,10 +33,6 @@ export class IdempotencyConflictError extends Error {
   }
 }
 
-function inputJson(value: unknown): Prisma.InputJsonValue {
-  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
-}
-
 export function canonicalRequestHash(input: CanonicalCommandRequest): string {
   return canonicalSha256({
     commandType: input.commandType,
@@ -42,6 +40,7 @@ export function canonicalRequestHash(input: CanonicalCommandRequest): string {
     expectedVersion: input.expectedVersion ?? null,
     payload: input.payload,
     approvalId: input.approvalId ?? null,
+    retryMode: input.retryMode ?? "non_replayable",
   });
 }
 
@@ -84,6 +83,7 @@ export async function acceptControlPlaneCommand(
           requestHash,
           expectedVersion: input.expectedVersion,
           approvalId: input.approvalId,
+          retryMode: input.retryMode ?? "non_replayable",
           status: "accepted",
           maxAttempts: input.maxAttempts ?? 3,
         },
@@ -96,10 +96,11 @@ export async function acceptControlPlaneCommand(
           targetType: input.target.type,
           targetId: input.target.id,
           reason: input.reason,
-          after: inputJson({
+          after: toInputJson({
             commandId: command.id,
             expectedVersion: input.expectedVersion ?? null,
             approvalId: input.approvalId ?? null,
+            retryMode: input.retryMode ?? "non_replayable",
             requestHash,
             status: command.status,
           }),
@@ -111,13 +112,14 @@ export async function acceptControlPlaneCommand(
           eventType: "admin.command.accepted.v2",
           aggregateType: input.target.type,
           aggregateId: input.target.id,
-          payload: inputJson({
+          payload: toInputJson({
             commandId: command.id,
             commandType: input.commandType,
             target: input.target,
             expectedVersion: input.expectedVersion ?? null,
             payload: input.payload,
             approvalId: input.approvalId ?? null,
+            retryMode: input.retryMode ?? "non_replayable",
             requestHash,
           }),
         },
@@ -197,6 +199,7 @@ export async function reconcileExpiredCommandLeases(db: PrismaClient, now = new 
   for (const command of expired) {
     await db.$transaction(async (tx) => {
       const exhausted = command.attemptCount >= command.maxAttempts;
+      const canReplay = command.retryMode === "idempotent" && !exhausted;
       const updated = await tx.controlPlaneCommand.updateMany({
         where: {
           id: command.id,
@@ -205,15 +208,19 @@ export async function reconcileExpiredCommandLeases(db: PrismaClient, now = new 
           leaseExpiresAt: command.leaseExpiresAt,
         },
         data: {
-          status: exhausted ? "failed" : "accepted",
-          needsReconciliation: exhausted,
+          status: canReplay ? "accepted" : "failed",
+          needsReconciliation: !canReplay,
           leaseOwner: null,
           leaseExpiresAt: null,
           heartbeatAt: null,
-          finishedAt: exhausted ? now : null,
-          error: exhausted
-            ? inputJson({ code: "lease_expired_max_attempts", attemptCount: command.attemptCount })
-            : undefined,
+          finishedAt: canReplay ? null : now,
+          error: canReplay
+            ? undefined
+            : toInputJson({
+                code: exhausted ? "lease_expired_max_attempts" : "lease_expired_non_replayable",
+                attemptCount: command.attemptCount,
+                retryMode: command.retryMode,
+              }),
         },
       });
       if (updated.count !== 1) return;
@@ -226,11 +233,11 @@ export async function reconcileExpiredCommandLeases(db: PrismaClient, now = new 
         data: {
           status: "failed",
           finishedAt: now,
-          error: inputJson({ code: "lease_expired", leaseOwner: command.leaseOwner }),
+          error: toInputJson({ code: "lease_expired", leaseOwner: command.leaseOwner }),
         },
       });
-      if (exhausted) failed += 1;
-      else requeued += 1;
+      if (canReplay) requeued += 1;
+      else failed += 1;
     });
   }
   return { examined: expired.length, requeued, failed };

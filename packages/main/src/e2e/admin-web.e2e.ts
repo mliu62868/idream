@@ -203,6 +203,10 @@ test("admin content ops requires confirmation for public placement and archive w
   const consoleFailures = collectConsoleFailures(page);
   const admin = await startAdminSession(page);
   const adminURL = adminBaseURL();
+  const adminLogin = await page.request.post(`${adminURL}/api/admin-auth/login`, {
+    data: { username: "admin", password: "admin123" },
+  });
+  expect(adminLogin.ok(), await adminLogin.text()).toBeTruthy();
   const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
   const characterId = `e2e-content-confirm-character-${suffix}`;
   const archiveAssetId = `e2e-content-confirm-archive-${suffix}`;
@@ -349,12 +353,18 @@ test("admin content ops requires confirmation for public placement and archive w
 
     await page.goto(`${adminURL}/admin/content/assets`);
     await expectAdminShellReady(page, "Library");
-    const archiveCard = page.locator("article").filter({ hasText: archiveBatchTitle });
+    await page.getByRole("textbox", { name: "Search by tag, description, or asset ID" }).fill(archiveAssetId);
+    const archiveCard = page.locator(`a[href="/admin/content/assets/${archiveAssetId}"]`);
     await expect(archiveCard).toBeVisible({ timeout: 10_000 });
-    await archiveCard.getByRole("button", { name: "Archive" }).click();
-    await expect(page.getByText("Press Confirm archive asset to archive this asset.")).toBeVisible({
+    await archiveCard.click();
+    await expect(page.getByRole("heading", { name: archiveAssetId.slice(0, 8), exact: true })).toBeVisible({
       timeout: 10_000,
     });
+    await page.getByRole("button", { name: "Archive", exact: true }).click();
+    const archiveDialog = page.getByRole("heading", { name: "Archive", exact: true }).locator("..");
+    await expect(archiveDialog).toContainText(
+      "Assets have no name — type the first 8 characters of the ID to confirm.",
+    );
     await expect(
       prisma.mediaAsset.findUniqueOrThrow({
         where: { id: archiveAssetId },
@@ -362,8 +372,12 @@ test("admin content ops requires confirmation for public placement and archive w
       }).then((asset) => platformStatusFromMetadata(asset.metadata)),
     ).resolves.toBe("approved");
 
-    await archiveCard.getByRole("button", { name: "Confirm archive" }).click();
-    await expect(archiveCard.getByText("archived", { exact: true })).toBeVisible({
+    await archiveDialog.getByRole("textbox", { name: "Reason (≥3)" }).fill("archive after E2E confirmation");
+    await archiveDialog
+      .getByRole("textbox", { name: "Type the name to confirm" })
+      .fill(archiveAssetId.slice(0, 8));
+    await archiveDialog.getByRole("button", { name: "Archive", exact: true }).click();
+    await expect(page.getByText("archived", { exact: true })).toBeVisible({
       timeout: 10_000,
     });
     await expect(
@@ -387,22 +401,22 @@ test("admin content ops requires confirmation for public placement and archive w
 
     await page.goto(`${adminURL}/admin/content/placements`);
     await expectAdminShellReady(page, "Placements");
-    await expect(page.getByLabel("Asset").locator(`option[value="${archiveAssetId}"]`)).toHaveCount(0);
-    await page.getByLabel("Asset").selectOption(placementAssetId);
+    await page.getByRole("link", { name: "New placement" }).first().click();
+    await expect(page.getByRole("heading", { level: 2, name: "New placement" })).toBeVisible();
+    await expect(page.getByRole("combobox", { name: "Asset" }).locator(`option[value="${archiveAssetId}"]`)).toHaveCount(0);
+    await page.getByRole("combobox", { name: "Asset" }).selectOption(placementAssetId);
     await page.getByLabel("Target ID").fill(characterId);
-    await page.getByRole("button", { name: "Create placement" }).click();
-    await expect(page.getByText("Press Confirm create placement to publish this placement.")).toBeVisible({
-      timeout: 10_000,
-    });
+    await page.getByRole("textbox", { name: "Reason (≥3)" }).fill("publish approved E2E asset");
     await expect(
       prisma.mediaAssetPlacement.count({
         where: { mediaAssetId: placementAssetId, targetId: characterId },
       }),
     ).resolves.toBe(0);
 
-    await page.getByRole("button", { name: "Confirm create placement" }).click();
-    const placementRow = page.locator("article").filter({ hasText: placementAssetId });
-    await expect(placementRow).toBeVisible({ timeout: 10_000 });
+    await page.getByRole("button", { name: "Create placement" }).click();
+    await expect(page.getByRole("heading", { level: 2, name: "character_avatar" })).toBeVisible({
+      timeout: 10_000,
+    });
     await expect
       .poll(
         async () => {
@@ -427,10 +441,9 @@ test("admin content ops requires confirmation for public placement and archive w
       }),
     ).resolves.toEqual({ imageAssetId: placementAssetId });
 
-    await placementRow.getByRole("button", { name: "Pause" }).click();
-    await expect(page.getByText("Press Confirm pause placement to update this placement.")).toBeVisible({
-      timeout: 10_000,
-    });
+    await page.getByRole("button", { name: "Pause", exact: true }).click();
+    const pauseDialog = page.getByRole("heading", { name: "Pause", exact: true }).locator("..");
+    await pauseDialog.getByRole("textbox", { name: "Reason (≥3)" }).fill("pause after E2E verification");
     await expect(
       prisma.mediaAssetPlacement.findUniqueOrThrow({
         where: { id: createdPlacement.id },
@@ -438,8 +451,8 @@ test("admin content ops requires confirmation for public placement and archive w
       }),
     ).resolves.toEqual({ status: "published" });
 
-    await placementRow.getByRole("button", { name: "Confirm pause" }).click();
-    await expect(placementRow.getByText("paused", { exact: true })).toBeVisible({ timeout: 10_000 });
+    await pauseDialog.getByRole("button", { name: "Pause", exact: true }).click();
+    await expect(page.getByText("paused", { exact: true })).toBeVisible({ timeout: 10_000 });
     await expect(
       prisma.mediaAssetPlacement.findUniqueOrThrow({
         where: { id: createdPlacement.id },

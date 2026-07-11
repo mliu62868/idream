@@ -414,7 +414,7 @@ export async function setOfficialState(request: Request, id: string): Promise<Re
   if (!existing || existing.source !== "official" || existing.deletedAt) {
     throw Errors.notFound("Official character not found");
   }
-  if (body.status === "approved" && existing.status === "draft") {
+  if (body.status === "approved") {
     const missing = releaseCheckMissing(existing);
     if (missing.length > 0) {
       throw Errors.badRequest("Character release checks are incomplete", { missing });

@@ -1,5 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { canonicalSha256 } from "./canonical-json";
+import { toInputJson } from "./prisma-json";
 
 export interface ProductEventInput {
   readonly sourceService: string;
@@ -19,10 +20,6 @@ export type ProductEventIngestResult =
   | { readonly status: "persisted"; readonly eventId: string }
   | { readonly status: "duplicate"; readonly eventId: string }
   | { readonly status: "quarantined"; readonly eventId: string | null };
-
-function inputJson(value: unknown): Prisma.InputJsonValue {
-  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
-}
 
 function payloadHash(input: ProductEventInput): string {
   return canonicalSha256({
@@ -61,7 +58,7 @@ async function ingestTransaction(
         data: {
           processingState: "quarantined",
           quarantinedAt: new Date(),
-          error: inputJson({
+          error: toInputJson({
             code: "payload_hash_conflict",
             expectedHash: existing.payloadHash,
             receivedHash: hash,
@@ -83,7 +80,7 @@ async function ingestTransaction(
     const canonical = await tx.analyticsEvent.create({
       data: {
         name: input.eventType,
-        props: inputJson(input.payload),
+        props: toInputJson(input.payload),
         sourceService: input.sourceService,
         sourceEventId: input.sourceEventId,
         payloadHash: hash,
@@ -92,8 +89,8 @@ async function ingestTransaction(
         environment: input.environment,
         dataClass: input.dataClass,
         trustClass: input.trustClass,
-        actor: inputJson(input.actor),
-        context: inputJson(input.context),
+        actor: toInputJson(input.actor),
+        context: toInputJson(input.context),
       },
     });
     await tx.mainOutboxEvent.create({
@@ -101,7 +98,7 @@ async function ingestTransaction(
         eventType: "product.event.persisted.v2",
         aggregateType: "product_event",
         aggregateId: canonical.id,
-        payload: inputJson({
+        payload: toInputJson({
           eventId: canonical.id,
           sourceService: input.sourceService,
           sourceEventId: input.sourceEventId,

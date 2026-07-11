@@ -6,6 +6,7 @@ import { getControlPlaneCommand } from "./query";
 
 describe("Admin v2 command status query", () => {
   const adminId = `admin-v2-query-${randomUUID()}`;
+  const analystId = `admin-v2-query-analyst-${randomUUID()}`;
   let commandId = "";
 
   beforeAll(async () => {
@@ -14,6 +15,14 @@ describe("Admin v2 command status query", () => {
         id: adminId,
         email: `${adminId}@example.test`,
         role: "admin",
+        status: "active",
+      },
+    });
+    await prisma.user.create({
+      data: {
+        id: analystId,
+        email: `${analystId}@example.test`,
+        role: "analyst",
         status: "active",
       },
     });
@@ -35,7 +44,7 @@ describe("Admin v2 command status query", () => {
     await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: "incident-query-1" } });
     await prisma.adminAuditLog.deleteMany({ where: { actorId: adminId } });
     await prisma.controlPlaneCommand.deleteMany({ where: { actorId: adminId } });
-    await prisma.user.deleteMany({ where: { id: adminId } });
+    await prisma.user.deleteMany({ where: { id: { in: [adminId, analystId] } } });
     await prisma.$disconnect();
   });
 
@@ -62,10 +71,22 @@ describe("Admin v2 command status query", () => {
   });
 
   it("does not expose command state to an unauthenticated caller", async () => {
+    for (const id of [commandId, "unknown-command"]) {
+      const response = await getControlPlaneCommand(
+        new Request("http://localhost/api/v2/admin/commands/command"),
+        id,
+      );
+      expect(response.status).toBe(401);
+    }
+  });
+
+  it("rejects an authenticated actor without the target read permission", async () => {
     const response = await getControlPlaneCommand(
-      new Request("http://localhost/api/v2/admin/commands/command"),
+      new Request("http://localhost/api/v2/admin/commands/command", {
+        headers: { "x-idream-user-id": analystId, "x-idream-role": "analyst" },
+      }),
       commandId,
     );
-    expect(response.status).toBe(401);
+    expect(response.status).toBe(403);
   });
 });
