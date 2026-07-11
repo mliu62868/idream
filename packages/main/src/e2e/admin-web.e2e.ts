@@ -17,6 +17,13 @@ function adminBaseURL() {
   return url.toString().replace(/\/$/, "");
 }
 
+async function startDevAdminSession(page: Page, baseURL: string) {
+  const response = await page.request.post(`${baseURL}/api/admin-auth/login`, {
+    data: { username: "admin", password: "admin123" },
+  });
+  expect(response.ok(), await response.text()).toBeTruthy();
+}
+
 async function startAdminSession(page: Page) {
   const email = uniqueEmail("web");
   const ageGate = await page.request.post("/api/v1/age-gate/accept", {
@@ -139,6 +146,7 @@ test("admin web loads all control-plane sections and filters users", async ({ pa
 
   const admin = await startAdminSession(page);
   const adminURL = adminBaseURL();
+  await startDevAdminSession(page, adminURL);
 
   const sections = [
     { path: "/admin", heading: "Today", evidence: "Next best actions" },
@@ -203,10 +211,7 @@ test("admin content ops requires confirmation for public placement and archive w
   const consoleFailures = collectConsoleFailures(page);
   const admin = await startAdminSession(page);
   const adminURL = adminBaseURL();
-  const adminLogin = await page.request.post(`${adminURL}/api/admin-auth/login`, {
-    data: { username: "admin", password: "admin123" },
-  });
-  expect(adminLogin.ok(), await adminLogin.text()).toBeTruthy();
+  await startDevAdminSession(page, adminURL);
   const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
   const characterId = `e2e-content-confirm-character-${suffix}`;
   const archiveAssetId = `e2e-content-confirm-archive-${suffix}`;
