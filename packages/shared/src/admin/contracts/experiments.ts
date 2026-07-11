@@ -41,8 +41,36 @@ export const experimentExposureResponseSchema = z.object({
   variant: z.string().min(1),
 }).strict();
 
+export const experimentArmAnalysisSchema = z.object({
+  variant: z.string().min(1),
+  assignedSubjects: z.number().int().nonnegative(),
+  exposedSubjects: z.number().int().nonnegative(),
+  matureSubjects: z.number().int().nonnegative(),
+  outcomeSubjects: z.number().int().nonnegative(),
+  rate: z.number().min(0).max(1).nullable(),
+  absoluteLiftVsControl: z.number().min(-1).max(1).nullable(),
+}).strict();
+
+export const experimentAnalysisResponseSchema = z.object({
+  experimentId: adminIdSchema,
+  experimentKey: z.string().min(1),
+  experimentVersion: z.number().int().positive(),
+  status: z.string().min(1),
+  primaryMetric: z.literal("relationship.qce_activation.v1"),
+  controlVariant: z.string().min(1),
+  window: z.literal("7d_after_first_exposure"),
+  asOf: adminIsoDateTimeSchema,
+  maturity: z.enum(["mature", "immature", "insufficient_data"]),
+  qualityState: z.enum(["directional", "invalid"]),
+  decisionUse: z.enum(["directional_only", "blocked"]),
+  qualityEvidence: z.array(z.string()),
+  arms: z.array(experimentArmAnalysisSchema),
+}).strict();
+
 export type ExperimentVariant = z.infer<typeof experimentVariantSchema>;
 export type ExperimentAssignmentRequest = z.infer<typeof experimentAssignmentRequestSchema>;
 export type ExperimentAssignmentResponse = z.infer<typeof experimentAssignmentResponseSchema>;
 export type ExperimentExposureRequest = z.infer<typeof experimentExposureRequestSchema>;
 export type ExperimentExposureResponse = z.infer<typeof experimentExposureResponseSchema>;
+export type ExperimentArmAnalysis = z.infer<typeof experimentArmAnalysisSchema>;
+export type ExperimentAnalysisResponse = z.infer<typeof experimentAnalysisResponseSchema>;
