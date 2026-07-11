@@ -395,6 +395,142 @@ export const characterPerformanceReconciliationSchema = z.object({
   qualityState: z.enum(["directional", "invalid"]),
 }).strict();
 
+export const characterProjectDraftPatchRequestSchema = z
+  .object({
+    entityVersion: z.number().int().nonnegative(),
+    phase: characterProjectPhaseSchema,
+    ownerId: adminIdSchema.nullable(),
+    audience: z.string().trim().min(1).max(2_000),
+    companionNeed: z.string().trim().min(1).max(2_000),
+    hypothesis: z.string().trim().min(1).max(4_000),
+    differentiation: z.string().trim().min(1).max(4_000),
+    targetPlacementKeys: z.array(z.string().trim().min(1).max(120)).max(24),
+    successCriteria: z.array(z.string().trim().min(1).max(500)).min(1).max(24),
+    plannedLaunchAt: adminIsoDateTimeSchema.nullable(),
+    reason: z.string().trim().min(3).max(2_000),
+  })
+  .strict();
+
+export const characterWorkspaceProjectSchema = z
+  .object({
+    id: adminIdSchema,
+    characterId: adminIdSchema,
+    ownerId: adminIdSchema.nullable(),
+    phase: characterProjectPhaseSchema,
+    audience: z.string(),
+    companionNeed: z.string(),
+    hypothesis: z.string(),
+    differentiation: z.string(),
+    targetPlacementKeys: z.array(z.string()).readonly(),
+    successCriteria: z.array(z.string()).readonly(),
+    plannedLaunchAt: adminIsoDateTimeSchema.nullable(),
+    version: z.number().int().nonnegative(),
+    updatedAt: adminIsoDateTimeSchema,
+  })
+  .strict();
+
+export const characterReleaseCheckSchema = z
+  .object({
+    checkKey: z.string().trim().min(1),
+    result: z.enum(["passed", "failed", "blocked", "stale"]),
+    evidence: z.record(z.string(), z.unknown()),
+    checkedAt: adminIsoDateTimeSchema,
+  })
+  .strict();
+
+export const characterReleaseMonitorSchema = z
+  .object({
+    id: adminIdSchema,
+    window: z.string().trim().min(1),
+    status: z.string().trim().min(1),
+    baseline: z.record(z.string(), z.unknown()),
+    observed: z.record(z.string(), z.unknown()),
+    verification: z.record(z.string(), z.unknown()),
+    startedAt: adminIsoDateTimeSchema,
+    finishedAt: adminIsoDateTimeSchema.nullable(),
+  })
+  .strict();
+
+export const characterPreviewSnapshotSchema = z
+  .object({
+    releaseId: adminIdSchema.nullable(),
+    contentVersionId: adminIdSchema.nullable(),
+    label: z.enum(["Live", "Draft Preview"]),
+    name: z.string(),
+    description: z.string(),
+    persona: z.record(z.string(), z.unknown()),
+    opening: z.record(z.string(), z.unknown()),
+    appearance: z.record(z.string(), z.unknown()),
+    imageUrl: z.string().nullable(),
+  })
+  .strict();
+
+export const characterWorkspaceReleaseSchema = z
+  .object({
+    release: z
+      .object({
+        id: adminIdSchema,
+        projectId: adminIdSchema,
+        revisionId: adminIdSchema,
+        characterContentVersionId: adminIdSchema,
+        visualProfileId: adminIdSchema.nullable(),
+        visualProfileVersion: z.number().int().positive().nullable(),
+        referenceSetRevisionId: adminIdSchema.nullable(),
+        generationProvenance: z.record(z.string(), z.unknown()),
+        releasePlacementManifest: z.record(z.string(), z.unknown()),
+        snapshotHash: z.string().trim().min(1),
+        readiness: z.string().trim().min(1),
+        legacy: z.boolean(),
+        status: characterReleaseStatusSchema,
+        publishedAt: adminIsoDateTimeSchema.nullable(),
+        supersedesId: adminIdSchema.nullable(),
+        rollbackOfReleaseId: adminIdSchema.nullable(),
+        version: z.number().int().nonnegative(),
+        createdAt: adminIsoDateTimeSchema,
+        updatedAt: adminIsoDateTimeSchema,
+      })
+      .strict(),
+    checks: z.array(characterReleaseCheckSchema).readonly(),
+    monitors: z.array(characterReleaseMonitorSchema).readonly(),
+  })
+  .strict();
+
+export const characterWorkspaceDetailSchema = z
+  .object({
+    character: z
+      .object({
+        id: adminIdSchema,
+        name: z.string().trim().min(1),
+        age: z.number().int().min(18),
+        description: z.string(),
+        gender: z.string(),
+        style: z.string(),
+        visibility: z.string(),
+        legacyStatus: z.string(),
+        imageUrl: z.string().nullable(),
+        updatedAt: adminIsoDateTimeSchema,
+      })
+      .strict(),
+    project: characterWorkspaceProjectSchema,
+    serving: characterServingSchema.nullable(),
+    releases: z.array(characterWorkspaceReleaseSchema).readonly(),
+    preview: z
+      .object({
+        live: characterPreviewSnapshotSchema.nullable(),
+        draft: characterPreviewSnapshotSchema,
+        changedFields: z.array(z.string()).readonly(),
+      })
+      .strict(),
+    performance: z.array(characterPerformanceSummarySchema).readonly(),
+  })
+  .strict();
+
+export const characterReleaseMonitorRefreshRequestSchema = z
+  .object({
+    entityVersion: z.number().int().nonnegative(),
+  })
+  .strict();
+
 export type CharacterProject = z.infer<typeof characterProjectSchema>;
 export type CharacterRelease = z.infer<typeof characterReleaseSchema>;
 export type CharacterServing = z.infer<typeof characterServingSchema>;
@@ -408,6 +544,8 @@ export type CharacterPortfolioDecisionRequest = z.infer<typeof characterPortfoli
 export type CharacterPortfolioDecisionRecord = z.infer<typeof characterPortfolioDecisionRecordSchema>;
 export type CharacterPerformanceBackfillRequest = z.infer<typeof characterPerformanceBackfillRequestSchema>;
 export type CharacterPerformanceReconciliation = z.infer<typeof characterPerformanceReconciliationSchema>;
+export type CharacterProjectDraftPatchRequest = z.infer<typeof characterProjectDraftPatchRequestSchema>;
+export type CharacterWorkspaceDetail = z.infer<typeof characterWorkspaceDetailSchema>;
 export type CharacterReleasePublishCommandRequest = z.infer<
   typeof characterReleasePublishCommandRequestSchema
 >;

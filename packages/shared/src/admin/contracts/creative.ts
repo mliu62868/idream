@@ -100,7 +100,7 @@ export const creativeErrorClusterSchema = z
   })
   .strict();
 
-export const creativeRunSchema = z
+const creativeRunBaseSchema = z
   .object({
     id: adminIdSchema,
     purpose: z.string().trim().min(1),
@@ -121,8 +121,12 @@ export const creativeRunSchema = z
     createdAt: adminIsoDateTimeSchema,
     updatedAt: adminIsoDateTimeSchema,
   })
-  .strict()
-  .superRefine((run, ctx) => {
+  .strict();
+
+function validateCreativeRunOutcome(
+  run: z.infer<typeof creativeRunBaseSchema>,
+  ctx: { addIssue(issue: { code: "custom"; path: string[]; message: string }): void },
+) {
     if (!creativeRunCountsSchema.safeParse(run.counts).success) return;
     if (
       ["succeeded", "partially_succeeded", "failed"].includes(run.executionOutcome) &&
@@ -134,7 +138,9 @@ export const creativeRunSchema = z
         message: "Execution outcome does not match item facts",
       });
     }
-  });
+}
+
+export const creativeRunSchema = creativeRunBaseSchema.superRefine(validateCreativeRunOutcome);
 
 export const creativeAssetLineageSchema = z
   .object({
@@ -162,9 +168,63 @@ export const creativeRunQuerySchema = adminCursorQuerySchema.extend({
 
 export const creativeRunListResponseSchema = adminListResponseSchema(creativeRunSchema);
 
+export const creativeRunItemDetailSchema = z
+  .object({
+    id: adminIdSchema,
+    ordinal: z.number().int().nonnegative(),
+    status: z.string(),
+    version: z.number().int().nonnegative(),
+    retryability: z.string(),
+    lineage: z
+      .object({
+        requestId: adminIdSchema.nullable(),
+        attemptId: adminIdSchema.nullable(),
+        assetId: adminIdSchema.nullable(),
+        reviewDecisionId: adminIdSchema.nullable(),
+        placementVersionId: adminIdSchema.nullable(),
+      })
+      .strict(),
+    review: z
+      .object({
+        id: adminIdSchema,
+        decision: z.enum(["approved", "rejected"]),
+        identityConsistency: z.enum(["passed", "failed", "unscored"]),
+        score: z.number().int().min(0).max(100).nullable(),
+        reason: z.string(),
+        reviewerId: adminIdSchema,
+        createdAt: adminIsoDateTimeSchema,
+      })
+      .strict()
+      .nullable(),
+    placement: z
+      .object({
+        id: adminIdSchema,
+        slot: z.string(),
+        targetType: z.string(),
+        targetId: adminIdSchema,
+        status: z.string(),
+        verificationState: adminVerificationStateSchema,
+        verifiedAt: adminIsoDateTimeSchema.nullable(),
+        rollbackPlacementId: adminIdSchema.nullable(),
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict();
+
+export const creativeRunDetailSchema = creativeRunBaseSchema
+  .omit({ errorClusters: true, relatedIncidentIds: true })
+  .extend({
+    title: z.string().trim().min(1),
+    items: z.array(creativeRunItemDetailSchema).readonly(),
+  })
+  .strict()
+  .superRefine(validateCreativeRunOutcome);
+
 export type CreativeRun = z.infer<typeof creativeRunSchema>;
 export type CreativeAssetLineage = z.infer<typeof creativeAssetLineageSchema>;
 export type CreativeRunQuery = z.infer<typeof creativeRunQuerySchema>;
+export type CreativeRunDetail = z.infer<typeof creativeRunDetailSchema>;
 export type CreativeRunRetryFailedCommandRequest = z.infer<
   typeof creativeRunRetryFailedCommandRequestSchema
 >;
