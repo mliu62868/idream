@@ -20,11 +20,14 @@ psql_super -U "$SUPER" -d "$DB" -f "$HERE/03_character_management.sql"
 psql_super -U "$SUPER" -d "$DB" -c "SET ROLE core_owner;" -f "$HERE/2026-07-08-chat-visual-passport-and-tool-flags.sql"
 psql_super -U "$SUPER" -d "$DB" -c "SET ROLE chat_owner;" -f "$HERE/03_chat_tables.sql"
 psql_super -U "$SUPER" -d "$DB" -f "$HERE/04_grants.sql"
+psql_super -U "$SUPER" -d "$DB" -f "$HERE/2026-07-11-chat-session-release-pin.sql"
 echo "== applied =="
 
 echo "== positive: chat_service CAN read the 4 views + write chat.* =="
 psql_chat -U chat_service -d "$DB" -c "SELECT count(*) FROM core.chat_user_view;" >/dev/null
 psql_chat -U chat_service -d "$DB" -c "SELECT count(*) FROM core.chat_character_view;" >/dev/null
+psql_chat -U chat_service -d "$DB" -c "SELECT count(*) FROM core.chat_character_content_version_view;" >/dev/null
+psql_chat -U chat_service -d "$DB" -c "SELECT count(*) FROM core.chat_character_release_view;" >/dev/null
 psql_chat -U chat_service -d "$DB" -c "SELECT count(*) FROM billing.chat_entitlement_view;" >/dev/null
 psql_chat -U chat_service -d "$DB" -c "SELECT count(*) FROM compliance.chat_user_eligibility_view;" >/dev/null
 psql_chat -U chat_service -d "$DB" -c "INSERT INTO chat.chat_sessions (id,user_id,character_id) VALUES ('val_s1','val_u1','val_c1');" >/dev/null

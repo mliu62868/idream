@@ -41,10 +41,13 @@ export type { PrismaClient as ChatPrismaClient };
 export type {
   ChatUserView,
   ChatCharacterView,
+  ChatCharacterContentVersionView,
+  ChatCharacterReleaseView,
   ChatCharacterTagsView,
   ChatEntitlementView,
   ChatUserEligibilityView,
   ChatSession,
+  ChatSessionReleaseMigration,
   Message,
   MessageVersion,
   MessageAttachment,

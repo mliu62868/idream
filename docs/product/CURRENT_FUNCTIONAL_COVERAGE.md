@@ -58,7 +58,9 @@
 - V1 `setOfficialState` 已退出独立写 authority：它重新检查 release permission，接受同一 `ControlPlaneCommand` 并调用同一 executor。schedule/rollback v2 Route Handler 与常驻 Admin command worker 已接线。
 - 迁移已通过 fresh deploy/redeploy，以及 560f7900 当前 schema 显式 baseline applied 后的 forward deploy/redeploy；反例覆盖 dry-run 无副作用、断点续跑/重跑无重复、legacy incomplete 保持 live、tampered snapshot、policy drift、跨版本冲突与完整 rollback。证据见 [`2026-07-11-admin-phase2-character-release-backfill.md`](../product-audits/2026-07-11-admin-phase2-character-release-backfill.md)。
 
-本纵切仍不等于完整 Character Phase 2/3 cutover：Project autosave/conflict UI、真实 preview diff/Portfolio、qualification eval/stale dispatcher、Chat Session release pin/migration 和 monitor fact collector 仍待完成。
+Character→Chat serving 关键闭环现已落地：新 Session 固定当时 serving `CharacterContentVersion + CharacterRelease`，已有 pin 的 Session 在新 Release 发布后仍使用不可变内容快照；存量未归因 Session 只在 cutover 后首个 turn 固定当时版本，历史 Message 保持 `exact_unattributed`。兼容性迁移通过高风险 `chat.session_release.migrate` command、durable main→chat outbox、Chat pending migration、下一 turn 原子换绑、chat→main ACK 和 command verification 闭环，记录 old/new、reason、compatibility QA 与 Audit。route qualification dispatcher 会把 policy/evaluator/expiry 漂移派生为 Release `stale` 修复信号但不改写历史 qualification、也不自动下线 Serving；24h/72h collector 从 canonical Chat/Generation facts 更新 ReleaseMonitor 和明确 keep/investigate/rollback-review 建议。
+
+本纵切仍不等于完整 Character Phase 2/3 cutover：Project autosave/conflict UI、真实 preview diff/Portfolio、生产 qualification eval matrix 调度、真实 production monitor 窗口和 Session pin 生产 reconciliation/canary 仍待完成。
 
 ## 2026-07-10 角色运营项目工作台
 

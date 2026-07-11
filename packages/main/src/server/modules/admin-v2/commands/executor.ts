@@ -2,6 +2,7 @@ import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { claimControlPlaneCommand } from "../shared/control-plane-command";
 import { toInputJson } from "../shared/prisma-json";
+import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 
 const WORKER_ID = "admin-v2-inline-executor";
 
@@ -165,12 +166,126 @@ async function executeCloseCase(commandId: string) {
   }
 }
 
+function jsonObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function requiredString(payload: Record<string, unknown>, key: string): string {
+  const value = payload[key];
+  if (typeof value !== "string" || !value) {
+    throw Errors.badRequest(`Migration command payload is missing ${key}`);
+  }
+  return value;
+}
+
+function nullableString(payload: Record<string, unknown>, key: string): string | null {
+  const value = payload[key];
+  if (value === null) return null;
+  if (typeof value !== "string" || !value) {
+    throw Errors.badRequest(`Migration command payload has invalid ${key}`);
+  }
+  return value;
+}
+
+async function executeMigrateSessionRelease(commandId: string) {
+  const claimed = await claimControlPlaneCommand(prisma, {
+    commandId,
+    workerId: WORKER_ID,
+    leaseMs: 30_000,
+  });
+  if (!claimed) return prisma.controlPlaneCommand.findUniqueOrThrow({ where: { id: commandId } });
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const payload = jsonObject(claimed.requestPayload);
+      const characterId = requiredString(payload, "characterId");
+      const toCharacterContentVersionId = requiredString(payload, "toCharacterContentVersionId");
+      const toCharacterReleaseId = requiredString(payload, "toCharacterReleaseId");
+      const fromCharacterContentVersionId = nullableString(payload, "fromCharacterContentVersionId");
+      const fromCharacterReleaseId = nullableString(payload, "fromCharacterReleaseId");
+      const reason = jsonObject(payload.reason);
+      const compatibilityQa = jsonObject(payload.compatibilityQa);
+      if (compatibilityQa.status !== "passed") {
+        throw Errors.conflict("Compatibility QA is no longer passing");
+      }
+      // Interactive transactions own one pg connection; keep authority reads
+      // sequential so the adapter never multiplexes a busy client.
+      const release = await tx.characterRelease.findUnique({ where: { id: toCharacterReleaseId } });
+      const content = await tx.characterContentVersion.findUnique({
+        where: { id: toCharacterContentVersionId },
+      });
+      if (
+        !release ||
+        !content ||
+        content.characterId !== characterId ||
+        release.characterContentVersionId !== content.id ||
+        release.version !== claimed.expectedVersion
+      ) {
+        throw Errors.conflict("Target Release changed before session migration dispatch");
+      }
+      const eventId = `session-release-migration:${claimed.id}`;
+      const eventPayload = {
+        commandId: claimed.id,
+        sessionId: claimed.targetId,
+        characterId,
+        fromCharacterContentVersionId,
+        fromCharacterReleaseId,
+        toCharacterContentVersionId,
+        toCharacterReleaseId,
+        reason: typeof reason.summary === "string" ? reason.summary : "compatibility migration",
+        compatibilityQa,
+        requestedById: claimed.actorId,
+      };
+      await tx.mainOutboxEvent.upsert({
+        where: { id: eventId },
+        create: {
+          id: eventId,
+          eventType: MAIN_TO_CHAT_EVENTS.sessionReleaseMigrationRequested,
+          aggregateType: "chat_session",
+          aggregateId: claimed.targetId,
+          payload: toInputJson({
+            sourceService: "main",
+            sourceEventId: eventId,
+            eventType: MAIN_TO_CHAT_EVENTS.sessionReleaseMigrationRequested,
+            schemaVersion: 2,
+            occurredAt: new Date().toISOString(),
+            aggregateType: "chat_session",
+            aggregateId: claimed.targetId,
+            payload: eventPayload,
+          }),
+        },
+        update: {},
+      });
+      return tx.controlPlaneCommand.update({
+        where: { id: claimed.id },
+        data: {
+          status: "verifying",
+          result: toInputJson({
+            sessionId: claimed.targetId,
+            dispatchEventId: eventId,
+            verificationState: "verifying",
+          }),
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          heartbeatAt: new Date(),
+        },
+      });
+    });
+  } catch (error) {
+    await failCommand(claimed.id, claimed.attemptCount, error);
+    throw error;
+  }
+}
+
 export async function executeAcceptedAdminCommand(commandId: string) {
   const command = await prisma.controlPlaneCommand.findUnique({ where: { id: commandId } });
   if (!command) throw Errors.notFound("Control-plane command not found");
   if (["succeeded", "failed", "cancelled"].includes(command.status)) return command;
   if (command.commandType === "incident.resolve") return executeResolveIncident(command.id);
   if (command.commandType === "case.close") return executeCloseCase(command.id);
+  if (command.commandType === "chat.session_release.migrate") {
+    return executeMigrateSessionRelease(command.id);
+  }
   throw Errors.badRequest("No executor is registered for command", { commandType: command.commandType });
 }
-

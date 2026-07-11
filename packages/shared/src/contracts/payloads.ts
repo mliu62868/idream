@@ -156,6 +156,43 @@ export const chatImageFailedPayloadSchema = z
   })
   .passthrough();
 
+export const chatSessionReleaseMigrationRequestedPayloadSchema = z
+  .object({
+    commandId: z.string().min(1),
+    sessionId: z.string().min(1),
+    characterId: z.string().min(1),
+    fromCharacterContentVersionId: z.string().min(1).nullable(),
+    fromCharacterReleaseId: z.string().min(1).nullable(),
+    toCharacterContentVersionId: z.string().min(1),
+    toCharacterReleaseId: z.string().min(1).nullable(),
+    reason: z.string().trim().min(1).max(1_000),
+    compatibilityQa: z
+      .object({
+        status: z.literal("passed"),
+        policyVersion: z.string().trim().min(1),
+      })
+      .passthrough(),
+    requestedById: z.string().min(1),
+  })
+  .passthrough();
+
+export type ChatSessionReleaseMigrationRequestedPayload = z.infer<
+  typeof chatSessionReleaseMigrationRequestedPayloadSchema
+>;
+
+export const chatSessionReleaseMigrationAppliedPayloadSchema = z
+  .object({
+    commandId: z.string().min(1),
+    sessionId: z.string().min(1),
+    characterId: z.string().min(1),
+    fromCharacterContentVersionId: z.string().min(1).nullable(),
+    fromCharacterReleaseId: z.string().min(1).nullable(),
+    toCharacterContentVersionId: z.string().min(1),
+    toCharacterReleaseId: z.string().min(1).nullable(),
+    appliedAt: z.iso.datetime(),
+  })
+  .strict();
+
 export const videoGeneratePayloadSchema = z
   .object({
     version: z.literal(1),

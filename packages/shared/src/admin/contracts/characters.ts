@@ -18,6 +18,20 @@ export const characterReleaseScheduleCommandRequestSchema = adminCommandRequestS
 // The URL identifies the immutable historical Release; entityVersion is the
 // CharacterServing version because rollback swaps that authority pointer.
 export const characterReleaseRollbackCommandRequestSchema = adminCommandRequestSchema;
+export const characterSessionReleaseMigrationCommandRequestSchema = adminCommandRequestSchema.extend({
+  characterId: adminIdSchema,
+  fromCharacterContentVersionId: adminIdSchema.nullable(),
+  fromCharacterReleaseId: adminIdSchema.nullable(),
+  toCharacterContentVersionId: adminIdSchema,
+  toCharacterReleaseId: adminIdSchema,
+  compatibilityQa: z
+    .object({
+      status: z.literal("passed"),
+      policyVersion: z.string().trim().min(1),
+      evidence: z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict(),
+});
 
 export const characterProjectPhaseSchema = z.enum([
   "idea",
@@ -198,4 +212,7 @@ export type CharacterReleaseScheduleCommandRequest = z.infer<
 >;
 export type CharacterReleaseRollbackCommandRequest = z.infer<
   typeof characterReleaseRollbackCommandRequestSchema
+>;
+export type CharacterSessionReleaseMigrationCommandRequest = z.infer<
+  typeof characterSessionReleaseMigrationCommandRequestSchema
 >;

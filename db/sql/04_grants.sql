@@ -5,6 +5,8 @@
 -- (run as core_owner)
 GRANT SELECT ON core.chat_user_view              TO chat_service;
 GRANT SELECT ON core.chat_character_view         TO chat_service;
+GRANT SELECT ON core.chat_character_content_version_view TO chat_service;
+GRANT SELECT ON core.chat_character_release_view TO chat_service;
 GRANT SELECT ON core.chat_character_tags_view    TO chat_service;
 GRANT SELECT ON billing.chat_entitlement_view    TO chat_service;
 GRANT SELECT ON compliance.chat_user_eligibility_view TO chat_service;

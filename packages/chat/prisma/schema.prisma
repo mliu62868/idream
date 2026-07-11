@@ -54,6 +54,31 @@ view ChatCharacterView {
   @@schema("core")
 }
 
+view ChatCharacterContentVersionView {
+  contentVersionId  String @unique @map("content_version_id")
+  characterId       String @map("character_id")
+  version           Int
+  contentHash       String @map("content_hash")
+  personaSnapshot   Json   @map("persona_snapshot")
+  openingSnapshot   Json   @map("opening_snapshot")
+  appearanceSnapshot Json  @map("appearance_snapshot")
+
+  @@map("chat_character_content_version_view")
+  @@schema("core")
+}
+
+view ChatCharacterReleaseView {
+  releaseId                 String @unique @map("release_id")
+  characterId               String @map("character_id")
+  characterContentVersionId String @map("character_content_version_id")
+  status                    String
+  version                   Int
+  snapshotHash              String @map("snapshot_hash")
+
+  @@map("chat_character_release_view")
+  @@schema("core")
+}
+
 view ChatCharacterTagsView {
   characterId String @unique @map("character_id")
   tags        Json
@@ -101,13 +126,40 @@ model ChatSession {
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
   deletedAt       DateTime? @map("deleted_at")
+  characterContentVersionId String? @map("character_content_version_id")
+  characterReleaseId        String? @map("character_release_id")
+  releasePinnedAt           DateTime? @map("release_pinned_at")
 
   messages    Message[]
   attachments MessageAttachment[]
+  releaseMigrations ChatSessionReleaseMigration[]
 
   @@index([userId, lastMessageAt(sort: Desc)], map: "chat_sessions_user_last_idx")
   @@index([characterId], map: "chat_sessions_character_idx")
   @@map("chat_sessions")
+  @@schema("chat")
+}
+
+model ChatSessionReleaseMigration {
+  id                            String    @id
+  commandId                     String    @unique @map("command_id")
+  sessionId                     String    @map("session_id")
+  characterId                   String    @map("character_id")
+  fromCharacterContentVersionId String?   @map("from_character_content_version_id")
+  fromCharacterReleaseId        String?   @map("from_character_release_id")
+  toCharacterContentVersionId   String    @map("to_character_content_version_id")
+  toCharacterReleaseId          String?   @map("to_character_release_id")
+  reason                        String
+  compatibilityQa               Json      @map("compatibility_qa")
+  requestedById                 String    @map("requested_by_id")
+  status                        String    @default("pending")
+  requestedAt                   DateTime  @default(now()) @map("requested_at")
+  appliedAt                     DateTime? @map("applied_at")
+
+  session ChatSession @relation(fields: [sessionId], references: [id])
+
+  @@index([sessionId, status, requestedAt], map: "chat_session_release_migrations_pending_idx")
+  @@map("chat_session_release_migrations")
   @@schema("chat")
 }
 

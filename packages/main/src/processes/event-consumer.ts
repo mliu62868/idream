@@ -11,6 +11,7 @@ import {
   MAIN_TO_CHAT_EVENTS,
   CHAT_TO_MAIN_EVENTS,
   chatImageRequestedPayloadSchema,
+  chatSessionReleaseMigrationAppliedPayloadSchema,
   idempotencyKeys,
 } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
@@ -164,6 +165,73 @@ export async function applyChatEvent(event: InboundEvent): Promise<void> {
     case CHAT_TO_MAIN_EVENTS.accountErasureCompleted:
       logger.info({ userId: event.aggregateId }, "chat account erasure completed");
       return;
+    case CHAT_TO_MAIN_EVENTS.sessionReleaseMigrationApplied: {
+      const payload = chatSessionReleaseMigrationAppliedPayloadSchema.parse(event.payload);
+      await prisma.$transaction(async (tx) => {
+        const command = await tx.controlPlaneCommand.findUnique({
+          where: { id: payload.commandId },
+        });
+        if (!command || command.commandType !== "chat.session_release.migrate") return;
+        if (command.status === "succeeded") return;
+        if (command.status !== "verifying" || command.targetId !== payload.sessionId) {
+          throw new Error("session release migration verification does not match command state");
+        }
+        const expected = jsonRecord(command.requestPayload);
+        const expectedMatches =
+          expected.characterId === payload.characterId &&
+          expected.fromCharacterContentVersionId === payload.fromCharacterContentVersionId &&
+          expected.fromCharacterReleaseId === payload.fromCharacterReleaseId &&
+          expected.toCharacterContentVersionId === payload.toCharacterContentVersionId &&
+          expected.toCharacterReleaseId === payload.toCharacterReleaseId;
+        if (!expectedMatches) {
+          throw new Error("session release migration verification payload changed");
+        }
+        const appliedAt = new Date(payload.appliedAt);
+        await tx.controlPlaneCommand.update({
+          where: { id: command.id },
+          data: {
+            status: "succeeded",
+            result: {
+              sessionId: payload.sessionId,
+              characterId: payload.characterId,
+              fromCharacterContentVersionId: payload.fromCharacterContentVersionId,
+              fromCharacterReleaseId: payload.fromCharacterReleaseId,
+              toCharacterContentVersionId: payload.toCharacterContentVersionId,
+              toCharacterReleaseId: payload.toCharacterReleaseId,
+              verificationState: "passed",
+              appliedAt: payload.appliedAt,
+            },
+            heartbeatAt: appliedAt,
+            finishedAt: appliedAt,
+          },
+        });
+        await tx.controlPlaneCommandAttempt.updateMany({
+          where: { commandId: command.id, status: "running" },
+          data: { status: "succeeded", finishedAt: appliedAt },
+        });
+        await tx.adminAuditLog.create({
+          data: {
+            actorId: command.actorId,
+            actorRole: "command_verifier",
+            action: "chat.session_release.migrate.applied",
+            targetType: "chat_session",
+            targetId: payload.sessionId,
+            reason: "Chat applied the approved Release pin at the next turn boundary",
+            before: {
+              characterContentVersionId: payload.fromCharacterContentVersionId,
+              characterReleaseId: payload.fromCharacterReleaseId,
+            },
+            after: {
+              characterContentVersionId: payload.toCharacterContentVersionId,
+              characterReleaseId: payload.toCharacterReleaseId,
+              appliedAt: payload.appliedAt,
+            },
+            requestId: command.requestId,
+          },
+        });
+      });
+      return;
+    }
     default:
       // usage.incremented / memory.updated / relationship.updated: analytics-only
       // for now; recording is enough.

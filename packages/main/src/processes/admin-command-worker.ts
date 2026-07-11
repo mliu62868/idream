@@ -14,6 +14,7 @@ const COMMAND_TYPES = [
   "character.serving.resume",
   "incident.resolve",
   "case.close",
+  "chat.session_release.migrate",
 ] as const;
 const CHARACTER_COMMAND_TYPES = new Set<string>([
   "character.release.schedule",

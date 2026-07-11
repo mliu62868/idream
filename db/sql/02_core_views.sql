@@ -39,6 +39,31 @@ FROM public.characters c
 LEFT JOIN public.character_serving cs ON cs."characterId" = c.id
 LEFT JOIN public.character_releases cr ON cr.id = cs."currentReleaseId";
 
+-- Immutable Chat context. Unlike chat_character_view, this view is historical:
+-- a superseded content/release snapshot remains readable by an already-pinned
+-- session and is never replaced by the current serving pointer.
+CREATE OR REPLACE VIEW core.chat_character_content_version_view AS
+SELECT
+  ccv.id AS content_version_id,
+  ccv."characterId" AS character_id,
+  ccv.version,
+  ccv."contentHash" AS content_hash,
+  ccv."personaSnapshot" AS persona_snapshot,
+  ccv."openingSnapshot" AS opening_snapshot,
+  ccv."appearanceSnapshot" AS appearance_snapshot
+FROM public.character_content_versions ccv;
+
+CREATE OR REPLACE VIEW core.chat_character_release_view AS
+SELECT
+  cr.id AS release_id,
+  cp."characterId" AS character_id,
+  cr."characterContentVersionId" AS character_content_version_id,
+  cr.status,
+  cr.version,
+  cr."snapshotHash" AS snapshot_hash
+FROM public.character_releases cr
+JOIN public.character_projects cp ON cp.id = cr."projectId";
+
 CREATE OR REPLACE VIEW core.chat_character_tags_view AS
 SELECT
   ct."characterId"                       AS character_id,

@@ -6,6 +6,7 @@ import {
   characterReleasePublishCommandRequestSchema,
   characterReleaseRollbackCommandRequestSchema,
   characterReleaseScheduleCommandRequestSchema,
+  characterSessionReleaseMigrationCommandRequestSchema,
   creativeRunRetryFailedCommandRequestSchema,
   incidentResolveCommandRequestSchema,
   type AdminCommandRequest,
@@ -360,6 +361,70 @@ export function rollbackCharacterRelease(request: Request, characterId: string, 
     }
     parsed.payload.sourceReleaseId = sourceReleaseId;
     return acceptCommand({ actor, parsed, definition: rollbackReleaseDefinition, targetId: characterId });
+  });
+}
+
+const migrateSessionReleaseDefinition = {
+  commandType: "chat.session_release.migrate",
+  targetType: "chat_session",
+  permission: "character.release.publish",
+  retryMode: "idempotent",
+} as const satisfies CommandDefinition;
+
+export function migrateChatSessionRelease(request: Request, sessionId: string) {
+  return commandResponse(request, async () => {
+    const actor = await actorWithPermission(request, migrateSessionReleaseDefinition.permission);
+    const parsed = await parseCommand(request, characterSessionReleaseMigrationCommandRequestSchema);
+    requireConfirmation(
+      parsed.body.confirmation,
+      `${sessionId}:${parsed.body.toCharacterReleaseId}:migrate`,
+    );
+    const [content, release] = await Promise.all([
+      prisma.characterContentVersion.findUnique({
+        where: { id: parsed.body.toCharacterContentVersionId },
+      }),
+      prisma.characterRelease.findUnique({
+        where: { id: parsed.body.toCharacterReleaseId },
+      }),
+    ]);
+    if (!content || content.characterId !== parsed.body.characterId) {
+      throw Errors.notFound("Target CharacterContentVersion is not valid for character");
+    }
+    if (!release) throw Errors.notFound("Target CharacterRelease not found");
+    const project = await prisma.characterProject.findUnique({ where: { id: release.projectId } });
+    if (
+      !project ||
+      project.characterId !== parsed.body.characterId ||
+      release.characterContentVersionId !== content.id
+    ) {
+      throw new InvariantFailedError([
+        {
+          code: "release_content_mismatch",
+          message: "Target Release does not pin the requested immutable content version.",
+        },
+      ]);
+    }
+    if (release.version !== parsed.body.entityVersion) {
+      return versionConflict(
+        parsed.requestId,
+        { id: release.id, status: release.status, version: release.version },
+        parsed.body.entityVersion,
+      );
+    }
+    parsed.payload.characterId = parsed.body.characterId;
+    parsed.payload.fromCharacterContentVersionId = parsed.body.fromCharacterContentVersionId;
+    parsed.payload.fromCharacterReleaseId = parsed.body.fromCharacterReleaseId;
+    parsed.payload.toCharacterContentVersionId = parsed.body.toCharacterContentVersionId;
+    parsed.payload.toCharacterReleaseId = parsed.body.toCharacterReleaseId;
+    parsed.payload.compatibilityQa = parsed.body.compatibilityQa;
+    parsed.payload.requestedById = actor.id;
+    return acceptCommand({
+      actor,
+      parsed,
+      definition: migrateSessionReleaseDefinition,
+      targetId: sessionId,
+      executeInline: true,
+    });
   });
 }
 

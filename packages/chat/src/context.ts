@@ -47,14 +47,22 @@ export interface BuildContextInput {
 export async function buildContext(input: BuildContextInput): Promise<BuiltContext> {
   const { prisma, userId, characterId, sessionId, memoryEnabled, userMessageId } = input;
 
-  const [persona, entitlementRow, session, anchorUserMessage, latestUserMessage] = await Promise.all([
+  const [currentPersona, entitlementRow, session, anchorUserMessage, latestUserMessage] = await Promise.all([
     prisma.chatCharacterView.findUnique({ where: { characterId } }),
     prisma.chatEntitlementView.findUnique({ where: { userId } }),
     prisma.chatSession.findUnique({ where: { id: sessionId } }),
     userMessageId
       ? prisma.message.findUnique({
           where: { id: userMessageId },
-          select: { id: true, sessionId: true, role: true, status: true, createdAt: true },
+          select: {
+            id: true,
+            sessionId: true,
+            role: true,
+            status: true,
+            createdAt: true,
+            characterContentVersionId: true,
+            characterReleaseId: true,
+          },
         })
       : Promise.resolve(null),
     prisma.message.findFirst({
@@ -63,13 +71,37 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
       select: { id: true },
     }),
   ]);
-  if (!persona) throw new Error(`character ${characterId} not visible to chat`);
+  if (!currentPersona) throw new Error(`character ${characterId} not visible to chat`);
   const anchor =
     anchorUserMessage?.sessionId === sessionId &&
     anchorUserMessage.role === "user" &&
     anchorUserMessage.status === "sent"
       ? anchorUserMessage
       : null;
+
+  const pinnedContentVersionId =
+    anchor?.characterContentVersionId ?? session?.characterContentVersionId ?? null;
+  const pinnedReleaseId =
+    anchor?.characterReleaseId ?? session?.characterReleaseId ?? null;
+  const contentVersion = pinnedContentVersionId
+    ? await prisma.chatCharacterContentVersionView.findUnique({
+        where: { contentVersionId: pinnedContentVersionId },
+      })
+    : null;
+  if (
+    pinnedContentVersionId &&
+    (!contentVersion || contentVersion.characterId !== characterId)
+  ) {
+    throw new Error(
+      `pinned content version ${pinnedContentVersionId} is unavailable for character ${characterId}`,
+    );
+  }
+  const persona = contentVersion
+    ? personaFromImmutableContent(currentPersona, contentVersion.personaSnapshot, {
+        characterContentVersionId: contentVersion.contentVersionId,
+        characterReleaseId: pinnedReleaseId,
+      })
+    : currentPersona;
 
   const policy = resolvePolicy(snapshotFromView(entitlementRow), {
     memoryEnabled,
@@ -171,6 +203,39 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
     longTermMemories,
     relationship,
     canUpdateSessionSummary: memoryEnabled && anchoredToLatestTurn,
+  };
+}
+
+function jsonRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function personaFromImmutableContent(
+  current: ChatCharacterView,
+  snapshotValue: unknown,
+  pin: {
+    readonly characterContentVersionId: string;
+    readonly characterReleaseId: string | null;
+  },
+): ChatCharacterView {
+  const snapshot = jsonRecord(snapshotValue);
+  const age = typeof snapshot.age === "number" && Number.isInteger(snapshot.age)
+    ? snapshot.age
+    : current.age;
+  return {
+    ...current,
+    name: stringValue(snapshot.name) ?? current.name,
+    age,
+    description: stringValue(snapshot.description) ?? current.description,
+    systemPrompt: stringValue(snapshot.systemPrompt) ?? current.systemPrompt,
+    characterContentVersionId: pin.characterContentVersionId,
+    characterReleaseId: pin.characterReleaseId,
   };
 }
 

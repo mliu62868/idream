@@ -73,7 +73,7 @@ export async function createSession(
   override?: Partial<ChatContext>,
 ) {
   const { prisma } = ctx(override);
-  await assertEligible(prisma, input.userId, input.characterId);
+  const { character } = await assertEligible(prisma, input.userId, input.characterId);
 
   // The product exposes one active conversation per user/character pair. The
   // advisory lock makes the read-then-create invariant true under concurrent
@@ -89,13 +89,26 @@ export async function createSession(
 
     const id = createId("sess");
     const created = await tx.chatSession.create({
-      data: { id, userId: input.userId, characterId: input.characterId, title: input.title ?? null },
+      data: {
+        id,
+        userId: input.userId,
+        characterId: input.characterId,
+        title: input.title ?? null,
+        characterContentVersionId: character.characterContentVersionId,
+        characterReleaseId: character.characterReleaseId,
+        releasePinnedAt: character.characterContentVersionId ? new Date() : null,
+      },
     });
     await recordOutbox(tx, {
       eventType: CHAT_TO_MAIN_EVENTS.sessionCreated,
       aggregateType: "session",
       aggregateId: id,
-      payload: { userId: input.userId, characterId: input.characterId },
+      payload: {
+        userId: input.userId,
+        characterId: input.characterId,
+        characterContentVersionId: character.characterContentVersionId,
+        characterReleaseId: character.characterReleaseId,
+      },
     });
     return created;
   });
@@ -190,6 +203,102 @@ async function allocateEngagementSessionId(
   return createId("eng");
 }
 
+interface SessionPin {
+  readonly characterContentVersionId: string | null;
+  readonly characterReleaseId: string | null;
+}
+
+async function resolveSessionPin(
+  tx: Prisma.TransactionClient,
+  session: {
+    readonly id: string;
+    readonly characterId: string;
+    readonly characterContentVersionId: string | null;
+    readonly characterReleaseId: string | null;
+  },
+): Promise<SessionPin> {
+  const pendingMigration = await tx.chatSessionReleaseMigration.findFirst({
+    where: { sessionId: session.id, status: "pending" },
+    orderBy: { requestedAt: "asc" },
+  });
+  if (pendingMigration) {
+    const sourceStillMatches =
+      session.characterContentVersionId === pendingMigration.fromCharacterContentVersionId &&
+      session.characterReleaseId === pendingMigration.fromCharacterReleaseId;
+    if (!sourceStillMatches) {
+      throw new ChatError(
+        "session_release_migration_conflict",
+        "session release changed after migration approval",
+        409,
+      );
+    }
+    const appliedAt = new Date();
+    await tx.chatSession.update({
+      where: { id: session.id },
+      data: {
+        characterContentVersionId: pendingMigration.toCharacterContentVersionId,
+        characterReleaseId: pendingMigration.toCharacterReleaseId,
+        releasePinnedAt: appliedAt,
+      },
+    });
+    await tx.chatSessionReleaseMigration.update({
+      where: { id: pendingMigration.id },
+      data: { status: "applied", appliedAt },
+    });
+    await recordOutbox(tx, {
+      eventType: CHAT_TO_MAIN_EVENTS.sessionReleaseMigrationApplied,
+      schemaVersion: 2,
+      aggregateType: "session_release_migration",
+      aggregateId: pendingMigration.commandId,
+      payload: {
+        commandId: pendingMigration.commandId,
+        sessionId: session.id,
+        characterId: session.characterId,
+        fromCharacterContentVersionId: pendingMigration.fromCharacterContentVersionId,
+        fromCharacterReleaseId: pendingMigration.fromCharacterReleaseId,
+        toCharacterContentVersionId: pendingMigration.toCharacterContentVersionId,
+        toCharacterReleaseId: pendingMigration.toCharacterReleaseId,
+        appliedAt: appliedAt.toISOString(),
+      },
+    });
+    return {
+      characterContentVersionId: pendingMigration.toCharacterContentVersionId,
+      characterReleaseId: pendingMigration.toCharacterReleaseId,
+    };
+  }
+
+  if (session.characterContentVersionId) {
+    return {
+      characterContentVersionId: session.characterContentVersionId,
+      characterReleaseId: session.characterReleaseId,
+    };
+  }
+
+  // Legacy sessions intentionally remain exact_unattributed for historical
+  // turns. Their first post-cutover turn pins the serving snapshot visible at
+  // that instant; no earlier Message row is rewritten.
+  const current = await tx.chatCharacterView.findUnique({
+    where: { characterId: session.characterId },
+    select: { characterContentVersionId: true, characterReleaseId: true },
+  });
+  if (!current?.characterContentVersionId) {
+    return { characterContentVersionId: null, characterReleaseId: null };
+  }
+  const pinnedAt = new Date();
+  await tx.chatSession.update({
+    where: { id: session.id },
+    data: {
+      characterContentVersionId: current.characterContentVersionId,
+      characterReleaseId: current.characterReleaseId,
+      releasePinnedAt: pinnedAt,
+    },
+  });
+  return {
+    characterContentVersionId: current.characterContentVersionId,
+    characterReleaseId: current.characterReleaseId,
+  };
+}
+
 export async function sendMessage(
   input: { userId: string; sessionId: string; content: string },
   override?: Partial<ChatContext>,
@@ -199,7 +308,7 @@ export async function sendMessage(
   if (!session || session.userId !== input.userId || session.status !== "active") {
     throw new ChatError("session_not_found", "session not found", 404);
   }
-  const { character } = await assertEligible(prisma, input.userId, session.characterId);
+  await assertEligible(prisma, input.userId, session.characterId);
 
   const content = normalizeMessageContent(input.content);
 
@@ -221,6 +330,7 @@ export async function sendMessage(
     if (moderation.status !== "blocked") {
       await assertTurnCapacity(tx, input.userId, session.id, policy);
     }
+    const pin = await resolveSessionPin(tx, currentSession);
     const turnOccurredAt = new Date();
     const engagementSessionId = await allocateEngagementSessionId(tx, session.id, turnOccurredAt);
     await tx.message.create({
@@ -232,8 +342,8 @@ export async function sendMessage(
         status: moderation.status === "blocked" ? "blocked" : "sent",
         safetyStatus: moderation.status === "blocked" ? "blocked" : "passed",
         engagementSessionId,
-        characterContentVersionId: character.characterContentVersionId,
-        characterReleaseId: character.characterReleaseId,
+        characterContentVersionId: pin.characterContentVersionId,
+        characterReleaseId: pin.characterReleaseId,
         createdAt: turnOccurredAt,
         updatedAt: turnOccurredAt,
       },

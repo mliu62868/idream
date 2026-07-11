@@ -12,6 +12,7 @@ function readPermission(targetType: string): PermissionKey {
   if (targetType === "creative_run") return "creative.run.read";
   if (targetType === "ops_incident") return "ops.incident.read";
   if (targetType === "admin_case") return "case.read";
+  if (targetType === "chat_session") return "character.release.read";
   return "audit.read";
 }
 

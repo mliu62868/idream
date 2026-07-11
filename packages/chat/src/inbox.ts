@@ -12,6 +12,7 @@ import {
   chatImageAcceptedPayloadSchema,
   chatImageCompletedPayloadSchema,
   chatImageFailedPayloadSchema,
+  chatSessionReleaseMigrationRequestedPayloadSchema,
 } from "@idream/shared/contracts";
 import { createHash } from "node:crypto";
 
@@ -198,6 +199,66 @@ async function applyEffect(event: InboundEvent, prisma: ChatPrismaClient): Promi
           status: payload.status,
           generationJobId: payload.generationJobId ?? undefined,
           errorCode: payload.errorCode ?? null,
+        },
+      });
+      return;
+    }
+    case MAIN_TO_CHAT_EVENTS.sessionReleaseMigrationRequested: {
+      const payload = chatSessionReleaseMigrationRequestedPayloadSchema.parse(event.payload);
+      const existingMigration = await prisma.chatSessionReleaseMigration.findUnique({
+        where: { commandId: payload.commandId },
+      });
+      if (existingMigration) {
+        if (
+          existingMigration.sessionId !== payload.sessionId ||
+          existingMigration.toCharacterContentVersionId !== payload.toCharacterContentVersionId ||
+          existingMigration.toCharacterReleaseId !== payload.toCharacterReleaseId
+        ) {
+          throw new Error("session release migration command payload changed on redelivery");
+        }
+        return;
+      }
+      const session = await prisma.chatSession.findUnique({ where: { id: payload.sessionId } });
+      if (!session || session.characterId !== payload.characterId) {
+        throw new Error("session release migration target does not exist");
+      }
+      if (
+        session.characterContentVersionId !== payload.fromCharacterContentVersionId ||
+        session.characterReleaseId !== payload.fromCharacterReleaseId
+      ) {
+        throw new Error("session release migration source pin is stale");
+      }
+      const content = await prisma.chatCharacterContentVersionView.findUnique({
+        where: { contentVersionId: payload.toCharacterContentVersionId },
+      });
+      if (!content || content.characterId !== payload.characterId) {
+        throw new Error("session release migration content version is invalid");
+      }
+      if (payload.toCharacterReleaseId) {
+        const release = await prisma.chatCharacterReleaseView.findUnique({
+          where: { releaseId: payload.toCharacterReleaseId },
+        });
+        if (
+          !release ||
+          release.characterId !== payload.characterId ||
+          release.characterContentVersionId !== payload.toCharacterContentVersionId
+        ) {
+          throw new Error("session release migration Release does not match immutable content");
+        }
+      }
+      await prisma.chatSessionReleaseMigration.create({
+        data: {
+          id: event.eventId,
+          commandId: payload.commandId,
+          sessionId: payload.sessionId,
+          characterId: payload.characterId,
+          fromCharacterContentVersionId: payload.fromCharacterContentVersionId,
+          fromCharacterReleaseId: payload.fromCharacterReleaseId,
+          toCharacterContentVersionId: payload.toCharacterContentVersionId,
+          toCharacterReleaseId: payload.toCharacterReleaseId,
+          reason: payload.reason,
+          compatibilityQa: payload.compatibilityQa as never,
+          requestedById: payload.requestedById,
         },
       });
       return;

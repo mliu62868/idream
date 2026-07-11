@@ -17,10 +17,36 @@ CREATE TABLE IF NOT EXISTS chat.chat_sessions (
   updated_at         timestamp NOT NULL DEFAULT (timezone('utc', now())),
   deleted_at         timestamp
 );
+ALTER TABLE chat.chat_sessions
+  ADD COLUMN IF NOT EXISTS character_content_version_id text,
+  ADD COLUMN IF NOT EXISTS character_release_id text,
+  ADD COLUMN IF NOT EXISTS release_pinned_at timestamp;
 CREATE INDEX IF NOT EXISTS chat_sessions_user_last_idx
   ON chat.chat_sessions (user_id, last_message_at DESC);
 CREATE INDEX IF NOT EXISTS chat_sessions_character_idx
   ON chat.chat_sessions (character_id);
+
+CREATE TABLE IF NOT EXISTS chat.chat_session_release_migrations (
+  id                                text PRIMARY KEY,
+  command_id                        text NOT NULL UNIQUE,
+  session_id                        text NOT NULL REFERENCES chat.chat_sessions(id),
+  character_id                      text NOT NULL,
+  from_character_content_version_id text,
+  from_character_release_id         text,
+  to_character_content_version_id   text NOT NULL,
+  to_character_release_id           text,
+  reason                            text NOT NULL,
+  compatibility_qa                  jsonb NOT NULL,
+  requested_by_id                   text NOT NULL,
+  status                            text NOT NULL DEFAULT 'pending',
+  requested_at                      timestamp NOT NULL DEFAULT (timezone('utc', now())),
+  applied_at                        timestamp
+);
+CREATE INDEX IF NOT EXISTS chat_session_release_migrations_pending_idx
+  ON chat.chat_session_release_migrations (session_id, status, requested_at);
+CREATE UNIQUE INDEX IF NOT EXISTS chat_session_release_migrations_one_pending_idx
+  ON chat.chat_session_release_migrations (session_id)
+  WHERE status = 'pending';
 
 CREATE TABLE IF NOT EXISTS chat.messages (
   id            text PRIMARY KEY,

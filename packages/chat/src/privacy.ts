@@ -76,6 +76,7 @@ export async function deleteAccount(
     const sessions = await tx.chatSession.findMany({ where: { userId: input.userId }, select: { id: true } });
     const sessionIds = sessions.map((s) => s.id);
     if (sessionIds.length) {
+      await tx.chatSessionReleaseMigration.deleteMany({ where: { sessionId: { in: sessionIds } } });
       const messages = await tx.message.findMany({ where: { sessionId: { in: sessionIds } }, select: { id: true } });
       const messageIds = messages.map((m) => m.id);
       if (messageIds.length) await tx.messageVersion.deleteMany({ where: { messageId: { in: messageIds } } });

@@ -17,6 +17,7 @@ export const CHAT_TO_MAIN_EVENTS = {
   usageIncremented: "chat.usage.incremented",
   safetyFlagged: "chat.safety.flagged",
   accountErasureCompleted: "chat.account_erasure.completed",
+  sessionReleaseMigrationApplied: "chat.session_release_migration.applied.v2",
 } as const;
 
 /** main → chat (Main outbox → chat inbox). Cache-invalidation / block / compensate. */
@@ -32,6 +33,7 @@ export const MAIN_TO_CHAT_EVENTS = {
   chatImageAccepted: "chat.image.accepted",
   chatImageCompleted: "chat.image.completed",
   chatImageFailed: "chat.image.failed",
+  sessionReleaseMigrationRequested: "chat.session_release_migration.requested.v2",
 } as const;
 
 export const chatToMainEventType = z.enum(
