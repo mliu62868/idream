@@ -4,6 +4,17 @@
   "backendKind": "comfyui",
   "version": 1,
   "capabilities": ["img2img", "edit", "referenceImages", "stableSeed", "textToImage"],
+  "identity": {
+    "mode": "single_reference",
+    "maxReferences": 1,
+    "acceptedRoles": ["identity_anchor", "identity_reference", "source_image"],
+    "supportsLookReference": false,
+    "supportsSourceImageWithIdentity": false
+  },
+  "quality": {
+    "maxCandidates": 2,
+    "evaluatorDimensions": ["artifact", "face_count", "identity", "intent"]
+  },
   "apiPrompt": {
     "1": {
       "class_type": "CheckpointLoaderSimple",

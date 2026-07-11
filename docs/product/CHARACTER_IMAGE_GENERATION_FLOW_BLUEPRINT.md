@@ -1,5 +1,7 @@
 # 角色一致性图片生成流程蓝图
 
+> **已被 `CHARACTER_IMAGE_GENERATION_SYSTEM.md` 收敛取代。** 本文保留旧流程与文案历史；新的目标流程、状态契约和跨服务不变量以新文档为准。
+
 更新日期：2026-07-01
 
 状态：产品流程设计；作为 `CHARACTER_CONSISTENT_IMAGE_GENERATION_PRD.md` 的产品体验补充。PRD 负责定义对象、接口、实现状态和工程分期；本文负责定义用户流程、系统决策、页面信息架构和下一步产品路线。
@@ -541,4 +543,3 @@ Quality suffix
 - reference/init-image 路径按 capability gate 生效。
 - 至少一个真实 demo 角色 20 张人工一致性通过率 >= 80%。
 - 新模型模板不绕过人工评审直接上线。
-

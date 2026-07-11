@@ -491,6 +491,7 @@ async function seedCompletedChatImageAttachment(input: {
   const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
   const mediaId = `e2e-ui-chat-image-media-${suffix}`;
   const attachmentId = `e2e-ui-chat-image-attachment-${suffix}`;
+  const generationJobId = `e2e-ui-chat-image-job-${suffix}`;
   const fixture = input.fixture ?? "valid";
   const storageKey = fixture === "blank" ? `e2e/chat/${mediaId}.png` : null;
   if (storageKey) {
@@ -502,10 +503,25 @@ async function seedCompletedChatImageAttachment(input: {
     fixture === "blank"
       ? `/user-content/${Buffer.from(mediaId, "utf8").toString("base64url")}/content.png`
       : "/images/ourdream/card-sarah-mercer.webp";
+  await prisma.generationJob.create({
+    data: {
+      id: generationJobId,
+      userId: user.id,
+      characterId: input.characterId,
+      mode: "image",
+      controls: {},
+      presetIds: [],
+      outputCount: 1,
+      status: "completed",
+      sourceType: "chat_image",
+      sourceId: attachmentId,
+    },
+  });
   await prisma.mediaAsset.create({
     data: {
       id: mediaId,
       ownerId: user.id,
+      sourceJobId: generationJobId,
       characterId: input.characterId,
       type: "image",
       url: mediaUrl,
@@ -2633,7 +2649,11 @@ test("chat UI opens Generate with character context and renders chat image attac
   await expect(completedImage).toHaveAttribute("src", /card-sarah-mercer\.webp/);
   await expect(completedImage).toHaveAttribute("alt", /Generated image:/);
   await expect(assistantBubble.getByRole("button", { name: "More like this" })).toBeVisible();
-  await expect(assistantBubble.getByRole("button", { name: "Add identity" })).toHaveCount(0);
+  await expect(assistantBubble.getByRole("button", { name: "Looks like them" })).toBeVisible();
+  await expect(assistantBubble.getByRole("button", { name: "Doesn't match" })).toBeVisible();
+  await expect(assistantBubble.getByRole("button", { name: "Use for identity" })).toHaveCount(0);
+  await assistantBubble.getByRole("button", { name: "Looks like them" }).click();
+  await expect(page.getByText("Thanks — this image looks like the character.")).toBeVisible();
 
   await seedCompletedChatImageAttachment({
     email,
@@ -3354,6 +3374,8 @@ test("generator UI queues an image job and surfaces completed media in the galle
   const generatedMediaCard = page.locator(`[data-media-id="${generatedMediaId}"]`);
   await expect(generatedMediaCard.getByRole("button", { name: "Use as character image" })).toHaveCount(0);
   await expect(generatedMediaCard.getByRole("button", { name: "Add to identity" })).toHaveCount(0);
+  await expect(generatedMediaCard.getByRole("button", { name: "Looks like character" })).toBeVisible();
+  await expect(generatedMediaCard.getByRole("button", { name: "Doesn't match character" })).toBeVisible();
   await expect(generatedMediaCard.getByRole("button", { name: "Create variation" })).toBeVisible();
   await generatedMediaCard.getByRole("button", { name: "Report" }).click();
   await expect(page.getByText("Report submitted.")).toBeVisible({ timeout: 10_000 });
@@ -3374,6 +3396,7 @@ test("generator UI queues an image job and surfaces completed media in the galle
   await expect(ownedMediaCard.getByTestId("gallery-media-image")).toHaveCount(0);
   await expect(ownedMediaCard.getByRole("button", { name: "Use as character image" })).toBeVisible();
   await expect(ownedMediaCard.getByRole("button", { name: "Add to identity" })).toBeVisible();
+  await expect(ownedMediaCard.getByRole("button", { name: "Save as Look" })).toBeVisible();
   await expect(ownedMediaCard.getByRole("button", { name: "Create variation" })).toBeVisible();
 
   await generatedMediaCard.getByRole("button", { name: "Like" }).click();
@@ -3631,6 +3654,24 @@ test("upgrade checkout failures are announced as assertive alerts", async ({ pag
   await expect(checkoutResult).toHaveAttribute("aria-live", "assertive");
 });
 
+test("character generator keeps identity controls behind Advanced settings", async ({ page }) => {
+  await startSignedInAdultSession(page, "generate-character-first");
+  await page.goto("/generate?characterId=melissa-burke");
+
+  await expect(page.getByText("Character identity", { exact: true })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Describe the moment", { exact: true })).toBeVisible();
+  await expect(page.locator("#generator-model")).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: "Negative Prompt" })).toHaveCount(0);
+
+  await page.getByTestId("generator-advanced-toggle").click();
+
+  await expect(page.locator("#generator-model")).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Negative Prompt" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Closest match" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Natural" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "More expressive" })).toBeVisible();
+});
+
 test("upgrade UI activates Premium, grants dreamcoins, and unlocks prompt controls", async ({
   page,
 }) => {
@@ -3685,7 +3726,11 @@ test("upgrade UI activates Premium, grants dreamcoins, and unlocks prompt contro
   const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
   await expect(prompt).toBeEnabled({ timeout: 10_000 });
   await prompt.fill("premium e2e prompt control");
+  await expect(page.getByRole("textbox", { name: "Negative Prompt" })).toHaveCount(0);
+  await expect(page.locator("#generator-model")).toHaveCount(0);
+  await page.getByTestId("generator-advanced-toggle").click();
   await expect(page.getByRole("textbox", { name: "Negative Prompt" })).toBeEnabled();
+  await expect(page.locator("#generator-model")).toBeVisible();
   await page.getByRole("button", { name: "Generate" }).click();
   await expect(page.getByText("Generation queued.")).toBeVisible({ timeout: 10_000 });
   const job = await latestImageJob(page.request);

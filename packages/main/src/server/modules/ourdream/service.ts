@@ -144,6 +144,13 @@ const generationControlsSchema = z
     backgroundPresetId: z.string().trim().min(1).max(120).optional(),
     posePresetId: z.string().trim().min(1).max(120).optional(),
     outfitPresetId: z.string().trim().min(1).max(120).optional(),
+    lookId: z.string().trim().min(1).max(120).optional(),
+    expression: z.string().trim().min(1).max(240).optional(),
+    pose: z.string().trim().min(1).max(240).optional(),
+    outfit: z.string().trim().min(1).max(400).optional(),
+    camera: z.string().trim().min(1).max(240).optional(),
+    lighting: z.string().trim().min(1).max(240).optional(),
+    styleDelta: z.string().trim().min(1).max(240).optional(),
     orientation: z.enum(imageOrientations).optional(),
     model: z.string().trim().min(1).max(120).optional(),
     seconds: z.number().int().min(1).max(30).optional(),
@@ -193,6 +200,35 @@ const presetCreateSchema = z.object({
 });
 
 const mediaCollectionVisibilitySchema = z.enum(["private", "public", "unlisted"]);
+
+const generationFeedbackSchema = z.object({
+  feedbackType: z.enum(["identity_match", "identity_mismatch"]),
+  sourceSurface: z.enum(["chat", "generator", "gallery"]),
+});
+
+const characterLookAppearanceSchema = z
+  .record(z.string(), z.unknown())
+  .superRefine((value, ctx) => {
+    const allowedKeys = new Set(["outfit", "hair", "accessories", "makeup", "description"]);
+    for (const key of Object.keys(value)) {
+      if (allowedKeys.has(key)) continue;
+      ctx.addIssue({
+        code: "custom",
+        path: [key],
+        message: `${key} is an identity trait; a Look may only change styling`,
+      });
+    }
+  });
+
+const characterLookSchema = z.object({
+  label: z.string().trim().min(1).max(80),
+  appearanceDelta: characterLookAppearanceSchema,
+  referenceAssetId: z.string().trim().min(1).optional(),
+});
+
+const characterLookPatchSchema = characterLookSchema.partial().extend({
+  status: z.enum(["active", "archived"]).optional(),
+});
 
 const mediaCollectionCreateSchema = z.object({
   name: z.string().trim().min(1).max(80),
@@ -378,6 +414,14 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
       return submitReport(request, { targetType: "character", targetId: id });
     }
     if (id && action === "duplicate" && method === "POST") return duplicateCharacter(request, id);
+    if (id && action === "looks" && !child && method === "GET") return listCharacterLooks(request, id);
+    if (id && action === "looks" && !child && method === "POST") return createCharacterLook(request, id);
+    if (id && action === "looks" && child && method === "PATCH") {
+      return updateCharacterLook(request, id, child);
+    }
+    if (id && action === "looks" && child && method === "DELETE") {
+      return archiveCharacterLook(request, id, child);
+    }
     if (id && !action && method === "PATCH") return updateCharacter(request, id);
     if (id && !action && method === "DELETE") return archiveCharacter(request, id);
   }
@@ -436,10 +480,12 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
     if (id === "bulk" && method === "POST") return bulkMedia(request);
     if (id && action === "like" && method === "POST") return likeMedia(request, id);
     if (id && action === "like" && method === "DELETE") return unlikeMedia(request, id);
+    if (id && action === "feedback" && method === "POST") return recordMediaFeedback(request, id);
     if (id && action === "use-as-character-image" && method === "POST") {
       return setMediaAsCharacterImage(request, id);
     }
     if (id && action === "add-to-identity" && method === "POST") return addMediaToIdentity(request, id);
+    if (id && action === "save-as-look" && method === "POST") return saveMediaAsCharacterLook(request, id);
     if (id && action === "variation" && method === "POST") return createMediaVariation(request, id);
     if (id && action === "content" && method === "GET") return contentMedia(request, id);
     if (id && action === "download" && method === "GET") return downloadMedia(request, id);
@@ -948,6 +994,86 @@ async function getCharacter(request: Request, id: string) {
 
   await trackEvent("character_viewed", { characterId: character.id }, ctx);
   return ok({ character: characterDTO(character, ctx.userId) });
+}
+
+async function listCharacterLooks(request: Request, characterId: string) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  await assertIdentityTargetCharacter(characterId, user.id);
+  const items = await prisma.characterLook.findMany({
+    where: { characterId, ownerId: user.id, status: { not: "archived" } },
+    orderBy: { updatedAt: "desc" },
+  });
+  return ok({ items: items.map(characterLookDTO) });
+}
+
+async function createCharacterLook(request: Request, characterId: string) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  const body = characterLookSchema.parse(await jsonBody(request));
+  const character = await assertIdentityTargetCharacter(characterId, user.id);
+  const visualProfile = await ensureActiveVisualProfile(character, {
+    anchorAssetId: null,
+    createdFrom: "look_bootstrap",
+  });
+  if (body.referenceAssetId) await assertIdentityImageMedia(body.referenceAssetId, user.id);
+
+  const look = await prisma.$transaction((tx) =>
+    persistCharacterLook(tx, {
+      characterId,
+      visualProfileId: visualProfile.id,
+      ownerId: user.id,
+      label: body.label,
+      appearanceDelta: toInputJson(body.appearanceDelta),
+      referenceAssetId: body.referenceAssetId ?? null,
+    }),
+  );
+  return ok({ look: characterLookDTO(look) }, { status: 201 });
+}
+
+async function updateCharacterLook(request: Request, characterId: string, lookId: string) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  const body = characterLookPatchSchema.parse(await jsonBody(request));
+  await assertIdentityTargetCharacter(characterId, user.id);
+  const current = await prisma.characterLook.findFirst({
+    where: { id: lookId, characterId, ownerId: user.id, status: { not: "archived" } },
+  });
+  if (!current) throw Errors.notFound("Character Look not found");
+  if (body.referenceAssetId) await assertIdentityImageMedia(body.referenceAssetId, user.id);
+  const look = await prisma.characterLook.update({
+    where: { id: current.id },
+    data: {
+      label: body.label,
+      appearanceDelta: body.appearanceDelta ? toInputJson(body.appearanceDelta) : undefined,
+      referenceAssetId: body.referenceAssetId,
+      status: body.status,
+      activeKey:
+        (body.status ?? current.status) === "active"
+          ? characterLookActiveKey(user.id, characterId, body.label ?? current.label)
+          : null,
+    },
+  });
+  return ok({ look: characterLookDTO(look) });
+}
+
+async function archiveCharacterLook(request: Request, characterId: string, lookId: string) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  await assertIdentityTargetCharacter(characterId, user.id);
+  const updated = await prisma.characterLook.updateMany({
+    where: { id: lookId, characterId, ownerId: user.id, status: { not: "archived" } },
+    data: { status: "archived", activeKey: null },
+  });
+  if (updated.count === 0) throw Errors.notFound("Character Look not found");
+  return empty();
 }
 
 async function likeCharacter(request: Request, id: string) {
@@ -1518,6 +1644,10 @@ interface GenerationVisualProfile {
   adapterRefs: Prisma.JsonValue;
 }
 
+type ReferenceSetWithReferences = Prisma.ReferenceSetRevisionGetPayload<{
+  include: { references: true };
+}>;
+
 type CharacterVisualProfileSource = {
   id: string;
   name: string;
@@ -1612,7 +1742,7 @@ export async function createActiveCharacterVisualProfileVersion(
     });
   }
   const version = (active?.version ?? 0) + 1;
-  return tx.characterVisualProfile.create({
+  const created = await tx.characterVisualProfile.create({
     data: characterVisualProfileCreateData({
       characterId: character.id,
       version,
@@ -1629,6 +1759,13 @@ export async function createActiveCharacterVisualProfileVersion(
       createdFrom: input.createdFrom,
     }),
   });
+  if (active) {
+    await tx.characterLook.updateMany({
+      where: { visualProfileId: active.id, status: "active" },
+      data: { status: "needs_rebase", activeKey: null },
+    });
+  }
+  return created;
 }
 
 function extractVisualTraitRecord(value: Prisma.JsonValue, preferredKey: string) {
@@ -1694,6 +1831,30 @@ async function resolveGenerationVisualProfile(
   return resolveActiveVisualProfile(character);
 }
 
+async function resolveGenerationLook(
+  userId: string,
+  characterId: string | null,
+  visualProfileId: string | null,
+  lookId?: string,
+) {
+  if (!lookId) return null;
+  if (!characterId || !visualProfileId) {
+    throw Errors.badRequest("A Character Look requires character image generation");
+  }
+  const look = await prisma.characterLook.findFirst({
+    where: { id: lookId, ownerId: userId, characterId, status: "active" },
+  });
+  if (!look) throw Errors.notFound("Character Look not found");
+  if (look.visualProfileId !== visualProfileId) {
+    throw Errors.badRequest("Character Look must be rebased to the active identity", {
+      lookId,
+      lookVisualProfileId: look.visualProfileId,
+      activeVisualProfileId: visualProfileId,
+    });
+  }
+  return look;
+}
+
 async function resolveActiveVisualProfile(
   character: GenerationPromptCharacter,
 ): Promise<GenerationVisualProfile | null> {
@@ -1755,6 +1916,13 @@ async function createGenerationJobForUser(
           fallbackToActiveOnStale: options.fallbackToActiveOnStaleVisualProfile,
         })
       : null;
+  const selectedLook = await resolveGenerationLook(
+    userId,
+    character?.id ?? null,
+    visualProfile?.id ?? null,
+    body.controls.lookId,
+  );
+  const lookSnapshot = selectedLook ? characterLookSnapshot(selectedLook) : null;
   const selectedModel = body.model ?? body.controls.model;
   const profile = await selectGenerationProfile(body.mode, selectedModel);
   // Guard: if "chat-image-edit" was requested (edit_last_image) but selectGenerationProfile
@@ -1782,7 +1950,12 @@ async function createGenerationJobForUser(
     throw Errors.forbidden("Video generation is disabled");
   }
   const systemPromptSource = isTrustedGenerationPromptSource(options.source?.sourceType);
-  if ((body.prompt || body.negativePrompt) && !systemPromptSource && !entitlements.premium_controls) {
+  const freeCharacterMoment = body.mode === "image" && Boolean(character) && Boolean(body.prompt);
+  if (
+    (body.negativePrompt || (body.prompt && !freeCharacterMoment)) &&
+    !systemPromptSource &&
+    !entitlements.premium_controls
+  ) {
     throw Errors.paymentRequired("Custom prompt controls require Premium");
   }
   if (profile.requiredEntitlement && !entitlements[profile.requiredEntitlement]) {
@@ -1811,6 +1984,13 @@ async function createGenerationJobForUser(
         })
       : { width: profile.defaultWidth, height: profile.defaultHeight };
   const referenceAssetIds = visualProfile ? visualProfileReferenceAssetIds(visualProfile) : [];
+  const referenceSetRevision = visualProfile
+    ? await ensureReferenceSetRevision(visualProfile, "generation_lazy_snapshot")
+    : null;
+  const referenceManifest = referenceSetRevision
+    ? referenceManifestFromRevision(referenceSetRevision, consistencyMode)
+    : [];
+  const momentSpec = buildMomentSpec(body, options.source);
   const seed = body.seed ?? visualProfile?.defaultSeed ?? null;
   const controls = pruneUndefined({
     ...body.controls,
@@ -1827,6 +2007,8 @@ async function createGenerationJobForUser(
           visualProfileVersion: visualProfile.version,
           consistencyMode,
           referenceAssetIds,
+          referenceSetRevisionId: referenceSetRevision?.id,
+          referenceManifest,
           anchorAssetIds: jsonStringArray(visualProfile.anchorAssetIds),
           seed,
         }
@@ -1841,6 +2023,7 @@ async function createGenerationJobForUser(
     consistencyMode,
     userPrompt: body.prompt,
     presetFragment,
+    lookFragment: selectedLook ? JSON.stringify(selectedLook.appearanceDelta) : "",
     sourceType: options.source?.sourceType,
   });
   const negativePrompt =
@@ -1888,6 +2071,11 @@ async function createGenerationJobForUser(
         consistencyMode: visualProfile ? consistencyMode : null,
         seed,
         referenceAssetIds: visualProfile ? toInputJson(referenceAssetIds) : undefined,
+        referenceSetRevisionId: referenceSetRevision?.id,
+        referenceManifest: referenceSetRevision ? toInputJson(referenceManifest) : undefined,
+        momentSpec: toInputJson(momentSpec),
+        lookId: selectedLook?.id,
+        lookSnapshot: lookSnapshot ? toInputJson(lookSnapshot) : undefined,
         idempotencyKey: options.idempotencyKey,
         mode: body.mode,
         prompt,
@@ -1915,6 +2103,7 @@ async function createGenerationJobForUser(
       recipeId: created.recipeId,
       visualProfileId: created.visualProfileId,
       visualProfileVersion: created.visualProfileVersion,
+      referenceSetRevisionId: created.referenceSetRevisionId,
       consistencyMode: created.consistencyMode,
       idempotencyKey: options.idempotencyKey ?? null,
       sourceType: created.sourceType,
@@ -2027,6 +2216,7 @@ function buildGenerationPrompt(input: {
   consistencyMode: "balanced" | "strict" | "creative";
   userPrompt?: string;
   presetFragment: string;
+  lookFragment: string;
   sourceType?: string;
 }) {
   const userPrompt = cleanPromptText(input.userPrompt, 900);
@@ -2041,7 +2231,13 @@ function buildGenerationPrompt(input: {
         })
       : buildVideoGenerationPrompt(input.character, userPrompt);
   const preset = cleanPromptText(input.presetFragment, 500);
-  return clampPrompt(preset ? `${base}. Scene details: ${preset}` : base, 2_000);
+  const look = cleanPromptText(input.lookFragment, 500);
+  return clampPrompt(
+    [base, look ? `Active look: ${look}` : null, preset ? `Scene details: ${preset}` : null]
+      .filter(Boolean)
+      .join(". "),
+    2_000,
+  );
 }
 
 function buildImageGenerationPrompt(input: {
@@ -2124,6 +2320,161 @@ function visualProfileReferenceAssetIds(profile: GenerationVisualProfile) {
       ...jsonStringArray(profile.referenceAssetIds),
     ]),
   );
+}
+
+function referenceSnapshotInputs(profile: GenerationVisualProfile) {
+  const anchorIds = jsonStringArray(profile.anchorAssetIds);
+  const anchorSet = new Set(anchorIds);
+  const referenceIds = jsonStringArray(profile.referenceAssetIds).filter((id) => !anchorSet.has(id));
+  return [
+    ...anchorIds.map((mediaAssetId, index) => ({
+      mediaAssetId,
+      position: index,
+      role: index === 0 ? "primary_face" : "identity_anchor",
+      weight: index === 0 ? 1 : 0.9,
+      selectionReason: index === 0 ? "primary_identity_anchor" : "supporting_identity_angle",
+    })),
+    ...referenceIds.map((mediaAssetId, index) => ({
+      mediaAssetId,
+      position: anchorIds.length + index,
+      role: "identity_reference",
+      weight: 0.75,
+      selectionReason: "user_promoted_identity_reference",
+    })),
+  ];
+}
+
+async function createReferenceSetRevision(
+  tx: Prisma.TransactionClient,
+  profile: GenerationVisualProfile,
+  createdFrom: string,
+) {
+  const proposedReferences = referenceSnapshotInputs(profile);
+  const existingAssets = await tx.mediaAsset.findMany({
+    where: { id: { in: proposedReferences.map((reference) => reference.mediaAssetId) }, deletedAt: null },
+    select: { id: true },
+  });
+  const existingAssetIds = new Set(existingAssets.map((asset) => asset.id));
+  const latest = await tx.referenceSetRevision.aggregate({
+    where: { visualProfileId: profile.id },
+    _max: { revision: true },
+  });
+  await tx.referenceSetRevision.updateMany({
+    where: { visualProfileId: profile.id, status: "active" },
+    data: { status: "superseded" },
+  });
+  return tx.referenceSetRevision.create({
+    data: {
+      visualProfileId: profile.id,
+      revision: (latest._max.revision ?? 0) + 1,
+      status: "active",
+      selectorVersion: "v1",
+      createdFrom,
+      references: {
+        create: proposedReferences
+          .filter((reference) => existingAssetIds.has(reference.mediaAssetId))
+          .map((reference) => ({
+            ...reference,
+            selectorVersion: "v1",
+          })),
+      },
+    },
+    include: { references: { orderBy: { position: "asc" } } },
+  });
+}
+
+async function ensureReferenceSetRevisionInTx(
+  tx: Prisma.TransactionClient,
+  profile: GenerationVisualProfile,
+  createdFrom: string,
+) {
+  const existing = await tx.referenceSetRevision.findFirst({
+    where: { visualProfileId: profile.id, status: "active" },
+    include: { references: { orderBy: { position: "asc" } } },
+    orderBy: { revision: "desc" },
+  });
+  return existing ?? createReferenceSetRevision(tx, profile, createdFrom);
+}
+
+async function ensureReferenceSetRevision(
+  profile: GenerationVisualProfile,
+  createdFrom: string,
+): Promise<ReferenceSetWithReferences> {
+  const existing = await prisma.referenceSetRevision.findFirst({
+    where: { visualProfileId: profile.id, status: "active" },
+    include: { references: { orderBy: { position: "asc" } } },
+    orderBy: { revision: "desc" },
+  });
+  if (existing) return existing;
+  try {
+    return await prisma.$transaction((tx) =>
+      ensureReferenceSetRevisionInTx(tx, profile, createdFrom),
+    );
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) throw error;
+    return prisma.referenceSetRevision.findFirstOrThrow({
+      where: { visualProfileId: profile.id, status: "active" },
+      include: { references: { orderBy: { position: "asc" } } },
+      orderBy: { revision: "desc" },
+    });
+  }
+}
+
+function referenceManifestFromRevision(
+  revision: ReferenceSetWithReferences,
+  consistencyMode?: "balanced" | "strict" | "creative",
+) {
+  return revision.references.map((reference) => ({
+    mediaAssetId: reference.mediaAssetId,
+    role: reference.role,
+    weight: resolvedReferenceWeight(reference.role, reference.weight, consistencyMode),
+    crop: reference.crop,
+    qualityScore: reference.qualityScore,
+    identityScore: reference.identityScore,
+    selectorVersion: reference.selectorVersion,
+    selectionReason: reference.selectionReason,
+  }));
+}
+
+function resolvedReferenceWeight(
+  role: string,
+  baseWeight: number,
+  mode?: "balanced" | "strict" | "creative",
+) {
+  if (!mode || mode === "balanced") return baseWeight;
+  const anchor = role === "primary_face" || role === "identity_anchor";
+  if (mode === "strict") return anchor ? 1.25 : 0.95;
+  return anchor ? 0.65 : 0.45;
+}
+
+function buildMomentSpec(body: GenerationCreateBody, source?: GenerationSource) {
+  const controls = body.controls as Record<string, unknown>;
+  const rawInput = cleanPromptText(body.prompt, 2_000) || "A natural in-character moment";
+  const continuitySources: string[] = [];
+  if (source?.sourceType === "chat_image") continuitySources.push("chat_context");
+  if (body.prompt) continuitySources.push("user_prompt");
+  if (typeof controls.lookId === "string") continuitySources.push("character_look");
+  if (typeof controls.sourceImageAssetId === "string") continuitySources.push("source_image");
+  if (continuitySources.length === 0) continuitySources.push("product_default");
+
+  return pruneUndefined({
+    schemaVersion: "1",
+    parserVersion: "moment-direct-v1",
+    rawInput,
+    scene: rawInput,
+    action: typeof controls.pose === "string" ? controls.pose : undefined,
+    expression: typeof controls.expression === "string" ? controls.expression : undefined,
+    outfitIntent: typeof controls.outfitPresetId === "string" ? "change" : "unspecified",
+    outfit: typeof controls.outfit === "string" ? controls.outfit : undefined,
+    locationContinuity:
+      source?.sourceType === "chat_image" ? "continue" : "unspecified",
+    camera: typeof controls.camera === "string" ? controls.camera : undefined,
+    lighting: typeof controls.lighting === "string" ? controls.lighting : undefined,
+    styleDelta: typeof controls.styleDelta === "string" ? controls.styleDelta : undefined,
+    confidence: 1,
+    continuitySources,
+    createdAt: new Date().toISOString(),
+  });
 }
 
 function buildVideoGenerationPrompt(character: GenerationPromptCharacter | null, userPrompt: string) {
@@ -2504,6 +2855,11 @@ async function retryGenerationJob(request: Request, id: string) {
         consistencyMode: job.consistencyMode,
         seed: job.seed,
         referenceAssetIds: job.referenceAssetIds === null ? undefined : job.referenceAssetIds,
+        referenceSetRevisionId: job.referenceSetRevisionId,
+        referenceManifest: job.referenceManifest === null ? undefined : job.referenceManifest,
+        momentSpec: job.momentSpec === null ? undefined : job.momentSpec,
+        lookId: job.lookId,
+        lookSnapshot: job.lookSnapshot === null ? undefined : job.lookSnapshot,
         derivedFromJobId: job.id,
         mode: job.mode,
         prompt: job.prompt,
@@ -2896,6 +3252,158 @@ async function unlikeMedia(request: Request, id: string) {
   return ok({ liked: false });
 }
 
+async function recordMediaFeedback(request: Request, id: string) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  const body = generationFeedbackSchema.parse(await jsonBody(request));
+  const asset = await assertMediaOwner(id, user.id);
+  if (asset.type !== "image") throw Errors.badRequest("Feedback is only supported for image media");
+  if (!asset.sourceJobId) throw Errors.badRequest("Generated image feedback requires a source job");
+  const job = await prisma.generationJob.findFirst({
+    where: { id: asset.sourceJobId, userId: user.id },
+    select: { id: true, characterId: true },
+  });
+  if (!job) throw Errors.notFound("Generation job not found for media feedback");
+  const character = job.characterId ? await generationCharacter(job.characterId, user.id) : null;
+  const visualProfile = character ? await resolveActiveVisualProfile(character) : null;
+
+  const value = body.feedbackType === "identity_match" ? "match" : "mismatch";
+  const quality = jsonRecord(jsonRecord(asset.metadata).quality);
+  const current = mediaIdentityFeedback(quality.identityFeedback);
+  if (current?.value === value) {
+    const referenceCandidate = visualProfile
+      ? await prisma.referenceCandidate.findUnique({
+          where: {
+            visualProfileId_mediaAssetId: {
+              visualProfileId: visualProfile.id,
+              mediaAssetId: asset.id,
+            },
+          },
+        })
+      : null;
+    return ok({
+      feedback: current,
+      eventId: current.eventId,
+      referenceCandidate: referenceCandidate ? referenceCandidateDTO(referenceCandidate) : null,
+    });
+  }
+
+  const revision = (current?.revision ?? 0) + 1;
+  const feedback = {
+    id: `feedback:${user.id}:${asset.id}:identity`,
+    dimension: "identity",
+    value,
+    revision,
+    sourceSurface: body.sourceSurface,
+  } as const;
+  const result = await prisma.$transaction(async (tx) => {
+    const currentFeedbackRow = await tx.generationFeedback.findFirst({
+      where: {
+        actorId: user.id,
+        mediaAssetId: asset.id,
+        dimension: feedback.dimension,
+        active: true,
+      },
+      orderBy: { revision: "desc" },
+    });
+    const event = await appendGenerationEvent(tx, job.id, "user_feedback", "User rated character identity", {
+      schemaVersion: 1,
+      actorId: user.id,
+      mediaAssetId: asset.id,
+      feedbackId: feedback.id,
+      feedbackType: body.feedbackType,
+      feedbackDimension: feedback.dimension,
+      feedbackValue: feedback.value,
+      idempotencyKey: feedback.id,
+      revision,
+      sourceSurface: body.sourceSurface,
+      supersedesEventId: current?.eventId ?? null,
+    });
+    await tx.generationFeedback.updateMany({
+      where: {
+        actorId: user.id,
+        mediaAssetId: asset.id,
+        dimension: feedback.dimension,
+        active: true,
+      },
+      data: { active: false },
+    });
+    await tx.generationFeedback.create({
+      data: {
+        feedbackKey: feedback.id,
+        actorId: user.id,
+        mediaAssetId: asset.id,
+        generationJobId: job.id,
+        dimension: feedback.dimension,
+        value: feedback.value,
+        revision,
+        sourceSurface: body.sourceSurface,
+        active: true,
+        supersedesId: currentFeedbackRow?.id,
+        eventId: event.id,
+      },
+    });
+    const storedFeedback = { ...feedback, eventId: event.id };
+    await tx.mediaAsset.update({
+      where: { id: asset.id },
+      data: {
+        metadata: mediaMetadataWithQuality(asset.metadata, {
+          identityFeedback: storedFeedback,
+        }),
+      },
+    });
+    const referenceCandidate = visualProfile
+      ? await tx.referenceCandidate.upsert({
+          where: {
+            visualProfileId_mediaAssetId: {
+              visualProfileId: visualProfile.id,
+              mediaAssetId: asset.id,
+            },
+          },
+          update: {
+            sourceJobId: job.id,
+            status: value === "match" ? "candidate" : "rejected",
+            rejectionReason: value === "mismatch" ? "user_identity_mismatch" : null,
+          },
+          create: {
+            visualProfileId: visualProfile.id,
+            mediaAssetId: asset.id,
+            sourceJobId: job.id,
+            proposedRole: "identity_reference",
+            source: "user_feedback",
+            status: value === "match" ? "candidate" : "rejected",
+            rejectionReason: value === "mismatch" ? "user_identity_mismatch" : null,
+          },
+        })
+      : null;
+    return { storedFeedback, referenceCandidate };
+  });
+  return ok({
+    feedback: result.storedFeedback,
+    eventId: result.storedFeedback.eventId,
+    referenceCandidate: result.referenceCandidate
+      ? referenceCandidateDTO(result.referenceCandidate)
+      : null,
+  });
+}
+
+function mediaIdentityFeedback(value: unknown) {
+  if (!isRecord(value)) return null;
+  const id = typeof value.id === "string" ? value.id : null;
+  const dimension = value.dimension === "identity" ? "identity" as const : null;
+  const feedbackValue = value.value === "match" || value.value === "mismatch" ? value.value : null;
+  const revision = typeof value.revision === "number" && Number.isInteger(value.revision) ? value.revision : null;
+  const sourceSurface =
+    value.sourceSurface === "chat" || value.sourceSurface === "generator" || value.sourceSurface === "gallery"
+      ? value.sourceSurface
+      : null;
+  const eventId = typeof value.eventId === "string" ? value.eventId : null;
+  if (!id || !dimension || !feedbackValue || revision === null || !sourceSurface || !eventId) return null;
+  return { id, dimension, value: feedbackValue, revision, sourceSurface, eventId };
+}
+
 async function setMediaAsCharacterImage(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
@@ -2911,41 +3419,20 @@ async function setMediaAsCharacterImage(request: Request, id: string) {
   const activeAnchorIds = jsonStringArray(activeProfile.anchorAssetIds);
   const activeReferenceIds = jsonStringArray(activeProfile.referenceAssetIds);
   const nextAnchorIds = [asset.id, ...activeAnchorIds.filter((anchorId) => anchorId !== asset.id)];
-  const shouldVersionProfile =
+  const referenceChanged =
     nextAnchorIds.length !== activeAnchorIds.length ||
     nextAnchorIds.some((anchorId, index) => anchorId !== activeAnchorIds[index]) ||
     activeReferenceIds.includes(asset.id);
-
-  const visualProfile = await prisma.$transaction(async (tx) => {
-    let nextProfile = activeProfile;
-    if (shouldVersionProfile) {
-      await tx.characterVisualProfile.updateMany({
-        where: { characterId: character.id, status: "active" },
-        data: { status: "archived" },
-      });
-      nextProfile = await tx.characterVisualProfile.create({
-        data: {
-          characterId: character.id,
-          version: activeProfile.version + 1,
-          status: "active",
-          style: activeProfile.style,
-          identityPrompt: activeProfile.identityPrompt,
-          negativeIdentityPrompt: activeProfile.negativeIdentityPrompt,
-          faceTraits: toInputJson(activeProfile.faceTraits),
-          hairTraits: toInputJson(activeProfile.hairTraits),
-          bodyTraits: toInputJson(activeProfile.bodyTraits),
-          signatureTraits: toInputJson(activeProfile.signatureTraits),
-          styleTraits: toInputJson(activeProfile.styleTraits),
-          anchorAssetIds: toInputJson(nextAnchorIds),
-          referenceAssetIds: toInputJson(activeReferenceIds.filter((referenceId) => referenceId !== asset.id)),
-          defaultSeed: activeProfile.defaultSeed,
-          adapterRefs: toInputJson(activeProfile.adapterRefs),
-          qualityScore: activeProfile.qualityScore,
-          consistencyScore: activeProfile.consistencyScore,
-          createdFrom: "gallery_character_image",
-        },
-      });
-    }
+  const result = await prisma.$transaction(async (tx) => {
+    const updatedProfile = await tx.characterVisualProfile.update({
+      where: { id: activeProfile.id },
+      data: {
+        anchorAssetIds: toInputJson(nextAnchorIds),
+        referenceAssetIds: toInputJson(
+          activeReferenceIds.filter((referenceId) => referenceId !== asset.id),
+        ),
+      },
+    });
     await tx.character.update({
       where: { id: character.id },
       data: { imageAssetId: asset.id },
@@ -2956,18 +3443,26 @@ async function setMediaAsCharacterImage(request: Request, id: string) {
         characterId: character.id,
         metadata: mediaMetadataWithQuality(asset.metadata, {
           selectedAsCharacterImage: true,
-          visualProfileId: nextProfile.id,
-          visualProfileVersion: nextProfile.version,
+          visualProfileId: updatedProfile.id,
+          visualProfileVersion: updatedProfile.version,
         }),
       },
     });
-    return nextProfile;
+    const referenceSetRevision = referenceChanged
+      ? await createReferenceSetRevision(tx, updatedProfile, "gallery_character_image")
+      : await ensureReferenceSetRevisionInTx(tx, updatedProfile, "gallery_character_image_existing");
+    await tx.referenceCandidate.updateMany({
+      where: { mediaAssetId: asset.id, status: "candidate" },
+      data: { status: "promoted", promotedRevisionId: referenceSetRevision.id },
+    });
+    return { visualProfile: updatedProfile, referenceSetRevision };
   });
 
   return ok({
     characterId: character.id,
     imageAssetId: asset.id,
-    visualProfile: visualProfileDTO(visualProfile),
+    visualProfile: visualProfileDTO(result.visualProfile),
+    referenceSetRevision: referenceSetRevisionDTO(result.referenceSetRevision),
   });
 }
 
@@ -2986,6 +3481,10 @@ async function addMediaToIdentity(request: Request, id: string) {
   const anchorIds = jsonStringArray(activeProfile.anchorAssetIds);
   const currentReferenceIds = jsonStringArray(activeProfile.referenceAssetIds);
   if (anchorIds.includes(asset.id) || currentReferenceIds.includes(asset.id)) {
+    const referenceSetRevision = await ensureReferenceSetRevision(
+      activeProfile,
+      "gallery_reference_existing",
+    );
     const updated = await prisma.mediaAsset.update({
       where: { id: asset.id },
       data: {
@@ -2997,36 +3496,18 @@ async function addMediaToIdentity(request: Request, id: string) {
         }),
       },
     });
-    return ok({ visualProfile: visualProfileDTO(activeProfile), media: mediaDTO({ ...updated, liked: false }) });
+    return ok({
+      visualProfile: visualProfileDTO(activeProfile),
+      referenceSetRevision: referenceSetRevisionDTO(referenceSetRevision),
+      media: mediaDTO({ ...updated, liked: false }),
+    });
   }
 
   const nextReferenceIds = [...currentReferenceIds, asset.id];
-  const nextProfile = await prisma.$transaction(async (tx) => {
-    await tx.characterVisualProfile.update({
+  const result = await prisma.$transaction(async (tx) => {
+    const updatedProfile = await tx.characterVisualProfile.update({
       where: { id: activeProfile.id },
-      data: { status: "archived" },
-    });
-    const created = await tx.characterVisualProfile.create({
-      data: {
-        characterId: character.id,
-        version: activeProfile.version + 1,
-        status: "active",
-        style: activeProfile.style,
-        identityPrompt: activeProfile.identityPrompt,
-        negativeIdentityPrompt: activeProfile.negativeIdentityPrompt,
-        faceTraits: toInputJson(activeProfile.faceTraits),
-        hairTraits: toInputJson(activeProfile.hairTraits),
-        bodyTraits: toInputJson(activeProfile.bodyTraits),
-        signatureTraits: toInputJson(activeProfile.signatureTraits),
-        styleTraits: toInputJson(activeProfile.styleTraits),
-        anchorAssetIds: toInputJson(anchorIds),
-        referenceAssetIds: toInputJson(nextReferenceIds),
-        defaultSeed: activeProfile.defaultSeed,
-        adapterRefs: toInputJson(activeProfile.adapterRefs),
-        qualityScore: activeProfile.qualityScore,
-        consistencyScore: activeProfile.consistencyScore,
-        createdFrom: "gallery_reference",
-      },
+      data: { referenceAssetIds: toInputJson(nextReferenceIds) },
     });
     await tx.mediaAsset.update({
       where: { id: asset.id },
@@ -3034,15 +3515,85 @@ async function addMediaToIdentity(request: Request, id: string) {
         characterId: character.id,
         metadata: mediaMetadataWithQuality(asset.metadata, {
           addedToReferences: true,
-          visualProfileId: created.id,
-          visualProfileVersion: created.version,
+          visualProfileId: updatedProfile.id,
+          visualProfileVersion: updatedProfile.version,
         }),
       },
     });
-    return created;
+    const referenceSetRevision = await createReferenceSetRevision(
+      tx,
+      updatedProfile,
+      "gallery_reference",
+    );
+    await tx.referenceCandidate.updateMany({
+      where: { mediaAssetId: asset.id, status: "candidate" },
+      data: { status: "promoted", promotedRevisionId: referenceSetRevision.id },
+    });
+    return { visualProfile: updatedProfile, referenceSetRevision };
   });
 
-  return ok({ visualProfile: visualProfileDTO(nextProfile) });
+  return ok({
+    visualProfile: visualProfileDTO(result.visualProfile),
+    referenceSetRevision: referenceSetRevisionDTO(result.referenceSetRevision),
+  });
+}
+
+async function saveMediaAsCharacterLook(request: Request, id: string) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  const body = characterLookSchema.omit({ referenceAssetId: true }).parse(await jsonBody(request));
+  const asset = await assertIdentityImageMedia(id, user.id);
+  const character = await assertIdentityTargetCharacter(asset.characterId, user.id);
+  const visualProfile = await ensureActiveVisualProfile(character, {
+    anchorAssetId: null,
+    createdFrom: "media_look_bootstrap",
+  });
+  const look = await prisma.$transaction((tx) =>
+    persistCharacterLook(tx, {
+      characterId: character.id,
+      visualProfileId: visualProfile.id,
+      ownerId: user.id,
+      label: body.label,
+      appearanceDelta: toInputJson(body.appearanceDelta),
+      referenceAssetId: asset.id,
+    }),
+  );
+  return ok({ look: characterLookDTO(look) }, { status: 201 });
+}
+
+async function persistCharacterLook(
+  tx: Prisma.TransactionClient,
+  input: {
+    characterId: string;
+    visualProfileId: string;
+    ownerId: string;
+    label: string;
+    appearanceDelta: Prisma.InputJsonValue;
+    referenceAssetId: string | null;
+  },
+) {
+  await tx.characterLook.updateMany({
+    where: {
+      ownerId: input.ownerId,
+      characterId: input.characterId,
+      label: input.label,
+      status: "active",
+    },
+    data: { status: "archived", activeKey: null },
+  });
+  return tx.characterLook.create({
+    data: {
+      ...input,
+      status: "active",
+      activeKey: characterLookActiveKey(input.ownerId, input.characterId, input.label),
+    },
+  });
+}
+
+function characterLookActiveKey(ownerId: string, characterId: string, label: string) {
+  return `${ownerId}:${characterId}:${label.trim().toLowerCase()}`;
 }
 
 async function createMediaVariation(request: Request, id: string) {
@@ -4951,6 +5502,7 @@ function mediaDTO(asset: {
       selectedAsCharacterImage: booleanFromRecord(quality, "selectedAsCharacterImage", false),
       addedToReferences: booleanFromRecord(quality, "addedToReferences", false),
     },
+    quality: Object.keys(quality).length > 0 ? quality : null,
     provenance: mediaProvenanceDTO(asset.sourceJob),
     createdAt: asset.createdAt,
   };
@@ -5065,6 +5617,11 @@ function generationJobDTO(job: GenerationJobWithRelations) {
     consistencyMode: job.consistencyMode,
     seed: job.seed,
     referenceAssetIds: job.referenceAssetIds,
+    referenceSetRevisionId: job.referenceSetRevisionId,
+    referenceManifest: job.referenceManifest,
+    momentSpec: job.momentSpec,
+    lookId: job.lookId,
+    lookSnapshot: job.lookSnapshot,
     derivedFromJobId: job.derivedFromJobId,
     mode: job.mode,
     prompt: job.prompt,
@@ -5486,6 +6043,94 @@ function visualProfileDTO(profile: GenerationVisualProfile) {
   };
 }
 
+type CharacterLookDTOInput = {
+  id: string;
+  characterId: string;
+  visualProfileId: string;
+  ownerId: string;
+  label: string;
+  appearanceDelta: Prisma.JsonValue;
+  referenceAssetId: string | null;
+  status: string;
+  rebasedFromLookId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+function characterLookSnapshot(look: CharacterLookDTOInput) {
+  return {
+    schemaVersion: "1",
+    lookId: look.id,
+    label: look.label,
+    visualProfileId: look.visualProfileId,
+    appearanceDelta: look.appearanceDelta,
+    referenceAssetId: look.referenceAssetId,
+    capturedAt: new Date().toISOString(),
+  };
+}
+
+function characterLookDTO(look: CharacterLookDTOInput) {
+  return {
+    id: look.id,
+    characterId: look.characterId,
+    visualProfileId: look.visualProfileId,
+    ownerId: look.ownerId,
+    label: look.label,
+    appearanceDelta: look.appearanceDelta,
+    referenceAssetId: look.referenceAssetId,
+    status: look.status,
+    rebasedFromLookId: look.rebasedFromLookId,
+    createdAt: look.createdAt,
+    updatedAt: look.updatedAt,
+  };
+}
+
+function referenceCandidateDTO(candidate: {
+  id: string;
+  visualProfileId: string;
+  mediaAssetId: string;
+  sourceJobId: string | null;
+  proposedRole: string;
+  qualityScore: number | null;
+  identityScore: number | null;
+  source: string;
+  status: string;
+  rejectionReason: string | null;
+  promotedRevisionId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}) {
+  return {
+    id: candidate.id,
+    visualProfileId: candidate.visualProfileId,
+    mediaAssetId: candidate.mediaAssetId,
+    sourceJobId: candidate.sourceJobId,
+    proposedRole: candidate.proposedRole,
+    qualityScore: candidate.qualityScore,
+    identityScore: candidate.identityScore,
+    source: candidate.source,
+    status: candidate.status,
+    rejectionReason: candidate.rejectionReason,
+    promotedRevisionId: candidate.promotedRevisionId,
+    createdAt: candidate.createdAt,
+    updatedAt: candidate.updatedAt,
+  };
+}
+
+function referenceSetRevisionDTO(revision: ReferenceSetWithReferences) {
+  return {
+    id: revision.id,
+    visualProfileId: revision.visualProfileId,
+    revision: revision.revision,
+    status: revision.status,
+    selectorVersion: revision.selectorVersion,
+    createdFrom: revision.createdFrom,
+    availableAtSnapshot: revision.availableAtSnapshot,
+    references: referenceManifestFromRevision(revision),
+    createdAt: revision.createdAt,
+  };
+}
+
 function stringFromMediaDimensions(width: number | null, height: number | null) {
   if (!width || !height) return "4:5";
   const ratio = width / height;
@@ -5647,6 +6292,7 @@ async function enqueueGenerationJob(job: {
   outputCount: number;
   seed?: string | null;
   referenceAssetIds?: Prisma.JsonValue | null;
+  referenceManifest?: Prisma.JsonValue | null;
 }) {
   const controls = await internalGenerationControls(job);
   const modelCapabilities = modelCapabilitiesFromControls(controls);
@@ -5658,6 +6304,7 @@ async function enqueueGenerationJob(job: {
             characterId: job.characterId,
             controls,
             referenceAssetIds: job.referenceAssetIds,
+            referenceManifest: job.referenceManifest,
           }),
           modelCapabilities,
         )

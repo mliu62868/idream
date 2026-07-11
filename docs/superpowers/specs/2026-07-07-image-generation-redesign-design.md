@@ -1,5 +1,7 @@
 # 生图系统第一性原理重构 —— 设计方案
 
+> **产品体验部分已被 `docs/product/CHARACTER_IMAGE_GENERATION_SYSTEM.md` 收敛取代。** 本文继续作为 workflow-native 底座、模型 bring-up 与 P1–P5 实现历史的技术记录。
+
 更新日期：2026-07-07
 状态：设计草案 / 待用户评审（尚未实现）
 适用范围：生图底座抽象（ComfyUI + sdcpp）、运营配置台（底座/模版/角色/预生图）、角色一致性、聊天 Agent 生图能力。

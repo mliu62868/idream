@@ -4,6 +4,17 @@
   "backendKind": "comfyui",
   "version": 1,
   "capabilities": ["textToImage", "stableSeed"],
+  "identity": {
+    "mode": "none",
+    "maxReferences": 0,
+    "acceptedRoles": [],
+    "supportsLookReference": false,
+    "supportsSourceImageWithIdentity": false
+  },
+  "quality": {
+    "maxCandidates": 1,
+    "evaluatorDimensions": ["artifact", "face_count"]
+  },
   "apiPrompt": {
     "1": {
       "class_type": "UNETLoader",

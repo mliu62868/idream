@@ -56,6 +56,25 @@ function modelWith(backend: GenBackend): BackendImageModel {
 }
 
 describe("BackendImageModel", () => {
+  it("rejects identity references when the workflow contract declares no identity support", async () => {
+    const backend = makeStubBackend();
+    const model = modelWith(backend);
+    const result = await model.generate({
+      prompt: "same character in a cafe",
+      count: 1,
+      model: "m",
+      referenceImages: [
+        { assetId: "anchor-1", role: "identity_anchor", b64Json: "aW1hZ2U=" },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "unsupported_identity_workflow", retryable: false },
+    });
+    expect(backend.submit).not.toHaveBeenCalled();
+  });
+
   it("loops submit/poll `count` times with an incrementing seed and maps assets", async () => {
     const backend = makeStubBackend();
     const registry = { resolveForModel: vi.fn(() => ({ backend, descriptor })) };

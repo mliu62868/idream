@@ -122,6 +122,20 @@ export class BackendImageModel implements ImageModel {
     }
 
     const { backend, descriptor } = resolved;
+    const referenceContractError = validateReferenceContract(
+      descriptor,
+      input.referenceImages ?? [],
+    );
+    if (referenceContractError) {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported_identity_workflow",
+          message: referenceContractError,
+          retryable: false,
+        },
+      };
+    }
     const size = resolveSize(input);
     const baseSeed = numericSeed(input.seed, input.requestId);
     const count = Math.max(1, Math.min(input.count, 4));
@@ -167,6 +181,34 @@ export class BackendImageModel implements ImageModel {
       };
     }
   }
+}
+
+function validateReferenceContract(
+  descriptor: ReturnType<BackendRegistry["resolveForModel"]>["descriptor"],
+  images: NonNullable<GenerateInput["referenceImages"]>,
+) {
+  if (images.length === 0) return null;
+  const identityImages = images.filter((image) => image.role !== "source_image");
+  const sourceImages = images.filter((image) => image.role === "source_image");
+  const contract = descriptor.identity;
+  if (contract.mode === "none") {
+    return `Workflow ${descriptor.workflowKey} does not accept reference images`;
+  }
+  const unsupportedRole = images.find((image) => !contract.acceptedRoles.includes(image.role));
+  if (unsupportedRole) {
+    return `Workflow ${descriptor.workflowKey} does not accept reference role ${unsupportedRole.role}`;
+  }
+  if (identityImages.length > contract.maxReferences) {
+    return `Workflow ${descriptor.workflowKey} accepts at most ${contract.maxReferences} identity references`;
+  }
+  if (
+    identityImages.length > 0 &&
+    sourceImages.length > 0 &&
+    !contract.supportsSourceImageWithIdentity
+  ) {
+    return `Workflow ${descriptor.workflowKey} cannot combine a source image with identity references`;
+  }
+  return null;
 }
 
 function resolveSize(input: GenerateInput): { width?: number; height?: number } {

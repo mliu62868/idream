@@ -51,6 +51,37 @@ const placeholderImagePng = Uint8Array.from(
   ),
 );
 
+function baselineGeneratedImageQuality() {
+  return {
+    ...generatedImageQualityEvidence(
+      "sanity-v1",
+      { status: "unscored" as const, reason: "artifact_evaluator_unavailable" },
+    ),
+    sanity: { status: "passed" as const },
+  };
+}
+
+function unscoredGeneratedImageQuality() {
+  return generatedImageQualityEvidence(
+    "not_provided",
+    { status: "unscored" as const, reason: "worker_did_not_provide_evidence" },
+  );
+}
+
+function generatedImageQualityEvidence(
+  evaluatorVersion: string,
+  artifact: { status: "unscored"; reason: string },
+) {
+  return {
+    schemaVersion: "1" as const,
+    evaluatorVersion,
+    artifact,
+    faceCount: { status: "unscored" as const, reason: "evaluator_unavailable" },
+    identity: { status: "unscored" as const, reason: "evaluator_unavailable" },
+    intent: { status: "unscored" as const, reason: "evaluator_unavailable" },
+  };
+}
+
 export async function drainLocalAiPipeline(input: {
   limit?: number;
   workerId?: string;
@@ -358,6 +389,7 @@ async function runImageGenerate(payload: ImageGeneratePayload, jobMeta: QueueJob
           height: asset.height,
           contentType,
           providerKey: asset.key ?? null,
+          quality: baselineGeneratedImageQuality(),
         };
       }),
     );
@@ -566,8 +598,14 @@ async function finalizeGenerationCompleted(
               consistencyMode: job.consistencyMode,
               seed: job.seed,
               referenceAssetIds: job.referenceAssetIds,
+              quality: asset.quality ?? unscoredGeneratedImageQuality(),
             }),
           },
+        });
+        await appendGenerationEvent(tx, job.id, "image_quality_scored", "Image quality evidence recorded", {
+          mediaAssetId: mediaId,
+          assetIndex: index,
+          quality: asset.quality ?? unscoredGeneratedImageQuality(),
         });
       }
     }

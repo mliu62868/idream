@@ -19,6 +19,7 @@ export async function imageReferenceInputsForGenerationJob(input: {
   characterId: string | null;
   controls: Prisma.JsonValue | Record<string, unknown>;
   referenceAssetIds?: Prisma.JsonValue | null;
+  referenceManifest?: Prisma.JsonValue | null;
   maxReferences?: number;
 }): Promise<ImageReferenceInput[]> {
   const controls = jsonRecord(input.controls);
@@ -28,11 +29,13 @@ export async function imageReferenceInputsForGenerationJob(input: {
   const anchorAssetIds = jsonStringArray(visualIdentity.anchorAssetIds);
   const identityReferenceIds = jsonStringArray(visualIdentity.referenceAssetIds);
   const jobReferenceIds = jsonStringArray(input.referenceAssetIds);
+  const manifest = referenceManifestItems(input.referenceManifest);
+  const manifestById = new Map(manifest.map((item) => [item.mediaAssetId, item]));
   const orderedIds = uniqueStrings([
     sourceImageAssetId,
-    ...anchorAssetIds,
-    ...identityReferenceIds,
-    ...jobReferenceIds,
+    ...(manifest.length > 0
+      ? manifest.map((item) => item.mediaAssetId)
+      : [...anchorAssetIds, ...identityReferenceIds, ...jobReferenceIds]),
   ]).slice(0, input.maxReferences ?? 4);
   if (orderedIds.length === 0) return [];
 
@@ -59,17 +62,26 @@ export async function imageReferenceInputsForGenerationJob(input: {
   return orderedIds.flatMap((assetId) => {
     const asset = byId.get(assetId);
     if (!asset) return [];
-    const role = referenceRole({
-      assetId,
-      sourceImageAssetId,
-      anchorAssetIds,
-      identityReferenceIds,
-    });
+    const manifestItem = manifestById.get(assetId);
+    const role =
+      assetId === sourceImageAssetId
+        ? "source_image"
+        : (manifestItem?.role ??
+          referenceRole({
+            assetId,
+            sourceImageAssetId,
+            anchorAssetIds,
+            identityReferenceIds,
+          }));
     return [
       {
         assetId,
         role,
-        weight: referenceWeight(role, consistencyMode),
+        weight: manifestItem?.weight ?? referenceWeight(role, consistencyMode),
+        ...(manifestItem?.selectorVersion ? { selectorVersion: manifestItem.selectorVersion } : {}),
+        ...(manifestItem?.selectionReason ? { selectionReason: manifestItem.selectionReason } : {}),
+        ...(manifestItem?.qualityScore !== undefined ? { qualityScore: manifestItem.qualityScore } : {}),
+        ...(manifestItem?.identityScore !== undefined ? { identityScore: manifestItem.identityScore } : {}),
         ...(asset.storageKey ? { storageKey: asset.storageKey } : {}),
         ...(asset.url ? { url: asset.url } : {}),
         ...(asset.contentType ? { contentType: asset.contentType } : {}),
@@ -77,6 +89,34 @@ export async function imageReferenceInputsForGenerationJob(input: {
         ...(asset.height ? { height: asset.height } : {}),
       },
     ];
+  });
+}
+
+function referenceManifestItems(value: Prisma.JsonValue | null | undefined) {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const record = jsonRecord(item);
+    const mediaAssetId = stringFromRecord(record, "mediaAssetId");
+    if (!mediaAssetId) return [];
+    const rawRole = stringFromRecord(record, "role");
+    const role: ImageReferenceInput["role"] =
+      rawRole === "primary_face" || rawRole === "identity_anchor"
+        ? "identity_anchor"
+        : rawRole === "source_image"
+          ? "source_image"
+          : "identity_reference";
+    const weight = numberFromRecord(record, "weight");
+    const qualityScore = numberFromRecord(record, "qualityScore");
+    const identityScore = numberFromRecord(record, "identityScore");
+    return [{
+      mediaAssetId,
+      role,
+      ...(weight !== undefined ? { weight } : {}),
+      selectorVersion: stringFromRecord(record, "selectorVersion"),
+      selectionReason: stringFromRecord(record, "selectionReason"),
+      qualityScore,
+      identityScore,
+    }];
   });
 }
 
@@ -170,6 +210,11 @@ function jsonStringArray(value: unknown) {
 function stringFromRecord(record: Record<string, unknown>, key: string) {
   const value = record[key];
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function numberFromRecord(record: Record<string, unknown>, key: string) {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function uniqueStrings(values: Array<string | undefined>) {

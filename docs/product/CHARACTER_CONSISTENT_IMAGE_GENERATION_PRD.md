@@ -1,5 +1,7 @@
 # 角色一致性的图片生成产品规格
 
+> **已被 `CHARACTER_IMAGE_GENERATION_SYSTEM.md` 收敛取代。** 本文保留 2026-06 至 2026-07 的实现背景与历史裁决；新的产品目标、领域对象、状态、指标和分期以新文档为准。
+
 更新日期：2026-06-30
 
 状态：产品设计方案；Phase 1 代码底座已落地（CVP schema、Create/Generate/Chat identity lock、Generate identity UI、Gallery feedback、Official Admin visibility）；reference image transport 已接到 queue / worker / pipeline request，且本地 sd.cpp gateway 已能把 `source_image` 映射为 `--init-img`；model profile 已有 `runnerConfig.capabilities` 能力门控，支持 text+seed 与 reference/init-image 路径按模型能力分流；当前 Pornmaster/Z-Image profile 只启用 text+seed 与 init-image，不启用 identity `--ref-image`；Admin 不再提供模型管理或手动创建模型 profile 的默认入口，候选 profile 由工程侧 seed/config 注入，Admin 只做 dry run、test image、人工一致性 review、publish/rollback；高阶 LoRA/IP-Adapter/identity reference 消费与候选模型真实 20 张一致性 smoke 仍待通过

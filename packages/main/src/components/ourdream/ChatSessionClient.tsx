@@ -490,6 +490,29 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     }
   }
 
+  async function recordAttachmentIdentityFeedback(
+    mediaAssetId: string,
+    feedbackType: "identity_match" | "identity_mismatch",
+  ) {
+    setStatus(null);
+    try {
+      const response = await fetch(`/api/v1/media/${encodeURIComponent(mediaAssetId)}/feedback`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ feedbackType, sourceSurface: "chat" }),
+      });
+      setStatus(
+        response.ok
+          ? feedbackType === "identity_match"
+            ? "Thanks — this image looks like the character."
+            : "Identity mismatch recorded. Use More like this for a corrected retry."
+          : "Couldn't save image feedback.",
+      );
+    } catch {
+      setStatus("Couldn't save image feedback.");
+    }
+  }
+
   async function createAttachmentVariation(mediaAssetId: string) {
     setStatus(null);
     setDeleteConfirmMessageId(null);
@@ -748,6 +771,16 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                                   : undefined
                               }
                               onConfirm={() => confirmImageAttachment(attachment.id)}
+                              onIdentityMatch={
+                                attachment.mediaAssetId
+                                  ? () => recordAttachmentIdentityFeedback(attachment.mediaAssetId as string, "identity_match")
+                                  : undefined
+                              }
+                              onIdentityMismatch={
+                                attachment.mediaAssetId
+                                  ? () => recordAttachmentIdentityFeedback(attachment.mediaAssetId as string, "identity_mismatch")
+                                  : undefined
+                              }
                               onMoreLikeThis={
                                 attachment.mediaAssetId
                                   ? () => createAttachmentVariation(attachment.mediaAssetId as string)
@@ -994,6 +1027,8 @@ function ChatImageAttachmentCard({
   characterId,
   onConfirm,
   onAddToIdentity,
+  onIdentityMatch,
+  onIdentityMismatch,
   onMoreLikeThis,
 }: Readonly<{
   attachment: ChatAttachment;
@@ -1001,6 +1036,8 @@ function ChatImageAttachmentCard({
   characterId: string | null;
   onConfirm: () => void;
   onAddToIdentity?: () => void;
+  onIdentityMatch?: () => void;
+  onIdentityMismatch?: () => void;
   onMoreLikeThis?: () => void;
 }>) {
   const source = attachment.thumbnailUrl ?? attachment.mediaUrl;
@@ -1029,6 +1066,8 @@ function ChatImageAttachmentCard({
             canAddToIdentity={canAddToIdentity}
             characterId={characterId}
             onAddToIdentity={onAddToIdentity}
+            onIdentityMatch={onIdentityMatch}
+            onIdentityMismatch={onIdentityMismatch}
             onMoreLikeThis={onMoreLikeThis}
           />
         ) : null}
@@ -1090,6 +1129,8 @@ function ChatImageAttachmentCard({
           canAddToIdentity={canAddToIdentity}
           characterId={characterId}
           onAddToIdentity={onAddToIdentity}
+          onIdentityMatch={onIdentityMatch}
+          onIdentityMismatch={onIdentityMismatch}
           onMoreLikeThis={onMoreLikeThis}
         />
       ) : null}
@@ -1101,15 +1142,37 @@ function ChatImageAttachmentActions({
   canAddToIdentity,
   characterId,
   onAddToIdentity,
+  onIdentityMatch,
+  onIdentityMismatch,
   onMoreLikeThis,
 }: Readonly<{
   canAddToIdentity: boolean;
   characterId: string | null;
   onAddToIdentity?: () => void;
+  onIdentityMatch?: () => void;
+  onIdentityMismatch?: () => void;
   onMoreLikeThis?: () => void;
 }>) {
   return (
     <div className="grid gap-2 border-t border-white/10 p-2">
+      <div className="grid grid-cols-2 gap-2" aria-label="Character identity feedback">
+        <button
+          className="inline-flex h-8 items-center justify-center gap-1.5 rounded-full bg-emerald-400/15 px-3 text-[11px] font-bold text-emerald-100"
+          onClick={onIdentityMatch}
+          type="button"
+        >
+          <Check className="h-3.5 w-3.5" />
+          Looks like them
+        </button>
+        <button
+          className="inline-flex h-8 items-center justify-center gap-1.5 rounded-full bg-rose-400/15 px-3 text-[11px] font-bold text-rose-100"
+          onClick={onIdentityMismatch}
+          type="button"
+        >
+          <X className="h-3.5 w-3.5" />
+          Doesn&apos;t match
+        </button>
+      </div>
       <div className={`grid gap-2 ${canAddToIdentity ? "grid-cols-2" : "grid-cols-1"}`}>
         <button
           className="inline-flex h-8 items-center justify-center gap-1.5 rounded-full bg-white px-3 text-[11px] font-black text-[rgb(13,13,13)]"
@@ -1126,7 +1189,7 @@ function ChatImageAttachmentActions({
             type="button"
           >
             <ListChecks className="h-3.5 w-3.5" />
-            Add identity
+            Use for identity
           </button>
         )}
       </div>

@@ -43,6 +43,38 @@ describe("bindComfySlots", () => {
   });
 });
 
+describe("workflow identity capability contract", () => {
+  it("parses an explicit identity-routing and quality contract", () => {
+    const descriptor = workflowDescriptorSchema.parse({
+      workflowKey: "identity-edit",
+      modelId: "identity-model",
+      backendKind: "comfyui",
+      version: 1,
+      capabilities: ["referenceImages"],
+      identity: {
+        mode: "single_reference",
+        maxReferences: 1,
+        acceptedRoles: ["identity_anchor", "source_image"],
+        supportsLookReference: false,
+        supportsSourceImageWithIdentity: false,
+      },
+      quality: {
+        maxCandidates: 2,
+        evaluatorDimensions: ["artifact", "identity", "intent"],
+      },
+      apiPrompt: {},
+      inputs: [],
+    });
+
+    expect(descriptor.identity).toMatchObject({
+      mode: "single_reference",
+      maxReferences: 1,
+      acceptedRoles: ["identity_anchor", "source_image"],
+    });
+    expect(descriptor.quality.evaluatorDimensions).toEqual(["artifact", "identity", "intent"]);
+  });
+});
+
 describe("bindSdcppArgs", () => {
   it("maps slots to sd-cli arg flags", () => {
     const d = workflowDescriptorSchema.parse({

@@ -24,12 +24,36 @@ const slotSchema = z.object({
   default: z.union([z.string(), z.number()]).optional(),
 });
 
+export const workflowIdentityCapabilitySchema = z.object({
+  mode: z.enum(["none", "single_reference", "multi_reference", "adapter", "multi_identity"]),
+  maxReferences: z.number().int().min(0).max(16),
+  acceptedRoles: z.array(z.enum(["identity_anchor", "identity_reference", "source_image"])),
+  supportsLookReference: z.boolean(),
+  supportsSourceImageWithIdentity: z.boolean(),
+});
+
+export const workflowQualityCapabilitySchema = z.object({
+  maxCandidates: z.number().int().min(1).max(8),
+  evaluatorDimensions: z.array(z.enum(["artifact", "face_count", "identity", "intent"])),
+});
+
 export const workflowDescriptorSchema = z.object({
   workflowKey: z.string(),
   modelId: z.string(),
   backendKind: z.enum(["comfyui", "sdcpp"]),
   version: z.number().int().positive(),
   capabilities: z.array(z.string()),
+  identity: workflowIdentityCapabilitySchema.default({
+    mode: "none",
+    maxReferences: 0,
+    acceptedRoles: [],
+    supportsLookReference: false,
+    supportsSourceImageWithIdentity: false,
+  }),
+  quality: workflowQualityCapabilitySchema.default({
+    maxCandidates: 1,
+    evaluatorDimensions: ["artifact"],
+  }),
   apiPrompt: z.record(z.string(), comfyNodeSchema),
   inputs: z.array(slotSchema),
 });

@@ -11,6 +11,7 @@ import {
   ImageIcon,
   ListChecks,
   RefreshCw,
+  Settings2,
   Square,
   Trash2,
   WandSparkles,
@@ -85,6 +86,14 @@ type UserPreset = {
   visibility: string;
 };
 
+type CharacterLookItem = {
+  id: string;
+  characterId: string;
+  label: string;
+  status: string;
+  appearanceDelta: Record<string, unknown>;
+};
+
 type BulkAction = "delete" | "visibility";
 type BulkVisibility = "private" | "public_pack" | "unlisted";
 
@@ -151,6 +160,7 @@ export function GeneratorWorkspace() {
   const [count, setCount] = useState(1);
   const [model, setModel] = useState("");
   const [consistencyMode, setConsistencyMode] = useState<ConsistencyMode>("balanced");
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [modePresetId, setModePresetId] = useState("");
   const [backgroundPresetId, setBackgroundPresetId] = useState("");
   const [posePresetId, setPosePresetId] = useState("");
@@ -173,6 +183,11 @@ export function GeneratorWorkspace() {
   const [bulkDeleteConfirmKey, setBulkDeleteConfirmKey] = useState<string | null>(null);
   const [deleteConfirmPresetId, setDeleteConfirmPresetId] = useState<string | null>(null);
   const [editSourceMediaId, setEditSourceMediaId] = useState("");
+  const [lookEditorMediaId, setLookEditorMediaId] = useState<string | null>(null);
+  const [lookLabel, setLookLabel] = useState("");
+  const [lookDescription, setLookDescription] = useState("");
+  const [looks, setLooks] = useState<CharacterLookItem[]>([]);
+  const [selectedLookId, setSelectedLookId] = useState("");
   const [remixFeedItemId, setRemixFeedItemId] = useState("");
   const [authReturnTarget, setAuthReturnTarget] = useState("/generate");
   const workspaceTopRef = useRef<HTMLDivElement>(null);
@@ -206,6 +221,8 @@ export function GeneratorWorkspace() {
   const insufficientBalance =
     Boolean(config) && estimatedCost > (config?.dreamcoins.balance ?? 0);
   const imageEditMode = mode === "image" && imageWorkflow === "image-edit";
+  const characterImageMode = mode === "image" && !freeplay && !imageEditMode;
+  const canDescribeMoment = canUsePrompt || characterImageMode;
   const anonymousViewer = config?.viewer?.authenticated === false;
   const upgradeHref = upgradeHrefForTarget(authReturnTarget);
   const insufficientBalanceHref = anonymousViewer
@@ -368,6 +385,24 @@ export function GeneratorWorkspace() {
     setIdentityMedia(payload.data?.items ?? []);
   }, []);
 
+  const refreshLooks = useCallback(async () => {
+    if (!characterId || freeplay) {
+      setLooks([]);
+      setSelectedLookId("");
+      return;
+    }
+    const response = await fetch(`/api/v1/characters/${encodeURIComponent(characterId)}/looks`);
+    if (!response.ok) {
+      setLooks([]);
+      setSelectedLookId("");
+      return;
+    }
+    const payload = (await response.json()) as ApiPayload<{ items: CharacterLookItem[] }>;
+    const items = (payload.data?.items ?? []).filter((look) => look.status === "active");
+    setLooks(items);
+    setSelectedLookId((current) => items.some((look) => look.id === current) ? current : "");
+  }, [characterId, freeplay]);
+
   const refreshCharacters = useCallback(async () => {
     try {
       const response = await fetch("/api/v1/characters?limit=12");
@@ -437,6 +472,11 @@ export function GeneratorWorkspace() {
   }, [refreshCharacters, refreshConfig, refreshIdentityMedia, refreshJobs, refreshMedia, refreshPresets]);
 
   useEffect(() => {
+    const timer = window.setTimeout(() => void refreshLooks(), 0);
+    return () => window.clearTimeout(timer);
+  }, [refreshLooks]);
+
+  useEffect(() => {
     const pendingJobs = jobs.filter((job) => !isTerminal(job.status));
     if (pendingJobs.length === 0) return;
     const timer = window.setInterval(() => {
@@ -475,7 +515,7 @@ export function GeneratorWorkspace() {
           freeplay,
           consistencyMode,
           outputCount,
-          prompt: canUsePrompt && prompt ? prompt : undefined,
+          prompt: canDescribeMoment && prompt ? prompt : undefined,
           negativePrompt: canUsePrompt && negativePrompt ? negativePrompt : undefined,
           remixFeedItemId: remixFeedItemId || undefined,
           controls: {
@@ -486,6 +526,7 @@ export function GeneratorWorkspace() {
             backgroundPresetId: mode === "image" && backgroundPresetId ? backgroundPresetId : undefined,
             posePresetId: mode === "image" && posePresetId ? posePresetId : undefined,
             outfitPresetId: mode === "image" && outfitPresetId ? outfitPresetId : undefined,
+            lookId: mode === "image" && selectedLookId ? selectedLookId : undefined,
           },
         }),
       });
@@ -601,6 +642,59 @@ export function GeneratorWorkspace() {
       }),
     });
     setStatus(response.ok ? "Report submitted." : "Report failed.");
+  }
+
+  async function recordIdentityFeedback(
+    item: MediaItem,
+    feedbackType: "identity_match" | "identity_mismatch",
+  ) {
+    const response = await fetch(`/api/v1/media/${item.id}/feedback`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ feedbackType, sourceSurface: "gallery" }),
+    });
+    const payload = (await response.json().catch(() => null)) as ApiPayload<unknown> | null;
+    if (!response.ok || !payload?.ok) {
+      setStatus(payload?.error?.message ?? "Couldn't save identity feedback.");
+      return;
+    }
+    setStatus(
+      feedbackType === "identity_match"
+        ? "Recorded: looks like the character."
+        : "Recorded: identity doesn't match.",
+    );
+  }
+
+  function openLookEditor(item: MediaItem) {
+    setLookEditorMediaId(item.id);
+    setLookLabel("");
+    setLookDescription(item.prompt ?? "");
+    setStatus("");
+  }
+
+  async function saveMediaAsLook() {
+    if (!lookEditorMediaId || !lookLabel.trim() || !lookDescription.trim()) {
+      setStatus("Name the Look and describe the reusable outfit or styling.");
+      return;
+    }
+    const response = await fetch(`/api/v1/media/${lookEditorMediaId}/save-as-look`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        label: lookLabel.trim(),
+        appearanceDelta: { description: lookDescription.trim() },
+      }),
+    });
+    const payload = (await response.json().catch(() => null)) as ApiPayload<unknown> | null;
+    if (!response.ok || !payload?.ok) {
+      setStatus(payload?.error?.message ?? "Couldn't save this Look.");
+      return;
+    }
+    setLookEditorMediaId(null);
+    setLookLabel("");
+    setLookDescription("");
+    setStatus("Look saved. You can reuse it for this character.");
+    void refreshLooks();
   }
 
   async function runIdentityMediaAction(
@@ -1037,22 +1131,22 @@ export function GeneratorWorkspace() {
               </>
             )}
 
-            {mode === "image" && !freeplay && !imageEditMode && (
+            {characterImageMode && (
               <div className="mt-4">
                 <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
-                  Consistency
+                  Character identity
                 </p>
                 <div className="mt-2 flex min-h-10 items-center justify-between gap-3 rounded-[10px] bg-black/25 px-3 py-2 text-xs">
                   <span className="inline-flex min-w-0 items-center gap-2 font-bold text-white">
                     <ImageIcon className="h-4 w-4 shrink-0 text-[rgb(255,64,180)]" />
                     <span className="truncate">
                       {selectedCharacter?.visualProfile
-                        ? `Identity locked · v${selectedCharacter.visualProfile.version}`
+                        ? "Identity locked"
                         : "Set up identity image"}
                     </span>
                   </span>
                   <span className="shrink-0 text-[rgb(170,170,170)]">
-                    {selectedCharacter?.visualProfile ? `${identityReferenceCount} refs` : "No anchor"}
+                    {selectedCharacter?.visualProfile ? "We keep them recognizable" : "No anchor"}
                   </span>
                 </div>
                 {!selectedCharacter?.visualProfile && (
@@ -1060,60 +1154,47 @@ export function GeneratorWorkspace() {
                     Generate a first image, then choose Use as character image in Gallery to lock this character&apos;s visual identity.
                   </div>
                 )}
-                {identityTimeline.length > 0 && (
-                  <div className="mt-2 rounded-[10px] bg-black/25 p-3" data-testid="identity-timeline">
-                    <div className="mb-2 flex items-center justify-between gap-2">
-                      <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
-                        Identity timeline
-                      </p>
-                      <span className="text-[11px] font-semibold text-[rgb(170,170,170)]">
-                        v{selectedCharacter?.visualProfile?.version ?? identityTimeline[0]?.visualProfileVersion ?? 1}
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-4 gap-2">
-                      {identityTimeline.map((item) => {
-                        const source = item.thumbnailUrl ?? item.url;
-                        return (
-                          <div
-                            className="relative aspect-square overflow-hidden rounded-[8px] bg-[rgb(36,36,36)]"
-                            key={item.id}
-                          >
-                            <Image
-                              alt="Identity reference"
-                              className="object-cover object-top"
-                              fill
-                              sizes="64px"
-                              src={source}
-                              unoptimized={isPrivateMediaUrl(source)}
-                            />
-                            <span className="absolute bottom-1 left-1 rounded-full bg-black/70 px-1.5 py-0.5 text-[9px] font-black text-white">
-                              {item.identity?.selectedAsCharacterImage
-                                ? "Main"
-                                : `v${item.visualProfileVersion ?? "?"}`}
-                            </span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-                <div className="mt-2 grid grid-cols-3 rounded-full bg-[rgb(36,36,36)] p-1">
-                  {(["balanced", "strict", "creative"] as const).map((item) => (
-                    <button
-                      className={`h-9 rounded-full text-[12px] font-bold capitalize ${
-                        consistencyMode === item
-                          ? "bg-white text-[rgb(13,13,13)]"
-                          : "text-[rgb(170,170,170)]"
-                      }`}
-                      key={item}
-                      onClick={() => setConsistencyMode(item)}
-                      type="button"
+                {looks.length > 0 && (
+                  <label className="mt-3 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+                    Reuse a Look
+                    <select
+                      aria-label="Character Look"
+                      className="mt-2 h-11 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] font-semibold text-white outline-none"
+                      onChange={(event) => setSelectedLookId(event.target.value)}
+                      value={selectedLookId}
                     >
-                      {item}
-                    </button>
-                  ))}
-                </div>
+                      <option value="">No saved Look</option>
+                      {looks.map((look) => (
+                        <option key={look.id} value={look.id}>
+                          {look.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
               </div>
+            )}
+
+            {!imageEditMode && (
+              <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+                {characterImageMode ? "Describe the moment" : "Scene Prompt"}
+                <textarea
+                  aria-label="Prompt"
+                  className="mt-2 min-h-24 w-full rounded-[10px] bg-[rgb(36,36,36)] p-4 text-[13px] font-semibold text-white outline-none disabled:text-[rgb(114,113,112)]"
+                  disabled={!canDescribeMoment}
+                  id="generator-prompt"
+                  name="prompt"
+                  onChange={(event) => setPrompt(event.target.value)}
+                  placeholder={
+                    canDescribeMoment
+                      ? characterImageMode
+                        ? `What is ${selectedCharacter?.title ?? "the character"} doing, where are they, and how does the moment feel?`
+                        : "Scene, pose, mood"
+                      : "Premium control"
+                  }
+                  value={prompt}
+                />
+              </label>
             )}
 
             {!imageEditMode ? (
@@ -1172,7 +1253,7 @@ export function GeneratorWorkspace() {
               </label>
             )}
 
-            {!imageEditMode && (
+            {!imageEditMode && (!characterImageMode || advancedOpen) && (
               <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
                 Model
                 <select
@@ -1309,35 +1390,102 @@ export function GeneratorWorkspace() {
               </div>
             )}
 
-            {!imageEditMode && (
-              <>
-                <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
-                  Scene Prompt
-                  <textarea
-                    aria-label="Prompt"
-                    className="mt-2 min-h-24 w-full rounded-[10px] bg-[rgb(36,36,36)] p-4 text-[13px] font-semibold text-white outline-none disabled:text-[rgb(114,113,112)]"
-                    disabled={!canUsePrompt}
-                    id="generator-prompt"
-                    name="prompt"
-                    onChange={(event) => setPrompt(event.target.value)}
-                    placeholder={canUsePrompt ? "Scene, pose, mood" : "Premium control"}
-                    value={prompt}
-                  />
-                </label>
+            {!imageEditMode && (!characterImageMode || advancedOpen) && (
+              <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+                Negative Prompt
+                <input
+                  className="mt-2 h-11 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] font-semibold text-white outline-none disabled:text-[rgb(114,113,112)]"
+                  disabled={!canUsePrompt}
+                  id="generator-negative-prompt"
+                  name="negativePrompt"
+                  onChange={(event) => setNegativePrompt(event.target.value)}
+                  placeholder={canUsePrompt ? "Artifacts to avoid" : "Premium control"}
+                  value={negativePrompt}
+                />
+              </label>
+            )}
 
-                <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
-                  Negative Prompt
-                  <input
-                    className="mt-2 h-11 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] font-semibold text-white outline-none disabled:text-[rgb(114,113,112)]"
-                    disabled={!canUsePrompt}
-                    id="generator-negative-prompt"
-                    name="negativePrompt"
-                    onChange={(event) => setNegativePrompt(event.target.value)}
-                    placeholder={canUsePrompt ? "Artifacts to avoid" : "Premium control"}
-                    value={negativePrompt}
-                  />
-                </label>
-              </>
+            {characterImageMode && (
+              <div className="mt-4">
+                <button
+                  aria-expanded={advancedOpen}
+                  className="flex h-10 w-full items-center justify-between rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[12px] font-bold text-[rgb(190,190,190)]"
+                  data-testid="generator-advanced-toggle"
+                  onClick={() => setAdvancedOpen((current) => !current)}
+                  type="button"
+                >
+                  <span className="inline-flex items-center gap-2">
+                    <Settings2 className="h-4 w-4" />
+                    Advanced settings
+                  </span>
+                  <span>{advancedOpen ? "Hide" : "Show"}</span>
+                </button>
+                {advancedOpen && (
+                  <div className="mt-2 grid gap-3 rounded-[10px] bg-black/25 p-3" data-testid="generator-advanced-settings">
+                    <div>
+                      <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+                        Identity variation
+                      </p>
+                      <div className="mt-2 grid grid-cols-3 rounded-full bg-[rgb(36,36,36)] p-1">
+                        {(["strict", "balanced", "creative"] as const).map((item) => (
+                          <button
+                            className={`min-h-9 rounded-full px-2 text-[11px] font-bold ${
+                              consistencyMode === item
+                                ? "bg-white text-[rgb(13,13,13)]"
+                                : "text-[rgb(170,170,170)]"
+                            }`}
+                            key={item}
+                            onClick={() => setConsistencyMode(item)}
+                            type="button"
+                          >
+                            {consistencyModeLabel(item)}
+                          </button>
+                        ))}
+                      </div>
+                      <p className="mt-2 text-[11px] font-medium leading-4 text-[rgb(150,150,150)]">
+                        {consistencyModeDescription(consistencyMode)}
+                      </p>
+                    </div>
+                    {identityTimeline.length > 0 && (
+                      <div data-testid="identity-timeline">
+                        <div className="mb-2 flex items-center justify-between gap-2">
+                          <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+                            Identity references
+                          </p>
+                          <span className="text-[11px] font-semibold text-[rgb(170,170,170)]">
+                            {identityReferenceCount} images
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-4 gap-2">
+                          {identityTimeline.map((item) => {
+                            const source = item.thumbnailUrl ?? item.url;
+                            return (
+                              <div
+                                className="relative aspect-square overflow-hidden rounded-[8px] bg-[rgb(36,36,36)]"
+                                key={item.id}
+                              >
+                                <Image
+                                  alt="Identity reference"
+                                  className="object-cover object-top"
+                                  fill
+                                  sizes="64px"
+                                  src={source}
+                                  unoptimized={isPrivateMediaUrl(source)}
+                                />
+                                {item.identity?.selectedAsCharacterImage && (
+                                  <span className="absolute bottom-1 left-1 rounded-full bg-black/70 px-1.5 py-0.5 text-[9px] font-black text-white">
+                                    Main
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             )}
 
             {!imageEditMode && !canUsePrompt && (
@@ -1345,7 +1493,7 @@ export function GeneratorWorkspace() {
                 className="mt-2 flex items-center justify-between gap-2 rounded-[10px] bg-[rgb(36,36,36)] px-4 py-3 text-[12px] font-semibold text-[rgb(190,190,190)]"
                 href={upgradeHref}
               >
-                <span>Custom prompt &amp; negative prompt are Premium controls.</span>
+                <span>Custom moments and advanced prompt controls are Premium features.</span>
                 <span className="rounded-full bg-[rgb(255,48,170)] px-3 py-1 text-[11px] font-black text-white">
                   Upgrade
                 </span>
@@ -1554,6 +1702,46 @@ export function GeneratorWorkspace() {
                   </span>
                 </div>
               )}
+              {lookEditorMediaId && (
+                <div className="mb-4 grid gap-3 rounded-[12px] border border-white/10 bg-[rgb(28,28,28)] p-4">
+                  <div>
+                    <h3 className="text-[14px] font-black text-white">Save as a reusable Look</h3>
+                    <p className="mt-1 text-[12px] text-[rgb(170,170,170)]">
+                      Save clothing, hair styling, and accessories—not the character&apos;s face.
+                    </p>
+                  </div>
+                  <input
+                    aria-label="Look name"
+                    className="h-10 rounded-[8px] border border-white/10 bg-black/30 px-3 text-[13px] text-white outline-none focus:border-white/30"
+                    onChange={(event) => setLookLabel(event.target.value)}
+                    placeholder="Look name, e.g. Rainy day"
+                    value={lookLabel}
+                  />
+                  <textarea
+                    aria-label="Look styling description"
+                    className="min-h-20 resize-y rounded-[8px] border border-white/10 bg-black/30 p-3 text-[13px] text-white outline-none focus:border-white/30"
+                    onChange={(event) => setLookDescription(event.target.value)}
+                    placeholder="Cream trench coat, loosely pinned curls, amber umbrella…"
+                    value={lookDescription}
+                  />
+                  <div className="flex justify-end gap-2">
+                    <button
+                      className="h-9 rounded-full bg-white/10 px-4 text-[12px] font-bold text-white"
+                      onClick={() => setLookEditorMediaId(null)}
+                      type="button"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      className="h-9 rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]"
+                      onClick={() => void saveMediaAsLook()}
+                      type="button"
+                    >
+                      Save Look
+                    </button>
+                  </div>
+                </div>
+              )}
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {media.map((item, index) => {
                   const source = item.thumbnailUrl ?? item.url;
@@ -1629,6 +1817,22 @@ export function GeneratorWorkspace() {
                         <>
                           {item.type === "image" && (
                             <div className="absolute left-2 top-2 flex gap-2 opacity-100 md:opacity-0 md:transition-opacity md:group-hover:opacity-100">
+                              {item.characterId && (
+                                <>
+                                  <IconButton
+                                    label="Looks like character"
+                                    onClick={() => void recordIdentityFeedback(item, "identity_match")}
+                                  >
+                                    <CheckSquare className="h-4 w-4" />
+                                  </IconButton>
+                                  <IconButton
+                                    label="Doesn't match character"
+                                    onClick={() => void recordIdentityFeedback(item, "identity_mismatch")}
+                                  >
+                                    <EyeOff className="h-4 w-4" />
+                                  </IconButton>
+                                </>
+                              )}
                               {canEditIdentityForMedia(item) && (
                                 <>
                                   <IconButton
@@ -1646,6 +1850,12 @@ export function GeneratorWorkspace() {
                                     }
                                   >
                                     <ListChecks className="h-4 w-4" />
+                                  </IconButton>
+                                  <IconButton
+                                    label="Save as Look"
+                                    onClick={() => openLookEditor(item)}
+                                  >
+                                    <Settings2 className="h-4 w-4" />
                                   </IconButton>
                                 </>
                               )}
@@ -2032,6 +2242,22 @@ function isBlankImagePreview(image: HTMLImageElement) {
   } catch {
     return false;
   }
+}
+
+function consistencyModeLabel(mode: ConsistencyMode) {
+  if (mode === "strict") return "Closest match";
+  if (mode === "creative") return "More expressive";
+  return "Natural";
+}
+
+function consistencyModeDescription(mode: ConsistencyMode) {
+  if (mode === "strict") {
+    return "Keeps the result closest to the identity images, with less pose and styling freedom.";
+  }
+  if (mode === "creative") {
+    return "Allows stronger scene and styling changes while preserving the character's core identity.";
+  }
+  return "Balances a recognizable identity with natural changes in pose, outfit, lighting, and scene.";
 }
 
 function generationConfigErrorMessage(status: number) {

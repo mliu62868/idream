@@ -222,19 +222,26 @@ describe("DTO privacy", () => {
 });
 
 describe("premium entitlement gates (402)", () => {
-  it("requires Premium for custom prompts and Deluxe for video — 402", async () => {
+  it("keeps character Moments free while requiring Premium for freeplay prompts and Deluxe for video", async () => {
     const userId = `${P}free-user`;
     const charId = `${P}gate-char`;
     await createUser({ id: userId });
     await createCharacter({ id: charId, creatorId: userId, visibility: "public", status: "approved" });
     await grantCoins(userId, 1000, "seed");
 
-    const customPrompt = await api("POST", "generation/jobs", {
+    const characterMoment = await api("POST", "generation/jobs", {
       userId,
       ageGate: true,
       body: { mode: "image", characterId: charId, prompt: "a custom scene", outputCount: 1 },
     });
-    expectError(customPrompt, 402, "payment_required");
+    expectOk(characterMoment, 202);
+
+    const freeplayPrompt = await api("POST", "generation/jobs", {
+      userId,
+      ageGate: true,
+      body: { mode: "image", freeplay: true, prompt: "a custom scene", outputCount: 1 },
+    });
+    expectError(freeplayPrompt, 402, "payment_required");
 
     const video = await api("POST", "generation/jobs", {
       userId,
