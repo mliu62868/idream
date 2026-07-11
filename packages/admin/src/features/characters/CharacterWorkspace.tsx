@@ -10,6 +10,7 @@ import {
 import { ArrowLeft, Clock3, RefreshCcw, Rocket, RotateCcw, Save, ShieldAlert } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { AdminSubview } from "@/components/admin/nav-config";
+import { CharacterCreateWizard } from "@/features/characters/CharacterCreateWizard";
 import { CollaborationPanel } from "@/features/collaboration/CollaborationPanel";
 import {
   EmptyWorkspace,
@@ -31,7 +32,7 @@ type Permissions = {
 
 type ProjectDraft = Pick<CharacterWorkspaceDetail["project"],
   "phase" | "ownerId" | "audience" | "companionNeed" | "hypothesis" | "differentiation" |
-  "targetPlacementKeys" | "successCriteria" | "plannedLaunchAt">;
+  "targetPlacementKeys" | "successCriteria" | "productionPackage" | "qaPlan" | "plannedLaunchAt">;
 
 const tabs = ["project", "preview", "release", "monitor", "portfolio"] as const;
 type Tab = typeof tabs[number];
@@ -140,6 +141,8 @@ function ProjectEditor({ data, permissions, onReload }: { data: CharacterWorkspa
     differentiation: data.project.differentiation,
     targetPlacementKeys: [...data.project.targetPlacementKeys],
     successCriteria: [...data.project.successCriteria],
+    productionPackage: data.project.productionPackage,
+    qaPlan: data.project.qaPlan,
     plannedLaunchAt: data.project.plannedLaunchAt,
   }), [data]);
   const [draft, setDraft] = useState(initial);
@@ -190,6 +193,8 @@ function ProjectEditor({ data, permissions, onReload }: { data: CharacterWorkspa
         <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Target placements<input className={`${fieldClass} mt-1`} onChange={(event) => set("targetPlacementKeys", event.target.value.split(",").map((item) => item.trim()).filter(Boolean))} value={draft.targetPlacementKeys.join(", ")} /></label>
         <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Planned launch<input className={`${fieldClass} mt-1`} onChange={(event) => set("plannedLaunchAt", event.target.value ? new Date(event.target.value).toISOString() : null)} type="datetime-local" value={draft.plannedLaunchAt?.slice(0, 16) ?? ""} /></label>
         <label className="text-xs font-semibold text-[var(--ad-text-muted)] sm:col-span-2">Success criteria<textarea className={`${textAreaClass} mt-1`} onChange={(event) => set("successCriteria", event.target.value.split("\n").map((item) => item.trim()).filter(Boolean))} value={draft.successCriteria.join("\n")} /></label>
+        <label className="text-xs font-semibold text-[var(--ad-text-muted)] sm:col-span-2">Production package<textarea className={`${textAreaClass} mt-1`} onChange={(event) => set("productionPackage", event.target.value)} value={draft.productionPackage} /></label>
+        <label className="text-xs font-semibold text-[var(--ad-text-muted)] sm:col-span-2">QA plan<textarea className={`${textAreaClass} mt-1`} onChange={(event) => set("qaPlan", event.target.value)} value={draft.qaPlan} /></label>
       </fieldset>
       <aside className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <p className="text-xs font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">Server draft</p>
@@ -376,5 +381,6 @@ function CharacterDetail({ id, permissions }: { id: string; permissions: Permiss
 }
 
 export function CharacterWorkspace({ view, permissions }: { view: AdminSubview; permissions: Permissions }) {
+  if (view.kind === "new") return <CharacterCreateWizard canCreate={permissions.writeProject} />;
   return view.kind === "detail" ? <CharacterDetail id={view.id} permissions={permissions} /> : <CharacterPortfolio permissions={permissions} />;
 }

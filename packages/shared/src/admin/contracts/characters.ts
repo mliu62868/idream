@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   adminCursorQuerySchema,
   adminCommandRequestSchema,
+  adminCommandReasonSchema,
   adminIdSchema,
   adminIsoDateTimeSchema,
   adminListResponseSchema,
@@ -70,6 +71,93 @@ export const characterPerformanceQualitySchema = z.enum([
   "directional",
   "invalid",
 ]);
+
+export const characterDraftPersonaSchema = z
+  .object({
+    name: z.string().trim().min(1).max(120),
+    age: z.number().int().min(18).max(120),
+    gender: z.enum(["female", "male", "trans"]),
+    relationshipArchetype: z.string().trim().min(1).max(500),
+    characterPromise: z.string().trim().min(1).max(1_000),
+    personality: z.string().trim().min(1).max(4_000),
+    tone: z.string().trim().min(1).max(2_000),
+    backstory: z.string().trim().min(1).max(8_000),
+    firstMessage: z.string().trim().min(1).max(4_000),
+    exampleDialogue: z.array(z.string().trim().min(1).max(2_000)).min(1).max(24),
+  })
+  .strict();
+
+export const characterDraftVisualDirectionSchema = z
+  .object({
+    identityAnchor: z.string().trim().min(1).max(2_000),
+    stableTraits: z.array(z.string().trim().min(1).max(500)).min(1).max(24),
+    style: z.enum(["realistic", "anime", "hybrid", "other"]),
+    referenceDirection: z.string().trim().min(1).max(4_000),
+  })
+  .strict();
+
+export const characterProjectCreateRequestSchema = z
+  .object({
+    positioning: z
+      .object({
+        audience: z.string().trim().min(1).max(2_000),
+        companionNeed: z.string().trim().min(1).max(2_000),
+        hypothesis: z.string().trim().min(1).max(4_000),
+        differentiation: z.string().trim().min(1).max(4_000),
+      })
+      .strict(),
+    persona: characterDraftPersonaSchema,
+    visualDirection: characterDraftVisualDirectionSchema,
+    commercialIntent: z
+      .object({
+        ownerId: adminIdSchema.nullable(),
+        plannedLaunchAt: adminIsoDateTimeSchema.nullable(),
+        targetPlacementKeys: z.array(z.string().trim().min(1).max(120)).max(24),
+        successCriteria: z.array(z.string().trim().min(1).max(500)).min(1).max(24),
+        productionPackage: z.string().trim().min(1).max(4_000),
+        qaPlan: z.string().trim().min(1).max(4_000),
+      })
+      .strict(),
+    reason: adminCommandReasonSchema,
+    confirmation: z.literal("CREATE CHARACTER"),
+  })
+  .strict();
+
+export const characterProjectCreateResponseSchema = z
+  .object({
+    characterId: adminIdSchema,
+    characterContentVersionId: adminIdSchema,
+    projectId: adminIdSchema,
+    revisionId: adminIdSchema,
+    projectVersion: z.number().int().positive(),
+    contentVersion: z.number().int().positive(),
+    deepLink: z.string().startsWith("/admin/characters/"),
+    replayed: z.boolean(),
+  })
+  .strict();
+
+export const characterProjectDraftSchema = characterProjectCreateRequestSchema.pick({
+  positioning: true,
+  persona: true,
+  visualDirection: true,
+  commercialIntent: true,
+});
+
+export const characterProjectDraftAuthoritySchema = z
+  .object({
+    characterId: adminIdSchema,
+    projectId: adminIdSchema,
+    projectVersion: z.number().int().positive(),
+    deepLink: z.string().startsWith("/admin/characters/"),
+  })
+  .strict();
+
+export const characterProjectDraftResumeSchema = z
+  .object({
+    authority: characterProjectDraftAuthoritySchema,
+    draft: characterProjectDraftSchema,
+  })
+  .strict();
 
 export const characterProjectSchema = z
   .object({
@@ -399,7 +487,7 @@ export const characterPerformanceReconciliationSchema = z.object({
 export const characterProjectDraftPatchRequestSchema = z
   .object({
     entityVersion: z.number().int().nonnegative(),
-    phase: characterProjectPhaseSchema,
+    phase: characterProjectPhaseSchema.optional(),
     ownerId: adminIdSchema.nullable(),
     audience: z.string().trim().min(1).max(2_000),
     companionNeed: z.string().trim().min(1).max(2_000),
@@ -407,7 +495,16 @@ export const characterProjectDraftPatchRequestSchema = z
     differentiation: z.string().trim().min(1).max(4_000),
     targetPlacementKeys: z.array(z.string().trim().min(1).max(120)).max(24),
     successCriteria: z.array(z.string().trim().min(1).max(500)).min(1).max(24),
+    productionPackage: z.string().trim().max(4_000).default(""),
+    qaPlan: z.string().trim().max(4_000).default(""),
     plannedLaunchAt: adminIsoDateTimeSchema.nullable(),
+    content: z
+      .object({
+        persona: characterDraftPersonaSchema,
+        visualDirection: characterDraftVisualDirectionSchema,
+      })
+      .strict()
+      .optional(),
     reason: z.string().trim().min(3).max(2_000),
   })
   .strict();
@@ -424,6 +521,8 @@ export const characterWorkspaceProjectSchema = z
     differentiation: z.string(),
     targetPlacementKeys: z.array(z.string()).readonly(),
     successCriteria: z.array(z.string()).readonly(),
+    productionPackage: z.string(),
+    qaPlan: z.string(),
     plannedLaunchAt: adminIsoDateTimeSchema.nullable(),
     version: z.number().int().nonnegative(),
     updatedAt: adminIsoDateTimeSchema,
@@ -533,6 +632,13 @@ export const characterReleaseMonitorRefreshRequestSchema = z
   .strict();
 
 export type CharacterProject = z.infer<typeof characterProjectSchema>;
+export type CharacterDraftPersona = z.infer<typeof characterDraftPersonaSchema>;
+export type CharacterDraftVisualDirection = z.infer<typeof characterDraftVisualDirectionSchema>;
+export type CharacterProjectCreateRequest = z.infer<typeof characterProjectCreateRequestSchema>;
+export type CharacterProjectCreateResponse = z.infer<typeof characterProjectCreateResponseSchema>;
+export type CharacterProjectDraft = z.infer<typeof characterProjectDraftSchema>;
+export type CharacterProjectDraftAuthority = z.infer<typeof characterProjectDraftAuthoritySchema>;
+export type CharacterProjectDraftResume = z.infer<typeof characterProjectDraftResumeSchema>;
 export type CharacterRelease = z.infer<typeof characterReleaseSchema>;
 export type CharacterServing = z.infer<typeof characterServingSchema>;
 export type CharacterPortfolioItem = z.infer<typeof characterPortfolioItemSchema>;

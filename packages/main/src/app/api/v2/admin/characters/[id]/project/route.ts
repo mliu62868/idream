@@ -1,11 +1,19 @@
-import { characterProjectDraftPatchRequestSchema } from "@idream/shared/admin";
+import { characterProjectDraftPatchRequestSchema, characterProjectDraftResumeSchema } from "@idream/shared/admin";
 import { Errors } from "@/server/lib/errors";
 import { actorWithPermission } from "@/server/modules/admin/service";
-import { updateCharacterProjectDraft } from "@/server/modules/admin-v2/characters/workspace";
+import { getCharacterProjectDraftForResume, updateCharacterProjectDraft } from "@/server/modules/admin-v2/characters/workspace";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
+export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
+  const { id } = await context.params;
+  return adminV2Route(async () => {
+    await actorWithPermission(request, "character.project.write");
+    return characterProjectDraftResumeSchema.parse(await getCharacterProjectDraftForResume(id));
+  });
+}
 
 function ifMatchVersion(request: Request): number | null {
   const value = request.headers.get("if-match")?.replace(/^W\//, "").replaceAll('"', "");
@@ -35,7 +43,10 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       differentiation: body.differentiation,
       targetPlacementKeys: body.targetPlacementKeys,
       successCriteria: body.successCriteria,
+      productionPackage: body.productionPackage,
+      qaPlan: body.qaPlan,
       plannedLaunchAt: body.plannedLaunchAt,
+      content: body.content,
       reason: body.reason,
       requestId: request.headers.get("x-request-id") ?? crypto.randomUUID(),
     });

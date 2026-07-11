@@ -74,7 +74,7 @@ function item(input: ItemInput): NavItem {
 export const navItems: NavItem[] = [
   item({ id: "dashboard", label: "Today", href: "/admin/today", icon: Gauge, group: "Today", permissions: ["dashboard.read"] }),
 
-  item({ id: "content/official", label: "Portfolio & Projects", href: "/admin/characters", icon: ShieldCheck, group: "Character Studio", permissions: ["character.project.read", "character.performance.read", "content.read"] }),
+  item({ id: "content/official", label: "Portfolio & Projects", href: "/admin/characters", icon: ShieldCheck, group: "Character Studio", permissions: ["character.project.read", "character.project.write", "character.performance.read", "content.read"] }),
   item({ id: "content/review-queue", label: "Character Review", href: "/admin/characters/review", icon: ClipboardCheck, group: "Character Studio", permissions: ["safety.review.read", "content.read"] }),
   item({ id: "content/templates", label: "Character Starters", href: "/admin/characters/starters", icon: Sparkles, group: "Character Studio", permissions: ["content.read"] }),
   item({ id: "content/tags", label: "Taxonomy", href: "/admin/characters/taxonomy", icon: Flag, group: "Character Studio", permissions: ["content.read"] }),

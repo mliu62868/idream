@@ -1,3 +1,8 @@
+import type {
+  CharacterDraftPersona,
+  CharacterDraftVisualDirection,
+} from "@idream/shared/admin";
+import { characterProjectDraftResumeSchema } from "@idream/shared/admin";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
@@ -5,6 +10,7 @@ import type { AdminActor } from "@/server/modules/admin/service";
 import { listCharacterPortfolioData } from "./portfolio";
 import { collectReleaseMonitorFacts } from "./release-monitor";
 import { toInputJson } from "../shared/prisma-json";
+import { characterDraftSnapshots } from "./draft-content";
 
 function record(value: Prisma.JsonValue | null | undefined): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -45,6 +51,8 @@ function projectDto(project: {
     differentiation: project.differentiation ?? "",
     targetPlacementKeys: strings(audience.targetPlacementKeys as Prisma.JsonValue | undefined),
     successCriteria: strings(project.successCriteria),
+    productionPackage: text(audience.productionPackage),
+    qaPlan: text(audience.qaPlan),
     plannedLaunchAt: project.plannedLaunchAt?.toISOString() ?? null,
     version: project.version,
     updatedAt: project.updatedAt.toISOString(),
@@ -224,11 +232,66 @@ export async function getCharacterWorkspace(characterId: string) {
   };
 }
 
+export async function getCharacterProjectDraftForResume(characterId: string) {
+  const [character, project, content] = await Promise.all([
+    prisma.character.findUnique({ where: { id: characterId } }),
+    prisma.characterProject.findFirst({ where: { characterId }, orderBy: { updatedAt: "desc" } }),
+    prisma.characterContentVersion.findFirst({ where: { characterId }, orderBy: { version: "desc" } }),
+  ]);
+  if (!character || !project || !content) throw Errors.notFound("Character Project draft not found");
+  const projectView = projectDto(project);
+  const persona = record(content.personaSnapshot);
+  const opening = record(content.openingSnapshot);
+  const appearance = record(content.appearanceSnapshot);
+  return characterProjectDraftResumeSchema.parse({
+    authority: {
+      characterId,
+      projectId: project.id,
+      projectVersion: project.version,
+      deepLink: `/admin/characters/${characterId}`,
+    },
+    draft: {
+      positioning: {
+        audience: projectView.audience,
+        companionNeed: projectView.companionNeed,
+        hypothesis: projectView.hypothesis,
+        differentiation: projectView.differentiation,
+      },
+      persona: {
+        name: text(persona.name) || character.name,
+        age: typeof persona.age === "number" ? persona.age : character.age,
+        gender: text(persona.gender) || character.gender,
+        relationshipArchetype: text(persona.relationshipArchetype) || character.relationship,
+        characterPromise: text(persona.characterPromise) || character.description,
+        personality: text(persona.personality),
+        tone: text(persona.tone),
+        backstory: text(persona.backstory),
+        firstMessage: text(opening.firstMessage),
+        exampleDialogue: strings(persona.exampleDialogue as Prisma.JsonValue | undefined),
+      },
+      visualDirection: {
+        identityAnchor: text(appearance.identityAnchor),
+        stableTraits: strings(appearance.stableTraits as Prisma.JsonValue | undefined),
+        style: text(appearance.style) || character.style,
+        referenceDirection: text(appearance.referenceDirection),
+      },
+      commercialIntent: {
+        ownerId: projectView.ownerId,
+        plannedLaunchAt: projectView.plannedLaunchAt,
+        targetPlacementKeys: projectView.targetPlacementKeys,
+        successCriteria: projectView.successCriteria,
+        productionPackage: projectView.productionPackage,
+        qaPlan: projectView.qaPlan,
+      },
+    },
+  });
+}
+
 export async function updateCharacterProjectDraft(input: {
   readonly characterId: string;
   readonly expectedVersion: number;
   readonly actor: AdminActor;
-  readonly phase: string;
+  readonly phase?: string;
   readonly ownerId: string | null;
   readonly audience: string;
   readonly companionNeed: string;
@@ -236,7 +299,13 @@ export async function updateCharacterProjectDraft(input: {
   readonly differentiation: string;
   readonly targetPlacementKeys: readonly string[];
   readonly successCriteria: readonly string[];
+  readonly productionPackage: string;
+  readonly qaPlan: string;
   readonly plannedLaunchAt: string | null;
+  readonly content?: {
+    readonly persona: CharacterDraftPersona;
+    readonly visualDirection: CharacterDraftVisualDirection;
+  };
   readonly reason: string;
   readonly requestId: string;
 }) {
@@ -246,12 +315,14 @@ export async function updateCharacterProjectDraft(input: {
     const changed = await tx.characterProject.updateMany({
       where: { id: project.id, version: input.expectedVersion },
       data: {
-        phase: input.phase,
+        ...(input.phase ? { phase: input.phase } : {}),
         ownerId: input.ownerId,
         audience: toInputJson({
           audience: input.audience,
           companionNeed: input.companionNeed,
           targetPlacementKeys: input.targetPlacementKeys,
+          productionPackage: input.productionPackage,
+          qaPlan: input.qaPlan,
         }),
         hypothesis: input.hypothesis,
         differentiation: input.differentiation,
@@ -268,6 +339,76 @@ export async function updateCharacterProjectDraft(input: {
       });
     }
     const updated = await tx.characterProject.findUniqueOrThrow({ where: { id: project.id } });
+    let contentVersion: { id: string; version: number; contentHash: string } | null = null;
+    let revision: { id: string; revision: number } | null = null;
+    if (input.content) {
+      const snapshots = characterDraftSnapshots(input.content);
+      const latestContent = await tx.characterContentVersion.findFirst({
+        where: { characterId: input.characterId },
+        orderBy: { version: "desc" },
+      });
+      if (!latestContent || latestContent.contentHash !== snapshots.contentHash) {
+        const latestRevision = await tx.characterRevision.findFirst({
+          where: { projectId: project.id },
+          orderBy: { revision: "desc" },
+        });
+        const createdContent = await tx.characterContentVersion.create({
+          data: {
+            characterId: input.characterId,
+            version: (latestContent?.version ?? 0) + 1,
+            contentHash: snapshots.contentHash,
+            personaSnapshot: toInputJson(snapshots.personaSnapshot),
+            openingSnapshot: toInputJson(snapshots.openingSnapshot),
+            appearanceSnapshot: toInputJson(snapshots.appearanceSnapshot),
+            sourceType: "admin_character_project_autosave",
+            sourceId: project.id,
+            createdById: input.actor.id,
+          },
+        });
+        const createdRevision = await tx.characterRevision.create({
+          data: {
+            projectId: project.id,
+            revision: (latestRevision?.revision ?? 0) + 1,
+            characterContentVersionId: createdContent.id,
+            projectSnapshot: toInputJson({
+              project: projectDto(updated),
+              contentHash: snapshots.contentHash,
+            }),
+            createdById: input.actor.id,
+          },
+        });
+        await tx.character.updateMany({
+          where: { id: input.characterId, status: "draft", visibility: "private" },
+          data: {
+            name: input.content.persona.name,
+            age: input.content.persona.age,
+            description: input.content.persona.characterPromise,
+            systemPrompt: [
+              input.content.persona.personality,
+              input.content.persona.tone,
+              input.content.persona.backstory,
+            ].join("\n\n"),
+            style: input.content.visualDirection.style,
+            gender: input.content.persona.gender,
+            relationship: input.content.persona.relationshipArchetype,
+            appearance: toInputJson(snapshots.appearanceSnapshot),
+            advancedDetails: toInputJson({ ...snapshots.personaSnapshot, ...snapshots.openingSnapshot }),
+          },
+        });
+        contentVersion = {
+          id: createdContent.id,
+          version: createdContent.version,
+          contentHash: createdContent.contentHash,
+        };
+        revision = { id: createdRevision.id, revision: createdRevision.revision };
+      } else {
+        contentVersion = {
+          id: latestContent.id,
+          version: latestContent.version,
+          contentHash: latestContent.contentHash,
+        };
+      }
+    }
     await tx.adminAuditLog.create({
       data: {
         actorId: input.actor.id,
@@ -277,8 +418,19 @@ export async function updateCharacterProjectDraft(input: {
         targetId: project.id,
         reason: input.reason,
         before: toInputJson(projectDto(project)),
-        after: toInputJson(projectDto(updated)),
+        after: toInputJson({ project: projectDto(updated), contentVersion, revision }),
         requestId: input.requestId,
+      },
+    });
+    await tx.adminCollaborationActivity.create({
+      data: {
+        targetType: "character_project",
+        targetId: project.id,
+        kind: "draft_saved",
+        actorId: input.actor.id,
+        body: "Saved Character Project draft",
+        metadata: toInputJson({ projectVersion: updated.version, contentVersion, revision }),
+        idempotencyKey: `character_project_draft_saved:${input.requestId}`,
       },
     });
     await tx.mainOutboxEvent.create({
@@ -290,6 +442,8 @@ export async function updateCharacterProjectDraft(input: {
           projectId: project.id,
           characterId: input.characterId,
           version: updated.version,
+          contentVersion,
+          revision,
           occurredAt: updated.updatedAt.toISOString(),
         }),
       },

@@ -105,7 +105,8 @@ describe("Character operator workspace", () => {
   afterAll(async () => {
     await prisma.adminUserPermission.deleteMany({ where: { userId: readOnlyActorId } });
     await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: projectId } });
-    await prisma.adminAuditLog.deleteMany({ where: { requestId } });
+    await prisma.adminCollaborationActivity.deleteMany({ where: { targetId: projectId } });
+    await prisma.adminAuditLog.deleteMany({ where: { targetId: projectId } });
     await prisma.characterServing.deleteMany({ where: { characterId } });
     await prisma.characterRelease.deleteMany({ where: { projectId } });
     await prisma.characterRevision.deleteMany({ where: { projectId } });
@@ -123,6 +124,7 @@ describe("Character operator workspace", () => {
       draft: { label: "Draft Preview", contentVersionId: contentId, releaseId },
       changedFields: ["new_release"],
     });
+    expect(detail.project).toMatchObject({ productionPackage: "", qaPlan: "" });
     expect(detail.releases[0]).toMatchObject({ release: { readiness: "blocked" }, checks: [], monitors: [] });
   });
 
@@ -139,13 +141,91 @@ describe("Character operator workspace", () => {
       differentiation: "Calm direction without generic affirmation",
       targetPlacementKeys: ["feed_card"],
       successCriteria: ["QCE improves without D7 regression"],
+      productionPackage: "Identity set and feed card",
+      qaPlan: "Five-turn mobile and desktop preview",
       plannedLaunchAt: null,
+      content: {
+        persona: {
+          name: "Mara V2",
+          age: 29,
+          gender: "female",
+          relationshipArchetype: "steady confidante",
+          characterPromise: "A precise place to put the day down",
+          personality: "Observant and gently challenging",
+          tone: "Warm and concise",
+          backstory: "A night-shift radio host.",
+          firstMessage: "Tell me what followed you home.",
+          exampleDialogue: ["Start with the part that still has heat."],
+        },
+        visualDirection: {
+          identityAnchor: "Composed late-night radio host",
+          stableTraits: ["dark wavy hair", "warm brown eyes"],
+          style: "realistic",
+          referenceDirection: "Intimate tungsten editorial portrait",
+        },
+      },
       reason: "Autosave Character Project changes",
       requestId,
     });
     expect(saved).toMatchObject({ phase: "launch_ready", version: 2 });
     expect(await prisma.adminAuditLog.count({ where: { requestId } })).toBe(1);
     expect(await prisma.mainOutboxEvent.count({ where: { aggregateId: projectId } })).toBe(1);
+    expect(await prisma.characterContentVersion.findMany({ where: { characterId } })).toHaveLength(2);
+    expect(await prisma.characterRevision.findMany({ where: { projectId } })).toHaveLength(2);
+    expect(await prisma.character.findUniqueOrThrow({ where: { id: characterId } })).toMatchObject({ name: "Mara V2", age: 29 });
+
+    await prisma.character.update({ where: { id: characterId }, data: { status: "approved", visibility: "public" } });
+    await prisma.characterRelease.update({ where: { id: releaseId }, data: { status: "published" } });
+    await prisma.characterServing.update({
+      where: { characterId },
+      data: { state: "live", currentReleaseId: releaseId },
+    });
+    const liveCandidate = await updateCharacterProjectDraft({
+      characterId,
+      expectedVersion: 2,
+      actor: { id: `workspace-actor-${suffix}`, role: "admin" },
+      ownerId: null,
+      audience: "People decompressing after demanding work",
+      companionNeed: "A reliable transition out of work mode",
+      hypothesis: "A more specific opening improves qualified conversation",
+      differentiation: "Calm direction without generic affirmation",
+      targetPlacementKeys: ["feed_card"],
+      successCriteria: ["QCE improves without D7 regression"],
+      productionPackage: "Identity set and feed card",
+      qaPlan: "Five-turn mobile and desktop preview",
+      plannedLaunchAt: null,
+      content: {
+        persona: {
+          name: "Unpublished Mara Candidate",
+          age: 30,
+          gender: "female",
+          relationshipArchetype: "steady confidante",
+          characterPromise: "A sharper unpublished promise",
+          personality: "Observant and direct",
+          tone: "Warm and precise",
+          backstory: "A revised draft backstory.",
+          firstMessage: "This opening is not live yet.",
+          exampleDialogue: ["This candidate stays behind the release boundary."],
+        },
+        visualDirection: {
+          identityAnchor: "Revised late-night radio host",
+          stableTraits: ["dark wavy hair", "warm brown eyes"],
+          style: "realistic",
+          referenceDirection: "A revised unpublished portrait direction",
+        },
+      },
+      reason: "Verify live projection containment",
+      requestId: `${requestId}-live-candidate`,
+    });
+    expect(liveCandidate.version).toBe(3);
+    expect(await prisma.character.findUniqueOrThrow({ where: { id: characterId } })).toMatchObject({
+      name: "Mara V2",
+      age: 29,
+      status: "approved",
+      visibility: "public",
+    });
+    expect(await prisma.characterContentVersion.findMany({ where: { characterId } })).toHaveLength(3);
+    expect(await prisma.characterRevision.findMany({ where: { projectId } })).toHaveLength(3);
 
     await expect(updateCharacterProjectDraft({
       characterId,
@@ -159,13 +239,15 @@ describe("Character operator workspace", () => {
       differentiation: "stale",
       targetPlacementKeys: [],
       successCriteria: ["stale"],
+      productionPackage: "stale",
+      qaPlan: "stale",
       plannedLaunchAt: null,
       reason: "Stale tab save",
       requestId: `${requestId}-conflict`,
     })).rejects.toMatchObject({ status: 409 });
     expect(await prisma.characterProject.findUniqueOrThrow({ where: { id: projectId } })).toMatchObject({
       phase: "launch_ready",
-      version: 2,
+      version: 3,
     });
   });
 

@@ -82,6 +82,7 @@ describe("permission and work-mode navigation", () => {
     expect(ids).not.toContain("generation/config");
     expect(ids).not.toContain("pricing");
     for (const id of ids) expect(sectionIsPermitted(id, supportPermissions)).toBe(true);
+    expect(sectionIsPermitted("content/official", new Set(["character.project.write"]))).toBe(true);
   });
 
   it("uses work mode only to reorder permitted workspaces, never to grant access", () => {
