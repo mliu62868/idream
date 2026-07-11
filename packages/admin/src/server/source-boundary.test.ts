@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -18,5 +18,8 @@ describe("admin source boundary", () => {
     expect(nextConfig).not.toContain("reuses TS source from packages/main");
     expect(turboConfig).not.toContain("../main/src");
     expect(turboConfig).not.toContain("../main/prisma");
+    const legacyMainUi = await readdir(path.join(workspaceRoot, "packages/main/src/components/admin"), { recursive: true })
+      .catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? [] : Promise.reject(error));
+    expect(legacyMainUi.filter((entry) => /\.[cm]?[jt]sx?$/.test(entry))).toEqual([]);
   });
 });

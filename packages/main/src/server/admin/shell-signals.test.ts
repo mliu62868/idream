@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { deriveAdminShellSignals } from "./shell-signals";
 
-describe("admin shell provenance signals", () => {
+describe("admin bootstrap provenance signals", () => {
   it("does not infer production data class or fixture absence when provenance is unset", () => {
     expect(deriveAdminShellSignals({ NODE_ENV: "production" })).toEqual({
       environment: "production",
@@ -12,7 +12,7 @@ describe("admin shell provenance signals", () => {
     });
   });
 
-  it("shows explicit environment, data class, fixture, timezone, and freshness inputs", () => {
+  it("uses explicit provenance inputs", () => {
     expect(deriveAdminShellSignals({
       ADMIN_ENVIRONMENT: "staging",
       ADMIN_DATA_CLASS: "internal",

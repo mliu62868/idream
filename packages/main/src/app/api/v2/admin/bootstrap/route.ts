@@ -1,5 +1,5 @@
 import { adminBootstrapSchema } from "@idream/shared/admin";
-import { deriveAdminShellSignals } from "@/components/admin/shell-signals";
+import { deriveAdminShellSignals } from "@/server/admin/shell-signals";
 import { DEV_ADMIN_ACCOUNT_HINTS } from "@/server/admin/dev-login-accounts";
 import { devLoginEnabled } from "@/server/admin/dev-login";
 import { effectivePermissions } from "@/server/admin/effective-permissions";
