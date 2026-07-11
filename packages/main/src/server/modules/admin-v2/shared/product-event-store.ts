@@ -1,4 +1,5 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { incrementCounter, observeHistogram } from "@idream/shared";
 import { canonicalSha256 } from "./canonical-json";
 import { toInputJson } from "./prisma-json";
 
@@ -115,16 +116,38 @@ export async function ingestProductEvent(
   db: PrismaClient,
   input: ProductEventInput,
 ): Promise<ProductEventIngestResult> {
+  const startedAt = performance.now();
+  let outcome = "error";
   const hash = payloadHash(input);
   try {
-    return await ingestTransaction(db, input, hash);
+    const result = await ingestTransaction(db, input, hash);
+    outcome = result.status;
+    return result;
   } catch (error) {
     if (
       error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === "P2002"
     ) {
-      return ingestTransaction(db, input, hash);
+      const result = await ingestTransaction(db, input, hash);
+      outcome = result.status;
+      return result;
     }
     throw error;
+  } finally {
+    const labels = { source: input.sourceService, outcome };
+    incrementCounter("main_inbound_events_total", "Durable inbound product events by outcome", labels);
+    observeHistogram(
+      "main_inbound_event_lag_seconds",
+      "Source occurrence to main durable ingest lag in seconds",
+      { source: input.sourceService },
+      Math.max(0, Date.now() - input.occurredAt.getTime()) / 1_000,
+      [1, 5, 15, 30, 60, 120, 300, 900],
+    );
+    observeHistogram(
+      "durable_ingest_ack_latency_seconds",
+      "Durable ingest acknowledgement latency in seconds",
+      { source: input.sourceService, target: "main" },
+      Math.max(0, performance.now() - startedAt) / 1_000,
+    );
   }
 }

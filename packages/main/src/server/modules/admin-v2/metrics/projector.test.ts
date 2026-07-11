@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { renderPrometheusMetrics, resetMetricsForTests } from "@idream/shared";
 import { prisma } from "@/server/lib/db";
 import {
   loadCanonicalMetricDataset,
@@ -12,6 +13,7 @@ describe("canonical metric fact projector", () => {
   const userId = `${prefix}-user`;
 
   beforeAll(async () => {
+    resetMetricsForTests();
     await prisma.user.create({
       data: { id: userId, email: `${userId}@example.test`, role: "user", status: "active" },
     });
@@ -59,6 +61,10 @@ describe("canonical metric fact projector", () => {
 
     await expect(projectCanonicalMetricEvent(prisma, completed)).resolves.toMatchObject({ status: "applied", factType: "chat_exchange" });
     await expect(projectCanonicalMetricEvent(prisma, completed)).resolves.toMatchObject({ status: "duplicate", factType: "chat_exchange" });
+    const projectionMetrics = renderPrometheusMetrics();
+    expect(projectionMetrics).toContain('projection_total{outcome="applied",projection="canonical_metrics"} 1');
+    expect(projectionMetrics).toContain('projection_total{outcome="duplicate",projection="canonical_metrics"} 1');
+    expect(projectionMetrics).toContain('projection_lag_seconds_count{projection="canonical_metrics"} 2');
 
     const before = await loadCanonicalMetricDataset(prisma, { userIds: [userId] });
     expect(before.chatExchanges).toEqual([

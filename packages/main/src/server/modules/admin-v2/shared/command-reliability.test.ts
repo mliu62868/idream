@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { renderPrometheusMetrics, resetMetricsForTests } from "@idream/shared";
 import { prisma } from "@/server/lib/db";
 import {
   acceptControlPlaneCommand,
@@ -12,6 +13,7 @@ import { ingestProductEvent } from "./product-event-store";
 
 describe("Admin v2 command reliability", () => {
   beforeEach(async () => {
+    resetMetricsForTests();
     await prisma.mainOutboxEvent.deleteMany();
     await prisma.controlPlaneCommandAttempt.deleteMany();
     await prisma.controlPlaneCommand.deleteMany();
@@ -72,6 +74,10 @@ describe("Admin v2 command reliability", () => {
     expect(await prisma.controlPlaneCommand.count()).toBe(1);
     expect(await prisma.mainOutboxEvent.count()).toBe(1);
     expect(await prisma.adminAuditLog.count({ where: { actorId: "admin-v2-test" } })).toBe(1);
+    const metrics = renderPrometheusMetrics();
+    expect(metrics).toContain('admin_command_total{outcome="accepted",type="incident.resolve"} 1');
+    expect(metrics).toContain('admin_command_total{outcome="replayed",type="incident.resolve"} 1');
+    expect(metrics).toContain("admin_command_duration_seconds_count");
   });
 
   it("rejects reuse of an idempotency key for a different canonical request", async () => {
@@ -168,6 +174,9 @@ describe("Admin v2 command reliability", () => {
       leaseOwner: null,
       error: expect.objectContaining({ code: "lease_expired_non_replayable" }),
     });
+    const metrics = renderPrometheusMetrics();
+    expect(metrics).toContain('admin_command_lease_expired_total{outcome="requeued"} 1');
+    expect(metrics).toContain('admin_command_lease_expired_total{outcome="failed"} 2');
   });
 });
 
@@ -199,6 +208,11 @@ describe("canonical product event durable ingest", () => {
     expect(
       await prisma.analyticsEvent.count({ where: { sourceService: "admin-test", sourceEventId } }),
     ).toBe(1);
+    const metrics = renderPrometheusMetrics();
+    expect(metrics).toContain('main_inbound_events_total{outcome="persisted",source="admin-test"} 1');
+    expect(metrics).toContain('main_inbound_events_total{outcome="duplicate",source="admin-test"} 1');
+    expect(metrics).toContain("main_inbound_event_lag_seconds_count");
+    expect(metrics).toContain("durable_ingest_ack_latency_seconds_count");
   });
 
   it("quarantines the source key when a replay carries a different payload", async () => {

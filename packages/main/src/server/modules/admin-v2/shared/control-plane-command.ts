@@ -1,4 +1,5 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { incrementCounter, observeHistogram } from "@idream/shared";
 import { canonicalSha256 } from "./canonical-json";
 import { toInputJson } from "./prisma-json";
 
@@ -64,78 +65,99 @@ export async function acceptControlPlaneCommand(
   db: PrismaClient,
   input: AcceptControlPlaneCommandInput,
 ) {
-  const scope = `${input.environment}:${input.actor.id}`;
-  const requestHash = canonicalRequestHash(input);
-  const existing = await resolveExisting(db, scope, input.idempotencyKey, requestHash);
-  if (existing) return existing;
-
+  const startedAt = performance.now();
+  let outcome = "error";
   try {
-    return await db.$transaction(async (tx) => {
-      const command = await tx.controlPlaneCommand.create({
-        data: {
-          scope,
-          idempotencyKey: input.idempotencyKey,
-          commandType: input.commandType,
-          targetType: input.target.type,
-          targetId: input.target.id,
-          actorId: input.actor.id,
-          requestId: input.requestId,
-          requestHash,
-          requestPayload: toInputJson(input.payload),
-          expectedVersion: input.expectedVersion,
-          approvalId: input.approvalId,
-          retryMode: input.retryMode ?? "non_replayable",
-          status: "accepted",
-          maxAttempts: input.maxAttempts ?? 3,
-        },
-      });
-      await tx.adminAuditLog.create({
-        data: {
-          actorId: input.actor.id,
-          actorRole: input.actor.role,
-          action: input.commandType,
-          targetType: input.target.type,
-          targetId: input.target.id,
-          reason: input.reason,
-          after: toInputJson({
-            commandId: command.id,
-            expectedVersion: input.expectedVersion ?? null,
-            approvalId: input.approvalId ?? null,
-            retryMode: input.retryMode ?? "non_replayable",
-            requestHash,
-            status: command.status,
-          }),
-          requestId: input.requestId,
-        },
-      });
-      await tx.mainOutboxEvent.create({
-        data: {
-          eventType: "admin.command.accepted.v2",
-          aggregateType: input.target.type,
-          aggregateId: input.target.id,
-          payload: toInputJson({
-            commandId: command.id,
-            commandType: input.commandType,
-            target: input.target,
-            expectedVersion: input.expectedVersion ?? null,
-            payload: input.payload,
-            approvalId: input.approvalId ?? null,
-            retryMode: input.retryMode ?? "non_replayable",
-            requestHash,
-          }),
-        },
-      });
-      return { commandId: command.id, status: command.status, replayed: false as const };
-    });
-  } catch (error) {
-    if (
-      error instanceof Prisma.PrismaClientKnownRequestError &&
-      error.code === "P2002"
-    ) {
-      const raced = await resolveExisting(db, scope, input.idempotencyKey, requestHash);
-      if (raced) return raced;
+    const scope = `${input.environment}:${input.actor.id}`;
+    const requestHash = canonicalRequestHash(input);
+    const existing = await resolveExisting(db, scope, input.idempotencyKey, requestHash);
+    if (existing) {
+      outcome = "replayed";
+      return existing;
     }
+
+    try {
+      const result = await db.$transaction(async (tx) => {
+        const command = await tx.controlPlaneCommand.create({
+          data: {
+            scope,
+            idempotencyKey: input.idempotencyKey,
+            commandType: input.commandType,
+            targetType: input.target.type,
+            targetId: input.target.id,
+            actorId: input.actor.id,
+            requestId: input.requestId,
+            requestHash,
+            requestPayload: toInputJson(input.payload),
+            expectedVersion: input.expectedVersion,
+            approvalId: input.approvalId,
+            retryMode: input.retryMode ?? "non_replayable",
+            status: "accepted",
+            maxAttempts: input.maxAttempts ?? 3,
+          },
+        });
+        await tx.adminAuditLog.create({
+          data: {
+            actorId: input.actor.id,
+            actorRole: input.actor.role,
+            action: input.commandType,
+            targetType: input.target.type,
+            targetId: input.target.id,
+            reason: input.reason,
+            after: toInputJson({
+              commandId: command.id,
+              expectedVersion: input.expectedVersion ?? null,
+              approvalId: input.approvalId ?? null,
+              retryMode: input.retryMode ?? "non_replayable",
+              requestHash,
+              status: command.status,
+            }),
+            requestId: input.requestId,
+          },
+        });
+        await tx.mainOutboxEvent.create({
+          data: {
+            eventType: "admin.command.accepted.v2",
+            aggregateType: input.target.type,
+            aggregateId: input.target.id,
+            payload: toInputJson({
+              commandId: command.id,
+              commandType: input.commandType,
+              target: input.target,
+              expectedVersion: input.expectedVersion ?? null,
+              payload: input.payload,
+              approvalId: input.approvalId ?? null,
+              retryMode: input.retryMode ?? "non_replayable",
+              requestHash,
+            }),
+          },
+        });
+        return { commandId: command.id, status: command.status, replayed: false as const };
+      });
+      outcome = "accepted";
+      return result;
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+        const raced = await resolveExisting(db, scope, input.idempotencyKey, requestHash);
+        if (raced) {
+          outcome = "replayed";
+          return raced;
+        }
+      }
+      throw error;
+    }
+  } catch (error) {
+    outcome = error instanceof IdempotencyConflictError ? "conflict" : "error";
     throw error;
+  } finally {
+    const labels = { type: input.commandType, outcome };
+    incrementCounter("admin_command_total", "Admin control-plane command acceptance outcomes", labels);
+    observeHistogram(
+      "admin_command_duration_seconds",
+      "Admin control-plane command acceptance latency in seconds",
+      labels,
+      Math.max(0, performance.now() - startedAt) / 1_000,
+    );
   }
 }
 
@@ -240,6 +262,22 @@ export async function reconcileExpiredCommandLeases(db: PrismaClient, now = new 
       if (canReplay) requeued += 1;
       else failed += 1;
     });
+  }
+  if (requeued > 0) {
+    incrementCounter(
+      "admin_command_lease_expired_total",
+      "Expired admin command leases by recovery outcome",
+      { outcome: "requeued" },
+      requeued,
+    );
+  }
+  if (failed > 0) {
+    incrementCounter(
+      "admin_command_lease_expired_total",
+      "Expired admin command leases by recovery outcome",
+      { outcome: "failed" },
+      failed,
+    );
   }
   return { examined: expired.length, requeued, failed };
 }

@@ -9,6 +9,7 @@ import {
   subscriptionActivatedV2Schema,
   subscriptionEndedV2Schema,
 } from "@idream/shared/contracts";
+import { incrementCounter, observeHistogram } from "@idream/shared";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { CanonicalMetricDataset } from "./engine";
 import { toInputJson } from "../shared/prisma-json";
@@ -376,12 +377,17 @@ export async function projectCanonicalMetricEvent(
   db: PrismaClient,
   event: MetricProductEvent,
 ): Promise<MetricProjectionResult> {
-  const existing = await db.metricProjectionReceipt.findUnique({
-    where: { sourceService_sourceEventId: { sourceService: event.sourceService, sourceEventId: event.sourceEventId } },
-  });
-  if (existing) return receiptResult(existing);
+  let outcome = "error";
   try {
-    return await db.$transaction(async (tx) => {
+    const existing = await db.metricProjectionReceipt.findUnique({
+      where: { sourceService_sourceEventId: { sourceService: event.sourceService, sourceEventId: event.sourceEventId } },
+    });
+    if (existing) {
+      const result = receiptResult(existing);
+      outcome = result.status;
+      return result;
+    }
+    const result = await db.$transaction(async (tx) => {
       const concurrent = await tx.metricProjectionReceipt.findUnique({
         where: { sourceService_sourceEventId: { sourceService: event.sourceService, sourceEventId: event.sourceEventId } },
       });
@@ -402,14 +408,31 @@ export async function projectCanonicalMetricEvent(
       });
       return result;
     });
+    outcome = result.status;
+    return result;
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
       const receipt = await db.metricProjectionReceipt.findUniqueOrThrow({
         where: { sourceService_sourceEventId: { sourceService: event.sourceService, sourceEventId: event.sourceEventId } },
       });
-      return receiptResult(receipt);
+      const result = receiptResult(receipt);
+      outcome = result.status;
+      return result;
     }
     throw error;
+  } finally {
+    incrementCounter(
+      "projection_total",
+      "Canonical projection events by outcome",
+      { projection: "canonical_metrics", outcome },
+    );
+    observeHistogram(
+      "projection_lag_seconds",
+      "Canonical source occurrence to projection completion lag in seconds",
+      { projection: "canonical_metrics" },
+      Math.max(0, Date.now() - event.occurredAt.getTime()) / 1_000,
+      [1, 5, 15, 30, 60, 120, 300, 900],
+    );
   }
 }
 
