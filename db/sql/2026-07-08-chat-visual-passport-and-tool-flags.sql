@@ -28,9 +28,13 @@ SELECT
   vp.version      AS visual_profile_version,
   vp."identityPrompt" AS identity_prompt,
   COALESCE((c."advancedDetails"->>'imageToolEnabled')::boolean, true) AS image_tool_enabled
+  ,cr."characterContentVersionId" AS character_content_version_id
+  ,cr.id            AS character_release_id
 FROM public.characters c
 LEFT JOIN public.character_visual_profiles vp
-  ON vp."characterId" = c.id AND vp.status = 'active';
+  ON vp."characterId" = c.id AND vp.status = 'active'
+LEFT JOIN public.character_serving cs ON cs."characterId" = c.id
+LEFT JOIN public.character_releases cr ON cr.id = cs."currentReleaseId";
 
 -- Entitlement image_tool_enabled: mirrors the voice_enabled pivot in 02_core_views.sql
 -- (:76), but defaults TRUE — the tool is currently available to every tier, gated

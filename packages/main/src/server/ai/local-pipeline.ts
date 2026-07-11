@@ -9,6 +9,8 @@ import {
 import { jobQueue } from "@/server/jobs/queue";
 import type { QueueJob } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
+import { env } from "@/server/lib/env";
+import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
 import { providers } from "@/server/providers";
 import {
   markProductionItemFailed,
@@ -633,11 +635,12 @@ async function finalizeGenerationCompleted(
       });
     }
 
+    const completedAt = new Date();
     await tx.generationJob.update({
       where: { id: job.id },
       data: {
         status: "completed",
-        completedAt: new Date(),
+        completedAt,
         errorCode: null,
       },
     });
@@ -662,10 +665,139 @@ async function finalizeGenerationCompleted(
         mediaAssetId: productionAsset.id,
       });
     }
+    const deliveredAssets = await tx.mediaAsset.findMany({
+      where: { sourceJobId: job.id },
+      orderBy: { createdAt: "asc" },
+      select: { id: true },
+    });
+    const attemptArtifacts = payload.attemptId
+      ? await tx.generationArtifact.findMany({
+        where: { attemptId: payload.attemptId },
+        orderBy: { ordinal: "asc" },
+      })
+      : [];
+    for (const [index, asset] of deliveredAssets.entries()) {
+      const artifact = attemptArtifacts[index];
+      if (artifact) {
+        await tx.generationArtifact.update({
+          where: { id: artifact.id },
+          data: { assetId: asset.id, validationState: "valid" },
+        });
+      }
+      await tx.generationDelivery.upsert({
+        where: {
+          artifactId_targetType_targetId: {
+            artifactId: artifact?.id ?? `legacy:${asset.id}`,
+            targetType: "user_library",
+            targetId: job.userId,
+          },
+        },
+        create: {
+          id: `generation_delivery_${job.id}_${index}`,
+          requestId: job.id,
+          artifactId: artifact?.id ?? `legacy:${asset.id}`,
+          targetType: "user_library",
+          targetId: job.userId,
+          status: "delivered",
+          deliveredAt: completedAt,
+        },
+        update: { status: "delivered", deliveredAt: completedAt },
+      });
+    }
+    if (deliveredAssets.length > 0) {
+      await appendLocalCanonicalProductEvent(tx, {
+        sourceEventId: `generation-delivery:${job.id}:v2`,
+        eventType: "generation.delivery.completed.v2",
+        occurredAt: completedAt,
+        userId: job.userId,
+        context: { characterId: job.characterId, characterReleaseId: null },
+        payload: {
+          requestId: job.id,
+          artifactId: deliveredAssets[0].id,
+          userId: job.userId,
+          expectedOutputCount: job.outputCount,
+          deliveredOutputCount: deliveredAssets.length,
+          valid: true,
+          displayable: true,
+        },
+      });
+    }
+    await appendLocalCanonicalProductEvent(tx, {
+      sourceEventId: `ai-usage:${payload.attemptId ?? job.id}:v2`,
+      eventType: "ai.usage.recorded.v2",
+      occurredAt: completedAt,
+      userId: job.userId,
+      context: { characterId: job.characterId, characterReleaseId: null },
+      payload: {
+        invocationId: payload.attemptId ?? job.id,
+        requestId: job.id,
+        ...(payload.attemptId ? { attemptId: payload.attemptId } : {}),
+        userId: job.userId,
+        provider: job.provider ?? "local-pipeline",
+        model: job.model ?? (typeof payload.usage.model === "string" ? payload.usage.model : "unknown"),
+        usage: payload.usage,
+        pricingVersion: `generation-${job.profileVersion ?? "legacy"}`,
+      },
+    });
   });
 
   await trackEvent("generation_completed", { jobId: job.id, mode: payload.mode }, { userId: job.userId });
   await enqueueChatImageCompleted(job.id);
+}
+
+async function appendLocalCanonicalProductEvent(
+  tx: Prisma.TransactionClient,
+  input: {
+    sourceEventId: string;
+    eventType: string;
+    occurredAt: Date;
+    userId: string;
+    context: Readonly<Record<string, unknown>>;
+    payload: Readonly<Record<string, unknown>>;
+  },
+) {
+  const actor = { userId: input.userId, isInternal: false };
+  const hash = canonicalSha256({
+    eventType: input.eventType,
+    schemaVersion: 2,
+    occurredAt: input.occurredAt,
+    environment: env.APP_ENV,
+    dataClass: "customer",
+    trustClass: "canonical",
+    actor,
+    context: input.context,
+    payload: input.payload,
+  });
+  const event = await tx.analyticsEvent.upsert({
+    where: { sourceService_sourceEventId: { sourceService: "main", sourceEventId: input.sourceEventId } },
+    create: {
+      userId: input.userId,
+      name: input.eventType,
+      props: toInputJson(input.payload),
+      sourceService: "main",
+      sourceEventId: input.sourceEventId,
+      payloadHash: hash,
+      schemaVersion: 2,
+      occurredAt: input.occurredAt,
+      environment: env.APP_ENV,
+      dataClass: "customer",
+      trustClass: "canonical",
+      actor: toInputJson(actor),
+      context: toInputJson(input.context),
+    },
+    update: {},
+  });
+  await tx.mainOutboxEvent.upsert({
+    where: { id: `product_metric_${input.sourceEventId.replaceAll(":", "_")}` },
+    create: {
+      id: `product_metric_${input.sourceEventId.replaceAll(":", "_")}`,
+      eventType: "product.event.persisted.v2",
+      aggregateType: "product_event",
+      aggregateId: event.id,
+      payload: toInputJson({ eventId: event.id, sourceService: "main", sourceEventId: input.sourceEventId, eventType: input.eventType, schemaVersion: 2 }),
+    },
+    update: {},
+  });
 }
 
 async function finalizeGenerationFailed(

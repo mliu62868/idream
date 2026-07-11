@@ -374,6 +374,7 @@ async function finalize(input: FinalizeInput): Promise<boolean> {
     // Re-read inside the TX for idempotency under concurrency.
     const current = await tx.message.findUnique({ where: { id: payload.assistantMessageId } });
     if (!current || current.status !== "generating" || current.attempt !== payload.attempt) return false;
+    const sourceTurn = await tx.message.findUnique({ where: { id: payload.userMessageId } });
 
     const tokenCount = usage.completionTokens;
     const updated = await tx.message.updateMany({
@@ -460,6 +461,42 @@ async function finalize(input: FinalizeInput): Promise<boolean> {
         payload: { sessionId: session.id, userId: session.userId, layer: "output", policyCode: moderation.policyCode },
       });
     } else {
+      if (sourceTurn?.engagementSessionId && sourceTurn.characterContentVersionId) {
+        // The model context is the actual snapshot used by this attempt. A
+        // Release may move after the user turn but before the worker starts, so
+        // emitting the earlier pointer would create false historical precision.
+        const actualContentVersionId = context.persona.characterContentVersionId;
+        const actualReleaseId = context.persona.characterReleaseId;
+        if (actualContentVersionId) {
+          await tx.message.update({
+            where: { id: sourceTurn.id },
+            data: {
+              characterContentVersionId: actualContentVersionId,
+              characterReleaseId: actualReleaseId,
+            },
+          });
+          await recordOutbox(tx, {
+            eventType: CHAT_TO_MAIN_EVENTS.exchangeCompletedV2,
+            schemaVersion: 2,
+            aggregateType: "exchange",
+            aggregateId: sourceTurn.id,
+            payload: {
+              exchangeId: sourceTurn.id,
+              userMessageId: sourceTurn.id,
+              assistantMessageId: payload.assistantMessageId,
+              selectedAssistantMessageId: payload.assistantMessageId,
+              assistantAttemptNo: payload.attempt,
+              isRegeneration: payload.attempt > 1,
+              sessionId: session.id,
+              engagementSessionId: sourceTurn.engagementSessionId,
+              userId: session.userId,
+              characterId: session.characterId,
+              characterContentVersionId: actualContentVersionId,
+              characterReleaseId: actualReleaseId,
+            },
+          });
+        }
+      }
       await recordOutbox(tx, {
         eventType: CHAT_TO_MAIN_EVENTS.messageCompleted,
         aggregateType: "message",

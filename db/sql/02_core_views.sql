@@ -29,7 +29,15 @@ SELECT
   c.status        AS status,
   c."voiceId"     AS voice_id,
   c."updatedAt"   AS updated_at
-FROM public.characters c;
+  ,NULL::text      AS visual_profile_id
+  ,NULL::integer   AS visual_profile_version
+  ,NULL::text      AS identity_prompt
+  ,COALESCE((c."advancedDetails"->>'imageToolEnabled')::boolean, true) AS image_tool_enabled
+  ,cr."characterContentVersionId" AS character_content_version_id
+  ,cr.id            AS character_release_id
+FROM public.characters c
+LEFT JOIN public.character_serving cs ON cs."characterId" = c.id
+LEFT JOIN public.character_releases cr ON cr.id = cs."currentReleaseId";
 
 CREATE OR REPLACE VIEW core.chat_character_tags_view AS
 SELECT

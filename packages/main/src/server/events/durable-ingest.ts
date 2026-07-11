@@ -12,7 +12,11 @@ export async function ingestDurableServiceEvent(raw: unknown) {
     schemaVersion: event.schemaVersion,
     occurredAt: new Date(event.occurredAt),
     environment: env.APP_ENV,
-    dataClass: "operational",
+    // Chat/generation product outcomes describe customer activity. Internal and
+    // fixture events carry their own explicit class before reaching this boundary;
+    // defaulting canonical outcomes to "operational" made every metric projector
+    // fail closed and silently prevented the v2 fact layer from ever advancing.
+    dataClass: "customer",
     trustClass: "canonical",
     actor: { type: "service", service: event.sourceService },
     context: { aggregateType: event.aggregateType, aggregateId: event.aggregateId },

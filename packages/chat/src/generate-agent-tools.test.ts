@@ -53,7 +53,14 @@ type CreateCall = { data: Record<string, unknown>; where?: Record<string, unknow
 // `completedSourceAttachment` seeds the edit_last_image lookup (generate.ts's
 // buildImageRequestFromPlan queries tx.messageAttachment.findFirst); undefined
 // exercises the no-source-photo fallback (behavior contract point 3).
-function fakePrisma(completedSourceAttachment?: { mediaAssetId: string }) {
+function fakePrisma(
+  completedSourceAttachment?: { mediaAssetId: string },
+  typedSourceTurn?: {
+    engagementSessionId: string;
+    characterContentVersionId: string;
+    characterReleaseId: string | null;
+  },
+) {
   const attachmentCreates: CreateCall[] = [];
   const outboxCreates: CreateCall[] = [];
   const messageUpdates: CreateCall[] = [];
@@ -68,10 +75,16 @@ function fakePrisma(completedSourceAttachment?: { mediaAssetId: string }) {
       findFirst: async () => completedSourceAttachment ?? null,
     },
     message: {
-      findUnique: async () => ({ id: "msg_assistant", status: "generating", attempt: 1 }),
+      findUnique: async (call: { where: { id: string } }) => call.where.id === "msg_user"
+        ? { id: "msg_user", ...typedSourceTurn }
+        : { id: "msg_assistant", status: "generating", attempt: 1 },
       updateMany: async (call: CreateCall) => {
         messageUpdates.push(call);
         return { count: 1 };
+      },
+      update: async (call: CreateCall) => {
+        messageUpdates.push(call);
+        return {};
       },
     },
     messageVersion: {
@@ -131,6 +144,8 @@ const context = {
     status: "approved",
     voiceId: null,
     updatedAt: new Date("2026-01-01T00:00:00Z"),
+    characterContentVersionId: "content_v4",
+    characterReleaseId: "release_v3",
   },
   policy: {
     model: "local-model",
@@ -251,6 +266,35 @@ describe("chat generate agent image tool", () => {
       kind: "chat.image.requested",
       promptHint: expect.stringContaining("sunlit window"),
       controls: { orientation: "4:5", outputCount: 1 },
+    });
+  });
+
+  it("emits a typed exchange with the pinned content/release and stable engagement session", async () => {
+    supportsToolsState.value = false;
+    streamMock.mockImplementation(async function* reply() {
+      yield { delta: "hello", done: true };
+    });
+    const { prisma, outboxCreates } = fakePrisma(undefined, {
+      engagementSessionId: "engagement_v1",
+      characterContentVersionId: "content_v4",
+      characterReleaseId: "release_v3",
+    });
+
+    await expect(processGenerate(
+      { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+      prisma,
+    )).resolves.toEqual({ status: "sent" });
+
+    expect(outboxCreates.find((call) => call.data.eventType === CHAT_TO_MAIN_EVENTS.exchangeCompletedV2)?.data).toMatchObject({
+      schemaVersion: 2,
+      aggregateType: "exchange",
+      aggregateId: "msg_user",
+      payload: {
+        exchangeId: "msg_user",
+        engagementSessionId: "engagement_v1",
+        characterContentVersionId: "content_v4",
+        characterReleaseId: "release_v3",
+      },
     });
   });
 

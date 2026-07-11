@@ -29,22 +29,26 @@ view ChatUserView {
 }
 
 view ChatCharacterView {
-  characterId          String   @unique @map("character_id")
-  creatorId            String?  @map("creator_id")
-  name                 String
-  age                  Int
-  description          String
-  systemPrompt         String?  @map("system_prompt")
-  relationship         String?
-  visibility           String
-  status               String
-  voiceId              String?  @map("voice_id")
-  updatedAt            DateTime @map("updated_at")
-  /** Active CharacterVisualProfile id (P4 passport injection); null when none/bootstrapped later. */
-  visualProfileId      String?  @map("visual_profile_id")
-  visualProfileVersion Int?     @map("visual_profile_version")
-  identityPrompt       String?  @map("identity_prompt")
-  imageToolEnabled     Boolean  @map("image_tool_enabled")
+  characterId               String   @unique @map("character_id")
+  creatorId                 String?  @map("creator_id")
+  name                      String
+  age                       Int
+  description               String
+  systemPrompt              String?  @map("system_prompt")
+  relationship              String?
+  visibility                String
+  status                    String
+  voiceId                   String?  @map("voice_id")
+  updatedAt                 DateTime @map("updated_at")
+  /**
+   * Active CharacterVisualProfile id (P4 passport injection); null when none/bootstrapped later.
+   */
+  visualProfileId           String?  @map("visual_profile_id")
+  visualProfileVersion      Int?     @map("visual_profile_version")
+  identityPrompt            String?  @map("identity_prompt")
+  imageToolEnabled          Boolean  @map("image_tool_enabled")
+  characterContentVersionId String?  @map("character_content_version_id")
+  characterReleaseId        String?  @map("character_release_id")
 
   @@map("chat_character_view")
   @@schema("core")
@@ -59,25 +63,25 @@ view ChatCharacterTagsView {
 }
 
 view ChatEntitlementView {
-  userId             String   @unique @map("user_id")
-  modelTier          String   @map("model_tier")
-  memoryMultiplier   Int      @map("memory_multiplier")
-  unlimitedMessages  Boolean  @map("unlimited_messages")
-  voiceEnabled       Boolean  @map("voice_enabled")
-  updatedAt          DateTime @map("updated_at")
-  imageToolEnabled   Boolean  @map("image_tool_enabled")
+  userId            String   @unique @map("user_id")
+  modelTier         String   @map("model_tier")
+  memoryMultiplier  Int      @map("memory_multiplier")
+  unlimitedMessages Boolean  @map("unlimited_messages")
+  voiceEnabled      Boolean  @map("voice_enabled")
+  updatedAt         DateTime @map("updated_at")
+  imageToolEnabled  Boolean  @map("image_tool_enabled")
 
   @@map("chat_entitlement_view")
   @@schema("billing")
 }
 
 view ChatUserEligibilityView {
-  userId           String    @unique @map("user_id")
-  ageGateAccepted  Boolean   @map("age_gate_accepted")
-  ageVerified      Boolean   @map("age_verified")
+  userId           String   @unique @map("user_id")
+  ageGateAccepted  Boolean  @map("age_gate_accepted")
+  ageVerified      Boolean  @map("age_verified")
   jurisdiction     String?
-  restrictedReason String?   @map("restricted_reason")
-  updatedAt        DateTime  @map("updated_at")
+  restrictedReason String?  @map("restricted_reason")
+  updatedAt        DateTime @map("updated_at")
 
   @@map("chat_user_eligibility_view")
   @@schema("compliance")
@@ -85,18 +89,18 @@ view ChatUserEligibilityView {
 
 // ---- chat authority tables (chat_service read/write) ------------------------
 model ChatSession {
-  id               String    @id
-  userId           String    @map("user_id")
-  characterId      String    @map("character_id")
-  title            String?
-  status           String    @default("active")
-  memoryEnabled    Boolean   @default(true) @map("memory_enabled")
-  memorySummary    String?   @map("memory_summary")
-  logExtractedSeq  BigInt    @default(0) @map("log_extracted_seq")
-  lastMessageAt    DateTime? @map("last_message_at")
-  createdAt        DateTime  @default(now()) @map("created_at")
-  updatedAt        DateTime  @default(now()) @updatedAt @map("updated_at")
-  deletedAt        DateTime? @map("deleted_at")
+  id              String    @id
+  userId          String    @map("user_id")
+  characterId     String    @map("character_id")
+  title           String?
+  status          String    @default("active")
+  memoryEnabled   Boolean   @default(true) @map("memory_enabled")
+  memorySummary   String?   @map("memory_summary")
+  logExtractedSeq BigInt    @default(0) @map("log_extracted_seq")
+  lastMessageAt   DateTime? @map("last_message_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
+  deletedAt       DateTime? @map("deleted_at")
 
   messages    Message[]
   attachments MessageAttachment[]
@@ -108,20 +112,23 @@ model ChatSession {
 }
 
 model Message {
-  id                     String      @id
-  sessionId              String      @map("session_id")
-  role                   String
-  content                String      @default("")
-  model                  String?
-  status                 String      @default("pending")
-  tokenCount             Int?        @map("token_count")
-  safetyStatus           String      @default("unknown") @map("safety_status")
-  attempt                Int         @default(1)
-  replyToMessageId       String?     @map("reply_to_message_id")
-  memoryExtractedAttempt Int         @default(0) @map("memory_extracted_attempt")
-  createdAt              DateTime    @default(now()) @map("created_at")
-  updatedAt              DateTime    @default(now()) @updatedAt @map("updated_at")
-  deletedAt              DateTime?   @map("deleted_at")
+  id                        String    @id
+  sessionId                 String    @map("session_id")
+  role                      String
+  content                   String    @default("")
+  model                     String?
+  status                    String    @default("pending")
+  tokenCount                Int?      @map("token_count")
+  safetyStatus              String    @default("unknown") @map("safety_status")
+  attempt                   Int       @default(1)
+  replyToMessageId          String?   @map("reply_to_message_id")
+  engagementSessionId       String?   @map("engagement_session_id")
+  characterContentVersionId String?   @map("character_content_version_id")
+  characterReleaseId        String?   @map("character_release_id")
+  memoryExtractedAttempt    Int       @default(0) @map("memory_extracted_attempt")
+  createdAt                 DateTime  @default(now()) @map("created_at")
+  updatedAt                 DateTime  @default(now()) @updatedAt @map("updated_at")
+  deletedAt                 DateTime? @map("deleted_at")
 
   session     ChatSession         @relation(fields: [sessionId], references: [id])
   versions    MessageVersion[]
@@ -215,6 +222,7 @@ model ChatOutboxEvent {
   aggregateType String    @map("aggregate_type")
   aggregateId   String    @map("aggregate_id")
   payload       Json      @default("{}")
+  schemaVersion Int       @default(1) @map("schema_version")
   status        String    @default("pending")
   attempts      Int       @default(0)
   nextRunAt     DateTime  @default(now()) @map("next_run_at")

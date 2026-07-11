@@ -156,6 +156,7 @@ export interface SendResult {
 export type EditMessageResult = SendResult;
 
 const MAX_MESSAGE_LENGTH = 12_000;
+const ENGAGEMENT_INACTIVITY_MS_V1 = 30 * 60 * 1_000;
 
 function normalizeMessageContent(value: string): string {
   const content = value.trim();
@@ -164,6 +165,29 @@ function normalizeMessageContent(value: string): string {
     throw new ChatError("message_too_long", `message exceeds ${MAX_MESSAGE_LENGTH} characters`, 400);
   }
   return content;
+}
+
+async function allocateEngagementSessionId(
+  tx: Prisma.TransactionClient,
+  sessionId: string,
+  now: Date,
+): Promise<string> {
+  const latestSuccessfulAssistant = await tx.message.findFirst({
+    where: { sessionId, role: "assistant", status: "sent", deletedAt: null },
+    orderBy: { updatedAt: "desc" },
+    select: { replyToMessageId: true, updatedAt: true },
+  });
+  if (
+    latestSuccessfulAssistant?.replyToMessageId &&
+    now.getTime() - latestSuccessfulAssistant.updatedAt.getTime() < ENGAGEMENT_INACTIVITY_MS_V1
+  ) {
+    const priorTurn = await tx.message.findUnique({
+      where: { id: latestSuccessfulAssistant.replyToMessageId },
+      select: { engagementSessionId: true },
+    });
+    if (priorTurn?.engagementSessionId) return priorTurn.engagementSessionId;
+  }
+  return createId("eng");
 }
 
 export async function sendMessage(
@@ -175,7 +199,7 @@ export async function sendMessage(
   if (!session || session.userId !== input.userId || session.status !== "active") {
     throw new ChatError("session_not_found", "session not found", 404);
   }
-  await assertEligible(prisma, input.userId, session.characterId);
+  const { character } = await assertEligible(prisma, input.userId, session.characterId);
 
   const content = normalizeMessageContent(input.content);
 
@@ -197,6 +221,8 @@ export async function sendMessage(
     if (moderation.status !== "blocked") {
       await assertTurnCapacity(tx, input.userId, session.id, policy);
     }
+    const turnOccurredAt = new Date();
+    const engagementSessionId = await allocateEngagementSessionId(tx, session.id, turnOccurredAt);
     await tx.message.create({
       data: {
         id: userMessageId,
@@ -205,6 +231,11 @@ export async function sendMessage(
         content,
         status: moderation.status === "blocked" ? "blocked" : "sent",
         safetyStatus: moderation.status === "blocked" ? "blocked" : "passed",
+        engagementSessionId,
+        characterContentVersionId: character.characterContentVersionId,
+        characterReleaseId: character.characterReleaseId,
+        createdAt: turnOccurredAt,
+        updatedAt: turnOccurredAt,
       },
     });
     await tx.message.create({
@@ -216,6 +247,8 @@ export async function sendMessage(
         status: moderation.status === "blocked" ? "blocked" : "pending",
         attempt: 1,
         replyToMessageId: userMessageId,
+        createdAt: turnOccurredAt,
+        updatedAt: turnOccurredAt,
       },
     });
     await tx.chatSession.update({
@@ -324,6 +357,7 @@ export async function editUserMessage(
   const moderation = await providers.moderation.check({ targetType: "text", content });
   const assistantMessageId = assistant?.id ?? createId("msg");
   const attempt = (assistant?.attempt ?? 0) + 1;
+  const assistantHadEligibleExchange = assistant?.status === "sent";
 
   await prisma.$transaction(async (tx) => {
     await lockTurn(tx, input.userId, session.id);
@@ -368,6 +402,25 @@ export async function editUserMessage(
           attempt,
           replyToMessageId: message.id,
           safetyStatus: moderation.status === "blocked" ? "blocked" : "unknown",
+        },
+      });
+    }
+
+    if (
+      assistantHadEligibleExchange &&
+      message.engagementSessionId &&
+      message.characterContentVersionId
+    ) {
+      await recordOutbox(tx, {
+        eventType: CHAT_TO_MAIN_EVENTS.exchangeCorrectedV2,
+        schemaVersion: 2,
+        aggregateType: "exchange",
+        aggregateId: message.id,
+        payload: {
+          exchangeId: message.id,
+          correctionType: "edited",
+          correctionRevision: attempt,
+          userId: input.userId,
         },
       });
     }

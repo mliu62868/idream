@@ -7,6 +7,7 @@ import {
 
 export const metricQualityStateSchema = z.enum(["certified", "directional", "invalid", "stale"]);
 export const metricDecisionUseSchema = z.enum(["allowed", "directional_only", "blocked"]);
+export const metricPublicationStatusSchema = z.enum(["official", "shadow", "diagnostic", "guardrail"]);
 
 export const metricDefinitionSchema = z
   .object({
@@ -28,8 +29,11 @@ export const metricDefinitionSchema = z
     dedupe: z.string().trim().min(1),
     attributionRule: z.string().trim().min(1),
     owner: z.string().trim().min(1),
+    publicationStatus: metricPublicationStatusSchema,
+    decisionGate: z.string().trim().min(1).nullable(),
     version: z.number().int().positive(),
     effectiveAt: adminIsoDateTimeSchema,
+    validFrom: adminIsoDateTimeSchema,
     queryHash: z.string().trim().min(1),
     freshnessSlo: z
       .object({
@@ -62,6 +66,7 @@ export const metricCardSchema = z
   .object({
     key: z.string().trim().min(1),
     definitionVersion: z.number().int().positive(),
+    publicationStatus: metricPublicationStatusSchema,
     name: z.string().trim().min(1),
     value: z.union([z.number(), z.string(), z.null()]),
     unit: z.string().trim().min(1),
@@ -70,12 +75,77 @@ export const metricCardSchema = z
     numeratorValue: z.number().nullable(),
     denominatorValue: z.number().nullable(),
     sampleSize: z.number().int().nonnegative(),
+    matureSampleSize: z.number().int().nonnegative(),
+    immatureSampleSize: z.number().int().nonnegative(),
     window: z.string().trim().min(1),
+    timezone: z.literal("UTC"),
     maturity: z.enum(["mature", "immature", "insufficient_data"]),
+    asOf: adminIsoDateTimeSchema,
+    validFrom: adminIsoDateTimeSchema,
     latestDataAt: adminIsoDateTimeSchema.nullable(),
     qualityState: metricQualityStateSchema,
+    decisionUse: metricDecisionUseSchema,
+    qualityEvidence: z.array(z.string().trim().min(1)).readonly(),
   })
-  .strict();
+  .strict()
+  .superRefine((card, ctx) => {
+    if (card.numeratorValue !== null && card.denominatorValue !== null && card.numeratorValue > card.denominatorValue) {
+      ctx.addIssue({ code: "custom", path: ["numeratorValue"], message: "Numerator must belong to denominator cohort" });
+    }
+    if ((card.qualityState === "invalid" || card.qualityState === "stale") && card.value !== null) {
+      ctx.addIssue({ code: "custom", path: ["value"], message: "Invalid or stale metrics must fail closed with value=null" });
+    }
+  });
+
+export const metricQualityReportSchema = z.object({
+  asOf: adminIsoDateTimeSchema,
+  qualityState: z.enum(["certified", "invalid"]),
+  duplicateEffectCount: z.number().int().nonnegative(),
+  impossibleStateCount: z.number().int().nonnegative(),
+  fixtureInternalLeakageCount: z.number().int().nonnegative(),
+  joinCoverage: z.number().min(0).max(1),
+  userJoinCoverage: z.number().min(0).max(1),
+  characterJoinCoverage: z.number().min(0).max(1),
+  contentVersionJoinCoverage: z.number().min(0).max(1),
+  releaseJoinCoverage: z.number().min(0).max(1),
+  eventLagP95Ms: z.number().int().nonnegative().nullable(),
+  freshnessSloMs: z.number().int().positive(),
+  scannedFactCount: z.number().int().nonnegative(),
+  checks: z.array(z.object({
+    key: z.string().min(1),
+    status: z.enum(["passed", "failed", "unavailable"]),
+    observed: z.union([z.number(), z.string(), z.null()]),
+    threshold: z.string().min(1),
+  }).strict()).readonly(),
+}).strict();
+
+export const metricDashboardResponseSchema = z.object({
+  definitions: z.array(metricDefinitionSchema).readonly(),
+  cards: z.array(metricCardSchema).readonly(),
+  quality: metricQualityReportSchema,
+  asOf: adminIsoDateTimeSchema,
+  freshness: z.enum(["fresh", "stale", "degraded"]),
+}).strict();
+
+export const metricReconciliationReportSchema = z.object({
+  asOf: adminIsoDateTimeSchema,
+  quality: metricQualityReportSchema,
+  recentBackfills: z.array(z.object({
+    runId: z.string().min(1),
+    source: z.string().min(1),
+    status: z.string().min(1),
+    dryRun: z.boolean(),
+    cursor: z.string().nullable(),
+    scannedCount: z.number().int().nonnegative(),
+    appliedCount: z.number().int().nonnegative(),
+    skippedCount: z.number().int().nonnegative(),
+    mismatchCount: z.number().int().nonnegative(),
+    coverage: z.number().min(0).max(1).nullable(),
+    validFrom: adminIsoDateTimeSchema.nullable(),
+    startedAt: adminIsoDateTimeSchema,
+    completedAt: adminIsoDateTimeSchema.nullable(),
+  }).strict()).readonly(),
+}).strict();
 
 export const metricQuerySchema = adminCursorQuerySchema.extend({
   qualityState: metricQualityStateSchema.optional(),
@@ -87,6 +157,9 @@ export const metricListResponseSchema = adminListResponseSchema(metricCardSchema
 export type MetricDefinition = z.infer<typeof metricDefinitionSchema>;
 export type MetricCard = z.infer<typeof metricCardSchema>;
 export type MetricQuery = z.infer<typeof metricQuerySchema>;
+export type MetricQualityReport = z.infer<typeof metricQualityReportSchema>;
+export type MetricDashboardResponse = z.infer<typeof metricDashboardResponseSchema>;
+export type MetricReconciliationReport = z.infer<typeof metricReconciliationReportSchema>;
 
 export function defineMetricRegistry(definitions: readonly MetricDefinition[]): readonly MetricDefinition[] {
   const parsed = definitions.map((definition) => metricDefinitionSchema.parse(definition));
@@ -111,13 +184,40 @@ const invalidLegacyDefaults = {
   dedupe: "legacy dedupe is not decision-grade",
   attributionRule: "none",
   owner: "Growth Analytics",
+  publicationStatus: "diagnostic" as const,
+  decisionGate: null,
   version: 1,
   effectiveAt: "2026-07-11T00:00:00.000Z",
+  validFrom: "2026-07-11T00:00:00.000Z",
   freshnessSlo: { maxAgeSeconds: 86400 },
   qualityState: "invalid" as const,
   decisionUse: "blocked" as const,
   lastValidatedAt: null,
   validationEvidence: [] as const,
+};
+
+const canonicalMetricDefaults = {
+  grain: "eligible_user",
+  sourceFacts: ["customer_signup_fact", "chat_exchange_fact", "generation_fulfillment_fact", "subscription_lifecycle_fact"] as const,
+  sourceEvents: ["customer.signup.completed.v2", "chat.exchange.completed.v2", "chat.exchange.corrected.v2", "generation.delivery.completed.v2", "subscription.activated.v2", "subscription.ended.v2"] as const,
+  requiredTrustClasses: ["canonical"] as const,
+  exclusions: ["internal actors", "fixture data", "non-production data", "non-customer data", "duplicate source events"] as const,
+  cohort: "eligible customer facts using occurredAt",
+  timezone: "UTC",
+  maturity: "metric-specific closed observation window",
+  dedupe: "canonical source key; exchangeId for logical chat turns; requestId for generation delivery",
+  attributionRule: "none unless exact release/placement context is present",
+  owner: "Growth Analytics",
+  publicationStatus: "diagnostic" as const,
+  decisionGate: null,
+  version: 1,
+  effectiveAt: "2026-07-11T00:00:00.000Z",
+  validFrom: "2026-07-11T00:00:00.000Z",
+  freshnessSlo: { maxAgeSeconds: 3600 },
+  qualityState: "certified" as const,
+  decisionUse: "allowed" as const,
+  lastValidatedAt: "2026-07-11T00:00:00.000Z",
+  validationEvidence: ["canonical-metrics-golden-dataset-v1"] as const,
 };
 
 export const ADMIN_METRIC_REGISTRY = defineMetricRegistry([
@@ -184,13 +284,184 @@ export const ADMIN_METRIC_REGISTRY = defineMetricRegistry([
     dedupe: "canonical source key",
     attributionRule: "correlation only; no causal claim",
     owner: "Growth Analytics",
+    publicationStatus: "diagnostic",
+    decisionGate: null,
     version: 1,
     effectiveAt: "2026-07-11T00:00:00.000Z",
+    validFrom: "2026-07-11T00:00:00.000Z",
     queryHash: "pending:flag-monitoring-v1",
     freshnessSlo: { maxAgeSeconds: 3600 },
     qualityState: "directional",
     decisionUse: "directional_only",
     lastValidatedAt: null,
     validationEvidence: [],
+  },
+  {
+    ...canonicalMetricDefaults,
+    key: "north_star.wpcu",
+    name: "Weekly Paying Companion Users",
+    description: "Current PRD North Star: paid users with at least one qualifying companion or creation value event in rolling seven days.",
+    businessQuestion: "How many paying users reached either core value path this week?",
+    numerator: "distinct paid eligible users with a QCE or successful generation delivery",
+    denominator: "not applicable (count metric)",
+    window: "rolling 7 days ending at asOf",
+    publicationStatus: "official",
+    decisionGate: "NS-01 keeps WPCU official until Product DRI approval and PRD update",
+    queryHash: "sha256:canonical-metric-engine-v1:north-star-wpcu",
+  },
+  {
+    ...canonicalMetricDefaults,
+    key: "north_star.wscu",
+    name: "Weekly Sustained Companion Users",
+    description: "Distinct users with two QCEs for the same character across sessions and UTC days at least 12 hours apart.",
+    businessQuestion: "How many users sustain a relationship across independent visits?",
+    numerator: "distinct eligible sustained companion users",
+    denominator: "not applicable (count metric)",
+    window: "rolling 7 days ending at asOf",
+    publicationStatus: "shadow",
+    decisionGate: "NS-01",
+    qualityState: "directional",
+    decisionUse: "directional_only",
+    queryHash: "sha256:canonical-metric-engine-v1:north-star-wscu-shadow",
+  },
+  {
+    ...canonicalMetricDefaults,
+    key: "diagnostic.wsr",
+    name: "Weekly Sustained Relationships",
+    description: "Distinct user-character pairs satisfying the WSCU sustained relationship rule.",
+    businessQuestion: "How many distinct relationships sustain across independent visits?",
+    numerator: "distinct sustained eligible user-character pairs",
+    denominator: "not applicable (count metric)",
+    grain: "user_character_pair",
+    window: "rolling 7 days ending at asOf",
+    qualityState: "directional",
+    decisionUse: "directional_only",
+    queryHash: "sha256:canonical-metric-engine-v1:diagnostic-wsr",
+  },
+  {
+    ...canonicalMetricDefaults,
+    key: "guardrail.wscru",
+    name: "Weekly Sustained Creation Users",
+    description: "Distinct users with successful deliveries from different requests on different UTC days at least 12 hours apart.",
+    businessQuestion: "How many users sustain creation value across independent product days?",
+    numerator: "distinct eligible sustained creation users",
+    denominator: "not applicable (count metric)",
+    sourceFacts: ["generation_fulfillment_fact"],
+    sourceEvents: ["generation.delivery.completed.v2"],
+    window: "rolling 7 days ending at asOf",
+    publicationStatus: "shadow",
+    decisionGate: "NS-01",
+    qualityState: "directional",
+    decisionUse: "directional_only",
+    queryHash: "sha256:canonical-metric-engine-v1:guardrail-wscru-shadow",
+  },
+  {
+    ...canonicalMetricDefaults,
+    key: "business.wpscu",
+    name: "Weekly Paying Sustained Companion Users",
+    description: "WSCU users with an active paid subscription during a qualifying episode.",
+    businessQuestion: "How much sustained companion value overlaps with paid status?",
+    numerator: "distinct paying sustained companion users",
+    denominator: "not applicable (count metric)",
+    window: "rolling 7 days ending at asOf",
+    publicationStatus: "shadow",
+    decisionGate: "NS-01",
+    qualityState: "directional",
+    decisionUse: "directional_only",
+    queryHash: "sha256:canonical-metric-engine-v1:business-wpscu-shadow",
+  },
+  {
+    ...canonicalMetricDefaults,
+    key: "activation.chat_24h",
+    name: "Chat Activation 24h",
+    description: "Eligible signup users completing their first QCE within 24 hours.",
+    businessQuestion: "Do mature signup cohorts reach qualified conversation value in their first day?",
+    numerator: "mature signup users with first QCE within 24h",
+    denominator: "eligible signup users whose 24h observation window is mature",
+    window: "signup occurredAt through +24h",
+    queryHash: "sha256:canonical-metric-engine-v1:activation-chat-24h",
+  },
+  {
+    ...canonicalMetricDefaults,
+    key: "activation.relationship_7d",
+    name: "Relationship Activation 7d",
+    description: "Eligible signup users satisfying the sustained same-character relationship rule within seven days.",
+    businessQuestion: "Do mature signup cohorts establish a repeated relationship in their first week?",
+    numerator: "mature signup users with a sustained same-character relationship within 7d",
+    denominator: "eligible signup users whose 7d observation window is mature",
+    window: "signup occurredAt through +7d",
+    queryHash: "sha256:canonical-metric-engine-v1:activation-relationship-7d",
+  },
+  {
+    ...canonicalMetricDefaults,
+    key: "activation.generation_7d",
+    name: "Generation Activation 7d",
+    description: "Eligible signup users receiving a valid displayable delivery within seven days.",
+    businessQuestion: "Do mature signup cohorts receive successful creation value in their first week?",
+    numerator: "mature signup users with a successful eligible delivery within 7d",
+    denominator: "eligible signup users whose 7d observation window is mature",
+    window: "signup occurredAt through +7d",
+    queryHash: "sha256:canonical-metric-engine-v1:activation-generation-7d",
+  },
+  {
+    ...canonicalMetricDefaults,
+    key: "retention.same_character_d1",
+    name: "Same-character D1",
+    description: "First-QCE pairs returning to the same character on the exact next UTC product day.",
+    businessQuestion: "Do qualified relationships return to the same character on D0+1?",
+    numerator: "mature first-QCE pairs with a same-character QCE on exact D0+1",
+    denominator: "first-QCE pair cohort mature through D0+1",
+    grain: "user_character_pair",
+    cohort: "first QCE user-character pair UTC product day",
+    window: "exact D0+1 UTC product day",
+    queryHash: "sha256:canonical-metric-engine-v1:retention-d1",
+  },
+  {
+    ...canonicalMetricDefaults,
+    key: "retention.same_character_d7",
+    name: "Same-character D7",
+    description: "First-QCE pairs returning to the same character on exact UTC D0+7.",
+    businessQuestion: "Do qualified relationships return to the same character on D0+7?",
+    numerator: "mature first-QCE pairs with a same-character QCE on exact D0+7",
+    denominator: "first-QCE pair cohort mature through D0+7",
+    grain: "user_character_pair",
+    cohort: "first QCE user-character pair UTC product day",
+    window: "exact D0+7 UTC product day",
+    queryHash: "sha256:canonical-metric-engine-v1:retention-d7",
+  },
+  {
+    ...canonicalMetricDefaults,
+    key: "retention.same_character_w1",
+    name: "Same-character W1 Return",
+    description: "First-QCE pairs returning on any UTC product day from D0+7 through D0+13.",
+    businessQuestion: "Do qualified relationships return during the following week?",
+    numerator: "mature first-QCE pairs with a same-character QCE during D7-D13",
+    denominator: "first-QCE pair cohort mature through D0+13",
+    grain: "user_character_pair",
+    cohort: "first QCE user-character pair UTC product day",
+    window: "D0+7 through D0+13 UTC product days",
+    queryHash: "sha256:canonical-metric-engine-v1:retention-w1",
+  },
+  {
+    ...canonicalMetricDefaults,
+    key: "conversion.paid_d7",
+    name: "Paid Conversion D7",
+    description: "Eligible signup cohort first entering active paid status within seven days.",
+    businessQuestion: "What share of mature signup cohorts first become paid within seven days?",
+    numerator: "mature signup users first active-paid within signup+7d",
+    denominator: "eligible signup users whose 7d observation window is mature",
+    window: "signup occurredAt through +7d",
+    queryHash: "sha256:canonical-metric-engine-v1:conversion-paid-d7",
+  },
+  {
+    ...canonicalMetricDefaults,
+    key: "conversion.paid_d30",
+    name: "Paid Conversion D30",
+    description: "Eligible signup cohort first entering active paid status within thirty days.",
+    businessQuestion: "What share of mature signup cohorts first become paid within thirty days?",
+    numerator: "mature signup users first active-paid within signup+30d",
+    denominator: "eligible signup users whose 30d observation window is mature",
+    window: "signup occurredAt through +30d",
+    queryHash: "sha256:canonical-metric-engine-v1:conversion-paid-d30",
   },
 ]);

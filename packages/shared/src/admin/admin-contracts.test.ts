@@ -273,8 +273,11 @@ describe("Admin API v2 public contracts", () => {
       dedupe: "one pair per cohort product day",
       attributionRule: "same character only",
       owner: "Growth Analytics",
+      publicationStatus: "diagnostic",
+      decisionGate: null,
       version: 1,
       effectiveAt: now,
+      validFrom: now,
       queryHash: "sha256:d1-v1",
       freshnessSlo: { maxAgeSeconds: 86400 },
       qualityState: "invalid",
@@ -289,6 +292,7 @@ describe("Admin API v2 public contracts", () => {
       metricCardSchema.safeParse({
         key: definition.key,
         definitionVersion: 1,
+        publicationStatus: "diagnostic",
         name: definition.name,
         value: null,
         unit: "percent",
@@ -297,10 +301,17 @@ describe("Admin API v2 public contracts", () => {
         numeratorValue: null,
         denominatorValue: null,
         sampleSize: 0,
+        matureSampleSize: 0,
+        immatureSampleSize: 0,
         window: definition.window,
+        timezone: "UTC",
         maturity: "immature",
+        asOf: now,
+        validFrom: now,
         latestDataAt: now,
         qualityState: "invalid",
+        decisionUse: "blocked",
+        qualityEvidence: ["canonical data unavailable"],
       }).success,
     ).toBe(true);
   });
@@ -367,5 +378,16 @@ describe("Admin API v2 public contracts", () => {
       qualityState: "directional",
       decisionUse: "directional_only",
     });
+    expect(ADMIN_METRIC_REGISTRY.find((definition) => definition.key === "north_star.wpcu")).toMatchObject({
+      publicationStatus: "official",
+      decisionGate: expect.stringContaining("NS-01"),
+    });
+    for (const key of ["north_star.wscu", "guardrail.wscru", "business.wpscu"]) {
+      expect(ADMIN_METRIC_REGISTRY.find((definition) => definition.key === key)).toMatchObject({
+        publicationStatus: "shadow",
+        decisionGate: "NS-01",
+        decisionUse: "directional_only",
+      });
+    }
   });
 });

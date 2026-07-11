@@ -1880,6 +1880,304 @@ model MetricDefinitionSnapshot {
   @@map("metric_definition_snapshots")
 }
 
+model MetricProjectionReceipt {
+  id               String   @id @default(cuid())
+  sourceService    String
+  sourceEventId    String
+  canonicalEventId String
+  eventType        String
+  outcome          String
+  factType         String?
+  factId           String?
+  reason           String?
+  occurredAt       DateTime
+  processedAt      DateTime @default(now())
+
+  @@unique([sourceService, sourceEventId])
+  @@index([outcome, processedAt])
+  @@index([canonicalEventId])
+  @@map("metric_projection_receipts")
+}
+
+model CustomerSignupFact {
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  sourceService   String
+  sourceEventId   String
+  environment     String
+  dataClass       String
+  trustClass      String
+  actorIsInternal Boolean  @default(false)
+  eligible        Boolean
+  occurredAt      DateTime
+  validFrom       DateTime
+  coverageState   String   @default("exact")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([sourceService, sourceEventId])
+  @@index([eligible, occurredAt])
+  @@map("customer_signup_facts")
+}
+
+model ChatExchangeFact {
+  id                         String   @id @default(cuid())
+  exchangeId                 String   @unique
+  sourceService              String
+  sourceEventId              String
+  userMessageId              String
+  assistantMessageId         String
+  selectedAssistantMessageId String
+  assistantAttemptNo         Int
+  correctionRevision         Int      @default(0)
+  correctionType             String?
+  sessionId                  String
+  engagementSessionId        String
+  userId                     String
+  characterId                String
+  characterContentVersionId  String
+  characterReleaseId         String?
+  environment                String
+  dataClass                  String
+  trustClass                 String
+  actorIsInternal            Boolean  @default(false)
+  eligible                   Boolean
+  occurredAt                 DateTime
+  productDay                 DateTime @db.Date
+  sourceUpdatedAt            DateTime
+  validFrom                  DateTime
+  coverageState              String   @default("exact")
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @updatedAt
+
+  @@unique([sourceService, sourceEventId])
+  @@index([userId, characterId, productDay, engagementSessionId])
+  @@index([eligible, occurredAt])
+  @@index([characterContentVersionId, characterReleaseId, occurredAt])
+  @@map("chat_exchange_facts")
+}
+
+model GenerationFulfillmentFact {
+  id                   String   @id @default(cuid())
+  requestId            String   @unique
+  sourceService        String
+  sourceEventId        String
+  artifactId           String
+  userId               String
+  characterId          String?
+  characterReleaseId   String?
+  placementId          String?
+  expectedOutputCount  Int      @default(1)
+  deliveredOutputCount Int      @default(1)
+  outcome              String   @default("succeeded")
+  validArtifact        Boolean  @default(true)
+  displayable          Boolean  @default(true)
+  environment          String
+  dataClass            String
+  trustClass           String
+  actorIsInternal      Boolean  @default(false)
+  eligible             Boolean
+  occurredAt           DateTime
+  validFrom            DateTime
+  coverageState        String   @default("exact_unattributed")
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@unique([sourceService, sourceEventId])
+  @@index([userId, eligible, occurredAt])
+  @@index([characterId, characterReleaseId, placementId, occurredAt])
+  @@map("generation_fulfillment_facts")
+}
+
+model SubscriptionLifecycleFact {
+  id                     String    @id @default(cuid())
+  subscriptionId         String    @unique
+  userId                 String
+  planId                 String?
+  activatedSourceService String
+  activatedSourceEventId String
+  endedSourceService     String?
+  endedSourceEventId     String?
+  environment            String
+  dataClass              String
+  trustClass             String
+  actorIsInternal        Boolean   @default(false)
+  eligible               Boolean
+  activeAt               DateTime
+  endedAt                DateTime?
+  validFrom              DateTime
+  coverageState          String    @default("exact")
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  @@unique([activatedSourceService, activatedSourceEventId])
+  @@index([userId, activeAt, endedAt])
+  @@index([eligible, activeAt])
+  @@map("subscription_lifecycle_facts")
+}
+
+model CharacterExposureFact {
+  id                        String   @id @default(cuid())
+  exposureId                String   @unique
+  sourceService             String
+  sourceEventId             String
+  userId                    String?
+  anonymousId               String?
+  journeyId                 String
+  characterId               String
+  characterContentVersionId String
+  characterReleaseId        String?
+  placementId               String?
+  visibleRatio              Float
+  visibleDurationMs         Int
+  environment               String
+  dataClass                 String
+  trustClass                String
+  actorIsInternal           Boolean  @default(false)
+  eligible                  Boolean
+  occurredAt                DateTime
+  validFrom                 DateTime
+  coverageState             String   @default("exact")
+  createdAt                 DateTime @default(now())
+
+  @@unique([sourceService, sourceEventId])
+  @@index([characterId, characterReleaseId, placementId, occurredAt])
+  @@index([journeyId, characterId, placementId])
+  @@map("character_exposure_facts")
+}
+
+model ExperimentExposureFact {
+  id                String   @id @default(cuid())
+  exposureId        String   @unique
+  sourceService     String
+  sourceEventId     String
+  experimentId      String
+  experimentVersion Int
+  assignmentVersion String
+  subjectType       String
+  subjectId         String
+  variant           String
+  eligible          Boolean
+  environment       String
+  dataClass         String
+  trustClass        String
+  occurredAt        DateTime
+  createdAt         DateTime @default(now())
+
+  @@unique([sourceService, sourceEventId])
+  @@index([experimentId, experimentVersion, variant, occurredAt])
+  @@map("experiment_exposure_facts")
+}
+
+model CompanionEngagementDaily {
+  id                 String   @id @default(cuid())
+  userId             String
+  characterId        String
+  productDay         DateTime @db.Date
+  metricVersion      Int      @default(1)
+  exchangeCount      Int
+  engagementSessions Int
+  qceCount           Int
+  latestOccurredAt   DateTime
+  coverageState      String   @default("exact")
+  updatedAt          DateTime @updatedAt
+
+  @@unique([userId, characterId, productDay, metricVersion])
+  @@index([productDay, qceCount])
+  @@map("companion_engagement_daily")
+}
+
+model CharacterFunnelDaily {
+  id                        String   @id @default(cuid())
+  characterId               String
+  characterContentVersionId String
+  characterReleaseId        String?
+  placementId               String?
+  productDay                DateTime @db.Date
+  metricVersion             Int      @default(1)
+  eligibleImpressions       Int      @default(0)
+  detailViews               Int      @default(0)
+  firstSuccessfulExchanges  Int      @default(0)
+  qceCount                  Int      @default(0)
+  relationshipActivations   Int      @default(0)
+  sameCharacterD7Returns    Int      @default(0)
+  paidAttributions          Int      @default(0)
+  coverageState             String   @default("exact")
+  updatedAt                 DateTime @updatedAt
+
+  @@unique([characterContentVersionId, characterReleaseId, placementId, productDay, metricVersion])
+  @@index([characterId, productDay])
+  @@map("character_funnel_daily")
+}
+
+model MetricSnapshot {
+  id                  String    @id @default(cuid())
+  metricKey           String
+  definitionVersion   Int
+  windowStart         DateTime
+  windowEnd           DateTime
+  asOf                DateTime
+  numeratorValue      Float?
+  denominatorValue    Float?
+  value               Float?
+  sampleSize          Int
+  matureSampleSize    Int
+  immatureSampleSize  Int
+  maturity            String
+  qualityState        String
+  publicationStatus   String
+  latestDataAt        DateTime?
+  definitionQueryHash String
+  qualityEvidence     Json
+  createdAt           DateTime  @default(now())
+
+  @@unique([metricKey, definitionVersion, windowStart, windowEnd, asOf])
+  @@index([qualityState, asOf])
+  @@map("metric_snapshots")
+}
+
+model DataQualityCheck {
+  id           String    @id @default(cuid())
+  checkKey     String
+  checkVersion Int       @default(1)
+  status       String
+  metricKeys   Json
+  observed     Json
+  threshold    Json
+  evidence     Json
+  windowStart  DateTime?
+  windowEnd    DateTime?
+  checkedAt    DateTime  @default(now())
+
+  @@index([checkKey, checkedAt])
+  @@index([status, checkedAt])
+  @@map("data_quality_checks")
+}
+
+model MetricBackfillRun {
+  id             String    @id @default(cuid())
+  source         String
+  status         String    @default("pending")
+  dryRun         Boolean   @default(true)
+  cursor         String?
+  batchSize      Int
+  scannedCount   Int       @default(0)
+  appliedCount   Int       @default(0)
+  skippedCount   Int       @default(0)
+  mismatchCount  Int       @default(0)
+  coverage       Float?
+  validFrom      DateTime?
+  beforeSnapshot Json
+  afterSnapshot  Json
+  mismatchReport Json
+  startedAt      DateTime  @default(now())
+  completedAt    DateTime?
+  updatedAt      DateTime  @updatedAt
+
+  @@index([source, status, updatedAt])
+  @@map("metric_backfill_runs")
+}
+
 model AiUsageFact {
   id                   String   @id @default(cuid())
   source               String
@@ -1895,9 +2193,16 @@ model AiUsageFact {
   latencyMs            Int?
   costMicros           BigInt?
   pricingVersion       String?
+  sourceService        String   @default("main")
+  sourceEventId        String?
+  environment          String   @default("local")
+  dataClass            String   @default("customer")
+  trustClass           String   @default("canonical")
+  actorIsInternal      Boolean  @default(false)
   occurredAt           DateTime
   createdAt            DateTime @default(now())
 
+  @@unique([sourceService, sourceEventId])
   @@index([requestId, occurredAt])
   @@index([provider, model, occurredAt])
   @@index([characterId, releaseId, occurredAt])

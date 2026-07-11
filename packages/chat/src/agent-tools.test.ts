@@ -32,6 +32,8 @@ const context = {
     visualProfileVersion: 1,
     identityPrompt: "Melissa, adult woman, auburn hair, hazel eyes",
     imageToolEnabled: true,
+    characterContentVersionId: null,
+    characterReleaseId: null,
   },
   policy: {
     model: "local-model",

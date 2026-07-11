@@ -7,6 +7,8 @@ import { z } from "zod";
 export const CHAT_TO_MAIN_EVENTS = {
   sessionCreated: "chat.session.created",
   messageCompleted: "chat.message.completed",
+  exchangeCompletedV2: "chat.exchange.completed.v2",
+  exchangeCorrectedV2: "chat.exchange.corrected.v2",
   messageBlocked: "chat.message.blocked",
   imageRequested: "chat.image.requested",
   sessionDeleted: "chat.session.deleted",

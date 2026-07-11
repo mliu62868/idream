@@ -51,7 +51,7 @@ import { InsightsView } from "@/components/admin/InsightsView";
 import { AnnouncementsView } from "@/components/admin/AnnouncementsView";
 import { ExperimentsView } from "@/components/admin/ExperimentsView";
 import { TodayView, type TodayData, type TodayLegacyData } from "@/components/admin/today/TodayView";
-import type { TodayProjection } from "@idream/shared/admin";
+import type { MetricDashboardResponse, TodayProjection } from "@idream/shared/admin";
 import { PlacementsSection } from "@/components/admin/placements/PlacementsSection";
 import { ImageProductionView } from "@/components/admin/ImageProductionView";
 import { OperatorFlow, type OperatorFlowItem } from "@/components/admin/generation/OperatorFlow";
@@ -180,6 +180,11 @@ type AnalyticsData = {
   topEvents: Row[];
 };
 
+type AnalyticsWorkspaceData = {
+  legacy: AnalyticsData;
+  canonical: MetricDashboardResponse;
+};
+
 type AbuseData = {
   window: { from: string; to: string };
   deviceClusters: Row[];
@@ -218,7 +223,7 @@ type SectionData =
   | { kind: "billing"; rows: Row[]; subscriptions: Row[]; reconciliation: ReconciliationData }
   | { kind: "pricing"; rows: Row[] }
   | { kind: "deadletter"; rows: Row[] }
-  | { kind: "analytics"; data: AnalyticsData }
+  | { kind: "analytics"; data: AnalyticsWorkspaceData }
   | { kind: "risk"; data: AbuseData }
   | { kind: "providers"; data: ProviderOpsData }
   | { kind: "content"; characters: Row[]; featured: Row[]; featuredIds: string[] }
@@ -1321,8 +1326,11 @@ async function fetchSection(
     return { kind: "pricing", rows: payload.items };
   }
   if (sectionId === "analytics") {
-    const payload = await apiGet<AnalyticsData>("/api/v1/admin/analytics/overview");
-    return { kind: "analytics", data: payload };
+    const [legacy, canonical] = await Promise.all([
+      apiGet<AnalyticsData>("/api/v1/admin/analytics/overview"),
+      apiGet<MetricDashboardResponse>("/api/v2/admin/metrics"),
+    ]);
+    return { kind: "analytics", data: { legacy, canonical } };
   }
   if (sectionId === "risk") {
     const payload = await apiGet<AbuseData>("/api/v1/admin/risk/abuse");
@@ -5384,19 +5392,57 @@ function DeadLetterView({
   );
 }
 
-function AnalyticsView({ data }: { data: AnalyticsData }) {
+function AnalyticsView({ data }: { data: AnalyticsWorkspaceData }) {
   const { locale, t } = useAdminI18n();
+  const { legacy, canonical } = data;
 
   return (
     <div className="space-y-5">
+      <div className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <p className="text-sm font-semibold text-[var(--ad-text)]">Canonical Metrics v2</p>
+            <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
+              asOf {compactDate(canonical.asOf, locale)} · {canonical.freshness} · join {(canonical.quality.joinCoverage * 100).toFixed(1)}%
+            </p>
+          </div>
+          <span className={cn(
+            "rounded-full px-2.5 py-1 text-xs font-medium",
+            canonical.quality.qualityState === "certified"
+              ? "bg-[var(--ad-green-bg)] text-[var(--ad-green-text)]"
+              : "bg-[var(--ad-red-bg)] text-[var(--ad-red-text)]",
+          )}>
+            {canonical.quality.qualityState}
+          </span>
+        </div>
+        <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {canonical.cards.map((card) => (
+            <div className="rounded-md border border-[var(--ad-border)] p-3" key={card.key}>
+              <div className="flex items-start justify-between gap-2">
+                <p className="text-sm font-medium text-[var(--ad-text)]">{card.name}</p>
+                <span className="text-[10px] uppercase tracking-wide text-[var(--ad-text-muted)]">
+                  {card.publicationStatus}
+                </span>
+              </div>
+              <p className="mt-2 text-2xl font-semibold text-[var(--ad-text)]">
+                {card.value === null ? "—" : card.unit === "ratio" ? `${(Number(card.value) * 100).toFixed(1)}%` : card.value}
+              </p>
+              <p className="mt-2 text-xs text-[var(--ad-text-muted)]">
+                v{card.definitionVersion} · sample {card.sampleSize} · mature {card.matureSampleSize} · {card.qualityState}
+              </p>
+              <p className="mt-1 text-xs text-[var(--ad-text-muted)]">{card.window}</p>
+            </div>
+          ))}
+        </div>
+      </div>
       <p className="text-xs text-[var(--ad-text-muted)]">
-        {t("Window")} {compactDate(data.window.from, locale)} → {compactDate(data.window.to, locale)} ·{" "}
-        {t("activity funnel")}
+        {t("Window")} {compactDate(legacy.window.from, locale)} → {compactDate(legacy.window.to, locale)} ·{" "}
+        {t("legacy operational diagnostics")}
       </p>
       <div className="rounded-lg grid gap-px overflow-hidden border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
-        <Metric label="Signups" value={data.funnel.signups} meta="new users" />
+        <Metric label="Signups" value={legacy.funnel.signups} meta="new users" />
         <Metric label="Activated" value="Invalid" meta="invalid for decisions · definition v1" />
-        <Metric label="Paying" value={data.funnel.payingUsers} meta="subscribed" />
+        <Metric label="Paying" value={legacy.funnel.payingUsers} meta="subscribed" />
         <Metric
           label="Conversion"
           value="Invalid"
@@ -5406,23 +5452,23 @@ function AnalyticsView({ data }: { data: AnalyticsData }) {
       <div className="rounded-lg grid gap-px overflow-hidden border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
         <Metric
           label="Generations"
-          value={data.generation.total}
-          meta={t("{count} completed", { count: data.generation.completed })}
+          value={legacy.generation.total}
+          meta={t("{count} completed", { count: legacy.generation.completed })}
         />
-        <Metric label="Failed" value={data.generation.failed} meta="generation jobs" />
-        <Metric label="Blocked" value={data.generation.blocked} meta="generation jobs" />
+        <Metric label="Failed" value={legacy.generation.failed} meta="generation jobs" />
+        <Metric label="Blocked" value={legacy.generation.blocked} meta="generation jobs" />
         <Metric
           label="Coins net"
-          value={data.economy.net}
-          meta={t("{count} granted", { count: data.economy.coinsGranted })}
+          value={legacy.economy.net}
+          meta={t("{count} granted", { count: legacy.economy.coinsGranted })}
         />
       </div>
       <DataTable
         columns={["reason", "totalDelta", "count"]}
-        rows={data.economy.byReason}
+        rows={legacy.economy.byReason}
         title="Coin economy by reason"
       />
-      <DataTable columns={["name", "count"]} rows={data.topEvents} title="Top events" />
+      <DataTable columns={["name", "count"]} rows={legacy.topEvents} title="Top events" />
     </div>
   );
 }

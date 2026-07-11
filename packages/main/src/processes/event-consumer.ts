@@ -24,6 +24,7 @@ import {
   durableChatIngressEnabled,
   recordMainToChatEvent,
 } from "./chat-outbox";
+import { projectCanonicalMetricEvent } from "@/server/modules/admin-v2/metrics/projector";
 
 function redisOptions(): RedisOptions {
   const url = new URL(env.REDIS_URL);
@@ -189,6 +190,21 @@ export async function dispatchPendingProductEvents(batch = 100): Promise<{ deliv
     if (!event) continue;
     const context = jsonRecord(event.context);
     try {
+      await projectCanonicalMetricEvent(prisma, {
+        id: event.id,
+        sourceService: event.sourceService,
+        sourceEventId: event.sourceEventId ?? event.id,
+        name: event.name,
+        schemaVersion: event.schemaVersion,
+        occurredAt: event.occurredAt ?? event.createdAt,
+        ingestedAt: event.ingestedAt,
+        environment: event.environment,
+        dataClass: event.dataClass,
+        trustClass: event.trustClass,
+        actor: event.actor,
+        context: event.context,
+        props: event.props,
+      });
       await applyChatEvent({
         eventId: event.sourceEventId ?? event.id,
         eventType: event.name,

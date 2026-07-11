@@ -33,6 +33,9 @@ CREATE TABLE IF NOT EXISTS chat.messages (
   safety_status text NOT NULL DEFAULT 'unknown',        -- unknown|passed|flagged|blocked
   attempt       integer NOT NULL DEFAULT 1,             -- regenerate attempt counter
   reply_to_message_id text,                              -- exact user turn answered by an assistant
+  engagement_session_id text,                            -- versioned 30m inactivity grouping, assigned on user turn
+  character_content_version_id text,                     -- exact immutable content used by this turn
+  character_release_id text,                             -- exact release when present; never inferred later
   memory_extracted_attempt integer NOT NULL DEFAULT 0,  -- latest attempt derived into file memory
   created_at    timestamp NOT NULL DEFAULT (timezone('utc', now())),
   updated_at    timestamp NOT NULL DEFAULT (timezone('utc', now())),
@@ -40,6 +43,10 @@ CREATE TABLE IF NOT EXISTS chat.messages (
 );
 ALTER TABLE chat.messages
   ADD COLUMN IF NOT EXISTS reply_to_message_id text;
+ALTER TABLE chat.messages
+  ADD COLUMN IF NOT EXISTS engagement_session_id text,
+  ADD COLUMN IF NOT EXISTS character_content_version_id text,
+  ADD COLUMN IF NOT EXISTS character_release_id text;
 ALTER TABLE chat.messages
   ADD COLUMN IF NOT EXISTS memory_extracted_attempt integer NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS messages_session_created_idx
@@ -122,6 +129,7 @@ CREATE TABLE IF NOT EXISTS chat.chat_outbox_events (
   aggregate_type text NOT NULL,
   aggregate_id   text NOT NULL,
   payload        jsonb NOT NULL DEFAULT '{}'::jsonb,
+  schema_version integer NOT NULL DEFAULT 1,
   status         text NOT NULL DEFAULT 'pending',       -- pending|delivered|failed
   attempts       integer NOT NULL DEFAULT 0,
   next_run_at    timestamp NOT NULL DEFAULT (timezone('utc', now())),
@@ -130,6 +138,8 @@ CREATE TABLE IF NOT EXISTS chat.chat_outbox_events (
 );
 CREATE INDEX IF NOT EXISTS chat_outbox_pending_idx
   ON chat.chat_outbox_events (status, next_run_at);
+ALTER TABLE chat.chat_outbox_events
+  ADD COLUMN IF NOT EXISTS schema_version integer NOT NULL DEFAULT 1;
 
 -- Inbox (main → chat). Commands consumed idempotently on event_id.
 CREATE TABLE IF NOT EXISTS chat.chat_inbox_events (

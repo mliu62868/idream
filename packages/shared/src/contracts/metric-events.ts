@@ -1,0 +1,77 @@
+import { z } from "zod";
+
+export const chatExchangeCompletedV2Schema = z.object({
+  exchangeId: z.string().min(1),
+  userMessageId: z.string().min(1),
+  assistantMessageId: z.string().min(1),
+  selectedAssistantMessageId: z.string().min(1),
+  assistantAttemptNo: z.number().int().positive(),
+  isRegeneration: z.boolean(),
+  sessionId: z.string().min(1),
+  engagementSessionId: z.string().min(1),
+  userId: z.string().min(1),
+  characterId: z.string().min(1),
+  characterContentVersionId: z.string().min(1),
+  characterReleaseId: z.string().min(1).nullable(),
+});
+
+export const chatExchangeCorrectionV2Schema = z.object({
+  exchangeId: z.string().min(1),
+  correctionType: z.enum(["selected", "edited", "deleted", "superseded"]),
+  correctionRevision: z.number().int().positive(),
+  userId: z.string().min(1),
+  selectedAssistantMessageId: z.string().min(1).optional(),
+});
+
+export const customerSignupCompletedV2Schema = z.object({
+  userId: z.string().min(1),
+});
+
+export const subscriptionActivatedV2Schema = z.object({
+  subscriptionId: z.string().min(1),
+  userId: z.string().min(1),
+  planId: z.string().min(1).optional(),
+});
+
+export const subscriptionEndedV2Schema = z.object({
+  subscriptionId: z.string().min(1),
+  userId: z.string().min(1),
+  reason: z.string().min(1).optional(),
+});
+
+export const generationDeliveryCompletedV2Schema = z.object({
+  requestId: z.string().min(1),
+  artifactId: z.string().min(1),
+  userId: z.string().min(1),
+  expectedOutputCount: z.number().int().positive().default(1),
+  deliveredOutputCount: z.number().int().positive().default(1),
+  valid: z.boolean(),
+  displayable: z.boolean(),
+});
+
+export const aiUsageRecordedV2Schema = z.object({
+  invocationId: z.string().min(1),
+  requestId: z.string().min(1).optional(),
+  attemptId: z.string().min(1).optional(),
+  transportExecutionId: z.string().min(1).optional(),
+  userId: z.string().min(1).optional(),
+  provider: z.string().min(1),
+  model: z.string().min(1),
+  usage: z.record(z.string(), z.unknown()),
+  latencyMs: z.number().int().nonnegative().optional(),
+  costMicros: z.number().int().nonnegative().optional(),
+  pricingVersion: z.string().min(1),
+});
+
+export const METRIC_PRODUCT_EVENTS = {
+  chatExchangeCompleted: "chat.exchange.completed.v2",
+  chatExchangeCorrected: "chat.exchange.corrected.v2",
+  customerSignupCompleted: "customer.signup.completed.v2",
+  subscriptionActivated: "subscription.activated.v2",
+  subscriptionEnded: "subscription.ended.v2",
+  generationDeliveryCompleted: "generation.delivery.completed.v2",
+  aiUsageRecorded: "ai.usage.recorded.v2",
+} as const;
+
+export type ChatExchangeCompletedV2 = z.infer<typeof chatExchangeCompletedV2Schema>;
+export type ChatExchangeCorrectionV2 = z.infer<typeof chatExchangeCorrectionV2Schema>;

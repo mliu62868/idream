@@ -23,6 +23,7 @@ export interface OutboxRecord {
   aggregateType: string;
   aggregateId: string;
   payload: Record<string, unknown>;
+  schemaVersion?: number;
 }
 
 /** Insert an outbox row within an existing transaction (atomic with the effect). */
@@ -38,6 +39,7 @@ export async function recordOutbox(
       aggregateType: record.aggregateType,
       aggregateId: record.aggregateId,
       payload: record.payload as Prisma.InputJsonValue,
+      schemaVersion: record.schemaVersion ?? 1,
     },
   });
   return id;
@@ -75,7 +77,7 @@ export async function deliverPendingOutbox(
         sourceService: "chat",
         sourceEventId: row.id,
         eventType: row.eventType,
-        schemaVersion: 1,
+        schemaVersion: row.schemaVersion,
         aggregateType: row.aggregateType,
         aggregateId: row.aggregateId,
         occurredAt: row.createdAt.toISOString(),
