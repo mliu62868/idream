@@ -28,10 +28,11 @@ interface FakeData {
 
 function fakePrisma(data: FakeData): ChatPrismaClient {
   const unique = (value: unknown) => async () => value;
-  return {
+  const fake = {
     message: {
       findUnique: unique(data.message ?? null),
       findFirst: unique(data.lastUser ?? { id: "msg_user" }),
+      count: async () => 0,
       update: async () => ({}),
     },
     chatSession: { findUnique: unique(data.session ?? null) },
@@ -40,6 +41,12 @@ function fakePrisma(data: FakeData): ChatPrismaClient {
     chatUserEligibilityView: { findUnique: unique(data.eligibility ?? null) },
     chatEntitlementView: { findUnique: unique(data.entitlement ?? null) },
     chatUsage: { findUnique: unique(data.usage ?? null) },
+    messageVersion: { count: async () => 0 },
+    $queryRaw: async () => [{ locked: 1 }],
+  };
+  return {
+    ...fake,
+    $transaction: async (run: (tx: typeof fake) => Promise<unknown>) => run(fake),
   } as unknown as ChatPrismaClient;
 }
 
@@ -52,8 +59,8 @@ const assistantMessage = {
 };
 const session = { id: "sess1", userId: "u1", characterId: "c1", memoryEnabled: true, status: "active" };
 const activeUser = { userId: "u1", status: "active", deletedAt: null };
-const approvedCharacter = { characterId: "c1", status: "approved", creatorId: "creator", age: 22 };
-const noRestriction = { userId: "u1", restrictedReason: null };
+const approvedCharacter = { characterId: "c1", status: "approved", visibility: "public", creatorId: "creator", age: 22 };
+const noRestriction = { userId: "u1", ageGateAccepted: true, restrictedReason: null };
 const freeEntitlement = {
   userId: "u1",
   modelTier: "free",
@@ -138,6 +145,7 @@ describe("regenerate quota + eligibility guard (P0-C)", () => {
     ["deleted", { ...assistantMessage, status: "deleted", deletedAt: new Date("2026-01-01T00:00:01Z") }],
     ["blocked", { ...assistantMessage, status: "blocked", deletedAt: null }],
     ["generating", { ...assistantMessage, status: "generating", deletedAt: null }],
+    ["pending", { ...assistantMessage, status: "pending", deletedAt: null }],
   ])("rejects %s assistant messages before enqueue", async (_case, message) => {
     const prisma = fakePrisma({
       message,

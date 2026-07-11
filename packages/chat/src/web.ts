@@ -12,6 +12,9 @@ import { dispatchChat, type ChatRequest } from "./router.js";
 import { createSseResponse } from "./stream.js";
 
 const BFF_TTL_MS = 30_000;
+const MAX_BODY_BYTES = 64 * 1024;
+
+class BodyTooLargeError extends Error {}
 
 export function createChatServer() {
   return createServer((req, res) => {
@@ -50,7 +53,15 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return;
   }
 
-  const raw = await readBody(req);
+  let raw: string;
+  try {
+    raw = await readBody(req);
+  } catch (error) {
+    if (!(error instanceof BodyTooLargeError)) throw error;
+    res.writeHead(413, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "payload_too_large" }));
+    return;
+  }
   const auth = resolveUser(req, raw, url.pathname);
   if (!auth.ok) {
     res.writeHead(401, { "content-type": "application/json" });
@@ -139,8 +150,21 @@ function header(req: IncomingMessage, name: string): string | undefined {
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on("data", (c: Buffer) => chunks.push(c));
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    let bytes = 0;
+    let rejected = false;
+    req.on("data", (c: Buffer) => {
+      if (rejected) return;
+      bytes += c.length;
+      if (bytes > MAX_BODY_BYTES) {
+        rejected = true;
+        reject(new BodyTooLargeError("request body too large"));
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on("end", () => {
+      if (!rejected) resolve(Buffer.concat(chunks).toString("utf8"));
+    });
     req.on("error", reject);
   });
 }

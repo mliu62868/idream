@@ -9,7 +9,7 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { env } from "./env.js";
-import { chatFsPaths, listPrefix, readWhole, writeAtomic } from "./chat-fs.js";
+import { chatFsPaths, listPrefix, readWhole, withFileMutationLock, writeAtomic } from "./chat-fs.js";
 import { createId } from "./id.js";
 
 export interface MemoryItem {
@@ -66,10 +66,18 @@ export async function updateMemory(
   for (const file of files) {
     const hit = parseFile(file).find((p) => p.id === id);
     if (!hit) continue;
-    const updated: MemoryItem = { ...hit, text: clean, id };
-    file.lines[hit.lineNo] = renderLine(updated);
-    await writeAtomic(file.relParts, joinLines(file.lines));
-    return updated;
+    return withFileMutationLock(file.relParts, async () => {
+      const raw = (await readWhole(file.relParts)) ?? "";
+      const lines = raw.split("\n");
+      const current = lines
+        .map((line, lineNo) => parseLine(file.charId, line, lineNo))
+        .find((item) => item?.id === id);
+      if (!current) return null;
+      const updated: MemoryItem = { ...current, text: clean, id };
+      lines[current.lineNo] = renderLine(updated);
+      await writeAtomic(file.relParts, joinLines(lines));
+      return updated;
+    });
   }
   return null;
 }
@@ -80,9 +88,17 @@ export async function deleteMemory(userId: string, id: string): Promise<boolean>
   for (const file of files) {
     const hit = parseFile(file).find((p) => p.id === id);
     if (!hit) continue;
-    file.lines.splice(hit.lineNo, 1);
-    await writeAtomic(file.relParts, joinLines(file.lines));
-    return true;
+    return withFileMutationLock(file.relParts, async () => {
+      const raw = (await readWhole(file.relParts)) ?? "";
+      const lines = raw.split("\n");
+      const current = lines
+        .map((line, lineNo) => parseLine(file.charId, line, lineNo))
+        .find((item) => item?.id === id);
+      if (!current) return false;
+      lines.splice(current.lineNo, 1);
+      await writeAtomic(file.relParts, joinLines(lines));
+      return true;
+    });
   }
   return false;
 }
@@ -101,18 +117,22 @@ export async function forgetByMessageIds(
   const files = await loadMemoryFiles(userId);
   let dropped = 0;
   for (const file of files) {
-    const keep: string[] = [];
-    let changed = false;
-    for (let i = 0; i < file.lines.length; i++) {
-      const parsed = parseLine(file.charId, file.lines[i], i);
-      if (parsed && parsed.sourceMessageIds.some((s) => targets.has(s))) {
-        dropped++;
-        changed = true;
-        continue;
+    dropped += await withFileMutationLock(file.relParts, async () => {
+      const raw = (await readWhole(file.relParts)) ?? "";
+      const lines = raw.split("\n");
+      const keep: string[] = [];
+      let fileDropped = 0;
+      for (let i = 0; i < lines.length; i++) {
+        const parsed = parseLine(file.charId, lines[i], i);
+        if (parsed && parsed.sourceMessageIds.some((s) => targets.has(s))) {
+          fileDropped += 1;
+          continue;
+        }
+        keep.push(lines[i]);
       }
-      keep.push(file.lines[i]);
-    }
-    if (changed) await writeAtomic(file.relParts, joinLines(keep));
+      if (fileDropped > 0) await writeAtomic(file.relParts, joinLines(keep));
+      return fileDropped;
+    });
   }
   return dropped;
 }
@@ -149,24 +169,28 @@ export async function consolidateMemories(
 
   if (toMemory.length) {
     const rel = chatFsPaths.memory(userId, characterId);
-    const items = await loadItems(rel, characterId);
-    for (const c of toMemory) {
-      if (mergeCandidate(items, c, characterId)) merged += 1;
-      else added += 1;
-    }
-    capItems(items, opts.maxStored);
-    await writeAtomic(rel, renderItemsFile(items));
+    await withFileMutationLock(rel, async () => {
+      const items = await loadItems(rel, characterId);
+      for (const c of toMemory) {
+        if (mergeCandidate(items, c, characterId)) merged += 1;
+        else added += 1;
+      }
+      capItems(items, opts.maxStored);
+      await writeAtomic(rel, renderItemsFile(items));
+    });
   }
 
   if (toBoundaries.length) {
     const rel = chatFsPaths.boundaries(userId);
-    const items = await loadItems(rel, "global");
-    for (const c of toBoundaries) {
-      if (mergeCandidate(items, { ...c, type: "boundary" }, "global")) merged += 1;
-      else added += 1;
-    }
-    // Boundaries are safety-critical — dedup but NEVER evict.
-    await writeAtomic(rel, renderItemsFile(items));
+    await withFileMutationLock(rel, async () => {
+      const items = await loadItems(rel, "global");
+      for (const c of toBoundaries) {
+        if (mergeCandidate(items, { ...c, type: "boundary" }, "global")) merged += 1;
+        else added += 1;
+      }
+      // Boundaries are safety-critical — dedup but NEVER evict.
+      await writeAtomic(rel, renderItemsFile(items));
+    });
   }
 
   return { added, merged };

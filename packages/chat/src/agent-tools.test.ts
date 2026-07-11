@@ -36,6 +36,7 @@ const context = {
   policy: {
     model: "local-model",
     maxContextMessages: 12,
+    maxContextChars: 24_000,
     maxMemories: 0,
     maxStoredMemories: 0,
     rateLimitPerHour: 60,

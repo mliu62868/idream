@@ -13,6 +13,7 @@ import { updateRelationship, parseRelationship } from "../src/relationship.js";
 import { exportAccount } from "../src/export.js";
 import { readWhole, chatFsPaths } from "../src/chat-fs.js";
 import { CHAT_QUEUES } from "@idream/shared/contracts";
+import { acceptAgeGate } from "./fixtures.js";
 
 const prisma = createChatPrisma();
 const superPool = new Pool({ connectionString: process.env.CHAT_TEST_SUPER_URL });
@@ -27,6 +28,7 @@ beforeAll(async () => {
     `INSERT INTO public.users (id,email,status,"createdAt","updatedAt") VALUES ($1,$2,'active',now(),now()) ON CONFLICT (id) DO NOTHING`,
     [USER, "p1@test.dev"],
   );
+  await acceptAgeGate(superPool, [USER]);
   await superPool.query(
     `INSERT INTO public.characters (id,name,age,description,visibility,status,style,gender,appearance,"advancedDetails","createdAt","updatedAt")
      VALUES ($1,'P1',25,'d','public','approved','realistic','female','{}','{}',now(),now()) ON CONFLICT (id) DO NOTHING`,

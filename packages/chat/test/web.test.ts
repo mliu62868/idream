@@ -15,6 +15,7 @@ import { drainQueue } from "../src/queue.js";
 import { setNoMemory } from "../src/service.js";
 import { getLastMockStreamMessages } from "../src/providers.js";
 import { CHAT_QUEUES, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
+import { acceptAgeGate } from "./fixtures.js";
 
 const superPool = new Pool({ connectionString: process.env.CHAT_TEST_SUPER_URL });
 const prisma = createChatPrisma();
@@ -117,6 +118,18 @@ beforeAll(async () => {
     `INSERT INTO public.users (id,email,status,"createdAt","updatedAt") VALUES ($1,$2,'active',now(),now()) ON CONFLICT (id) DO NOTHING`,
     [P5_ACCEPT_DEGRADE_USER, "web-p5-accept-degrade@test.dev"],
   );
+  await acceptAgeGate(superPool, [
+    USER,
+    IMG_USER,
+    VP_USER,
+    NOTOOL_USER,
+    FC_USER,
+    EDIT_USER,
+    EDIT_FALLBACK_USER,
+    EDIT_RETRY_USER,
+    P5_ACCEPT_USER,
+    P5_ACCEPT_DEGRADE_USER,
+  ]);
 });
 
 afterAll(async () => {

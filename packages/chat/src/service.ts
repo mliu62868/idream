@@ -4,6 +4,7 @@
 // placeholder(generating) + bumps session, enqueues chat.generate, returns
 // {assistantMessageId, streamUrl}. NO synchronous generation in the request.
 import type { ChatPrismaClient } from "./db.js";
+import type { Prisma } from "../generated/client/client.js";
 import { chatPrisma } from "./db.js";
 import { providers } from "./providers.js";
 import { createId } from "./id.js";
@@ -12,6 +13,8 @@ import { enqueue } from "./queue.js";
 import { streamKey } from "./stream.js";
 import { recordOutbox, scheduleOutboxDelivery } from "./outbox.js";
 import { resolvePolicy, snapshotFromView } from "./policy.js";
+import type { ChatPolicy } from "./policy.js";
+import { logger } from "./logger.js";
 import {
   CHAT_QUEUES,
   CHAT_TO_MAIN_EVENTS,
@@ -48,11 +51,17 @@ async function assertEligible(prisma: ChatPrismaClient, userId: string, characte
     throw new ChatError("user_inactive", "user not active", 403);
   }
   if (!character) throw new ChatError("character_not_found", "character not found", 404);
+  if (character.visibility !== "public" && character.creatorId !== userId) {
+    throw new ChatError("character_unavailable", "character not available", 403);
+  }
   if (character.status !== "approved" && character.creatorId !== userId) {
     throw new ChatError("character_unavailable", "character not available", 403);
   }
   if (character.age < 18) throw new ChatError("character_underage", "character not allowed", 403);
-  if (eligibility?.restrictedReason) {
+  if (!eligibility?.ageGateAccepted) {
+    throw new ChatError("age_gate_required", "age gate acceptance required", 403);
+  }
+  if (eligibility.restrictedReason) {
     throw new ChatError("restricted", eligibility.restrictedReason, 403);
   }
   return { user, character };
@@ -65,15 +74,19 @@ export async function createSession(
   const { prisma } = ctx(override);
   await assertEligible(prisma, input.userId, input.characterId);
 
-  // reuse an active session for (user, character) if present
-  const existing = await prisma.chatSession.findFirst({
-    where: { userId: input.userId, characterId: input.characterId, status: "active" },
-    orderBy: { lastMessageAt: "desc" },
-  });
-  if (existing) return existing;
+  // The product exposes one active conversation per user/character pair. The
+  // advisory lock makes the read-then-create invariant true under concurrent
+  // requests without coupling the independently deployable chat schema to a
+  // partial-unique-index-specific error path.
+  return prisma.$transaction(async (tx) => {
+    await advisoryLock(tx, `session:${input.userId}:${input.characterId}`);
+    const existing = await tx.chatSession.findFirst({
+      where: { userId: input.userId, characterId: input.characterId, status: "active" },
+      orderBy: { lastMessageAt: "desc" },
+    });
+    if (existing) return existing;
 
-  const id = createId("sess");
-  const session = await prisma.$transaction(async (tx) => {
+    const id = createId("sess");
     const created = await tx.chatSession.create({
       data: { id, userId: input.userId, characterId: input.characterId, title: input.title ?? null },
     });
@@ -85,7 +98,6 @@ export async function createSession(
     });
     return created;
   });
-  return session;
 }
 
 export async function listSessions(userId: string, override?: Partial<ChatContext>) {
@@ -106,13 +118,16 @@ export async function getSession(
   if (!session || session.userId !== input.userId || session.status === "deleted") {
     throw new ChatError("session_not_found", "session not found", 404);
   }
-  const messages = await prisma.message.findMany({
+  const newestMessages = await prisma.message.findMany({
     where: { sessionId: session.id, deletedAt: null, status: { not: "deleted" } },
-    orderBy: { createdAt: "asc" },
+    // Fetch the tail, not the oldest page. Assistant sorts before user in the
+    // DESC query so reversing restores user → assistant for equal TX timestamps.
+    orderBy: [{ createdAt: "desc" }, { role: "asc" }],
     take: 200,
   });
+  const messages = newestMessages.reverse();
   const attachments = await prisma.messageAttachment.findMany({
-    where: { sessionId: session.id },
+    where: { messageId: { in: messages.map((message) => message.id) } },
     orderBy: { createdAt: "asc" },
   });
   const byMessage = new Map<string, typeof attachments>();
@@ -139,6 +154,17 @@ export interface SendResult {
 
 export type EditMessageResult = SendResult;
 
+const MAX_MESSAGE_LENGTH = 12_000;
+
+function normalizeMessageContent(value: string): string {
+  const content = value.trim();
+  if (!content) throw new ChatError("empty_message", "message is empty", 400);
+  if (content.length > MAX_MESSAGE_LENGTH) {
+    throw new ChatError("message_too_long", `message exceeds ${MAX_MESSAGE_LENGTH} characters`, 400);
+  }
+  return content;
+}
+
 export async function sendMessage(
   input: { userId: string; sessionId: string; content: string },
   override?: Partial<ChatContext>,
@@ -150,18 +176,10 @@ export async function sendMessage(
   }
   await assertEligible(prisma, input.userId, session.characterId);
 
-  const content = input.content.trim();
-  if (!content) throw new ChatError("empty_message", "message is empty", 400);
+  const content = normalizeMessageContent(input.content);
 
-  // rate limit / quota (local judgment, design §3 step 3)
   const entitlement = await prisma.chatEntitlementView.findUnique({ where: { userId: input.userId } });
   const policy = resolvePolicy(snapshotFromView(entitlement), { memoryEnabled: session.memoryEnabled });
-  if (!policy.unlimitedMessages) {
-    const used = await currentUsage(prisma, input.userId);
-    if (used >= FREE_DAILY_MESSAGES) {
-      throw new ChatError("quota_exceeded", "Daily free message limit reached.", 402);
-    }
-  }
 
   // input moderation (design §3 step 4) — block before persisting an assistant turn
   const moderation = await providers.moderation.check({ targetType: "text", content });
@@ -170,6 +188,14 @@ export async function sendMessage(
   const assistantMessageId = createId("msg");
 
   await prisma.$transaction(async (tx) => {
+    await lockTurn(tx, input.userId, session.id);
+    const currentSession = await tx.chatSession.findUnique({ where: { id: session.id } });
+    if (!currentSession || currentSession.userId !== input.userId || currentSession.status !== "active") {
+      throw new ChatError("session_not_found", "session not found", 404);
+    }
+    if (moderation.status !== "blocked") {
+      await assertTurnCapacity(tx, input.userId, session.id, policy);
+    }
     await tx.message.create({
       data: {
         id: userMessageId,
@@ -186,8 +212,9 @@ export async function sendMessage(
         sessionId: session.id,
         role: "assistant",
         content: "",
-        status: moderation.status === "blocked" ? "blocked" : "generating",
+        status: moderation.status === "blocked" ? "blocked" : "pending",
         attempt: 1,
+        replyToMessageId: userMessageId,
       },
     });
     await tx.chatSession.update({
@@ -227,11 +254,7 @@ export async function sendMessage(
     };
   }
 
-  await enqueue({
-    queue: CHAT_QUEUES.generate,
-    payload: { sessionId: session.id, assistantMessageId, userMessageId, attempt: 1 },
-    dedupeKey: idempotencyKeys.chatGenerate(assistantMessageId, 1),
-  });
+  await enqueueGeneration({ sessionId: session.id, assistantMessageId, userMessageId, attempt: 1 });
 
   return {
     assistantMessageId,
@@ -258,8 +281,7 @@ export async function editUserMessage(
     throw new ChatError("session_not_active", "session is not active", 409);
   }
 
-  const content = input.content.trim();
-  if (!content) throw new ChatError("empty_message", "message is empty", 400);
+  const content = normalizeMessageContent(input.content);
 
   const latestUser = await prisma.message.findFirst({
     where: { sessionId: session.id, role: "user", deletedAt: null, status: { not: "deleted" } },
@@ -286,18 +308,14 @@ export async function editUserMessage(
   await assertEligible(prisma, input.userId, session.characterId);
   const entitlement = await prisma.chatEntitlementView.findUnique({ where: { userId: input.userId } });
   const policy = resolvePolicy(snapshotFromView(entitlement), { memoryEnabled: session.memoryEnabled });
-  if (!policy.unlimitedMessages) {
-    const used = await currentUsage(prisma, input.userId);
-    if (used >= FREE_DAILY_MESSAGES) {
-      throw new ChatError("quota_exceeded", "Daily free message limit reached.", 402);
-    }
-  }
 
   const moderation = await providers.moderation.check({ targetType: "text", content });
   const assistantMessageId = assistant?.id ?? createId("msg");
   const attempt = (assistant?.attempt ?? 0) + 1;
 
   await prisma.$transaction(async (tx) => {
+    await lockTurn(tx, input.userId, session.id);
+    await assertTurnCapacity(tx, input.userId, session.id, policy, assistantMessageId);
     await tx.message.update({
       where: { id: message.id },
       data: {
@@ -317,8 +335,9 @@ export async function editUserMessage(
         where: { id: assistant.id },
         data: {
           content: "",
-          status: moderation.status === "blocked" ? "blocked" : "generating",
+          status: moderation.status === "blocked" ? "blocked" : "pending",
           attempt,
+          replyToMessageId: message.id,
           model: null,
           tokenCount: null,
           safetyStatus: moderation.status === "blocked" ? "blocked" : "unknown",
@@ -331,8 +350,9 @@ export async function editUserMessage(
           sessionId: session.id,
           role: "assistant",
           content: "",
-          status: moderation.status === "blocked" ? "blocked" : "generating",
+          status: moderation.status === "blocked" ? "blocked" : "pending",
           attempt,
+          replyToMessageId: message.id,
           safetyStatus: moderation.status === "blocked" ? "blocked" : "unknown",
         },
       });
@@ -374,11 +394,7 @@ export async function editUserMessage(
     };
   }
 
-  await enqueue({
-    queue: CHAT_QUEUES.generate,
-    payload: { sessionId: session.id, assistantMessageId, userMessageId: message.id, attempt },
-    dedupeKey: idempotencyKeys.chatGenerate(assistantMessageId, attempt),
-  });
+  await enqueueGeneration({ sessionId: session.id, assistantMessageId, userMessageId: message.id, attempt });
 
   return {
     assistantMessageId,
@@ -407,7 +423,7 @@ export async function regenerate(
   if (message.deletedAt || ["blocked", "deleted"].includes(message.status)) {
     throw new ChatError("message_not_regenerable", "message cannot be regenerated", 409);
   }
-  if (message.status === "generating") {
+  if (["pending", "generating"].includes(message.status)) {
     throw new ChatError("message_generating", "message is already generating", 409);
   }
 
@@ -417,39 +433,43 @@ export async function regenerate(
   await assertEligible(prisma, input.userId, session.characterId);
   const entitlement = await prisma.chatEntitlementView.findUnique({ where: { userId: input.userId } });
   const policy = resolvePolicy(snapshotFromView(entitlement), { memoryEnabled: session.memoryEnabled });
-  if (!policy.unlimitedMessages) {
-    const used = await currentUsage(prisma, input.userId);
-    if (used >= FREE_DAILY_MESSAGES) {
-      throw new ChatError("quota_exceeded", "Daily free message limit reached.", 402);
-    }
-  }
 
-  const lastUser = await prisma.message.findFirst({
-    // user + assistant placeholder are inserted in the same transaction, so
-    // PostgreSQL now() can give them the same created_at.
-    where: { sessionId: session.id, role: "user", createdAt: { lte: message.createdAt }, deletedAt: null },
-    orderBy: { createdAt: "desc" },
-  });
+  const lastUser = message.replyToMessageId
+    ? await prisma.message.findUnique({ where: { id: message.replyToMessageId } })
+    : await prisma.message.findFirst({
+        // Compatibility for rows created before reply_to_message_id existed.
+        where: { sessionId: session.id, role: "user", createdAt: { lte: message.createdAt }, deletedAt: null },
+        orderBy: [{ createdAt: "desc" }, { role: "desc" }],
+      });
   if (!lastUser) {
     throw new ChatError("missing_user_turn", "assistant message has no user turn", 409);
   }
 
   const attempt = message.attempt + 1;
-  await prisma.message.update({
-    where: { id: message.id },
-    data: { status: "generating", attempt, content: "" },
+  await prisma.$transaction(async (tx) => {
+    await lockTurn(tx, input.userId, session.id);
+    await assertTurnCapacity(tx, input.userId, session.id, policy, message.id);
+    const current = await tx.message.findUnique({ where: { id: message.id } });
+    if (!current || ["pending", "generating"].includes(current.status)) {
+      throw new ChatError("message_generating", "message is already generating", 409);
+    }
+    await tx.message.update({
+      where: { id: message.id },
+      data: {
+        status: "pending",
+        attempt,
+        content: "",
+        replyToMessageId: lastUser.id,
+      },
+    });
   });
 
   // dedupeKey carries :attempt so regenerate is NOT swallowed (PLAN §3, the bug fix).
-  await enqueue({
-    queue: CHAT_QUEUES.generate,
-    payload: {
-      sessionId: session.id,
-      assistantMessageId: message.id,
-      userMessageId: lastUser?.id ?? "",
-      attempt,
-    },
-    dedupeKey: idempotencyKeys.chatGenerate(message.id, attempt),
+  await enqueueGeneration({
+    sessionId: session.id,
+    assistantMessageId: message.id,
+    userMessageId: lastUser.id,
+    attempt,
   });
 
   return {
@@ -622,4 +642,79 @@ async function currentUsage(prisma: ChatPrismaClient, userId: string): Promise<n
     where: { userId_periodStart: { userId, periodStart } },
   });
   return row?.messagesUsed ?? 0;
+}
+
+type TurnTransaction = Prisma.TransactionClient;
+
+async function advisoryLock(tx: TurnTransaction, key: string): Promise<void> {
+  await tx.$queryRaw`SELECT 1::int AS locked FROM pg_advisory_xact_lock(hashtext(${`idream-chat:${key}`}))`;
+}
+
+async function lockTurn(tx: TurnTransaction, userId: string, sessionId: string): Promise<void> {
+  // Stable lock order prevents deadlocks when different sessions for one user race.
+  await advisoryLock(tx, `user:${userId}`);
+  await advisoryLock(tx, `turn:${sessionId}`);
+}
+
+async function assertTurnCapacity(
+  tx: TurnTransaction,
+  userId: string,
+  sessionId: string,
+  policy: ChatPolicy,
+  excludeAssistantMessageId?: string,
+): Promise<void> {
+  const sessionInFlight = await tx.message.count({
+    where: {
+      sessionId,
+      role: "assistant",
+      status: { in: ["pending", "generating"] },
+      ...(excludeAssistantMessageId ? { id: { not: excludeAssistantMessageId } } : {}),
+    },
+  });
+  if (sessionInFlight > 0) {
+    throw new ChatError("reply_in_progress", "wait for the current reply to finish", 409);
+  }
+
+  const pendingReservations = await tx.message.count({
+    where: {
+      role: "assistant",
+      status: { in: ["pending", "generating"] },
+      session: { userId },
+      ...(excludeAssistantMessageId ? { id: { not: excludeAssistantMessageId } } : {}),
+    },
+  });
+  if (!policy.unlimitedMessages) {
+    const used = await currentUsage(tx as unknown as ChatPrismaClient, userId);
+    if (used + pendingReservations >= FREE_DAILY_MESSAGES) {
+      throw new ChatError("quota_exceeded", "Daily free message limit reached.", 402);
+    }
+  }
+
+  const since = new Date(Date.now() - 60 * 60_000);
+  const completedAttempts = await tx.messageVersion.count({
+    where: { createdAt: { gte: since }, message: { session: { userId } } },
+  });
+  if (completedAttempts + pendingReservations >= policy.rateLimitPerHour) {
+    throw new ChatError("rate_limited", "Hourly chat limit reached.", 429);
+  }
+}
+
+async function enqueueGeneration(input: {
+  sessionId: string;
+  assistantMessageId: string;
+  userMessageId: string;
+  attempt: number;
+}): Promise<void> {
+  try {
+    await enqueue({
+      queue: CHAT_QUEUES.generate,
+      payload: input,
+      dedupeKey: idempotencyKeys.chatGenerate(input.assistantMessageId, input.attempt),
+    });
+  } catch (error) {
+    // The pending assistant row is the durable generation intent. Reconcile will
+    // re-dispatch it, so a transient Redis outage must not turn a committed user
+    // message into an HTTP failure that encourages duplicate resubmission.
+    logger.warn({ err: error, assistantMessageId: input.assistantMessageId }, "generation enqueue deferred");
+  }
 }

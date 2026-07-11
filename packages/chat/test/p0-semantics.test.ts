@@ -16,6 +16,7 @@ import { setRelationship } from "../src/relationship.js";
 import { consumeInbound } from "../src/inbox.js";
 import { drainQueue, obliterate } from "../src/queue.js";
 import { CHAT_QUEUES, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
+import { acceptAgeGate } from "./fixtures.js";
 
 const prisma = createChatPrisma();
 const superPool = new Pool({ connectionString: process.env.CHAT_TEST_SUPER_URL });
@@ -54,6 +55,7 @@ beforeAll(async () => {
       [u, `${u}@test.dev`],
     );
   }
+  await acceptAgeGate(superPool, USERS);
   await superPool.query(
     `INSERT INTO public.characters (id,name,age,description,visibility,status,style,gender,appearance,"advancedDetails","createdAt","updatedAt")
      VALUES ($1,'P0',24,'d','public','approved','realistic','female','{}','{}',now(),now()) ON CONFLICT (id) DO NOTHING`,

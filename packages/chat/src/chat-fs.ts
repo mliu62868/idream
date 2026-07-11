@@ -75,6 +75,33 @@ export async function writeAtomic(relParts: string[], content: string): Promise<
   await rename(tmp, file);
 }
 
+// Whole-file memory and relationship updates are read-modify-write operations.
+// The worker is single-instance, but HTTP edits run in the same process and can
+// interleave with it. Serialize by authority-file path so an edit and a derived
+// update cannot silently overwrite each other.
+const mutationTails = new Map<string, Promise<void>>();
+
+export async function withFileMutationLock<T>(
+  relParts: string[],
+  mutate: () => Promise<T>,
+): Promise<T> {
+  const key = abs(relParts);
+  const previous = mutationTails.get(key) ?? Promise.resolve();
+  let release = (): void => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const tail = previous.catch(() => {}).then(() => gate);
+  mutationTails.set(key, tail);
+  await previous.catch(() => {});
+  try {
+    return await mutate();
+  } finally {
+    release();
+    if (mutationTails.get(key) === tail) mutationTails.delete(key);
+  }
+}
+
 /** List relative file paths under a directory prefix (recursive). Empty if absent. */
 export async function listPrefix(prefixParts: string[]): Promise<string[]> {
   const base = abs(prefixParts);

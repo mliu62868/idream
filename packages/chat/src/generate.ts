@@ -12,12 +12,13 @@ import type { ChatPrismaClient } from "./db.js";
 import { chatPrisma } from "./db.js";
 import { providers } from "./providers.js";
 import type { ChatToolCall, ModelMessage } from "./providers.js";
-import { buildContext, identityPromptLine, type BuiltContext } from "./context.js";
+import { buildContext, type BuiltContext } from "./context.js";
 import { appendStreamEvent, streamKey } from "./stream.js";
 import { appendLine, chatFsPaths } from "./chat-fs.js";
 import { recordOutbox, scheduleOutboxDelivery } from "./outbox.js";
 import { createId } from "./id.js";
 import { enqueue } from "./queue.js";
+import { logger } from "./logger.js";
 import {
   EDIT_LAST_IMAGE_TOOL,
   findAgentTool,
@@ -29,7 +30,7 @@ import {
   type AgentToolCallPlan,
   type ImageAgentToolCall,
 } from "./agent-tools.js";
-import { companionRole } from "@idream/shared";
+import { buildCompanionSystemPrompt } from "./prompt.js";
 import {
   CHAT_QUEUES,
   CHAT_TO_MAIN_EVENTS,
@@ -69,8 +70,18 @@ export async function processGenerate(
 
   await prisma.message.updateMany({
     where: { id: payload.assistantMessageId, status: { in: ["pending", "generating"] }, attempt: payload.attempt },
-    data: { status: "generating" },
+    data: { status: "generating", updatedAt: new Date() },
   });
+  let lastHeartbeatAt = Date.now();
+  const heartbeat = async (force = false): Promise<void> => {
+    const now = Date.now();
+    if (!force && now - lastHeartbeatAt < 30_000) return;
+    lastHeartbeatAt = now;
+    await prisma.message.updateMany({
+      where: { id: payload.assistantMessageId, status: "generating", attempt: payload.attempt },
+      data: { updatedAt: new Date(now) },
+    });
+  };
 
   const key = streamKey(payload.assistantMessageId);
   const context = await buildContext({
@@ -95,6 +106,7 @@ export async function processGenerate(
   const fcEnabled = providers.chat.supportsTools === true && context.policy.imageToolEnabled;
 
   const streamDelta = async (delta: string): Promise<void> => {
+    await heartbeat();
     seq += 1;
     chunks.push(delta);
     await appendStreamEvent(key, { type: "delta", attempt: payload.attempt, seq, delta });
@@ -260,7 +272,8 @@ export async function processGenerate(
   const moderation = await providers.moderation.check({ targetType: "text", content });
   const blocked = moderation.status === "blocked";
 
-  await finalize({
+  await heartbeat(true);
+  const finalized = await finalize({
     prisma,
     payload,
     session,
@@ -273,6 +286,7 @@ export async function processGenerate(
     imageToolCall,
     toolCallTrigger,
   });
+  if (!finalized) return { status: "skipped" };
 
   await appendStreamEvent(key, { type: "done", attempt: payload.attempt, usage });
 
@@ -294,15 +308,27 @@ export async function processGenerate(
       toolCalls: imageToolCall ? [imageToolCall] : [],
       moderation,
       model,
-    }));
+    })).catch((error) => {
+      // The PG ledger is already terminal. Trace persistence is diagnostic and
+      // must not prevent memory scheduling or make BullMQ retry a completed turn.
+      logger.error({ err: error, assistantMessageId: payload.assistantMessageId }, "agent trace append failed");
+    });
   }
 
   // Derive long-term memory off the hot path (reads jsonl + re-checks PG status).
   if (!blocked && session.memoryEnabled) {
     await enqueue({
       queue: CHAT_QUEUES.memoryExtract,
-      payload: { sessionId: session.id, assistantMessageId: payload.assistantMessageId, attempt: payload.attempt },
+      payload: {
+        sessionId: session.id,
+        assistantMessageId: payload.assistantMessageId,
+        userMessageId: payload.userMessageId,
+        attempt: payload.attempt,
+      },
       dedupeKey: idempotencyKeys.chatMemoryExtract(payload.assistantMessageId, payload.attempt),
+    }).catch((error) => {
+      // Reconcile scans sent messages whose memory_extracted_attempt lags.
+      logger.warn({ err: error, assistantMessageId: payload.assistantMessageId }, "memory extraction enqueue deferred");
     });
   }
 
@@ -324,13 +350,13 @@ interface FinalizeInput {
   toolCallTrigger: "agent_fc" | "agent_tool_call";
 }
 
-async function finalize(input: FinalizeInput): Promise<void> {
+async function finalize(input: FinalizeInput): Promise<boolean> {
   const { prisma, payload, session, content, model, usage, moderation, blocked, context, imageToolCall, toolCallTrigger } = input;
 
-  await prisma.$transaction(async (tx) => {
+  return prisma.$transaction(async (tx) => {
     // Re-read inside the TX for idempotency under concurrency.
     const current = await tx.message.findUnique({ where: { id: payload.assistantMessageId } });
-    if (!current || current.status !== "generating" || current.attempt !== payload.attempt) return;
+    if (!current || current.status !== "generating" || current.attempt !== payload.attempt) return false;
 
     const tokenCount = usage.completionTokens;
     const updated = await tx.message.updateMany({
@@ -343,7 +369,7 @@ async function finalize(input: FinalizeInput): Promise<void> {
         safetyStatus: blocked ? "blocked" : moderation.status === "flagged" ? "flagged" : "passed",
       },
     });
-    if (updated.count === 0) return;
+    if (updated.count === 0) return false;
 
     if (!blocked) {
       // flip previous selected off, add the new selected version
@@ -483,6 +509,7 @@ async function finalize(input: FinalizeInput): Promise<void> {
         });
       }
     }
+    return true;
   });
 }
 
@@ -500,20 +527,7 @@ function emptyAssistantReply(characterName: string) {
 function buildModelMessages(
   context: BuiltContext,
 ): Array<{ role: "system" | "user" | "assistant"; content: string }> {
-  const persona = context.persona;
-  const system = [
-    `You are ${persona.name}, an adult ${companionRole(persona.relationship)} in a private companion chat.`,
-    "Stay in persona; honor the user's stated preferences and boundaries; keep continuity.",
-    "Do not claim to remember facts not present in the supplied context.",
-    persona.systemPrompt ?? persona.description,
-    identityPromptLine(persona),
-    context.sessionSummary ? `Session summary: ${context.sessionSummary}` : "",
-    relationshipLine(context.relationship),
-    context.boundaries.length ? `Boundaries (highest priority):\n${context.boundaries.map((b) => `- ${b}`).join("\n")}` : "",
-    context.longTermMemories.length ? `Long-term memories:\n${context.longTermMemories.map((m) => `- ${m}`).join("\n")}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+  const system = buildCompanionSystemPrompt(context);
 
   return [
     { role: "system", content: system },
@@ -527,29 +541,21 @@ function buildModelMessages(
   ];
 }
 
-// Qualitative relationship line for the system prompt (P1-B). Never numbers/scores
-// — just tone + the narrative summary so replies reflect the bond's progression.
-const STAGE_TONE: Record<string, string> = {
-  new: "You have just met the user; be warm but still getting to know them.",
-  familiar: "You and the user are becoming familiar; reference shared history naturally.",
-  close: "You and the user are close; speak with comfortable intimacy and continuity.",
-  committed: "You and the user share a deep, committed bond; speak with trust and devotion.",
-};
-function relationshipLine(relationship: BuiltContext["relationship"]): string {
-  if (!relationship) return "";
-  const tone = STAGE_TONE[relationship.stage] ?? STAGE_TONE.new;
-  const summary = relationship.summary.trim();
-  return `Relationship: ${tone}${summary ? `\nWhat you remember of the bond:\n${summary}` : ""}`;
-}
-
 function buildSummary(context: BuiltContext, assistantContent: string): string {
   const lastUser = [...context.recentMessages].reverse().find((m) => m.role === "user")?.content;
-  const pieces = [
-    context.sessionSummary,
+  const newestTurn = [
     lastUser ? `User: ${lastUser}` : null,
     `Assistant: ${assistantContent}`,
-  ].filter(Boolean);
-  return clamp(pieces.join("\n"), 900);
+  ].filter(Boolean).join("\n");
+  // A rolling summary must never freeze once the old prefix fills the cap. Keep
+  // the newest turn intact and spend the remaining budget on the recent tail of
+  // the previous summary; durable long-term facts live in the memory layer.
+  const newest = clampTail(newestTurn, 900);
+  const previousBudget = Math.max(0, 900 - newest.length - 1);
+  const previous = context.sessionSummary && previousBudget > 0
+    ? clampTail(context.sessionSummary, previousBudget)
+    : "";
+  return [previous, newest].filter(Boolean).join("\n");
 }
 
 function estimateTokens(text: string): number {
@@ -557,6 +563,11 @@ function estimateTokens(text: string): number {
 }
 function clamp(value: string, max: number): string {
   return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
+}
+function clampTail(value: string, max: number): string {
+  if (value.length <= max) return value;
+  if (max <= 1) return "…".slice(0, max);
+  return `…${value.slice(-(max - 1))}`;
 }
 function chunk(text: string, size: number): string[] {
   const out: string[] = [];

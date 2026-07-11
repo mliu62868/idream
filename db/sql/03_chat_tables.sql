@@ -32,15 +32,23 @@ CREATE TABLE IF NOT EXISTS chat.messages (
   token_count   integer,
   safety_status text NOT NULL DEFAULT 'unknown',        -- unknown|passed|flagged|blocked
   attempt       integer NOT NULL DEFAULT 1,             -- regenerate attempt counter
+  reply_to_message_id text,                              -- exact user turn answered by an assistant
+  memory_extracted_attempt integer NOT NULL DEFAULT 0,  -- latest attempt derived into file memory
   created_at    timestamp NOT NULL DEFAULT (timezone('utc', now())),
   updated_at    timestamp NOT NULL DEFAULT (timezone('utc', now())),
   deleted_at    timestamp
 );
+ALTER TABLE chat.messages
+  ADD COLUMN IF NOT EXISTS reply_to_message_id text;
+ALTER TABLE chat.messages
+  ADD COLUMN IF NOT EXISTS memory_extracted_attempt integer NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS messages_session_created_idx
   ON chat.messages (session_id, created_at);
 -- reconciler hot scan: stuck `generating`
 CREATE INDEX IF NOT EXISTS messages_status_updated_idx
   ON chat.messages (status, updated_at);
+CREATE INDEX IF NOT EXISTS messages_reply_to_idx
+  ON chat.messages (reply_to_message_id);
 
 CREATE TABLE IF NOT EXISTS chat.message_versions (
   id         text PRIMARY KEY,

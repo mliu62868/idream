@@ -5,11 +5,11 @@
 // Each memory line carries source_message_ids back-linking PG.
 import type { ChatPrismaClient } from "./db.js";
 import { chatPrisma } from "./db.js";
-import { updateRelationship } from "./relationship.js";
+import { updateRelationshipOnce } from "./relationship.js";
 import { consolidateMemories } from "./memories.js";
 import { extractCandidates } from "./extract.js";
 import { resolvePolicy, snapshotFromView } from "./policy.js";
-import { createId } from "./id.js";
+import { recordOutbox } from "./outbox.js";
 import { CHAT_TO_MAIN_EVENTS } from "@idream/shared/contracts";
 
 // Re-export the extractor surface so existing importers keep their path.
@@ -19,6 +19,8 @@ export type { MemoryCandidate } from "./extract.js";
 export interface MemoryExtractPayload {
   sessionId: string;
   assistantMessageId: string;
+  /** Exact source turn. Optional only for draining jobs created before this field shipped. */
+  userMessageId?: string;
   attempt: number;
 }
 
@@ -35,13 +37,20 @@ export async function processMemoryExtract(
   // Find the user turn that preceded this assistant message.
   const assistant = await prisma.message.findUnique({ where: { id: payload.assistantMessageId } });
   if (!assistant) return { written: 0, skipped: "no_assistant" };
-  // user + assistant placeholder are inserted in the SAME transaction, so they
-  // share created_at (now() is fixed per TX); use lte + role filter to find it.
-  const userMessage = await prisma.message.findFirst({
-    where: { sessionId: session.id, role: "user", createdAt: { lte: assistant.createdAt }, deletedAt: null },
-    orderBy: { createdAt: "desc" },
-  });
+  if (assistant.attempt !== payload.attempt) return { written: 0, skipped: "stale_attempt" };
+  if (assistant.memoryExtractedAttempt >= payload.attempt) return { written: 0, skipped: "already_extracted" };
+  const sourceId = payload.userMessageId ?? assistant.replyToMessageId;
+  const userMessage = sourceId
+    ? await prisma.message.findUnique({ where: { id: sourceId } })
+    : await prisma.message.findFirst({
+        // Compatibility only for jobs/rows created before reply_to_message_id.
+        where: { sessionId: session.id, role: "user", createdAt: { lte: assistant.createdAt }, deletedAt: null },
+        orderBy: [{ createdAt: "desc" }, { role: "desc" }],
+      });
   if (!userMessage) return { written: 0, skipped: "no_user_turn" };
+  if (userMessage.sessionId !== session.id || userMessage.role !== "user") {
+    return { written: 0, skipped: "wrong_user_turn" };
+  }
 
   // canMemorize: re-check PG authority — sent + not deleted + safety passed.
   if (!canMemorize(userMessage) || !canMemorize(assistant)) {
@@ -49,12 +58,12 @@ export async function processMemoryExtract(
   }
 
   // Relationship narrative is derived every allowed turn (file authority, P1-2).
-  await updateRelationship(session.userId, session.characterId, {
-    summaryDelta: clampTurn(userMessage.content),
-  });
-  await recordDerivedOutbox(prisma, CHAT_TO_MAIN_EVENTS.relationshipUpdated, "character", session.characterId, {
-    userId: session.userId,
-  });
+  await updateRelationshipOnce(
+    session.userId,
+    session.characterId,
+    `${assistant.id}:${payload.attempt}`,
+    { summaryDelta: clampTurn(userMessage.content) },
+  );
 
   // Semantic extraction (igrep mem derive) when enabled, regex floor otherwise —
   // off the hot path, so a slow LLM only delays this worker, never a reply.
@@ -64,28 +73,54 @@ export async function processMemoryExtract(
     userId: session.userId,
     characterId: session.characterId,
   });
-  if (candidates.length === 0) return { written: 0, skipped: null };
+  let changedMemories = 0;
+  if (candidates.length > 0) {
+    // Consolidate INTO the authority files (dedup + confidence merge + tier cap)
+    // instead of blind-appending, so repeated preferences never stack duplicates
+    // and storage stays bounded by the entitlement (P1-C).
+    const entitlement = await prisma.chatEntitlementView.findUnique({ where: { userId: session.userId } });
+    const policy = resolvePolicy(snapshotFromView(entitlement), { memoryEnabled: true });
+    const { added, merged } = await consolidateMemories(
+      session.userId,
+      session.characterId,
+      candidates,
+      { maxStored: policy.maxStoredMemories },
+    );
+    changedMemories = added + merged;
+  }
 
-  // Consolidate INTO the authority files (dedup + confidence merge + tier cap)
-  // instead of blind-appending, so repeated preferences never stack duplicates
-  // and storage stays bounded by the entitlement (P1-C).
-  const entitlement = await prisma.chatEntitlementView.findUnique({ where: { userId: session.userId } });
-  const policy = resolvePolicy(snapshotFromView(entitlement), { memoryEnabled: true });
-  const { added, merged } = await consolidateMemories(
-    session.userId,
-    session.characterId,
-    candidates,
-    { maxStored: policy.maxStoredMemories },
-  );
-  await recordDerivedOutbox(prisma, CHAT_TO_MAIN_EVENTS.memoryUpdated, "user", session.userId, {
-    characterId: session.characterId,
-    count: added + merged,
+  // Claim completion and publish derived events atomically. File writes above are
+  // idempotent, so a crash before this TX safely retries without double-advancing
+  // the relationship or duplicating memories.
+  await prisma.$transaction(async (tx) => {
+    const claimed = await tx.message.updateMany({
+      where: {
+        id: assistant.id,
+        attempt: payload.attempt,
+        memoryExtractedAttempt: { lt: payload.attempt },
+      },
+      data: { memoryExtractedAttempt: payload.attempt },
+    });
+    if (claimed.count === 0) return;
+    await tx.chatSession.update({
+      where: { id: session.id },
+      data: { logExtractedSeq: { increment: 1 } },
+    });
+    await recordOutbox(tx, {
+      eventType: CHAT_TO_MAIN_EVENTS.relationshipUpdated,
+      aggregateType: "character",
+      aggregateId: session.characterId,
+      payload: { userId: session.userId },
+    });
+    if (changedMemories > 0) {
+      await recordOutbox(tx, {
+        eventType: CHAT_TO_MAIN_EVENTS.memoryUpdated,
+        aggregateType: "user",
+        aggregateId: session.userId,
+        payload: { characterId: session.characterId, count: changedMemories },
+      });
+    }
   });
-
-  // advance the derive watermark (D3) — best effort
-  await prisma.chatSession
-    .update({ where: { id: session.id }, data: { logExtractedSeq: { increment: 1 } } })
-    .catch(() => {});
 
   return { written: candidates.length, skipped: null };
 }
@@ -108,17 +143,4 @@ export function canMemorize(message: MemorableMessage): boolean {
 function clampTurn(text: string): string {
   const t = text.trim().replace(/\s+/g, " ");
   return t.length <= 200 ? `User: ${t}` : `User: ${t.slice(0, 199)}…`;
-}
-
-/** Outbox for off-TX derivations (memory/relationship). Delivered like any event. */
-async function recordDerivedOutbox(
-  prisma: ChatPrismaClient,
-  eventType: string,
-  aggregateType: string,
-  aggregateId: string,
-  payload: Record<string, unknown>,
-): Promise<void> {
-  await prisma.chatOutboxEvent
-    .create({ data: { id: createId("evt"), eventType, aggregateType, aggregateId, payload: payload as never } })
-    .catch(() => {});
 }

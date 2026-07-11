@@ -70,6 +70,13 @@ export async function enqueue(input: EnqueueInput): Promise<{ id: string }> {
       { payload: input.payload, dedupeKey: input.dedupeKey },
       enqueueOptions(input),
     );
+    // A deterministic job id is also the recovery key. BullMQ returns the old
+    // Job when that id exists; if it exhausted attempts, merely "adding" it does
+    // not make it runnable again. Reconcile deliberately re-enqueues durable PG
+    // intents, so revive the failed job in place.
+    if (input.dedupeKey && (await job.getState()) === "failed") {
+      await job.retry("failed");
+    }
     return { id: job.id ?? "" };
   } finally {
     await queue.close();

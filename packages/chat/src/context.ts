@@ -84,12 +84,16 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
       deletedAt: null,
       ...(anchor ? { createdAt: { lte: anchor.createdAt } } : {}),
     },
-    orderBy: { createdAt: "desc" },
+    // user + assistant are born in one transaction and therefore share
+    // createdAt. In the DESC window assistant must sort first so reverse()
+    // restores the semantic user → assistant order.
+    orderBy: [{ createdAt: "desc" }, { role: "asc" }],
     take: policy.maxContextMessages,
   });
-  const recentMessages: BuiltContext["recentMessages"] = recent
+  const orderedRecent: BuiltContext["recentMessages"] = recent
     .reverse()
     .map((m) => ({ id: m.id, role: m.role as "user" | "assistant", content: m.content }));
+  const recentMessages = fitRecentTranscript(orderedRecent, policy.maxContextChars);
 
   // P4 Task 5: photo awareness. Only the most recent window of assistant turns is
   // worth reminding the model about — older deliveries are already summarized away
@@ -165,6 +169,30 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
     relationship,
     canUpdateSessionSummary: memoryEnabled && anchoredToLatestTurn,
   };
+}
+
+function fitRecentTranscript(
+  messages: BuiltContext["recentMessages"],
+  maxChars: number,
+): BuiltContext["recentMessages"] {
+  const selected: BuiltContext["recentMessages"] = [];
+  let used = 0;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    const remaining = maxChars - used;
+    if (remaining <= 0) break;
+    if (message.content.length > remaining) {
+      if (selected.length === 0) {
+        selected.unshift({ ...message, content: `…${message.content.slice(-(Math.max(1, remaining - 1)))}` });
+      }
+      break;
+    }
+    selected.unshift(message);
+    used += message.content.length;
+  }
+  // Never begin a clipped context with an orphan assistant response.
+  if (selected.length > 1 && selected[0]?.role === "assistant") selected.shift();
+  return selected;
 }
 
 const IDENTITY_PROMPT_MAX = 400;

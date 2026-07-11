@@ -10,6 +10,7 @@ import {
   listPrefix,
   readWhole,
   writeAtomic,
+  withFileMutationLock,
 } from "./chat-fs.js";
 
 let dir: string;
@@ -61,5 +62,29 @@ describe("chat-fs", () => {
     await expect(appendLine(chatFsPaths.sessionLog("../etc", "s"), "x")).rejects.toThrow(
       /unsafe path segment/,
     );
+  });
+
+  it("serializes read-modify-write work for the same authority file", async () => {
+    const target = chatFsPaths.memory("u-lock", "c-lock");
+    const order: string[] = [];
+    let releaseFirst = (): void => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const first = withFileMutationLock(target, async () => {
+      order.push("first:start");
+      await firstGate;
+      order.push("first:end");
+    });
+    const second = withFileMutationLock(target, async () => {
+      order.push("second:start");
+      order.push("second:end");
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(order).toEqual(["first:start"]);
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(order).toEqual(["first:start", "first:end", "second:start", "second:end"]);
   });
 });

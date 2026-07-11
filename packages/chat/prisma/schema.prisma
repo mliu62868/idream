@@ -108,18 +108,20 @@ model ChatSession {
 }
 
 model Message {
-  id           String      @id
-  sessionId    String      @map("session_id")
-  role         String
-  content      String      @default("")
-  model        String?
-  status       String      @default("pending")
-  tokenCount   Int?        @map("token_count")
-  safetyStatus String      @default("unknown") @map("safety_status")
-  attempt      Int         @default(1)
-  createdAt    DateTime    @default(now()) @map("created_at")
-  updatedAt    DateTime    @default(now()) @updatedAt @map("updated_at")
-  deletedAt    DateTime?   @map("deleted_at")
+  id                     String      @id
+  sessionId              String      @map("session_id")
+  role                   String
+  content                String      @default("")
+  model                  String?
+  status                 String      @default("pending")
+  tokenCount             Int?        @map("token_count")
+  safetyStatus           String      @default("unknown") @map("safety_status")
+  attempt                Int         @default(1)
+  replyToMessageId       String?     @map("reply_to_message_id")
+  memoryExtractedAttempt Int         @default(0) @map("memory_extracted_attempt")
+  createdAt              DateTime    @default(now()) @map("created_at")
+  updatedAt              DateTime    @default(now()) @updatedAt @map("updated_at")
+  deletedAt              DateTime?   @map("deleted_at")
 
   session     ChatSession         @relation(fields: [sessionId], references: [id])
   versions    MessageVersion[]
@@ -127,6 +129,7 @@ model Message {
 
   @@index([sessionId, createdAt], map: "messages_session_created_idx")
   @@index([status, updatedAt], map: "messages_status_updated_idx")
+  @@index([replyToMessageId], map: "messages_reply_to_idx")
   @@map("messages")
   @@schema("chat")
 }

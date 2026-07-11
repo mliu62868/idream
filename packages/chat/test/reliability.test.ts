@@ -12,6 +12,7 @@ import { rollSessionLog, pruneExpiredSegments } from "../src/maintain.js";
 import { deleteSession, deleteAccount } from "../src/privacy.js";
 import { appendLine, chatFsPaths, listPrefix } from "../src/chat-fs.js";
 import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
+import { acceptAgeGate } from "./fixtures.js";
 
 const prisma = createChatPrisma();
 const superPool = new Pool({ connectionString: process.env.CHAT_TEST_SUPER_URL });
@@ -26,6 +27,7 @@ beforeAll(async () => {
     `INSERT INTO public.users (id,email,status,"createdAt","updatedAt") VALUES ($1,$2,'active',now(),now()) ON CONFLICT (id) DO NOTHING`,
     [USER, "rel@test.dev"],
   );
+  await acceptAgeGate(superPool, [USER]);
   await superPool.query(
     `INSERT INTO public.characters (id,name,age,description,visibility,status,style,gender,appearance,"advancedDetails","createdAt","updatedAt")
      VALUES ($1,'Rel',24,'d','public','approved','realistic','female','{}','{}',now(),now()) ON CONFLICT (id) DO NOTHING`,
@@ -121,6 +123,7 @@ describe("privacy deletion (P0-5, PG + files)", () => {
       `INSERT INTO public.users (id,email,status,"createdAt","updatedAt") VALUES ($1,$2,'active',now(),now()) ON CONFLICT (id) DO NOTHING`,
       [u, "erase@test.dev"],
     );
+    await acceptAgeGate(superPool, [u]);
     const s = await prisma.chatSession.create({ data: { id: "erase_s", userId: u, characterId: CHAR, status: "active" } });
     await prisma.message.create({ data: { id: "erase_m", sessionId: s.id, role: "user", content: "x", status: "sent" } });
     await appendLine(chatFsPaths.sessionLog(u, s.id), "{}");

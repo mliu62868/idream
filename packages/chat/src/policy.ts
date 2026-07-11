@@ -16,6 +16,8 @@ export interface EntitlementSnapshot {
 export interface ChatPolicy {
   model: string;
   maxContextMessages: number;
+  /** Hard character budget for recent transcript input (separate from output tokens). */
+  maxContextChars: number;
   /** Top-K long-term memories injected per turn (retrieval cap). */
   maxMemories: number;
   /** Total long-term memories retained on disk per character (storage cap, P1-C). */
@@ -32,6 +34,7 @@ export interface ChatPolicy {
 }
 
 const BASE_CONTEXT = 12;
+const BASE_CONTEXT_CHARS = 24_000;
 const BASE_MEMORIES = 6;
 // Storage baseline (P1-C): how many long-term memories a Free tier retains on
 // disk per character. Deluxe (memoryMultiplier=3) keeps 3× — "3x chat memory".
@@ -49,6 +52,7 @@ export function resolvePolicy(
   return {
     model,
     maxContextMessages: isPaid ? BASE_CONTEXT * 2 : BASE_CONTEXT,
+    maxContextChars: isPaid ? BASE_CONTEXT_CHARS * 2 : BASE_CONTEXT_CHARS,
     maxMemories: memoryAllowed ? Math.round(BASE_MEMORIES * Math.max(1, ent.memoryMultiplier)) : 0,
     maxStoredMemories: memoryAllowed
       ? Math.round(BASE_STORED_MEMORIES * Math.max(1, ent.memoryMultiplier))

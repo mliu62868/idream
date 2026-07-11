@@ -123,12 +123,15 @@ POST /api/v1/chat/sessions/:id/messages
   3. usage / rate limit（chat_service 本地判定；entitlement.unlimited_messages 短路；
      超额 → 拒绝，不入队）
   4. 输入审核
-  5. TX: insert user msg(sent) + insert assistant(generating) + update session.last_message_at
-  6. enqueue chat.generate(dedupeKey = chat-generate:<assistantMessageId>)
+  5. TX（user + session advisory locks）: 原子校验 quota/rate reservation；
+     insert user msg(sent) + insert assistant(pending, reply_to_message_id=<user>) + update session.last_message_at
+  6. best-effort enqueue chat.generate(dedupeKey = chat-generate:<assistantMessageId>:<attempt>)；
+     commit/enqueue 间崩溃或 Redis 暂不可用时，pending 行就是 durable intent，reconciler 补投
   7. 返回 { assistantMessageId, streamUrl }
 
 chat/worker / chat.generate
-  8. 构建上下文：recent msgs(PG) + session.memory_summary(PG) + persona(view) + policy(entitlement)
+  8. 原子转 pending→generating 并持有 generation lease（流式期间每 30s heartbeat）；构建上下文：
+     recent msgs(PG，消息数+字符双预算) + session.memory_summary(PG) + persona(view) + policy(entitlement)
      + 若 session.memory_enabled：读记忆文件(boundaries 全量 + 结构化 top-K)
        —— 有超时预算，超时/出错 → 退化为"仅 recent msgs"，不阻断生成（见 §5 热路径降级）
      —— memory_enabled=false（no-memory/incognito）：完全不读长期记忆
@@ -136,10 +139,10 @@ chat/worker / chat.generate
  10. 输出审核
  11. TX(幂等, 只账本): update assistant(sent) + selected message_version + chat_usage++
                 + session.memory_summary(会话滚动摘要,留 PG) + moderation_events + outbox_events
- 12. 写 session.jsonl：chat.generate 进程内**直接 append**（它已持有 system prompt/注入记忆/
-     raw 输出/候选），幂等键 session-append:<assistantMessageId>:<attempt>
- 13. enqueue chat.memory.extract（异步：读 session.jsonl + **回查 PG message 状态** 派生记忆/关系，写文件层）
- 14. SSE done；chat.outbox.deliver 异步投递主站
+ 12. finalize 成功后 SSE done；session.jsonl trace best-effort append（诊断事实，不反向破坏已提交账本）
+ 13. enqueue chat.memory.extract（异步：按 reply_to_message_id 精确回查 PG message 状态，
+     派生记忆/关系写文件层）；message.memory_extracted_attempt 是 durable 水位，reconciler 补投遗漏任务
+ 14. chat.outbox.deliver 异步投递主站
 ```
 
 > **regenerate**（`POST /messages/:id/regenerate`）：dedupeKey 必须带 attempt（`chat-generate:<assistantMessageId>:<attempt>`），否则同一 assistant message 重生成会被去重吞掉（**原 `:<assistantMessageId>` 是 bug**）。每次 regenerate 追加新 `message_versions`、翻转 `selected`、按 entitlement 决定是否再计 usage、session.jsonl 追加一轮。
@@ -161,8 +164,10 @@ chat-memory-extract:<assistantMessageId>:<attempt>
 chat-session-append:<assistantMessageId>:<attempt>
 ```
 
-**reconciler（P0 必需，现状完全缺失）**：`chat.reconcile` 周期任务
-- 扫长时间 `generating` 的 assistant message，对照 BullMQ/Stream 状态 → 标 `failed`。
+**reconciler（P0 必需）**：`chat.reconcile` 周期任务
+- 扫未投递的 `pending` assistant message → 按确定性 job id 补投；同 id failed job 原地 revive。
+- 扫长时间未 heartbeat 的 `generating` assistant message，以 attempt/status/lease compare-and-update → 标 `failed`。
+- 扫 `sent` 且 `memory_extracted_attempt < attempt` 的消息 → 补投幂等 memory.extract。
 - 扫已完成但 `outbox.status=pending` / `inbox.status=pending` 的事件 → 重投/重消费。
 
 **SSE 硬化**：`XREAD BLOCK` + `Last-Event-ID` 断点续读（取代现状 150ms 轮询/30s 超时，`src/server/ai/stream-store.ts`）；Stream 设 `MAXLEN`/TTL 自动裁剪；过期则前端退化拉 `GET /sessions/:id` 已落库消息。

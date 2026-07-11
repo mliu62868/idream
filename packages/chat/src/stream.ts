@@ -8,6 +8,7 @@ import { chatStreamEventSchema, type ChatStreamEvent } from "@idream/shared/cont
 import { env } from "./env.js";
 
 const STREAM_MAXLEN = 1000;
+const STREAM_TTL_SECONDS = 24 * 60 * 60;
 const SSE_DEADLINE_MS = 60_000;
 const BLOCK_MS = 5_000;
 
@@ -48,9 +49,14 @@ export async function appendStreamEvent(
   event: ChatStreamEvent,
 ): Promise<StoredStreamEvent> {
   const parsed = chatStreamEventSchema.parse(event);
-  const id = await publisherRedis().xadd(
-    key, "MAXLEN", "~", String(STREAM_MAXLEN), "*", "data", JSON.stringify(parsed),
-  );
+  const result = await publisherRedis()
+    .multi()
+    .xadd(key, "MAXLEN", "~", String(STREAM_MAXLEN), "*", "data", JSON.stringify(parsed))
+    .expire(key, STREAM_TTL_SECONDS)
+    .exec();
+  const [error, value] = result?.[0] ?? [];
+  if (error) throw error;
+  const id = typeof value === "string" ? value : null;
   return { id: id ?? "", event: parsed };
 }
 

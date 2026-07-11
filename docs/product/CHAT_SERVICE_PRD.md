@@ -506,14 +506,16 @@ Chat Service:
   6. 输入审核。
   7. DB transaction:
        - insert user message
-       - insert assistant placeholder(status=generating)
+       - insert assistant placeholder(status=pending, reply_to_message_id=userMessageId)
+       - reserve quota/rate capacity under user+session transaction locks
        - update session.last_message_at
-  8. 入 Chat 内部队列 `chat.generate`，返回 `{ userMessageId, assistantMessageId, streamUrl, status }`。
+  8. 入 Chat 内部队列 `chat.generate`，返回 `{ userMessageId, assistantMessageId, streamUrl, status }`；
+     若 commit 后入队暂时失败，reconciler 从 pending placeholder 补投。
      - 正常：`status="generating"`，`streamUrl` 指向 SSE。
      - 输入被审核拦截（P0-B）：**不入队、不返回 streamUrl**，返回
        `{ status:"blocked", streamUrl:null, safety:{ layer:"input", policyCode } }`；
        前端据此原地展示安全提示，不开启空的 EventSource。
-  9. Chat worker 构建上下文：
+  9. Chat worker 将 placeholder 转为 generating、刷新 generation lease，并构建上下文：
        - recent messages
        - session summary
        - companion memories
@@ -529,10 +531,11 @@ Chat Service:
        - update memory_summary           # 会话滚动摘要，留 PG
        - insert moderation events
        - insert outbox events
- 13. 写 session.jsonl（chat.generate 进程内 append）。
- 14. enqueue chat.memory.extract：异步派生长期记忆/关系，写**文件层**（mem/*.md），
+ 13. finalize 后发送 SSE done；写 session.jsonl（chat.generate 进程内 best-effort append）。
+ 14. enqueue chat.memory.extract：按 reply_to_message_id 精确派生长期记忆/关系，写**文件层**（mem/*.md），
      **不进上面的 PG 事务**（最终一致；companion_memories / relationship_states 已迁文件）。
- 15. SSE done，outbox 异步投递主站 analytics/safety/library。
+     `memory_extracted_attempt` 记录 durable 派生水位，遗漏任务由 reconciler 补投，relationship 按 turn key 幂等。
+ 15. outbox 异步投递主站 analytics/safety/library。
 ```
 
 > **更新**：长期记忆与关系状态已迁文件层（§6.5/§6.6），故移出 finalize 事务，改由异步 `chat.memory.extract` 写文件。finalize 事务只保留账本（messages/usage/moderation/outbox + 会话滚动摘要）。详见 `docs/architecture/14-chat-service-tech-design.md` §3/§5。

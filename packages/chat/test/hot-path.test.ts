@@ -14,6 +14,7 @@ import { processGenerate } from "../src/generate.js";
 import { drainQueue, obliterate } from "../src/queue.js";
 import { listStreamEvents, streamKey } from "../src/stream.js";
 import { CHAT_QUEUES } from "@idream/shared/contracts";
+import { acceptAgeGate } from "./fixtures.js";
 
 const prisma = createChatPrisma();
 const superPool = new Pool({ connectionString: process.env.CHAT_TEST_SUPER_URL });
@@ -45,6 +46,7 @@ beforeAll(async () => {
      VALUES ($1, $2, 'active', now(), now()) ON CONFLICT (id) DO NOTHING`,
     [EDIT_USER, "hot-edit@test.dev"],
   );
+  await acceptAgeGate(superPool, [USER, TURN_USER, EDIT_USER]);
   await superPool.query(
     `INSERT INTO public.characters (id, name, age, description, visibility, status, style, gender, appearance, "advancedDetails", "createdAt", "updatedAt")
      VALUES ($1, 'Hot', 22, 'desc', 'public', 'approved', 'realistic', 'female', '{}', '{}', now(), now())
@@ -69,9 +71,10 @@ describe("chat hot path (P0-3)", () => {
     expect(res.assistantMessageId).toBeTruthy();
     expect(res.streamUrl).toContain(res.assistantMessageId);
 
-    // placeholder is generating before the worker runs
+    // `pending` is the durable queue intent; the worker owns the transition to
+    // `generating`, which lets reconcile distinguish lost dispatch from a stuck model.
     const before = await prisma.message.findUnique({ where: { id: res.assistantMessageId } });
-    expect(before?.status).toBe("generating");
+    expect(before?.status).toBe("pending");
 
     // drain the generate queue with the real worker handler
     const handled = await drainQueue(CHAT_QUEUES.generate, async (job) => {

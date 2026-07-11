@@ -148,7 +148,7 @@ async function route(req: ChatRequest): Promise<ChatResponse> {
   if (segs[0] === "memories" && segs.length === 2) {
     const memoryId = segs[1];
     if (method === "PATCH") {
-      const updated = await updateMemory(userId, memoryId, str(body(req).text));
+      const updated = await updateMemory(userId, memoryId, limitedStr(body(req).text, 500, "memory text"));
       if (!updated) return json(404, { error: "memory_not_found" });
       return json(200, updated);
     }
@@ -170,7 +170,7 @@ async function route(req: ChatRequest): Promise<ChatResponse> {
       return json(
         200,
         await setRelationship(userId, characterId, {
-          summary: optStr(b.summary),
+          summary: optLimitedStr(b.summary, 1_200, "relationship summary"),
           stage: optStr(b.stage) as RelationshipStage | undefined,
         }),
       );
@@ -196,4 +196,12 @@ function str(v: unknown): string {
 }
 function optStr(v: unknown): string | undefined {
   return typeof v === "string" ? v : undefined;
+}
+function limitedStr(v: unknown, max: number, field: string): string {
+  const value = str(v);
+  if (value.length > max) throw new ChatError("bad_request", `${field} exceeds ${max} characters`, 400);
+  return value;
+}
+function optLimitedStr(v: unknown, max: number, field: string): string | undefined {
+  return typeof v === "string" ? limitedStr(v, max, field) : undefined;
 }
