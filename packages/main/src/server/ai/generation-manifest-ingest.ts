@@ -4,6 +4,7 @@ import {
   generationManifestIngestSchema,
   type GenerationManifestIngest,
 } from "@idream/shared/contracts";
+import { incrementCounter } from "@idream/shared";
 import { prisma } from "@/server/lib/db";
 import { jobQueue } from "@/server/jobs/queue";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
@@ -136,6 +137,13 @@ export async function ingestGenerationManifest(
     });
     return { acknowledged: true, status: "persisted" as const, receiptId: createdReceipt.id };
   });
+  if (result.status === "duplicate") {
+    incrementCounter(
+      "generation_completion_manifest_replay_total",
+      "Persisted generation completion manifests replayed after durable ingest interruption",
+      { outcome: "durable_duplicate" },
+    );
+  }
   return result;
 }
 

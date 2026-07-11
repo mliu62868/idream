@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { renderPrometheusMetrics, resetMetricsForTests } from "@idream/shared";
 import { generationManifestChecksum } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
 import { ingestGenerationManifest } from "./generation-manifest-ingest";
@@ -42,6 +43,7 @@ afterAll(async () => {
 
 describe("generation completion manifest durable ingest", () => {
   it("atomically records receipt, attempt, transport, artifact and finalize outbox", async () => {
+    resetMetricsForTests();
     const input = {
       manifestRef: `gen/completion-manifests/${attemptId}/manifest.json`,
       manifestChecksum: generationManifestChecksum(manifest),
@@ -49,6 +51,9 @@ describe("generation completion manifest durable ingest", () => {
     };
     expect(await ingestGenerationManifest(input)).toMatchObject({ acknowledged: true, status: "persisted" });
     expect(await ingestGenerationManifest(input)).toMatchObject({ acknowledged: true, status: "duplicate" });
+    expect(renderPrometheusMetrics()).toContain(
+      "generation_completion_manifest_replay_total{outcome=\"durable_duplicate\"} 1",
+    );
 
     expect(await prisma.inboundEventReceipt.count({ where: { sourceService: "gen", sourceEventId: attemptId } })).toBe(1);
     expect(await prisma.generationAttempt.findUnique({ where: { id: attemptId } })).toMatchObject({
