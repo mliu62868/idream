@@ -1,29 +1,248 @@
-@source "../../../main/src/components/admin";
-@source "../../../main/src/lib";
-@import "../../../main/src/app/globals.css";
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
 
-/* SPEC: admin 浅色编辑部风 design tokens（SSoT）。全后台颜色只许引用这些变量。
-   INVARIANTS: 不定义暗色变体——admin 只有亮色一种主题。 */
+@custom-variant dark (&:is(.dark *));
+
+@layer components {
+  .admin-input {
+    min-height: 2.25rem;
+    width: 100%;
+    min-width: 0;
+    border: 1px solid rgb(255 255 255 / 0.1);
+    background: rgb(0 0 0 / 0.2);
+    padding: 0.375rem 0.75rem;
+    color: rgb(255 255 255);
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+    outline: none;
+  }
+
+  .admin-input::placeholder {
+    color: rgb(114 113 112);
+  }
+
+  .admin-input option {
+    background: rgb(18 18 18);
+    color: rgb(255 255 255);
+  }
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --font-safety-docs: var(--font-safety), -apple-system, "system-ui", "Segoe UI",
+    system-ui, sans-serif;
+  --font-heading: var(--font-sans);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
 :root {
-  --ad-canvas: #f7f6f3;
-  --ad-surface: #ffffff;
-  --ad-ink: #111111;
-  --ad-text: #2f3437;
-  --ad-text-muted: #787774;
-  --ad-border: #eaeaea;
-  --ad-green-bg: #edf3ec;
-  --ad-green-text: #346538;
-  --ad-yellow-bg: #fbf3db;
-  --ad-yellow-text: #956400;
-  --ad-red-bg: #fdebec;
-  --ad-red-text: #9f2f2d;
-  --ad-blue-bg: #e1f3fe;
-  --ad-blue-text: #1f6c9f;
-  --ad-red-hover: #f9dfe1;
-  --ad-shadow-hover: 0 2px 8px rgba(0, 0, 0, 0.04);
+  --font-geist-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    sans-serif;
+  --font-geist-mono: ui-monospace, "SFMono-Regular", "SF Mono", Consolas,
+    "Liberation Mono", monospace;
+  --font-safety: -apple-system, "system-ui", "Segoe UI", system-ui, sans-serif;
+  --background: rgb(13 13 13);
+  --foreground: rgb(250 250 250);
+  --card: rgb(18 18 18);
+  --card-foreground: rgb(250 250 250);
+  --popover: rgb(36 36 36);
+  --popover-foreground: rgb(250 250 250);
+  --primary: rgb(253 95 194);
+  --primary-foreground: rgb(255 255 255);
+  --secondary: rgb(36 36 36);
+  --secondary-foreground: rgb(255 255 255);
+  --muted: rgb(36 36 36);
+  --muted-foreground: rgb(170 170 170);
+  --accent: rgb(46 46 46);
+  --accent-foreground: rgb(255 255 255);
+  --destructive: rgb(255 99 99);
+  --border: rgb(36 36 36);
+  --input: rgb(53 53 54);
+  --ring: rgb(255 255 255);
+  --chart-1: rgb(253 95 194);
+  --chart-2: rgb(170 170 170);
+  --chart-3: rgb(114 113 112);
+  --chart-4: rgb(53 53 54);
+  --chart-5: rgb(36 36 36);
+  --radius: 0.625rem;
+  --sidebar: rgb(18 18 18);
+  --sidebar-foreground: rgb(250 250 250);
+  --sidebar-primary: rgb(253 95 194);
+  --sidebar-primary-foreground: rgb(255 255 255);
+  --sidebar-accent: rgb(46 46 46);
+  --sidebar-accent-foreground: rgb(255 255 255);
+  --sidebar-border: rgb(36 36 36);
+  --sidebar-ring: rgb(255 255 255);
+  --ds-surface-primary: rgb(13 13 13);
+  --ds-surface-secondary: rgb(18 18 18);
+  --ds-surface-raised: rgb(46 46 46);
+  --ds-surface-strong: rgb(53 53 54);
+  --ds-border-primary: rgb(36 36 36);
+  --ds-content-primary: rgb(255 255 255);
+  --ds-content-secondary: rgb(170 170 170);
+  --ds-content-tertiary: rgb(114 113 112);
+  --ds-brand-pink: rgb(253 95 194);
+  --ds-gradient-accent-surface: linear-gradient(0deg, #ff1cac, #fd5fc2 50%, #ff79d1);
+  --ds-gradient-card-scrim: linear-gradient(
+    0deg,
+    rgba(0, 0, 0, 0.6),
+    rgba(0, 0, 0, 0.596) 4.625%,
+    rgba(0, 0, 0, 0.58) 9.25%,
+    rgba(0, 0, 0, 0.4) 27.75%,
+    rgba(0, 0, 0, 0.2) 41.625%,
+    transparent 69.375%
+  );
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+  html {
+    @apply font-sans;
+    background: rgb(13 13 13);
+    scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+  }
+  ::selection {
+    background: rgba(253, 95, 194, 0.35);
+  }
+}
+
+@layer utilities {
+  .font-safety-docs {
+    font-family:
+      var(--font-safety), -apple-system, "system-ui", "Segoe UI", system-ui,
+      sans-serif;
+  }
+
+  .line-clamp-2 {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+  }
+}
+
+/* Admin is a single-theme operational surface. These tokens are local to the
+   independently deployed console and intentionally do not inherit main UI. */
+:root {
+  --ad-canvas: #f4f3ef;
+  --ad-surface: #fffefa;
+  --ad-surface-subtle: #eeece5;
+  --ad-ink: #191a18;
+  --ad-text: #373a35;
+  --ad-text-muted: #74766f;
+  --ad-border: #deddd6;
+  --ad-green-bg: #e7f0e7;
+  --ad-green-text: #315f39;
+  --ad-yellow-bg: #f6edcf;
+  --ad-yellow-text: #785b16;
+  --ad-red-bg: #f7e3e1;
+  --ad-red-text: #913b35;
+  --ad-blue-bg: #e2edf2;
+  --ad-blue-text: #275d72;
+  --ad-red-hover: #efd2cf;
+  --ad-shadow-hover: 0 10px 28px rgb(50 47 38 / 0.08);
+}
+
+html {
+  background: var(--ad-canvas);
 }
 
 body {
   background: var(--ad-canvas);
   color: var(--ad-text);
+}
+
+.admin-skip-link {
+  position: fixed;
+  left: 1rem;
+  top: 1rem;
+  z-index: 50;
+  transform: translateY(-200%);
+  border-radius: 0.375rem;
+  background: var(--ad-ink);
+  padding: 0.75rem 1rem;
+  color: white;
+}
+
+.admin-skip-link:focus {
+  transform: translateY(0);
 }

@@ -1,6 +1,6 @@
 # @idream/admin
 
-iDream 后台控制台，独立部署的内部控制面服务（端口 3001）。复用 `packages/main` 的 TS 源码、数据库与 auth secret。
+iDream 后台控制台，独立部署的内部控制面服务（端口 3001）。Admin 只编译本包 UI 与 `@idream/shared` 契约；身份、查询和命令通过 fail-closed HTTP BFF 交给 main authority。
 
 ## 本地启动
 
@@ -23,7 +23,7 @@ bun run dev:admin     # http://localhost:3001/admin
 | `admin` | `admin123` | admin | 全部 |
 | `support` | `support123` | support | 只读 + 工单 |
 
-账号清单是单一事实来源：`packages/main/src/server/admin/dev-login-accounts.ts`，要加账号/改密码改这里。登录态有效期 12h；控制台右上角「退出」可切换账号。
+开发账号由 main authority 的 `/api/admin-auth/*` 契约返回；Admin 不导入认证实现。登录态有效期 12h；控制台右上角「退出」可切换账号。
 
 > 这些密码是本地开发便利，**仅非 production 生效**，生产环境登录框与接口（`/api/admin-auth/*`）整体禁用。
 
@@ -31,10 +31,10 @@ bun run dev:admin     # http://localhost:3001/admin
 
 ## 权限模型
 
-角色 → 权限映射见 `packages/main/src/server/admin/permissions.ts`；进入控制台要求 `dashboard.read`。
+权限键与角色默认映射由 `@idream/shared/admin/permissions` 定义，main authority 解析最终 effective permissions；进入控制台要求 `dashboard.read`。
 
 ## 验证
 
 ```bash
-cd packages/main && npx vitest run src/server/admin/dev-login.test.ts
+cd packages/admin && bun run check && bun run test
 ```

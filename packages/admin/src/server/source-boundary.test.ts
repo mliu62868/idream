@@ -1,0 +1,18 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { describe, expect, it } from "vitest";
+
+const packageRoot = path.resolve(import.meta.dirname, "../..");
+
+describe("admin source boundary", () => {
+  it("resolves application source from the admin package only", async () => {
+    const tsconfig = await readFile(path.join(packageRoot, "tsconfig.json"), "utf8");
+    const globals = await readFile(path.join(packageRoot, "src/app/globals.css"), "utf8");
+    const nextConfig = await readFile(path.join(packageRoot, "next.config.ts"), "utf8");
+
+    expect(tsconfig).not.toContain("../main/src");
+    expect(globals).not.toContain("main/src");
+    expect(nextConfig).not.toContain("../main/src");
+    expect(nextConfig).not.toContain("reuses TS source from packages/main");
+  });
+});

@@ -12,14 +12,10 @@ const nextConfig: NextConfig = {
   outputFileTracingExcludes: {
     "/*": [
       "test-results/**/*",
-      "../main/test-results/**/*",
-      "../main/playwright-report/**/*",
-      "../main/src/e2e/**/*",
-      "../main/src/**/*.test.*",
       "../../.playwright-cli/**/*",
     ],
   },
-  // Admin reuses TS source from packages/main and @idream/shared.
+  // Shared contracts are the only compile-time dependency on another workspace package.
   transpilePackages: ["@idream/shared"],
   turbopack: {
     root: workspaceRoot,
