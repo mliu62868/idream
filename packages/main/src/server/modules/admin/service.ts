@@ -93,6 +93,11 @@ import {
   deleteAnnouncement,
 } from "./announcements";
 import { listExperiments } from "./experiments";
+import {
+  ensureReviewCaseForAppeal,
+  ensureReviewCaseForReport,
+  recordReviewCaseDecision,
+} from "@/server/modules/admin-v2/cases/service";
 
 const FEATURED_SETTING_KEY = "feed.featured";
 
@@ -2990,6 +2995,26 @@ async function moderationDecision(request: Request, reportId: string) {
     if (body.decision === "actioned") {
       await applyModerationAction(current.targetType, current.targetId, tx);
     }
+    const adminCase = await ensureReviewCaseForReport(tx, current);
+    if (!adminCase) throw Errors.conflict("Open report did not produce a Review Case");
+    const evidence = await tx.caseEvidence.findUniqueOrThrow({
+      where: {
+        caseId_sourceType_sourceId: {
+          caseId: adminCase.id,
+          sourceType: "content_report",
+          sourceId: current.id,
+        },
+      },
+    });
+    await recordReviewCaseDecision(tx, {
+      caseId: adminCase.id,
+      actor,
+      decision: body.decision,
+      summary: body.notes ?? body.reason,
+      evidenceRefs: [evidence.id],
+      downstreamVerified: true,
+      requestId: request.headers.get("x-request-id") ?? randomUUID(),
+    });
     return { review, updated };
   });
   await writeAudit(request, actor, {
@@ -3032,6 +3057,26 @@ async function appealDecision(request: Request, appealId: string) {
         body.outcome === "open"
           ? { status: "open", reviewerId: null, resolvedAt: null }
           : { status: body.outcome, reviewerId: actor.id, resolvedAt: new Date() },
+    });
+    const adminCase = await ensureReviewCaseForAppeal(tx, current);
+    if (!adminCase) throw Errors.conflict("Open appeal did not produce a Review Case");
+    const evidence = await tx.caseEvidence.findUniqueOrThrow({
+      where: {
+        caseId_sourceType_sourceId: {
+          caseId: adminCase.id,
+          sourceType: "appeal",
+          sourceId: current.id,
+        },
+      },
+    });
+    await recordReviewCaseDecision(tx, {
+      caseId: adminCase.id,
+      actor,
+      decision: body.outcome,
+      summary: body.notes ?? `Appeal ${body.outcome}`,
+      evidenceRefs: [evidence.id],
+      downstreamVerified: body.outcome !== "open",
+      requestId: request.headers.get("x-request-id") ?? randomUUID(),
     });
     return { appeal: updated, restored: restoreResult };
   });

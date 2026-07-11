@@ -11,6 +11,10 @@ import type {
 } from "@/server/ai/schemas";
 import { imageReferenceInputsForGenerationJob } from "@/server/ai/reference-images";
 import { dispatchAdmin } from "@/server/modules/admin/service";
+import {
+  ensureReviewCaseForAppeal,
+  ensureReviewCaseForReport,
+} from "@/server/modules/admin-v2/cases/service";
 import { listActiveTemplates } from "@/server/modules/admin/characters/templates";
 import {
   IDENTITY_ASSEMBLER_VERSION,
@@ -4491,26 +4495,30 @@ async function submitReport(
   }
   const underage = body.category.includes("underage");
   const priority = underage ? 1 : 3;
-  const report = await prisma.contentReport.create({
-    data: {
-      reporterId: ctx.userId,
-      targetType,
-      targetId,
-      category: body.category,
-      description: body.description,
-      priority,
-    },
-  });
-  await prisma.moderationEvent.create({
-    data: {
-      targetType,
-      targetId,
-      layer: "community_report",
-      status: "flagged",
-      policyCode: body.category,
-      confidence: 1,
-      details: { reportId: report.id },
-    },
+  const report = await prisma.$transaction(async (tx) => {
+    const created = await tx.contentReport.create({
+      data: {
+        reporterId: ctx.userId,
+        targetType,
+        targetId,
+        category: body.category,
+        description: body.description,
+        priority,
+      },
+    });
+    await tx.moderationEvent.create({
+      data: {
+        targetType,
+        targetId,
+        layer: "community_report",
+        status: "flagged",
+        policyCode: body.category,
+        confidence: 1,
+        details: { reportId: created.id },
+      },
+    });
+    await ensureReviewCaseForReport(tx, created);
+    return created;
   });
 
   // Compliance (roadmap M9 / spec §4.4): underage reports are priority 1 and
@@ -4560,8 +4568,12 @@ async function createAppeal(request: Request) {
       originalDecisionId: z.string().trim().min(1).max(160).optional(),
     })
     .parse(await jsonBody(request));
-  const appeal = await prisma.appeal.create({
-    data: { userId: user.id, ...body },
+  const appeal = await prisma.$transaction(async (tx) => {
+    const created = await tx.appeal.create({
+      data: { userId: user.id, ...body },
+    });
+    await ensureReviewCaseForAppeal(tx, created);
+    return created;
   });
   await trackEvent("moderation_appeal_started", { appealId: appeal.id }, ctx);
   return ok({ appeal });

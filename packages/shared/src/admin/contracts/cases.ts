@@ -12,6 +12,40 @@ import {
 
 export const caseCloseCommandRequestSchema = adminCommandRequestSchema;
 
+export const caseAssignmentRequestSchema = z
+  .object({
+    entityVersion: z.number().int().nonnegative(),
+    ownerId: adminIdSchema.nullable(),
+    priority: adminPrioritySchema.optional(),
+    slaDueAt: adminIsoDateTimeSchema.optional(),
+    reason: z.string().trim().min(1),
+  })
+  .strict();
+
+export const caseDecisionRequestSchema = z
+  .object({
+    entityVersion: z.number().int().nonnegative(),
+    decision: z.string().trim().min(1),
+    summary: z.string().trim().min(1).max(4_000),
+    evidenceRefs: z.array(adminIdSchema).min(1),
+    confidence: z.number().min(0).max(1).optional(),
+  })
+  .strict();
+
+export const caseVerificationRequestSchema = z
+  .object({
+    entityVersion: z.number().int().nonnegative(),
+    state: z.enum(["passed", "failed", "overridden"]),
+    evidenceRefs: z.array(adminIdSchema).min(1),
+    overrideReason: z.string().trim().min(1).optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.state === "overridden" && !value.overrideReason) {
+      ctx.addIssue({ code: "custom", path: ["overrideReason"], message: "Override reason is required" });
+    }
+  });
+
 export const operationsCaseTypeSchema = z.enum([
   "support_request",
   "content_report",
@@ -96,3 +130,6 @@ export type OperationsCase = z.infer<typeof operationsCaseSchema>;
 export type CaseEvidence = z.infer<typeof caseEvidenceSchema>;
 export type OperationsCaseQuery = z.infer<typeof operationsCaseQuerySchema>;
 export type CaseCloseCommandRequest = z.infer<typeof caseCloseCommandRequestSchema>;
+export type CaseAssignmentRequest = z.infer<typeof caseAssignmentRequestSchema>;
+export type CaseDecisionRequest = z.infer<typeof caseDecisionRequestSchema>;
+export type CaseVerificationRequest = z.infer<typeof caseVerificationRequestSchema>;

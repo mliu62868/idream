@@ -323,6 +323,18 @@ describe("admin appeal queue", () => {
       status: "overturned",
       targetRestored: true,
     });
+    const caseEvidence = await prisma.caseEvidence.findFirstOrThrow({
+      where: { sourceType: "appeal", sourceId: appeal.id },
+    });
+    expect(await prisma.adminCase.findUniqueOrThrow({ where: { id: caseEvidence.caseId } })).toMatchObject({
+      status: "resolved",
+      verificationState: "passed",
+    });
+    expect(
+      await prisma.decisionRecord.findFirst({
+        where: { sourceType: "admin_case", sourceId: caseEvidence.caseId, decision: "overturned" },
+      }),
+    ).not.toBeNull();
 
     expectError(
       await api("PATCH", `admin/moderation/appeals/${appeal.id}`, {

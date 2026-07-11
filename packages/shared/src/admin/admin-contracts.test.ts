@@ -10,9 +10,11 @@ import {
   characterReleaseRollbackCommandRequestSchema,
   characterReleaseScheduleCommandRequestSchema,
   characterReleaseSchema,
+  caseVerificationRequestSchema,
   creativeRunSchema,
   deriveCreativeExecutionOutcome,
   incidentSchema,
+  incidentRecoveryVerificationRequestSchema,
   metricCardSchema,
   metricDefinitionSchema,
   operationsCaseSchema,
@@ -219,6 +221,36 @@ describe("Admin API v2 public contracts", () => {
       updatedAt: now,
     };
     expect(operationsCaseSchema.safeParse(closedWithoutResolution).success).toBe(false);
+  });
+
+  it("requires evidence and an audited reason for verification overrides", () => {
+    const incidentVerification = {
+      entityVersion: 4,
+      state: "overridden",
+      evidenceRefs: ["metric-window-1"],
+      checks: {
+        successRateRecovered: true,
+        signatureGrowthStopped: true,
+        backlogRecovering: false,
+        failedRequestPlanComplete: true,
+        settlementReconciled: true,
+      },
+    };
+    expect(incidentRecoveryVerificationRequestSchema.safeParse(incidentVerification).success).toBe(false);
+    expect(
+      incidentRecoveryVerificationRequestSchema.safeParse({
+        ...incidentVerification,
+        overrideReason: "Backlog signal is unavailable; manual queue sample attached.",
+      }).success,
+    ).toBe(true);
+
+    expect(
+      caseVerificationRequestSchema.safeParse({
+        entityVersion: 3,
+        state: "overridden",
+        evidenceRefs: ["evidence_1"],
+      }).success,
+    ).toBe(false);
   });
 
   it("requires decision-grade metadata on metric definitions and cards", () => {

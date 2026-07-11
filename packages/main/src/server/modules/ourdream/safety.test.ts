@@ -246,6 +246,15 @@ describe("reports, queue, and reporter anonymity", () => {
       where: { targetType: "character", targetId: CHAR, layer: "community_report" },
     });
     expect(event).not.toBeNull();
+    const evidence = await prisma.caseEvidence.findFirstOrThrow({
+      where: { sourceType: "content_report", sourceId: reportId },
+    });
+    expect(await prisma.adminCase.findUniqueOrThrow({ where: { id: evidence.caseId } })).toMatchObject({
+      type: "content_report",
+      targetType: "character",
+      targetId: CHAR,
+      status: "new",
+    });
   });
 
   it("does not disclose a report to anyone other than its reporter", async () => {
@@ -375,5 +384,17 @@ describe("admin moderation queue + audit", () => {
 
     const removed = await prisma.character.findUnique({ where: { id: target } });
     expect(removed?.status).toBe("removed");
+    const evidence = await prisma.caseEvidence.findFirstOrThrow({
+      where: { sourceType: "content_report", sourceId: reportId },
+    });
+    expect(await prisma.adminCase.findUniqueOrThrow({ where: { id: evidence.caseId } })).toMatchObject({
+      status: "resolved",
+      verificationState: "passed",
+    });
+    expect(
+      await prisma.decisionRecord.findFirst({
+        where: { sourceType: "admin_case", sourceId: evidence.caseId, decision: "actioned" },
+      }),
+    ).not.toBeNull();
   });
 });

@@ -135,7 +135,14 @@ describe("Admin API v2 authoritative command routes", () => {
   afterAll(async () => {
     await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: { in: [releaseId, runId, incidentId, caseId] } } });
     await prisma.adminAuditLog.deleteMany({ where: { actorId: { in: [adminId, analystId, supportId] } } });
-    await prisma.controlPlaneCommand.deleteMany({ where: { actorId: { in: [adminId, analystId, supportId] } } });
+    const commandIds = (
+      await prisma.controlPlaneCommand.findMany({
+        where: { actorId: { in: [adminId, analystId, supportId] } },
+        select: { id: true },
+      })
+    ).map((row) => row.id);
+    await prisma.controlPlaneCommandAttempt.deleteMany({ where: { commandId: { in: commandIds } } });
+    await prisma.controlPlaneCommand.deleteMany({ where: { id: { in: commandIds } } });
     await prisma.adminActionRequest.deleteMany({ where: { requestedById: adminId } });
     await prisma.adminCase.delete({ where: { id: caseId } });
     await prisma.opsIncident.delete({ where: { id: incidentId } });
@@ -183,7 +190,24 @@ describe("Admin API v2 authoritative command routes", () => {
       { commandType: "creative.run.retry_failed" },
       { commandType: "incident.resolve" },
     ]);
-    expect(await prisma.adminAuditLog.count({ where: { actorId: adminId } })).toBe(4);
+    expect(await prisma.adminAuditLog.count({ where: { actorId: adminId } })).toBe(6);
+    const executedStatuses =
+      await prisma.controlPlaneCommand.findMany({
+        where: { actorId: adminId, commandType: { in: ["incident.resolve", "case.close"] } },
+        select: { status: true },
+      });
+    expect(executedStatuses).toHaveLength(2);
+    expect(executedStatuses.every((row) => row.status === "succeeded")).toBe(true);
+
+    // Later cases exercise acceptance-time conflicts independently.
+    await prisma.opsIncident.update({
+      where: { id: incidentId },
+      data: { status: "monitoring", verificationState: "passed", version: 4 },
+    });
+    await prisma.adminCase.update({
+      where: { id: caseId },
+      data: { status: "resolved", verificationState: "passed", version: 5 },
+    });
   });
 
   it("replays the same idempotency key and rejects a changed canonical request", async () => {

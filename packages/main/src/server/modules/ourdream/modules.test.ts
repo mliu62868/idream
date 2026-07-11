@@ -888,6 +888,14 @@ describe("appeals", () => {
     });
     expectOk(res);
     expect(res.data.appeal).toMatchObject({ targetId: CHAR });
+    const evidence = await prisma.caseEvidence.findFirstOrThrow({
+      where: { sourceType: "appeal", sourceId: res.data.appeal.id as string },
+    });
+    expect(await prisma.adminCase.findUniqueOrThrow({ where: { id: evidence.caseId } })).toMatchObject({
+      type: "appeal",
+      status: "new",
+      priority: "high",
+    });
   });
 
   it("rejects unsupported appeal target types", async () => {

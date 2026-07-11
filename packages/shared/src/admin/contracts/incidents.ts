@@ -11,6 +11,66 @@ import {
 
 export const incidentResolveCommandRequestSchema = adminCommandRequestSchema;
 
+export const incidentTriageRequestSchema = z
+  .object({
+    entityVersion: z.number().int().nonnegative(),
+    ownerId: adminIdSchema.nullable(),
+    severity: adminSeveritySchema.optional(),
+    slaDueAt: adminIsoDateTimeSchema.optional(),
+    suspectedCause: z.string().trim().min(1).optional(),
+    confidence: z.number().min(0).max(1).optional(),
+    runbookUrl: z.string().url().optional(),
+    rollbackTarget: z.string().trim().min(1).optional(),
+    reason: z.string().trim().min(1),
+  })
+  .strict();
+
+export const incidentRecoveryVerificationRequestSchema = z
+  .object({
+    entityVersion: z.number().int().nonnegative(),
+    state: z.enum(["passed", "failed", "overridden"]),
+    evidenceRefs: z.array(z.string().trim().min(1)).min(1),
+    checks: z
+      .object({
+        successRateRecovered: z.boolean(),
+        signatureGrowthStopped: z.boolean(),
+        backlogRecovering: z.boolean(),
+        failedRequestPlanComplete: z.boolean(),
+        settlementReconciled: z.boolean(),
+      })
+      .strict(),
+    overrideReason: z.string().trim().min(1).optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.state === "overridden" && !value.overrideReason) {
+      ctx.addIssue({ code: "custom", path: ["overrideReason"], message: "Override reason is required" });
+    }
+  });
+
+export const incidentActionPlanPreviewRequestSchema = z
+  .object({
+    action: z.enum(["retry_eligible", "refund", "pause_route", "rollback"]),
+    targetVersion: z.string().trim().min(1).optional(),
+    ttlSeconds: z.number().int().min(1).max(3600).optional(),
+  })
+  .strict();
+
+export const incidentActionPlanExecuteRequestSchema = z
+  .object({
+    entityVersion: z.number().int().nonnegative(),
+    confirmation: z.string().trim().min(1),
+  })
+  .strict();
+
+export const adminBackfillRequestSchema = z
+  .object({
+    dryRun: z.boolean().default(true),
+    cursor: z.string().trim().min(1).optional(),
+    batchSize: z.number().int().min(1).max(500).optional(),
+  })
+  .strict();
+
 export const incidentStatusSchema = z.enum([
   "detected",
   "triaged",
@@ -28,6 +88,7 @@ export const incidentImpactSchema = z
     affectedUsers: z.number().int().nonnegative(),
     failedCostMicros: z.number().int().nonnegative(),
     refundMicros: z.number().int().nonnegative(),
+    refundDreamcoins: z.number().int().nonnegative().optional(),
   })
   .strict();
 
@@ -104,3 +165,14 @@ export type IncidentOccurrence = z.infer<typeof incidentOccurrenceSchema>;
 export type IncidentActionPlan = z.infer<typeof incidentActionPlanSchema>;
 export type IncidentQuery = z.infer<typeof incidentQuerySchema>;
 export type IncidentResolveCommandRequest = z.infer<typeof incidentResolveCommandRequestSchema>;
+export type IncidentTriageRequest = z.infer<typeof incidentTriageRequestSchema>;
+export type IncidentRecoveryVerificationRequest = z.infer<
+  typeof incidentRecoveryVerificationRequestSchema
+>;
+export type IncidentActionPlanPreviewRequest = z.infer<
+  typeof incidentActionPlanPreviewRequestSchema
+>;
+export type IncidentActionPlanExecuteRequest = z.infer<
+  typeof incidentActionPlanExecuteRequestSchema
+>;
+export type AdminBackfillRequest = z.infer<typeof adminBackfillRequestSchema>;

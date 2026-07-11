@@ -24,6 +24,7 @@ import {
   IdempotencyConflictError,
 } from "../shared/control-plane-command";
 import { CHARACTER_RELEASE_POLICY_VERSION } from "../characters/release-executor";
+import { executeAcceptedAdminCommand } from "./executor";
 
 type JsonObject = Record<string, unknown>;
 
@@ -148,6 +149,7 @@ async function acceptCommand(input: {
   readonly parsed: ParsedCommand<AdminCommandRequest>;
   readonly definition: CommandDefinition;
   readonly targetId: string;
+  readonly executeInline?: boolean;
 }) {
   await validateApproval({
     approvalId: input.parsed.body.approvalId,
@@ -177,6 +179,7 @@ async function acceptCommand(input: {
         })
       ).requestId
     : input.parsed.requestId;
+  if (input.executeInline) await executeAcceptedAdminCommand(accepted.commandId);
   const envelope = adminCommandAcceptedSchema.parse({
     status: "accepted",
     requestId: authoritativeRequestId,
@@ -437,7 +440,7 @@ export function resolveIncident(request: Request, incidentId: string) {
         `/admin/ops/incidents/${incidentId}`,
       );
     }
-    return acceptCommand({ actor, parsed, definition: resolveIncidentDefinition, targetId: incidentId });
+    return acceptCommand({ actor, parsed, definition: resolveIncidentDefinition, targetId: incidentId, executeInline: true });
   });
 }
 
@@ -478,6 +481,6 @@ export function closeCase(request: Request, caseId: string) {
         `/admin/customer-ops/cases/${caseId}`,
       );
     }
-    return acceptCommand({ actor, parsed, definition: closeCaseDefinition, targetId: caseId });
+    return acceptCommand({ actor, parsed, definition: closeCaseDefinition, targetId: caseId, executeInline: true });
   });
 }
