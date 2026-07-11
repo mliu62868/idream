@@ -12,6 +12,29 @@ import {
 
 export const creativeRunRetryFailedCommandRequestSchema = adminCommandRequestSchema;
 
+export const creativeReviewDecisionRequestSchema = z.object({
+  entityVersion: z.number().int().nonnegative(),
+  decision: z.enum(["approved", "rejected"]),
+  identityConsistency: z.enum(["passed", "failed", "unscored"]),
+  score: z.number().int().min(0).max(100).optional(),
+  reason: z.string().trim().min(3).max(2_000),
+});
+
+export const creativePlacementPublishRequestSchema = z.object({
+  entityVersion: z.number().int().nonnegative(),
+  itemId: adminIdSchema,
+  assetId: adminIdSchema,
+  slot: z.string().trim().min(1).max(120),
+  targetType: z.string().trim().min(1).max(120),
+  targetId: adminIdSchema,
+  reason: z.string().trim().min(3).max(2_000),
+});
+
+export const creativePlacementVerificationRequestSchema = z.object({
+  entityVersion: z.number().int().nonnegative(),
+  reason: z.string().trim().min(3).max(2_000),
+});
+
 export const creativeLifecycleStateSchema = z.enum(["draft", "active", "closed", "archived"]);
 export const creativeWorkflowStageSchema = z.enum([
   "brief",
@@ -145,3 +168,6 @@ export type CreativeRunQuery = z.infer<typeof creativeRunQuerySchema>;
 export type CreativeRunRetryFailedCommandRequest = z.infer<
   typeof creativeRunRetryFailedCommandRequestSchema
 >;
+export type CreativeReviewDecisionRequest = z.infer<typeof creativeReviewDecisionRequestSchema>;
+export type CreativePlacementPublishRequest = z.infer<typeof creativePlacementPublishRequestSchema>;
+export type CreativePlacementVerificationRequest = z.infer<typeof creativePlacementVerificationRequestSchema>;

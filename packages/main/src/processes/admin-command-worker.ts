@@ -5,6 +5,11 @@ import { logger } from "@/server/lib/logger";
 import { executeCharacterReleaseCommand } from "@/server/modules/admin-v2/characters/release-executor";
 import { executeAcceptedAdminCommand } from "@/server/modules/admin-v2/commands/executor";
 import { reconcileExpiredCommandLeases } from "@/server/modules/admin-v2/shared/control-plane-command";
+import {
+  dispatchCreativeRetryOutbox,
+  executeCreativeRetryCommand,
+  verifyCreativeRetryCommands,
+} from "@/server/modules/admin-v2/creative/retry-executor";
 
 const COMMAND_TYPES = [
   "character.release.schedule",
@@ -15,6 +20,7 @@ const COMMAND_TYPES = [
   "incident.resolve",
   "case.close",
   "chat.session_release.migrate",
+  "creative.run.retry_failed",
 ] as const;
 const CHARACTER_COMMAND_TYPES = new Set<string>([
   "character.release.schedule",
@@ -42,17 +48,23 @@ export async function drainAdminCommands(
   });
   let succeeded = 0;
   let failed = 0;
+  let verifying = 0;
   for (const command of commands) {
-    const result = CHARACTER_COMMAND_TYPES.has(command.commandType)
+    const result = command.commandType === "creative.run.retry_failed"
+      ? await executeCreativeRetryCommand(db, { commandId: command.id, workerId: input.workerId })
+      : CHARACTER_COMMAND_TYPES.has(command.commandType)
       ? await executeCharacterReleaseCommand(db, {
           commandId: command.id,
           workerId: input.workerId,
         })
       : await executeAcceptedAdminCommand(command.id);
     if (result.status === "succeeded") succeeded += 1;
+    else if (["accepted", "running", "verifying"].includes(result.status)) verifying += 1;
     else failed += 1;
   }
-  return { examined: commands.length, succeeded, failed };
+  const dispatched = await dispatchCreativeRetryOutbox(db, { limit: input.limit });
+  const verified = await verifyCreativeRetryCommands(db, { limit: input.limit });
+  return { examined: commands.length, succeeded, failed, verifying, dispatched, verified };
 }
 
 export const drainCharacterReleaseCommands = drainAdminCommands;

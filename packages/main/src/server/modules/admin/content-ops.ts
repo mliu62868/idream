@@ -297,6 +297,10 @@ export async function createProductionBatchCore(
         totalItems: body.count,
         estimatedCostDreamcoins: perItemCostDreamcoins * body.count,
         status: "queued",
+        ownerId: actor.id,
+        lifecycleState: "active",
+        workflowStage: "generation",
+        verificationState: "pending",
         createdById: actor.id,
       },
     });

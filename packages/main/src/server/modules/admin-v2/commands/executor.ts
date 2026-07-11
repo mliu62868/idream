@@ -3,6 +3,7 @@ import { Errors } from "@/server/lib/errors";
 import { claimControlPlaneCommand } from "../shared/control-plane-command";
 import { toInputJson } from "../shared/prisma-json";
 import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
+import { executeCreativeRetryCommand } from "../creative/retry-executor";
 
 const WORKER_ID = "admin-v2-inline-executor";
 
@@ -282,6 +283,9 @@ export async function executeAcceptedAdminCommand(commandId: string) {
   const command = await prisma.controlPlaneCommand.findUnique({ where: { id: commandId } });
   if (!command) throw Errors.notFound("Control-plane command not found");
   if (["succeeded", "failed", "cancelled"].includes(command.status)) return command;
+  if (command.commandType === "creative.run.retry_failed") {
+    return executeCreativeRetryCommand(prisma, { commandId: command.id, workerId: WORKER_ID });
+  }
   if (command.commandType === "incident.resolve") return executeResolveIncident(command.id);
   if (command.commandType === "case.close") return executeCloseCase(command.id);
   if (command.commandType === "chat.session_release.migrate") {

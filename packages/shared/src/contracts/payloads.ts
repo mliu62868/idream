@@ -434,6 +434,8 @@ export const aiFinalizePayloadSchema = z.discriminatedUnion("kind", [
       kind: z.literal("generation.failed"),
       requestId: z.string(),
       generationJobId: z.string(),
+      attemptId: z.string().optional(),
+      attemptNo: z.number().int().positive().optional(),
       mode: z.enum(["image", "video"]),
       error: z.object({
         code: z.string(),
@@ -448,6 +450,8 @@ export const aiFinalizePayloadSchema = z.discriminatedUnion("kind", [
       kind: z.literal("generation.blocked"),
       requestId: z.string(),
       generationJobId: z.string(),
+      attemptId: z.string().optional(),
+      attemptNo: z.number().int().positive().optional(),
       mode: z.enum(["image", "video"]),
       policyCode: z.string(),
       message: z.string(),

@@ -12,6 +12,9 @@ import {
   characterReleaseSchema,
   caseVerificationRequestSchema,
   creativeRunSchema,
+  creativeReviewDecisionRequestSchema,
+  creativePlacementPublishRequestSchema,
+  creativePlacementVerificationRequestSchema,
   deriveCreativeExecutionOutcome,
   incidentSchema,
   incidentRecoveryVerificationRequestSchema,
@@ -358,6 +361,36 @@ describe("Admin API v2 public contracts", () => {
         error: { code: "permission_denied", message: "Denied", requestId: "request_1" },
       }).success,
     ).toBe(false);
+  });
+
+  it("validates the Creative review, distribution placement, and verification commands", () => {
+    expect(creativeReviewDecisionRequestSchema.safeParse({
+      entityVersion: 4,
+      decision: "approved",
+      identityConsistency: "passed",
+      score: 92,
+      reason: "Matches the approved brief",
+    }).success).toBe(true);
+    expect(creativePlacementPublishRequestSchema.safeParse({
+      entityVersion: 5,
+      itemId: "item_1",
+      assetId: "asset_1",
+      slot: "feed_card",
+      targetType: "campaign",
+      targetId: "campaign_1",
+      reason: "Publish the approved asset",
+    }).success).toBe(true);
+    expect(creativePlacementVerificationRequestSchema.safeParse({
+      entityVersion: 6,
+      reason: "Observed expected asset in the current slot",
+    }).success).toBe(true);
+    expect(creativeReviewDecisionRequestSchema.safeParse({
+      entityVersion: 4,
+      decision: "approved",
+      identityConsistency: "passed",
+      score: 101,
+      reason: "Invalid score",
+    }).success).toBe(false);
   });
 
   it("ships an immutable registry with unsafe legacy metrics blocked for decisions", () => {

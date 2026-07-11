@@ -4791,7 +4791,7 @@ async function enforceApproval(
   }
 }
 
-export async function enqueueExistingGenerationJob(job: {
+type ExistingGenerationJob = {
   id: string;
   userId: string;
   characterId: string | null;
@@ -4807,12 +4807,26 @@ export async function enqueueExistingGenerationJob(job: {
   outputCount: number;
   seed?: string | null;
   referenceAssetIds?: Prisma.JsonValue | null;
-}) {
-  const attempt = await prisma.generationAttempt.upsert({
-    where: { requestId_attemptNo: { requestId: job.id, attemptNo: 1 } },
-    create: { requestId: job.id, attemptNo: 1, status: "queued" },
-    update: {},
-  });
+};
+
+export async function enqueueExistingGenerationJob(job: ExistingGenerationJob) {
+  return enqueueGenerationAttempt(job);
+}
+
+export async function enqueueGenerationAttempt(
+  job: ExistingGenerationJob,
+  suppliedAttempt?: { readonly attemptId: string; readonly attemptNo: number },
+) {
+  const attempt = suppliedAttempt
+    ? await prisma.generationAttempt.findUniqueOrThrow({ where: { id: suppliedAttempt.attemptId } })
+    : await prisma.generationAttempt.upsert({
+        where: { requestId_attemptNo: { requestId: job.id, attemptNo: 1 } },
+        create: { requestId: job.id, attemptNo: 1, status: "queued" },
+        update: {},
+      });
+  if (attempt.requestId !== job.id || (suppliedAttempt && attempt.attemptNo !== suppliedAttempt.attemptNo)) {
+    throw Errors.conflict("Generation Attempt does not belong to the requested generation authority");
+  }
   const controls = await internalExistingGenerationControls(job);
   const modelCapabilities = modelCapabilitiesFromControls(controls);
   const referenceImages =
@@ -4860,7 +4874,9 @@ export async function enqueueExistingGenerationJob(job: {
   await jobQueue.enqueue({
     queue: job.mode === "video" ? "ai.video.generate" : "ai.image.generate",
     payload: toInputJson(payload),
-    dedupeKey: `generation:${job.id}`,
+    dedupeKey: suppliedAttempt
+      ? `generation:${job.id}:attempt:${attempt.attemptNo}`
+      : `generation:${job.id}`,
     maxAttempts: 3,
   });
 }

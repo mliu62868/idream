@@ -17,6 +17,8 @@ describe("Admin API v2 authoritative command routes", () => {
   const releaseId = `release-${suffix}`;
   const runId = `run-${suffix}`;
   const failedItemId = `item-${suffix}`;
+  const failedJobId = `job-${suffix}`;
+  const creativeProfileId = `creative-profile-${suffix}`;
   const incidentId = `incident-${suffix}`;
   const caseId = `case-${suffix}`;
 
@@ -78,6 +80,44 @@ describe("Admin API v2 authoritative command routes", () => {
         version: 3,
       },
     });
+    await prisma.generationModelProfile.create({
+      data: {
+        id: creativeProfileId,
+        profileKey: creativeProfileId,
+        label: "Command test creative profile",
+        mode: "image",
+        runner: "pipeline",
+        pipelineModel: "mock-image",
+        runnerConfig: { verificationStatus: "passed" },
+        allowedOrientations: ["portrait"],
+        enabled: true,
+        status: "active",
+        version: 1,
+      },
+    });
+    await prisma.generationJob.create({
+      data: {
+        id: failedJobId,
+        userId: adminId,
+        mode: "image",
+        controls: {},
+        presetIds: [],
+        status: "failed",
+        profileId: creativeProfileId,
+        profileVersion: 1,
+        sourceType: "content_production_item",
+        sourceId: failedItemId,
+      },
+    });
+    await prisma.generationAttempt.create({
+      data: {
+        requestId: failedJobId,
+        attemptNo: 1,
+        status: "failed",
+        retryability: "retryable",
+        finishedAt: new Date(),
+      },
+    });
     await prisma.releaseValidationRun.create({
       data: {
         releaseId,
@@ -99,7 +139,9 @@ describe("Admin API v2 authoritative command routes", () => {
         status: "completed",
         version: 2,
         createdById: adminId,
-        items: { create: { id: failedItemId, itemIndex: 0, status: "failed", tags: [] } },
+        profileId: creativeProfileId,
+        profileVersion: 1,
+        items: { create: { id: failedItemId, jobId: failedJobId, itemIndex: 0, status: "failed", tags: [] } },
       },
     });
     await prisma.opsIncident.create({
@@ -148,6 +190,9 @@ describe("Admin API v2 authoritative command routes", () => {
     await prisma.opsIncident.delete({ where: { id: incidentId } });
     await prisma.contentProductionItem.deleteMany({ where: { batchId: runId } });
     await prisma.contentProductionBatch.delete({ where: { id: runId } });
+    await prisma.generationAttempt.deleteMany({ where: { requestId: failedJobId } });
+    await prisma.generationJob.delete({ where: { id: failedJobId } });
+    await prisma.generationModelProfile.delete({ where: { id: creativeProfileId } });
     await prisma.releaseValidationRun.deleteMany({ where: { releaseId } });
     await prisma.characterRelease.delete({ where: { id: releaseId } });
     await prisma.characterProject.delete({ where: { id: projectId } });

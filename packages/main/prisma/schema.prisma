@@ -652,6 +652,12 @@ model ContentProductionBatch {
   approvedItems           Int                     @default(0)
   estimatedCostDreamcoins Int                     @default(0)
   status                  String                  @default("draft") // enum: draft | queued | reviewing | completed | archived
+  ownerId                 String?
+  dueAt                   DateTime?
+  priority                String                  @default("normal")
+  lifecycleState          String                  @default("active")
+  workflowStage           String                  @default("generation")
+  verificationState       String                  @default("pending")
   version                 Int                     @default(1)
   createdById             String
   createdBy               User                    @relation(fields: [createdById], references: [id], onDelete: Cascade)
@@ -679,6 +685,7 @@ model ContentProductionItem {
   tags         Json
   reviewedById String?
   reviewedAt   DateTime?
+  version      Int                    @default(1)
   batch        ContentProductionBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
   job          GenerationJob?         @relation(fields: [jobId], references: [id], onDelete: SetNull)
   mediaAsset   MediaAsset?            @relation(fields: [mediaAssetId], references: [id], onDelete: SetNull)
@@ -691,27 +698,48 @@ model ContentProductionItem {
 }
 
 model MediaAssetPlacement {
-  id           String     @id @default(cuid())
-  mediaAssetId String
-  slot         String // enum: character_avatar | character_hero | feed_card | homepage_strip | seo_article | template_cover | campaign
-  targetType   String
-  targetId     String
-  status       String     @default("draft") // enum: draft | scheduled | published | paused | archived
-  scheduledAt  DateTime?
-  publishedAt  DateTime?
-  pausedAt     DateTime?
-  archivedAt   DateTime?
-  createdById  String
-  metadata     Json
-  mediaAsset   MediaAsset @relation(fields: [mediaAssetId], references: [id], onDelete: Cascade)
-  createdBy    User       @relation(fields: [createdById], references: [id], onDelete: Cascade)
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
+  id                   String     @id @default(cuid())
+  mediaAssetId         String
+  slot                 String // enum: character_avatar | character_hero | feed_card | homepage_strip | seo_article | template_cover | campaign
+  targetType           String
+  targetId             String
+  status               String     @default("draft") // enum: draft | scheduled | published | paused | archived
+  scheduledAt          DateTime?
+  publishedAt          DateTime?
+  pausedAt             DateTime?
+  archivedAt           DateTime?
+  createdById          String
+  metadata             Json
+  verificationState    String     @default("pending")
+  verificationEvidence Json?
+  verifiedAt           DateTime?
+  rollbackPlacementId  String?
+  version              Int        @default(1)
+  mediaAsset           MediaAsset @relation(fields: [mediaAssetId], references: [id], onDelete: Cascade)
+  createdBy            User       @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  createdAt            DateTime   @default(now())
+  updatedAt            DateTime   @updatedAt
 
   @@index([mediaAssetId, status])
   @@index([slot, targetType, targetId])
   @@index([createdById])
   @@map("media_asset_placements")
+}
+
+model CreativeReviewDecision {
+  id                  String   @id @default(cuid())
+  runItemId           String
+  artifactId          String
+  decision            String
+  identityConsistency String
+  score               Int?
+  reason              String
+  reviewerId          String
+  createdAt           DateTime @default(now())
+
+  @@index([runItemId, createdAt])
+  @@index([artifactId, createdAt])
+  @@map("creative_review_decisions")
 }
 
 model MediaLike {
@@ -1505,14 +1533,18 @@ model GenerationAttempt {
   errorSignature        String?
   retryability          String?
   operatorGuidance      String?
+  sourceCommandId       String?
+  creativeRunItemId     String?
   completionManifestRef String?
   startedAt             DateTime?
   finishedAt            DateTime?
   createdAt             DateTime  @default(now())
 
   @@unique([requestId, attemptNo])
+  @@unique([sourceCommandId, creativeRunItemId])
   @@index([status, createdAt])
   @@index([errorSignature, status])
+  @@index([sourceCommandId, status])
   @@map("generation_attempts")
 }
 

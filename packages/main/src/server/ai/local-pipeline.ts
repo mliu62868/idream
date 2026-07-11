@@ -315,7 +315,7 @@ async function runImageGenerate(payload: ImageGeneratePayload, jobMeta: QueueJob
     );
     return;
   }
-  await markGenerationRunning(payload.generationJobId);
+  await markGenerationRunning(payload.generationJobId, payload.attemptId);
   const referenceImages = await hydratedImageReferenceInputs(
     payload.referenceImages,
     providers.blob,
@@ -412,11 +412,13 @@ async function runImageGenerate(payload: ImageGeneratePayload, jobMeta: QueueJob
       kind: "generation.completed",
       requestId: payload.requestId,
       generationJobId: payload.generationJobId,
+      attemptId: payload.attemptId,
+      attemptNo: payload.attemptNo,
       mode: "image",
       assets,
       usage: { gpuSeconds: assets.length * 1.2, model: payload.model },
     } satisfies AiFinalizePayload),
-    dedupeKey: `generation-finalize:${payload.generationJobId}:completed`,
+    dedupeKey: generationFinalizeDedupeKey(payload, "completed"),
   });
 }
 
@@ -446,7 +448,7 @@ async function runVideoGenerate(payload: VideoGeneratePayload, jobMeta: QueueJob
     );
     return;
   }
-  await markGenerationRunning(payload.generationJobId);
+  await markGenerationRunning(payload.generationJobId, payload.attemptId);
 
   const result = await providers.video.generate({
     prompt: payload.prompt,
@@ -496,6 +498,8 @@ async function runVideoGenerate(payload: VideoGeneratePayload, jobMeta: QueueJob
       kind: "generation.completed",
       requestId: payload.requestId,
       generationJobId: payload.generationJobId,
+      attemptId: payload.attemptId,
+      attemptNo: payload.attemptNo,
       mode: "video",
       assets: [
         {
@@ -507,7 +511,7 @@ async function runVideoGenerate(payload: VideoGeneratePayload, jobMeta: QueueJob
       ],
       usage: { gpuSeconds: payload.seconds * 2, model: payload.model },
     } satisfies AiFinalizePayload),
-    dedupeKey: `generation-finalize:${payload.generationJobId}:completed`,
+    dedupeKey: generationFinalizeDedupeKey(payload, "completed"),
   });
 }
 
@@ -644,6 +648,12 @@ async function finalizeGenerationCompleted(
         errorCode: null,
       },
     });
+    if (payload.attemptId) {
+      await tx.generationAttempt.updateMany({
+        where: { id: payload.attemptId, requestId: job.id },
+        data: { status: "succeeded", finishedAt: completedAt },
+      });
+    }
     if (payload.attemptId) {
       await tx.mainOutboxEvent.updateMany({
         where: { id: `generation_manifest_${payload.attemptId}` },
@@ -816,6 +826,7 @@ async function finalizeGenerationFailed(
     "failed",
     payload.error.code,
     job.sourceType,
+    payload.attemptId,
   );
   await enqueueChatImageFailed(job.id, "failed", payload.error.code);
 }
@@ -847,6 +858,7 @@ async function finalizeGenerationBlocked(
     "blocked",
     payload.policyCode,
     job.sourceType,
+    payload.attemptId,
   );
   await enqueueChatImageFailed(job.id, "blocked", payload.policyCode);
 }
@@ -943,10 +955,12 @@ async function enqueueGenerationFailed(
       kind: "generation.failed",
       requestId: payload.requestId,
       generationJobId: payload.generationJobId,
+      attemptId: payload.attemptId,
+      attemptNo: payload.attemptNo,
       mode: payload.kind,
       error: { code, message, retryable: false },
     } satisfies AiFinalizePayload),
-    dedupeKey: `generation-finalize:${payload.generationJobId}:failed`,
+    dedupeKey: generationFinalizeDedupeKey(payload, "failed"),
   });
 }
 
@@ -963,13 +977,24 @@ async function enqueueGenerationBlocked(
       kind: "generation.blocked",
       requestId: payload.requestId,
       generationJobId: payload.generationJobId,
+      attemptId: payload.attemptId,
+      attemptNo: payload.attemptNo,
       mode: payload.kind,
       policyCode,
       message,
       layer,
     } satisfies AiFinalizePayload),
-    dedupeKey: `generation-finalize:${payload.generationJobId}:blocked`,
+    dedupeKey: generationFinalizeDedupeKey(payload, "blocked"),
   });
+}
+
+function generationFinalizeDedupeKey(
+  payload: { generationJobId: string; attemptId?: string; attemptNo?: number },
+  outcome: "completed" | "failed" | "blocked",
+) {
+  return payload.attemptId && (payload.attemptNo ?? 1) > 1
+    ? `generation-finalize:${payload.generationJobId}:${payload.attemptId}:${outcome}`
+    : `generation-finalize:${payload.generationJobId}:${outcome}`;
 }
 
 async function markGenerationModeratingInput(payload: ImageGeneratePayload | VideoGeneratePayload) {
@@ -994,12 +1019,18 @@ async function markGenerationModeratingInput(payload: ImageGeneratePayload | Vid
   );
 }
 
-async function markGenerationRunning(generationJobId: string) {
+async function markGenerationRunning(generationJobId: string, attemptId?: string) {
   await prisma.$transaction(async (tx) => {
     await tx.generationJob.updateMany({
       where: { id: generationJobId, status: { in: ["queued", "moderating_input", "running"] } },
       data: { status: "running", errorCode: null },
     });
+    if (attemptId) {
+      await tx.generationAttempt.updateMany({
+        where: { id: attemptId, requestId: generationJobId, status: "queued" },
+        data: { status: "running", startedAt: new Date() },
+      });
+    }
     await appendGenerationEvent(tx, generationJobId, "running", "Provider generation started", {});
   });
 }
@@ -1061,6 +1092,7 @@ async function refundGeneration(
   status: "failed" | "blocked",
   errorCode: string,
   sourceType: string,
+  attemptId?: string,
 ) {
   // INVARIANT: content_production jobs are never debited, so they must never be
   // credited on refund — their costDreamcoins is record-keeping only (ops batches
@@ -1081,6 +1113,17 @@ async function refundGeneration(
       where: { id: jobId },
       data: { status, errorCode, completedAt: new Date() },
     });
+    if (attemptId) {
+      await tx.generationAttempt.updateMany({
+        where: { id: attemptId, requestId: jobId },
+        data: {
+          status: "failed",
+          errorCode,
+          retryability: status === "failed" ? "retryable" : "not_retryable",
+          finishedAt: new Date(),
+        },
+      });
+    }
     await markProductionItemFailed(tx, jobId);
     await appendGenerationEvent(tx, jobId, status, `Generation job ${status}`, {
       errorCode,

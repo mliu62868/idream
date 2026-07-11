@@ -26,6 +26,7 @@ import {
 } from "../shared/control-plane-command";
 import { CHARACTER_RELEASE_POLICY_VERSION } from "../characters/release-executor";
 import { executeAcceptedAdminCommand } from "./executor";
+import { generationProfileHealth } from "../creative/retry-executor";
 
 type JsonObject = Record<string, unknown>;
 
@@ -50,6 +51,13 @@ class InvariantFailedError extends Error {
   ) {
     super("Command invariants are not satisfied");
     this.name = "InvariantFailedError";
+  }
+}
+
+class DependencyUnhealthyError extends Error {
+  constructor(readonly dependencies: readonly { code: string; message: string; itemId?: string }[]) {
+    super("A generation dependency is unhealthy; blind retry is disabled");
+    this.name = "DependencyUnhealthyError";
   }
 }
 
@@ -241,6 +249,20 @@ async function commandResponse(
           },
         },
         { status: 422 },
+      );
+    }
+    if (error instanceof DependencyUnhealthyError) {
+      return Response.json(
+        {
+          ok: false,
+          error: {
+            code: "dependency_unhealthy",
+            message: error.message,
+            requestId,
+            dependencies: error.dependencies,
+          },
+        },
+        { status: 503 },
       );
     }
     if (error instanceof ZodError || error instanceof SyntaxError) {
@@ -445,7 +467,10 @@ export function retryFailedCreativeRun(request: Request, runId: string) {
       include: {
         items: {
           where: { status: "failed" },
-          select: { id: true, job: { select: { id: true, status: true } } },
+          select: {
+            id: true,
+            job: { select: { id: true, status: true, profileId: true, profileVersion: true } },
+          },
         },
       },
     });
@@ -465,9 +490,9 @@ export function retryFailedCreativeRun(request: Request, runId: string) {
     const eligibleItemIds = run.items
       .filter(
         (item) =>
-          item.job === null ||
-          (["failed", "blocked", "cancelled"].includes(item.job.status) &&
-            !refundedJobIds.has(item.job.id)),
+          item.job !== null &&
+          item.job.status === "failed" &&
+          !refundedJobIds.has(item.job.id),
       )
       .map((item) => item.id)
       .sort();
@@ -477,6 +502,31 @@ export function retryFailedCreativeRun(request: Request, runId: string) {
         `/admin/creative/runs/${runId}`,
       );
     }
+    const dependencies: Array<{ code: string; message: string; itemId?: string }> = [];
+    for (const item of run.items.filter((candidate) => eligibleItemIds.includes(candidate.id))) {
+      if (!item.job?.profileId) {
+        dependencies.push({ code: "generation_profile_missing", message: "The failed item has no replayable profile authority.", itemId: item.id });
+        continue;
+      }
+      const [profile, latestAttempt] = await Promise.all([
+        prisma.generationModelProfile.findFirst({
+          where: {
+            version: item.job.profileVersion ?? undefined,
+            OR: [{ id: item.job.profileId }, { profileKey: item.job.profileId }],
+          },
+          orderBy: { version: "desc" },
+        }),
+        prisma.generationAttempt.findFirst({ where: { requestId: item.job.id }, orderBy: { attemptNo: "desc" } }),
+      ]);
+      const health = generationProfileHealth(profile);
+      if (!health.healthy) {
+        dependencies.push({ code: health.reason, message: "The generation profile has not passed its health gate.", itemId: item.id });
+      }
+      if (latestAttempt?.status === "unknown" || latestAttempt?.retryability === "not_retryable") {
+        dependencies.push({ code: "attempt_non_replayable", message: "The latest attempt requires reconciliation and cannot be retried.", itemId: item.id });
+      }
+    }
+    if (dependencies.length > 0) throw new DependencyUnhealthyError(dependencies);
     parsed.payload.failedItemIds = eligibleItemIds;
     return acceptCommand({ actor, parsed, definition: retryFailedDefinition, targetId: runId });
   });
