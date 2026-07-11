@@ -1,6 +1,6 @@
 "use client";
 
-// SPEC: 只读展示 generation backends（comfyui + sdcpp）目录 —— kind、endpoint/cliPath、
+// SPEC: 只读展示 generation backends（comfyui + sdcpp + drawthings）目录 —— kind、endpoint/cliPath、
 //       健康探测结果（ok + latencyMs，或 fail + detail）。用 ReadonlyOpsView 表格渲染，
 //       与 jobs/dead-letter 运维页一致；不健康行用 FailureReason 出人话，endpoint/cliPath
 //       折进 EngineeringDetails，不裸露成表格列。
@@ -24,6 +24,7 @@ type BackendItem = {
   kind: string;
   endpoint?: string;
   cliPath?: string;
+  modelsDir?: string;
   health: BackendHealth;
 };
 
@@ -66,7 +67,7 @@ export function BackendsView() {
       label: "Backend",
       render: (row) => {
         const backend = asBackend(row);
-        const hasConfig = Boolean(backend.endpoint || backend.cliPath);
+        const hasConfig = Boolean(backend.endpoint || backend.cliPath || backend.modelsDir);
         return (
           <div className="space-y-1.5">
             <span className="font-mono text-sm font-semibold">{backend.id}</span>
@@ -81,6 +82,11 @@ export function BackendsView() {
                   {backend.cliPath ? (
                     <div>
                       {t("CLI Path")}: {backend.cliPath}
+                    </div>
+                  ) : null}
+                  {backend.modelsDir ? (
+                    <div>
+                      {t("Models directory")}: {backend.modelsDir}
                     </div>
                   ) : null}
                 </div>

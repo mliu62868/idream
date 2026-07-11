@@ -1,4 +1,4 @@
-// SPEC: 只读 admin API —— GET generation/backends（comfyui/sdcpp 端点 + 健康探测）与
+// SPEC: 只读 admin API —— GET generation/backends（comfyui/sdcpp/drawthings + 健康探测）与
 // GET generation/workflows[/:workflowKey]（workflow 描述符目录只读展示，供工程排查）。
 // INTENT: main 不依赖 packages/gen（两者只通过 Redis 队列耦合），这里独立读取同一份
 // workflow 描述符 JSON（shared 的 loadWorkflowDescriptors）与同样的 env 默认值
@@ -96,13 +96,30 @@ async function comfyuiHealth(endpoint: string): Promise<BackendHealth> {
   }
 }
 
-async function sdcppHealth(cliPath: string): Promise<BackendHealth> {
+async function executableHealth(command: string): Promise<BackendHealth> {
   try {
-    await access(cliPath, fsConstants.X_OK);
+    await resolveExecutable(command);
     return { ok: true };
   } catch (error) {
     return { ok: false, detail: error instanceof Error ? error.message : String(error) };
   }
+}
+
+async function resolveExecutable(command: string) {
+  if (command.includes(path.sep)) {
+    await access(command, fsConstants.X_OK);
+    return command;
+  }
+  for (const dir of (process.env.PATH ?? "").split(path.delimiter).filter(Boolean)) {
+    const candidate = path.join(dir, command);
+    try {
+      await access(candidate, fsConstants.X_OK);
+      return candidate;
+    } catch {
+      // Continue searching PATH.
+    }
+  }
+  throw new Error(`${command} was not found on PATH`);
 }
 
 // INVARIANT: env 读取放在 handler 内部（不是 module 顶层常量），测试才能按用例覆盖
@@ -111,14 +128,24 @@ export async function listGenerationBackends(request: Request): Promise<Response
   await actorWithPermission(request, CONFIG_READ);
   const comfyuiEndpoint = process.env.COMFYUI_API_URL ?? "http://127.0.0.1:8188";
   const sdcppCli = process.env.SDCPP_CLI ?? path.join(os.homedir(), "bin", "sd-cli");
-  const [comfyui, sdcpp] = await Promise.all([
+  const drawThingsCli = process.env.DRAWTHINGS_CLI ?? "draw-things-cli";
+  const drawThingsModelsDir = process.env.DRAWTHINGS_MODELS_DIR;
+  const [comfyui, sdcpp, drawthings] = await Promise.all([
     comfyuiHealth(comfyuiEndpoint),
-    sdcppHealth(sdcppCli),
+    executableHealth(sdcppCli),
+    executableHealth(drawThingsCli),
   ]);
   return ok({
     items: [
       { id: "comfyui", kind: "comfyui", endpoint: comfyuiEndpoint, health: comfyui },
       { id: "sdcpp", kind: "sdcpp", cliPath: sdcppCli, health: sdcpp },
+      {
+        id: "drawthings",
+        kind: "drawthings",
+        cliPath: drawThingsCli,
+        ...(drawThingsModelsDir ? { modelsDir: drawThingsModelsDir } : {}),
+        health: drawthings,
+      },
     ],
   });
 }

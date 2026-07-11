@@ -32,7 +32,7 @@ export interface BackendHealth { ok: boolean; detail?: string }
 
 export interface GenBackend {
   readonly id: string;
-  readonly kind: "comfyui" | "sdcpp";
+  readonly kind: "comfyui" | "sdcpp" | "drawthings";
   capabilities(): Capabilities;
   submit(job: ResolvedGenJob): Promise<BackendHandle>;
   poll(handle: BackendHandle): Promise<BackendResult>;

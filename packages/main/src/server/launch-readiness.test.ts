@@ -614,6 +614,33 @@ describe("launch readiness", () => {
     expect(failedIds(report)).toContain("comfyui-api-url");
   });
 
+  it("accepts a Draw Things-only backend deploy without requiring ComfyUI", () => {
+    const report = assessLaunchReadiness({
+      env: {
+        ...productionEnv,
+        IMAGE_PROVIDER: "backend",
+        GEN_IMAGE_PROVIDER: "backend",
+        DRAWTHINGS_CLI: "/opt/drawthings/draw-things-cli",
+      },
+      imagePipelineProbe: null,
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(checkById(report, "gen-image-provider")?.status).toBe("pass");
+    expect(checkById(report, "drawthings-cli")?.status).toBe("pass");
+    expect(report.checks.map((check) => check.id)).not.toContain("comfyui-api-url");
+  });
+
   it("fails when a gen-split deploy leaves GEN_FINALIZER_QUEUES unset (dual-drain risk)", () => {
     const report = assessLaunchReadiness({
       env: { ...productionEnv, GEN_FINALIZER_QUEUES: undefined },

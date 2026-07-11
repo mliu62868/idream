@@ -32,4 +32,11 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
     expect(qwenEdit).toBeDefined();
     expect(() => workflowDescriptorSchema.parse(qwenEdit)).not.toThrow();
   });
+
+  it("loads the opt-in Draw Things Pornmaster descriptor", async () => {
+    const descriptors = await loadWorkflowDescriptors(WORKFLOWS_DIR);
+    const drawThings = descriptors.find((d) => d.modelId === "pornmaster-zimage-drawthings");
+    expect(drawThings).toBeDefined();
+    expect(drawThings?.backendKind).toBe("drawthings");
+  });
 });

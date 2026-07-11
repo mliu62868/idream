@@ -98,6 +98,20 @@ export const env = {
   get SDCPP_CLI(): string {
     return process.env.SDCPP_CLI ?? `${process.env.HOME}/bin/sd-cli`;
   },
+  /** Official Draw Things automation CLI, used by drawthings workflows. */
+  get DRAWTHINGS_CLI(): string {
+    return process.env.DRAWTHINGS_CLI ?? "draw-things-cli";
+  },
+  /** Optional override; omitted on macOS to reuse the Draw Things app model directory. */
+  get DRAWTHINGS_MODELS_DIR(): string | undefined {
+    return process.env.DRAWTHINGS_MODELS_DIR;
+  },
+  /** Keep worker generations deterministic and prevent implicit model downloads by default. */
+  get DRAWTHINGS_OFFLINE(): boolean {
+    return !new Set(["0", "false", "no", "off"]).has(
+      (process.env.DRAWTHINGS_OFFLINE ?? "true").trim().toLowerCase(),
+    );
+  },
   /** Directory of workflow descriptor JSON files (see ./backend/workflow.ts). */
   get GEN_WORKFLOW_DIR(): string {
     return process.env.GEN_WORKFLOW_DIR ?? "packages/gen/workflows";

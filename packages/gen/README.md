@@ -12,13 +12,16 @@ OpenAI-compatible pipeline gateway:
 
 - **`GenBackend`** (`src/backend/types.ts`) — a small `submit`/`poll`/`health`
   contract implemented per backend kind: `ComfyUIBackend` (`src/backend/comfyui.ts`,
-  drives ComfyUI's native `/prompt` → `/history` → `/view` HTTP API) and
-  `SdcppBackend` (`src/backend/sdcpp.ts`, shells out to the `sd-cli` binary).
+  drives ComfyUI's native `/prompt` → `/history` → `/view` HTTP API),
+  `SdcppBackend` (`src/backend/sdcpp.ts`, shells out to the `sd-cli` binary), and
+  `DrawThingsBackend` (`src/backend/drawthings.ts`, shells out to the official
+  `draw-things-cli`).
 - **Workflow descriptors** (`src/backend/workflow.ts`, JSON files under
-  `packages/gen/workflows/`) declare a ComfyUI `apiPrompt` graph plus a list of
-  named input slots (`prompt`, `width`, `height`, `seed`, `steps`, ...), each
-  bound to either a `{nodeId, field}` in the graph or a CLI `argFlag`. Adding a
-  new model is "drop a descriptor JSON," not "write new wiring code."
+  `packages/gen/workflows/`) are discriminated by backend kind. ComfyUI
+  workflows declare an `apiPrompt` graph; CLI workflows declare backend config.
+  All workflows expose named input slots (`prompt`, `width`, `height`, `seed`,
+  `steps`, ...), bound to either a `{nodeId, field}` or a CLI `argFlag`. Adding
+  a new model is "drop a descriptor JSON," not "write new wiring code."
 - **`BackendRegistry`** (`src/backend/registry.ts`) loads every descriptor from
   `GEN_WORKFLOW_DIR`, indexes them by `modelId`, and resolves each to its
   backend instance.
@@ -36,13 +39,31 @@ which takes priority — see `.env`'s `GEN_IMAGE_PROVIDER`) to route
 `packages/gen/workflows` (repo-root relative); the smoke script below resolves
 it explicitly so it works regardless of cwd.
 
+### Pointing at Draw Things
+
+Install the official `draw-things-cli`, set `DRAWTHINGS_CLI` when it is not on
+`PATH`, and select `pornmaster-zimage-drawthings-txt2img` on a model profile.
+On macOS the CLI automatically reuses the Draw Things app model directory;
+`DRAWTHINGS_MODELS_DIR` overrides it. Worker generations are offline by default
+(`DRAWTHINGS_OFFLINE=true`) so missing models fail instead of downloading at
+request time.
+
+```bash
+cd packages/gen
+GEN_IMAGE_PROVIDER=backend \
+  DRAWTHINGS_CLI=/opt/homebrew/bin/draw-things-cli \
+  bun run smoke:backend -- \
+  --model pornmaster-zimage-drawthings \
+  --out /tmp/drawthings-smoke.png
+```
+
 ### Running the backend smoke
 
 `src/backend/smoke.ts` drives `providers.image.generate()` for the
-`redcraft-krea2-comfyui` workflow against a live ComfyUI, asserts the returned
+the selected workflow against its live backend, asserts the returned
 PNG passes `assertGeneratedImageSanity`, and writes it to a temp path (or
 `--out <path>`). It is manual-only — not part of `vitest run` — since it
-requires a real ComfyUI server:
+requires the corresponding real backend:
 
 ```bash
 cd packages/gen

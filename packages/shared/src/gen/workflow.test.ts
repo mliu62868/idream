@@ -26,6 +26,7 @@ const comfyDescriptor = workflowDescriptorSchema.parse({
     { key: "seed", type: "int", target: { nodeId: "3", field: "seed" } },
   ],
 });
+if (comfyDescriptor.backendKind !== "comfyui") throw new Error("expected ComfyUI descriptor");
 
 describe("bindComfySlots", () => {
   it("injects values into declared node fields and applies defaults", () => {
@@ -72,6 +73,40 @@ describe("workflow identity capability contract", () => {
       acceptedRoles: ["identity_anchor", "source_image"],
     });
     expect(descriptor.quality.evaluatorDimensions).toEqual(["artifact", "identity", "intent"]);
+  });
+});
+
+describe("workflow backend contracts", () => {
+  it("accepts a Draw Things descriptor without a ComfyUI apiPrompt", () => {
+    const descriptor = workflowDescriptorSchema.parse({
+      workflowKey: "drawthings-pornmaster-t2i",
+      modelId: "pornmaster-zimage-drawthings",
+      backendKind: "drawthings",
+      version: 1,
+      capabilities: ["textToImage", "img2img", "stableSeed"],
+      drawThings: { model: "pornmasterzimage_turbov35bf16_f16.ckpt" },
+      inputs: [
+        { key: "prompt", type: "text", target: { argFlag: "--prompt" } },
+      ],
+    });
+
+    expect(descriptor.backendKind).toBe("drawthings");
+    if (descriptor.backendKind !== "drawthings") throw new Error("expected Draw Things descriptor");
+    expect(descriptor.drawThings.model).toBe("pornmasterzimage_turbov35bf16_f16.ckpt");
+    expect("apiPrompt" in descriptor).toBe(false);
+  });
+
+  it("still requires apiPrompt for ComfyUI descriptors", () => {
+    expect(() =>
+      workflowDescriptorSchema.parse({
+        workflowKey: "missing-comfy-prompt",
+        modelId: "broken-comfy",
+        backendKind: "comfyui",
+        version: 1,
+        capabilities: ["textToImage"],
+        inputs: [],
+      }),
+    ).toThrow();
   });
 });
 

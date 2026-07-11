@@ -37,10 +37,9 @@ export const workflowQualityCapabilitySchema = z.object({
   evaluatorDimensions: z.array(z.enum(["artifact", "face_count", "identity", "intent"])),
 });
 
-export const workflowDescriptorSchema = z.object({
+const workflowDescriptorBaseSchema = z.object({
   workflowKey: z.string(),
   modelId: z.string(),
-  backendKind: z.enum(["comfyui", "sdcpp"]),
   version: z.number().int().positive(),
   capabilities: z.array(z.string()),
   identity: workflowIdentityCapabilitySchema.default({
@@ -54,9 +53,33 @@ export const workflowDescriptorSchema = z.object({
     maxCandidates: 1,
     evaluatorDimensions: ["artifact"],
   }),
-  apiPrompt: z.record(z.string(), comfyNodeSchema),
   inputs: z.array(slotSchema),
 });
+
+const comfyWorkflowDescriptorSchema = workflowDescriptorBaseSchema.extend({
+  backendKind: z.literal("comfyui"),
+  apiPrompt: z.record(z.string(), comfyNodeSchema),
+});
+
+const sdcppWorkflowDescriptorSchema = workflowDescriptorBaseSchema.extend({
+  backendKind: z.literal("sdcpp"),
+  // Accepted for backward compatibility with descriptors created before the
+  // backend-specific schema split. sd.cpp never reads this field.
+  apiPrompt: z.record(z.string(), comfyNodeSchema).optional(),
+});
+
+const drawThingsWorkflowDescriptorSchema = workflowDescriptorBaseSchema.extend({
+  backendKind: z.literal("drawthings"),
+  drawThings: z.object({
+    model: z.string().trim().min(1),
+  }),
+});
+
+export const workflowDescriptorSchema = z.discriminatedUnion("backendKind", [
+  comfyWorkflowDescriptorSchema,
+  sdcppWorkflowDescriptorSchema,
+  drawThingsWorkflowDescriptorSchema,
+]);
 export type WorkflowDescriptor = z.infer<typeof workflowDescriptorSchema>;
 
 function resolveValue(slot: z.infer<typeof slotSchema>, values: SlotValues) {
@@ -66,6 +89,9 @@ function resolveValue(slot: z.infer<typeof slotSchema>, values: SlotValues) {
 }
 
 export function bindComfySlots(d: WorkflowDescriptor, values: SlotValues): Record<string, ComfyNode> {
+  if (d.backendKind !== "comfyui") {
+    throw new Error(`workflow ${d.workflowKey}: backend ${d.backendKind} has no ComfyUI prompt`);
+  }
   const prompt = structuredClone(d.apiPrompt);
   for (const slot of d.inputs) {
     if (!("nodeId" in slot.target)) continue;
@@ -76,13 +102,17 @@ export function bindComfySlots(d: WorkflowDescriptor, values: SlotValues): Recor
   return prompt;
 }
 
-export function bindSdcppArgs(d: WorkflowDescriptor, values: SlotValues): string[] {
+export function bindWorkflowArgs(d: WorkflowDescriptor, values: SlotValues): string[] {
   const args: string[] = [];
   for (const slot of d.inputs) {
     if (!("argFlag" in slot.target)) continue;
     args.push(slot.target.argFlag, String(resolveValue(slot, values)));
   }
   return args;
+}
+
+export function bindSdcppArgs(d: WorkflowDescriptor, values: SlotValues): string[] {
+  return bindWorkflowArgs(d, values);
 }
 
 export async function loadWorkflowDescriptors(

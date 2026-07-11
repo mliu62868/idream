@@ -82,9 +82,10 @@ main-web / packages/gen
   -> BackendRegistry (workflow descriptors under GEN_WORKFLOW_DIR)
   -> ComfyUIBackend -> COMFYUI_API_URL -> ComfyUI server -> model files
   -> SdcppBackend   -> SDCPP_CLI       -> sd-cli process -> model files
+  -> DrawThingsBackend -> DRAWTHINGS_CLI -> draw-things-cli -> model files
 ```
 
-Each workflow descriptor (`packages/gen/workflows/*.json`) declares its `backendKind` (`comfyui` or `sdcpp`), the model files it binds, and its input slots — adding a model is "drop a descriptor," not new wiring code. For a local end-to-end smoke against a live ComfyUI instance, run `bun run --filter @idream/gen smoke:backend`.
+Each workflow descriptor (`packages/gen/workflows/*.json`) declares its `backendKind` (`comfyui`, `sdcpp`, or `drawthings`), the model files it binds, and its input slots — adding a model is "drop a descriptor," not new wiring code. For a local end-to-end smoke against a selected live backend, run `bun run --filter @idream/gen smoke:backend`.
 
 `IMAGE_PROVIDER=pipeline` (an external OpenAI-compatible gateway reached via `PIPELINE_API_URL`) still exists but is deprecated in favor of `backend`.
 

@@ -1,0 +1,30 @@
+{
+  "workflowKey": "pornmaster-zimage-drawthings-txt2img",
+  "modelId": "pornmaster-zimage-drawthings",
+  "backendKind": "drawthings",
+  "version": 1,
+  "capabilities": ["textToImage", "img2img", "stableSeed"],
+  "identity": {
+    "mode": "single_reference",
+    "maxReferences": 0,
+    "acceptedRoles": ["source_image"],
+    "supportsLookReference": false,
+    "supportsSourceImageWithIdentity": false
+  },
+  "quality": {
+    "maxCandidates": 1,
+    "evaluatorDimensions": ["artifact", "face_count", "intent"]
+  },
+  "drawThings": {
+    "model": "pornmasterzimage_turbov35bf16_f16.ckpt"
+  },
+  "inputs": [
+    { "key": "prompt", "type": "text", "target": { "argFlag": "--prompt" } },
+    { "key": "negative", "type": "text", "target": { "argFlag": "--negative-prompt" }, "default": "" },
+    { "key": "width", "type": "int", "target": { "argFlag": "--width" }, "default": 832 },
+    { "key": "height", "type": "int", "target": { "argFlag": "--height" }, "default": 1216 },
+    { "key": "seed", "type": "int", "target": { "argFlag": "--seed" } },
+    { "key": "steps", "type": "int", "target": { "argFlag": "--steps" }, "default": 8 },
+    { "key": "cfg", "type": "float", "target": { "argFlag": "--cfg" }, "default": 1 }
+  ]
+}

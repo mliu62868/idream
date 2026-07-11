@@ -4,14 +4,19 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { buildBackendRegistry } from "./registry";
 
-function descriptorJson(modelId: string, backendKind: "comfyui" | "sdcpp", workflowKey = `${backendKind}-t2i`) {
+function descriptorJson(
+  modelId: string,
+  backendKind: "comfyui" | "sdcpp" | "drawthings",
+  workflowKey = `${backendKind}-t2i`,
+) {
   return JSON.stringify({
     workflowKey,
     modelId,
     backendKind,
     version: 1,
     capabilities: ["textToImage"],
-    apiPrompt: {},
+    ...(backendKind === "comfyui" ? { apiPrompt: {} } : {}),
+    ...(backendKind === "drawthings" ? { drawThings: { model: `${modelId}.ckpt` } } : {}),
     inputs: [],
   });
 }
@@ -46,6 +51,26 @@ describe("buildBackendRegistry", () => {
     // Same backend instance is reused across models of the same kind.
     const comfyAgain = registry.resolveForModel("redcraft-krea2-comfyui");
     expect(comfyAgain.backend).toBe(comfy.backend);
+  });
+
+  it("resolves Draw Things descriptors by model id and workflow key", async () => {
+    dir = await mkdtemp(path.join(tmpdir(), "gen-registry-"));
+    await writeFile(
+      path.join(dir, "drawthings.json"),
+      descriptorJson("pornmaster-zimage-drawthings", "drawthings"),
+    );
+
+    const registry = await buildBackendRegistry({
+      comfyApiUrl: "http://127.0.0.1:8188",
+      sdcppCli: "/bin/true",
+      drawThingsCli: "/bin/true",
+      workflowDir: dir,
+    });
+
+    const byModel = registry.resolveForModel("pornmaster-zimage-drawthings");
+    const byWorkflow = registry.resolveForModel("drawthings-t2i");
+    expect(byModel.backend.kind).toBe("drawthings");
+    expect(byWorkflow.backend).toBe(byModel.backend);
   });
 
   it("throws a clear error for an unknown modelId", async () => {

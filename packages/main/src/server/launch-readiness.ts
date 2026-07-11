@@ -1157,14 +1157,40 @@ function addImagePipelineChecks(
   });
 
   if (configured === "backend") {
-    addRequiredCheck(checks, env, {
-      id: "comfyui-api-url",
-      area: "Generation",
-      key: "COMFYUI_API_URL",
-      label: "ComfyUI API URL",
-      url: true,
-      remediation: "Set COMFYUI_API_URL to the internal ComfyUI backend used by GEN_IMAGE_PROVIDER=backend.",
-    });
+    const hasDrawThings = hasMinLength(env.DRAWTHINGS_CLI, 1);
+    const hasSdcpp = hasMinLength(env.SDCPP_CLI, 1);
+    const hasComfyui = hasMinLength(env.COMFYUI_API_URL, 1);
+
+    if (hasDrawThings) {
+      addRequiredCheck(checks, env, {
+        id: "drawthings-cli",
+        area: "Generation",
+        key: "DRAWTHINGS_CLI",
+        label: "Draw Things CLI",
+        minLength: 1,
+        remediation: "Set DRAWTHINGS_CLI to the pinned executable used by drawthings workflows.",
+      });
+    }
+    if (hasSdcpp) {
+      addRequiredCheck(checks, env, {
+        id: "sdcpp-cli",
+        area: "Generation",
+        key: "SDCPP_CLI",
+        label: "sd.cpp CLI",
+        minLength: 1,
+        remediation: "Set SDCPP_CLI to the executable used by sdcpp workflows.",
+      });
+    }
+    if (hasComfyui || (!hasDrawThings && !hasSdcpp)) {
+      addRequiredCheck(checks, env, {
+        id: "comfyui-api-url",
+        area: "Generation",
+        key: "COMFYUI_API_URL",
+        label: "ComfyUI API URL",
+        url: true,
+        remediation: "Set COMFYUI_API_URL, or configure DRAWTHINGS_CLI/SDCPP_CLI for the backend workflows in use.",
+      });
+    }
   } else {
     addRequiredCheck(checks, env, {
       id: "pipeline-api-url",

@@ -14,6 +14,7 @@
 // collides with a *different* descriptor's key — a descriptor whose own
 // workflowKey equals its own modelId is not a collision.
 import { ComfyUIBackend } from "./comfyui";
+import { DrawThingsBackend } from "./drawthings";
 import { SdcppBackend } from "./sdcpp";
 import { loadWorkflowDescriptors, type WorkflowDescriptor } from "./workflow";
 import type { GenBackend } from "./types";
@@ -26,6 +27,9 @@ export interface BackendRegistry {
 export async function buildBackendRegistry(opts: {
   comfyApiUrl: string;
   sdcppCli: string;
+  drawThingsCli?: string;
+  drawThingsModelsDir?: string;
+  drawThingsOffline?: boolean;
   workflowDir: string;
 }): Promise<BackendRegistry> {
   const descriptors = await loadWorkflowDescriptors(opts.workflowDir, {
@@ -53,6 +57,11 @@ export async function buildBackendRegistry(opts: {
   const backends: Record<WorkflowDescriptor["backendKind"], GenBackend> = {
     comfyui: new ComfyUIBackend({ apiUrl: opts.comfyApiUrl }),
     sdcpp: new SdcppBackend({ cli: opts.sdcppCli }),
+    drawthings: new DrawThingsBackend({
+      cli: opts.drawThingsCli ?? "draw-things-cli",
+      modelsDir: opts.drawThingsModelsDir,
+      offline: opts.drawThingsOffline,
+    }),
   };
 
   return {

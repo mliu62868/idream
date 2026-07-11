@@ -1,9 +1,8 @@
 // SPEC: Real end-to-end smoke — drives `providers.image.generate()` with
-// IMAGE_PROVIDER=backend against a LIVE ComfyUI instance, reproducing a real
-// image through the new abstraction: BackendImageModel -> BackendRegistry ->
-// ComfyUIBackend -> POST /prompt. This is the same round trip
-// probe-redcraft-comfyui.ts exercised directly against ComfyUI, but this time
-// through the actual provider seam the gen worker uses in production.
+// IMAGE_PROVIDER=backend against a LIVE registered backend, reproducing a real
+// image through BackendImageModel -> BackendRegistry -> GenBackend. The default
+// targets ComfyUI; pass a Draw Things model id to drive draw-things-cli through
+// the same provider seam the gen worker uses in production.
 // Defaults to the txt2img redcraft path; pass --model <modelId> to target any
 // other registered descriptor (e.g. qwen-image-edit), --ref <png path> to drive
 // an img2img/edit workflow off a local reference image, and --prompt to

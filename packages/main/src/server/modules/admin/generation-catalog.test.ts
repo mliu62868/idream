@@ -11,10 +11,10 @@ import {
 // SPEC: 只读 admin API 单测 —— generation/backends 与 generation/workflows[/:workflowKey]。
 // 直接驱动 handler（dispatchAdmin 路由接缝已在 service.ts 挂好；本文件像本目录其它 handler
 // 单测一样不经过路由字符串解析）。覆盖：workflows 摘要不含 apiPrompt、detail 含 apiPrompt、
-// 未知 workflowKey 404、backends 恰好两条且 health 字段存在（comfyui 用不可达端口驱动
+// 未知 workflowKey 404、backends 恰好三条且 health 字段存在（comfyui 用不可达端口驱动
 // ok:false 分支的确定性，而不是依赖本机是否真的跑着 ComfyUI）、非 admin actor 403。
 // INVARIANTS: dev-auth 头（x-idream-*）仅在 APP_ENV=test 生效；前缀 P 隔离测试数据；
-// COMFYUI_API_URL 覆盖必须在 finally 里还原，避免污染同文件其它用例。
+// COMFYUI_API_URL/DRAWTHINGS_CLI 覆盖必须在 finally 里还原，避免污染其它用例。
 
 const P = "zt-gencat-";
 
@@ -76,6 +76,7 @@ describe("generation catalog (admin, read-only)", () => {
     const keys = items.map((item) => item.workflowKey);
     expect(keys).toContain("redcraft-krea2-txt2img");
     expect(keys).toContain("qwen-image-edit-img2img");
+    expect(keys).toContain("pornmaster-zimage-drawthings-txt2img");
     for (const item of items) {
       expect(item).not.toHaveProperty("apiPrompt");
       expect(Object.keys(item).sort()).toEqual(
@@ -104,23 +105,27 @@ describe("generation catalog (admin, read-only)", () => {
     expect(res.error.code).toBe("not_found");
   });
 
-  it("lists exactly comfyui + sdcpp backends, each with a health object", async () => {
+  it("lists comfyui + sdcpp + drawthings backends, each with a health object", async () => {
     const admin = await setupActor("admin", "backends");
     const originalComfyUrl = process.env.COMFYUI_API_URL;
+    const originalDrawThingsCli = process.env.DRAWTHINGS_CLI;
     // Point at an unreachable port so comfyui health is deterministically ok:false,
     // instead of depending on whether a real ComfyUI happens to be running locally.
     process.env.COMFYUI_API_URL = "http://127.0.0.1:59999";
+    process.env.DRAWTHINGS_CLI = "/usr/bin/true";
     try {
       const res = await callBackends({ userId: admin, role: "admin" });
       expect(res.status).toBe(200);
 
       const items = res.data.items as Array<Record<string, unknown>>;
-      expect(items).toHaveLength(2);
+      expect(items).toHaveLength(3);
 
       const comfyui = items.find((item) => item.id === "comfyui") as Record<string, unknown>;
       const sdcpp = items.find((item) => item.id === "sdcpp") as Record<string, unknown>;
+      const drawthings = items.find((item) => item.id === "drawthings") as Record<string, unknown>;
       expect(comfyui).toBeTruthy();
       expect(sdcpp).toBeTruthy();
+      expect(drawthings).toBeTruthy();
 
       const comfyuiHealth = comfyui.health as Record<string, unknown>;
       expect(comfyuiHealth.ok).toBe(false);
@@ -128,9 +133,14 @@ describe("generation catalog (admin, read-only)", () => {
 
       const sdcppHealth = sdcpp.health as Record<string, unknown>;
       expect(typeof sdcppHealth.ok).toBe("boolean");
+
+      expect(drawthings.cliPath).toBe("/usr/bin/true");
+      expect(drawthings.health).toEqual({ ok: true });
     } finally {
       if (originalComfyUrl === undefined) delete process.env.COMFYUI_API_URL;
       else process.env.COMFYUI_API_URL = originalComfyUrl;
+      if (originalDrawThingsCli === undefined) delete process.env.DRAWTHINGS_CLI;
+      else process.env.DRAWTHINGS_CLI = originalDrawThingsCli;
     }
   });
 

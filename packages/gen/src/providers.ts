@@ -433,6 +433,9 @@ function getBackendRegistry(): Promise<BackendRegistry> {
   registryPromise ??= buildBackendRegistry({
     comfyApiUrl: env.COMFYUI_API_URL,
     sdcppCli: env.SDCPP_CLI,
+    drawThingsCli: env.DRAWTHINGS_CLI,
+    drawThingsModelsDir: env.DRAWTHINGS_MODELS_DIR,
+    drawThingsOffline: env.DRAWTHINGS_OFFLINE,
     workflowDir: env.GEN_WORKFLOW_DIR,
   });
   return registryPromise;
