@@ -1493,7 +1493,11 @@ export function GeneratorWorkspace() {
                 className="mt-2 flex items-center justify-between gap-2 rounded-[10px] bg-[rgb(36,36,36)] px-4 py-3 text-[12px] font-semibold text-[rgb(190,190,190)]"
                 href={upgradeHref}
               >
-                <span>Custom moments and advanced prompt controls are Premium features.</span>
+                <span>
+                  {characterImageMode
+                    ? "Model selection and negative prompts are Premium controls."
+                    : "Custom freeplay prompts and advanced controls are Premium features."}
+                </span>
                 <span className="rounded-full bg-[rgb(255,48,170)] px-3 py-1 text-[11px] font-black text-white">
                   Upgrade
                 </span>

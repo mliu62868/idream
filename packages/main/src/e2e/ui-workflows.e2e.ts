@@ -2654,6 +2654,23 @@ test("chat UI opens Generate with character context and renders chat image attac
   await expect(assistantBubble.getByRole("button", { name: "Use for identity" })).toHaveCount(0);
   await assistantBubble.getByRole("button", { name: "Looks like them" }).click();
   await expect(page.getByText("Thanks — this image looks like the character.")).toBeVisible();
+  const feedbackUser = await prisma.user.findUniqueOrThrow({
+    where: { email },
+    select: { id: true },
+  });
+  await expect
+    .poll(() =>
+      prisma.generationFeedback.findFirst({
+        where: {
+          actorId: feedbackUser.id,
+          mediaAssetId: mediaId,
+          dimension: "identity",
+          value: "match",
+          active: true,
+        },
+      }),
+    )
+    .not.toBeNull();
 
   await seedCompletedChatImageAttachment({
     email,
@@ -2686,6 +2703,9 @@ test("chat UI opens Generate with character context and renders chat image attac
     (await prisma.user.findUniqueOrThrow({ where: { email }, select: { id: true } })).id,
   );
   expect(variationJob.prompt).toContain("More like this image:");
+  expect(variationJob.momentSpec).toBeTruthy();
+  expect(variationJob.referenceSetRevisionId).toBeTruthy();
+  expect(variationJob.referenceManifest).not.toBeNull();
 
   const attachmentGenerate = assistantBubble.getByRole("link", { name: "Open in Generate" }).first();
   await expect(attachmentGenerate).toHaveAttribute("href", `/generate?characterId=${characterId}`);
@@ -3398,6 +3418,24 @@ test("generator UI queues an image job and surfaces completed media in the galle
   await expect(ownedMediaCard.getByRole("button", { name: "Add to identity" })).toBeVisible();
   await expect(ownedMediaCard.getByRole("button", { name: "Save as Look" })).toBeVisible();
   await expect(ownedMediaCard.getByRole("button", { name: "Create variation" })).toBeVisible();
+  await ownedMediaCard.getByRole("button", { name: "Save as Look" }).click();
+  await page.getByRole("textbox", { name: "Look name" }).fill("E2E Rainy Day");
+  await page
+    .getByRole("textbox", { name: "Look styling description" })
+    .fill("Cream trench coat, loosely pinned curls, amber umbrella");
+  await page.getByRole("button", { name: "Save Look" }).click();
+  await expect(page.getByText("Look saved. You can reuse it for this character.")).toBeVisible();
+  await expect
+    .poll(() =>
+      prisma.characterLook.findFirst({
+        where: {
+          characterId: ownedIdentityMedia.characterId,
+          label: "E2E Rainy Day",
+          status: "active",
+        },
+      }),
+    )
+    .not.toBeNull();
 
   await generatedMediaCard.getByRole("button", { name: "Like" }).click();
   await page.getByRole("button", { name: "Liked" }).click();
