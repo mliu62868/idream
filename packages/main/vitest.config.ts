@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config";
+import { defaultTestDatabaseUrl } from "./test-database-url";
 
 // SPEC: Integration tests run against a dedicated, freshly-seeded test database
 // (Postgres in TEST_DATABASE_URL, or the local compose Postgres by default),
@@ -7,7 +8,7 @@ import { defineConfig } from "vitest/config";
 // INVARIANTS: APP_ENV=test keeps dev auth headers (x-idream-user-id/role) enabled.
 const DATABASE_URL =
   process.env.TEST_DATABASE_URL ??
-  "postgresql://postgres:postgres@localhost:5433/idream_test";
+  defaultTestDatabaseUrl();
 
 export default defineConfig({
   test: {

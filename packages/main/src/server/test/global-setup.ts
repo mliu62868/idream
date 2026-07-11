@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import IORedis from "ioredis";
 import pg from "pg";
+import { defaultTestDatabaseUrl } from "../../../test-database-url";
 
 // SPEC: Reset the dedicated test database to a clean, seeded baseline before the
 // whole Vitest run. Reuses the project's own db-push + seed scripts against a
@@ -9,7 +10,7 @@ import pg from "pg";
 // isolated from the dev database.
 const DATABASE_URL =
   process.env.TEST_DATABASE_URL ??
-  "postgresql://postgres:postgres@localhost:5433/idream_test";
+  defaultTestDatabaseUrl();
 
 function postgresUrl(url: string, databaseName?: string) {
   const parsed = new URL(url);
