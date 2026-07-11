@@ -112,7 +112,15 @@ describe("experiment exposed-cohort analysis", () => {
       primaryMetric: "relationship.qce_activation.v1",
       controlVariant: "control",
     });
-    expect(analysis.arms).toEqual([
+    expect(analysis.arms.map((arm) => ({
+      variant: arm.variant,
+      assignedSubjects: arm.assignedSubjects,
+      exposedSubjects: arm.exposedSubjects,
+      matureSubjects: arm.matureSubjects,
+      outcomeSubjects: arm.outcomeSubjects,
+      rate: arm.rate,
+      absoluteLiftVsControl: arm.absoluteLiftVsControl,
+    }))).toEqual([
       {
         variant: "control",
         assignedSubjects: 2,
@@ -132,6 +140,7 @@ describe("experiment exposed-cohort analysis", () => {
         absoluteLiftVsControl: 0.5,
       },
     ]);
+    expect(analysis).toMatchObject({ significance: "unavailable", guardrailState: "blocked", minimumMaturePerArm: 100 });
   });
 
   it("exposes the analysis only to experiment managers", async () => {
@@ -147,6 +156,15 @@ describe("experiment exposed-cohort analysis", () => {
       ok: true,
       data: { experimentId, qualityState: "directional" },
     });
+  });
+
+  it("excludes fixture outcomes from production experiment decisions", async () => {
+    await prisma.chatExchangeFact.updateMany({
+      where: { sourceService: "analysis-test", userId: { in: [subjects[2], subjects[3]] } },
+      data: { dataClass: "fixture", trustClass: "synthetic" },
+    });
+    const analysis = await analyzeExperiment(prisma, experimentId, asOf);
+    expect(analysis.arms.find((arm) => arm.variant === "treatment")).toMatchObject({ outcomeSubjects: 0, rate: 0 });
   });
 
   it("fails closed before any exposed cohort has matured", async () => {

@@ -1275,16 +1275,39 @@ model PricingRule {
 }
 
 model AdminSavedView {
-  id        String   @id @default(cuid())
-  ownerId   String
-  scope     String
-  label     String
-  filters   Json
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id             String   @id @default(cuid())
+  ownerId        String
+  scope          String
+  label          String
+  filters        Json
+  queryState     Json?
+  version        Int      @default(1)
+  idempotencyKey String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
+  @@unique([ownerId, idempotencyKey])
   @@index([ownerId, scope])
   @@map("admin_saved_views")
+}
+
+model AdminCollaborationActivity {
+  id             String   @id @default(cuid())
+  targetType     String
+  targetId       String
+  kind           String
+  actorId        String
+  body           String?
+  mentionedIds   String[] @default([])
+  metadata       Json
+  parentId       String?
+  idempotencyKey String
+  createdAt      DateTime @default(now())
+
+  @@unique([actorId, idempotencyKey])
+  @@index([targetType, targetId, createdAt, id])
+  @@index([mentionedIds], type: Gin)
+  @@map("admin_collaboration_activities")
 }
 
 model AdminUserPermission {
@@ -1895,9 +1918,18 @@ model ExperimentDefinition {
   salt        String
   metrics     Json
   status      String   @default("draft")
+  stateVersion Int     @default(1)
+  startedAt   DateTime?
+  startedById String?
+  stoppedAt   DateTime?
+  stoppedById String?
+  createdById String?
+  createIdempotencyKey String?
   createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   @@unique([key, version])
+  @@unique([createdById, createIdempotencyKey])
   @@index([status, createdAt])
   @@map("experiment_definitions")
 }

@@ -25,10 +25,11 @@ export async function apiWrite<T>(
   path: string,
   method: "POST" | "PATCH" | "PUT",
   body: Record<string, unknown>,
+  headers?: Record<string, string>,
 ): Promise<T> {
   const response = await fetch(path, {
     method,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...headers },
     body: JSON.stringify(body),
   });
   const payload = (await response.json()) as ApiEnvelope<T>;

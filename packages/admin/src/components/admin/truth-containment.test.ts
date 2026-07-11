@@ -7,8 +7,12 @@ import { InsightsView } from "./InsightsView";
 describe("Phase 0 metric truth containment", () => {
   it("labels unassigned flags as monitoring rather than experiments", () => {
     const html = renderToStaticMarkup(createElement(ExperimentsView));
+    expect(html).toContain("Managed experiment workspace");
+    expect(html).toContain("Create draft");
     expect(html).toContain("Flag Monitoring");
     expect(html).toContain("no assignment or exposure records");
+    expect(html).toContain("min-h-11");
+    expect(html).not.toContain("lift=");
     expect(html).not.toContain(">Experiments<");
   });
 

@@ -6,6 +6,53 @@ export const experimentVariantSchema = z.object({
   allocationBps: z.number().int().positive().max(10_000),
 }).strict();
 
+export const experimentGuardrailSchema = z.object({
+  metricKey: z.string().trim().min(1).max(128),
+  maxAbsoluteRegression: z.number().min(0).max(1),
+}).strict();
+
+export const experimentMetricsSchema = z.object({
+  primary: z.literal("relationship.qce_activation.v1"),
+  controlVariant: z.string().trim().min(1).max(64),
+  minimumMaturePerArm: z.number().int().min(20).max(1_000_000).default(100),
+  guardrails: z.array(experimentGuardrailSchema).min(1),
+}).strict();
+
+export const experimentDefinitionCreateSchema = z.object({
+  key: z.string().trim().min(1).max(96).regex(/^[a-z0-9][a-z0-9._-]*$/),
+  hypothesis: z.string().trim().min(10).max(1_000),
+  eligibility: z.record(z.string(), z.unknown()),
+  variants: z.array(experimentVariantSchema).min(2).max(10),
+  salt: z.string().min(16).max(256),
+  metrics: experimentMetricsSchema,
+}).strict().superRefine((value, ctx) => {
+  const keys = new Set(value.variants.map((variant) => variant.key));
+  if (keys.size !== value.variants.length) ctx.addIssue({ code: "custom", path: ["variants"], message: "Variant keys must be unique" });
+  if (value.variants.reduce((sum, variant) => sum + variant.allocationBps, 0) !== 10_000) ctx.addIssue({ code: "custom", path: ["variants"], message: "Allocations must total 10000 bps" });
+  if (!keys.has(value.metrics.controlVariant)) ctx.addIssue({ code: "custom", path: ["metrics", "controlVariant"], message: "Control variant must exist" });
+});
+
+export const experimentLifecycleRequestSchema = z.object({
+  expectedStateVersion: z.number().int().positive(),
+  reason: z.string().trim().min(1).max(1_000),
+}).strict();
+
+export const experimentDefinitionSchema = z.object({
+  id: adminIdSchema,
+  key: z.string().min(1),
+  version: z.number().int().positive(),
+  hypothesis: z.string().min(1),
+  eligibility: z.record(z.string(), z.unknown()),
+  variants: z.array(experimentVariantSchema),
+  metrics: experimentMetricsSchema,
+  status: z.enum(["draft", "running", "stopped"]),
+  stateVersion: z.number().int().positive(),
+  startedAt: adminIsoDateTimeSchema.nullable(),
+  stoppedAt: adminIsoDateTimeSchema.nullable(),
+  createdAt: adminIsoDateTimeSchema,
+  updatedAt: adminIsoDateTimeSchema,
+}).strict();
+
 export const experimentAssignmentRequestSchema = z.object({
   subjectType: z.enum(["user", "anonymous"]),
   subjectId: adminIdSchema,
@@ -49,6 +96,8 @@ export const experimentArmAnalysisSchema = z.object({
   outcomeSubjects: z.number().int().nonnegative(),
   rate: z.number().min(0).max(1).nullable(),
   absoluteLiftVsControl: z.number().min(-1).max(1).nullable(),
+  confidenceInterval95: z.tuple([z.number(), z.number()]).nullable(),
+  pValueVsControl: z.number().min(0).max(1).nullable(),
 }).strict();
 
 export const experimentAnalysisResponseSchema = z.object({
@@ -61,13 +110,17 @@ export const experimentAnalysisResponseSchema = z.object({
   window: z.literal("7d_after_first_exposure"),
   asOf: adminIsoDateTimeSchema,
   maturity: z.enum(["mature", "immature", "insufficient_data"]),
-  qualityState: z.enum(["directional", "invalid"]),
-  decisionUse: z.enum(["directional_only", "blocked"]),
+  qualityState: z.enum(["certified", "directional", "invalid"]),
+  decisionUse: z.enum(["eligible", "directional_only", "blocked"]),
+  significance: z.enum(["significant", "not_significant", "unavailable"]),
+  guardrailState: z.enum(["passed", "failed", "blocked"]),
+  minimumMaturePerArm: z.number().int().positive(),
   qualityEvidence: z.array(z.string()),
   arms: z.array(experimentArmAnalysisSchema),
 }).strict();
 
 export type ExperimentVariant = z.infer<typeof experimentVariantSchema>;
+export type ExperimentDefinition = z.infer<typeof experimentDefinitionSchema>;
 export type ExperimentAssignmentRequest = z.infer<typeof experimentAssignmentRequestSchema>;
 export type ExperimentAssignmentResponse = z.infer<typeof experimentAssignmentResponseSchema>;
 export type ExperimentExposureRequest = z.infer<typeof experimentExposureRequestSchema>;
