@@ -14,11 +14,38 @@ import {
   metricCardSchema,
   metricDefinitionSchema,
   operationsCaseSchema,
+  todayProjectionSchema,
 } from "./index";
 
 const now = "2026-07-11T12:00:00.000Z";
 
 describe("Admin API v2 public contracts", () => {
+  it("requires authoritative totals and provenance for every Today queue", () => {
+    const emptyQueue = { totalCount: 0, items: [] };
+    expect(todayProjectionSchema.safeParse({
+      myShift: emptyQueue,
+      nextBestActions: emptyQueue,
+      unassigned: emptyQueue,
+      watching: emptyQueue,
+      recentlyResolved: emptyQueue,
+      asOf: now,
+      freshness: "fresh",
+      workMode: "admin",
+      rankingPolicyVersion: "today-ranking-v1",
+    }).success).toBe(true);
+    expect(todayProjectionSchema.safeParse({
+      myShift: { items: [] },
+      nextBestActions: emptyQueue,
+      unassigned: emptyQueue,
+      watching: emptyQueue,
+      recentlyResolved: emptyQueue,
+      asOf: now,
+      freshness: "fresh",
+      workMode: "admin",
+      rankingPolicyVersion: "today-ranking-v1",
+    }).success).toBe(false);
+  });
+
   it("accepts a cursor list envelope and rejects a response without freshness metadata", () => {
     const schema = adminListResponseSchema(characterProjectSchema);
     const project = {

@@ -50,7 +50,8 @@ import { ComplianceView } from "@/components/admin/ComplianceView";
 import { InsightsView } from "@/components/admin/InsightsView";
 import { AnnouncementsView } from "@/components/admin/AnnouncementsView";
 import { ExperimentsView } from "@/components/admin/ExperimentsView";
-import { TodayView, type TodayLegacyData } from "@/components/admin/today/TodayView";
+import { TodayView, type TodayData, type TodayLegacyData } from "@/components/admin/today/TodayView";
+import type { TodayProjection } from "@idream/shared/admin";
 import { PlacementsSection } from "@/components/admin/placements/PlacementsSection";
 import { ImageProductionView } from "@/components/admin/ImageProductionView";
 import { OperatorFlow, type OperatorFlowItem } from "@/components/admin/generation/OperatorFlow";
@@ -148,7 +149,7 @@ type PlaintextAccessResult = {
   };
 };
 
-type DashboardData = TodayLegacyData;
+type DashboardData = TodayData;
 
 type ConfigData = {
   profiles: Row[];
@@ -662,12 +663,12 @@ export function AdminConsoleClient({
     return () => window.cancelAnimationFrame(frame);
   }, [actor?.role]);
 
-  async function load(nextChatOpsFilters: ChatOpsFilters = chatOpsFilters) {
+  async function load(nextChatOpsFilters: ChatOpsFilters = chatOpsFilters, nextWorkMode: WorkMode = workMode) {
     if (!initialAccess || !canAccessActiveSection) return;
     setLoading(true);
     setError(null);
     try {
-      setData(await fetchSection(sectionId, { chatOps: nextChatOpsFilters }));
+      setData(await fetchSection(sectionId, { chatOps: nextChatOpsFilters, workMode: nextWorkMode }));
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Failed to load admin data");
     } finally {
@@ -900,6 +901,7 @@ export function AdminConsoleClient({
                         onChange={(event) => {
                           const nextMode = event.target.value as WorkMode;
                           setWorkMode(nextMode);
+                          if (sectionId === "dashboard") void load(chatOpsFilters, nextMode);
                           try {
                             window.localStorage.setItem(WORK_MODE_STORAGE_KEY, nextMode);
                           } catch {
@@ -1263,7 +1265,7 @@ async function fetchGenerationConfig(): Promise<ConfigData> {
 
 async function fetchSection(
   sectionId: string,
-  options: { chatOps?: ChatOpsFilters } = {},
+  options: { chatOps?: ChatOpsFilters; workMode?: WorkMode } = {},
 ): Promise<SectionData> {
   if (sectionId === "generation/jobs") {
     const payload = await apiGet<{ items: Row[] }>("/api/v1/admin/generation/jobs?mode=image");
@@ -1432,8 +1434,11 @@ async function fetchSection(
     };
   }
 
-  const payload = await apiGet<DashboardData>("/api/v1/admin/dashboard");
-  return { kind: "dashboard", data: payload };
+  const [legacy, projection] = await Promise.all([
+    apiGet<TodayLegacyData>("/api/v1/admin/dashboard"),
+    apiGet<TodayProjection>(`/api/v2/admin/today?workMode=${encodeURIComponent(options.workMode ?? "admin")}`),
+  ]);
+  return { kind: "dashboard", data: { legacy, projection } };
 }
 
 function queryString(params: Record<string, string | undefined>) {
@@ -2209,7 +2214,7 @@ function renderSection(
 ) {
   if (!section) return null;
   if (section.kind === "dashboard") {
-    return <TodayView data={section.data} permissions={ctx.permissions} workMode={ctx.workMode} />;
+    return <TodayView data={section.data} workMode={ctx.workMode} />;
   }
   if (section.kind === "jobs") return <JobsView rows={section.rows} openAction={ctx.openAction} />;
   if (section.kind === "config") {
