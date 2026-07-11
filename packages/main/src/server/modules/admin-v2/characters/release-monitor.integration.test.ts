@@ -18,6 +18,17 @@ describe("Release route qualification and post-publish monitor", () => {
   const now = new Date("2026-07-11T00:00:00.000Z");
 
   beforeAll(async () => {
+    await prisma.character.create({
+      data: {
+        id: characterId,
+        name: "Release monitor character",
+        age: 24,
+        description: "Fixture for release monitoring.",
+        source: "official",
+        appearance: {},
+        advancedDetails: {},
+      },
+    });
     await prisma.characterProject.create({
       data: { id: projectId, characterId, phase: "live_management", audience: {}, successCriteria: [] },
     });
@@ -102,6 +113,7 @@ describe("Release route qualification and post-publish monitor", () => {
     await prisma.generationRouteQualification.delete({ where: { id: qualificationId } });
     await prisma.characterRelease.delete({ where: { id: releaseId } });
     await prisma.characterProject.delete({ where: { id: projectId } });
+    await prisma.character.delete({ where: { id: characterId } });
     await prisma.$disconnect();
   });
 

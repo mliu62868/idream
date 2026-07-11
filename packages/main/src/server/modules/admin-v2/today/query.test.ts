@@ -379,6 +379,15 @@ describe("Today mentions and collaboration watch aliases", () => {
       impact: {},
       mitigation: {},
     } });
+    await prisma.character.create({ data: {
+      id: characterId,
+      name: "Watched Character",
+      age: 24,
+      description: "Today collaboration fixture.",
+      source: "official",
+      appearance: {},
+      advancedDetails: {},
+    } });
     await prisma.characterProject.create({ data: {
       id: projectId,
       characterId,
@@ -456,6 +465,7 @@ describe("Today mentions and collaboration watch aliases", () => {
     await prisma.characterServing.deleteMany({ where: { characterId } });
     await prisma.characterRelease.deleteMany({ where: { projectId } });
     await prisma.characterProject.deleteMany({ where: { id: projectId } });
+    await prisma.character.deleteMany({ where: { id: characterId } });
     await prisma.opsIncident.deleteMany({ where: { id: incidentId } });
     await prisma.adminCase.deleteMany({ where: { id: { in: [visibleCaseId, hiddenCaseId] } } });
     await prisma.user.deleteMany({ where: { id: actorId } });

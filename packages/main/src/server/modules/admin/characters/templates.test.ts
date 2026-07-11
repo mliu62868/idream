@@ -178,7 +178,7 @@ describe("character template library service (feature B)", () => {
       role: "admin",
       body: { name: "Visible One", sortOrder: 5, reason: "seed active" },
     });
-    const hidden = await call(createTemplate, {
+    await call(createTemplate, {
       userId: admin,
       role: "admin",
       body: { name: "Hidden One", sortOrder: 1, reason: "seed hidden" },
@@ -199,8 +199,6 @@ describe("character template library service (feature B)", () => {
     const visible = result.data.items.find((t: { name: string }) => t.name === "Visible One");
     expect(visible).not.toHaveProperty("createdById");
     expect(visible).not.toHaveProperty("isActive");
-
-    void active;
   });
 
   it("admin listTemplates returns inactive too and is gated by content.read (403 for analyst)", async () => {

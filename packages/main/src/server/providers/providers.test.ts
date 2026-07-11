@@ -64,6 +64,7 @@ describe("mock providers", () => {
       CRON_SECRET: "production-cron-token-0123456789",
       CHAT_SERVICE_URL: "https://chat.internal.example",
       CHAT_BFF_SIGNING_SECRET: "production-bff-secret-0123456789abcdef",
+      ADMIN_BFF_SIGNING_SECRET: "production-admin-bff-secret-0123456789abcdef",
       CHAT_PROVIDER: "mock",
       VOICE_PROVIDER: "mock",
       MODERATION_PROVIDER: "mock",
@@ -89,6 +90,7 @@ describe("mock providers", () => {
       CRON_SECRET: "production-cron-token-0123456789",
       CHAT_SERVICE_URL: "https://chat.internal.example",
       CHAT_BFF_SIGNING_SECRET: "production-bff-secret-0123456789abcdef",
+      ADMIN_BFF_SIGNING_SECRET: "production-admin-bff-secret-0123456789abcdef",
       // All launch-critical providers are real except image — image must still be
       // rejected so main's finalizer cannot write placeholder PNGs in production.
       CHAT_PROVIDER: "pipeline",
