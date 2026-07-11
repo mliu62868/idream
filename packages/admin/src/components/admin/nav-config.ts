@@ -74,12 +74,12 @@ function item(input: ItemInput): NavItem {
 export const navItems: NavItem[] = [
   item({ id: "dashboard", label: "Today", href: "/admin/today", icon: Gauge, group: "Today", permissions: ["dashboard.read"] }),
 
-  item({ id: "content/official", label: "Portfolio & Projects", href: "/admin/characters", icon: ShieldCheck, group: "Character Studio", permissions: ["content.read"] }),
+  item({ id: "content/official", label: "Portfolio & Projects", href: "/admin/characters", icon: ShieldCheck, group: "Character Studio", permissions: ["character.project.read", "character.performance.read", "content.read"] }),
   item({ id: "content/review-queue", label: "Character Review", href: "/admin/characters/review", icon: ClipboardCheck, group: "Character Studio", permissions: ["safety.review.read", "content.read"] }),
   item({ id: "content/templates", label: "Character Starters", href: "/admin/characters/starters", icon: Sparkles, group: "Character Studio", permissions: ["content.read"] }),
   item({ id: "content/tags", label: "Taxonomy", href: "/admin/characters/taxonomy", icon: Flag, group: "Character Studio", permissions: ["content.read"] }),
 
-  item({ id: "content/production", label: "Creative Runs", href: "/admin/creative/runs?template=pregen", icon: Play, group: "Creative Studio", permissions: ["content.production.write"] }),
+  item({ id: "content/production", label: "Creative Runs", href: "/admin/creative/runs", icon: Play, group: "Creative Studio", permissions: ["creative.run.read", "content.production.write"] }),
   item({ id: "content/assets", label: "Library", href: "/admin/creative/library", icon: ImageIcon, group: "Creative Studio", permissions: ["content.asset.read"] }),
   item({ id: "content/placements", label: "Placements", href: "/admin/creative/placements", icon: Bookmark, group: "Creative Studio", permissions: ["content.asset.read", "content.placement.write"] }),
 
@@ -239,6 +239,9 @@ function canonicalSection(path: string, query: URLSearchParams): AdminPath | nul
   if (path === "characters/new") return { sectionId: "content/official", view: { kind: "new" } };
   if (path.startsWith("characters/") && path.split("/").length === 2) {
     return { sectionId: "content/official", view: { kind: "detail", id: path.slice("characters/".length) } };
+  }
+  if (path.startsWith("creative/runs/") && path.split("/").length === 3) {
+    return { sectionId: "content/production", view: { kind: "detail", id: path.slice("creative/runs/".length) } };
   }
   for (const [prefix, sectionId] of [
     ["creative/library/", "content/assets"],

@@ -3,6 +3,7 @@ import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import type { AdminActor } from "@/server/modules/admin/service";
 import { listCharacterPortfolioData } from "./portfolio";
+import { collectReleaseMonitorFacts } from "./release-monitor";
 import { toInputJson } from "../shared/prisma-json";
 
 function record(value: Prisma.JsonValue | null | undefined): Record<string, unknown> {
@@ -295,4 +296,36 @@ export async function updateCharacterProjectDraft(input: {
     });
     return projectDto(updated);
   });
+}
+
+export async function refreshCharacterReleaseMonitor(input: {
+  readonly characterId: string;
+  readonly releaseId: string;
+  readonly expectedVersion: number;
+  readonly window: "24h" | "72h";
+}) {
+  const [project, release] = await Promise.all([
+    prisma.characterProject.findFirst({ where: { characterId: input.characterId } }),
+    prisma.characterRelease.findUnique({ where: { id: input.releaseId } }),
+  ]);
+  if (!project || !release || release.projectId !== project.id) {
+    throw Errors.notFound("Character Release not found");
+  }
+  if (release.version !== input.expectedVersion) {
+    throw Errors.conflict("Character Release changed before monitor refresh", {
+      currentVersion: release.version,
+    });
+  }
+  const result = await collectReleaseMonitorFacts(prisma, {
+    releaseId: release.id,
+    window: input.window,
+  });
+  return {
+    releaseId: release.id,
+    window: input.window,
+    status: result.monitor.status,
+    mature: result.mature,
+    recommendation: result.recommendation,
+    observed: result.observed,
+  };
 }

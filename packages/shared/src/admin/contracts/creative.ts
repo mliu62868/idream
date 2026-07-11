@@ -184,6 +184,16 @@ export const creativeRunItemDetailSchema = z
         placementVersionId: adminIdSchema.nullable(),
       })
       .strict(),
+    asset: z
+      .object({
+        id: adminIdSchema,
+        url: z.string().trim().min(1),
+        thumbnailUrl: z.string().trim().min(1).nullable(),
+        width: z.number().int().positive().nullable(),
+        height: z.number().int().positive().nullable(),
+      })
+      .strict()
+      .nullable(),
     review: z
       .object({
         id: adminIdSchema,

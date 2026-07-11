@@ -38,7 +38,6 @@ import { apiDelete, apiForm, apiGet, apiWrite, formatApiError, type ApiEnvelope 
 import { BackendsView } from "@/components/admin/BackendsView";
 import { GenerationMetricsView } from "@/components/admin/GenerationMetricsView";
 import { WorkflowsView } from "@/components/admin/WorkflowsView";
-import { OfficialSection } from "@/components/admin/official/OfficialSection";
 import { StartersSection } from "@/components/admin/starters/StartersSection";
 import { RecipesSection } from "@/components/admin/recipes/RecipesSection";
 import { PresetsSection } from "@/components/admin/presets/PresetsSection";
@@ -53,7 +52,6 @@ import { ExperimentsView } from "@/components/admin/ExperimentsView";
 import { TodayView, type TodayData, type TodayLegacyData } from "@/components/admin/today/TodayView";
 import type { MetricDashboardResponse, TodayProjection } from "@idream/shared/admin";
 import { PlacementsSection } from "@/components/admin/placements/PlacementsSection";
-import { ImageProductionView } from "@/components/admin/ImageProductionView";
 import { OperatorFlow, type OperatorFlowItem } from "@/components/admin/generation/OperatorFlow";
 import { FailureReason } from "@/components/admin/generation/FailureReason";
 import { ReadonlyOpsView, type OpsColumn } from "@/components/admin/generation/ReadonlyOpsView";
@@ -83,6 +81,8 @@ import {
 import type { AdminShellSignals } from "@/components/admin/shell-signals";
 import { IncidentWorkspace } from "@/features/incidents/IncidentWorkspace";
 import { CaseWorkspace } from "@/features/cases/CaseWorkspace";
+import { CharacterWorkspace } from "@/features/characters/CharacterWorkspace";
+import { CreativeRunWorkspace } from "@/features/creative/CreativeRunWorkspace";
 
 type Actor = {
   id: string;
@@ -2323,10 +2323,23 @@ function renderSection(
     return <ApprovalsView rows={section.rows} openAction={ctx.openAction} />;
   }
   if (section.kind === "selfFetch") {
-    if (section.view === "production") return <ImageProductionView />;
+    if (section.view === "production") {
+      return <CreativeRunWorkspace permissions={{
+        read: ctx.permissions.has("creative.run.read"),
+        write: ctx.permissions.has("creative.run.write"),
+        review: ctx.permissions.has("creative.run.review"),
+        place: ctx.permissions.has("creative.placement.publish"),
+      }} view={subview} />;
+    }
     if (section.view === "assets") return <AssetsSection view={subview} />;
     if (section.view === "placements") return <PlacementsSection view={subview} />;
-    if (section.view === "official") return <OfficialSection view={subview} />;
+    if (section.view === "official") {
+      return <CharacterWorkspace permissions={{
+        read: ctx.permissions.has("character.project.read") && ctx.permissions.has("character.performance.read"),
+        writeProject: ctx.permissions.has("character.project.write"),
+        publishRelease: ctx.permissions.has("character.release.publish"),
+      }} view={subview} />;
+    }
     if (section.view === "templates") return <StartersSection view={subview} />;
     if (section.view === "recipes") return <RecipesSection view={subview} />;
     if (section.view === "presets") return <PresetsSection view={subview} />;

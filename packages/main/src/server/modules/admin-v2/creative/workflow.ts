@@ -3,6 +3,10 @@ import { Errors } from "@/server/lib/errors";
 import type { AdminActor } from "@/server/modules/admin/service";
 import { deriveCreativeRunState, type CreativeRunLedgerFact } from "@/server/modules/admin/content-production-state";
 import { toInputJson } from "../shared/prisma-json";
+import {
+  creativeRunListResponseSchema,
+  creativeRunQuerySchema,
+} from "@idream/shared/admin";
 
 const RELEASE_OWNED_SLOTS = new Set(["character_avatar", "character_hero"]);
 
@@ -419,6 +423,13 @@ export async function getCreativeRunDetail(input: {
           reviewDecisionId: latestDecision?.id ?? null,
           placementVersionId: placement?.id ?? null,
         },
+        asset: asset ? {
+          id: asset.id,
+          url: asset.url,
+          thumbnailUrl: asset.thumbnailUrl,
+          width: asset.width,
+          height: asset.height,
+        } : null,
         review: latestDecision
           ? {
               id: latestDecision.id,
@@ -445,4 +456,46 @@ export async function getCreativeRunDetail(input: {
       };
     }),
   };
+}
+
+export async function listCreativeRuns(input: {
+  readonly requestUrl: string;
+  readonly actor: AdminActor;
+}) {
+  const query = creativeRunQuerySchema.parse(Object.fromEntries(new URL(input.requestUrl).searchParams));
+  const roots = await prisma.contentProductionBatch.findMany({
+    where: {
+      id: query.cursor ? { gt: query.cursor } : undefined,
+      lifecycleState: query.lifecycleState,
+      workflowStage: query.workflowStage,
+      ownerId: query.ownerId,
+      priority: query.priority,
+      ...(query.search ? {
+        OR: [
+          { id: { contains: query.search, mode: "insensitive" } },
+          { title: { contains: query.search, mode: "insensitive" } },
+          { purpose: { contains: query.search, mode: "insensitive" } },
+        ],
+      } : {}),
+    },
+    orderBy: { id: "asc" },
+    take: Math.min(200, query.limit * 4 + 1),
+    select: { id: true },
+  });
+  const details = await Promise.all(roots.map(({ id }) => getCreativeRunDetail({ runId: id, actor: input.actor })));
+  const filtered = details.filter((detail) => !query.executionOutcome || detail.executionOutcome === query.executionOutcome);
+  const page = filtered.slice(0, query.limit);
+  return creativeRunListResponseSchema.parse({
+    items: page.map((detail) => Object.fromEntries(
+      Object.entries(detail).filter(([key]) => key !== "title" && key !== "items"),
+    )),
+    pageInfo: {
+      endCursor: filtered.length > query.limit || roots.length === Math.min(200, query.limit * 4 + 1)
+        ? page.at(-1)?.id ?? null
+        : null,
+      hasNextPage: filtered.length > query.limit || roots.length === Math.min(200, query.limit * 4 + 1),
+    },
+    asOf: new Date().toISOString(),
+    freshness: "fresh",
+  });
 }

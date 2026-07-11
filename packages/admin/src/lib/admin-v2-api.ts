@@ -12,12 +12,25 @@ type RuntimeSchema<T> = {
   parse(value: unknown): T;
 };
 
+export class AdminV2RequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+    readonly details?: unknown,
+  ) {
+    super(message);
+    this.name = "AdminV2RequestError";
+  }
+}
+
 export async function adminV2Request<T>(
   path: string,
   options: {
     method?: "GET" | "POST" | "PATCH";
     body?: unknown;
     idempotencyKey?: string;
+    ifMatch?: number;
     schema?: RuntimeSchema<T>;
   } = {},
 ) {
@@ -25,6 +38,7 @@ export async function adminV2Request<T>(
   headers.set("x-request-id", crypto.randomUUID());
   if (options.body !== undefined) headers.set("content-type", "application/json");
   if (options.idempotencyKey) headers.set("idempotency-key", options.idempotencyKey);
+  if (options.ifMatch !== undefined) headers.set("if-match", `"${options.ifMatch}"`);
   const response = await fetch(path, {
     method: options.method ?? "GET",
     headers,
@@ -38,7 +52,14 @@ export async function adminV2Request<T>(
   } catch {
     throw new Error(`Admin authority request failed (${response.status})`);
   }
-  if (!payload.ok) throw new Error(payload.error.message ?? payload.error.code ?? "Admin request failed");
+  if (!payload.ok) {
+    throw new AdminV2RequestError(
+      payload.error.message ?? payload.error.code ?? "Admin request failed",
+      response.status,
+      payload.error.code,
+      payload.error.details,
+    );
+  }
   return options.schema ? options.schema.parse(payload.data) : payload.data;
 }
 
