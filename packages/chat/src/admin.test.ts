@@ -135,6 +135,12 @@ describe("chat internal admin api", () => {
     expect(JSON.stringify(body)).not.toContain(SECRET);
   });
 
+  it("rejects malformed or unknown canonical list query parameters", async () => {
+    await expect(dispatchChatAdmin({ method: "GET", path: "/internal/admin/sessions", query: { limit: "1junk" } })).resolves.toMatchObject({ status: 400 });
+    await expect(dispatchChatAdmin({ method: "GET", path: "/internal/admin/sessions", query: { status: "mystery" } })).resolves.toMatchObject({ status: 400 });
+    await expect(dispatchChatAdmin({ method: "GET", path: "/internal/admin/usage", query: { ignored: "value" } })).resolves.toMatchObject({ status: 400 });
+  });
+
   it("usage returns current daily quota metadata", async () => {
     const res = await dispatchChatAdmin({
       method: "GET",

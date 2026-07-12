@@ -257,6 +257,7 @@ describe("Today domain roots", () => {
 
   afterAll(async () => {
     await prisma.operationalWorkPreference.deleteMany({ where: { actorId } });
+    await prisma.releaseMonitor.deleteMany({ where: { releaseId } });
     await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: { in: [projectId, creativeRunId] } } });
     await prisma.adminAuditLog.deleteMany({ where: { actorId, targetId: { in: [projectId, creativeRunId] } } });
     await prisma.contentProductionBatch.deleteMany({ where: { id: creativeRunId } });
@@ -318,6 +319,31 @@ describe("Today domain roots", () => {
     await expect(prisma.contentProductionBatch.findUniqueOrThrow({ where: { id: creativeRunId } })).resolves.toMatchObject({ ownerId: actorId, version: 2 });
     await expect(prisma.adminAuditLog.count({ where: { actorId, action: { in: ["character.project.claimed", "creative.run.claimed"] } } })).resolves.toBe(2);
     await expect(prisma.mainOutboxEvent.count({ where: { aggregateId: { in: [projectId, creativeRunId] } } })).resolves.toBe(2);
+  });
+
+  it("re-enters a published Release when monitor authority requires rollback review", async () => {
+    await prisma.characterRelease.update({ where: { id: releaseId }, data: { status: "published", readiness: "ready" } });
+    await prisma.releaseMonitor.create({
+      data: {
+        releaseId,
+        window: "24h",
+        status: "action_required",
+        baseline: {},
+        observed: {},
+        verification: { recommendation: "rollback_review", operationalPassed: false },
+      },
+    });
+    const projection = await buildTodayProjection({
+      actor: { id: actorId, role: "admin" },
+      permissions: resolvePermissions("admin"),
+      now: new Date("2026-07-11T12:00:00.000Z"),
+      workMode: "character_producer",
+    });
+
+    expect(projection.nextBestActions.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sourceId: releaseId, verificationState: "failed", recommendedAction: "Investigate monitor evidence and keep or rollback" }),
+    ]));
+    expect(projection.recentlyResolved.items.some((item) => item.sourceId === releaseId)).toBe(false);
   });
 });
 

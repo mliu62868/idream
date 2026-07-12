@@ -14,7 +14,7 @@ import {
   type OperationsCase,
 } from "@idream/shared/admin";
 import { adminV2Request, setWorkspaceUrl } from "@/lib/admin-v2-api";
-import { createWorkspaceHistoryController, observeWorkspacePopState } from "@/lib/workspace-history";
+import { createWorkspaceHistoryController, observeWorkspacePopState, workspaceDetailId } from "@/lib/workspace-history";
 import { CollaborationPanel } from "@/features/collaboration/CollaborationPanel";
 import { SavedViewsControl } from "@/features/collaboration/SavedViewsControl";
 import {
@@ -110,12 +110,12 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      history.current.replace(initialUrlState, writeCaseUrl);
+      if (!initialCaseId) history.current.replace(initialUrlState, writeCaseUrl);
       void loadList(firstQuery.current);
       if (initialUrlState.selectedId) void loadDetail(initialUrlState.selectedId);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [initialUrlState, loadDetail, loadList]);
+  }, [initialCaseId, initialUrlState, loadDetail, loadList]);
 
   useEffect(() => {
     return observeWorkspacePopState(window, () => stateFromLocation(null), (restored) => {
@@ -310,6 +310,6 @@ function CaseInspector({ busy, canAssign, canDecide, detail, onClose, onMutate }
 
 function Select({ label, onChange, options, value }: { label: string; onChange: (value: string) => void; options: readonly string[]; value: string }) { return <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{label}<select className={fieldClass} onChange={(event) => onChange(event.target.value)} value={value}>{options.map((option) => <option key={option || "all"} value={option}>{option ? option.replaceAll("_", " ") : "All"}</option>)}</select></label>; }
 function Stat({ label, value }: { label: string; value: ReactNode }) { return <div><dt className="text-[10px] font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">{label}</dt><dd className="mt-1 truncate font-mono text-sm text-[var(--ad-ink)]" title={typeof value === "string" ? value : undefined}>{value}</dd></div>; }
-function stateFromLocation(initialCaseId: string | null) { const parsed = typeof window === "undefined" ? { query: defaultCaseQuery, selectedId: null, savedViewId: null } : parseCaseWorkspaceParams(new URLSearchParams(window.location.search)); return { ...parsed, selectedId: initialCaseId ?? parsed.selectedId }; }
+function stateFromLocation(initialCaseId: string | null) { const parsed = typeof window === "undefined" ? { query: defaultCaseQuery, selectedId: null, savedViewId: null } : parseCaseWorkspaceParams(new URLSearchParams(window.location.search)); return { ...parsed, selectedId: initialCaseId ?? parsed.selectedId ?? (typeof window === "undefined" ? null : workspaceDetailId(window.location.pathname, "/admin/cases")) }; }
 function writeCaseUrl(state: CaseWorkspaceUrlState, mode: "push" | "replace") { setWorkspaceUrl(buildCaseWorkspaceParams(state), { mode, pathname: caseWorkspacePath(state.selectedId) }); }
 function message(error: unknown) { return error instanceof Error ? error.message : "Case operation failed"; }

@@ -9,7 +9,7 @@ import {
   type OpsIncident,
 } from "@idream/shared/admin";
 import { adminV2Request, setWorkspaceUrl } from "@/lib/admin-v2-api";
-import { createWorkspaceHistoryController, observeWorkspacePopState } from "@/lib/workspace-history";
+import { createWorkspaceHistoryController, observeWorkspacePopState, workspaceDetailId } from "@/lib/workspace-history";
 import { CollaborationPanel } from "@/features/collaboration/CollaborationPanel";
 import { SavedViewsControl } from "@/features/collaboration/SavedViewsControl";
 import {
@@ -114,12 +114,12 @@ export function IncidentWorkspace({ canManage, initialIncidentId = null }: { can
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      history.current.replace(initialUrlState, writeIncidentUrl);
+      if (!initialIncidentId) history.current.replace(initialUrlState, writeIncidentUrl);
       void loadList(firstQuery.current);
       if (initialUrlState.selectedId) void loadDetail(initialUrlState.selectedId);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [initialUrlState, loadDetail, loadList]);
+  }, [initialIncidentId, initialUrlState, loadDetail, loadList]);
 
   useEffect(() => {
     return observeWorkspacePopState(window, () => stateFromLocation(null), (restored) => {
@@ -449,7 +449,7 @@ function Stat({ label, value }: { label: string; value: React.ReactNode }) {
   return <div><dt className="text-[10px] font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">{label}</dt><dd className="mt-1 font-mono text-sm text-[var(--ad-ink)]">{value}</dd></div>;
 }
 
-function stateFromLocation(initialIncidentId: string | null) { const parsed = typeof window === "undefined" ? { query: defaultIncidentQuery, selectedId: null, savedViewId: null } : parseIncidentWorkspaceParams(new URLSearchParams(window.location.search)); return { ...parsed, selectedId: initialIncidentId ?? parsed.selectedId }; }
+function stateFromLocation(initialIncidentId: string | null) { const parsed = typeof window === "undefined" ? { query: defaultIncidentQuery, selectedId: null, savedViewId: null } : parseIncidentWorkspaceParams(new URLSearchParams(window.location.search)); return { ...parsed, selectedId: initialIncidentId ?? parsed.selectedId ?? (typeof window === "undefined" ? null : workspaceDetailId(window.location.pathname, "/admin/ops/incidents")) }; }
 
 function writeIncidentUrl(state: IncidentWorkspaceUrlState, mode: "push" | "replace") { setWorkspaceUrl(buildIncidentWorkspaceParams(state), { mode, pathname: incidentWorkspacePath(state.selectedId) }); }
 

@@ -10,7 +10,7 @@ import {
 } from "@idream/shared/admin";
 import { ArrowLeft, RefreshCcw, Search, UserRound } from "lucide-react";
 import { adminV2Request, setWorkspaceUrl } from "@/lib/admin-v2-api";
-import { createWorkspaceHistoryController, observeWorkspacePopState } from "@/lib/workspace-history";
+import { createWorkspaceHistoryController, observeWorkspacePopState, workspaceDetailId } from "@/lib/workspace-history";
 import {
   buildCustomerWorkspaceParams,
   customerWorkspacePath,
@@ -79,12 +79,12 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      history.current.replace(initialUrlState, writeCustomerUrl);
+      if (!initialCustomerId) history.current.replace(initialUrlState, writeCustomerUrl);
       void loadList(firstQuery.current);
       if (initialUrlState.selectedId) void loadDetail(initialUrlState.selectedId);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [initialUrlState, loadDetail, loadList]);
+  }, [initialCustomerId, initialUrlState, loadDetail, loadList]);
 
   useEffect(() => {
     return observeWorkspacePopState(window, () => stateFromLocation(null), (restored) => {
@@ -192,6 +192,6 @@ function CustomerInspector({ detail, onClose }: { detail: Customer360; onClose: 
 
 function DetailSection({ children, title }: { children: React.ReactNode; title: string }) { return <section className="border-t border-[var(--ad-border)] pt-4"><h4 className="mb-3 text-sm font-semibold">{title}</h4>{children}</section>; }
 function ListStat({ label, value }: { label: string; value: React.ReactNode }) { return <span><span className="block text-[10px] font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">{label}</span><span className="mt-1 block font-mono text-sm">{value}</span></span>; }
-function stateFromLocation(initialCustomerId: string | null) { const parsed = typeof window === "undefined" ? { query: defaultCustomerQuery, selectedId: null } : parseCustomerWorkspaceParams(new URLSearchParams(window.location.search)); return { ...parsed, selectedId: initialCustomerId ?? parsed.selectedId }; }
+function stateFromLocation(initialCustomerId: string | null) { const parsed = typeof window === "undefined" ? { query: defaultCustomerQuery, selectedId: null } : parseCustomerWorkspaceParams(new URLSearchParams(window.location.search)); return { ...parsed, selectedId: initialCustomerId ?? parsed.selectedId ?? (typeof window === "undefined" ? null : workspaceDetailId(window.location.pathname, "/admin/customers")) }; }
 function writeCustomerUrl(state: CustomerWorkspaceUrlState, mode: "push" | "replace") { setWorkspaceUrl(buildCustomerWorkspaceParams(state), { mode, pathname: customerWorkspacePath(state.selectedId) }); }
 function message(cause: unknown) { return cause instanceof Error ? cause.message : "Customer workspace request failed"; }

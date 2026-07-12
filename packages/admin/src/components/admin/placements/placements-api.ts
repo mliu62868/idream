@@ -37,8 +37,6 @@ export const APPROVED_ASSETS_LIST = "/api/v1/admin/content/assets?status=approve
 
 // 与 placementSlotSchema（content-ops.ts:42-50）一致。
 export const SLOTS = [
-  "character_avatar",
-  "character_hero",
   "feed_card",
   "homepage_strip",
   "seo_article",
@@ -78,7 +76,7 @@ export type PlacementDraft = {
 
 export const defaultPlacementDraft: PlacementDraft = {
   mediaAssetId: "",
-  slot: "character_avatar",
+  slot: "feed_card",
   targetType: "character",
   targetId: "",
   status: "published",

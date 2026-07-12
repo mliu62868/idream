@@ -3,7 +3,7 @@ import { placementCreatePayload, placementPatchPayload, type PlacementDraft } fr
 
 const baseDraft: PlacementDraft = {
   mediaAssetId: "asset-1",
-  slot: "character_avatar",
+  slot: "feed_card",
   targetType: "character",
   targetId: "char-1",
   status: "published",
@@ -14,7 +14,7 @@ describe("placementCreatePayload", () => {
   it("carries every create field verbatim and trims reason", () => {
     expect(placementCreatePayload(baseDraft)).toEqual({
       mediaAssetId: "asset-1",
-      slot: "character_avatar",
+      slot: "feed_card",
       targetType: "character",
       targetId: "char-1",
       status: "published",
@@ -26,13 +26,13 @@ describe("placementCreatePayload", () => {
     expect(
       placementCreatePayload({
         ...baseDraft,
-        slot: "feed_card",
+        slot: "campaign",
         targetType: "campaign",
         status: "draft",
       }),
     ).toEqual({
       mediaAssetId: "asset-1",
-      slot: "feed_card",
+      slot: "campaign",
       targetType: "campaign",
       targetId: "char-1",
       status: "draft",

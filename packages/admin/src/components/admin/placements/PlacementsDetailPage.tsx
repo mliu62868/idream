@@ -12,7 +12,6 @@ import { EngineeringDetails } from "@/components/admin/generation/EngineeringDet
 import {
   PATCH_ACTIONS,
   PLACEMENTS_BASE,
-  PLACEMENTS_LIST,
   placementPatchPayload,
   type Placement,
 } from "./placements-api";
@@ -49,14 +48,14 @@ export function PlacementsDetailPage({ id }: { id: string }) {
     setLoading(true);
     setError(null);
     try {
-      const data = await apiGet<{ items: Placement[] }>(PLACEMENTS_LIST);
+      const data = await apiGet<{ items: Placement[] }>(`${PLACEMENTS_BASE}?search=${encodeURIComponent(id)}&limit=25`);
       setRows(data.items);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : t("Request failed"));
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [id, t]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {

@@ -1418,14 +1418,20 @@ function deadLetterBatchConfirmation(jobIds: string[]) {
   return jobIds.join(",");
 }
 
+const modelProfileListQuerySchema = z.object({
+  search: z.string().trim().min(1).max(200).optional(),
+  mode: z.enum(["image", "video"]).optional(),
+  status: z.enum(["draft", "active", "archived"]).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  cursor: z.string().min(1).optional(),
+}).strict();
+
 async function listModelProfiles(request: Request) {
   await actorWithPermission(request, "generation.config.read");
   const url = new URL(request.url);
-  const search = url.searchParams.get("search")?.trim() || undefined;
-  const mode = url.searchParams.get("mode") ?? undefined;
-  const status = url.searchParams.get("status") ?? undefined;
-  const limitParam = url.searchParams.get("limit");
-  const limit = limitParam ? clampInt(limitParam, 1, 100, 100) : null;
+  const query = modelProfileListQuerySchema.parse(Object.fromEntries(url.searchParams));
+  const { search, mode, status } = query;
+  const limit = query.limit ?? null;
   const queryIdentity = { search, mode, status };
   const cursorKeys = adminListCursorKeys(url, "generation_profiles", queryIdentity);
   const cursorWhere: Prisma.GenerationModelProfileWhereInput | undefined = cursorKeys ? (() => {
@@ -1449,6 +1455,39 @@ async function listModelProfiles(request: Request) {
     },
     orderBy: [{ profileKey: "asc" }, { version: "desc" }, { id: "asc" }],
     take: limit === null ? undefined : limit + 1,
+    select: {
+      id: true,
+      profileKey: true,
+      label: true,
+      mode: true,
+      runner: true,
+      pipelineModel: true,
+      workflowKey: true,
+      sourceModelPath: true,
+      convertedModelPath: true,
+      modelFormat: true,
+      runnerConfig: true,
+      defaultWidth: true,
+      defaultHeight: true,
+      allowedOrientations: true,
+      steps: true,
+      sampler: true,
+      scheduler: true,
+      cfgScale: true,
+      costMultiplier: true,
+      requiredEntitlement: true,
+      maxCount: true,
+      concurrencyLimit: true,
+      enabled: true,
+      rolloutPercent: true,
+      version: true,
+      status: true,
+      dryRunSummary: true,
+      publishedAt: true,
+      archivedAt: true,
+      createdAt: true,
+      updatedAt: true,
+    },
   });
   const page = limit === null ? profiles : profiles.slice(0, limit);
   return ok({
@@ -4410,13 +4449,8 @@ async function listContentCharacters(request: Request) {
   if (search) {
     where.OR = [{ id: { contains: search } }, { name: { contains: search } }];
   }
-  if (cursorWhere) where.AND = cursorWhere;
-  const orderBy: Prisma.CharacterOrderByWithRelationInput = { createdAt: "desc" };
-  const items = await prisma.character.findMany({
-    where,
-    orderBy: [orderBy, { id: "desc" }],
-    take: sort === "popular" ? undefined : limit + 1,
-    select: {
+  if (cursorWhere && sort !== "popular") where.AND = cursorWhere;
+  const select = {
       id: true,
       name: true,
       gender: true,
@@ -4435,15 +4469,52 @@ async function listContentCharacters(request: Request) {
         select: { id: true, version: true, status: true, style: true },
       },
       stats: { select: { chatsCount: true, likesCount: true, viewsCount: true } },
-    },
-  });
-  const orderedItems = sort === "popular"
-    ? items.sort((a, b) => (b.stats?.chatsCount ?? -1) - (a.stats?.chatsCount ?? -1) || b.id.localeCompare(a.id))
-    : items;
-  const page = orderedItems.slice(0, limit);
+    } satisfies Prisma.CharacterSelect;
+  const items = sort === "popular"
+    ? await (async () => {
+        const cursorValue = cursorKeys?.[0];
+        const cursorId = cursorKeys ? adminCursorString(cursorKeys, 1, "content_characters") : null;
+        if (cursorKeys && cursorValue === null) {
+          return prisma.character.findMany({
+            where: { ...where, stats: { is: null }, id: { lt: cursorId ?? "" } },
+            orderBy: { id: "desc" },
+            take: limit + 1,
+            select,
+          });
+        }
+        const chatsCount = cursorKeys ? adminCursorNumber(cursorKeys, 0, "content_characters") : null;
+        const ranked = await prisma.character.findMany({
+          where: {
+            ...where,
+            stats: { isNot: null },
+            ...(chatsCount !== null && cursorId ? { AND: [{ OR: [
+              { stats: { is: { chatsCount: { lt: chatsCount } } } },
+              { stats: { is: { chatsCount } }, id: { lt: cursorId } },
+            ] }] } : {}),
+          },
+          orderBy: [{ stats: { chatsCount: "desc" } }, { id: "desc" }],
+          take: limit + 1,
+          select,
+        });
+        if (ranked.length > limit) return ranked;
+        const unranked = await prisma.character.findMany({
+          where: { ...where, stats: { is: null } },
+          orderBy: { id: "desc" },
+          take: limit + 1 - ranked.length,
+          select,
+        });
+        return [...ranked, ...unranked];
+      })()
+    : await prisma.character.findMany({
+        where,
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: limit + 1,
+        select,
+      });
+  const page = items.slice(0, limit);
   return ok({
     items: page,
-    pageInfo: adminListPageInfo("content_characters", queryIdentity, page, orderedItems.length > limit, (row) => [
+    pageInfo: adminListPageInfo("content_characters", queryIdentity, page, items.length > limit, (row) => [
       sort === "popular" ? row.stats?.chatsCount ?? null : row.createdAt.toISOString(),
       row.id,
     ]),

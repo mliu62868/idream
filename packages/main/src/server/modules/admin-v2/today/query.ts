@@ -55,6 +55,7 @@ type ProjectableRow =
       sourceType: "character_release";
       row: CharacterRelease;
       project: { ownerId: string | null; characterId: string; phase: string; plannedLaunchAt: Date | null; version: number };
+      monitorActionRequired?: boolean;
     }
   | { sourceType: "creative_run"; row: ContentProductionBatch };
 
@@ -188,12 +189,14 @@ function projectRow(
   }
   if (row.sourceType === "character_release") {
     const item = row.row;
-    const severity = item.readiness === "blocked" ? "high" : item.readiness === "stale" ? "medium" : "low";
+    const severity = row.monitorActionRequired || item.readiness === "blocked" ? "high" : item.readiness === "stale" ? "medium" : "low";
     return {
       sourceType: row.sourceType,
       sourceId: item.id,
       title: `Character release ${item.status.replaceAll("_", " ")}`,
-      summary: `${row.project.characterId} · ${row.project.phase.replaceAll("_", " ")} · readiness ${item.readiness}`,
+      summary: row.monitorActionRequired
+        ? `${row.project.characterId} · published monitor requires action`
+        : `${row.project.characterId} · ${row.project.phase.replaceAll("_", " ")} · readiness ${item.readiness}`,
       severity,
       priority: severity === "high" ? "high" : "normal",
       impactSnapshot: {
@@ -204,10 +207,10 @@ function projectRow(
       },
       ownerId: row.project.ownerId,
       slaDueAt: row.project.plannedLaunchAt?.toISOString() ?? null,
-      recommendedAction: item.readiness === "blocked" ? "Resolve release readiness blockers" : "Advance release checks",
+      recommendedAction: row.monitorActionRequired ? "Investigate monitor evidence and keep or rollback" : item.readiness === "blocked" ? "Resolve release readiness blockers" : "Advance release checks",
       rankingReason: rankingReason(severity, row.project.plannedLaunchAt, item.createdAt),
       deepLink: `/admin/characters/${encodeURIComponent(row.project.characterId)}?tab=release&releaseId=${encodeURIComponent(item.id)}`,
-      verificationState: item.readiness === "blocked" ? "failed" : item.readiness === "ready" ? "passed" : "pending",
+      verificationState: row.monitorActionRequired || item.readiness === "blocked" ? "failed" : item.readiness === "ready" ? "passed" : "pending",
       lastChangedAt: item.updatedAt.toISOString(),
       environment,
       dataClass: "internal",
@@ -365,6 +368,7 @@ function sourceRows(
   releases: Array<{
     row: CharacterRelease;
     project: { ownerId: string | null; characterId: string; phase: string; plannedLaunchAt: Date | null; version: number };
+    monitorActionRequired?: boolean;
   }> = [],
   creativeRuns: ContentProductionBatch[] = [],
   mentions: Extract<ProjectableRow, { sourceType: "collaboration_mention" }>[] = [],
@@ -374,7 +378,7 @@ function sourceRows(
     ...cases.map((row) => ({ sourceType: "admin_case" as const, row })),
     ...incidents.map((row) => ({ sourceType: "ops_incident" as const, row })),
     ...commands.map((row) => ({ sourceType: "control_plane_command" as const, row })),
-    ...releases.map(({ row, project }) => ({ sourceType: "character_release" as const, row, project })),
+    ...releases.map(({ row, project, monitorActionRequired }) => ({ sourceType: "character_release" as const, row, project, monitorActionRequired })),
     ...creativeRuns.map((row) => ({ sourceType: "creative_run" as const, row })),
   ];
 }
@@ -387,6 +391,7 @@ async function findQueueRows(input: {
   creativeWhere: Prisma.ContentProductionBatchWhereInput | null;
   permissions: ReadonlySet<AdminPermissionKey>;
   mentions?: Extract<ProjectableRow, { sourceType: "collaboration_mention" }>[];
+  monitorActionReleaseIds?: ReadonlySet<string>;
 }) {
   const commandPermissionWhere = readableCommandWhere(input.permissions);
   const commandWhere = input.commandWhere && commandPermissionWhere
@@ -411,7 +416,7 @@ async function findQueueRows(input: {
   const projectsById = new Map(projects.map((item) => [item.id, item]));
   const releases = releaseRows.flatMap((row) => {
     const project = projectsById.get(row.projectId);
-    return project ? [{ row, project }] : [];
+    return project ? [{ row, project, monitorActionRequired: input.monitorActionReleaseIds?.has(row.id) ?? false }] : [];
   });
   return {
     totalCount: cases.length + incidents.length + commands.length + releases.length + creativeRuns.length + (input.mentions?.length ?? 0),
@@ -536,6 +541,18 @@ export async function buildTodayProjection(input: {
   const allProjectIds = projects.map((item) => item.id);
   const ownedProjectIds = projects.filter((item) => item.ownerId === input.actor.id).map((item) => item.id);
   const unassignedProjectIds = projects.filter((item) => item.ownerId === null).map((item) => item.id);
+  const monitorActionRows = releaseReadable
+    ? await prisma.releaseMonitor.findMany({
+        where: {
+          OR: [
+            { status: "action_required" },
+            { verification: { path: ["recommendation"], equals: "rollback_review" } },
+          ],
+        },
+        select: { releaseId: true },
+      })
+    : [];
+  const monitorActionReleaseIds = new Set(monitorActionRows.map((item) => item.releaseId));
   const preferences = await prisma.operationalWorkPreference.findMany({ where: { actorId: input.actor.id } });
   const pinnedKeys = new Set(preferences.filter((item) => item.pinned).map((item) => `${item.sourceType}:${item.sourceId}`));
   const snoozed = preferences.filter((item) => item.snoozedUntil && item.snoozedUntil > now);
@@ -555,7 +572,13 @@ export async function buildTodayProjection(input: {
     id: withoutIds(snoozedCommandIds),
   } satisfies Prisma.ControlPlaneCommandWhereInput;
   const activeReleaseWhere = releaseReadable
-    ? { status: { in: ACTIVE_RELEASE_STATUSES }, projectId: { in: allProjectIds }, id: withoutIds(snoozedReleaseIds) }
+    ? {
+        AND: [
+          { projectId: { in: allProjectIds } },
+          { id: withoutIds(snoozedReleaseIds) },
+          { OR: [{ status: { in: ACTIVE_RELEASE_STATUSES } }, { id: { in: [...monitorActionReleaseIds] } }] },
+        ],
+      }
     : null;
   const activeCreativeWhere = creativeReadable
     ? { lifecycleState: "active", id: withoutIds(snoozedCreativeIds) }
@@ -581,6 +604,7 @@ export async function buildTodayProjection(input: {
       },
       permissions: input.permissions,
       mentions,
+      monitorActionReleaseIds,
     }),
     findQueueRows({
       caseWhere: activeCaseWhere,
@@ -590,6 +614,7 @@ export async function buildTodayProjection(input: {
       creativeWhere: activeCreativeWhere,
       permissions: input.permissions,
       mentions,
+      monitorActionReleaseIds,
     }),
     findQueueRows({
       caseWhere: input.permissions.has("case.assign") && activeCaseWhere
@@ -606,12 +631,13 @@ export async function buildTodayProjection(input: {
         ? { AND: [activeCreativeWhere, { ownerId: null }] }
         : null,
       permissions: input.permissions,
+      monitorActionReleaseIds,
     }),
     findQueueRows({
       caseWhere: caseScope && { AND: [caseScope, { status: { in: RESOLVED_CASE_STATUSES }, verificationState: { in: ["passed", "overridden"] }, updatedAt: { gte: recentCutoff } }] },
       incidentWhere: incidentScope && { AND: [incidentScope, { status: { in: RESOLVED_INCIDENT_STATUSES }, verificationState: { in: ["passed", "overridden"] }, updatedAt: { gte: recentCutoff } }] },
       commandWhere: { actorId: input.actor.id, status: "succeeded", finishedAt: { gte: recentCutoff } },
-      releaseWhere: releaseReadable ? { status: { in: RESOLVED_RELEASE_STATUSES }, updatedAt: { gte: recentCutoff } } : null,
+      releaseWhere: releaseReadable ? { status: { in: RESOLVED_RELEASE_STATUSES }, id: { notIn: [...monitorActionReleaseIds] }, updatedAt: { gte: recentCutoff } } : null,
       creativeWhere: creativeReadable
         ? { lifecycleState: { in: ["closed", "archived"] }, verificationState: { in: ["passed", "overridden"] }, updatedAt: { gte: recentCutoff } }
         : null,

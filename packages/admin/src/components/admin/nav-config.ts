@@ -85,8 +85,8 @@ export const navItems: NavItem[] = [
   item({ id: "content/tags", label: "Taxonomy", href: "/admin/characters/taxonomy", icon: Flag, group: "Character Studio", read: read("content.read") }),
 
   item({ id: "content/production", label: "Creative Runs", href: "/admin/creative/runs", icon: Play, group: "Creative Studio", read: read("creative.run.read") }),
-  item({ id: "content/assets", label: "Library", href: "/admin/creative/library", icon: ImageIcon, group: "Creative Studio", read: read("content.asset.read") }),
-  item({ id: "content/placements", label: "Placements", href: "/admin/creative/placements", icon: Bookmark, group: "Creative Studio", read: read("content.asset.read") }),
+  item({ id: "content/assets", label: "Library", href: "/admin/creative/library", icon: ImageIcon, group: "Creative Studio", read: read("creative.asset.read") }),
+  item({ id: "content/placements", label: "Placements", href: "/admin/creative/placements", icon: Bookmark, group: "Creative Studio", read: read("creative.placement.read") }),
 
   item({ id: "cases", label: "Cases", href: "/admin/cases?view=mine", icon: Ticket, group: "Customer Operations", read: read("case.read") }),
   item({ id: "users", label: "Customers", href: "/admin/customers", icon: Users, group: "Customer Operations", read: read("customer.read") }),

@@ -4,6 +4,7 @@
 // （main 不直连 chat DB，统一走这里）。鉴权在 web.ts 用 x-internal-token 完成，本模块只查数。
 // INVARIANTS: 仅 GET；未知路径 404；返回不含明文聊天内容。
 import { createHash } from "node:crypto";
+import { z } from "zod";
 import type { Prisma } from "../generated/client/client.js";
 import { chatPrisma } from "./db.js";
 import { env } from "./env.js";
@@ -38,6 +39,9 @@ export async function dispatchChatAdmin(req: ChatAdminRequest): Promise<ChatAdmi
   } catch (error) {
     if (error instanceof ChatAdminCursorError) {
       return { status: 400, body: { error: "invalid_cursor", message: error.message } };
+    }
+    if (error instanceof z.ZodError) {
+      return { status: 400, body: { error: "invalid_query", issues: error.issues } };
     }
     throw error;
   }
@@ -184,13 +188,34 @@ async function chatModelHealth() {
   }
 }
 
-async function sessions(query?: Record<string, string>) {
-  const userId = cleanParam(query?.userId);
-  const characterId = cleanParam(query?.characterId);
-  const status = cleanParam(query?.status);
-  const limit = clampLimit(query?.limit);
+const listLimitSchema = z.coerce.number().int().min(1).max(100).default(50);
+const sessionsQuerySchema = z.object({
+  userId: z.string().trim().min(1).max(200).optional(),
+  characterId: z.string().trim().min(1).max(200).optional(),
+  status: z.enum(["active", "archived", "deleted", "all"]).optional(),
+  limit: listLimitSchema,
+  cursor: z.string().min(1).optional(),
+}).strict();
+const usageQuerySchema = z.object({
+  userId: z.string().trim().min(1).max(200).optional(),
+  limit: listLimitSchema,
+  cursor: z.string().min(1).optional(),
+}).strict();
+const moderationEventsQuerySchema = z.object({
+  status: z.enum(["all", "blocked", "flagged", "passed"]).optional(),
+  layer: z.enum(["all", "input", "output"]).optional(),
+  policyCode: z.string().trim().min(1).max(200).optional(),
+  targetType: z.string().trim().min(1).max(100).optional(),
+  targetId: z.string().trim().min(1).max(200).optional(),
+  limit: listLimitSchema,
+  cursor: z.string().min(1).optional(),
+}).strict();
+
+async function sessions(rawQuery?: Record<string, string>) {
+  const query = sessionsQuerySchema.parse(rawQuery ?? {});
+  const { userId, characterId, status, limit } = query;
   const queryIdentity = { userId, characterId, status: status && status !== "all" ? status : "all" };
-  const cursorKeys = decodeChatAdminCursor(query?.cursor, "sessions", queryIdentity);
+  const cursorKeys = decodeChatAdminCursor(query.cursor, "sessions", queryIdentity);
   const where: Prisma.ChatSessionWhereInput = {};
   if (userId) where.userId = userId;
   if (characterId) where.characterId = characterId;
@@ -271,12 +296,12 @@ async function sessions(query?: Record<string, string>) {
   };
 }
 
-async function usage(query?: Record<string, string>) {
-  const userId = cleanParam(query?.userId);
-  const limit = clampLimit(query?.limit);
+async function usage(rawQuery?: Record<string, string>) {
+  const query = usageQuerySchema.parse(rawQuery ?? {});
+  const { userId, limit } = query;
   const periodStart = startOfUtcDay();
   const queryIdentity = { userId, periodStart: periodStart.toISOString() };
-  const cursorKeys = decodeChatAdminCursor(query?.cursor, "usage", queryIdentity);
+  const cursorKeys = decodeChatAdminCursor(query.cursor, "usage", queryIdentity);
   const cursorWhere: Prisma.ChatUsageWhereInput | undefined = cursorKeys ? (() => {
     const messagesUsed = chatCursorNumber(cursorKeys, 0, "usage");
     const updatedAt = chatCursorDate(cursorKeys, 1, "usage");
@@ -359,15 +384,11 @@ async function usage(query?: Record<string, string>) {
   };
 }
 
-async function moderationEvents(query?: Record<string, string>) {
-  const limit = clampLimit(query?.limit);
-  const status = cleanParam(query?.status);
-  const layer = cleanParam(query?.layer);
-  const policyCode = cleanParam(query?.policyCode);
-  const targetType = cleanParam(query?.targetType);
-  const targetId = cleanParam(query?.targetId);
+async function moderationEvents(rawQuery?: Record<string, string>) {
+  const query = moderationEventsQuerySchema.parse(rawQuery ?? {});
+  const { limit, status, layer, policyCode, targetType, targetId } = query;
   const queryIdentity = { status, layer, policyCode, targetType, targetId };
-  const cursorKeys = decodeChatAdminCursor(query?.cursor, "moderation_events", queryIdentity);
+  const cursorKeys = decodeChatAdminCursor(query.cursor, "moderation_events", queryIdentity);
   const where: Prisma.ChatModerationEventWhereInput = {};
   if (status && status !== "all") where.status = status;
   if (layer && layer !== "all") where.layer = layer;
@@ -465,17 +486,6 @@ function chatAdminPageInfo<T>(
         }), "utf8").toString("base64url")
       : null,
   };
-}
-
-function cleanParam(raw: string | undefined): string | undefined {
-  const value = raw?.trim();
-  return value ? value : undefined;
-}
-
-function clampLimit(raw: string | undefined): number {
-  const parsed = raw ? Number.parseInt(raw, 10) : 50;
-  if (!Number.isFinite(parsed)) return 50;
-  return Math.max(1, Math.min(100, parsed));
 }
 
 function chatModelsEndpoint(baseUrl: string): URL {

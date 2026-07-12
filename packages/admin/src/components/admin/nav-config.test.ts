@@ -96,8 +96,9 @@ describe("permission and work-mode navigation", () => {
     ]))).toBe(true);
     expect(sectionIsPermitted("content/production", new Set(["content.production.write"]))).toBe(false);
     expect(sectionIsPermitted("content/production", new Set(["creative.run.read"]))).toBe(true);
-    expect(sectionIsPermitted("content/assets", new Set(["creative.asset.read"]))).toBe(false);
-    expect(sectionIsPermitted("content/assets", new Set(["content.asset.read"]))).toBe(true);
+    expect(sectionIsPermitted("content/assets", new Set(["creative.asset.read"]))).toBe(true);
+    expect(sectionIsPermitted("content/placements", new Set(["creative.placement.read"]))).toBe(true);
+    expect(sectionIsPermitted("content/assets", new Set(["content.asset.read"]))).toBe(false);
   });
 
   it("allows bootstrap when any exact workspace predicate is satisfied", () => {

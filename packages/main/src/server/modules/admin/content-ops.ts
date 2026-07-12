@@ -623,7 +623,7 @@ export async function regenerateProductionItem(request: Request, id: string): Pr
 }
 
 export async function listContentAssets(request: Request) {
-  await actorWithPermission(request, "content.asset.read");
+  await actorWithPermission(request, "creative.asset.read");
   const url = new URL(request.url);
   const status = url.searchParams.get("status")?.trim() || undefined;
   const productionItemStatus = status === "archived" ? undefined : status;
@@ -697,7 +697,7 @@ export async function listContentAssets(request: Request) {
 }
 
 export async function getContentAsset(request: Request, id: string) {
-  await actorWithPermission(request, "content.asset.read");
+  await actorWithPermission(request, "creative.asset.read");
   const asset = await prisma.mediaAsset.findUnique({
     where: { id },
     include: contentAssetInclude,
@@ -825,7 +825,7 @@ export async function bulkPatchContentAssets(request: Request) {
 }
 
 export async function listPlacements(request: Request) {
-  await actorWithPermission(request, "content.asset.read");
+  await actorWithPermission(request, "creative.placement.read");
   const url = new URL(request.url);
   const status = url.searchParams.get("status")?.trim() || undefined;
   const slot = placementSlotSchema.safeParse(url.searchParams.get("slot")).data;
@@ -877,7 +877,7 @@ export async function listPlacements(request: Request) {
 }
 
 export async function createPlacement(request: Request) {
-  const actor = await actorWithPermission(request, "content.placement.write");
+  const actor = await actorWithPermission(request, "creative.placement.publish");
   const body = placementCreateSchema.parse(await jsonBody(request));
   assertLegacyPlacementAuthority(body.slot);
   await assertApprovedAsset(body.mediaAssetId);
@@ -928,7 +928,7 @@ export async function createPlacement(request: Request) {
 }
 
 export async function patchPlacement(request: Request, id: string) {
-  const actor = await actorWithPermission(request, "content.placement.write");
+  const actor = await actorWithPermission(request, "creative.placement.publish");
   const body = placementPatchSchema.parse(await jsonBody(request));
   if (body.confirmation !== id) {
     throw Errors.badRequest("Confirmation did not match placement");

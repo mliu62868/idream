@@ -48,3 +48,15 @@ export function observeWorkspacePopState<T>(
   target.addEventListener("popstate", onPopState);
   return () => target.removeEventListener("popstate", onPopState);
 }
+
+export function workspaceDetailId(pathname: string, listPath: string) {
+  const prefix = `${listPath}/`;
+  if (!pathname.startsWith(prefix)) return null;
+  const encoded = pathname.slice(prefix.length);
+  if (!encoded || encoded.includes("/")) return null;
+  try {
+    return decodeURIComponent(encoded);
+  } catch {
+    return null;
+  }
+}
