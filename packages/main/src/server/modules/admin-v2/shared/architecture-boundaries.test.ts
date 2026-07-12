@@ -131,4 +131,15 @@ describe("Admin v2 architecture boundaries", () => {
     expect(chat).toContain("export async function chatOpsOverview");
     expect(chat).not.toContain(["@/server/modules/admin", "service"].join("/"));
   });
+
+  it("keeps content merchandising authority out of the dispatcher monolith", async () => {
+    const root = path.join(process.cwd(), "src/server/modules/admin");
+    const dispatcher = await readFile(path.join(root, "service.ts"), "utf8");
+    const content = await readFile(path.join(root, "content/merchandising.ts"), "utf8").catch(() => "");
+    expect(dispatcher).not.toContain("const contentVisibilitySchema");
+    expect(dispatcher).not.toContain("async function listContentCharacters");
+    expect(dispatcher).not.toContain("async function putFeaturedCharacters");
+    expect(content).toContain("export async function listContentCharacters");
+    expect(content).toContain("executeIdempotentDomainCommand");
+  });
 });

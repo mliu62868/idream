@@ -132,4 +132,13 @@ describe("admin source boundary", () => {
     expect(catchAll).not.toContain("/api/v1/admin/chat/");
     expect(chat).toContain("export function ChatOpsWorkspace");
   });
+
+  it("keeps content merchandising authority out of the catch-all client", async () => {
+    const catchAll = await readFile(path.join(packageRoot, "src/components/admin/AdminConsoleClient.tsx"), "utf8");
+    const content = await readFile(path.join(packageRoot, "src/features/content-merchandising/ContentMerchandisingWorkspace.tsx"), "utf8").catch(() => "");
+    expect(catchAll).not.toContain("function ContentView");
+    expect(catchAll).not.toContain("/api/v1/admin/content/characters");
+    expect(catchAll).not.toContain("/api/v1/admin/content/featured");
+    expect(content).toContain("export function ContentMerchandisingWorkspace");
+  });
 });

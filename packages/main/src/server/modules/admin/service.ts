@@ -1,10 +1,8 @@
-import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import {
-  adminAuditData,
   actorWithPermission,
   clampInt,
   jsonBody,
@@ -156,8 +154,14 @@ import {
   chatOpsSessions,
   chatOpsUsage,
 } from "./chat/service";
-
-const FEATURED_SETTING_KEY = "feed.featured";
+import {
+  getContentCharacter,
+  getFeaturedCharacters,
+  listContentCharacters,
+  putFeaturedCharacters,
+  setCharacterStatus,
+  setCharacterVisibility,
+} from "./content/merchandising";
 
 type ApiMethod = "GET" | "POST" | "PATCH" | "DELETE" | "PUT";
 
@@ -200,24 +204,6 @@ const savedViewCreateSchema = z.object({
   scope: z.string().trim().min(1).max(80),
   label: z.string().trim().min(1).max(120),
   filters: z.record(z.string(), z.unknown()).default({}),
-});
-
-const contentVisibilitySchema = z.object({
-  visibility: z.enum(["private", "unlisted", "public"]),
-  reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.string().trim().min(1).max(160),
-});
-
-const contentStatusSchema = z.object({
-  status: z.enum(["approved", "rejected", "removed", "archived"]),
-  reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.string().trim().min(1).max(160),
-});
-
-const featuredPutSchema = z.object({
-  characterIds: z.array(z.string().trim().min(1).max(160)).max(24),
-  reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.string().trim().min(1).max(160),
 });
 
 export async function dispatchAdmin(request: Request, segments: string[]) {
@@ -1164,264 +1150,6 @@ async function deleteSavedView(request: Request, id: string) {
   return ok({ deleted: true });
 }
 
-// ── F2 Content/Character 目录治理 ──
-async function listContentCharacters(request: Request) {
-  await actorWithPermission(request, "content.read");
-  const url = new URL(request.url);
-  const search = url.searchParams.get("search")?.trim();
-  const status = url.searchParams.get("status") ?? undefined;
-  const visibility = url.searchParams.get("visibility") ?? undefined;
-  const creatorId = url.searchParams.get("creatorId") ?? undefined;
-  const sort = url.searchParams.get("sort") ?? "recent";
-  const limit = clampInt(url.searchParams.get("limit"), 1, 100, 60);
-  const queryIdentity = { search, status, visibility, creatorId, sort };
-  const cursorKeys = adminListCursorKeys(url, "content_characters", queryIdentity);
-  const cursorWhere: Prisma.CharacterWhereInput | undefined = cursorKeys ? (() => {
-    const id = adminCursorString(cursorKeys, 1, "content_characters");
-    if (sort === "popular") {
-      if (cursorKeys[0] === null) {
-        return { stats: { is: null }, id: { lt: id } };
-      }
-      const chatsCount = adminCursorNumber(cursorKeys, 0, "content_characters");
-      return { OR: [
-        { stats: { is: { chatsCount: { lt: chatsCount } } } },
-        { stats: { is: { chatsCount } }, id: { lt: id } },
-        { stats: { is: null } },
-      ] };
-    }
-    const createdAt = adminCursorDate(cursorKeys, 0, "content_characters");
-    return { OR: [{ createdAt: { lt: createdAt } }, { createdAt, id: { lt: id } }] };
-  })() : undefined;
-  const where: Prisma.CharacterWhereInput = { status, visibility, creatorId, deletedAt: null };
-  if (search) {
-    where.OR = [{ id: { contains: search } }, { name: { contains: search } }];
-  }
-  if (cursorWhere && sort !== "popular") where.AND = cursorWhere;
-  const select = {
-      id: true,
-      name: true,
-      gender: true,
-      style: true,
-      status: true,
-      visibility: true,
-      creatorId: true,
-      createdAt: true,
-      imageAsset: {
-        select: { id: true, url: true, thumbnailUrl: true },
-      },
-      visualProfiles: {
-        where: { status: "active" },
-        orderBy: { version: "desc" },
-        take: 1,
-        select: { id: true, version: true, status: true, style: true },
-      },
-      stats: { select: { chatsCount: true, likesCount: true, viewsCount: true } },
-    } satisfies Prisma.CharacterSelect;
-  const items = sort === "popular"
-    ? await (async () => {
-        const cursorValue = cursorKeys?.[0];
-        const cursorId = cursorKeys ? adminCursorString(cursorKeys, 1, "content_characters") : null;
-        if (cursorKeys && cursorValue === null) {
-          return prisma.character.findMany({
-            where: { ...where, stats: { is: null }, id: { lt: cursorId ?? "" } },
-            orderBy: { id: "desc" },
-            take: limit + 1,
-            select,
-          });
-        }
-        const chatsCount = cursorKeys ? adminCursorNumber(cursorKeys, 0, "content_characters") : null;
-        const ranked = await prisma.character.findMany({
-          where: {
-            ...where,
-            stats: { isNot: null },
-            ...(chatsCount !== null && cursorId ? { AND: [{ OR: [
-              { stats: { is: { chatsCount: { lt: chatsCount } } } },
-              { stats: { is: { chatsCount } }, id: { lt: cursorId } },
-            ] }] } : {}),
-          },
-          orderBy: [{ stats: { chatsCount: "desc" } }, { id: "desc" }],
-          take: limit + 1,
-          select,
-        });
-        if (ranked.length > limit) return ranked;
-        const unranked = await prisma.character.findMany({
-          where: { ...where, stats: { is: null } },
-          orderBy: { id: "desc" },
-          take: limit + 1 - ranked.length,
-          select,
-        });
-        return [...ranked, ...unranked];
-      })()
-    : await prisma.character.findMany({
-        where,
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-        take: limit + 1,
-        select,
-      });
-  const page = items.slice(0, limit);
-  return ok({
-    items: page,
-    pageInfo: adminListPageInfo("content_characters", queryIdentity, page, items.length > limit, (row) => [
-      sort === "popular" ? row.stats?.chatsCount ?? null : row.createdAt.toISOString(),
-      row.id,
-    ]),
-  });
-}
-
-async function getContentCharacter(request: Request, id: string) {
-  await actorWithPermission(request, "content.read");
-  const character = await prisma.character.findUnique({
-    where: { id },
-    include: {
-      stats: true,
-      creator: { select: { id: true, email: true, displayName: true } },
-      tags: true,
-    },
-  });
-  if (!character) throw Errors.notFound("Character not found");
-  const [reports, recentJobs] = await Promise.all([
-    prisma.contentReport.findMany({
-      where: { targetType: "character", targetId: id },
-      orderBy: { createdAt: "desc" },
-      take: 10,
-    }),
-    prisma.generationJob.findMany({
-      where: { characterId: id },
-      orderBy: { createdAt: "desc" },
-      take: 10,
-      select: { id: true, mode: true, status: true, createdAt: true },
-    }),
-  ]);
-  // 只投影派生布尔，不把整个 advancedDetails 传给前端（见 chat-tools.ts 的写路径）。
-  const chatImageToolEnabled =
-    isRecord(character.advancedDetails) && character.advancedDetails.imageToolEnabled === false
-      ? false
-      : true;
-  return ok({ character, reports, recentJobs, chatImageToolEnabled });
-}
-
-async function setCharacterVisibility(request: Request, id: string) {
-  const actor = await actorWithPermission(request, "content.takedown.write");
-  const body = contentVisibilitySchema.parse(await jsonBody(request));
-  if (body.confirmation !== contentVisibilityConfirmation(id, body.visibility)) {
-    throw Errors.badRequest("Confirmation did not match visibility target");
-  }
-  const before = await prisma.character.findUnique({ where: { id } });
-  if (!before) throw Errors.notFound("Character not found");
-  if (before.source === "official") {
-    throw Errors.conflict("Official Character visibility is controlled by Character Release and Serving commands", {
-      repairDeepLink: `/admin/characters/${id}?tab=release`,
-    });
-  }
-  const after = await prisma.$transaction(async (tx) => {
-    const updated = await tx.character.update({ where: { id }, data: { visibility: body.visibility } });
-    await tx.adminAuditLog.create({
-      data: adminAuditData(request, actor, {
-        action: "content.visibility.write",
-        targetType: "character",
-        targetId: id,
-        reason: body.reason,
-        before: { visibility: before.visibility },
-        after: { visibility: updated.visibility },
-      }),
-    });
-    return updated;
-  });
-  return ok({ character: { id: after.id, visibility: after.visibility, status: after.status } });
-}
-
-function contentVisibilityConfirmation(id: string, visibility: string) {
-  return `${id}:visibility:${visibility}`;
-}
-
-async function setCharacterStatus(request: Request, id: string) {
-  const actor = await actorWithPermission(request, "content.takedown.write");
-  const body = contentStatusSchema.parse(await jsonBody(request));
-  if (body.confirmation !== contentStatusConfirmation(id, body.status)) {
-    throw Errors.badRequest("Confirmation did not match status target");
-  }
-  const before = await prisma.character.findUnique({ where: { id } });
-  if (!before) throw Errors.notFound("Character not found");
-  if (before.source === "official") {
-    throw Errors.conflict("Official Character status is controlled by Character Release and Serving commands", {
-      repairDeepLink: `/admin/characters/${id}?tab=release`,
-    });
-  }
-  const after = await prisma.$transaction(async (tx) => {
-    const updated = await tx.character.update({ where: { id }, data: { status: body.status } });
-    await tx.adminAuditLog.create({
-      data: adminAuditData(request, actor, {
-        action: "content.status.write",
-        targetType: "character",
-        targetId: id,
-        reason: body.reason,
-        before: { status: before.status },
-        after: { status: updated.status },
-      }),
-    });
-    return updated;
-  });
-  return ok({ character: { id: after.id, visibility: after.visibility, status: after.status } });
-}
-
-function contentStatusConfirmation(id: string, status: string) {
-  return `${id}:status:${status}`;
-}
-
-// ── F3 Featured 策展（AppSetting key=feed.featured；公开 feed 读路径优先展示，见 ourdream/service feed()） ──
-function featuredIdsFromSetting(value: Prisma.JsonValue | undefined): string[] {
-  return isRecord(value) ? jsonStringArray(value.characterIds) : [];
-}
-
-async function getFeaturedCharacters(request: Request) {
-  await actorWithPermission(request, "content.read");
-  const setting = await prisma.appSetting.findUnique({ where: { key: FEATURED_SETTING_KEY } });
-  const ids = featuredIdsFromSetting(setting?.value);
-  const characters = ids.length
-    ? await prisma.character.findMany({
-        where: { id: { in: ids } },
-        select: { id: true, name: true, visibility: true, status: true },
-      })
-    : [];
-  const byId = new Map(characters.map((character) => [character.id, character]));
-  const items = ids.map((cid) => byId.get(cid)).filter((value) => value !== undefined);
-  return ok({ characterIds: ids, items });
-}
-
-async function putFeaturedCharacters(request: Request) {
-  const actor = await actorWithPermission(request, "content.takedown.write");
-  const body = featuredPutSchema.parse(await jsonBody(request));
-  const unique = [...new Set(body.characterIds.map((id) => id.trim()).filter(Boolean))];
-  const expectedConfirmation = unique.length > 0 ? unique.join(",") : "CLEAR";
-  if (body.confirmation !== expectedConfirmation) {
-    throw Errors.badRequest("Confirmation did not match featured target");
-  }
-  // 仅允许仍 public+approved 的角色进精选，避免精选位指向已下架内容。
-  const valid = unique.length
-    ? await prisma.character.findMany({
-        where: { id: { in: unique }, visibility: "public", status: "approved", deletedAt: null },
-        select: { id: true },
-      })
-    : [];
-  const validSet = new Set(valid.map((character) => character.id));
-  const validIds = unique.filter((id) => validSet.has(id));
-  const before = await prisma.appSetting.findUnique({ where: { key: FEATURED_SETTING_KEY } });
-  await prisma.appSetting.upsert({
-    where: { key: FEATURED_SETTING_KEY },
-    update: { value: toInputJson({ characterIds: validIds }) },
-    create: { key: FEATURED_SETTING_KEY, value: toInputJson({ characterIds: validIds }) },
-  });
-  await writeAudit(request, actor, {
-    action: "content.featured.write",
-    targetType: "app_setting",
-    targetId: FEATURED_SETTING_KEY,
-    reason: body.reason,
-    before: { characterIds: featuredIdsFromSetting(before?.value) },
-    after: { characterIds: validIds },
-  });
-  return ok({ characterIds: validIds, skipped: unique.filter((id) => !validSet.has(id)) });
-}
-
 // ── F6 Chat 运营面（代理到 chat 服务内部 admin 只读 API；尊重 DB 边界，默认不回明文） ──
 // INTENT: chat 服务不可达/未配置时降级返回 configured:false（与既有 chat BFF 降级一致），不抛 500。
 function recipeAuditSnapshot(template: {
@@ -1444,55 +1172,3 @@ function recipeAuditSnapshot(template: {
 // 开启时，高危执行端点须先存在一条 action+targetId 匹配且 status=approved 的 AdminActionRequest；
 // 执行前消费它（status=consumed，一次性防重放）。flag 关闭（受控 beta 默认）→ 不强制，行为不变。
 // INVARIANTS: 无凭据→403；有凭据→放行并消费；同凭据二次执行→无可用凭据→403。
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function jsonStringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string")
-    : [];
-}
-
-function adminListCursorKeys(
-  url: URL,
-  scope: string,
-  queryIdentity: unknown,
-  parameter = "cursor",
-) {
-  const raw = url.searchParams.get(parameter);
-  if (!raw) return undefined;
-  return decodeAdminListCursor(raw, scope, queryIdentity);
-}
-
-function adminCursorString(keys: readonly unknown[], index: number, scope: string) {
-  const value = keys[index];
-  if (typeof value !== "string" || !value) throw Errors.badRequest(`${scope} cursor key is invalid`);
-  return value;
-}
-
-function adminCursorNumber(keys: readonly unknown[], index: number, scope: string) {
-  const value = keys[index];
-  if (typeof value !== "number" || !Number.isFinite(value)) throw Errors.badRequest(`${scope} cursor key is invalid`);
-  return value;
-}
-
-function adminCursorDate(keys: readonly unknown[], index: number, scope: string) {
-  const value = new Date(adminCursorString(keys, index, scope));
-  if (Number.isNaN(value.getTime())) throw Errors.badRequest(`${scope} cursor timestamp is invalid`);
-  return value;
-}
-
-function adminListPageInfo<T>(
-  scope: string,
-  queryIdentity: unknown,
-  page: readonly T[],
-  hasNextPage: boolean,
-  keys: (row: T) => readonly (string | number | boolean | null)[],
-) {
-  const last = page.at(-1);
-  return {
-    endCursor: hasNextPage && last ? encodeAdminListCursor(scope, queryIdentity, keys(last)) : null,
-    hasNextPage,
-  };
-}

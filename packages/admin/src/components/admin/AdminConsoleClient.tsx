@@ -2,24 +2,19 @@
 
 import Link from "next/link";
 import { type AdminPermissionKey } from "@idream/shared/admin/permissions";
-import { type FormEvent, type KeyboardEvent, type ReactNode, type WheelEvent } from "react";
+import { type KeyboardEvent, type WheelEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Ban,
   Check,
   ChevronRight,
-  Flag,
   Languages,
   Loader2,
   RefreshCcw,
-  RotateCcw,
-  Search,
-  ShieldCheck,
-  Trash2,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { apiGet, apiWrite, formatApiError, type ApiEnvelope } from "@/components/admin/api";
+import { apiGet, formatApiError, type ApiEnvelope } from "@/components/admin/api";
 import { BackendsView } from "@/components/admin/BackendsView";
 import { GenerationMetricsView } from "@/components/admin/GenerationMetricsView";
 import { WorkflowsView } from "@/components/admin/WorkflowsView";
@@ -82,12 +77,9 @@ import { SupportWorkspace } from "@/features/support/SupportWorkspace";
 import { PromoWorkspace } from "@/features/promo/PromoWorkspace";
 import { ApprovalsWorkspace } from "@/features/approvals/ApprovalsWorkspace";
 import { ChatOpsWorkspace } from "@/features/chat-ops/ChatOpsWorkspace";
+import { ContentMerchandisingWorkspace } from "@/features/content-merchandising/ContentMerchandisingWorkspace";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
-import {
-  buildCompatibilityListUrl,
-  readCompatibilityListQuery,
-  type CompatibilityListQuery,
-} from "@/features/compatibility-lists/query";
+import { buildCompatibilityListUrl } from "@/features/compatibility-lists/query";
 
 type Actor = {
   id: string;
@@ -106,9 +98,6 @@ type AdminConsoleClientProps = {
 
 type Row = Record<string, unknown>;
 
-type PageInfo = { endCursor: string | null; hasNextPage: boolean };
-const emptyPageInfo: PageInfo = { endCursor: null, hasNextPage: false };
-type ListQuery = CompatibilityListQuery;
 
 type DashboardData = TodayData;
 
@@ -149,7 +138,6 @@ type SectionData =
   | { kind: "analytics"; data: AnalyticsWorkspaceData }
   | { kind: "risk"; data: AbuseData }
   | { kind: "providers"; data: ProviderOpsData }
-  | { kind: "content"; characters: Row[]; featured: Row[]; featuredIds: string[]; pageInfo: PageInfo; query: ListQuery }
   // 自取数视图（组件内部 fetch），section 只需一个标记，不在此预取数据。
   | {
       kind: "selfFetch";
@@ -185,7 +173,8 @@ type SectionData =
         | "support"
         | "promo"
         | "approvals"
-        | "chat";
+        | "chat"
+        | "content-merchandising";
     };
 
 type PendingAction = {
@@ -819,7 +808,6 @@ async function fetchSection(
     searchParams?: URLSearchParams;
   } = {},
 ): Promise<SectionData> {
-  const params = options.searchParams ?? new URLSearchParams();
   if (sectionId === "generation/jobs") {
     return { kind: "selfFetch", view: "jobs" };
   }
@@ -862,19 +850,7 @@ async function fetchSection(
   }
   if (sectionId === "support") return { kind: "selfFetch", view: "support" };
   if (sectionId === "content") {
-    const query = listQuery(params, ["contentSearch", "contentStatus", "contentVisibility", "contentCursor"]);
-    const [characters, featured] = await Promise.all([
-      apiGet<{ items: Row[]; pageInfo: PageInfo }>(`/api/v1/admin/content/characters${queryString({ search: query.contentSearch, status: query.contentStatus, visibility: query.contentVisibility, cursor: query.contentCursor, limit: "25" })}`),
-      apiGet<{ items: Row[]; characterIds: string[] }>("/api/v1/admin/content/featured"),
-    ]);
-    return {
-      kind: "content",
-      characters: characters.items,
-      featured: featured.items,
-      featuredIds: featured.characterIds,
-      pageInfo: characters.pageInfo ?? emptyPageInfo,
-      query,
-    };
+    return { kind: "selfFetch", view: "content-merchandising" };
   }
   if (sectionId === "content/production") return { kind: "selfFetch", view: "production" };
   if (sectionId === "content/assets") return { kind: "selfFetch", view: "assets" };
@@ -902,24 +878,6 @@ async function fetchSection(
   return { kind: "dashboard", data: { legacy, projection } };
 }
 
-function queryString(params: Record<string, string | undefined>) {
-  const query = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
-    const trimmed = value?.trim();
-    if (!trimmed || trimmed === "all") continue;
-    query.set(key, trimmed);
-  }
-  const serialized = query.toString();
-  return serialized ? `?${serialized}` : "";
-}
-
-function parseCsv(value: string) {
-  return value.split(",").map((item) => item.trim()).filter(Boolean);
-}
-
-function listQuery(params: URLSearchParams, keys: readonly string[]): ListQuery {
-  return readCompatibilityListQuery(params, keys);
-}
 
 function renderSection(
   section: SectionData | null,
@@ -943,20 +901,6 @@ function renderSection(
   if (section.kind === "analytics") return <AnalyticsView data={section.data} />;
   if (section.kind === "risk") return <RiskView data={section.data} />;
   if (section.kind === "providers") return <ProviderOpsView data={section.data} />;
-  if (section.kind === "content") {
-    return (
-      <ContentView
-        characters={section.characters}
-        featured={section.featured}
-        featuredIds={section.featuredIds}
-        openAction={ctx.openAction}
-        reload={ctx.reload}
-        pageInfo={section.pageInfo}
-        query={section.query}
-        updateQuery={ctx.updateQuery}
-      />
-    );
-  }
   if (section.kind === "selfFetch") {
     if (section.view === "jobs") {
       return <GenerationJobsWorkspace />;
@@ -1060,6 +1004,9 @@ function renderSection(
     }
     if (section.view === "chat") {
       return <ChatOpsWorkspace canRead={ctx.permissions.has("chat.ops.read")} />;
+    }
+    if (section.view === "content-merchandising") {
+      return <ContentMerchandisingWorkspace canWrite={ctx.permissions.has("content.takedown.write")} />;
     }
     return <ReviewQueueView />;
   }
@@ -1197,216 +1144,7 @@ function ProviderOpsView({ data }: { data: ProviderOpsData }) {
   );
 }
 
-function ContentView({
-  characters,
-  featured,
-  featuredIds,
-  openAction,
-  reload,
-  pageInfo,
-  query,
-  updateQuery,
-}: {
-  characters: Row[];
-  featured: Row[];
-  featuredIds: string[];
-  openAction: (action: PendingAction) => void;
-  reload: () => void;
-  pageInfo: PageInfo;
-  query: ListQuery;
-  updateQuery: (updates: Record<string, string | null>, clearCursors?: readonly string[]) => void;
-}) {
-  const { t } = useAdminI18n();
-  const [featuredInput, setFeaturedInput] = useState(featuredIds.join(", "));
-  const [reason, setReason] = useState("");
-  const [confirmation, setConfirmation] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const expectedConfirmation = parseCsv(featuredInput).join(",") || "CLEAR";
-  const canSaveFeatured =
-    !busy &&
-    reason.trim().length >= 3 &&
-    confirmation.trim() === expectedConfirmation;
 
-  async function saveFeatured() {
-    setBusy(true);
-    setErr(null);
-    try {
-      await apiWrite("/api/v1/admin/content/featured", "PUT", {
-        characterIds: parseCsv(featuredInput),
-        reason: reason.trim(),
-        confirmation: confirmation.trim(),
-      });
-      setReason("");
-      setConfirmation("");
-      reload();
-    } catch (error) {
-      setErr(error instanceof Error ? error.message : "Save failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="space-y-5">
-      <ServerListToolbar cursorKeys={["contentCursor"]} fields={[
-        { key: "contentSearch", label: "Search" },
-        { key: "contentStatus", label: "Status", options: ["draft", "pending_review", "approved", "rejected", "removed", "archived"] },
-        { key: "contentVisibility", label: "Visibility", options: ["private", "unlisted", "public"] },
-      ]} query={query} updateQuery={updateQuery} />
-      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-        <h2 className="text-sm font-semibold">{t("Featured curation")}</h2>
-        <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-          逗号分隔的 character id；仅 public+approved 会被保留，公开 feed 优先展示。
-        </p>
-        <div className="mt-3 grid gap-3 md:grid-cols-[1fr_220px_260px_auto]">
-          <input
-            className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 font-mono text-sm outline-none focus:border-[var(--ad-ink)]"
-            onChange={(event) => {
-              setFeaturedInput(event.target.value);
-              setConfirmation("");
-            }}
-            placeholder="char_a, char_b"
-            value={featuredInput}
-          />
-          <input
-            className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
-            onChange={(event) => setReason(event.target.value)}
-            placeholder={t("Reason (≥3 chars)")}
-            value={reason}
-          />
-          <input
-            aria-label={t("Featured confirmation")}
-            className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 font-mono text-sm outline-none focus:border-[var(--ad-ink)]"
-            onChange={(event) => setConfirmation(event.target.value)}
-            placeholder={expectedConfirmation === "CLEAR" ? t("Type CLEAR") : t("Type featured IDs")}
-            value={confirmation}
-          />
-          <button
-            className="inline-flex h-10 items-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
-            disabled={!canSaveFeatured}
-            onClick={() => void saveFeatured()}
-            type="button"
-          >
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flag className="h-4 w-4" />}
-            {t("Save featured")}
-          </button>
-        </div>
-        {err ? <p role="alert" className="mt-2 text-xs text-[var(--ad-red-text)]">{err}</p> : null}
-      </section>
-      <DataTable columns={["id", "name", "visibility", "status"]} rows={featured} title="Currently featured" />
-      <DataTable
-        actions={(row) => {
-          const id = stringValue(row.id);
-          return (
-            <div className="flex gap-1">
-              <IconAction
-                icon={<ShieldCheck className="h-4 w-4" />}
-                label="Make private"
-                onClick={() =>
-                  openAction({
-                    title: `Make ${id} private`,
-                    endpoint: `/api/v1/admin/content/characters/${id}/visibility`,
-                    method: "POST",
-                    confirmText: `${id}:visibility:private`,
-                    reasonRequired: true,
-                    body: (actionReason, confirmation) => ({
-                      visibility: "private",
-                      reason: actionReason,
-                      confirmation,
-                    }),
-                  })
-                }
-              />
-              <IconAction
-                icon={<Trash2 className="h-4 w-4" />}
-                label="Remove"
-                onClick={() =>
-                  openAction({
-                    title: `Remove ${id}`,
-                    endpoint: `/api/v1/admin/content/characters/${id}/status`,
-                    method: "POST",
-                    confirmText: `${id}:status:removed`,
-                    reasonRequired: true,
-                    body: (actionReason, confirmation) => ({
-                      status: "removed",
-                      reason: actionReason,
-                      confirmation,
-                    }),
-                  })
-                }
-              />
-            </div>
-          );
-        }}
-        columns={["id", "name", "gender", "style", "visibility", "status", "createdAt"]}
-        rows={characters}
-        title="Characters"
-        empty={queryIsFiltered(query, ["contentSearch", "contentStatus", "contentVisibility"]) ? "No characters match these filters" : "No characters exist yet"}
-      />
-      <CanonicalPager cursorKey="contentCursor" pageInfo={pageInfo} updateQuery={updateQuery} />
-    </div>
-  );
-}
-
- type ServerQueryField = {
-  key: string;
-  label: string;
-  options?: readonly string[];
-};
-
-function ServerListToolbar({
-  query,
-  fields,
-  cursorKeys,
-  updateQuery,
-}: {
-  query: ListQuery;
-  fields: readonly ServerQueryField[];
-  cursorKeys: readonly string[];
-  updateQuery: (updates: Record<string, string | null>, clearCursors?: readonly string[]) => void;
-}) {
-  const { t } = useAdminI18n();
-
-  function apply(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    updateQuery(Object.fromEntries(fields.map((field) => [field.key, String(form.get(field.key) ?? "")])), cursorKeys);
-  }
-
-  return (
-    <form className="rounded-lg grid gap-3 border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-2 xl:grid-cols-4" key={fields.map((field) => `${field.key}:${query[field.key] ?? ""}`).join("|")} onSubmit={apply}>
-      {fields.map((field) => field.options ? (
-        <label className="grid gap-1" key={field.key}>
-          <span className="text-xs font-medium text-[var(--ad-text-muted)]">{t(field.label)}</span>
-          <select className="h-11 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm" defaultValue={query[field.key] ?? ""} name={field.key}>
-            <option value="">{t("All")}</option>
-            {field.options.map((option) => <option key={option} value={option}>{t(option)}</option>)}
-          </select>
-        </label>
-      ) : (
-        <label className="grid gap-1" key={field.key}>
-          <span className="text-xs font-medium text-[var(--ad-text-muted)]">{t(field.label)}</span>
-          <input className="h-11 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm" defaultValue={query[field.key] ?? ""} name={field.key} type="search" />
-        </label>
-      ))}
-      <div className="flex items-end gap-2">
-        <button className="inline-flex h-11 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white" type="submit"><Search className="h-4 w-4" />{t("Apply")}</button>
-        <button className="inline-flex h-11 items-center gap-2 rounded-md border border-[var(--ad-border)] px-4 text-sm" onClick={() => updateQuery(Object.fromEntries(fields.map((field) => [field.key, null])), cursorKeys)} type="button"><RotateCcw className="h-4 w-4" />{t("Reset")}</button>
-      </div>
-    </form>
-  );
-}
-
-function CanonicalPager({ pageInfo, cursorKey, updateQuery }: { pageInfo: PageInfo; cursorKey: string; updateQuery: (updates: Record<string, string | null>) => void }) {
-  const { t } = useAdminI18n();
-  if (!pageInfo.hasNextPage || !pageInfo.endCursor) return null;
-  return <button className="inline-flex h-11 items-center gap-2 rounded-md border border-[var(--ad-border)] px-4 text-sm" onClick={() => updateQuery({ [cursorKey]: pageInfo.endCursor })} type="button">{t("Next page")}<ChevronRight className="h-4 w-4" /></button>;
-}
-
-function queryIsFiltered(query: ListQuery, keys: readonly string[]) {
-  return keys.some((key) => Boolean(query[key]));
-}
 
 function DataTable({
   title,
@@ -1509,33 +1247,6 @@ function Metric({
   return <div className="bg-[var(--ad-surface)] p-4">{body}</div>;
 }
 
-function IconAction({
-  disabled = false,
-  icon,
-  label,
-  onClick,
-}: {
-  disabled?: boolean;
-  icon: ReactNode;
-  label: string;
-  onClick: () => void;
-}) {
-  const { t } = useAdminI18n();
-  const displayLabel = t(label);
-
-  return (
-    <button
-      className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs text-[var(--ad-text)] hover:bg-black/[0.04] disabled:cursor-not-allowed disabled:opacity-50"
-      disabled={disabled}
-      onClick={onClick}
-      title={displayLabel}
-      type="button"
-    >
-      {icon}
-      <span>{displayLabel}</span>
-    </button>
-  );
-}
 
 function renderCell(value: unknown, locale: AdminLocale = "en") {
   if (typeof value === "boolean") {
