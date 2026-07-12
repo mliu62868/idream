@@ -495,8 +495,8 @@ export async function listCharacterPortfolioData(
   });
 }
 
-export async function createCharacterPortfolioDecision(
-  db: PrismaClient,
+export async function createCharacterPortfolioDecisionInTransaction(
+  tx: Prisma.TransactionClient,
   input: {
     readonly characterId: string;
     readonly actor: { readonly id: string; readonly role: string };
@@ -504,17 +504,16 @@ export async function createCharacterPortfolioDecision(
     readonly body: CharacterPortfolioDecisionRequest;
   },
 ) {
-  const project = await db.characterProject.findFirst({ where: { characterId: input.characterId } });
+  const project = await tx.characterProject.findFirst({ where: { characterId: input.characterId } });
   if (!project) throw Errors.notFound("Character Project not found");
   if (input.actor.role === "user" && project.ownerId !== input.actor.id) {
     throw Errors.forbidden("Character is outside the producer's assigned scope");
   }
-  const release = await db.characterRelease.findUnique({ where: { id: input.body.releaseId } });
+  const release = await tx.characterRelease.findUnique({ where: { id: input.body.releaseId } });
   if (!release || release.projectId !== project.id) {
     throw Errors.badRequest("Decision release must belong to the Character Project");
   }
-  const created = await db.$transaction(async (tx) => {
-    const decision = await tx.decisionRecord.create({
+  const decision = await tx.decisionRecord.create({
       data: {
         sourceType: "character_portfolio",
         sourceId: input.characterId,
@@ -530,7 +529,7 @@ export async function createCharacterPortfolioDecision(
         reviewAt: input.body.reviewAt ? new Date(input.body.reviewAt) : null,
       },
     });
-    await tx.adminAuditLog.create({
+  await tx.adminAuditLog.create({
       data: {
         actorId: input.actor.id,
         actorRole: input.actor.role,
@@ -547,9 +546,20 @@ export async function createCharacterPortfolioDecision(
         requestId: input.requestId,
       },
     });
-    return decision;
-  });
-  return decisionDto(created);
+  await tx.mainOutboxEvent.create({ data: {
+    eventType: "character.portfolio.decision.recorded.v2",
+    aggregateType: "character",
+    aggregateId: input.characterId,
+    payload: toInputJson({ decisionRecordId: decision.id, releaseId: input.body.releaseId, decision: input.body.decision }),
+  } });
+  return decisionDto(decision);
+}
+
+export async function createCharacterPortfolioDecision(
+  db: PrismaClient,
+  input: Parameters<typeof createCharacterPortfolioDecisionInTransaction>[1],
+) {
+  return db.$transaction((tx) => createCharacterPortfolioDecisionInTransaction(tx, input));
 }
 
 export async function listCharacterPortfolio(request: Request) {

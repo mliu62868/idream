@@ -59,7 +59,9 @@ export async function evaluateGenerationRouteQualification(input: {
   actor: AdminActor;
   requestId: string;
   request: QualificationRequest;
+  tx?: Prisma.TransactionClient;
 }) {
+  const db = input.tx ?? prisma;
   const request = generationRouteQualificationEvaluateRequestSchema.parse(input.request);
   if (request.confirmation !== `QUALIFY ${request.matrixKey}`) {
     throw Errors.badRequest("Confirmation did not match the route qualification matrix");
@@ -72,7 +74,7 @@ export async function evaluateGenerationRouteQualification(input: {
   if (batchIds.length !== request.batchIds.length) {
     throw Errors.badRequest("Evaluation batches must be unique");
   }
-  const batches = await prisma.contentProductionBatch.findMany({
+  const batches = await db.contentProductionBatch.findMany({
     where: { id: { in: batchIds } },
     include: {
       items: {
@@ -109,7 +111,7 @@ export async function evaluateGenerationRouteQualification(input: {
   const generationProfileKey = [...profileKeys][0] as string;
   const generationProfileVersion = [...profileVersions][0] as number;
   const workflowKey = [...workflowKeys][0] as string;
-  const profile = await prisma.generationModelProfile.findFirst({
+  const profile = await db.generationModelProfile.findFirst({
     where: { profileKey: generationProfileKey, version: generationProfileVersion },
   });
   if (!profile || (profile.workflowKey ?? profile.pipelineModel) !== workflowKey) {
@@ -122,7 +124,7 @@ export async function evaluateGenerationRouteQualification(input: {
   if (visualProfileIds.includes(null)) {
     throw Errors.conflict("Identity qualification requires a pinned Visual Identity on every sample");
   }
-  const visualProfiles = await prisma.characterVisualProfile.findMany({
+  const visualProfiles = await db.characterVisualProfile.findMany({
     where: { id: { in: visualProfileIds as string[] } },
     select: { id: true, style: true, version: true },
   });
@@ -176,7 +178,7 @@ export async function evaluateGenerationRouteQualification(input: {
     costLatencyGuardrail: request.costLatencyGuardrail,
   });
 
-  const qualification = await prisma.$transaction(async (tx) => {
+  const persist = async (tx: Prisma.TransactionClient) => {
     const existing = await tx.generationRouteQualification.findUnique({
       where: {
         routeFingerprint_matrixKey_policyVersion: {
@@ -256,7 +258,8 @@ export async function evaluateGenerationRouteQualification(input: {
       },
     });
     return { record: created, replayed: false };
-  });
+  };
+  const qualification = input.tx ? await persist(input.tx) : await prisma.$transaction(persist);
   return generationRouteQualificationEvaluateResponseSchema.parse({
     qualificationId: qualification.record.id,
     routeFingerprint,

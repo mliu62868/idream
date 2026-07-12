@@ -11,9 +11,11 @@ export async function proposeCharacterRelease(input: {
   expectedProjectVersion: number;
   qaRunId: string;
   reason: string;
-}) {
-  const actor = await actorWithPermission(input.request, "character.release.propose", { characterId: input.characterId });
-  return prisma.$transaction(async (tx) => {
+  actor?: { readonly id: string; readonly role: string };
+  requestId?: string;
+}, db?: Prisma.TransactionClient) {
+  const actor = input.actor ?? await actorWithPermission(input.request, "character.release.propose", { characterId: input.characterId });
+  const execute = async (tx: Prisma.TransactionClient) => {
     const project = await tx.characterProject.findFirst({ where: { characterId: input.characterId } });
     if (!project) throw Errors.notFound("Character Project not found");
     if (project.version !== input.expectedProjectVersion) throw Errors.conflict("Character Project changed before Release proposal");
@@ -86,12 +88,13 @@ export async function proposeCharacterRelease(input: {
       targetId: release.id,
       reason: input.reason,
       after: toInputJson({ characterId: input.characterId, releaseId: release.id, snapshotHash: release.snapshotHash, status: release.status }),
-      requestId: input.request.headers.get("x-request-id"),
+      requestId: input.requestId ?? input.request.headers.get("x-request-id"),
     } });
     await tx.adminCollaborationActivity.create({ data: { targetType: "character_release", targetId: release.id, kind: "status_change", actorId: actor.id, body: "Proposed immutable Character Release for review", metadata: toInputJson({ from: null, to: "in_review", characterId: input.characterId }), idempotencyKey: `character_release_proposed:${release.id}` } });
     await tx.mainOutboxEvent.create({ data: { eventType: "character.release.proposed.v2", aggregateType: "character_release", aggregateId: release.id, payload: toInputJson({ characterId: input.characterId, releaseId: release.id, snapshotHash: release.snapshotHash, version: release.version }) } });
     return release;
-  });
+  };
+  return db ? execute(db) : prisma.$transaction(execute);
 }
 
 export async function validateCharacterRelease(input: {
@@ -99,9 +102,11 @@ export async function validateCharacterRelease(input: {
   characterId: string;
   releaseId: string;
   expectedVersion: number;
-}) {
-  const actor = await actorWithPermission(input.request, "character.release.publish", { characterId: input.characterId });
-  return prisma.$transaction(async (tx) => {
+  actor?: { readonly id: string; readonly role: string };
+  requestId?: string;
+}, db?: Prisma.TransactionClient) {
+  const actor = input.actor ?? await actorWithPermission(input.request, "character.release.publish", { characterId: input.characterId });
+  const execute = async (tx: Prisma.TransactionClient) => {
     const release = await tx.characterRelease.findUnique({ where: { id: input.releaseId } });
     if (!release) throw Errors.notFound("Character Release not found");
     const project = await tx.characterProject.findUnique({ where: { id: release.projectId } });
@@ -120,7 +125,7 @@ export async function validateCharacterRelease(input: {
       reason: `Release validation ${validation.run.result}`,
       before: toInputJson({ readiness: release.readiness }),
       after: toInputJson({ readiness, validationRunId: validation.run.id, snapshotHash: validation.run.snapshotHash, policyVersion: validation.run.policyVersion, failedChecks: validation.failed.map((check) => check.key) }),
-      requestId: input.request.headers.get("x-request-id"),
+      requestId: input.requestId ?? input.request.headers.get("x-request-id"),
     } });
     await tx.mainOutboxEvent.create({ data: {
       eventType: "character.release.validated.v2",
@@ -136,7 +141,8 @@ export async function validateCharacterRelease(input: {
       policyVersion: validation.run.policyVersion,
       checks: validation.checks,
     };
-  });
+  };
+  return db ? execute(db) : prisma.$transaction(execute);
 }
 
 export async function reviewCharacterRelease(input: {
@@ -172,3 +178,4 @@ export async function reviewCharacterRelease(input: {
     return updated;
   });
 }
+import type { Prisma } from "@prisma/client";

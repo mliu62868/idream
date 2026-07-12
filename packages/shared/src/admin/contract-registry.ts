@@ -51,14 +51,6 @@ export const ADMIN_V2_PENDING_CONTRACTS = {
     owner: "packages/main/src/server/modules/admin-v2/permissions/grant-bundles.ts",
     reason: "The grant request parser is route-local and has not moved to the shared Admin contract package.",
   },
-  characterReleaseReviewRequestSchema: {
-    owner: "packages/main/src/app/api/v2/admin/characters/[id]/releases/[releaseId]/review/route.ts",
-    reason: "The Release review parser is Route Handler local and is not yet a shared request contract.",
-  },
-  characterReleaseValidationRequestSchema: {
-    owner: "packages/main/src/app/api/v2/admin/characters/[id]/releases/[releaseId]/validation/route.ts",
-    reason: "The Release validation parser is Route Handler local and is not yet a shared request contract.",
-  },
   customerListQuerySchema: {
     owner: "packages/main/src/server/modules/admin-v2/cases/customer-query.ts",
     reason: "Customer list query validation remains main-local and therefore cannot be executed by the shared registry.",

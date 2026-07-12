@@ -4,6 +4,7 @@ import {
   characterQaRunSchema,
   type CharacterQaRun,
 } from "@idream/shared/admin";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
@@ -14,10 +15,15 @@ export async function createCharacterQaRun(
   request: Request,
   characterId: string,
   rawInput: unknown,
+  options?: {
+    readonly tx?: Prisma.TransactionClient;
+    readonly actor?: { readonly id: string; readonly role: string };
+    readonly requestId?: string;
+  },
 ): Promise<CharacterQaRun> {
-  const actor = await actorWithPermission(request, "character.release.review", { characterId });
+  const actor = options?.actor ?? await actorWithPermission(request, "character.release.review", { characterId });
   const input = characterQaRunCreateRequestSchema.parse(rawInput);
-  return prisma.$transaction(async (tx) => {
+  const execute = async (tx: Prisma.TransactionClient) => {
     const project = await tx.characterProject.findFirst({ where: { characterId } });
     if (!project) throw Errors.notFound("Character Project not found");
     if (project.version !== input.entityVersion) {
@@ -72,7 +78,7 @@ export async function createCharacterQaRun(
           status,
           evidenceHash,
         }),
-        requestId: request.headers.get("x-request-id"),
+        requestId: options?.requestId ?? request.headers.get("x-request-id"),
       },
     });
     await tx.adminCollaborationActivity.create({
@@ -106,5 +112,6 @@ export async function createCharacterQaRun(
       checks,
       createdAt: qaRun.createdAt.toISOString(),
     });
-  });
+  };
+  return options?.tx ? execute(options.tx) : prisma.$transaction(execute);
 }

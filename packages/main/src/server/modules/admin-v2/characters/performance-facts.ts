@@ -3,7 +3,7 @@ import {
   characterPerformanceBackfillResponseSchema,
   characterPerformanceReconciliationSchema,
 } from "@idream/shared/admin";
-import type { PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { ok } from "@/server/lib/http";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
@@ -17,12 +17,14 @@ export interface CharacterPerformanceBackfillOptions {
   readonly asOf?: Date;
 }
 
+type BackfillDb = PrismaClient | Prisma.TransactionClient;
+
 function nextDay(day: Date) {
   return new Date(day.getTime() + 24 * 60 * 60 * 1_000);
 }
 
 export async function backfillCharacterFunnelFacts(
-  db: PrismaClient,
+  db: BackfillDb,
   options: CharacterPerformanceBackfillOptions,
 ) {
   const limit = Math.max(1, Math.min(1_000, options.batchSize));
@@ -154,7 +156,7 @@ export async function backfillCharacterFunnelFacts(
 }
 
 export async function backfillCharacterVariableCostFacts(
-  db: PrismaClient,
+  db: BackfillDb,
   options: CharacterPerformanceBackfillOptions,
 ) {
   const limit = Math.max(1, Math.min(1_000, options.batchSize));

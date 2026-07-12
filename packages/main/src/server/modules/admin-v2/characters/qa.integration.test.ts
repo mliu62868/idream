@@ -29,6 +29,7 @@ describe("Character QA evidence authority", () => {
         "content-type": "application/json",
         "x-idream-user-id": userId,
         "x-idream-role": userId === actorId ? "admin" : "user",
+        "idempotency-key": randomUUID(),
         "x-request-id": randomUUID(),
       },
       body: JSON.stringify(body),
@@ -79,6 +80,7 @@ describe("Character QA evidence authority", () => {
     await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: { in: qaRunIds } } });
     await prisma.adminCollaborationActivity.deleteMany({ where: { targetId: projectId } });
     await prisma.adminAuditLog.deleteMany({ where: { actorId } });
+    await prisma.controlPlaneCommand.deleteMany({ where: { actorId, commandType: "character.qa.run.create" } });
     await prisma.characterQaRun.deleteMany({ where: { characterId } });
     await prisma.characterRevision.deleteMany({ where: { projectId } });
     await prisma.characterProject.deleteMany({ where: { id: projectId } });

@@ -623,6 +623,18 @@ export const characterReleaseProposalRequestSchema = z.object({
   confirmation: z.string().trim().min(1),
 }).strict();
 
+export const characterReleaseReviewRequestSchema = z.object({
+  entityVersion: z.number().int().positive(),
+  decision: z.enum(["approved", "changes_requested"]),
+  reason: z.string().trim().min(3).max(2_000),
+  confirmation: z.string().trim().min(1),
+}).strict();
+
+export const characterReleaseValidationRequestSchema = z.object({
+  entityVersion: z.number().int().positive(),
+  confirmation: z.string().trim().min(1),
+}).strict();
+
 export const characterReleaseMonitorSchema = z
   .object({
     id: adminIdSchema,

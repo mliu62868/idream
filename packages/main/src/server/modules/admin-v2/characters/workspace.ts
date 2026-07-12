@@ -504,10 +504,13 @@ export async function refreshCharacterReleaseMonitor(input: {
   readonly releaseId: string;
   readonly expectedVersion: number;
   readonly window: "24h" | "72h";
-}) {
+  readonly actor?: { readonly id: string; readonly role: string };
+  readonly requestId?: string;
+}, db?: Prisma.TransactionClient) {
+  const execute = async (tx: Prisma.TransactionClient) => {
   const [project, release] = await Promise.all([
-    prisma.characterProject.findFirst({ where: { characterId: input.characterId } }),
-    prisma.characterRelease.findUnique({ where: { id: input.releaseId } }),
+    tx.characterProject.findFirst({ where: { characterId: input.characterId } }),
+    tx.characterRelease.findUnique({ where: { id: input.releaseId } }),
   ]);
   if (!project || !release || release.projectId !== project.id) {
     throw Errors.notFound("Character Release not found");
@@ -517,11 +520,11 @@ export async function refreshCharacterReleaseMonitor(input: {
       currentVersion: release.version,
     });
   }
-  const result = await collectReleaseMonitorFacts(prisma, {
+  const result = await collectReleaseMonitorFacts(tx, {
     releaseId: release.id,
     window: input.window,
   });
-  return {
+  const response = {
     releaseId: release.id,
     window: input.window,
     status: result.monitor.status,
@@ -529,4 +532,23 @@ export async function refreshCharacterReleaseMonitor(input: {
     recommendation: result.recommendation,
     observed: result.observed,
   };
+  await tx.adminAuditLog.create({ data: {
+    actorId: input.actor?.id ?? "system",
+    actorRole: input.actor?.role ?? "system",
+    action: "character.release.monitor.refreshed",
+    targetType: "character_release",
+    targetId: release.id,
+    reason: `Refresh ${input.window} release monitor`,
+    after: toInputJson(response),
+    requestId: input.requestId,
+  } });
+  await tx.mainOutboxEvent.create({ data: {
+    eventType: "character.release.monitor.refreshed.v2",
+    aggregateType: "character_release",
+    aggregateId: release.id,
+    payload: toInputJson(response),
+  } });
+  return response;
+  };
+  return db ? execute(db) : prisma.$transaction(execute);
 }
