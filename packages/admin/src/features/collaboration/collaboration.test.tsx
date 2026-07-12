@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { CollaborationPanel, parseMentionIds } from "./CollaborationPanel";
+import { CollaborationPanel, parseAttachmentIds, parseChecklist, parseMentionIds } from "./CollaborationPanel";
 import {
   applySavedView,
   caseQueryFromSavedState,
@@ -22,6 +22,17 @@ describe("Admin collaboration UI", () => {
   it("deduplicates bounded mention IDs", () => {
     expect(parseMentionIds(" a, b, a, , c ")).toEqual(["a", "b", "c"]);
     expect(parseMentionIds(Array.from({ length: 60 }, (_, index) => `u${index}`).join(","))).toHaveLength(50);
+  });
+
+  it("turns checklist and attachment input into structured evidence", () => {
+    expect(parseChecklist("[x] Disabled provider\n[ ] Verify recovery")).toEqual([
+      { id: "item-1", completed: true, label: "Disabled provider" },
+      { id: "item-2", completed: false, label: "Verify recovery" },
+    ]);
+    expect(parseAttachmentIds("asset-1, asset-1, asset-2")).toEqual([
+      { id: "asset-1", label: "asset-1" },
+      { id: "asset-2", label: "asset-2" },
+    ]);
   });
 
   it("round trips supported Incident server-query fields", () => {

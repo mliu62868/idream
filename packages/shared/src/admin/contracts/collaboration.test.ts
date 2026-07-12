@@ -30,7 +30,7 @@ describe("admin collaboration and experiment contracts", () => {
   it("owns collaboration and Saved View authority response contracts", () => {
     const now = new Date().toISOString();
     const activity = { id: "activity-1", targetType: "incident", targetId: "incident-1", kind: "comment", actorId: "admin-1", body: "Investigating", mentionedIds: [], metadata: {}, parentId: null, createdAt: now };
-    expect(collaborationActivityListResponseSchema.parse({ items: [activity], watching: true, pageInfo: { hasNextPage: false, endCursor: null }, asOf: now }).items).toHaveLength(1);
+    expect(collaborationActivityListResponseSchema.parse({ items: [activity], watching: true, watcherIds: ["actor-1"], pageInfo: { hasNextPage: false, endCursor: null }, asOf: now }).items).toHaveLength(1);
     expect(collaborationWatchResponseSchema.parse({ watching: true, duplicate: false }).watching).toBe(true);
     expect(savedViewMutationResponseSchema.parse({ view: { id: "view-1", scope: "incident", label: "Mine", queryState: { search: "", filters: {}, sort: { field: "id", direction: "asc" }, pageSize: 30 }, version: 1, createdAt: now, updatedAt: now }, duplicate: false }).view.version).toBe(1);
   });

@@ -68,7 +68,11 @@ function activityDto(row: Awaited<ReturnType<typeof prisma.adminCollaborationAct
     actorId: row.actorId,
     body: row.body,
     mentionedIds: row.mentionedIds,
-    metadata,
+    metadata: {
+      attachments: Array.isArray(metadata.attachments) ? metadata.attachments : [],
+      ...(typeof metadata.handoffToActorId === "string" ? { handoffToActorId: metadata.handoffToActorId } : {}),
+      checklistItems: Array.isArray(metadata.checklistItems) ? metadata.checklistItems : [],
+    },
     parentId: row.parentId,
     createdAt: row.createdAt.toISOString(),
   };
@@ -93,12 +97,15 @@ export async function listActivity(request: Request, rawTargetType: string, targ
     take: query.limit + 1,
   });
   const items = rows.slice(0, query.limit).map(activityDto);
-  const preference = await prisma.operationalWorkPreference.findUnique({
-    where: { actorId_sourceType_sourceId: { actorId: actor.id, sourceType: targetType, sourceId: targetId } },
+  const preferences = await prisma.operationalWorkPreference.findMany({
+    where: { sourceType: targetType, sourceId: targetId, watching: true },
+    select: { actorId: true },
+    orderBy: { actorId: "asc" },
   });
   return ok({
     items,
-    watching: preference?.watching ?? false,
+    watching: preferences.some((preference) => preference.actorId === actor.id),
+    watcherIds: preferences.map((preference) => preference.actorId),
     pageInfo: { hasNextPage: rows.length > query.limit, endCursor: rows.length > query.limit ? items.at(-1)?.id ?? null : null },
     asOf: new Date().toISOString(),
   });
@@ -118,10 +125,18 @@ export async function createActivity(request: Request, rawTargetType: string, ta
     if (asRecord(existing.metadata)._requestHash !== hash) throw Errors.conflict("Idempotency key was reused with a different activity");
     return ok({ activity: activityDto(existing), duplicate: true });
   }
-  const mentionedIds = [...new Set(input.mentionedIds.filter((id) => id !== actor.id))];
-  if (mentionedIds.length > 0) {
-    const mentionedUsers = await prisma.user.count({ where: { id: { in: mentionedIds }, status: "active" } });
-    if (mentionedUsers !== mentionedIds.length) throw Errors.badRequest("Every mentioned actor must be an active user");
+  const referencedActorIds = [...new Set([
+    ...input.mentionedIds,
+    ...(input.metadata.handoffToActorId ? [input.metadata.handoffToActorId] : []),
+    ...input.metadata.checklistItems.flatMap((item) => item.ownerId ? [item.ownerId] : []),
+  ])];
+  const mentionedIds = [...new Set([
+    ...input.mentionedIds,
+    ...(input.metadata.handoffToActorId ? [input.metadata.handoffToActorId] : []),
+  ].filter((id) => id !== actor.id))].sort();
+  if (referencedActorIds.length > 0) {
+    const referencedUsers = await prisma.user.count({ where: { id: { in: referencedActorIds }, status: "active" } });
+    if (referencedUsers !== referencedActorIds.length) throw Errors.badRequest("Every referenced actor must be an active user");
   }
   if (input.parentId) {
     const parent = await prisma.adminCollaborationActivity.findFirst({ where: { id: input.parentId, targetType, targetId }, select: { id: true } });

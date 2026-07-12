@@ -39,13 +39,39 @@ export const collaborationActivityKindSchema = z.enum([
   "checklist",
 ]);
 
+export const collaborationAttachmentSchema = z.object({
+  id: adminIdSchema,
+  label: z.string().trim().min(1).max(160),
+  mimeType: z.string().trim().min(1).max(120).optional(),
+}).strict();
+
+export const collaborationChecklistItemSchema = z.object({
+  id: adminIdSchema,
+  label: z.string().trim().min(1).max(240),
+  completed: z.boolean(),
+  ownerId: adminIdSchema.optional(),
+}).strict();
+
+export const collaborationActivityMetadataSchema = z.object({
+  attachments: z.array(collaborationAttachmentSchema).max(20).default([]),
+  handoffToActorId: adminIdSchema.optional(),
+  checklistItems: z.array(collaborationChecklistItemSchema).max(100).default([]),
+}).strict();
+
 export const collaborationActivityCreateSchema = z.object({
   kind: z.enum(["comment", "handoff", "checklist"]),
   body: z.string().trim().min(1).max(4_000),
   mentionedIds: z.array(adminIdSchema).max(50).default([]),
   parentId: adminIdSchema.optional(),
-  metadata: z.record(z.string(), z.unknown()).default({}),
-}).strict();
+  metadata: collaborationActivityMetadataSchema.default({ attachments: [], checklistItems: [] }),
+}).strict().superRefine((input, context) => {
+  if (input.kind === "handoff" && !input.metadata.handoffToActorId) {
+    context.addIssue({ code: "custom", path: ["metadata", "handoffToActorId"], message: "Handoffs require a target actor" });
+  }
+  if (input.kind === "checklist" && input.metadata.checklistItems.length === 0) {
+    context.addIssue({ code: "custom", path: ["metadata", "checklistItems"], message: "Checklist updates require at least one item" });
+  }
+});
 
 export const collaborationWatchSchema = z.object({ watching: z.boolean() }).strict();
 
@@ -57,7 +83,7 @@ export const collaborationActivitySchema = z.object({
   actorId: adminIdSchema,
   body: z.string().nullable(),
   mentionedIds: z.array(adminIdSchema),
-  metadata: z.record(z.string(), z.unknown()),
+  metadata: collaborationActivityMetadataSchema,
   parentId: adminIdSchema.nullable(),
   createdAt: adminIsoDateTimeSchema,
 }).strict();
@@ -81,6 +107,7 @@ export const savedViewUpdateResponseSchema = z.object({ view: savedViewSchema })
 export const collaborationActivityListResponseSchema = z.object({
   items: z.array(collaborationActivitySchema).readonly(),
   watching: z.boolean(),
+  watcherIds: z.array(adminIdSchema).readonly(),
   pageInfo: adminPageInfoSchema,
   asOf: adminIsoDateTimeSchema,
 }).strict();

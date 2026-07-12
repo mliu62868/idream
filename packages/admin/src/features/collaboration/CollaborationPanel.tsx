@@ -35,6 +35,7 @@ export function CollaborationPanel({
 }) {
   const [items, setItems] = useState<Activity[]>([]);
   const [watching, setWatching] = useState(false);
+  const [watcherIds, setWatcherIds] = useState<readonly string[]>([]);
   const [pageInfo, setPageInfo] = useState<ActivityList["pageInfo"]>({ hasNextPage: false, endCursor: null });
   const [loading, setLoading] = useState(true);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -45,6 +46,9 @@ export function CollaborationPanel({
   const [kind, setKind] = useState<ActivityKind>("comment");
   const [body, setBody] = useState("");
   const [mentions, setMentions] = useState("");
+  const [attachmentIds, setAttachmentIds] = useState("");
+  const [handoffActorId, setHandoffActorId] = useState("");
+  const [checklist, setChecklist] = useState("");
   const bodyRef = useRef<HTMLTextAreaElement | null>(null);
   const requestId = useRef(0);
 
@@ -63,6 +67,7 @@ export function CollaborationPanel({
       if (currentRequest !== requestId.current) return;
       setItems((current) => cursor ? [...current, ...response.items] : [...response.items]);
       setWatching(response.watching);
+      setWatcherIds(response.watcherIds);
       setPageInfo(response.pageInfo);
       setAccessRestricted(false);
     } catch (cause) {
@@ -118,6 +123,7 @@ export function CollaborationPanel({
     setError(null);
     setNotice(null);
     try {
+      const checklistItems = parseChecklist(checklist);
       await adminV2Request(
         `/api/v2/admin/collaboration/${targetType}/${encodeURIComponent(targetId)}/activity`,
         {
@@ -127,12 +133,19 @@ export function CollaborationPanel({
             kind,
             body: normalizedBody,
             mentionedIds: parseMentionIds(mentions),
-            metadata: {},
+            metadata: {
+              attachments: parseAttachmentIds(attachmentIds),
+              ...(kind === "handoff" ? { handoffToActorId: handoffActorId.trim() } : {}),
+              checklistItems: kind === "checklist" ? checklistItems : [],
+            },
           },
         },
       );
       setBody("");
       setMentions("");
+      setAttachmentIds("");
+      setHandoffActorId("");
+      setChecklist("");
       setNotice(`${kindLabels[kind]} added to the activity timeline.`);
       await load();
       bodyRef.current?.focus();
@@ -164,6 +177,9 @@ export function CollaborationPanel({
           {watching ? "Stop watching" : "Watch"}
         </WorkspaceButton>
       </div>
+      <p className="mt-2 break-words text-xs text-[var(--ad-text-muted)]">
+        {watcherIds.length === 0 ? "No watchers" : `${watcherIds.length} watcher${watcherIds.length === 1 ? "" : "s"}: ${watcherIds.join(", ")}`}
+      </p>
 
       <div aria-atomic="true" aria-live="polite" className="mt-3 min-h-5 text-xs">
         {error ? <p className="text-[var(--ad-red-text)]" role="alert">{error} <button className="underline" onClick={() => void load()} type="button">Retry</button></p> : null}
@@ -176,6 +192,9 @@ export function CollaborationPanel({
             <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Activity type<select className={fieldClass} onChange={(event) => setKind(event.target.value as ActivityKind)} value={kind}>{Object.entries(kindLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
             <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Mention actor IDs<input className={fieldClass} onChange={(event) => setMentions(event.target.value)} placeholder="user-id-1, user-id-2" value={mentions} /></label>
           </div>
+          {kind === "handoff" ? <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Handoff actor ID<input className={fieldClass} onChange={(event) => setHandoffActorId(event.target.value)} required value={handoffActorId} /></label> : null}
+          {kind === "checklist" ? <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Checklist items, one per line<textarea className={textAreaClass} onChange={(event) => setChecklist(event.target.value)} placeholder="[x] Provider disabled&#10;[ ] Verify recovery" required value={checklist} /></label> : null}
+          <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Attachment evidence IDs<input className={fieldClass} onChange={(event) => setAttachmentIds(event.target.value)} placeholder="asset-id-1, asset-id-2" value={attachmentIds} /></label>
           <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{kindLabels[kind]}<textarea className={textAreaClass} maxLength={4_000} onChange={(event) => setBody(event.target.value)} ref={bodyRef} required value={body} /></label>
           <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-[var(--ad-text-muted)]">{body.length}/4000</span><WorkspaceButton disabled={submitting || body.trim().length === 0} tone="primary" type="submit"><Send className="h-4 w-4" />Add activity</WorkspaceButton></div>
         </form>
@@ -185,7 +204,7 @@ export function CollaborationPanel({
         <h4 className="text-xs font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">Activity timeline</h4>
         {loading && items.length === 0 ? <p className="mt-3 text-sm text-[var(--ad-text-muted)]" role="status">Loading collaboration activity…</p> : items.length === 0 ? <p className="mt-3 rounded-md bg-[var(--ad-surface-subtle)] p-3 text-sm text-[var(--ad-text-muted)]">No activity yet. The first comment or handoff will appear here.</p> : (
           <ol className="mt-3 space-y-3">
-            {items.map((activity) => <li className="border-l-2 border-[var(--ad-border)] pl-3" key={activity.id}><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs font-semibold">{activity.kind.replaceAll("_", " ")} · <span className="font-mono">{activity.actorId}</span></span><time className="text-xs text-[var(--ad-text-muted)]" dateTime={activity.createdAt}>{new Date(activity.createdAt).toLocaleString()}</time></div>{activity.body ? <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6">{activity.body}</p> : null}{activity.mentionedIds.length > 0 ? <p className="mt-1 break-words text-xs text-[var(--ad-text-muted)]">Mentions: {activity.mentionedIds.map((id) => `@${id}`).join(", ")}</p> : null}</li>)}
+            {items.map((activity) => <li className="border-l-2 border-[var(--ad-border)] pl-3" key={activity.id}><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs font-semibold">{activity.kind.replaceAll("_", " ")} · <span className="font-mono">{activity.actorId}</span></span><time className="text-xs text-[var(--ad-text-muted)]" dateTime={activity.createdAt}>{new Date(activity.createdAt).toLocaleString()}</time></div>{activity.body ? <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6">{activity.body}</p> : null}{activity.mentionedIds.length > 0 ? <p className="mt-1 break-words text-xs text-[var(--ad-text-muted)]">Mentions: {activity.mentionedIds.map((id) => `@${id}`).join(", ")}</p> : null}{activity.metadata.handoffToActorId ? <p className="mt-1 text-xs">Handoff to: <span className="font-mono">{activity.metadata.handoffToActorId}</span></p> : null}{activity.metadata.checklistItems.length > 0 ? <ul className="mt-2 space-y-1 text-xs">{activity.metadata.checklistItems.map((item) => <li key={item.id}>{item.completed ? "✓" : "○"} {item.label}{item.ownerId ? ` — ${item.ownerId}` : ""}</li>)}</ul> : null}{activity.metadata.attachments.length > 0 ? <p className="mt-2 break-words text-xs text-[var(--ad-text-muted)]">Evidence: {activity.metadata.attachments.map((item) => item.label).join(", ")}</p> : null}</li>)}
           </ol>
         )}
         {pageInfo.hasNextPage && pageInfo.endCursor ? <div className="mt-3"><WorkspaceButton disabled={loadingOlder} onClick={() => void load(pageInfo.endCursor ?? undefined)}><RefreshCcw className="h-4 w-4" />{loadingOlder ? "Loading…" : "Load older activity"}</WorkspaceButton></div> : null}
@@ -196,6 +215,18 @@ export function CollaborationPanel({
 
 export function parseMentionIds(value: string) {
   return [...new Set(value.split(",").map((item) => item.trim()).filter(Boolean))].slice(0, 50);
+}
+
+export function parseAttachmentIds(value: string) {
+  return parseMentionIds(value).slice(0, 20).map((id) => ({ id, label: id }));
+}
+
+export function parseChecklist(value: string) {
+  return value.split("\n").map((line) => line.trim()).filter(Boolean).slice(0, 100).map((line, index) => ({
+    id: `item-${index + 1}`,
+    completed: /^\[[xX]\]\s*/.test(line),
+    label: line.replace(/^\[[xX ]\]\s*/, "").trim(),
+  })).filter((item) => item.label.length > 0);
 }
 
 function message(cause: unknown, fallback: string) {

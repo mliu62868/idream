@@ -138,12 +138,13 @@ export function VisualPassportPanel({ characterId }: { characterId: string }) {
         ) : (
           <div className="mt-2 overflow-x-auto">
             <table className="w-full text-left text-xs">
+              <caption className="sr-only">Visual passport versions</caption>
               <thead className="text-[var(--ad-text-muted)]">
                 <tr className="border-b border-[var(--ad-border)]">
-                  <th className="py-1.5 pr-3 font-medium">{t("Version")}</th>
-                  <th className="py-1.5 pr-3 font-medium">{t("Status")}</th>
-                  <th className="py-1.5 pr-3 font-medium">{t("Created from")}</th>
-                  <th className="py-1.5 pr-3 font-medium">{t("Created at")}</th>
+                  <th scope="col" className="py-1.5 pr-3 font-medium">{t("Version")}</th>
+                  <th scope="col" className="py-1.5 pr-3 font-medium">{t("Status")}</th>
+                  <th scope="col" className="py-1.5 pr-3 font-medium">{t("Created from")}</th>
+                  <th scope="col" className="py-1.5 pr-3 font-medium">{t("Created at")}</th>
                 </tr>
               </thead>
               <tbody>

@@ -147,17 +147,18 @@ function ProfilesTable({ profiles, t }: { profiles: ProfileMetric[]; t: Translat
     <SectionShell isEmpty={profiles.length === 0} t={t} title="Profiles">
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs">
+          <caption className="sr-only">Generation profiles</caption>
           <thead>
             <tr className="text-[var(--ad-text-muted)]">
-              <th className="pb-2 pr-4">{t("Label")}</th>
-              <th className="pb-2 pr-4">{t("Profile")}</th>
-              <th className="pb-2 pr-4">{t("Workflow")}</th>
-              <th className="pb-2 pr-4">{t("Total")}</th>
-              <th className="pb-2 pr-4">{t("Completed")}</th>
-              <th className="pb-2 pr-4">{t("Failed")}</th>
-              <th className="pb-2 pr-4">{t("Blocked")}</th>
-              <th className="pb-2 pr-4">{t("Cost")}</th>
-              <th className="pb-2">{t("Avg Duration")}</th>
+              <th scope="col" className="pb-2 pr-4">{t("Label")}</th>
+              <th scope="col" className="pb-2 pr-4">{t("Profile")}</th>
+              <th scope="col" className="pb-2 pr-4">{t("Workflow")}</th>
+              <th scope="col" className="pb-2 pr-4">{t("Total")}</th>
+              <th scope="col" className="pb-2 pr-4">{t("Completed")}</th>
+              <th scope="col" className="pb-2 pr-4">{t("Failed")}</th>
+              <th scope="col" className="pb-2 pr-4">{t("Blocked")}</th>
+              <th scope="col" className="pb-2 pr-4">{t("Cost")}</th>
+              <th scope="col" className="pb-2">{t("Avg Duration")}</th>
             </tr>
           </thead>
           <tbody>
@@ -191,14 +192,15 @@ function RecipesTable({ recipes, t }: { recipes: RecipeMetric[]; t: Translate })
     <SectionShell isEmpty={recipes.length === 0} t={t} title="Recipes">
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs">
+          <caption className="sr-only">Generation recipes</caption>
           <thead>
             <tr className="text-[var(--ad-text-muted)]">
-              <th className="pb-2 pr-4">{t("Recipe")}</th>
-              <th className="pb-2 pr-4">{t("Total")}</th>
-              <th className="pb-2 pr-4">{t("Completed")}</th>
-              <th className="pb-2 pr-4">{t("Failed")}</th>
-              <th className="pb-2 pr-4">{t("Blocked")}</th>
-              <th className="pb-2">{t("Cost")}</th>
+              <th scope="col" className="pb-2 pr-4">{t("Recipe")}</th>
+              <th scope="col" className="pb-2 pr-4">{t("Total")}</th>
+              <th scope="col" className="pb-2 pr-4">{t("Completed")}</th>
+              <th scope="col" className="pb-2 pr-4">{t("Failed")}</th>
+              <th scope="col" className="pb-2 pr-4">{t("Blocked")}</th>
+              <th scope="col" className="pb-2">{t("Cost")}</th>
             </tr>
           </thead>
           <tbody>
@@ -227,14 +229,15 @@ function SourcesTable({ sources, t }: { sources: SourceMetric[]; t: Translate })
     <SectionShell isEmpty={sources.length === 0} t={t} title="Sources">
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs">
+          <caption className="sr-only">Generation sources</caption>
           <thead>
             <tr className="text-[var(--ad-text-muted)]">
-              <th className="pb-2 pr-4">{t("Source")}</th>
-              <th className="pb-2 pr-4">{t("Total")}</th>
-              <th className="pb-2 pr-4">{t("Completed")}</th>
-              <th className="pb-2 pr-4">{t("Failed")}</th>
-              <th className="pb-2 pr-4">{t("Blocked")}</th>
-              <th className="pb-2">{t("Cost")}</th>
+              <th scope="col" className="pb-2 pr-4">{t("Source")}</th>
+              <th scope="col" className="pb-2 pr-4">{t("Total")}</th>
+              <th scope="col" className="pb-2 pr-4">{t("Completed")}</th>
+              <th scope="col" className="pb-2 pr-4">{t("Failed")}</th>
+              <th scope="col" className="pb-2 pr-4">{t("Blocked")}</th>
+              <th scope="col" className="pb-2">{t("Cost")}</th>
             </tr>
           </thead>
           <tbody>
@@ -263,11 +266,12 @@ function PlacementsTable({ placements, t }: { placements: PlacementMetric[]; t: 
     <SectionShell isEmpty={placements.length === 0} t={t} title="Placements">
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs">
+          <caption className="sr-only">Generation placements</caption>
           <thead>
             <tr className="text-[var(--ad-text-muted)]">
-              <th className="pb-2 pr-4">{t("Slot")}</th>
-              <th className="pb-2 pr-4">{t("Status")}</th>
-              <th className="pb-2">{t("Count")}</th>
+              <th scope="col" className="pb-2 pr-4">{t("Slot")}</th>
+              <th scope="col" className="pb-2 pr-4">{t("Status")}</th>
+              <th scope="col" className="pb-2">{t("Count")}</th>
             </tr>
           </thead>
           <tbody>
@@ -296,12 +300,13 @@ function PlacementEngagementTable({
     <SectionShell isEmpty={engagement.length === 0} t={t} title="Placement Engagement">
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs">
+          <caption className="sr-only">Placement engagement</caption>
           <thead>
             <tr className="text-[var(--ad-text-muted)]">
-              <th className="pb-2 pr-4">{t("Slot")}</th>
-              <th className="pb-2 pr-4">{t("Placement")}</th>
-              <th className="pb-2 pr-4">{t("Impressions")}</th>
-              <th className="pb-2">{t("Clicks")}</th>
+              <th scope="col" className="pb-2 pr-4">{t("Slot")}</th>
+              <th scope="col" className="pb-2 pr-4">{t("Placement")}</th>
+              <th scope="col" className="pb-2 pr-4">{t("Impressions")}</th>
+              <th scope="col" className="pb-2">{t("Clicks")}</th>
             </tr>
           </thead>
           <tbody>

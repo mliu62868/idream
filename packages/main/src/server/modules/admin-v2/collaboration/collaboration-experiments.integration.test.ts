@@ -86,14 +86,19 @@ describe("admin collaboration, saved views, and managed experiments", () => {
   it("records comments, mentions, handoff/watch activity separately from immutable audit evidence", async () => {
     const context = { params: Promise.resolve({ targetType: "incident", targetId: incidentId }) };
     const request = (body: object) => new Request(`http://localhost/api/v2/admin/collaboration/incident/${incidentId}/activity`, { method: "POST", headers: headers(adminId, "admin", `activity-${suffix}`), body: JSON.stringify(body) });
-    const first = await activityRoute(request({ kind: "handoff", body: "Take over provider recovery", mentionedIds: [analystId, supportId], metadata: { shift: "west" } }), context);
+    const activityBody = { kind: "handoff", body: "Take over provider recovery", mentionedIds: [supportId], metadata: { handoffToActorId: analystId, attachments: [{ id: `evidence-${suffix}`, label: "Provider recovery log", mimeType: "text/plain" }], checklistItems: [] } };
+    const first = await activityRoute(request(activityBody), context);
     expect(first.status).toBe(201);
-    const replay = await activityRoute(request({ kind: "handoff", body: "Take over provider recovery", mentionedIds: [analystId, supportId], metadata: { shift: "west" } }), context);
+    const replay = await activityRoute(request(activityBody), context);
     expect((await replay.json()).data.duplicate).toBe(true);
     const collision = await activityRoute(request({ kind: "comment", body: "changed", mentionedIds: [], metadata: {} }), context);
     expect(collision.status).toBe(409);
     const watch = await watchRoute(new Request(`http://localhost/api/v2/admin/collaboration/incident/${incidentId}/watch`, { method: "PUT", headers: headers(adminId, "admin", `watch-${suffix}`), body: JSON.stringify({ watching: true }) }), context);
     expect(await watch.json()).toMatchObject({ ok: true, data: { watching: true, duplicate: false } });
+    const activityList = await listActivityRoute(new Request(`http://localhost/api/v2/admin/collaboration/incident/${incidentId}/activity`, { headers: headers() }), context);
+    const activityPayload = await activityList.json();
+    expect(activityPayload).toMatchObject({ ok: true, data: { watcherIds: [adminId] } });
+    expect(activityPayload.data.items.find((item: { kind: string }) => item.kind === "handoff")).toMatchObject({ metadata: { handoffToActorId: analystId, attachments: [{ label: "Provider recovery log" }] } });
     const hiddenMentions = await mentionsRoute(new Request("http://localhost/api/v2/admin/collaboration/mentions", { headers: headers(analystId, "analyst") }));
     expect(await hiddenMentions.json()).toMatchObject({ ok: true, data: { items: [] } });
     const supportIncident = await listActivityRoute(

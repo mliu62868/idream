@@ -3334,10 +3334,11 @@ function ModelAssetLibraryTable({ items }: { items: ModelImportAsset[] }) {
       </div>
       <div className="overflow-x-auto">
         <table className="min-w-full text-left text-xs">
+          <caption className="sr-only">Asset library</caption>
           <thead className="bg-black/[0.03] text-[var(--ad-text-muted)]">
             <tr>
               {["Asset kind", "Name", "Format", "Size", "Path", "Updated", "Actions"].map((column) => (
-                <th key={column} className="border-b border-[var(--ad-border)] px-3 py-2 font-semibold">
+                <th scope="col" key={column} className="border-b border-[var(--ad-border)] px-3 py-2 font-semibold">
                   {t(column)}
                 </th>
               ))}
@@ -6655,15 +6656,16 @@ function DataTable({
       </div>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[860px] border-collapse text-left text-sm">
+          <caption className="sr-only">{t("Operational records")}</caption>
           <thead className="bg-black/[0.03] text-[11px] uppercase text-[var(--ad-text-muted)]">
             <tr>
               {columns.map((column) => (
-                <th key={column} className="border-b border-[var(--ad-border)] px-3 py-2 font-semibold">
+                <th scope="col" key={column} className="border-b border-[var(--ad-border)] px-3 py-2 font-semibold">
                   {columnLabel(column)}
                 </th>
               ))}
               {actions ? (
-                <th className="sticky right-0 z-10 border-b border-l border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 font-semibold">
+                <th scope="col" className="sticky right-0 z-10 border-b border-l border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 font-semibold">
                   {t("Actions")}
                 </th>
               ) : null}

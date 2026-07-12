@@ -300,13 +300,14 @@ function AgeVerificationSection() {
         </section>
       ) : null}
       <table className="w-full text-left text-sm">
+        <caption className="sr-only">Compliance records</caption>
         <thead className="border-b border-[var(--ad-border)] text-xs text-[var(--ad-text-muted)]">
           <tr>
-            <th className="px-3 py-2 font-medium">{t("user")}</th>
-            <th className="px-3 py-2 font-medium">{t("provider")}</th>
-            <th className="px-3 py-2 font-medium">{t("status")}</th>
-            <th className="px-3 py-2 font-medium">{t("jurisdiction")}</th>
-            <th className="px-3 py-2 font-medium" />
+            <th scope="col" className="px-3 py-2 font-medium">{t("user")}</th>
+            <th scope="col" className="px-3 py-2 font-medium">{t("provider")}</th>
+            <th scope="col" className="px-3 py-2 font-medium">{t("status")}</th>
+            <th scope="col" className="px-3 py-2 font-medium">{t("jurisdiction")}</th>
+            <th scope="col" className="px-3 py-2 font-medium"><span className="sr-only">{t("Actions")}</span></th>
           </tr>
         </thead>
         <tbody>

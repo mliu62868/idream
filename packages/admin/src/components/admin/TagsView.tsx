@@ -119,15 +119,16 @@ export function TagsView() {
           <h2 className="text-sm font-semibold">{t("Tag taxonomy")} ({tags.length})</h2>
         </div>
         <table className="w-full text-left text-sm">
+          <caption className="sr-only">Tag taxonomy</caption>
           <thead className="border-b border-[var(--ad-border)] text-xs text-[var(--ad-text-muted)]">
             <tr>
-              <th className="px-3 py-2 font-medium">{t("slug")}</th>
-              <th className="px-3 py-2 font-medium">{t("label")}</th>
-              <th className="px-3 py-2 font-medium">{t("category")}</th>
-              <th className="px-3 py-2 font-medium">{t("characters")}</th>
-              <th className="px-3 py-2 font-medium">{t("sensitive")}</th>
-              <th className="px-3 py-2 font-medium">{t("muted")}</th>
-              <th className="px-3 py-2 font-medium" />
+              <th scope="col" className="px-3 py-2 font-medium">{t("slug")}</th>
+              <th scope="col" className="px-3 py-2 font-medium">{t("label")}</th>
+              <th scope="col" className="px-3 py-2 font-medium">{t("category")}</th>
+              <th scope="col" className="px-3 py-2 font-medium">{t("characters")}</th>
+              <th scope="col" className="px-3 py-2 font-medium">{t("sensitive")}</th>
+              <th scope="col" className="px-3 py-2 font-medium">{t("muted")}</th>
+              <th scope="col" className="px-3 py-2 font-medium"><span className="sr-only">{t("Actions")}</span></th>
             </tr>
           </thead>
           <tbody>

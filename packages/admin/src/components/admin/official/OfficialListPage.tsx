@@ -148,15 +148,16 @@ export function OfficialListPage() {
         <section className="overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
           <div className="overflow-x-auto">
             <table className="w-full min-w-[980px] border-collapse text-left">
+              <caption className="sr-only">Official characters</caption>
               <thead className="bg-black/[0.025] text-[11px] uppercase tracking-wide text-[var(--ad-text-muted)]">
                 <tr>
-                  <th className="border-b border-[var(--ad-border)] px-4 py-3 font-semibold">Character</th>
-                  <th className="border-b border-[var(--ad-border)] px-3 py-3 font-semibold">Stage</th>
-                  <th className="border-b border-[var(--ad-border)] px-3 py-3 font-semibold">Readiness</th>
-                  <th className="border-b border-[var(--ad-border)] px-3 py-3 font-semibold">Visuals</th>
-                  <th className="border-b border-[var(--ad-border)] px-3 py-3 font-semibold">Performance</th>
-                  <th className="border-b border-[var(--ad-border)] px-3 py-3 font-semibold">Updated</th>
-                  <th className="border-b border-[var(--ad-border)] px-4 py-3 text-right font-semibold">Next step</th>
+                  <th scope="col" className="border-b border-[var(--ad-border)] px-4 py-3 font-semibold">Character</th>
+                  <th scope="col" className="border-b border-[var(--ad-border)] px-3 py-3 font-semibold">Stage</th>
+                  <th scope="col" className="border-b border-[var(--ad-border)] px-3 py-3 font-semibold">Readiness</th>
+                  <th scope="col" className="border-b border-[var(--ad-border)] px-3 py-3 font-semibold">Visuals</th>
+                  <th scope="col" className="border-b border-[var(--ad-border)] px-3 py-3 font-semibold">Performance</th>
+                  <th scope="col" className="border-b border-[var(--ad-border)] px-3 py-3 font-semibold">Updated</th>
+                  <th scope="col" className="border-b border-[var(--ad-border)] px-4 py-3 text-right font-semibold">Next step</th>
                 </tr>
               </thead>
               <tbody>
