@@ -56,6 +56,51 @@ function stableSignature(attempt: FailedAttemptSource) {
   };
 }
 
+export function transformGenerationIncidentBackfill(attempt: FailedAttemptSource) {
+  const derived = stableSignature(attempt);
+  if (!derived) {
+    return {
+      classification: "unavailable" as const,
+      action: "preserve_without_incident" as const,
+      before: {
+        status: attempt.status,
+        provider: attempt.provider,
+        profileKey: attempt.profileKey,
+        workflowKey: attempt.workflowKey,
+        errorClass: attempt.errorClass,
+        errorSignature: attempt.errorSignature,
+      },
+      after: { occurrenceKey: null, signature: null },
+      mismatches: [{
+        code: "insufficient_stable_signature",
+        detail: "Generation Attempt cannot be correlated without provider/profile/workflow/error signature evidence.",
+      }],
+    };
+  }
+  return {
+    classification: "eligible" as const,
+    action: "correlate_generation_incident" as const,
+    before: {
+      status: attempt.status,
+      provider: attempt.provider,
+      profileKey: attempt.profileKey,
+      workflowKey: attempt.workflowKey,
+      errorClass: attempt.errorClass,
+      errorSignature: attempt.errorSignature,
+    },
+    after: {
+      occurrenceKey: `generation-attempt:${attempt.id}`,
+      signature: derived.signature,
+      signatureVersion: INCIDENT_SIGNATURE_VERSION,
+    },
+    mismatches: [] as Array<{ code: string; detail: string }>,
+  };
+}
+
+export async function applyGenerationIncidentBackfill(db: PrismaClient, attemptId: string) {
+  return correlateFailedGenerationAttempt(attemptId, { db });
+}
+
 async function refreshIncidentImpact(db: Db, incidentId: string) {
   const occurrences = await db.opsIncidentOccurrence.findMany({
     where: { incidentId },
@@ -284,52 +329,6 @@ export async function dispatchGenerationIncidentCorrelation(
     }
   }
   return { examined: rows.length, correlated, unavailable, failed };
-}
-
-export async function backfillGenerationIncidents(input: {
-  readonly dryRun: boolean;
-  readonly cursor?: string;
-  readonly batchSize?: number;
-}) {
-  const rows = await prisma.generationAttempt.findMany({
-    where: {
-      status: { in: ["failed", "unknown"] },
-      ...(input.cursor ? { id: { gt: input.cursor } } : {}),
-    },
-    orderBy: { id: "asc" },
-    take: Math.min(500, Math.max(1, input.batchSize ?? 100)),
-  });
-  const before = await prisma.opsIncidentOccurrence.count();
-  const report = {
-    dryRun: input.dryRun,
-    scanned: rows.length,
-    eligible: 0,
-    applied: 0,
-    unavailable: [] as Array<{ attemptId: string; reason: string }>,
-    mismatches: [] as Array<{ attemptId: string; reason: string }>,
-    nextCursor: rows.at(-1)?.id ?? null,
-    beforeOccurrences: before,
-    afterOccurrences: before,
-  };
-  for (const row of rows) {
-    if (!stableSignature(row)) {
-      report.unavailable.push({ attemptId: row.id, reason: "insufficient_stable_signature" });
-      continue;
-    }
-    report.eligible += 1;
-    if (input.dryRun) continue;
-    try {
-      await correlateFailedGenerationAttempt(row.id);
-      report.applied += 1;
-    } catch (error) {
-      report.mismatches.push({
-        attemptId: row.id,
-        reason: error instanceof Error ? error.message : "unknown_error",
-      });
-    }
-  }
-  report.afterOccurrences = await prisma.opsIncidentOccurrence.count();
-  return report;
 }
 
 function eligibleOccurrenceIds(

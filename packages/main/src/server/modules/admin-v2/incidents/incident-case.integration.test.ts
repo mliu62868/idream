@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
+import { backfillGenerationIncidents, backfillReviewCases } from "@/server/modules/admin-v2/backfill/production-runner";
 import {
-  backfillGenerationIncidents,
   correlateFailedGenerationAttempt,
   executeIncidentActionPlan,
   previewIncidentActionPlan,
@@ -17,7 +17,6 @@ import {
   ensureReviewCaseForReport,
   recordReviewCaseDecision,
   verifyReviewCase,
-  backfillReviewCases,
 } from "../cases/service";
 import { POST as resolveIncident } from "@/app/api/v2/admin/incidents/[id]/commands/resolve/route";
 import { POST as closeCase } from "@/app/api/v2/admin/cases/[id]/commands/close/route";
@@ -170,6 +169,14 @@ describe("Incident and P0 Review Case authority loops", () => {
   });
 
   afterAll(async () => {
+    const sourceIds = [attemptA, attemptB, incompleteAttempt, boundaryAttemptA, boundaryAttemptB, reportA, reportB, terminalReport];
+    const backfillItems = await prisma.adminBackfillItem.findMany({
+      where: { entityId: { in: sourceIds } },
+      select: { runId: true },
+    });
+    const backfillRunIds = [...new Set(backfillItems.map((item) => item.runId))];
+    await prisma.adminBackfillItem.deleteMany({ where: { runId: { in: backfillRunIds } } });
+    await prisma.adminBackfillRun.deleteMany({ where: { id: { in: backfillRunIds } } });
     const actionCommandIds = (await prisma.controlPlaneCommand.findMany({
       where: { actorId: adminId },
       select: { id: true },

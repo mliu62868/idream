@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
+import { backfillCustomerCases } from "@/server/modules/admin-v2/backfill/production-runner";
 import {
-  backfillCustomerCases,
   recordReviewCaseDecisionAtomic,
   reopenOrRecurCase,
   recordCustomerCaseAction,
@@ -91,6 +91,13 @@ describe("Support and billing Case depth", () => {
   });
 
   afterAll(async () => {
+    const backfillItems = await prisma.adminBackfillItem.findMany({
+      where: { entityType: "support_request", entityId: { in: [supportRequestId, billingRequestId] } },
+      select: { runId: true },
+    });
+    const backfillRunIds = [...new Set(backfillItems.map((item) => item.runId))];
+    await prisma.adminBackfillItem.deleteMany({ where: { runId: { in: backfillRunIds } } });
+    await prisma.adminBackfillRun.deleteMany({ where: { id: { in: backfillRunIds } } });
     const cases = await prisma.adminCase.findMany({
       where: { targetType: "user", targetId: customerId },
       select: { id: true },

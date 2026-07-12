@@ -94,41 +94,35 @@ function slaFor(priority: string, createdAt: Date) {
   return new Date(createdAt.getTime() + hours * 60 * 60 * 1_000);
 }
 
-function decodeBackfillCursor(cursor?: string) {
-  if (!cursor) return { reportId: undefined, appealId: undefined };
-  try {
-    const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as {
-      reportId?: unknown;
-      appealId?: unknown;
-    };
-    return {
-      reportId: typeof parsed.reportId === "string" ? parsed.reportId : undefined,
-      appealId: typeof parsed.appealId === "string" ? parsed.appealId : undefined,
-    };
-  } catch {
-    return { reportId: cursor, appealId: cursor };
-  }
+export function transformCustomerCaseBackfill(request: SupportRequest) {
+  const type = supportCaseType(request.category);
+  const priority = priorityForSupport(request.priority);
+  const terminal = !ACTIVE_SUPPORT_STATUSES.includes(request.status);
+  return {
+    classification: "eligible" as const,
+    action: "ensure_customer_case" as const,
+    before: {
+      sourceStatus: request.status,
+      category: request.category,
+      assignedToId: request.assignedToId,
+    },
+    after: {
+      caseType: type,
+      targetType: "user",
+      targetId: request.userId,
+      status: supportStatus(request.status),
+      priority,
+      ownerId: request.assignedToId,
+      verificationState: terminal ? "overridden" : "pending",
+    },
+    mismatches: [] as Array<{ code: string; detail: string }>,
+  };
 }
 
-function encodeBackfillCursor(cursor: { reportId?: string; appealId?: string }) {
-  if (!cursor.reportId && !cursor.appealId) return null;
-  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
-}
-
-function decodeCustomerBackfillCursor(cursor?: string) {
-  if (!cursor) return undefined;
-  try {
-    const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as { supportRequestId?: unknown };
-    return typeof parsed.supportRequestId === "string" ? parsed.supportRequestId : undefined;
-  } catch {
-    return cursor;
-  }
-}
-
-function encodeCustomerBackfillCursor(supportRequestId?: string) {
-  return supportRequestId
-    ? Buffer.from(JSON.stringify({ supportRequestId }), "utf8").toString("base64url")
-    : null;
+export async function applyCustomerCaseBackfill(db: Db, request: SupportRequest) {
+  const adminCase = await ensureSupportCaseForRequest(db, request);
+  if (!adminCase) throw Errors.internal("Customer Case transformation did not produce Case authority");
+  return adminCase;
 }
 
 export async function ensureSupportCaseForRequest(db: Db, request: SupportRequest) {
@@ -381,51 +375,6 @@ async function addBillingEvidence(db: Db, caseId: string, userId: string) {
   }
 }
 
-export async function backfillCustomerCases(input: {
-  readonly dryRun: boolean;
-  readonly cursor?: string;
-  readonly batchSize?: number;
-  readonly actor: Actor;
-}) {
-  const take = Math.min(500, Math.max(1, input.batchSize ?? 100));
-  const cursor = decodeCustomerBackfillCursor(input.cursor);
-  const fetched = await prisma.supportRequest.findMany({
-    where: cursor ? { id: { gt: cursor } } : undefined,
-    orderBy: { id: "asc" },
-    take: take + 1,
-  });
-  const hasNextPage = fetched.length > take;
-  const rows = fetched.slice(0, take);
-  const before = await prisma.adminCase.count({ where: { type: { in: ["support_request", "billing_dispute"] } } });
-  const mismatches: Array<{ sourceType: string; sourceId: string; reason: string }> = [];
-  let applied = 0;
-  if (!input.dryRun) {
-    for (const row of rows) {
-      try {
-        await prisma.$transaction((tx) => ensureSupportCaseForRequest(tx, row));
-        applied += 1;
-      } catch (error) {
-        mismatches.push({
-          sourceType: "support_request",
-          sourceId: row.id,
-          reason: error instanceof Error ? error.message : "unknown_error",
-        });
-      }
-    }
-  }
-  return {
-    dryRun: input.dryRun,
-    scanned: rows.length,
-    eligible: rows.length,
-    applied,
-    unavailable: [],
-    mismatches,
-    nextCursor: hasNextPage ? encodeCustomerBackfillCursor(rows.at(-1)?.id) : null,
-    beforeCases: before,
-    afterCases: await prisma.adminCase.count({ where: { type: { in: ["support_request", "billing_dispute"] } } }),
-  };
-}
-
 export async function ensureReviewCaseForReport(db: Db, report: ContentReport) {
   const key = reportCaseKey(report);
   const keyActive = activeKey("content_report", report.targetType, report.targetId, key);
@@ -593,80 +542,46 @@ export async function ensureReviewCaseForAppeal(db: Db, appeal: Appeal) {
   return adminCase;
 }
 
-export async function backfillReviewCases(input: {
-  readonly dryRun: boolean;
-  readonly cursor?: string;
-  readonly batchSize?: number;
-  readonly actor: Actor;
-}) {
-  const take = Math.min(500, Math.max(1, input.batchSize ?? 100));
-  const cursor = decodeBackfillCursor(input.cursor);
-  const [reports, appeals] = await Promise.all([
-    prisma.contentReport.findMany({
-      where: {
-        ...(cursor.reportId ? { id: { gt: cursor.reportId } } : {}),
-      },
-      orderBy: { id: "asc" },
-      take,
-    }),
-    prisma.appeal.findMany({
-      where: {
-        ...(cursor.appealId ? { id: { gt: cursor.appealId } } : {}),
-      },
-      orderBy: { id: "asc" },
-      take,
-    }),
-  ]);
-  const before = await prisma.adminCase.count({ where: { type: { in: ["content_report", "appeal"] } } });
-  const sourceRows = [
-    ...reports.map((row) => ({ type: "content_report" as const, row })),
-    ...appeals.map((row) => ({ type: "appeal" as const, row })),
-  ].sort((left, right) => left.row.id.localeCompare(right.row.id));
-  let applied = 0;
-  const mismatches: Array<{ sourceType: string; sourceId: string; reason: string }> = [];
-  if (!input.dryRun) {
-    for (const source of sourceRows) {
-      try {
-        await prisma.$transaction(async (tx) => {
-          if (source.type === "content_report") {
-            if (ACTIVE_REPORT_STATUSES.includes(source.row.status)) {
-              await ensureReviewCaseForReport(tx, source.row);
-            } else {
-              await importTerminalReviewEvidence(tx, source.type, source.row, input.actor);
-            }
-          } else if (source.row.status === "open") {
-            await ensureReviewCaseForAppeal(tx, source.row);
-          } else {
-            await importTerminalReviewEvidence(tx, source.type, source.row, input.actor);
-          }
-        });
-        applied += 1;
-      } catch (error) {
-        mismatches.push({
-          sourceType: source.type,
-          sourceId: source.row.id,
-          reason: error instanceof Error ? error.message : "unknown_error",
-        });
-      }
-    }
-  }
+export type ReviewCaseBackfillSource =
+  | { readonly type: "content_report"; readonly row: ContentReport }
+  | { readonly type: "appeal"; readonly row: Appeal };
+
+export function transformReviewCaseBackfill(source: ReviewCaseBackfillSource) {
+  const active = source.type === "content_report"
+    ? ACTIVE_REPORT_STATUSES.includes(source.row.status)
+    : source.row.status === "open";
   return {
-    dryRun: input.dryRun,
-    scanned: sourceRows.length,
-    eligible: sourceRows.length,
-    applied,
-    unavailable: [],
-    mismatches,
-    nextCursor:
-      reports.length === take || appeals.length === take
-        ? encodeBackfillCursor({
-            reportId: reports.at(-1)?.id ?? cursor.reportId,
-            appealId: appeals.at(-1)?.id ?? cursor.appealId,
-          })
-        : null,
-    beforeCases: before,
-    afterCases: await prisma.adminCase.count({ where: { type: { in: ["content_report", "appeal"] } } }),
+    classification: "eligible" as const,
+    action: active ? "ensure_active_review_case" as const : "import_terminal_review_evidence" as const,
+    before: {
+      sourceType: source.type,
+      sourceStatus: source.row.status,
+      targetType: source.row.targetType,
+      targetId: source.row.targetId,
+    },
+    after: {
+      caseType: source.type === "content_report" ? "content_report" : "appeal",
+      status: active ? "new" : "closed",
+      active,
+      verificationState: active ? "pending" : "overridden",
+    },
+    mismatches: [] as Array<{ code: string; detail: string }>,
   };
+}
+
+export async function applyReviewCaseBackfill(
+  db: Prisma.TransactionClient,
+  source: ReviewCaseBackfillSource,
+  actor: Actor,
+) {
+  if (source.type === "content_report") {
+    if (ACTIVE_REPORT_STATUSES.includes(source.row.status)) {
+      return ensureReviewCaseForReport(db, source.row);
+    }
+    return importTerminalReviewEvidence(db, source.type, source.row, actor);
+  }
+  if (source.row.status === "open") return ensureReviewCaseForAppeal(db, source.row);
+  return importTerminalReviewEvidence(db, source.type, source.row, actor);
 }
 
 async function importTerminalReviewEvidence(

@@ -1,5 +1,5 @@
 import { adminBackfillRequestSchema } from "@idream/shared/admin";
-import { backfillGenerationIncidents } from "@/server/modules/admin-v2/incidents/service";
+import { backfillGenerationIncidents } from "@/server/modules/admin-v2/backfill/production-runner";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 
