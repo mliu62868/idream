@@ -27,7 +27,6 @@ describe("Creative retry through verified placement", () => {
   const assetId = `creative-asset-${suffix}`;
   let commandId = "";
   let placementId = "";
-  let unsupportedPlacementId = "";
   const request = (path: string, body?: unknown) => {
     const headers: Record<string, string> = {
       "content-type": "application/json",
@@ -126,7 +125,7 @@ describe("Creative retry through verified placement", () => {
   afterAll(async () => {
     await jobQueue.removeByDedupePrefix(`generation:${jobId}:attempt:`, ["ai.image.generate"]);
     await prisma.creativeReviewDecision.deleteMany({ where: { runItemId: itemId } });
-    await prisma.mediaAssetPlacement.deleteMany({ where: { id: { in: [placementId, unsupportedPlacementId].filter(Boolean) } } });
+    await prisma.mediaAssetPlacement.deleteMany({ where: { id: placementId } });
     await prisma.generationDelivery.deleteMany({ where: { requestId: jobId } });
     await prisma.generationArtifact.deleteMany({
       where: { attemptId: { in: (await prisma.generationAttempt.findMany({ where: { requestId: jobId }, select: { id: true } })).map((row) => row.id) } },
@@ -365,7 +364,7 @@ describe("Creative retry through verified placement", () => {
       },
     });
 
-    const unsupportedPlacementResponse = await publishPlacement(
+    const closedPlacementResponse = await publishPlacement(
       request(`/api/v2/admin/creative/runs/${runId}/placements`, {
         entityVersion: 7,
         itemId,
@@ -373,28 +372,15 @@ describe("Creative retry through verified placement", () => {
         slot: "feed_card",
         targetType: "campaign",
         targetId: `campaign-${suffix}`,
-        reason: "Prove a slot without a runtime renderer cannot self-verify",
+        reason: "A closed Run cannot publish another placement",
       }),
       { params: Promise.resolve({ id: runId }) },
     );
-    unsupportedPlacementId = (await unsupportedPlacementResponse.json()).data.placementId;
-    const unsupportedVerification = await verifyPlacement(
-      request(`/api/v2/admin/creative/runs/${runId}/placements/${unsupportedPlacementId}/verification`, {
-        entityVersion: 8,
-        reason: "Runtime resolver is intentionally unavailable for feed_card",
-      }),
-      { params: Promise.resolve({ id: runId, placementId: unsupportedPlacementId }) },
-    );
-    expect((await unsupportedVerification.json()).data).toMatchObject({
-      verificationState: "failed",
-      runVersion: 9,
-      checks: { runtimeSurfaceSupported: false, placementVisibleInRuntime: false },
-    });
-    expect(await prisma.contentProductionBatch.findUniqueOrThrow({ where: { id: runId } })).toMatchObject({
-      lifecycleState: "active",
-      status: "reviewing",
-      verificationState: "failed",
-    });
+    expect(closedPlacementResponse.status).toBe(409);
+    expect(await prisma.mediaAssetPlacement.count({
+      where: { metadata: { path: ["creativeRunId"], equals: runId } },
+    })).toBe(1);
+
     const mutationReceipts = await prisma.controlPlaneCommand.findMany({
       where: {
         actorId: adminId,
@@ -405,12 +391,12 @@ describe("Creative retry through verified placement", () => {
       select: { commandType: true },
     });
     expect(mutationReceipts.filter(({ commandType }) => commandType === "creative.review.decision")).toHaveLength(1);
-    expect(mutationReceipts.filter(({ commandType }) => commandType === "creative.placement.publish")).toHaveLength(2);
-    expect(mutationReceipts.filter(({ commandType }) => commandType === "creative.placement.verify")).toHaveLength(2);
+    expect(mutationReceipts.filter(({ commandType }) => commandType === "creative.placement.publish")).toHaveLength(1);
+    expect(mutationReceipts.filter(({ commandType }) => commandType === "creative.placement.verify")).toHaveLength(1);
 
     const publishedReview = await decideItem(
       request(`/api/v2/admin/creative/runs/${runId}/items/${itemId}/decisions`, {
-        entityVersion: 9,
+        entityVersion: 7,
         decision: "rejected",
         identityConsistency: "failed",
         reason: "A published immutable item cannot be rewritten by a later review",

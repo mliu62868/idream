@@ -200,6 +200,50 @@ export async function recordCreativeReviewDecision(input: {
     if (!asset || asset.deletedAt || asset.safetyStatus !== "passed") {
       throw Errors.badRequest("Only a valid generated asset can be reviewed");
     }
+    const claimedRun = await tx.contentProductionBatch.updateMany({
+      where: {
+        id: run.id,
+        version: run.version,
+        lifecycleState: "active",
+        workflowStage: run.workflowStage,
+        verificationState: run.verificationState,
+      },
+      data: {
+        workflowStage: nextWorkflowStage,
+        verificationState: "pending",
+        status: "reviewing",
+        version: { increment: 1 },
+      },
+    });
+    if (claimedRun.count !== 1) {
+      throw Errors.conflict("Creative Run changed during review", {
+        expectedVersion: run.version,
+      });
+    }
+    const claimedItem = await tx.contentProductionItem.updateMany({
+      where: {
+        id: item.id,
+        batchId: run.id,
+        version: item.version,
+        status: item.status,
+        mediaAssetId: item.mediaAssetId,
+      },
+      data: {
+        mediaAssetId: asset.id,
+        status: input.decision,
+        reviewNote: input.reason.trim(),
+        rating: input.score,
+        reviewedById: input.actor.id,
+        reviewedAt: new Date(),
+        version: { increment: 1 },
+      },
+    });
+    if (claimedItem.count !== 1) {
+      throw Errors.conflict("Creative Run item changed during review", {
+        itemId: item.id,
+        expectedVersion: item.version,
+      });
+    }
     const decision = await tx.creativeReviewDecision.create({
       data: {
         runItemId: item.id,
@@ -211,30 +255,12 @@ export async function recordCreativeReviewDecision(input: {
         reviewerId: input.actor.id,
       },
     });
-    await tx.contentProductionItem.update({
-      where: { id: item.id },
-      data: {
-        mediaAssetId: asset.id,
-        status: input.decision,
-        reviewNote: input.reason.trim(),
-        rating: input.score,
-        reviewedById: input.actor.id,
-        reviewedAt: new Date(),
-        version: { increment: 1 },
-      },
-    });
     const approvedItems = await tx.contentProductionItem.count({
       where: { batchId: run.id, status: { in: ["approved", "published"] } },
     });
     const updatedRun = await tx.contentProductionBatch.update({
-      where: { id: run.id },
-      data: {
-        workflowStage: nextWorkflowStage,
-        verificationState: "pending",
-        status: "reviewing",
-        approvedItems,
-        version: { increment: 1 },
-      },
+      where: { id: run.id, version: run.version + 1 },
+      data: { approvedItems },
     });
     await tx.adminAuditLog.create({
       data: {
@@ -306,8 +332,11 @@ export async function publishDistributionPlacement(input: {
     if (run.version !== input.expectedVersion) {
       throw Errors.conflict("Creative Run changed before placement", { currentVersion: run.version });
     }
-    if (!isCreativeRunLifecycleTransitionAllowed(run.lifecycleState, run.lifecycleState)) {
-      throw Errors.conflict("Creative Run cannot accept placement in its present lifecycle", { lifecycleState: run.lifecycleState });
+    if (
+      run.lifecycleState !== "active" ||
+      !isCreativeRunLifecycleTransitionAllowed(run.lifecycleState, run.lifecycleState)
+    ) {
+      throw Errors.conflict("Creative Run is not active for placement", { lifecycleState: run.lifecycleState });
     }
     if (
       !isCreativeRunWorkflowTransitionAllowed(run.workflowStage, "verification") ||
@@ -345,6 +374,41 @@ export async function publishDistributionPlacement(input: {
       },
       orderBy: [{ publishedAt: "desc" }, { createdAt: "desc" }],
     });
+    const claimedRun = await tx.contentProductionBatch.updateMany({
+      where: {
+        id: run.id,
+        version: run.version,
+        lifecycleState: "active",
+        workflowStage: run.workflowStage,
+        verificationState: run.verificationState,
+      },
+      data: {
+        workflowStage: "verification",
+        verificationState: "verifying",
+        version: { increment: 1 },
+      },
+    });
+    if (claimedRun.count !== 1) {
+      throw Errors.conflict("Creative Run changed during placement", {
+        expectedVersion: run.version,
+      });
+    }
+    const claimedItem = await tx.contentProductionItem.updateMany({
+      where: {
+        id: item.id,
+        batchId: run.id,
+        version: item.version,
+        status: item.status,
+        mediaAssetId: input.assetId,
+      },
+      data: { status: "published", version: { increment: 1 } },
+    });
+    if (claimedItem.count !== 1) {
+      throw Errors.conflict("Creative Run item changed during placement", {
+        itemId: item.id,
+        expectedVersion: item.version,
+      });
+    }
     if (rollbackTarget) {
       await tx.mediaAssetPlacement.update({
         where: { id: rollbackTarget.id },
@@ -371,17 +435,8 @@ export async function publishDistributionPlacement(input: {
         data: { visibility: "unlisted" },
       });
     }
-    await tx.contentProductionItem.update({
-      where: { id: item.id },
-      data: { status: "published", version: { increment: 1 } },
-    });
-    const updatedRun = await tx.contentProductionBatch.update({
+    const updatedRun = await tx.contentProductionBatch.findUniqueOrThrow({
       where: { id: run.id },
-      data: {
-        workflowStage: "verification",
-        verificationState: "verifying",
-        version: { increment: 1 },
-      },
     });
     await tx.adminAuditLog.create({
       data: {
