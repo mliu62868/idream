@@ -273,7 +273,7 @@ export async function dispatchPendingProductEvents(batch = 100): Promise<{ deliv
     if (!event) continue;
     const context = jsonRecord(event.context);
     try {
-      await projectCanonicalMetricEvent(prisma, {
+      const metricProjection = await projectCanonicalMetricEvent(prisma, {
         id: event.id,
         sourceService: event.sourceService,
         sourceEventId: event.sourceEventId ?? event.id,
@@ -288,6 +288,9 @@ export async function dispatchPendingProductEvents(batch = 100): Promise<{ deliv
         context: event.context,
         props: event.props,
       });
+      if (metricProjection.status === "deferred") {
+        throw new Error(`Metric projection deferred: ${metricProjection.reason}`);
+      }
       await applyChatEvent({
         eventId: event.sourceEventId ?? event.id,
         eventType: event.name,

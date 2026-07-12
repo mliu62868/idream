@@ -48,7 +48,7 @@ function syntheticEvent(input: {
 }): MetricProductEvent {
   return {
     id: input.sourceEventId,
-    sourceService: "main-authority",
+    sourceService: "main",
     sourceEventId: input.sourceEventId,
     name: input.eventType,
     schemaVersion: 2,

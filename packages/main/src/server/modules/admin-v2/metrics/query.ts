@@ -18,6 +18,7 @@ import { evaluateCanonicalMetrics, type CanonicalMetricDataset, utcCalendarWeekS
 import { loadCanonicalMetricDataset, reconcileCanonicalMetricFacts } from "./projector";
 
 const FRESHNESS_SLO_MS = 60 * 60 * 1_000;
+const OUTCOME_COMPLETENESS_WINDOW_MS = 30 * 24 * 60 * 60 * 1_000;
 const CANONICAL_DEFINITIONS = ADMIN_METRIC_REGISTRY.filter((definition) =>
   !definition.key.startsWith("legacy.") && definition.key !== "flag_monitoring.exposure",
 );
@@ -91,9 +92,57 @@ function validSnapshotData(snapshot: {
     && (snapshot.numeratorValue === null || snapshot.denominatorValue === null || snapshot.numeratorValue <= snapshot.denominatorValue);
 }
 
+interface MetricQualityCheckRow {
+  readonly checkKey: string;
+  readonly status: string;
+  readonly metricKeys: unknown;
+  readonly checkedAt: Date;
+  readonly evidence?: unknown;
+}
+
+const QUALITY_CHECK_STATUS_PRIORITY: Readonly<Record<string, number>> = {
+  passed: 0,
+  unavailable: 1,
+  rechecking: 2,
+  failed: 3,
+};
+
+function sourceEventIdFromQualityEvidence(evidence: unknown): string | null {
+  if (evidence === null || typeof evidence !== "object" || Array.isArray(evidence)) return null;
+  const sourceEventId = (evidence as Record<string, unknown>).sourceEventId;
+  return typeof sourceEventId === "string" ? sourceEventId : null;
+}
+
+export function selectQualityChecksForMetric<T extends MetricQualityCheckRow>(
+  rows: readonly T[],
+  metricKey: string,
+): Map<string, T> {
+  const relevant = rows.filter((row) => Array.isArray(row.metricKeys) && row.metricKeys.includes(metricKey));
+  const latestAggregate = new Map<string, T>();
+  for (const row of relevant) {
+    if (sourceEventIdFromQualityEvidence(row.evidence)) continue;
+    const current = latestAggregate.get(row.checkKey);
+    if (!current || row.checkedAt > current.checkedAt) latestAggregate.set(row.checkKey, row);
+  }
+  const selected = new Map<string, T>();
+  for (const row of relevant) {
+    if (!sourceEventIdFromQualityEvidence(row.evidence) && latestAggregate.get(row.checkKey) !== row) continue;
+    const current = selected.get(row.checkKey);
+    const rowPriority = QUALITY_CHECK_STATUS_PRIORITY[row.status] ?? 2;
+    const currentPriority = current ? QUALITY_CHECK_STATUS_PRIORITY[current.status] ?? 2 : -1;
+    if (!current || rowPriority > currentPriority || (
+      rowPriority === currentPriority && row.checkedAt > current.checkedAt
+    )) {
+      selected.set(row.checkKey, row);
+    }
+  }
+  return selected;
+}
+
 async function qualityReport(db: PrismaClient, asOf: Date) {
+  const completenessWindowStart = new Date(asOf.getTime() - OUTCOME_COMPLETENESS_WINDOW_MS);
   const [report, eligibleSignups, eligibleExchanges, eligibleDeliveries, eligibleSubscriptions] = await Promise.all([
-    reconcileCanonicalMetricFacts(db, { asOf }),
+    reconcileCanonicalMetricFacts(db, { asOf, windowStart: completenessWindowStart }),
     db.customerSignupFact.count({ where: { eligible: true, occurredAt: { lte: asOf } } }),
     db.chatExchangeFact.count({ where: { eligible: true, occurredAt: { lte: asOf } } }),
     db.generationFulfillmentFact.count({ where: { eligible: true, occurredAt: { lte: asOf } } }),
@@ -108,6 +157,7 @@ async function qualityReport(db: PrismaClient, asOf: Date) {
     asOf: asOf.toISOString(),
     freshnessSloMs: FRESHNESS_SLO_MS,
     checks: [
+      { key: "server_outcome_completeness", status: report.incompleteOutcomeCount === 0 ? "passed" : "failed", observed: report.incompleteOutcomeCount, threshold: "= 0" },
       { key: "duplicate_effect", status: report.duplicateEffectCount === 0 ? "passed" : "failed", observed: report.duplicateEffectCount, threshold: "= 0" },
       { key: "impossible_state", status: report.impossibleStateCount === 0 ? "passed" : "failed", observed: report.impossibleStateCount, threshold: "= 0" },
       { key: "fixture_internal_leakage", status: report.fixtureInternalLeakageCount === 0 ? "passed" : "failed", observed: report.fixtureInternalLeakageCount, threshold: "= 0" },
@@ -131,12 +181,31 @@ async function buildCards(input: {
 }): Promise<MetricCard[]> {
   const evaluation = evaluateCanonicalMetrics(input.dataset, input.asOf);
   const metricKeys = Object.keys(evaluation.metrics);
+  const maxQualityCheckAgeMs = Math.max(
+    ...metricKeys.map((key) => (DEFINITION_BY_KEY.get(key)?.freshnessSlo.maxAgeSeconds ?? 0) * 1_000),
+  );
+  const completenessWindowStart = new Date(input.asOf.getTime() - OUTCOME_COMPLETENESS_WINDOW_MS);
+  const nonCompletenessChecks = REQUIRED_METRIC_QUALITY_CHECKS.filter(
+    (checkKey) => checkKey !== "metrics.server_outcome_completeness",
+  );
   const [definitionSnapshots, qualityChecks, metricSnapshots] = await Promise.all([
     input.db.metricDefinitionSnapshot.findMany({
       where: { OR: metricKeys.map((key) => ({ key, version: DEFINITION_BY_KEY.get(key)?.version ?? 1 })) },
     }),
     input.db.dataQualityCheck.findMany({
-      where: { checkKey: { in: [...REQUIRED_METRIC_QUALITY_CHECKS] }, checkedAt: { lte: input.asOf } },
+      where: {
+        checkedAt: { lte: input.asOf },
+        OR: [
+          {
+            checkKey: "metrics.server_outcome_completeness",
+            windowEnd: { gte: completenessWindowStart },
+          },
+          {
+            checkKey: { in: nonCompletenessChecks },
+            checkedAt: { gte: new Date(input.asOf.getTime() - maxQualityCheckAgeMs) },
+          },
+        ],
+      },
       orderBy: { checkedAt: "desc" },
     }),
     input.db.metricSnapshot.findMany({
@@ -157,13 +226,7 @@ async function buildCards(input: {
     const identity = `${definition.key}@${definition.version}`;
     const definitionSnapshot = definitionSnapshotByKey.get(identity);
     const snapshot = latestMetricSnapshot.get(identity);
-    const metricQualityChecks = new Map<string, (typeof qualityChecks)[number]>();
-    for (const check of qualityChecks) {
-      if (metricQualityChecks.has(check.checkKey)) continue;
-      if (Array.isArray(check.metricKeys) && check.metricKeys.includes(definition.key)) {
-        metricQualityChecks.set(check.checkKey, check);
-      }
-    }
+    const metricQualityChecks = selectQualityChecksForMetric(qualityChecks, definition.key);
     const certification = evaluateMetricCertification({
       definition,
       asOf: input.asOf,
@@ -280,17 +343,34 @@ export async function materializeMetricSnapshots(db: PrismaClient, asOf = new Da
   const dataset = filterDatasetFrom(rawDataset, factsValidFrom());
   const quality = await qualityReport(db, asOf);
   const qualityWindowStart = factsValidFrom();
+  const completenessWindowStart = new Date(asOf.getTime() - OUTCOME_COMPLETENESS_WINDOW_MS);
+  const quarantinedOutcomeTypes = await db.metricProjectionReceipt.findMany({
+    where: {
+      outcome: "quarantined",
+      occurredAt: { gte: completenessWindowStart, lte: asOf },
+    },
+    select: { eventType: true },
+    distinct: ["eventType"],
+  });
+  const quarantinedEventTypes = new Set(quarantinedOutcomeTypes.map((row) => row.eventType));
+  const affectedCompletenessMetrics = CANONICAL_DEFINITIONS
+    .filter((definition) => definition.sourceEvents.some((eventType) => quarantinedEventTypes.has(eventType)))
+    .map((definition) => definition.key);
   await db.$transaction(async (tx) => {
     for (const check of quality.checks) {
       await tx.dataQualityCheck.create({
         data: {
           checkKey: `metrics.${check.key}`,
           status: check.status,
-          metricKeys: CANONICAL_DEFINITIONS.map((definition) => definition.key),
+          metricKeys: check.key === "server_outcome_completeness" && check.status !== "passed"
+            ? affectedCompletenessMetrics
+            : CANONICAL_DEFINITIONS.map((definition) => definition.key),
           observed: toInputJson({ value: check.observed }),
           threshold: toInputJson({ expression: check.threshold }),
           evidence: toInputJson({ asOf: asOf.toISOString(), observed: check.observed, threshold: check.threshold }),
-          windowStart: qualityWindowStart,
+          windowStart: check.key === "server_outcome_completeness"
+            ? completenessWindowStart
+            : qualityWindowStart,
           windowEnd: asOf,
           checkedAt: asOf,
         },

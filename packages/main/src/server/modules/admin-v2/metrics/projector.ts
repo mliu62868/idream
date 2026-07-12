@@ -11,6 +11,7 @@ import {
   subscriptionEndedV2Schema,
 } from "@idream/shared/contracts";
 import { incrementCounter, observeHistogram } from "@idream/shared";
+import { ADMIN_METRIC_REGISTRY } from "@idream/shared/admin";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { CanonicalMetricDataset } from "./engine";
 import { toInputJson } from "../shared/prisma-json";
@@ -34,6 +35,8 @@ export interface MetricProductEvent {
 
 export type MetricProjectionResult =
   | { readonly status: "applied" | "duplicate"; readonly factType: string; readonly factId: string | null }
+  | { readonly status: "deferred"; readonly reason: string }
+  | { readonly status: "quarantined"; readonly reason: string }
   | { readonly status: "skipped"; readonly reason: string };
 
 type Transaction = Prisma.TransactionClient;
@@ -57,6 +60,135 @@ function isEligibleServerOutcome(event: MetricProductEvent): boolean {
     event.dataClass === "customer" &&
     event.trustClass === "canonical" &&
     !actorIsInternal(event);
+}
+
+const MAX_SOURCE_CLOCK_SKEW_MS = 5 * 60 * 1_000;
+
+interface MetricPayloadSchema {
+  safeParse(value: unknown): { readonly success: boolean };
+}
+
+interface MetricEventDescriptor {
+  readonly schema: MetricPayloadSchema;
+  readonly serverOutcome: boolean;
+  readonly allowedSources?: ReadonlySet<string>;
+}
+
+const METRIC_EVENT_DESCRIPTORS = new Map<string, MetricEventDescriptor>([
+  [METRIC_PRODUCT_EVENTS.chatExchangeCompleted, { schema: chatExchangeCompletedV2Schema, serverOutcome: true, allowedSources: new Set(["chat"]) }],
+  [METRIC_PRODUCT_EVENTS.chatExchangeCorrected, { schema: chatExchangeCorrectionV2Schema, serverOutcome: true, allowedSources: new Set(["chat"]) }],
+  [METRIC_PRODUCT_EVENTS.customerSignupCompleted, { schema: customerSignupCompletedV2Schema, serverOutcome: true, allowedSources: new Set(["main"]) }],
+  [METRIC_PRODUCT_EVENTS.subscriptionActivated, { schema: subscriptionActivatedV2Schema, serverOutcome: true, allowedSources: new Set(["main"]) }],
+  [METRIC_PRODUCT_EVENTS.subscriptionEnded, { schema: subscriptionEndedV2Schema, serverOutcome: true, allowedSources: new Set(["main"]) }],
+  [METRIC_PRODUCT_EVENTS.generationDeliveryCompleted, { schema: generationDeliveryCompletedV2Schema, serverOutcome: true, allowedSources: new Set(["main", "gen"]) }],
+  [METRIC_PRODUCT_EVENTS.aiUsageRecorded, { schema: aiUsageRecordedV2Schema, serverOutcome: true, allowedSources: new Set(["main", "gen"]) }],
+  [METRIC_PRODUCT_EVENTS.experimentExposed, { schema: experimentExposedV2Schema, serverOutcome: false }],
+  [METRIC_PRODUCT_EVENTS.characterExposureRecorded, { schema: characterExposureRecordedV2Schema, serverOutcome: false }],
+]);
+
+function hasOwn(recordValue: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(recordValue, key);
+}
+
+function hasInvalidOutcomePayload(event: MetricProductEvent): boolean {
+  const descriptor = METRIC_EVENT_DESCRIPTORS.get(event.name);
+  if (!descriptor) return false;
+  if (!descriptor.schema.safeParse(event.props).success) return true;
+  if (event.name !== METRIC_PRODUCT_EVENTS.generationDeliveryCompleted) return false;
+  const payload = record(event.props);
+  return !hasOwn(payload, "expectedOutputCount") ||
+    !hasOwn(payload, "deliveredOutputCount") ||
+    (
+      typeof payload.expectedOutputCount === "number" &&
+      typeof payload.deliveredOutputCount === "number" &&
+      payload.deliveredOutputCount > payload.expectedOutputCount
+    );
+}
+
+function hasValidSourceIdentity(event: MetricProductEvent): boolean {
+  const allowedSources = METRIC_EVENT_DESCRIPTORS.get(event.name)?.allowedSources;
+  if (!allowedSources) return true;
+  if (
+    event.id.length === 0 ||
+    event.sourceEventId.length === 0 ||
+    !allowedSources.has(event.sourceService)
+  ) {
+    return false;
+  }
+  const payloadUserId = record(event.props).userId;
+  if (typeof payloadUserId !== "string") return true;
+  return record(event.actor).userId === payloadUserId;
+}
+
+function isServerOutcomeEventType(eventType: string): boolean {
+  return METRIC_EVENT_DESCRIPTORS.get(eventType)?.serverOutcome === true;
+}
+
+function hasValidOutcomeTimeWindow(event: MetricProductEvent): boolean {
+  const occurredAt = event.occurredAt.getTime();
+  const ingestedAt = event.ingestedAt.getTime();
+  return Number.isFinite(occurredAt) &&
+    Number.isFinite(ingestedAt) &&
+    occurredAt <= ingestedAt + MAX_SOURCE_CLOCK_SKEW_MS;
+}
+
+function affectedMetricKeys(eventType: string): string[] {
+  return ADMIN_METRIC_REGISTRY
+    .filter((definition) => definition.sourceEvents.includes(eventType))
+    .map((definition) => definition.key);
+}
+
+async function hasAuthoritativeGenerationFulfillment(
+  tx: Transaction,
+  payload: {
+    readonly requestId: string;
+    readonly artifactId: string;
+    readonly userId: string;
+    readonly expectedOutputCount: number;
+    readonly deliveredOutputCount: number;
+  },
+): Promise<boolean> {
+  const [request, attempts, deliveries] = await Promise.all([
+    tx.generationJob.findUnique({
+      where: { id: payload.requestId },
+      select: { userId: true, outputCount: true, deliveredOutputCount: true, status: true },
+    }),
+    tx.generationAttempt.findMany({
+      where: { requestId: payload.requestId, status: "succeeded" },
+      select: { id: true },
+    }),
+    tx.generationDelivery.findMany({
+      where: {
+        requestId: payload.requestId,
+        status: "delivered",
+        targetType: "user_library",
+        targetId: payload.userId,
+        deliveredAt: { not: null },
+      },
+      select: { artifactId: true },
+    }),
+  ]);
+  if (!request ||
+    request.userId !== payload.userId ||
+    request.status !== "completed" ||
+    request.outputCount !== payload.expectedOutputCount ||
+    request.deliveredOutputCount !== payload.deliveredOutputCount ||
+    deliveries.length !== payload.deliveredOutputCount ||
+    attempts.length === 0
+  ) {
+    return false;
+  }
+  const artifacts = await tx.generationArtifact.findMany({
+    where: {
+      id: { in: deliveries.map((delivery) => delivery.artifactId) },
+      attemptId: { in: attempts.map((attempt) => attempt.id) },
+      validationState: "valid",
+      archiveState: "active",
+    },
+    select: { id: true, assetId: true },
+  });
+  return artifacts.length === payload.deliveredOutputCount &&
+    artifacts.some((artifact) => artifact.assetId === payload.artifactId);
 }
 
 function utcProductDay(date: Date): Date {
@@ -110,6 +242,22 @@ async function refreshCompanionDaily(
 async function applyEvent(tx: Transaction, event: MetricProductEvent): Promise<MetricProjectionResult> {
   if (event.name === "chat.message.completed") {
     return { status: "skipped", reason: "legacy_untyped" };
+  }
+  const descriptor = METRIC_EVENT_DESCRIPTORS.get(event.name);
+  if (descriptor && event.schemaVersion !== 2) {
+    return { status: "quarantined", reason: "unsupported_schema_version" };
+  }
+  if (descriptor?.serverOutcome && !isEligibleServerOutcome(event)) {
+    return { status: "skipped", reason: "ineligible_data" };
+  }
+  if (hasInvalidOutcomePayload(event)) {
+    return { status: "quarantined", reason: "incomplete_outcome_payload" };
+  }
+  if (!hasValidSourceIdentity(event)) {
+    return { status: "quarantined", reason: "invalid_source_identity" };
+  }
+  if (descriptor?.serverOutcome && !hasValidOutcomeTimeWindow(event)) {
+    return { status: "quarantined", reason: "invalid_outcome_time_window" };
   }
   if (event.name === METRIC_PRODUCT_EVENTS.experimentExposed) {
     const payload = experimentExposedV2Schema.parse(event.props);
@@ -316,7 +464,7 @@ async function applyEvent(tx: Transaction, event: MetricProductEvent): Promise<M
   if (event.name === METRIC_PRODUCT_EVENTS.chatExchangeCorrected) {
     const payload = chatExchangeCorrectionV2Schema.parse(event.props);
     const existing = await tx.chatExchangeFact.findUnique({ where: { exchangeId: payload.exchangeId } });
-    if (!existing) return { status: "skipped", reason: "missing_exchange" };
+    if (!existing) return { status: "deferred", reason: "awaiting_required_fact" };
     if (payload.correctionRevision > existing.correctionRevision) {
       await tx.chatExchangeFact.update({
         where: { id: existing.id },
@@ -419,7 +567,7 @@ async function applyEvent(tx: Transaction, event: MetricProductEvent): Promise<M
   if (event.name === METRIC_PRODUCT_EVENTS.subscriptionEnded) {
     const payload = subscriptionEndedV2Schema.parse(event.props);
     const existing = await tx.subscriptionLifecycleFact.findUnique({ where: { subscriptionId: payload.subscriptionId } });
-    if (!existing) return { status: "skipped", reason: "missing_subscription_activation" };
+    if (!existing) return { status: "deferred", reason: "awaiting_required_fact" };
     const fact = await tx.subscriptionLifecycleFact.update({
       where: { id: existing.id },
       data: {
@@ -432,6 +580,9 @@ async function applyEvent(tx: Transaction, event: MetricProductEvent): Promise<M
   }
   if (event.name === METRIC_PRODUCT_EVENTS.generationDeliveryCompleted) {
     const payload = generationDeliveryCompletedV2Schema.parse(event.props);
+    if (!await hasAuthoritativeGenerationFulfillment(tx, payload)) {
+      return { status: "quarantined", reason: "missing_required_fact" };
+    }
     const validDelivery = payload.valid && payload.displayable && payload.deliveredOutputCount > 0;
     const fact = await tx.generationFulfillmentFact.upsert({
       where: { requestId: payload.requestId },
@@ -508,6 +659,9 @@ function receiptResult(receipt: {
   factId: string | null;
   reason: string | null;
 }): MetricProjectionResult {
+  if (receipt.outcome === "quarantined") {
+    return { status: "quarantined", reason: receipt.reason ?? "incomplete_outcome" };
+  }
   if (receipt.outcome === "skipped") return { status: "skipped", reason: receipt.reason ?? "unsupported_event" };
   return { status: "duplicate", factType: receipt.factType ?? "unknown", factId: receipt.factId };
 }
@@ -532,6 +686,48 @@ export async function projectCanonicalMetricEvent(
       });
       if (concurrent) return receiptResult(concurrent);
       const result = await applyEvent(tx, event);
+      if (result.status === "deferred") return result;
+      if (result.status === "quarantined" && isServerOutcomeEventType(event.name)) {
+        const windowStart = event.occurredAt <= event.ingestedAt ? event.occurredAt : event.ingestedAt;
+        const windowEnd = event.occurredAt <= event.ingestedAt ? event.ingestedAt : event.occurredAt;
+        await tx.dataQualityCheck.create({
+          data: {
+            checkKey: "metrics.server_outcome_completeness",
+            status: "failed",
+            metricKeys: affectedMetricKeys(event.name),
+            observed: toInputJson({ quarantinedOutcomeCount: 1, reason: result.reason }),
+            threshold: toInputJson({ expression: "= 0" }),
+            evidence: toInputJson({
+              canonicalEventId: event.id,
+              sourceService: event.sourceService,
+              sourceEventId: event.sourceEventId,
+              eventType: event.name,
+              schemaVersion: event.schemaVersion,
+              occurredAt: event.occurredAt.toISOString(),
+              ingestedAt: event.ingestedAt.toISOString(),
+            }),
+            windowStart,
+            windowEnd,
+          },
+        });
+      }
+      if (result.status === "applied" && isServerOutcomeEventType(event.name)) {
+        await tx.dataQualityCheck.updateMany({
+          where: {
+            checkKey: "metrics.server_outcome_completeness",
+            status: "rechecking",
+            AND: [
+              { evidence: { path: ["sourceService"], equals: event.sourceService } },
+              { evidence: { path: ["sourceEventId"], equals: event.sourceEventId } },
+            ],
+          },
+          data: {
+            status: "passed",
+            observed: toInputJson({ quarantinedOutcomeCount: 0, resolved: true }),
+            checkedAt: new Date(),
+          },
+        });
+      }
       await tx.metricProjectionReceipt.create({
         data: {
           sourceService: event.sourceService,
@@ -575,6 +771,56 @@ export async function projectCanonicalMetricEvent(
   }
 }
 
+export type MetricQuarantineRequeueResult =
+  | { readonly status: "requeued"; readonly outboxCount: number }
+  | { readonly status: "not_found" | "not_quarantined"; readonly outboxCount: 0 };
+
+export async function requeueQuarantinedMetricEvent(
+  db: PrismaClient,
+  key: { readonly sourceService: string; readonly sourceEventId: string },
+): Promise<MetricQuarantineRequeueResult> {
+  return db.$transaction(async (tx) => {
+    const where = { sourceService_sourceEventId: key } as const;
+    const receipt = await tx.metricProjectionReceipt.findUnique({ where });
+    if (!receipt) return { status: "not_found", outboxCount: 0 };
+    if (receipt.outcome !== "quarantined") return { status: "not_quarantined", outboxCount: 0 };
+    const canonical = await tx.analyticsEvent.findUnique({ where });
+    if (!canonical || canonical.id !== receipt.canonicalEventId) {
+      return { status: "not_found", outboxCount: 0 };
+    }
+    const outboxWhere = {
+      eventType: "product.event.persisted.v2",
+      aggregateType: "product_event",
+      aggregateId: canonical.id,
+    } as const;
+    const outboxCount = await tx.mainOutboxEvent.count({ where: outboxWhere });
+    if (outboxCount === 0) return { status: "not_found", outboxCount: 0 };
+    await tx.metricProjectionReceipt.delete({ where });
+    await tx.dataQualityCheck.updateMany({
+      where: {
+        checkKey: "metrics.server_outcome_completeness",
+        status: "failed",
+        AND: [
+          { evidence: { path: ["sourceService"], equals: key.sourceService } },
+          { evidence: { path: ["sourceEventId"], equals: key.sourceEventId } },
+        ],
+      },
+      data: { status: "rechecking", checkedAt: new Date() },
+    });
+    const outbox = await tx.mainOutboxEvent.updateMany({
+      where: outboxWhere,
+      data: {
+        status: "pending",
+        attempts: 0,
+        nextRunAt: new Date(),
+        deliveredAt: null,
+        lastError: Prisma.DbNull,
+      },
+    });
+    return { status: "requeued", outboxCount: outbox.count };
+  });
+}
+
 export async function loadCanonicalMetricDataset(
   db: PrismaClient,
   options: { readonly userIds?: readonly string[] } = {},
@@ -614,6 +860,7 @@ export async function loadCanonicalMetricDataset(
 
 export interface MetricReconciliationReport {
   readonly asOf: Date;
+  readonly incompleteOutcomeCount: number;
   readonly duplicateEffectCount: number;
   readonly impossibleStateCount: number;
   readonly fixtureInternalLeakageCount: number;
@@ -639,11 +886,18 @@ function percentile95(values: readonly number[]): number | null {
 
 export async function reconcileCanonicalMetricFacts(
   db: PrismaClient,
-  options: { readonly sourceEventPrefix?: string; readonly asOf?: Date } = {},
+  options: { readonly sourceEventPrefix?: string; readonly windowStart?: Date; readonly asOf?: Date } = {},
 ): Promise<MetricReconciliationReport> {
   const sourceWhere = options.sourceEventPrefix ? { sourceEventId: { startsWith: options.sourceEventPrefix } } : {};
+  const receiptWhere = {
+    ...sourceWhere,
+    occurredAt: {
+      ...(options.windowStart ? { gte: options.windowStart } : {}),
+      ...(options.asOf ? { lte: options.asOf } : {}),
+    },
+  };
   const [receipts, signups, exchanges, deliveries, subscriptions] = await Promise.all([
-    db.metricProjectionReceipt.findMany({ where: sourceWhere }),
+    db.metricProjectionReceipt.findMany({ where: receiptWhere }),
     db.customerSignupFact.findMany({ where: sourceWhere }),
     db.chatExchangeFact.findMany({ where: sourceWhere }),
     db.generationFulfillmentFact.findMany({ where: sourceWhere }),
@@ -654,6 +908,9 @@ export async function reconcileCanonicalMetricFacts(
     }),
   ]);
   const facts = [...signups, ...exchanges, ...deliveries, ...subscriptions];
+  const incompleteOutcomeCount = receipts.filter((row) =>
+    row.outcome === "quarantined" && isServerOutcomeEventType(row.eventType),
+  ).length;
   const userIds = [...new Set(facts.map((row) => row.userId))];
   const characterIds = [...new Set([
     ...exchanges.map((row) => row.characterId),
@@ -692,6 +949,7 @@ export async function reconcileCanonicalMetricFacts(
   const eventLagP95Ms = percentile95(receipts.map((row) => Math.max(0, row.processedAt.getTime() - row.occurredAt.getTime())));
   return {
     asOf: options.asOf ?? new Date(),
+    incompleteOutcomeCount,
     duplicateEffectCount,
     impossibleStateCount,
     fixtureInternalLeakageCount,
@@ -702,7 +960,7 @@ export async function reconcileCanonicalMetricFacts(
     releaseJoinCoverage,
     eventLagP95Ms,
     scannedFactCount: facts.length,
-    qualityState: duplicateEffectCount === 0 && impossibleStateCount === 0 && fixtureInternalLeakageCount === 0 && joinCoverage >= 0.99
+    qualityState: incompleteOutcomeCount === 0 && duplicateEffectCount === 0 && impossibleStateCount === 0 && fixtureInternalLeakageCount === 0 && joinCoverage >= 0.99
       ? "certified"
       : "invalid",
   };

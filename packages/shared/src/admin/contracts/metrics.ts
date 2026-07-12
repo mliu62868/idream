@@ -100,6 +100,7 @@ export const metricCardSchema = z
 export const metricQualityReportSchema = z.object({
   asOf: adminIsoDateTimeSchema,
   qualityState: z.enum(["certified", "invalid"]),
+  incompleteOutcomeCount: z.number().int().nonnegative(),
   duplicateEffectCount: z.number().int().nonnegative(),
   impossibleStateCount: z.number().int().nonnegative(),
   fixtureInternalLeakageCount: z.number().int().nonnegative(),

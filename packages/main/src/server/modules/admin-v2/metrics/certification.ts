@@ -1,6 +1,7 @@
 import type { MetricDefinition } from "@idream/shared/admin";
 
 export const REQUIRED_METRIC_QUALITY_CHECKS = [
+  "metrics.server_outcome_completeness",
   "metrics.duplicate_effect",
   "metrics.impossible_state",
   "metrics.fixture_internal_leakage",

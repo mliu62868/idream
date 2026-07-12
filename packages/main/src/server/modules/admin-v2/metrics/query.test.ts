@@ -7,7 +7,9 @@ import {
   getMetricDashboard,
   getMetricQualityReport,
   getMetricReconciliationReport,
+  materializeMetricSnapshots,
   publishMetricRegistrySnapshots,
+  selectQualityChecksForMetric,
 } from "./query";
 
 describe("Admin v2 canonical metrics query", () => {
@@ -53,6 +55,55 @@ describe("Admin v2 canonical metrics query", () => {
       headers: { "x-idream-user-id": analystId, "x-idream-role": "analyst" },
     } : undefined);
   }
+
+  it("keeps a metric blocked while any quarantine in the quality window remains unresolved", () => {
+    const metricKey = "activation.generation_7d";
+    const checks = selectQualityChecksForMetric([
+      {
+        checkKey: "metrics.server_outcome_completeness",
+        status: "failed",
+        metricKeys: [metricKey],
+        checkedAt: new Date("2026-07-11T12:00:00Z"),
+        evidence: { sourceEventId: "still-unresolved" },
+        source: "still-unresolved",
+      },
+      {
+        checkKey: "metrics.server_outcome_completeness",
+        status: "passed",
+        metricKeys: [metricKey],
+        checkedAt: new Date("2026-07-11T12:05:00Z"),
+        evidence: { sourceEventId: "resolved" },
+        source: "newer-but-only-one-resolved",
+      },
+    ], metricKey);
+
+    expect(checks.get("metrics.server_outcome_completeness")).toMatchObject({
+      status: "failed",
+      source: "still-unresolved",
+    });
+  });
+
+  it("lets a newer materialized passed state supersede an older aggregate failure", () => {
+    const metricKey = "activation.generation_7d";
+    const checks = selectQualityChecksForMetric([
+      {
+        checkKey: "metrics.server_outcome_completeness",
+        status: "failed",
+        metricKeys: [metricKey],
+        checkedAt: new Date("2026-07-11T12:00:00Z"),
+        evidence: { asOf: "2026-07-11T12:00:00.000Z" },
+      },
+      {
+        checkKey: "metrics.server_outcome_completeness",
+        status: "passed",
+        metricKeys: [metricKey],
+        checkedAt: new Date("2026-07-11T12:10:00Z"),
+        evidence: { asOf: "2026-07-11T12:10:00.000Z" },
+      },
+    ], metricKey);
+
+    expect(checks.get("metrics.server_outcome_completeness")).toMatchObject({ status: "passed" });
+  });
 
   it("fails closed when facts exist but no persisted certification authority exists", async () => {
     const response = await getMetricDashboard(request("/api/v2/admin/metrics?asOf=2026-08-20T00:00:00.000Z"));
@@ -119,5 +170,48 @@ describe("Admin v2 canonical metrics query", () => {
     expect(metricReconciliationReportSchema.parse(reconciliationBody.data)).toMatchObject({
       quality: { duplicateEffectCount: 0, impossibleStateCount: 0 },
     });
+  });
+
+  it("reports quarantined authoritative outcomes as an unavailable completeness gate", async () => {
+    await projectCanonicalMetricEvent(prisma, {
+      id: `${prefix}-canonical-unknown-schema`,
+      sourceService: "main",
+      sourceEventId: `${prefix}-unknown-schema`,
+      name: "customer.signup.completed.v2",
+      schemaVersion: 99,
+      occurredAt: new Date("2026-07-12T00:00:00Z"),
+      ingestedAt: new Date("2026-07-12T00:00:01Z"),
+      environment: "production",
+      dataClass: "customer",
+      trustClass: "canonical",
+      actor: { userId: customerId, isInternal: false },
+      context: {},
+      props: { userId: customerId },
+    });
+
+    const beforeResponse = await getMetricQualityReport(request("/api/v2/admin/metrics/quality?asOf=2026-07-01T00:00:00.000Z"));
+    const beforeBody = await beforeResponse.json();
+    expect(metricQualityReportSchema.parse(beforeBody.data).incompleteOutcomeCount).toBe(0);
+
+    const response = await getMetricQualityReport(request("/api/v2/admin/metrics/quality?asOf=2026-08-01T00:00:00.000Z"));
+    const body = await response.json();
+    const quality = metricQualityReportSchema.parse(body.data);
+    expect(quality).toMatchObject({ qualityState: "invalid", incompleteOutcomeCount: 1 });
+    expect(quality.checks).toContainEqual({
+      key: "server_outcome_completeness",
+      status: "failed",
+      observed: 1,
+      threshold: "= 0",
+    });
+
+    await materializeMetricSnapshots(prisma, new Date("2026-08-01T00:00:00.000Z"));
+    const completeness = await prisma.dataQualityCheck.findFirstOrThrow({
+      where: { checkKey: "metrics.server_outcome_completeness", checkedAt: new Date("2026-08-01T00:00:00.000Z") },
+    });
+    expect(completeness).toMatchObject({
+      status: "failed",
+      metricKeys: expect.arrayContaining(["activation.chat_24h"]),
+    });
+    expect(completeness.metricKeys).not.toContain("north_star.wscu");
   });
 });

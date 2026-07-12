@@ -20,9 +20,30 @@ describe("canonical metric fact projector", () => {
   });
 
   afterAll(async () => {
+    const qualityChecks = await prisma.dataQualityCheck.findMany({
+      where: { checkKey: "metrics.server_outcome_completeness" },
+      select: { id: true, evidence: true },
+    });
+    await prisma.dataQualityCheck.deleteMany({
+      where: {
+        id: {
+          in: qualityChecks.flatMap((check) => {
+            const evidence = check.evidence;
+            if (evidence === null || typeof evidence !== "object" || Array.isArray(evidence)) return [];
+            const sourceEventId = (evidence as Record<string, unknown>).sourceEventId;
+            return typeof sourceEventId === "string" && sourceEventId.startsWith(prefix) ? [check.id] : [];
+          }),
+        },
+      },
+    });
     await prisma.metricProjectionReceipt.deleteMany({ where: { sourceEventId: { startsWith: prefix } } });
     await prisma.chatExchangeFact.deleteMany({ where: { userId } });
     await prisma.generationFulfillmentFact.deleteMany({ where: { userId } });
+    await prisma.generationDelivery.deleteMany({ where: { requestId: { startsWith: prefix } } });
+    await prisma.generationArtifact.deleteMany({ where: { attemptId: { startsWith: prefix } } });
+    await prisma.generationAttemptEvent.deleteMany({ where: { attemptId: { startsWith: prefix } } });
+    await prisma.generationAttempt.deleteMany({ where: { requestId: { startsWith: prefix } } });
+    await prisma.generationJob.deleteMany({ where: { id: { startsWith: prefix } } });
     await prisma.subscriptionLifecycleFact.deleteMany({ where: { userId } });
     await prisma.customerSignupFact.deleteMany({ where: { userId } });
     await prisma.user.deleteMany({ where: { id: userId } });
@@ -118,15 +139,273 @@ describe("canonical metric fact projector", () => {
       id: `${prefix}-canonical-internal`,
       sourceEventId: `${prefix}-internal`,
       name: "chat.exchange.completed.v2",
+      schemaVersion: 2,
       dataClass: "internal",
     })).resolves.toMatchObject({ status: "skipped", reason: "ineligible_data" });
   });
 
+  it("quarantines an authoritative outcome with an unknown schema version", async () => {
+    const sourceEventId = `${prefix}-unknown-schema`;
+    await expect(projectCanonicalMetricEvent(prisma, {
+      id: `${prefix}-canonical-unknown-schema`,
+      sourceService: "main",
+      sourceEventId,
+      name: "customer.signup.completed.v2",
+      schemaVersion: 3,
+      occurredAt: new Date("2026-07-01T00:00:00Z"),
+      ingestedAt: new Date("2026-07-01T00:00:01Z"),
+      environment: "production",
+      dataClass: "customer",
+      trustClass: "canonical",
+      actor: { userId, isInternal: false },
+      context: {},
+      props: { userId },
+    })).resolves.toEqual({ status: "quarantined", reason: "unsupported_schema_version" });
+
+    await expect(prisma.metricProjectionReceipt.findUniqueOrThrow({
+      where: { sourceService_sourceEventId: { sourceService: "main", sourceEventId } },
+    })).resolves.toMatchObject({
+      outcome: "quarantined",
+      reason: "unsupported_schema_version",
+    });
+    await expect(reconcileCanonicalMetricFacts(prisma, { sourceEventPrefix: sourceEventId })).resolves.toMatchObject({
+      incompleteOutcomeCount: 1,
+      qualityState: "invalid",
+    });
+    await expect(prisma.dataQualityCheck.findFirstOrThrow({
+      where: {
+        checkKey: "metrics.server_outcome_completeness",
+        evidence: { path: ["sourceEventId"], equals: sourceEventId },
+      },
+    })).resolves.toMatchObject({
+      status: "failed",
+      metricKeys: expect.arrayContaining(["activation.chat_24h"]),
+    });
+    await expect(loadCanonicalMetricDataset(prisma, { userIds: [userId] })).resolves.toMatchObject({ signups: [] });
+  });
+
+  it("quarantines a generation outcome without required fulfillment facts", async () => {
+    const sourceEventId = `${prefix}-missing-fulfillment-window`;
+    await expect(projectCanonicalMetricEvent(prisma, {
+      id: `${prefix}-canonical-missing-fulfillment-window`,
+      sourceService: "main",
+      sourceEventId,
+      name: "generation.delivery.completed.v2",
+      schemaVersion: 2,
+      occurredAt: new Date("2026-07-02T01:00:00Z"),
+      ingestedAt: new Date("2026-07-02T01:00:01Z"),
+      environment: "production",
+      dataClass: "customer",
+      trustClass: "canonical",
+      actor: { userId, isInternal: false },
+      context: { generationRequestId: `${prefix}-incomplete-request` },
+      props: {
+        requestId: `${prefix}-incomplete-request`,
+        artifactId: `${prefix}-incomplete-artifact`,
+        userId,
+        valid: true,
+        displayable: true,
+      },
+    })).resolves.toEqual({ status: "quarantined", reason: "incomplete_outcome_payload" });
+
+    await expect(loadCanonicalMetricDataset(prisma, { userIds: [userId] })).resolves.toMatchObject({
+      generationDeliveries: [],
+    });
+  });
+
+  it("quarantines an impossible generation fulfillment outcome", async () => {
+    await expect(projectCanonicalMetricEvent(prisma, {
+      id: `${prefix}-canonical-impossible-fulfillment`,
+      sourceService: "main",
+      sourceEventId: `${prefix}-impossible-fulfillment`,
+      name: "generation.delivery.completed.v2",
+      schemaVersion: 2,
+      occurredAt: new Date("2026-07-02T02:00:00Z"),
+      ingestedAt: new Date("2026-07-02T02:00:01Z"),
+      environment: "production",
+      dataClass: "customer",
+      trustClass: "canonical",
+      actor: { userId, isInternal: false },
+      context: { generationRequestId: `${prefix}-impossible-request` },
+      props: {
+        requestId: `${prefix}-impossible-request`,
+        artifactId: `${prefix}-impossible-artifact`,
+        userId,
+        expectedOutputCount: 1,
+        deliveredOutputCount: 2,
+        valid: true,
+        displayable: true,
+      },
+    })).resolves.toEqual({ status: "quarantined", reason: "incomplete_outcome_payload" });
+
+    await expect(loadCanonicalMetricDataset(prisma, { userIds: [userId] })).resolves.toMatchObject({
+      generationDeliveries: [],
+    });
+  });
+
+  it("quarantines a generation outcome without matching request, attempt, artifact, and delivery authority", async () => {
+    await expect(projectCanonicalMetricEvent(prisma, {
+      id: `${prefix}-canonical-unbacked-fulfillment`,
+      sourceService: "main",
+      sourceEventId: `${prefix}-unbacked-fulfillment`,
+      name: "generation.delivery.completed.v2",
+      schemaVersion: 2,
+      occurredAt: new Date("2026-07-02T03:00:00Z"),
+      ingestedAt: new Date("2026-07-02T03:00:01Z"),
+      environment: "production",
+      dataClass: "customer",
+      trustClass: "canonical",
+      actor: { userId, isInternal: false },
+      context: { generationRequestId: `${prefix}-unbacked-request` },
+      props: {
+        requestId: `${prefix}-unbacked-request`,
+        artifactId: `${prefix}-unbacked-asset`,
+        userId,
+        expectedOutputCount: 1,
+        deliveredOutputCount: 1,
+        valid: true,
+        displayable: true,
+      },
+    })).resolves.toEqual({ status: "quarantined", reason: "missing_required_fact" });
+
+    await expect(loadCanonicalMetricDataset(prisma, { userIds: [userId] })).resolves.toMatchObject({
+      generationDeliveries: [],
+    });
+  });
+
+  it("quarantines an authoritative outcome without a valid source identity", async () => {
+    const sourceEventId = `${prefix}-invalid-source`;
+    await expect(projectCanonicalMetricEvent(prisma, {
+      id: `${prefix}-canonical-invalid-source`,
+      sourceService: "web",
+      sourceEventId,
+      name: "customer.signup.completed.v2",
+      schemaVersion: 2,
+      occurredAt: new Date("2026-07-01T00:00:00Z"),
+      ingestedAt: new Date("2026-07-01T00:00:01Z"),
+      environment: "production",
+      dataClass: "customer",
+      trustClass: "canonical",
+      actor: { userId, isInternal: false },
+      context: {},
+      props: { userId },
+    })).resolves.toEqual({ status: "quarantined", reason: "invalid_source_identity" });
+
+    await expect(loadCanonicalMetricDataset(prisma, { userIds: [userId] })).resolves.toMatchObject({ signups: [] });
+  });
+
+  it("quarantines an outcome whose source occurrence is outside the ingest clock-skew window", async () => {
+    await expect(projectCanonicalMetricEvent(prisma, {
+      id: `${prefix}-canonical-invalid-time-window`,
+      sourceService: "main",
+      sourceEventId: `${prefix}-invalid-time-window`,
+      name: "customer.signup.completed.v2",
+      schemaVersion: 2,
+      occurredAt: new Date("2026-07-01T00:10:01Z"),
+      ingestedAt: new Date("2026-07-01T00:00:00Z"),
+      environment: "production",
+      dataClass: "customer",
+      trustClass: "canonical",
+      actor: { userId, isInternal: false },
+      context: {},
+      props: { userId },
+    })).resolves.toEqual({ status: "quarantined", reason: "invalid_outcome_time_window" });
+
+    await expect(loadCanonicalMetricDataset(prisma, { userIds: [userId] })).resolves.toMatchObject({ signups: [] });
+  });
+
+  it("defers an out-of-order terminal outcome and recovers after its authority fact arrives", async () => {
+    const endedEvent = {
+      id: `${prefix}-canonical-orphan-subscription-end`,
+      sourceService: "main",
+      sourceEventId: `${prefix}-orphan-subscription-end`,
+      name: "subscription.ended.v2",
+      schemaVersion: 2,
+      occurredAt: new Date("2026-07-03T00:00:00Z"),
+      ingestedAt: new Date("2026-07-03T00:00:01Z"),
+      environment: "production",
+      dataClass: "customer",
+      trustClass: "canonical",
+      actor: { userId, isInternal: false },
+      context: {},
+      props: { subscriptionId: `${prefix}-missing-subscription`, userId },
+    } as const;
+    await expect(projectCanonicalMetricEvent(prisma, endedEvent)).resolves.toEqual({
+      status: "deferred",
+      reason: "awaiting_required_fact",
+    });
+    await expect(prisma.metricProjectionReceipt.findUnique({
+      where: {
+        sourceService_sourceEventId: {
+          sourceService: endedEvent.sourceService,
+          sourceEventId: endedEvent.sourceEventId,
+        },
+      },
+    })).resolves.toBeNull();
+
+    await expect(projectCanonicalMetricEvent(prisma, {
+      ...endedEvent,
+      id: `${prefix}-canonical-orphan-subscription-activation`,
+      sourceEventId: `${prefix}-orphan-subscription-activation`,
+      name: "subscription.activated.v2",
+      occurredAt: new Date("2026-07-02T00:00:00Z"),
+      props: { subscriptionId: `${prefix}-missing-subscription`, userId, planId: "premium-monthly" },
+    })).resolves.toMatchObject({ status: "applied" });
+    await expect(projectCanonicalMetricEvent(prisma, endedEvent)).resolves.toMatchObject({ status: "applied" });
+
+    await expect(loadCanonicalMetricDataset(prisma, { userIds: [userId] })).resolves.toMatchObject({
+      subscriptions: [expect.objectContaining({ endedAt: endedEvent.occurredAt })],
+    });
+    await prisma.subscriptionLifecycleFact.delete({
+      where: { subscriptionId: `${prefix}-missing-subscription` },
+    });
+  });
+
   it("projects signup, subscription, and successful delivery facts and reports zero duplicate effect", async () => {
+    const requestId = `${prefix}-request`;
+    const assetId = `${prefix}-artifact`;
+    const attemptId = `${prefix}-attempt`;
+    const artifactAuthorityId = `${prefix}-artifact-authority`;
+    await prisma.generationJob.create({
+      data: {
+        id: requestId,
+        userId,
+        mode: "image",
+        controls: {},
+        presetIds: [],
+        outputCount: 1,
+        deliveredOutputCount: 1,
+        status: "completed",
+      },
+    });
+    await prisma.generationAttempt.create({
+      data: { id: attemptId, requestId, attemptNo: 1, status: "succeeded" },
+    });
+    await prisma.generationArtifact.create({
+      data: {
+        id: artifactAuthorityId,
+        attemptId,
+        ordinal: 0,
+        manifestChecksum: "a".repeat(64),
+        validationState: "valid",
+        assetId,
+      },
+    });
+    await prisma.generationDelivery.create({
+      data: {
+        id: `${prefix}-delivery-authority`,
+        requestId,
+        artifactId: artifactAuthorityId,
+        targetType: "user_library",
+        targetId: userId,
+        status: "delivered",
+        deliveredAt: new Date("2026-07-02T01:00:00Z"),
+      },
+    });
     const common = {
       sourceService: "main",
       schemaVersion: 2,
-      ingestedAt: new Date("2026-07-02T00:00:01Z"),
+      ingestedAt: new Date("2026-07-05T00:00:00Z"),
       environment: "production",
       dataClass: "customer",
       trustClass: "canonical",
@@ -157,7 +436,15 @@ describe("canonical metric fact projector", () => {
         name: "generation.delivery.completed.v2",
         occurredAt: new Date("2026-07-02T01:00:00Z"),
         context: { characterId: "character-v2", characterReleaseId: null },
-        props: { requestId: `${prefix}-request`, artifactId: `${prefix}-artifact`, userId, valid: true, displayable: true },
+        props: {
+          requestId,
+          artifactId: assetId,
+          userId,
+          expectedOutputCount: 1,
+          deliveredOutputCount: 1,
+          valid: true,
+          displayable: true,
+        },
       },
     ];
     for (const event of events) {
