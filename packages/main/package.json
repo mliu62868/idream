@@ -61,6 +61,7 @@
     "admin:readiness:sign": "tsx src/scripts/admin-release-sign.ts",
     "admin:readiness:canary": "tsx src/scripts/admin-canary.ts",
     "admin:readiness:chaos": "tsx src/scripts/admin-dependency-chaos.ts",
+    "admin:readiness:chaos:real-projector": "RUN_ADMIN_REAL_PROCESS_CHAOS=1 vitest run src/server/readiness/real-projector-process-chaos.test.ts --reporter=verbose",
     "probe:age": "tsx src/server/probe-age-verification.ts",
     "probe:blob": "tsx src/server/probe-blob-storage.ts",
     "probe:catalog": "tsx src/server/probe-public-catalog.ts",

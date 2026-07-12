@@ -71,6 +71,6 @@ Only after those observations pass may the BFF V1 route, main compatibility disp
 - Focused Postgres Incident/Case/contract tests and the real Creative→Incident→Case browser authority loop passed after response-gate fixes.
 - Shared 27/116、Admin 60/198、Main 124 files / 756 passed + 1 skipped；root lint/typecheck/build passed。
 - `admin-v2-workspaces.e2e.ts` passed 9/9 across desktop, 375px and 834px with keyboard, focus, axe WCAG 2.2 AA and no-overflow gates.
-- Isolated transport chaos passed PostgreSQL/Redis reconnect plus consumer/dispatcher/projector restart checks; its report explicitly excludes real Prisma/BullMQ/domain-process release evidence.
+- Isolated transport chaos passed PostgreSQL/Redis reconnect plus consumer/dispatcher/projector restart checks. A separate real-process test now SIGKILLs the canonical Prisma projector inside its fact+receipt transaction and proves fresh-process recovery/replay leaves exactly one fact and receipt. The isolated report still excludes real BullMQ, Admin command-worker/dispatcher, network-partition and broader domain-process release evidence.
 
 The local Next.js 16 guides used for this slice were `use-client.md`, `server-and-client-components.md`, `route-handlers.md` and the `route.ts` file-convention guide. The extracted Billing workspace is intentionally a narrow Client Component boundary; no legacy GET caching assumptions were introduced.

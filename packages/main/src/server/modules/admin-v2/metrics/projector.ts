@@ -683,6 +683,17 @@ function receiptResult(receipt: {
   return { status: "duplicate", factType: receipt.factType ?? "unknown", factId: receipt.factId };
 }
 
+async function pauseAfterApplyForProcessChaos(eventId: string) {
+  if (process.env.ADMIN_CHAOS_PROJECTOR_PAUSE_AFTER_APPLY_EVENT_ID !== eventId) return;
+  await new Promise<void>((resolve, reject) => {
+    process.stdout.write("ADMIN_CHAOS_PROJECTOR_AFTER_APPLY_READY\n", (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+  await new Promise<never>(() => undefined);
+}
+
 export async function projectCanonicalMetricEvent(
   db: PrismaClient,
   event: MetricProductEvent,
@@ -745,6 +756,7 @@ export async function projectCanonicalMetricEvent(
           },
         });
       }
+      await pauseAfterApplyForProcessChaos(event.id);
       await tx.metricProjectionReceipt.create({
         data: {
           sourceService: event.sourceService,
