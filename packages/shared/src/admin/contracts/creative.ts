@@ -12,6 +12,43 @@ import {
 
 export const creativeRunRetryFailedCommandRequestSchema = adminCommandRequestSchema;
 
+export const creativeRunCreateRequestSchema = z
+  .object({
+    title: z.string().trim().min(1).max(160).optional(),
+    purpose: z.enum([
+      "character_cover",
+      "character_hero",
+      "character_chat",
+      "feed",
+      "homepage",
+      "seo",
+      "template_cover",
+      "campaign",
+      "model_eval",
+    ]),
+    targetType: z.enum(["character", "route_page", "campaign", "template", "none"]),
+    targetId: adminIdSchema.optional(),
+    profileId: adminIdSchema,
+    recipeId: adminIdSchema.optional(),
+    presetIds: z.array(adminIdSchema).max(12).default([]),
+    orientation: z.string().trim().min(1).max(20).optional(),
+    count: z.number().int().min(1).max(24).default(4),
+    brief: z.string().trim().min(1).max(2_000),
+    consistencyMode: z.enum(["strict", "balanced", "creative"]).default("balanced"),
+    dueAt: adminIsoDateTimeSchema.optional(),
+    priority: adminPrioritySchema.default("normal"),
+    reason: z.string().trim().min(3).max(2_000),
+  })
+  .strict()
+  .superRefine((request, ctx) => {
+    if (request.targetType !== "none" && !request.targetId) {
+      ctx.addIssue({ code: "custom", path: ["targetId"], message: "Target ID is required for this target type" });
+    }
+    if (request.targetType === "none" && request.targetId) {
+      ctx.addIssue({ code: "custom", path: ["targetId"], message: "Target ID must be omitted for a targetless Run" });
+    }
+  });
+
 export const creativeReviewDecisionRequestSchema = z.object({
   entityVersion: z.number().int().nonnegative(),
   decision: z.enum(["approved", "rejected"]),

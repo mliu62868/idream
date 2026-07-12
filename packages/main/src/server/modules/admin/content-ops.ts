@@ -5,6 +5,7 @@ import { recordGenerationAttemptQueuedEvent } from "@/server/ai/generation-attem
 import { dimensionsForImageOrientation } from "@/server/modules/ourdream/generation-dimensions";
 import { generationCostDreamcoins } from "@/server/lib/generation-pricing";
 import { prisma } from "@/server/lib/db";
+import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import {
@@ -21,6 +22,7 @@ import {
   type CreativeRunLedgerFact,
 } from "./content-production-state";
 import { dispatchCreativeRetryOutbox } from "@/server/modules/admin-v2/creative/retry-executor";
+import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
 
 const productionPurposeSchema = z.enum([
   "character_cover",
@@ -75,6 +77,8 @@ const productionBatchCreateSchema = z.object({
   count: z.number().int().min(1).max(24).default(4),
   brief: optionalText(2_000),
   consistencyMode: consistencyModeSchema.default("balanced"),
+  dueAt: optionalText(80),
+  priority: z.enum(["low", "normal", "high", "urgent"]).default("normal"),
   reason: optionalText(2_000),
 });
 
@@ -223,6 +227,9 @@ export async function createProductionBatchCore(
   actor: AdminActor,
   body: ProductionBatchCreateInput,
 ): Promise<Response> {
+  const idempotencyKey = request.headers.get("idempotency-key")?.trim() || null;
+  const commandScope = `${env.APP_ENV}:${actor.id}:creative.run.create`;
+  const requestHash = canonicalSha256({ commandType: "creative.run.create", payload: body });
   const profile = await resolveProductionProfile(body.profileId);
   const recipe = await resolveProductionRecipe(body.recipeId, body.targetType);
   const target = await resolveProductionTarget(body.targetType, body.targetId);
@@ -281,7 +288,35 @@ export async function createProductionBatchCore(
     profile.costMultiplier ?? 1,
   );
 
+  let replayed = false;
   const batch = await auditedTransaction("content.production.batch.create", async (tx) => {
+    if (idempotencyKey) {
+      await tx.$queryRaw`SELECT 1::int AS locked FROM pg_advisory_xact_lock(hashtext(${`${commandScope}:${idempotencyKey}`}))`;
+      const existing = await tx.controlPlaneCommand.findUnique({
+        where: { scope_idempotencyKey: { scope: commandScope, idempotencyKey } },
+      });
+      if (existing) {
+        if (existing.requestHash !== requestHash) {
+          throw Errors.conflict("Idempotency key was reused with a different Creative Run brief", {
+            commandId: existing.id,
+          });
+        }
+        const result = existing.result && typeof existing.result === "object" && !Array.isArray(existing.result)
+          ? existing.result as Record<string, unknown>
+          : {};
+        if (existing.status !== "succeeded" || typeof result.batchId !== "string") {
+          throw Errors.conflict("The original Creative Run create command has not completed", {
+            commandId: existing.id,
+            status: existing.status,
+          });
+        }
+        replayed = true;
+        return tx.contentProductionBatch.findUniqueOrThrow({
+          where: { id: result.batchId },
+          include: productionBatchInclude,
+        });
+      }
+    }
     const createdBatch = await tx.contentProductionBatch.create({
       data: {
         title,
@@ -300,6 +335,8 @@ export async function createProductionBatchCore(
         estimatedCostDreamcoins: perItemCostDreamcoins * body.count,
         status: "queued",
         ownerId: actor.id,
+        dueAt: parseOptionalDate(body.dueAt),
+        priority: body.priority,
         lifecycleState: "active",
         workflowStage: "generation",
         verificationState: "pending",
@@ -392,6 +429,25 @@ export async function createProductionBatchCore(
     }
 
     await refreshContentProductionBatchStats(tx, createdBatch.id);
+    if (idempotencyKey) {
+      await tx.controlPlaneCommand.create({
+        data: {
+          scope: commandScope,
+          idempotencyKey,
+          commandType: "creative.run.create",
+          targetType: "creative_run",
+          targetId: createdBatch.id,
+          actorId: actor.id,
+          requestId: request.headers.get("x-request-id") ?? crypto.randomUUID(),
+          requestHash,
+          requestPayload: toInputJson(body),
+          retryMode: "idempotent",
+          status: "succeeded",
+          result: toInputJson({ batchId: createdBatch.id }),
+          finishedAt: new Date(),
+        },
+      });
+    }
     await tx.adminAuditLog.create({
       data: {
         actorId: actor.id,
@@ -414,8 +470,8 @@ export async function createProductionBatchCore(
       include: productionBatchInclude,
     });
   });
-  await dispatchCreativeRetryOutbox(prisma, { limit: body.count });
-  return ok({ batch: productionBatchDTO(batch) }, { status: 202 });
+  if (!replayed) await dispatchCreativeRetryOutbox(prisma, { limit: body.count });
+  return ok({ batch: productionBatchDTO(batch), replayed }, { status: replayed ? 200 : 202 });
 }
 
 export async function createProductionBatch(request: Request) {

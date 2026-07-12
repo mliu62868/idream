@@ -7,7 +7,7 @@ import {
   type CreativeRun,
   type CreativeRunDetail,
 } from "@idream/shared/admin";
-import { ArrowLeft, Check, ImageIcon, RefreshCcw, RotateCcw, Send, ShieldAlert, X } from "lucide-react";
+import { ArrowLeft, Check, ImageIcon, Plus, RefreshCcw, RotateCcw, Send, ShieldAlert, X } from "lucide-react";
 import { useCallback, useEffect, useState, type KeyboardEvent } from "react";
 import type { AdminSubview } from "@/components/admin/nav-config";
 import { CollaborationPanel } from "@/features/collaboration/CollaborationPanel";
@@ -19,6 +19,50 @@ type Permissions = { read: boolean; write: boolean; review: boolean; place: bool
 
 function denied() {
   return <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-8"><ShieldAlert className="h-6 w-6" /><h2 className="mt-4 text-lg font-semibold">No permission</h2><p className="mt-2 text-sm text-[var(--ad-text-muted)]">creative.run.read is required for this workspace.</p></section>;
+}
+
+function CreateRunForm({ enabled }: { enabled: boolean }) {
+  const [title, setTitle] = useState("");
+  const [purpose, setPurpose] = useState("feed");
+  const [targetType, setTargetType] = useState("character");
+  const [targetId, setTargetId] = useState("");
+  const [profileId, setProfileId] = useState("");
+  const [count, setCount] = useState("4");
+  const [brief, setBrief] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (!enabled) return null;
+  const create = async () => {
+    setBusy(true); setError(null);
+    try {
+      const result = await adminV2Request<{ batch: { id: string }; replayed: boolean }>(
+        "/api/v2/admin/creative/runs",
+        {
+          method: "POST",
+          idempotencyKey: crypto.randomUUID(),
+          body: {
+            ...(title.trim() ? { title: title.trim() } : {}),
+            purpose,
+            targetType,
+            ...(targetType !== "none" ? { targetId: targetId.trim() } : {}),
+            profileId: profileId.trim(),
+            presetIds: [],
+            count: Number(count),
+            brief: brief.trim(),
+            consistencyMode: "balanced",
+            priority: "normal",
+            reason: "Launch an operator-authored Creative Run from its explicit brief",
+          },
+        },
+      );
+      window.location.assign(`/admin/creative/runs/${result.batch.id}`);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Creative Run could not be launched");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return <section className="mt-5 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" aria-labelledby="create-creative-run-title"><h2 className="font-semibold" id="create-creative-run-title">Brief & launch</h2><p className="mt-1 text-xs text-[var(--ad-text-muted)]">Creates the Run, immutable item lineage, first Attempts, and durable generation intents in one transaction.</p><div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4"><label className="text-xs font-semibold text-[var(--ad-text-muted)]">Title<input className={`${fieldClass} mt-1`} onChange={(event) => setTitle(event.target.value)} value={title} /></label><label className="text-xs font-semibold text-[var(--ad-text-muted)]">Purpose<select className={`${fieldClass} mt-1`} onChange={(event) => setPurpose(event.target.value)} value={purpose}>{["character_cover", "character_hero", "character_chat", "feed", "homepage", "seo", "template_cover", "campaign", "model_eval"].map((value) => <option key={value}>{value}</option>)}</select></label><label className="text-xs font-semibold text-[var(--ad-text-muted)]">Target type<select className={`${fieldClass} mt-1`} onChange={(event) => setTargetType(event.target.value)} value={targetType}>{["character", "route_page", "campaign", "template", "none"].map((value) => <option key={value}>{value}</option>)}</select></label><label className="text-xs font-semibold text-[var(--ad-text-muted)]">Target ID<input className={`${fieldClass} mt-1`} disabled={targetType === "none"} onChange={(event) => setTargetId(event.target.value)} value={targetId} /></label><label className="text-xs font-semibold text-[var(--ad-text-muted)]">Generation profile<input className={`${fieldClass} mt-1`} onChange={(event) => setProfileId(event.target.value)} placeholder="active profile key" value={profileId} /></label><label className="text-xs font-semibold text-[var(--ad-text-muted)]">Items<input className={`${fieldClass} mt-1`} max={24} min={1} onChange={(event) => setCount(event.target.value)} type="number" value={count} /></label><label className="text-xs font-semibold text-[var(--ad-text-muted)] sm:col-span-2">Brief<textarea className={`${textAreaClass} mt-1`} onChange={(event) => setBrief(event.target.value)} value={brief} /></label></div>{error ? <p className="mt-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}<WorkspaceButton disabled={busy || !profileId.trim() || !brief.trim() || (targetType !== "none" && !targetId.trim())} onClick={() => void create()} tone="primary"><Plus className="h-4 w-4" /> Create and launch</WorkspaceButton></section>;
 }
 
 function RunList({ permissions }: { permissions: Permissions }) {
@@ -42,7 +86,7 @@ function RunList({ permissions }: { permissions: Permissions }) {
   }, [outcome, permissions.read, search]);
   useEffect(() => { const timer = window.setTimeout(() => void load(), search.trim() ? 250 : 0); return () => window.clearTimeout(timer); }, [load, search]);
   if (!permissions.read) return denied();
-  return <section aria-labelledby="creative-runs-title"><div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between"><div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">Creative Studio</p><h1 className="mt-1 text-2xl font-semibold" id="creative-runs-title">Creative Runs</h1><p className="mt-2 max-w-2xl text-sm text-[var(--ad-text-muted)]">Execution, review, placement, and verification remain separate facts.</p></div><div className="grid gap-2 sm:grid-cols-2"><label className="text-xs font-semibold text-[var(--ad-text-muted)]">Search<input className={`${fieldClass} mt-1`} onChange={(event) => setSearch(event.target.value)} placeholder="Run, title or purpose" value={search} /></label><label className="text-xs font-semibold text-[var(--ad-text-muted)]">Outcome<select className={`${fieldClass} mt-1`} onChange={(event) => setOutcome(event.target.value)} value={outcome}>{["all", "pending", "running", "succeeded", "partially_succeeded", "failed", "cancelled"].map((value) => <option key={value}>{value}</option>)}</select></label></div></div>{error ? <div className="mt-5 rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">{error} <button className="ml-2 underline" onClick={() => void load()} type="button">Retry</button></div> : null}<div className="mt-6">{loading ? <LoadingWorkspace label="Loading Creative Run facts" /> : items.length === 0 ? <EmptyWorkspace filtered={Boolean(search || outcome !== "all")} onClear={() => { setSearch(""); setOutcome("all"); }} /> : <div className="grid gap-3">{items.map((run) => <Link className="grid gap-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 transition-colors hover:border-[var(--ad-ink)] focus-visible:outline focus-visible:outline-2 sm:grid-cols-[1fr_auto]" href={`/admin/creative/runs/${run.id}`} key={run.id}><div><div className="flex flex-wrap items-center gap-2"><strong>{run.purpose}</strong><StatusBadge value={run.executionOutcome} /><StatusBadge value={run.reviewState} /><StatusBadge value={run.deploymentState} /><StatusBadge value={run.verificationState} /></div><p className="mt-2 text-xs text-[var(--ad-text-muted)]">{run.target.type}:{run.target.id} · {run.workflowStage} · owner {run.ownerId ?? "unassigned"}</p><div className="mt-3 flex flex-wrap gap-3 text-xs tabular-nums"><span>{run.counts.generated}/{run.counts.total} generated</span><span>{run.counts.failed} failed</span><span>{run.counts.approved} approved</span><span>{run.counts.placed} placed</span></div></div><span className="self-center text-xs text-[var(--ad-text-muted)]">Open operator flow →</span></Link>)}</div>}</div></section>;
+  return <section aria-labelledby="creative-runs-title"><div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between"><div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">Creative Studio</p><h1 className="mt-1 text-2xl font-semibold" id="creative-runs-title">Creative Runs</h1><p className="mt-2 max-w-2xl text-sm text-[var(--ad-text-muted)]">Execution, review, placement, and verification remain separate facts.</p></div><div className="grid gap-2 sm:grid-cols-2"><label className="text-xs font-semibold text-[var(--ad-text-muted)]">Search<input className={`${fieldClass} mt-1`} onChange={(event) => setSearch(event.target.value)} placeholder="Run, title or purpose" value={search} /></label><label className="text-xs font-semibold text-[var(--ad-text-muted)]">Outcome<select className={`${fieldClass} mt-1`} onChange={(event) => setOutcome(event.target.value)} value={outcome}>{["all", "pending", "running", "succeeded", "partially_succeeded", "failed", "cancelled"].map((value) => <option key={value}>{value}</option>)}</select></label></div></div><CreateRunForm enabled={permissions.write} />{error ? <div className="mt-5 rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">{error} <button className="ml-2 underline" onClick={() => void load()} type="button">Retry</button></div> : null}<div className="mt-6">{loading ? <LoadingWorkspace label="Loading Creative Run facts" /> : items.length === 0 ? <EmptyWorkspace filtered={Boolean(search || outcome !== "all")} onClear={() => { setSearch(""); setOutcome("all"); }} /> : <div className="grid gap-3">{items.map((run) => <Link className="grid gap-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 transition-colors hover:border-[var(--ad-ink)] focus-visible:outline focus-visible:outline-2 sm:grid-cols-[1fr_auto]" href={`/admin/creative/runs/${run.id}`} key={run.id}><div><div className="flex flex-wrap items-center gap-2"><strong>{run.purpose}</strong><StatusBadge value={run.executionOutcome} /><StatusBadge value={run.reviewState} /><StatusBadge value={run.deploymentState} /><StatusBadge value={run.verificationState} /></div><p className="mt-2 text-xs text-[var(--ad-text-muted)]">{run.target.type}:{run.target.id} · {run.workflowStage} · owner {run.ownerId ?? "unassigned"}</p><div className="mt-3 flex flex-wrap gap-3 text-xs tabular-nums"><span>{run.counts.generated}/{run.counts.total} generated</span><span>{run.counts.failed} failed</span><span>{run.counts.approved} approved</span><span>{run.counts.placed} placed</span></div></div><span className="self-center text-xs text-[var(--ad-text-muted)]">Open operator flow →</span></Link>)}</div>}</div></section>;
 }
 
 function AssetViewer({ run, selected, onSelect }: { run: CreativeRunDetail; selected: number; onSelect: (index: number) => void }) {

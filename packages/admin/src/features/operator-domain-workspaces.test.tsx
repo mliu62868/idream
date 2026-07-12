@@ -21,6 +21,14 @@ describe("Character and Creative operator workspaces", () => {
     });
   });
 
+  it("exposes the Creative brief-and-launch front half only with write authority", () => {
+    const writable = renderToStaticMarkup(<CreativeRunWorkspace permissions={{ read: true, write: true, review: true, place: true }} view={{ kind: "list" }} />);
+    const readOnly = renderToStaticMarkup(<CreativeRunWorkspace permissions={{ read: true, write: false, review: false, place: false }} view={{ kind: "list" }} />);
+    expect(writable).toContain("Brief &amp; launch");
+    expect(writable).toContain("Create and launch");
+    expect(readOnly).not.toContain("Create and launch");
+  });
+
   it("renders server-authority search controls while portfolio data is loading", () => {
     const html = renderToStaticMarkup(<CharacterWorkspace permissions={{ read: true, writeProject: true, proposeRelease: true, publishRelease: true, reviewRelease: true }} view={{ kind: "list" }} />);
     expect(html).toContain("Search authority");
