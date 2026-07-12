@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { CharacterWorkspace } from "./characters/CharacterWorkspace";
+import { CharacterPerformanceWorkspace, CharacterWorkspace } from "./characters/CharacterWorkspace";
 import { CreativeRunWorkspace } from "./creative/CreativeRunWorkspace";
 import { parseAdminPath } from "@/components/admin/nav-config";
 
@@ -33,5 +33,14 @@ describe("Character and Creative operator workspaces", () => {
     const html = renderToStaticMarkup(<CharacterWorkspace permissions={{ read: true, writeProject: true, proposeRelease: true, publishRelease: true, reviewRelease: true }} view={{ kind: "list" }} />);
     expect(html).toContain("Search authority");
     expect(html).toContain("Loading release-attributed portfolio");
+  });
+
+  it("renders the analyst Character Performance route without granting Project access", () => {
+    const html = renderToStaticMarkup(
+      <CharacterPerformanceWorkspace canOpenProjects={false} canRead={true} />,
+    );
+    expect(html).toContain("Character Performance");
+    expect(html).toContain("Loading release-attributed portfolio");
+    expect(html).not.toContain("No permission");
   });
 });

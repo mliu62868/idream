@@ -52,7 +52,7 @@ export type NavItem = {
   id: string;
   label: string;
   href: string;
-  legacyHref: string;
+  legacyHref: string | null;
   icon: LucideIcon;
   group: AdminWorkspace;
   read: { allOf: readonly AdminPermissionKey[] };
@@ -69,6 +69,14 @@ function item(input: ItemInput): NavItem {
   return {
     ...input,
     legacyHref: input.id === "dashboard" ? "/admin" : `/admin/${input.id}`,
+    tier: input.group === "Today" ? "daily" : "folded",
+  };
+}
+
+function targetItem(input: ItemInput): NavItem {
+  return {
+    ...input,
+    legacyHref: null,
     tier: input.group === "Today" ? "daily" : "folded",
   };
 }
@@ -95,6 +103,7 @@ export const navItems: NavItem[] = [
 
   item({ id: "analytics", label: "Product Health", href: "/admin/growth/health", icon: BarChart3, group: "Growth", read: read("analytics.metric.read") }),
   item({ id: "insights", label: "Funnels & Retention", href: "/admin/growth/funnels", icon: BarChart3, group: "Growth", read: read("analytics.metric.read") }),
+  targetItem({ id: "growth/characters", label: "Character Performance", href: "/admin/growth/characters", icon: Activity, group: "Growth", read: read("character.performance.read") }),
   item({ id: "experiments", label: "Experiments", href: "/admin/growth/experiments", icon: Flag, group: "Growth", read: read("experiment.manage") }),
   item({ id: "content", label: "Featured Merchandising", href: "/admin/growth/merchandising?view=featured", icon: Library, group: "Growth", read: read("content.read") }),
   item({ id: "announcements", label: "Announcements", href: "/admin/growth/merchandising?view=announcements", icon: MessageSquare, group: "Growth", read: read("growth.promo.read") }),
@@ -214,7 +223,7 @@ const CANONICAL_LIST_SECTIONS: Record<string, string> = {
   "customer-ops/account-requests": "compliance",
   "growth/health": "analytics",
   "growth/funnels": "insights",
-  "growth/characters": "content/official",
+  "growth/characters": "growth/characters",
   "growth/experiments": "experiments",
   "growth/content": "cms",
   "ops/incidents": "ops/incidents",

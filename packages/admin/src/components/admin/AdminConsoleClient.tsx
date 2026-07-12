@@ -88,7 +88,7 @@ import { IncidentWorkspace } from "@/features/incidents/IncidentWorkspace";
 import { CaseWorkspace } from "@/features/cases/CaseWorkspace";
 import { CustomerWorkspace } from "@/features/customers/CustomerWorkspace";
 import { GlobalAdminSearch } from "@/features/search/GlobalAdminSearch";
-import { CharacterWorkspace } from "@/features/characters/CharacterWorkspace";
+import { CharacterPerformanceWorkspace, CharacterWorkspace } from "@/features/characters/CharacterWorkspace";
 import { CreativeRunWorkspace } from "@/features/creative/CreativeRunWorkspace";
 import { JobsView as GenerationJobsWorkspace } from "@/features/jobs/JobsView";
 import { AuditWorkspace } from "@/features/audit/AuditWorkspace";
@@ -277,7 +277,8 @@ type SectionData =
         | "generation-metrics"
         | "incidents"
         | "cases"
-        | "audit";
+        | "audit"
+        | "character-performance";
     }
   | {
       kind: "chatops";
@@ -1398,6 +1399,7 @@ async function fetchSection(
   if (sectionId === "ops/incidents") return { kind: "selfFetch", view: "incidents" };
   if (sectionId === "cases") return { kind: "selfFetch", view: "cases" };
   if (sectionId === "audit-log") return { kind: "selfFetch", view: "audit" };
+  if (sectionId === "growth/characters") return { kind: "selfFetch", view: "character-performance" };
   if (sectionId === "generation/dead-letter") {
     const query = listQuery(params, ["deadSearch", "deadMode", "deadStatus", "deadError", "deadCursor"]);
     const payload = await apiGet<{ items: Row[]; pageInfo: PageInfo }>(`/api/v1/admin/generation/dead-letter${queryString({
@@ -2576,6 +2578,16 @@ function renderSection(
       );
     }
     if (section.view === "audit") return <AuditWorkspace />;
+    if (section.view === "character-performance") {
+      return <CharacterPerformanceWorkspace
+        canOpenProjects={[
+          "character.project.read",
+          "character.release.read",
+          "character.performance.read",
+        ].every((permission) => ctx.permissions.has(permission as AdminPermissionKey))}
+        canRead={ctx.permissions.has("character.performance.read")}
+      />;
+    }
     return <ReviewQueueView />;
   }
   if (section.kind === "chatops") {

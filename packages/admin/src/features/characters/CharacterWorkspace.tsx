@@ -53,15 +53,12 @@ function permissionDenied(label: string) {
   );
 }
 
-function PortfolioCard({ item }: { item: CharacterPortfolioItem }) {
+function PortfolioCard({ canOpenProject, item }: { canOpenProject: boolean; item: CharacterPortfolioItem }) {
   const performance = item.performance.find((metric) => metric.window === "28d" && metric.placementId === null)
     ?? item.performance.find((metric) => metric.window === "28d")
     ?? null;
-  return (
-    <Link
-      className="group grid gap-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 transition-colors hover:border-[var(--ad-ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)] sm:grid-cols-[64px_1fr_auto]"
-      href={`/admin/characters/${item.characterId}`}
-    >
+  const content = (
+    <>
       <div className="grid h-16 w-16 place-items-center rounded-lg bg-black/[0.04] text-xl font-semibold text-[var(--ad-text-muted)]">
         {item.name.slice(0, 1).toUpperCase()}
       </div>
@@ -78,13 +75,17 @@ function PortfolioCard({ item }: { item: CharacterPortfolioItem }) {
       </div>
       <div className="self-center text-right text-xs text-[var(--ad-text-muted)]">
         {item.latestDecision?.decision ?? "No decision"}<br />
-        <span className="mt-1 inline-block group-hover:text-[var(--ad-ink)]">Open workspace →</span>
+        <span className="mt-1 inline-block group-hover:text-[var(--ad-ink)]">{canOpenProject ? "Open workspace →" : "Performance only"}</span>
       </div>
-    </Link>
+    </>
   );
+  const className = "group grid gap-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 transition-colors sm:grid-cols-[64px_1fr_auto]";
+  return canOpenProject
+    ? <Link className={`${className} hover:border-[var(--ad-ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]`} href={`/admin/characters/${item.characterId}`}>{content}</Link>
+    : <article className={className}>{content}</article>;
 }
 
-function CharacterPortfolio({ permissions }: { permissions: Permissions }) {
+function CharacterPortfolio({ canOpenProjects, canRead, mode }: { canOpenProjects: boolean; canRead: boolean; mode: "studio" | "performance" }) {
   const [items, setItems] = useState<CharacterPortfolioItem[]>([]);
   const [search, setSearch] = useState("");
   const [cursor, setCursor] = useState<string | undefined>();
@@ -94,7 +95,7 @@ function CharacterPortfolio({ permissions }: { permissions: Permissions }) {
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async (next: { search: string; cursor?: string }, historyMode: "none" | "push" | "replace") => {
-    if (!permissions.read) return;
+    if (!canRead) return;
     setLoading(true);
     setError(null);
     try {
@@ -115,7 +116,7 @@ function CharacterPortfolio({ permissions }: { permissions: Permissions }) {
     } finally {
       setLoading(false);
     }
-  }, [permissions.read]);
+  }, [canRead]);
 
   useEffect(() => {
     const restore = (historyMode: "none" | "replace") => {
@@ -139,15 +140,16 @@ function CharacterPortfolio({ permissions }: { permissions: Permissions }) {
     void load({ search, cursor: nextCursor }, "push");
   }
 
-  if (!permissions.read) return permissionDenied("character.project.read");
+  if (!canRead) return permissionDenied(mode === "performance" ? "character.performance.read" : "character.project.read");
+  const performanceMode = mode === "performance";
   return (
     <section aria-labelledby="character-portfolio-title">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">Character Studio</p><h2 className="mt-1 text-2xl font-semibold" id="character-portfolio-title">Portfolio & Projects</h2><p className="mt-2 max-w-2xl text-sm text-[var(--ad-text-muted)]">Decide what to promote, improve, pause, or retire from release-attributed evidence.</p></div>
+        <div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">{performanceMode ? "Growth" : "Character Studio"}</p><h2 className="mt-1 text-2xl font-semibold" id="character-portfolio-title">{performanceMode ? "Character Performance" : "Portfolio & Projects"}</h2><p className="mt-2 max-w-2xl text-sm text-[var(--ad-text-muted)]">{performanceMode ? "Compare release-attributed value, maturity, and portfolio decisions without expanding Project authority." : "Decide what to promote, improve, pause, or retire from release-attributed evidence."}</p></div>
         <form className="flex items-end gap-2" onSubmit={(event) => { event.preventDefault(); apply(); }}><label className="text-xs font-semibold text-[var(--ad-text-muted)]">Search authority<input aria-label="Search characters" className={`${fieldClass} mt-1 sm:w-72`} onChange={(event) => setSearch(event.target.value)} placeholder="Name, character or project ID" value={search} /></label><WorkspaceButton tone="primary" type="submit">Apply</WorkspaceButton></form>
       </div>
       {error ? <div className="mt-5 rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">{error} <button className="ml-2 underline" onClick={() => void load({ search, cursor }, "none")} type="button">Retry</button></div> : null}
-      <div className="mt-6">{loading ? <LoadingWorkspace label="Loading release-attributed portfolio" /> : items.length === 0 ? <EmptyWorkspace filtered={Boolean(search)} onClear={() => { setSearch(""); setCursor(undefined); void load({ search: "" }, "push"); }} /> : <div className="grid gap-3">{items.map((item) => <PortfolioCard item={item} key={item.characterId} />)}</div>}</div>
+      <div className="mt-6">{loading ? <LoadingWorkspace label="Loading release-attributed portfolio" /> : items.length === 0 ? <EmptyWorkspace filtered={Boolean(search)} onClear={() => { setSearch(""); setCursor(undefined); void load({ search: "" }, "push"); }} /> : <div className="grid gap-3">{items.map((item) => <PortfolioCard canOpenProject={canOpenProjects} item={item} key={item.characterId} />)}</div>}</div>
       <div className="mt-4 flex items-center justify-between gap-3"><p className="text-xs text-[var(--ad-text-muted)]">{asOf ? `Fresh as of ${new Date(asOf).toLocaleString()}` : "No successful query yet"}</p><WorkspaceButton disabled={loading || !pageInfo.hasNextPage || !pageInfo.endCursor} onClick={() => apply(pageInfo.endCursor ?? undefined)}>Next page</WorkspaceButton></div>
     </section>
   );
@@ -644,5 +646,9 @@ function CharacterDetail({ id, permissions }: { id: string; permissions: Permiss
 
 export function CharacterWorkspace({ view, permissions }: { view: AdminSubview; permissions: Permissions }) {
   if (view.kind === "new") return <CharacterCreateWizard canCreate={permissions.writeProject} />;
-  return view.kind === "detail" ? <CharacterDetail id={view.id} permissions={permissions} /> : <CharacterPortfolio permissions={permissions} />;
+  return view.kind === "detail" ? <CharacterDetail id={view.id} permissions={permissions} /> : <CharacterPortfolio canOpenProjects={permissions.read} canRead={permissions.read} mode="studio" />;
+}
+
+export function CharacterPerformanceWorkspace({ canOpenProjects, canRead }: { canOpenProjects: boolean; canRead: boolean }) {
+  return <CharacterPortfolio canOpenProjects={canOpenProjects} canRead={canRead} mode="performance" />;
 }

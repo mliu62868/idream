@@ -22,19 +22,22 @@ const NAV_IDS = [
   "announcements", "analytics", "insights", "experiments", "compliance", "ops/incidents",
   "approvals", "system/access", "audit-log",
 ];
+const TARGET_ONLY_NAV_IDS = ["growth/characters"];
 
 describe("admin navigation information architecture", () => {
   it("publishes every decision workspace exactly once inside the seven workspaces", () => {
-    expect(navItems.map((item) => item.id).sort()).toEqual([...NAV_IDS].sort());
-    expect(new Set(navItems.map((item) => item.id)).size).toBe(NAV_IDS.length);
+    expect(navItems.map((item) => item.id).sort()).toEqual([...NAV_IDS, ...TARGET_ONLY_NAV_IDS].sort());
+    expect(new Set(navItems.map((item) => item.id)).size).toBe(NAV_IDS.length + TARGET_ONLY_NAV_IDS.length);
     expect(new Set(navItems.map((item) => item.group))).toEqual(new Set(ADMIN_WORKSPACES));
   });
 
   it("publishes canonical workspace URLs while retaining each legacy URL", () => {
     for (const item of navItems) {
       expect(item.href).toMatch(/^\/admin\/(today|characters|creative|cases|customers|customer-ops|growth|ops|system)/);
-      expect(item.legacyHref).toBe(item.id === "dashboard" ? "/admin" : `/admin/${item.id}`);
+      if (TARGET_ONLY_NAV_IDS.includes(item.id)) expect(item.legacyHref).toBeNull();
+      else expect(item.legacyHref).toBe(item.id === "dashboard" ? "/admin" : `/admin/${item.id}`);
     }
+    expect(navItems.filter((item) => item.legacyHref !== null)).toHaveLength(34);
   });
 
   it("maps canonical routes and query-backed saved views onto domain workspaces", () => {
@@ -49,6 +52,7 @@ describe("admin navigation information architecture", () => {
     expect(parseAdminPath("characters/char-1?tab=release&releaseId=release-1")).toEqual({ sectionId: "content/official", view: { kind: "detail", id: "char-1" } });
     expect(parseAdminPath("system/audit?commandId=command-1")).toEqual({ sectionId: "audit-log", view: { kind: "list" } });
     expect(parseAdminPath("growth/offers?view=promo").sectionId).toBe("promo");
+    expect(parseAdminPath("growth/characters").sectionId).toBe("growth/characters");
     expect(parseAdminPath("ops/recipes?view=presets").sectionId).toBe("generation/presets");
     expect(parseAdminPath("growth/merchandising?view=announcements").sectionId).toBe("announcements");
   });
@@ -94,6 +98,8 @@ describe("permission and work-mode navigation", () => {
       "character.release.read",
       "character.performance.read",
     ]))).toBe(true);
+    expect(sectionIsPermitted("growth/characters", new Set(["character.performance.read"]))).toBe(true);
+    expect(sectionIsPermitted("content/official", new Set(["character.performance.read"]))).toBe(false);
     expect(sectionIsPermitted("content/production", new Set(["content.production.write"]))).toBe(false);
     expect(sectionIsPermitted("content/production", new Set(["creative.run.read"]))).toBe(true);
     expect(sectionIsPermitted("content/assets", new Set(["creative.asset.read"]))).toBe(true);
@@ -103,6 +109,7 @@ describe("permission and work-mode navigation", () => {
 
   it("allows bootstrap when any exact workspace predicate is satisfied", () => {
     expect(canReadAnyWorkspace(new Set(["ops.incident.read"]))).toBe(true);
+    expect(canReadAnyWorkspace(new Set(["character.performance.read"]))).toBe(true);
     expect(canReadAnyWorkspace(new Set(["character.project.read"]))).toBe(false);
     expect(canReadAnyWorkspace(new Set(["character.project.write"]))).toBe(false);
     expect(canReadAnyWorkspace(new Set())).toBe(false);
@@ -150,8 +157,10 @@ describe("permission and work-mode navigation", () => {
     const growth = navGroupsForPermissions(new Set([
       "analytics.metric.read",
       "experiment.manage",
+      "character.performance.read",
     ]), "growth_analyst").flatMap((group) => group.items.map((item) => item.id));
-    expect(growth).toEqual(expect.arrayContaining(["analytics", "insights", "experiments"]));
+    expect(growth).toEqual(expect.arrayContaining(["analytics", "insights", "experiments", "growth/characters"]));
+    expect(growth).not.toContain("content/official");
   });
 
   it("derives conservative default modes from existing auth roles", () => {
