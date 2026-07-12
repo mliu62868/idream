@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ADMIN_DOMAIN_CUTOVER_MANIFEST,
+  adminCutoverDomainForPath,
   resolveAdminDomainReadRoute,
 } from "./domain-cutover";
 
@@ -42,6 +43,16 @@ describe("Admin domain read cutover manifest", () => {
     });
   });
 
+  it.each([
+    ["/api/v2/admin/characters", "character"],
+    ["/api/v2/admin/creative/runs", "creative"],
+    ["/api/v2/admin/incidents/incident-1", "incident"],
+    ["/api/v2/admin/cases/case-1", "case"],
+    ["/api/v2/admin/today", "today"],
+  ] as const)("classifies %s as the %s domain", (pathname, domain) => {
+    expect(adminCutoverDomainForPath(pathname)).toBe(domain);
+  });
+
   it("uses only an explicitly configured same-contract HTTP compatibility authority", () => {
     expect(resolveAdminDomainReadRoute({
       method: "HEAD",
@@ -78,6 +89,20 @@ describe("Admin domain read cutover manifest", () => {
       kind: "unavailable",
       domain: "today",
       code: "admin_today_read_authority_invalid",
+    });
+  });
+
+  it("fails closed instead of silently replacing an invalid canonical authority", () => {
+    expect(resolveAdminDomainReadRoute({
+      method: "GET",
+      pathname: "/api/v2/admin/characters",
+      environment: { MAIN_WEB_URL: "not-a-valid-authority" },
+    })).toEqual({
+      kind: "unavailable",
+      domain: "character",
+      readAuthority: "unavailable",
+      code: "admin_character_canonical_read_unconfigured",
+      message: "Character canonical read authority is not configured",
     });
   });
 

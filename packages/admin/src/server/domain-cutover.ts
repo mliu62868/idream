@@ -9,7 +9,6 @@ type DomainCutoverManifestEntry = {
   readonly routeSegment: string;
   readonly readAuthorityEnv: string;
   readonly compatibilityBaseUrlEnv: string;
-  readonly compatibilityContract: string;
 };
 
 export const ADMIN_DOMAIN_CUTOVER_MANIFEST = {
@@ -18,35 +17,30 @@ export const ADMIN_DOMAIN_CUTOVER_MANIFEST = {
     routeSegment: "characters",
     readAuthorityEnv: "ADMIN_CHARACTER_READ_AUTHORITY",
     compatibilityBaseUrlEnv: "ADMIN_CHARACTER_COMPATIBILITY_READ_URL",
-    compatibilityContract: "admin-v2-character-read-v1",
   },
   creative: {
     displayName: "Creative",
     routeSegment: "creative",
     readAuthorityEnv: "ADMIN_CREATIVE_READ_AUTHORITY",
     compatibilityBaseUrlEnv: "ADMIN_CREATIVE_COMPATIBILITY_READ_URL",
-    compatibilityContract: "admin-v2-creative-read-v1",
   },
   incident: {
     displayName: "Incident",
     routeSegment: "incidents",
     readAuthorityEnv: "ADMIN_INCIDENT_READ_AUTHORITY",
     compatibilityBaseUrlEnv: "ADMIN_INCIDENT_COMPATIBILITY_READ_URL",
-    compatibilityContract: "admin-v2-incident-read-v1",
   },
   case: {
     displayName: "Case",
     routeSegment: "cases",
     readAuthorityEnv: "ADMIN_CASE_READ_AUTHORITY",
     compatibilityBaseUrlEnv: "ADMIN_CASE_COMPATIBILITY_READ_URL",
-    compatibilityContract: "admin-v2-case-read-v1",
   },
   today: {
     displayName: "Today",
     routeSegment: "today",
     readAuthorityEnv: "ADMIN_TODAY_READ_AUTHORITY",
     compatibilityBaseUrlEnv: "ADMIN_TODAY_COMPATIBILITY_READ_URL",
-    compatibilityContract: "admin-v2-today-read-v1",
   },
 } as const satisfies Record<AdminCutoverDomain, DomainCutoverManifestEntry>;
 
@@ -75,6 +69,10 @@ type DomainReadRoute =
 
 const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
+export function isAdminReadMethod(method: string) {
+  return READ_METHODS.has(method.toUpperCase());
+}
+
 export function adminCutoverDomainForPath(pathname: string): AdminCutoverDomain | null {
   for (const [domain, entry] of Object.entries(ADMIN_DOMAIN_CUTOVER_MANIFEST) as Array<
     [AdminCutoverDomain, DomainCutoverManifestEntry]
@@ -92,7 +90,7 @@ export function resolveAdminDomainReadRoute(input: {
 }): DomainReadRoute {
   const domain = adminCutoverDomainForPath(input.pathname);
   if (!domain) return { kind: "not_domain" };
-  if (!READ_METHODS.has(input.method.toUpperCase())) return { kind: "not_read", domain };
+  if (!isAdminReadMethod(input.method)) return { kind: "not_read", domain };
 
   const entry = ADMIN_DOMAIN_CUTOVER_MANIFEST[domain];
   const rawAuthority = input.environment[entry.readAuthorityEnv]?.trim();
@@ -101,11 +99,21 @@ export function resolveAdminDomainReadRoute(input: {
     : rawAuthority as AdminReadAuthorityFlag;
 
   if (authority === "canonical_v2") {
+    const upstreamBaseUrl = canonicalMainBaseUrl(input.environment);
+    if (!upstreamBaseUrl) {
+      return {
+        kind: "unavailable",
+        domain,
+        readAuthority: "unavailable",
+        code: `admin_${domain}_canonical_read_unconfigured`,
+        message: `${entry.displayName} canonical read authority is not configured`,
+      };
+    }
     return {
       kind: "selected",
       domain,
       readAuthority: authority,
-      upstreamBaseUrl: canonicalMainBaseUrl(input.environment),
+      upstreamBaseUrl,
     };
   }
   if (authority === "deployment_rollback") {
@@ -148,7 +156,9 @@ export function resolveAdminDomainReadRoute(input: {
 }
 
 export function canonicalMainBaseUrl(environment: Environment) {
-  return normalizeHttpBaseUrl(environment.MAIN_WEB_URL) ?? "http://127.0.0.1:3000";
+  const configured = environment.MAIN_WEB_URL?.trim();
+  if (!configured) return "http://127.0.0.1:3000";
+  return normalizeHttpBaseUrl(configured);
 }
 
 function normalizeHttpBaseUrl(value: string | undefined) {

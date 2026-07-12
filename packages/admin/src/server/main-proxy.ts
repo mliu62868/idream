@@ -4,9 +4,19 @@ import { randomUUID } from "node:crypto";
 import {
   adminCutoverDomainForPath,
   canonicalMainBaseUrl,
+  isAdminReadMethod,
   resolveAdminDomainReadRoute,
   type AdminCutoverDomain,
+  type AdminDomainReadAuthority,
 } from "./domain-cutover";
+
+type AdminProxyAuthority =
+  | AdminDomainReadAuthority
+  | "unavailable"
+  | "global_kill_switch"
+  | "canonical_write"
+  | "legacy_v1"
+  | "not_applicable";
 
 const requestHopByHopHeaders = [
   "connection",
@@ -85,12 +95,25 @@ export async function proxyToMain(request: Request, pathname: string): Promise<R
 
   const readAuthority = readRoute.kind === "selected"
     ? readRoute.readAuthority
-    : request.method === "GET" || request.method === "HEAD" || request.method === "OPTIONS"
+    : isAdminReadMethod(request.method)
       ? surface === "legacy_v1" ? "legacy_v1" : surface === "admin_v2" ? "canonical_v2" : "not_applicable"
       : domain ? "canonical_write" : "not_applicable";
   const upstreamBaseUrl = readRoute.kind === "selected"
     ? readRoute.upstreamBaseUrl
     : canonicalMainBaseUrl(process.env);
+  if (!upstreamBaseUrl) {
+    recordProxyMetrics(request.method, "configuration_error", surface, routeClass, startedAt, domain, readAuthority);
+    return Response.json(
+      {
+        ok: false,
+        error: {
+          code: "admin_main_authority_url_invalid",
+          message: "Admin canonical authority URL is invalid",
+        },
+      },
+      { status: 503, headers: provenanceHeaders(domain, readAuthority) },
+    );
+  }
   const incomingURL = new URL(request.url);
   const upstreamURL = new URL(pathname, `${upstreamBaseUrl}/`);
   upstreamURL.search = incomingURL.search;
@@ -167,7 +190,7 @@ export async function proxyToMain(request: Request, pathname: string): Promise<R
 
 function activeAdminV2KillSwitch(pathname: string, method: string): "read" | "write" | null {
   if (!pathname.startsWith("/api/v2/admin")) return null;
-  const readOnly = method === "GET" || method === "HEAD" || method === "OPTIONS";
+  const readOnly = isAdminReadMethod(method);
   if (readOnly && process.env.ADMIN_V2_READ_KILL_SWITCH === "true") return "read";
   if (!readOnly && process.env.ADMIN_V2_WRITE_KILL_SWITCH === "true") return "write";
   return null;
@@ -197,7 +220,7 @@ function recordProxyMetrics(
   routeClass: string,
   startedAt: number,
   domain: AdminCutoverDomain | null,
-  readAuthority: string,
+  readAuthority: AdminProxyAuthority,
 ) {
   const labels = { domain: domain ?? "unscoped", method, outcome, readAuthority, routeClass, surface };
   incrementCounter(
@@ -222,7 +245,7 @@ function recordProxyMetrics(
 
 function provenanceHeaders(
   domain: AdminCutoverDomain | null,
-  readAuthority: string,
+  readAuthority: AdminProxyAuthority,
   initial: HeadersInit = {},
 ) {
   const headers = new Headers(initial);
@@ -233,7 +256,7 @@ function provenanceHeaders(
 function addProvenanceHeaders(
   headers: Headers,
   domain: AdminCutoverDomain | null,
-  readAuthority: string,
+  readAuthority: AdminProxyAuthority,
 ) {
   if (domain) headers.set("x-idream-admin-domain", domain);
   headers.set("x-idream-admin-read-authority", readAuthority);

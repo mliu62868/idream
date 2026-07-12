@@ -252,4 +252,26 @@ describe("Admin main HTTP proxy", () => {
     expect(response.headers.get("x-idream-admin-read-authority")).toBe("global_kill_switch");
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it("fails closed when the canonical write authority URL is invalid", async () => {
+    vi.stubEnv("MAIN_WEB_URL", "not-a-valid-authority");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await proxyToMain(
+      new Request("http://admin.local/api/v2/admin/incidents/incident-1/commands/resolve", {
+        method: "POST",
+        body: "{}",
+      }),
+      "/api/v2/admin/incidents/incident-1/commands/resolve",
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "admin_main_authority_url_invalid" },
+    });
+    expect(response.headers.get("x-idream-admin-domain")).toBe("incident");
+    expect(response.headers.get("x-idream-admin-read-authority")).toBe("canonical_write");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
