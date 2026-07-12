@@ -7,7 +7,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
-import { ensureGenerationSettlementLinks, linkGenerationLedgerEntry } from "@/server/ai/generation-settlement";
+import { ensureGenerationSettlementLinks } from "@/server/ai/generation-settlement";
 import {
   recordGenerationAttemptEvent,
   recordGenerationAttemptQueuedEvent,
@@ -28,7 +28,6 @@ import {
   adminAuditData,
   actorWithPermission,
   clampInt,
-  hashHeader,
   jsonBody,
   toInputJson,
   writeAudit,
@@ -118,6 +117,8 @@ import {
   deleteAnnouncement,
 } from "./announcements";
 import { listExperiments } from "./experiments";
+import { billingAdjustment } from "./billing/command";
+import { appendLedger, dreamcoinBalance } from "./billing/ledger";
 import { billingLedger, billingReconciliation, listSubscriptions } from "./billing/query";
 import { listFeatureFlags, patchFeatureFlag } from "./config/feature-flags";
 import {
@@ -127,11 +128,6 @@ import {
   publishPricingRule,
   rollbackPricingRule,
 } from "./pricing/service";
-import {
-  DUAL_APPROVAL_FLAG,
-  LEDGER_APPROVAL_THRESHOLD,
-  enforceApproval,
-} from "./shared/legacy-approval";
 export { DUAL_APPROVAL_FLAG, LEDGER_APPROVAL_THRESHOLD } from "./shared/legacy-approval";
 import {
   ensureReviewCaseForAppeal,
@@ -198,14 +194,6 @@ const deadLetterBatchSchema = z.object({
   jobIds: z.array(z.string().trim().min(1).max(160)).min(1).max(100),
   reason: z.string().trim().min(3).max(2_000),
   confirmation: z.string().trim().min(1).max(20_000),
-});
-
-const ledgerAdjustmentSchema = z.object({
-  userId: z.string().trim().min(1),
-  delta: z.number().int().refine((value) => value !== 0),
-  reason: z.string().trim().min(3).max(2_000),
-  sourceId: z.string().trim().max(160).optional(),
-  confirmation: z.string().trim().min(1).max(160),
 });
 
 const modelProfileSchema = z.object({
@@ -3278,65 +3266,6 @@ function appealOutcomeConfirmation(outcome: z.infer<typeof appealDecisionSchema>
   return "REOPEN";
 }
 
-async function billingAdjustment(request: Request) {
-  const actor = await actorWithPermission(request, "billing.ledger.adjust");
-  const body = ledgerAdjustmentSchema.parse(await jsonBody(request));
-  const idempotencyKey = request.headers.get("idempotency-key")?.trim();
-  if (!idempotencyKey) throw Errors.badRequest("Idempotency-Key is required for ledger adjustments");
-  const expectedConfirmation = ledgerAdjustmentConfirmation(body.userId, body.delta);
-  if (body.confirmation !== expectedConfirmation) {
-    throw Errors.badRequest("Confirmation did not match ledger adjustment target");
-  }
-  const result = await prisma.$transaction(async (tx) => {
-    const replay = await tx.dreamcoinLedger.findUnique({ where: { idempotencyKey } });
-    if (replay) {
-      if (replay.userId !== body.userId || replay.delta !== body.delta || replay.reason !== "admin_adjust") {
-        throw Errors.conflict("Idempotency-Key was already used for a different ledger adjustment");
-      }
-      return { entry: replay, replayed: true };
-    }
-    const user = await tx.user.findUnique({ where: { id: body.userId } });
-    if (!user) throw Errors.notFound("User not found");
-    // 高危：大额 ledger 调整在硬门控开启时需双人审批凭据。
-    if (Math.abs(body.delta) >= LEDGER_APPROVAL_THRESHOLD) {
-      await enforceApproval("billing.ledger.adjust", body.userId, tx);
-    }
-    const entry = await appendLedger(
-      tx,
-      body.userId,
-      body.delta,
-      "admin_adjust",
-      body.sourceId ?? `admin-adjust:${actor.id}:${idempotencyKey}`,
-      idempotencyKey,
-    );
-    await tx.adminAuditLog.create({
-      data: {
-        actorId: actor.id,
-        actorRole: actor.role,
-        action: "billing.ledger.adjust",
-        targetType: "user",
-        targetId: body.userId,
-        reason: body.reason,
-        after: toInputJson({
-          ledgerEntryId: entry.id,
-          delta: entry.delta,
-          balanceAfter: entry.balanceAfter,
-          sourceId: entry.sourceId,
-          idempotencyKey,
-        }),
-        requestId: request.headers.get("x-request-id") ?? randomUUID(),
-        ipHash: hashHeader(request.headers.get("x-forwarded-for") ?? request.headers.get("x-real-ip")),
-      },
-    });
-    return { entry, replayed: false };
-  });
-  return ok({ ledgerEntry: result.entry, replayed: result.replayed });
-}
-
-function ledgerAdjustmentConfirmation(userId: string, delta: number) {
-  return `${userId}:${delta}`;
-}
-
 // SPEC: Phase-0 truth containment. Exact operational aggregates remain available,
 // while the legacy activation/conversion values are explicitly invalid until the
 // canonical fact + certified metric cutover.
@@ -5097,49 +5026,6 @@ async function stageGenerationRetry(
 
 export async function enqueueExistingGenerationJob(job: ExistingGenerationJob) {
   return enqueueGenerationAttempt(job);
-}
-
-async function dreamcoinBalance(userId: string, tx: Prisma.TransactionClient | typeof prisma = prisma) {
-  const aggregate = await tx.dreamcoinLedger.aggregate({
-    where: { userId },
-    _sum: { delta: true },
-  });
-  return aggregate._sum.delta ?? 0;
-}
-
-async function appendLedger(
-  tx: Prisma.TransactionClient,
-  userId: string,
-  delta: number,
-  reason: string,
-  sourceId?: string,
-  idempotencyKey?: string,
-) {
-  if (idempotencyKey) {
-    const existing = await tx.dreamcoinLedger.findUnique({ where: { idempotencyKey } });
-    if (existing) {
-      await linkGenerationLedgerEntry(tx, existing);
-      return existing;
-    }
-  }
-  await lockUserLedger(tx, userId);
-  const balance = await dreamcoinBalance(userId, tx);
-  const created = await tx.dreamcoinLedger.create({
-    data: {
-      userId,
-      delta,
-      balanceAfter: balance + delta,
-      reason,
-      sourceId,
-      idempotencyKey,
-    },
-  });
-  await linkGenerationLedgerEntry(tx, created);
-  return created;
-}
-
-async function lockUserLedger(tx: Prisma.TransactionClient, userId: string) {
-  await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId} FOR UPDATE`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
