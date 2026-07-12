@@ -68,7 +68,6 @@ export default defineConfig({
         "../shared/src/admin/release-gate.ts",
         import.meta.url,
       ).pathname,
-      "@idream/shared/admin": new URL("../shared/src/admin/index.ts", import.meta.url).pathname,
       "@idream/shared/admin/api-manifest": new URL(
         "../shared/src/admin/api-manifest.ts",
         import.meta.url,
