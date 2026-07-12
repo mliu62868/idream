@@ -8,12 +8,13 @@ import {
   redeemCodeHashCandidates,
 } from "@/server/lib/redeem-codes";
 import {
+  adminAuditData,
   actorWithPermission,
   clampInt,
   jsonBody,
   toInputJson,
-  writeAudit,
 } from "@/server/modules/admin/shared/legacy-primitives";
+import { executeIdempotentDomainCommand } from "@/server/modules/admin/shared/domain-command";
 import {
   decodeAdminListCursor,
   encodeAdminListCursor,
@@ -92,53 +93,106 @@ export async function createRedeemCode(request: Request) {
   if (body.confirmation !== body.code)
     throw Errors.badRequest("Confirmation did not match");
   const codeHash = redeemCodeHash(body.code);
-  const existing = await prisma.redeemCode.findFirst({
-    where: { codeHash: { in: redeemCodeHashCandidates(body.code) } },
-  });
-  if (existing) throw Errors.badRequest("Redeem code already exists");
-  const code = await prisma.redeemCode.create({
-    data: {
-      codeHash,
-      reward: toInputJson(body.reward),
-      status: "active",
-      maxRedemptions: body.maxRedemptions ?? null,
-      expiresAt: body.expiresAt ? new Date(body.expiresAt) : null,
-    },
-  });
-  await writeAudit(request, actor, {
-    action: "promo.redeem_code.create",
+  const result = await executeIdempotentDomainCommand({
+    request,
+    actor,
+    commandType: "promo.redeem_code.create",
     targetType: "redeem_code",
-    targetId: code.id,
-    reason: body.reason,
-    after: {
+    targetId: codeHash,
+    payload: {
+      codeHash,
       reward: body.reward,
-      maxRedemptions: code.maxRedemptions,
-      expiresAt: code.expiresAt,
+      maxRedemptions: body.maxRedemptions ?? null,
+      expiresAt: body.expiresAt ?? null,
+    },
+    execute: async (tx, requestId) => {
+      const existing = await tx.redeemCode.findFirst({
+        where: { codeHash: { in: redeemCodeHashCandidates(body.code) } },
+      });
+      if (existing) throw Errors.badRequest("Redeem code already exists");
+      const code = await tx.redeemCode.create({
+        data: {
+          codeHash,
+          reward: toInputJson(body.reward),
+          status: "active",
+          maxRedemptions: body.maxRedemptions ?? null,
+          expiresAt: body.expiresAt ? new Date(body.expiresAt) : null,
+        },
+      });
+      await tx.adminAuditLog.create({
+        data: {
+          ...adminAuditData(request, actor, {
+            action: "promo.redeem_code.create",
+            targetType: "redeem_code",
+            targetId: code.id,
+            reason: body.reason,
+            after: {
+              reward: body.reward,
+              maxRedemptions: code.maxRedemptions,
+              expiresAt: code.expiresAt,
+            },
+          }),
+          requestId,
+        },
+      });
+      await tx.mainOutboxEvent.create({
+        data: {
+          eventType: "admin.promo.redeem_code_created.v2",
+          aggregateType: "redeem_code",
+          aggregateId: code.id,
+          payload: toInputJson({ id: code.id, actorId: actor.id, requestId }),
+        },
+      });
+      return { id: code.id, status: code.status };
     },
   });
-  return ok({ id: code.id, status: code.status });
+  return ok(result);
 }
 
 export async function disableRedeemCode(request: Request, id: string) {
   const actor = await actorWithPermission(request, "growth.promo.write");
   const body = promoDisableSchema.parse(await jsonBody(request));
-  const before = await prisma.redeemCode.findUnique({ where: { id } });
-  if (!before) throw Errors.notFound("Redeem code not found");
-  if (body.confirmation !== before.id)
+  if (body.confirmation !== id)
     throw Errors.badRequest("Confirmation did not match target");
-  const after = await prisma.redeemCode.update({
-    where: { id },
-    data: { status: "disabled" },
-  });
-  await writeAudit(request, actor, {
-    action: "promo.redeem_code.disable",
+  const result = await executeIdempotentDomainCommand({
+    request,
+    actor,
+    commandType: "promo.redeem_code.disable",
     targetType: "redeem_code",
     targetId: id,
-    reason: body.reason,
-    before: { status: before.status },
-    after: { status: after.status },
+    payload: body,
+    execute: async (tx, requestId) => {
+      const before = await tx.redeemCode.findUnique({ where: { id } });
+      if (!before) throw Errors.notFound("Redeem code not found");
+      const after = await tx.redeemCode.update({
+        where: { id },
+        data: { status: "disabled" },
+      });
+      await tx.adminAuditLog.create({
+        data: {
+          ...adminAuditData(request, actor, {
+            action: "promo.redeem_code.disable",
+            targetType: "redeem_code",
+            targetId: id,
+            reason: body.reason,
+            before: { status: before.status },
+            after: { status: after.status },
+          }),
+          requestId,
+        },
+      });
+      await tx.mainOutboxEvent.create({
+        data: {
+          eventType: "admin.promo.redeem_code_disabled.v2",
+          aggregateType: "redeem_code",
+          aggregateId: id,
+          payload: toInputJson({ id, actorId: actor.id, requestId }),
+        },
+      });
+      return { id: after.id, status: after.status };
+    },
   });
-  return ok({ id: after.id, status: after.status });
+  return ok(result);
 }
 
 export async function listReferrals(request: Request) {

@@ -3802,6 +3802,40 @@ describe("admin featured curation (F3)", () => {
 });
 
 describe("admin promo: redeem codes + referrals (F4)", () => {
+  it("replays an exact create command without duplicating domain, audit, or outbox rows", async () => {
+    const admin = await setupActor("admin", "promo-idempotency");
+    const code = `${P}IDEMPOTENT`;
+    const idempotencyKey = `${P}promo-create-key`;
+    const body = {
+      code,
+      reward: { dreamcoins: 15 },
+      maxRedemptions: 5,
+      reason: "verify exact command replay",
+      confirmation: code,
+    };
+    const first = await api("POST", "admin/promo/redeem-codes", {
+      userId: admin,
+      role: "admin",
+      headers: { "idempotency-key": idempotencyKey },
+      body,
+    });
+    const replay = await api("POST", "admin/promo/redeem-codes", {
+      userId: admin,
+      role: "admin",
+      headers: { "idempotency-key": idempotencyKey },
+      body,
+    });
+    expectOk(first);
+    expectOk(replay);
+    expect(replay.data).toMatchObject({ id: first.data.id, replayed: true });
+    await expect(prisma.adminAuditLog.count({
+      where: { action: "promo.redeem_code.create", targetId: first.data.id },
+    })).resolves.toBe(1);
+    await expect(prisma.mainOutboxEvent.count({
+      where: { eventType: "admin.promo.redeem_code_created.v2", aggregateId: first.data.id },
+    })).resolves.toBe(1);
+  });
+
   it("creates/lists/disables redeem codes (no plaintext) with permission gating", async () => {
     const admin = await setupActor("admin", "promo");
     const analyst = await setupActor("analyst", "promo"); // has growth.promo.read, not write
