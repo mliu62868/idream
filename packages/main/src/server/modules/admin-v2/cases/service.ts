@@ -904,12 +904,12 @@ export async function verifyReviewCase(input: {
   readonly evidenceRefs: readonly string[];
   readonly overrideReason?: string;
   readonly requestId: string;
-}) {
+}, db?: Prisma.TransactionClient) {
   if (input.evidenceRefs.length === 0) throw Errors.badRequest("Verification requires evidence");
   if (input.state === "overridden" && !input.overrideReason?.trim()) {
     throw Errors.badRequest("Verification override requires a reason");
   }
-  return prisma.$transaction(async (tx) => {
+  const execute = async (tx: Prisma.TransactionClient) => {
     const current = await tx.adminCase.findUnique({ where: { id: input.caseId } });
     if (!current) throw Errors.notFound("Case not found");
     assertCaseScope(current, input.actor);
@@ -990,7 +990,8 @@ export async function verifyReviewCase(input: {
       }),
     } });
     return updated;
-  });
+  };
+  return db ? execute(db) : prisma.$transaction(execute);
 }
 
 export async function recordCustomerCaseAction(input: {
@@ -1009,8 +1010,8 @@ export async function recordCustomerCaseAction(input: {
   readonly evidenceRefs: readonly string[];
   readonly outcomeRef: string;
   readonly requestId: string;
-}) {
-  return prisma.$transaction(async (tx) => {
+}, db?: Prisma.TransactionClient) {
+  const execute = async (tx: Prisma.TransactionClient) => {
     const current = await tx.adminCase.findUnique({ where: { id: input.caseId } });
     if (!current) throw Errors.notFound("Case not found");
     assertCaseScope(current, input.actor);
@@ -1111,7 +1112,8 @@ export async function recordCustomerCaseAction(input: {
       },
     });
     return updated;
-  });
+  };
+  return db ? execute(db) : prisma.$transaction(execute);
 }
 
 export async function waitCase(input: {
@@ -1121,8 +1123,8 @@ export async function waitCase(input: {
   readonly reason: string;
   readonly resumeAt?: Date;
   readonly requestId: string;
-}) {
-  return prisma.$transaction(async (tx) => {
+}, db?: Prisma.TransactionClient) {
+  const execute = async (tx: Prisma.TransactionClient) => {
     const current = await tx.adminCase.findUnique({ where: { id: input.caseId } });
     if (!current) throw Errors.notFound("Case not found");
     assertCaseScope(current, input.actor);
@@ -1162,7 +1164,8 @@ export async function waitCase(input: {
       payload: toInputJson({ caseId: current.id, version: updated.version, resumeAt: input.resumeAt?.toISOString() ?? null }),
     } });
     return updated;
-  });
+  };
+  return db ? execute(db) : prisma.$transaction(execute);
 }
 
 export async function reopenOrRecurCase(input: {
@@ -1172,8 +1175,8 @@ export async function reopenOrRecurCase(input: {
   readonly reason: string;
   readonly requestId: string;
   readonly reopenWindowMs?: number;
-}) {
-  return prisma.$transaction(async (tx) => {
+}, db?: Prisma.TransactionClient) {
+  const execute = async (tx: Prisma.TransactionClient) => {
     const current = await tx.adminCase.findUnique({ where: { id: input.caseId } });
     if (!current) throw Errors.notFound("Case not found");
     assertCaseScope(current, input.actor);
@@ -1261,5 +1264,6 @@ export async function reopenOrRecurCase(input: {
     } });
     await tx.mainOutboxEvent.create({ data: { eventType: "admin.case.recurrence.created.v2", aggregateType: "admin_case", aggregateId: recurrence.id, payload: toInputJson({ caseId: recurrence.id, priorCaseId: terminal.id, priorCaseVersion: terminal.version, version: recurrence.version }) } });
     return { mode: "recurrence" as const, adminCase: recurrence };
-  });
+  };
+  return db ? execute(db) : prisma.$transaction(execute);
 }

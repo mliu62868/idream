@@ -1,10 +1,12 @@
-import { z } from "zod";
+import { caseWaitRequestSchema } from "@idream/shared/admin";
+import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { waitCase } from "@/server/modules/admin-v2/cases/service";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
+import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
+import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 
-const bodySchema = z.object({ entityVersion: z.number().int().positive(), reason: z.string().trim().min(3).max(2_000), resumeAt: z.string().datetime().optional(), confirmation: z.string().trim().min(1) }).strict();
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
@@ -12,8 +14,20 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const { id } = await context.params;
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "case.assign");
-    const body = bodySchema.parse(await request.json());
+    const body = caseWaitRequestSchema.parse(await request.json());
     if (body.confirmation !== `${id}:wait`) throw Errors.badRequest("Confirmation did not match Case wait target");
-    return waitCase({ caseId: id, actor, expectedVersion: body.entityVersion, reason: body.reason, resumeAt: body.resumeAt ? new Date(body.resumeAt) : undefined, requestId: request.headers.get("x-request-id") ?? crypto.randomUUID() });
+    const idempotencyKey = requireIdempotencyKey(request);
+    const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
+    return executeAtomicIdempotentMutation({
+      environment: env.APP_ENV,
+      actor,
+      idempotencyKey,
+      requestId,
+      commandType: "case.wait",
+      target: { type: "admin_case", id },
+      expectedVersion: body.entityVersion,
+      payload: body,
+      mutate: (tx) => waitCase({ caseId: id, actor, expectedVersion: body.entityVersion, reason: body.reason, resumeAt: body.resumeAt ? new Date(body.resumeAt) : undefined, requestId }, tx),
+    });
   });
 }

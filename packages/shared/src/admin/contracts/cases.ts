@@ -22,6 +22,23 @@ export const caseAssignmentRequestSchema = z
   })
   .strict();
 
+export const caseReopenRequestSchema = z
+  .object({
+    entityVersion: z.number().int().positive(),
+    reason: z.string().trim().min(3).max(2_000),
+    confirmation: z.string().trim().min(1),
+  })
+  .strict();
+
+export const caseWaitRequestSchema = z
+  .object({
+    entityVersion: z.number().int().positive(),
+    reason: z.string().trim().min(3).max(2_000),
+    resumeAt: adminIsoDateTimeSchema.optional(),
+    confirmation: z.string().trim().min(1),
+  })
+  .strict();
+
 export const CONTENT_REPORT_CASE_DECISIONS = [
   "actioned",
   "no_violation",

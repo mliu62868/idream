@@ -1,5 +1,8 @@
 import { caseVerificationRequestSchema } from "@idream/shared/admin";
+import { env } from "@/server/lib/env";
 import { verifyReviewCase } from "@/server/modules/admin-v2/cases/service";
+import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
+import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 
@@ -11,14 +14,26 @@ export async function POST(request: Request, context: Context) {
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "case.decide");
     const body = caseVerificationRequestSchema.parse(await request.json());
-    return verifyReviewCase({
-      caseId: id,
+    const idempotencyKey = requireIdempotencyKey(request);
+    const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
+    return executeAtomicIdempotentMutation({
+      environment: env.APP_ENV,
       actor,
+      idempotencyKey,
+      requestId,
+      commandType: "case.verification.record",
+      target: { type: "admin_case", id },
       expectedVersion: body.entityVersion,
-      state: body.state,
-      evidenceRefs: body.evidenceRefs,
-      overrideReason: body.overrideReason,
-      requestId: request.headers.get("x-request-id") ?? crypto.randomUUID(),
+      payload: body,
+      mutate: (tx) => verifyReviewCase({
+        caseId: id,
+        actor,
+        expectedVersion: body.entityVersion,
+        state: body.state,
+        evidenceRefs: body.evidenceRefs,
+        overrideReason: body.overrideReason,
+        requestId,
+      }, tx),
     });
   });
 }

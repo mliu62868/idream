@@ -51,14 +51,6 @@ export const ADMIN_V2_PENDING_CONTRACTS = {
     owner: "packages/main/src/server/modules/admin-v2/permissions/grant-bundles.ts",
     reason: "The grant request parser is route-local and has not moved to the shared Admin contract package.",
   },
-  caseReopenRequestSchema: {
-    owner: "packages/main/src/app/api/v2/admin/cases/[id]/commands/reopen/route.ts",
-    reason: "The Case reopen body schema is local to its Route Handler and is not exported as a shared contract.",
-  },
-  caseWaitRequestSchema: {
-    owner: "packages/main/src/app/api/v2/admin/cases/[id]/commands/wait/route.ts",
-    reason: "The Case wait body schema is local to its Route Handler and is not exported as a shared contract.",
-  },
   characterReleaseReviewRequestSchema: {
     owner: "packages/main/src/app/api/v2/admin/characters/[id]/releases/[releaseId]/review/route.ts",
     reason: "The Release review parser is Route Handler local and is not yet a shared request contract.",

@@ -1,7 +1,10 @@
 import { caseAssignmentRequestSchema } from "@idream/shared/admin";
-import { assignReviewCase } from "@/server/modules/admin-v2/cases/service";
+import { env } from "@/server/lib/env";
+import { assignReviewCaseInTransaction } from "@/server/modules/admin-v2/cases/service";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
+import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -11,15 +14,27 @@ export async function POST(request: Request, context: Context) {
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "case.assign");
     const body = caseAssignmentRequestSchema.parse(await request.json());
-    return assignReviewCase({
-      caseId: id,
+    const idempotencyKey = requireIdempotencyKey(request);
+    const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
+    return executeAtomicIdempotentMutation({
+      environment: env.APP_ENV,
       actor,
+      idempotencyKey,
+      requestId,
+      commandType: "case.assignment",
+      target: { type: "admin_case", id },
       expectedVersion: body.entityVersion,
-      ownerId: body.ownerId,
-      priority: body.priority,
-      slaDueAt: body.slaDueAt ? new Date(body.slaDueAt) : undefined,
-      reason: body.reason,
-      requestId: request.headers.get("x-request-id") ?? crypto.randomUUID(),
+      payload: body,
+      mutate: (tx) => assignReviewCaseInTransaction(tx, {
+        caseId: id,
+        actor,
+        expectedVersion: body.entityVersion,
+        ownerId: body.ownerId,
+        priority: body.priority,
+        slaDueAt: body.slaDueAt ? new Date(body.slaDueAt) : undefined,
+        reason: body.reason,
+        requestId,
+      }),
     });
   });
 }
