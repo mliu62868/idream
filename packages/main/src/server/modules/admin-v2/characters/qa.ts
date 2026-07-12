@@ -6,7 +6,7 @@ import {
 } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
-import { actorWithPermission } from "@/server/modules/admin/service";
+import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { canonicalSha256 } from "../shared/canonical-json";
 import { toInputJson } from "../shared/prisma-json";
 

@@ -4,7 +4,7 @@ import { fail, ok } from "@/server/lib/http";
 import { prisma } from "@/server/lib/db";
 import {
   actorWithPermission,
-} from "@/server/modules/admin/service";
+} from "@/server/modules/admin-v2/shared/authority";
 import type { PermissionKey } from "@/server/admin/permissions";
 
 function readPermission(targetType: string): PermissionKey {

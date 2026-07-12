@@ -1,5 +1,5 @@
 import { generationRouteQualificationEvaluateRequestSchema } from "@idream/shared/admin";
-import { actorWithPermission } from "@/server/modules/admin/service";
+import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { evaluateGenerationRouteQualification } from "@/server/modules/admin-v2/characters/route-qualification";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 

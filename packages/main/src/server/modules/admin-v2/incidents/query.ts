@@ -3,7 +3,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
-import { actorWithPermission } from "@/server/modules/admin/service";
+import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { assertIncidentReadable, incidentReadScopeWhere } from "./scope";
 
 function record(value: Prisma.JsonValue | null) {

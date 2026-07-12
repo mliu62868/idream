@@ -2,7 +2,7 @@ import { incidentTriageRequestSchema } from "@idream/shared/admin";
 import { getIncidentDetail } from "@/server/modules/admin-v2/incidents/query";
 import { triageIncident } from "@/server/modules/admin-v2/incidents/workflow";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
-import { actorWithPermission } from "@/server/modules/admin/service";
+import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";

@@ -1,5 +1,5 @@
 import { creativeRunAttachIncidentRequestSchema } from "@idream/shared/admin";
-import { actorWithPermission } from "@/server/modules/admin/service";
+import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { attachCreativeRunToIncident } from "@/server/modules/admin-v2/creative/workflow";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 

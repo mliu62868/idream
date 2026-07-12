@@ -1,6 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { Errors } from "@/server/lib/errors";
-import { enqueueGenerationAttempt } from "@/server/modules/admin/service";
+import { enqueueGenerationAttempt } from "@/server/modules/generation/attempt-dispatch";
 import { recordGenerationAttemptQueuedEvent } from "@/server/ai/generation-attempt-events";
 import { claimControlPlaneCommand } from "../shared/control-plane-command";
 import { toInputJson } from "../shared/prisma-json";

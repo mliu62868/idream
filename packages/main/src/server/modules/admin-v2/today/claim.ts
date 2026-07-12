@@ -7,8 +7,8 @@ import {
 import { effectiveCharacterIdsForPermission } from "@/server/admin/effective-permissions";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
-import type { AdminActor } from "@/server/modules/admin/service";
-import { actorWithPermission } from "@/server/modules/admin/service";
+import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { assignReviewCase } from "../cases/service";
 import { triageIncident } from "../incidents/workflow";
 import { toInputJson } from "../shared/prisma-json";

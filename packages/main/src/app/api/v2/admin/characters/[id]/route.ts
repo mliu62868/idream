@@ -1,5 +1,5 @@
 import { characterWorkspaceDetailSchema } from "@idream/shared/admin";
-import { actorWithPermission } from "@/server/modules/admin/service";
+import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { getCharacterWorkspace } from "@/server/modules/admin-v2/characters/workspace";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 

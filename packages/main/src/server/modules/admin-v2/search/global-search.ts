@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { prisma } from "@/server/lib/db";
 import { ok } from "@/server/lib/http";
-import { actorWithPermission } from "@/server/modules/admin/service";
+import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { effectiveCharacterIdsForPermission, effectivePermissions } from "@/server/admin/effective-permissions";
 import { incidentReadScopeWhere } from "@/server/modules/admin-v2/incidents/scope";
 

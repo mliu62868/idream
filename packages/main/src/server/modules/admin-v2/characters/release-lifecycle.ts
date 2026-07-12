@@ -1,6 +1,6 @@
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
-import { actorWithPermission } from "@/server/modules/admin/service";
+import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { CHARACTER_RELEASE_POLICY_VERSION, validateCharacterReleaseSnapshot } from "./release-executor";
 import { characterReleaseSnapshotHash } from "./release-snapshot";
 import { toInputJson } from "../shared/prisma-json";

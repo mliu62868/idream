@@ -2,7 +2,7 @@ import { operationalWorkPreferenceUpdateSchema } from "@idream/shared/admin";
 import { effectivePermissions } from "@/server/admin/effective-permissions";
 import { updateOperationalWorkPreference } from "@/server/modules/admin-v2/today/preferences";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
-import { actorWithPermission } from "@/server/modules/admin/service";
+import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";

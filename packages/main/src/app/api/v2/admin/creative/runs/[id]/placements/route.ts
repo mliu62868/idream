@@ -1,7 +1,7 @@
 import { creativePlacementPublishRequestSchema } from "@idream/shared/admin";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 import { publishDistributionPlacement } from "@/server/modules/admin-v2/creative/workflow";
-import { actorWithPermission } from "@/server/modules/admin/service";
+import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";

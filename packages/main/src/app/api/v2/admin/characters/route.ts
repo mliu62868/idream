@@ -3,7 +3,7 @@ import {
   characterProjectCreateResponseSchema,
 } from "@idream/shared/admin";
 import { Errors } from "@/server/lib/errors";
-import { actorWithPermission } from "@/server/modules/admin/service";
+import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { createCharacterProject } from "@/server/modules/admin-v2/characters/creation";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 

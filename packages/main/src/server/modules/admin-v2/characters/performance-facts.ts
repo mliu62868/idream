@@ -6,7 +6,7 @@ import {
 import type { PrismaClient } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { ok } from "@/server/lib/http";
-import { actorWithPermission } from "@/server/modules/admin/service";
+import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { toInputJson } from "../shared/prisma-json";
 
 export interface CharacterPerformanceBackfillOptions {

@@ -3,7 +3,7 @@ import { ADMIN_GRANT_BUNDLES, type AdminGrantBundleKey } from "@idream/shared";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
-import { actorWithPermission, jsonBody } from "@/server/modules/admin/service";
+import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
 import { toInputJson } from "../shared/prisma-json";
 
 const bundleKeySchema = z.enum(["character_producer", "creative_operator", "growth_operator"]);

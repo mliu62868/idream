@@ -1,7 +1,7 @@
 import { adminBackfillRequestSchema } from "@idream/shared/admin";
 import { backfillCustomerCases } from "@/server/modules/admin-v2/cases/service";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
-import { actorWithPermission } from "@/server/modules/admin/service";
+import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";

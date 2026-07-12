@@ -1,7 +1,7 @@
 import { prisma } from "@/server/lib/db";
 import type { Prisma } from "@prisma/client";
 import { Errors } from "@/server/lib/errors";
-import type { AdminActor } from "@/server/modules/admin/service";
+import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { deriveCreativeRunState, type CreativeRunLedgerFact } from "@/server/modules/admin/content-production-state";
 import { toInputJson } from "../shared/prisma-json";
 import { resolveCommunityCampaignPlacements } from "@/server/modules/ourdream/community-campaigns";

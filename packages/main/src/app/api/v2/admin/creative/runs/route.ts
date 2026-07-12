@@ -1,5 +1,5 @@
 import { creativeRunCreateRequestSchema } from "@idream/shared/admin";
-import { actorWithPermission } from "@/server/modules/admin/service";
+import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { Errors } from "@/server/lib/errors";
 import { createProductionBatchCore } from "@/server/modules/admin/content-ops";
 import { listCreativeRuns } from "@/server/modules/admin-v2/creative/workflow";

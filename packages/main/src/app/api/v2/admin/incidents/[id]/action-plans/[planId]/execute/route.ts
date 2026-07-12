@@ -1,7 +1,7 @@
 import { incidentActionPlanExecuteRequestSchema } from "@idream/shared/admin";
 import { executeIncidentActionPlan } from "@/server/modules/admin-v2/incidents/service";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
-import { actorWithPermission } from "@/server/modules/admin/service";
+import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { Errors } from "@/server/lib/errors";
 
 export const dynamic = "force-dynamic";

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { Errors } from "@/server/lib/errors";
-import { actorWithPermission } from "@/server/modules/admin/service";
+import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { cancelGenerationRequest } from "@/server/ai/generation-request-lifecycle";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 

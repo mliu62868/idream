@@ -7,28 +7,29 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
-import type { ImageGeneratePayload, VideoGeneratePayload } from "@/server/ai/schemas";
-import { imageReferenceInputsForGenerationJob } from "@/server/ai/reference-images";
 import { ensureGenerationSettlementLinks, linkGenerationLedgerEntry } from "@/server/ai/generation-settlement";
 import {
   recordGenerationAttemptEvent,
   recordGenerationAttemptQueuedEvent,
 } from "@/server/ai/generation-attempt-events";
 import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
-import { jobQueue } from "@/server/jobs/queue";
 import {
   applyOverrides,
   isPermissionKey,
   resolvePermissions,
-  type PermissionKey,
 } from "@/server/admin/permissions";
-import { effectiveCharacterIdsForPermission, effectivePermissions } from "@/server/admin/effective-permissions";
+import { effectivePermissions } from "@/server/admin/effective-permissions";
 import { getAuthCtx, requireUser, type ActorRole } from "@/server/lib/auth";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
-import { verifyAdminBffRequest } from "@/server/modules/admin-v2/shared/admin-bff";
+import {
+  actorWithPermission,
+  jsonBody,
+  type AdminActor,
+} from "@/server/modules/admin-v2/shared/authority";
+export { actorWithPermission, jsonBody, type AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import {
   decodeAdminListCursor,
   encodeAdminListCursor,
@@ -109,11 +110,15 @@ import {
   recordReviewCaseDecision,
   synchronizeSupportCaseFromRequest,
 } from "@/server/modules/admin-v2/cases/service";
+import {
+  enqueueGenerationAttempt,
+  type ExistingGenerationJob,
+} from "@/server/modules/generation/attempt-dispatch";
+export { enqueueGenerationAttempt } from "@/server/modules/generation/attempt-dispatch";
 
 const FEATURED_SETTING_KEY = "feed.featured";
 
 type ApiMethod = "GET" | "POST" | "PATCH" | "DELETE" | "PUT";
-export type AdminActor = { id: string; role: ActorRole };
 type PlaintextFields = Record<string, string | null>;
 
 const adminDecisionSchema = z.object({
@@ -4597,33 +4602,6 @@ async function chatOpsModerationEvents(request: Request) {
   });
 }
 
-export async function actorWithPermission(
-  request: Request,
-  permission: PermissionKey,
-  resource?: { readonly characterId?: string },
-): Promise<AdminActor> {
-  const bff = await verifyAdminBffRequest(request);
-  if (!bff.ok) {
-    throw Errors.unauthorized("Admin BFF authentication failed", { reason: bff.reason });
-  }
-  const ctx = await getAuthCtx(request);
-  const user = requireUser(ctx);
-  const effective = await effectivePermissions(user.id, user.role);
-  if (!effective.has(permission)) {
-    throw Errors.forbidden("Missing admin permission", { permission });
-  }
-  if (resource?.characterId && permission.startsWith("character.")) {
-    const allowedCharacterIds = await effectiveCharacterIdsForPermission(user.id, user.role, permission);
-    if (allowedCharacterIds !== null && !allowedCharacterIds.has(resource.characterId)) {
-      throw Errors.forbidden("Character is outside the effective permission scope", {
-        permission,
-        characterId: resource.characterId,
-      });
-    }
-  }
-  return { id: user.id, role: user.role };
-}
-
 export async function writeAudit(
   request: Request,
   actor: AdminActor,
@@ -5010,25 +4988,6 @@ async function enforceApproval(
   }
 }
 
-type ExistingGenerationJob = {
-  id: string;
-  userId: string;
-  characterId: string | null;
-  mode: string;
-  prompt: string | null;
-  negativePrompt: string | null;
-  controls: Prisma.JsonValue;
-  presetIds: Prisma.JsonValue;
-  model: string | null;
-  profileId?: string | null;
-  profileVersion?: number | null;
-  provider?: string | null;
-  orientation: string | null;
-  outputCount: number;
-  seed?: string | null;
-  referenceAssetIds?: Prisma.JsonValue | null;
-};
-
 async function stageGenerationRetry(
   tx: Prisma.TransactionClient,
   input: {
@@ -5136,125 +5095,6 @@ export async function enqueueExistingGenerationJob(job: ExistingGenerationJob) {
   return enqueueGenerationAttempt(job);
 }
 
-export async function enqueueGenerationAttempt(
-  job: ExistingGenerationJob,
-  suppliedAttempt?: { readonly attemptId: string; readonly attemptNo: number },
-) {
-  const attempt = await prisma.$transaction(async (tx) => {
-    const row = suppliedAttempt
-      ? await tx.generationAttempt.findUniqueOrThrow({ where: { id: suppliedAttempt.attemptId } })
-      : await tx.generationAttempt.upsert({
-          where: { requestId_attemptNo: { requestId: job.id, attemptNo: 1 } },
-          create: { requestId: job.id, attemptNo: 1, status: "queued" },
-          update: {},
-        });
-    await recordGenerationAttemptQueuedEvent(tx, row);
-    return row;
-  });
-  if (attempt.requestId !== job.id || (suppliedAttempt && attempt.attemptNo !== suppliedAttempt.attemptNo)) {
-    throw Errors.conflict("Generation Attempt does not belong to the requested generation authority");
-  }
-  const controls = await internalExistingGenerationControls(job);
-  const modelCapabilities = modelCapabilitiesFromControls(controls);
-  const referenceImages =
-    job.mode === "image" && (modelCapabilities.referenceImages || modelCapabilities.initImage)
-      ? filterReferenceImagesForCapabilities(
-          await imageReferenceInputsForGenerationJob({
-            userId: job.userId,
-            characterId: job.characterId,
-            controls,
-            referenceAssetIds: job.referenceAssetIds,
-          }),
-          modelCapabilities,
-        )
-      : [];
-  const common = {
-    version: 1 as const,
-    requestId: `admin_requeue_${randomUUID()}`,
-    generationJobId: job.id,
-    attemptId: attempt.id,
-    attemptNo: attempt.attemptNo,
-    userId: job.userId,
-    characterId: job.characterId,
-    prompt: job.prompt ?? `${job.mode === "video" ? "Video" : "Image"} generation ${job.id}`,
-    negativePrompt: job.negativePrompt,
-    controls,
-    seed: job.seed ?? job.id,
-    model: job.model ?? (job.mode === "video" ? "mock-video" : "mock-image"),
-    outputPrefix: `gen/${job.id}/`,
-  };
-  const payload: ImageGeneratePayload | VideoGeneratePayload =
-    job.mode === "video"
-      ? {
-          ...common,
-          kind: "video",
-          seconds: numericControl(controls, "seconds", 4),
-        }
-      : {
-          ...common,
-          kind: "image",
-          presetIds: jsonStringArray(job.presetIds),
-          orientation: job.orientation ?? stringControl(controls, "orientation", "portrait"),
-          count: job.outputCount,
-          ...(referenceImages.length > 0 ? { referenceImages } : {}),
-        };
-  await jobQueue.enqueue({
-    queue: job.mode === "video" ? "ai.video.generate" : "ai.image.generate",
-    payload: toInputJson(payload),
-    dedupeKey: suppliedAttempt
-      ? `generation:${job.id}:attempt:${attempt.attemptNo}`
-      : `generation:${job.id}`,
-    maxAttempts: 3,
-  });
-}
-
-async function internalExistingGenerationControls(job: {
-  controls: Prisma.JsonValue;
-  profileId?: string | null;
-  profileVersion?: number | null;
-}) {
-  const controls = jsonRecord(job.controls);
-  if (!job.profileId || !job.profileVersion) return controls;
-  const profile = await prisma.generationModelProfile.findFirst({
-    where: {
-      version: job.profileVersion,
-      OR: [{ profileKey: job.profileId }, { id: job.profileId }],
-    },
-  });
-  if (!profile) return controls;
-  return pruneUndefined({
-    ...controls,
-    modelCapabilities: generationModelCapabilities(profile.runner, profile.runnerConfig),
-    sdcpp: profile.runner === "sd_cpp" ? sdcppProfileRuntimeConfig(profile) : undefined,
-  });
-}
-
-function generationModelCapabilities(runner: string, runnerConfig: Prisma.JsonValue | null) {
-  const config = jsonRecord(runnerConfig);
-  return normalizedModelCapabilities(config.capabilities, runner === "sd_cpp");
-}
-
-function modelCapabilitiesFromControls(controls: Record<string, unknown>) {
-  const capabilities = jsonRecord(controls.modelCapabilities);
-  return {
-    textToImage: booleanFromRecord(capabilities, "textToImage", true),
-    stableSeed: booleanFromRecord(capabilities, "stableSeed", true),
-    referenceImages: booleanFromRecord(capabilities, "referenceImages", false),
-    initImage: booleanFromRecord(capabilities, "initImage", false),
-    lora: booleanFromRecord(capabilities, "lora", false),
-  };
-}
-
-function filterReferenceImagesForCapabilities(
-  images: Awaited<ReturnType<typeof imageReferenceInputsForGenerationJob>>,
-  capabilities: ReturnType<typeof modelCapabilitiesFromControls>,
-) {
-  return images.filter((image) => {
-    if (image.role === "source_image") return capabilities.initImage;
-    return capabilities.referenceImages;
-  });
-}
-
 async function dreamcoinBalance(userId: string, tx: Prisma.TransactionClient | typeof prisma = prisma) {
   const aggregate = await tx.dreamcoinLedger.aggregate({
     where: { userId },
@@ -5298,13 +5138,6 @@ async function lockUserLedger(tx: Prisma.TransactionClient, userId: string) {
   await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId} FOR UPDATE`;
 }
 
-export async function jsonBody(request: Request): Promise<unknown> {
-  if (request.method === "GET" || request.method === "DELETE") return {};
-  const text = await request.text();
-  if (!text) return {};
-  return JSON.parse(text) as unknown;
-}
-
 export function toInputJson(value: unknown): Prisma.InputJsonValue {
   return value as Prisma.InputJsonValue;
 }
@@ -5346,25 +5179,6 @@ function consentScopeFields(scope: Prisma.JsonValue | undefined) {
   const fields = scope.fields;
   if (!Array.isArray(fields)) return new Set<string>();
   return new Set(fields.filter((field): field is string => typeof field === "string"));
-}
-
-function stringControl(
-  controls: Record<string, unknown>,
-  key: string,
-  fallback: string,
-) {
-  const value = controls[key];
-  return typeof value === "string" && value.trim() ? value : fallback;
-}
-
-function numericControl(
-  controls: Record<string, unknown>,
-  key: string,
-  fallback: number,
-) {
-  const value = controls[key];
-  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
-  return value;
 }
 
 export function clampInt(value: string | null, min: number, max: number, fallback: number) {

@@ -6,7 +6,7 @@ import {
 } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
-import type { AdminActor } from "@/server/modules/admin/service";
+import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { generationWorkflowDescriptor } from "@/server/modules/admin/generation-catalog";
 import { canonicalSha256 } from "../shared/canonical-json";
 import { toInputJson } from "../shared/prisma-json";

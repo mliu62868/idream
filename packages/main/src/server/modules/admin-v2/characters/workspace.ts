@@ -7,7 +7,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
-import type { AdminActor } from "@/server/modules/admin/service";
+import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { listCharacterPortfolioData } from "./portfolio";
 import { collectReleaseMonitorFacts } from "./release-monitor";
 import { toInputJson } from "../shared/prisma-json";

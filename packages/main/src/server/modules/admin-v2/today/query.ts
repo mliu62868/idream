@@ -19,7 +19,7 @@ import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { AppError } from "@/server/lib/errors";
 import { fail, ok } from "@/server/lib/http";
-import { actorWithPermission } from "@/server/modules/admin/service";
+import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { incidentReadScopeWhere } from "@/server/modules/admin-v2/incidents/scope";
 
 const QUEUE_LIMIT = 10;

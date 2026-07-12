@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { effectivePermissions } from "@/server/admin/effective-permissions";
 import { grantUserBundle, listUserGrantBundles, revokeUserBundle } from "./grant-bundles";
-import { actorWithPermission } from "@/server/modules/admin/service";
+import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 
 describe("persisted Admin grant bundle authority", () => {
   const suffix = randomUUID();
