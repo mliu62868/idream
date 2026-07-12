@@ -6,6 +6,8 @@ const source = [
   readFileSync(new URL("./AnnouncementsView.tsx", import.meta.url), "utf8"),
   readFileSync(new URL("../../features/audit/AuditWorkspace.tsx", import.meta.url), "utf8"),
   readFileSync(new URL("../../features/audit/query.ts", import.meta.url), "utf8"),
+  readFileSync(new URL("../../features/pricing/PricingWorkspace.tsx", import.meta.url), "utf8"),
+  readFileSync(new URL("../../features/pricing/query.ts", import.meta.url), "utf8"),
 ].join("\n");
 
 describe("remaining canonical admin list surfaces", () => {

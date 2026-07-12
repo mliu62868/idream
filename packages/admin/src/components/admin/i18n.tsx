@@ -140,6 +140,7 @@ const zh: Record<string, string> = {
   "Growth": "增长",
   "Platform Operations": "平台运营",
   "Portfolio & Projects": "角色组合与项目",
+  "Character Performance": "角色表现",
   "Taxonomy": "分类体系",
   "Creative Runs": "创意生产批次",
   "Library": "素材库",

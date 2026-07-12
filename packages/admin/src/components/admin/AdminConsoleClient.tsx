@@ -92,6 +92,7 @@ import { CharacterPerformanceWorkspace, CharacterWorkspace } from "@/features/ch
 import { CreativeRunWorkspace } from "@/features/creative/CreativeRunWorkspace";
 import { JobsView as GenerationJobsWorkspace } from "@/features/jobs/JobsView";
 import { AuditWorkspace } from "@/features/audit/AuditWorkspace";
+import { PricingWorkspace } from "@/features/pricing/PricingWorkspace";
 import {
   buildCompatibilityListUrl,
   readCompatibilityListQuery,
@@ -244,7 +245,6 @@ type SectionData =
   | { kind: "users"; rows: Row[] }
   | { kind: "access"; rows: Row[] }
   | { kind: "billing"; rows: Row[]; subscriptions: Row[]; reconciliation: ReconciliationData; pageInfo: { ledger: PageInfo; subscriptions: PageInfo }; query: ListQuery }
-  | { kind: "pricing"; rows: Row[]; pageInfo: PageInfo; query: ListQuery }
   | { kind: "deadletter"; rows: Row[]; pageInfo: PageInfo; query: ListQuery }
   | { kind: "analytics"; data: AnalyticsWorkspaceData }
   | { kind: "risk"; data: AbuseData }
@@ -278,7 +278,8 @@ type SectionData =
         | "incidents"
         | "cases"
         | "audit"
-        | "character-performance";
+        | "character-performance"
+        | "pricing";
     }
   | {
       kind: "chatops";
@@ -397,16 +398,6 @@ type LoraDraft = {
   enabled: boolean;
 };
 
-type PricingDraft = {
-  ruleKey: string;
-  label: string;
-  mode: "image" | "video" | "voice";
-  baseCost: string;
-  multiplier: string;
-  reason: string;
-  confirmation: string;
-};
-
 type PermissionForm = {
   userId: string;
   permissionKey: string;
@@ -469,16 +460,6 @@ const modelProfileTemplates: Array<{
   },
 ];
 const fallbackModelProfileTemplate = modelProfileTemplates[0]!;
-
-const defaultPricingDraft: PricingDraft = {
-  ruleKey: "generation_image_default",
-  label: "Image generation default",
-  mode: "image",
-  baseCost: "5",
-  multiplier: "1",
-  reason: "",
-  confirmation: "",
-};
 
 const defaultPermissionForm: PermissionForm = {
   userId: "",
@@ -647,8 +628,6 @@ export function AdminConsoleClient({
   const [actionBusy, setActionBusy] = useState(false);
   const [adjustment, setAdjustment] = useState({ userId: "", delta: "" });
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
-  const [pricingDraft, setPricingDraft] = useState<PricingDraft>(defaultPricingDraft);
-  const [pricingBusy, setPricingBusy] = useState(false);
   const [permissionForm, setPermissionForm] = useState<PermissionForm>(defaultPermissionForm);
   const [chatOpsFilters, setChatOpsFilters] = useState<ChatOpsFilters>(() => chatOpsFiltersFromParams(initialRouteParams));
   const [locale, setLocale] = useState<AdminLocale>("en");
@@ -823,20 +802,6 @@ export function AdminConsoleClient({
       setError(actionError instanceof Error ? actionError.message : "Admin action failed");
     } finally {
       setActionBusy(false);
-    }
-  }
-
-  async function createPricingRule() {
-    setPricingBusy(true);
-    setError(null);
-    try {
-      await apiWrite("/api/v1/admin/pricing/rules", "POST", pricingDraftPayload(pricingDraft));
-      setPricingDraft({ ...pricingDraft, reason: "", confirmation: "" });
-      await load();
-    } catch (createError) {
-      setError(createError instanceof Error ? createError.message : "Pricing rule create failed");
-    } finally {
-      setPricingBusy(false);
     }
   }
 
@@ -1116,10 +1081,6 @@ export function AdminConsoleClient({
                 setAdjustment,
                 selectedProfileId,
                 setSelectedProfileId,
-                pricingDraft,
-                setPricingDraft,
-                pricingBusy,
-                createPricingRule,
                 permissionForm,
                 setPermissionForm,
                 chatOpsFilters,
@@ -1468,11 +1429,7 @@ async function fetchSection(
       query,
     };
   }
-  if (sectionId === "pricing") {
-    const query = listQuery(params, ["pricingSearch", "pricingMode", "pricingStatus", "pricingCursor"]);
-    const payload = await apiGet<{ items: Row[]; pageInfo: PageInfo }>(`/api/v1/admin/pricing/rules${queryString({ search: query.pricingSearch, mode: query.pricingMode, status: query.pricingStatus, cursor: query.pricingCursor, limit: "25" })}`);
-    return { kind: "pricing", rows: payload.items, pageInfo: payload.pageInfo ?? emptyPageInfo, query };
-  }
+  if (sectionId === "pricing") return { kind: "selfFetch", view: "pricing" };
   if (sectionId === "analytics") {
     const [legacy, canonical] = await Promise.all([
       options.includeLegacyAnalytics
@@ -1680,29 +1637,6 @@ function runnerConfigForProfileTemplate(template: ModelProfileTemplateId) {
     };
   }
   return {};
-}
-
-function canCreatePricingRule(draft: PricingDraft) {
-  const ruleKey = draft.ruleKey.trim();
-  return Boolean(
-    ruleKey &&
-      draft.label.trim() &&
-      draft.baseCost.trim() !== "" &&
-      draft.reason.trim().length >= 3 &&
-      draft.confirmation.trim() === ruleKey,
-  );
-}
-
-function pricingDraftPayload(draft: PricingDraft): Record<string, unknown> {
-  return {
-    ruleKey: draft.ruleKey.trim(),
-    label: draft.label.trim(),
-    mode: draft.mode,
-    baseCost: intFromText(draft.baseCost, 5),
-    multiplier: numberFromText(draft.multiplier, 1),
-    reason: draft.reason.trim(),
-    confirmation: draft.confirmation.trim(),
-  };
 }
 
 function parseCsv(value: string) {
@@ -2397,10 +2331,6 @@ function renderSection(
     setAdjustment: (value: { userId: string; delta: string }) => void;
     selectedProfileId: string | null;
     setSelectedProfileId: (value: string | null) => void;
-    pricingDraft: PricingDraft;
-    setPricingDraft: (value: PricingDraft) => void;
-    pricingBusy: boolean;
-    createPricingRule: () => void;
     permissionForm: PermissionForm;
     setPermissionForm: (value: PermissionForm) => void;
     chatOpsFilters: ChatOpsFilters;
@@ -2464,21 +2394,6 @@ function renderSection(
         rows={section.rows}
         setAdjustment={ctx.setAdjustment}
         subscriptions={section.subscriptions}
-        pageInfo={section.pageInfo}
-        query={section.query}
-        updateQuery={ctx.updateQuery}
-      />
-    );
-  }
-  if (section.kind === "pricing") {
-    return (
-      <PricingView
-        busy={ctx.pricingBusy}
-        draft={ctx.pricingDraft}
-        onCreate={ctx.createPricingRule}
-        onDraftChange={ctx.setPricingDraft}
-        openAction={ctx.openAction}
-        rows={section.rows}
         pageInfo={section.pageInfo}
         query={section.query}
         updateQuery={ctx.updateQuery}
@@ -2588,6 +2503,7 @@ function renderSection(
         canRead={ctx.permissions.has("character.performance.read")}
       />;
     }
+    if (section.view === "pricing") return <PricingWorkspace canWrite={ctx.permissions.has("config.pricing.write")} />;
     return <ReviewQueueView />;
   }
   if (section.kind === "chatops") {
@@ -5101,162 +5017,6 @@ function BillingView({
         empty={queryIsFiltered(query, ["billingSearch", "ledgerReason"]) ? "No ledger entries match these filters" : "No ledger entries exist yet"}
       />
       <CanonicalPager cursorKey="ledgerCursor" pageInfo={pageInfo.ledger} updateQuery={updateQuery} />
-    </div>
-  );
-}
-
-function PricingView({
-  busy,
-  draft,
-  onCreate,
-  onDraftChange,
-  openAction,
-  rows,
-  pageInfo,
-  query,
-  updateQuery,
-}: {
-  busy: boolean;
-  draft: PricingDraft;
-  onCreate: () => void;
-  onDraftChange: (value: PricingDraft) => void;
-  openAction: (action: PendingAction) => void;
-  rows: Row[];
-  pageInfo: PageInfo;
-  query: ListQuery;
-  updateQuery: (updates: Record<string, string | null>, clearCursors?: readonly string[]) => void;
-}) {
-  const { t } = useAdminI18n();
-
-  return (
-    <div className="space-y-6">
-      <ServerListToolbar cursorKeys={["pricingCursor"]} fields={[
-        { key: "pricingSearch", label: "Search" },
-        { key: "pricingMode", label: "Mode", options: ["image", "video", "voice"] },
-        { key: "pricingStatus", label: "Status", options: ["draft", "active", "archived"] },
-      ]} query={query} updateQuery={updateQuery} />
-      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="text-sm font-semibold">{t("Create Pricing Rule Draft")}</h2>
-            <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-              改价走 draft → publish 版本化发布；发布即归档同 mode 旧 active，可一键 rollback。
-            </p>
-          </div>
-          <button
-            className="inline-flex h-9 items-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
-            disabled={busy || !canCreatePricingRule(draft)}
-            onClick={onCreate}
-            type="button"
-          >
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-            {t("Create Draft")}
-          </button>
-        </div>
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-7">
-          <FormField
-            label="Rule Key"
-            onChange={(value) => onDraftChange({ ...draft, ruleKey: value })}
-            value={draft.ruleKey}
-          />
-          <FormField
-            label="Label"
-            onChange={(value) => onDraftChange({ ...draft, label: value })}
-            value={draft.label}
-          />
-          <FormSelect
-            label="Mode"
-            onChange={(value) => onDraftChange({ ...draft, mode: value as PricingDraft["mode"] })}
-            options={["image", "video", "voice"]}
-            value={draft.mode}
-          />
-          <FormField
-            label="Base Cost (coins)"
-            onChange={(value) => onDraftChange({ ...draft, baseCost: value })}
-            value={draft.baseCost}
-          />
-          <FormField
-            label="Multiplier"
-            onChange={(value) => onDraftChange({ ...draft, multiplier: value })}
-            value={draft.multiplier}
-          />
-          <FormField
-            label="Reason (≥3)"
-            onChange={(value) => onDraftChange({ ...draft, reason: value })}
-            value={draft.reason}
-          />
-          <FormField
-            label="Confirm rule key"
-            onChange={(value) => onDraftChange({ ...draft, confirmation: value })}
-            value={draft.confirmation}
-          />
-        </div>
-      </section>
-
-      <DataTable
-        actions={(row) => {
-          const id = stringValue(row.id);
-          const status = stringValue(row.status);
-          return (
-            <div className="flex flex-wrap gap-1">
-              {status === "draft" ? (
-                <IconAction
-                  icon={<UploadCloud className="h-4 w-4" />}
-                  label="Publish"
-                  onClick={() =>
-                    openAction({
-                      title: `Publish pricing ${id}`,
-                      endpoint: `/api/v1/admin/pricing/rules/${id}/publish`,
-                      method: "POST",
-                      confirmText: id,
-                      reasonRequired: true,
-                      body: (actionReason, actionConfirmation) => ({
-                        reason: actionReason,
-                        confirmation: actionConfirmation,
-                      }),
-                    })
-                  }
-                />
-              ) : null}
-              {status === "active" ? (
-                <IconAction
-                  icon={<RotateCcw className="h-4 w-4" />}
-                  label="Rollback"
-                  onClick={() =>
-                    openAction({
-                      title: `Rollback pricing ${id}`,
-                      endpoint: `/api/v1/admin/pricing/rules/${id}/rollback`,
-                      method: "POST",
-                      confirmText: id,
-                      reasonRequired: true,
-                      body: (actionReason, actionConfirmation) => ({
-                        reason: actionReason,
-                        confirmation: actionConfirmation,
-                      }),
-                    })
-                  }
-                />
-              ) : null}
-            </div>
-          );
-        }}
-        columns={[
-          "id",
-          "ruleKey",
-          "label",
-          "mode",
-          "baseCost",
-          "multiplier",
-          "status",
-          "version",
-          "effectiveFrom",
-          "publishedAt",
-        ]}
-        rows={rows}
-        title="Pricing Rules"
-        empty={queryIsFiltered(query, ["pricingSearch", "pricingMode", "pricingStatus"]) ? "No pricing rules match these filters" : "No pricing rules exist yet"}
-      />
-      <CanonicalPager cursorKey="pricingCursor" pageInfo={pageInfo} updateQuery={updateQuery} />
     </div>
   );
 }

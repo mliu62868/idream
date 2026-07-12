@@ -37,4 +37,20 @@ describe("admin source boundary", () => {
     expect(catchAll).not.toContain("function AuditView");
     expect(auditFeature).toContain("export function AuditWorkspace");
   });
+
+  it("keeps the migrated Pricing domain and its writes out of the catch-all client", async () => {
+    const catchAll = await readFile(
+      path.join(packageRoot, "src/components/admin/AdminConsoleClient.tsx"),
+      "utf8",
+    );
+    const pricingFeature = await readFile(
+      path.join(packageRoot, "src/features/pricing/PricingWorkspace.tsx"),
+      "utf8",
+    );
+
+    expect(catchAll).not.toContain("/api/v1/admin/pricing/rules");
+    expect(catchAll).not.toContain("function PricingView");
+    expect(pricingFeature).toContain("config.pricing.write");
+    expect(pricingFeature).toContain("export function PricingWorkspace");
+  });
 });
