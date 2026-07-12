@@ -1048,6 +1048,7 @@ export async function buildTodayProjection(input: {
       watching: true,
       pinned: true,
       snoozedUntil: true,
+      version: true,
     },
   });
   const pinnedKeys = new Set(preferences.filter((item) => item.pinned).map((item) => `${item.sourceType}:${item.sourceId}`));
