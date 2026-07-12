@@ -97,7 +97,7 @@ const sqlChecks: readonly SqlInvariant[] = [
       SELECT r.id, count(*) OVER()::int AS total
       FROM character_serving s
       JOIN character_releases r ON r.id = s."currentReleaseId"
-      WHERE r.legacy = false AND NOT EXISTS (
+      WHERE NOT EXISTS (
         SELECT 1 FROM generation_route_qualifications q
         WHERE q."routeFingerprint" = r."generationProvenance"->>'routeFingerprint'
           AND q."matrixKey" = r."generationProvenance"->>'matrixKey'
@@ -145,25 +145,36 @@ const sqlChecks: readonly SqlInvariant[] = [
     description: "Partial generation Requests must deliver at least one but fewer than the expected outputs",
     evidence: "GenerationJob expected count and actual delivered rows reconciled to the partial GenerationFulfillmentFact",
     query: Prisma.sql`
-      WITH partial_counts AS (
+      WITH request_counts AS (
         SELECT
-          f."requestId" AS id,
+          j.id,
           f."expectedOutputCount" AS fact_expected,
           f."deliveredOutputCount" AS fact_delivered,
           j."outputCount" AS request_expected,
+          j."deliveredOutputCount" AS request_delivered,
           count(d.id)::int AS actual_delivered
-        FROM generation_fulfillment_facts f
-        LEFT JOIN generation_jobs j ON j.id = f."requestId"
+        FROM generation_jobs j
+        LEFT JOIN generation_fulfillment_facts f
+          ON f."requestId" = j.id AND f.outcome = 'partial'
         LEFT JOIN generation_deliveries d
-          ON d."requestId" = f."requestId" AND d.status = 'delivered'
-        WHERE f.outcome = 'partial'
-        GROUP BY f."requestId", f."expectedOutputCount", f."deliveredOutputCount", j."outputCount"
+          ON d."requestId" = j.id AND d.status = 'delivered'
+        GROUP BY j.id, f."expectedOutputCount", f."deliveredOutputCount", j."outputCount", j."deliveredOutputCount"
       ), violations AS (
-        SELECT id FROM partial_counts
-        WHERE request_expected IS NULL
-          OR fact_expected <> request_expected
-          OR fact_delivered <> actual_delivered
-          OR NOT (actual_delivered > 0 AND actual_delivered < request_expected)
+        SELECT id FROM request_counts
+        WHERE (
+            greatest(request_delivered, actual_delivered) > 0
+            AND greatest(request_delivered, actual_delivered) < request_expected
+            AND fact_expected IS NULL
+          )
+          OR (
+            fact_expected IS NOT NULL
+            AND (
+              fact_expected <> request_expected
+              OR fact_delivered <> actual_delivered
+              OR request_delivered <> actual_delivered
+              OR NOT (actual_delivered > 0 AND actual_delivered < request_expected)
+            )
+          )
       )
       SELECT id, count(*) OVER()::int AS total
       FROM violations ORDER BY id LIMIT 20
@@ -188,6 +199,46 @@ const sqlChecks: readonly SqlInvariant[] = [
       FROM content_production_batches b
       WHERE b.status = 'completed' AND greatest(b."completedItems", b."approvedItems") = 0
       ORDER BY b.id LIMIT 20
+    `,
+  },
+  {
+    key: "creative_run_child_projection_mismatch",
+    description: "Creative Run counters and lifecycle projection must equal their child item facts",
+    evidence: "ContentProductionBatch totals/status recomputed from ContentProductionItem states",
+    query: Prisma.sql`
+      WITH derived AS (
+        SELECT
+          b.id,
+          count(i.id)::int AS total_items,
+          count(i.id) FILTER (WHERE i.status IN ('generated', 'approved', 'published'))::int AS completed_items,
+          count(i.id) FILTER (WHERE i.status = 'failed')::int AS failed_items,
+          count(i.id) FILTER (WHERE i.status IN ('approved', 'published'))::int AS approved_items,
+          count(i.id) FILTER (WHERE i.status IN ('approved', 'rejected', 'published', 'failed'))::int AS reviewed_items,
+          count(i.id) FILTER (WHERE i.status IN ('queued', 'regenerate_requested'))::int AS active_items,
+          count(i.id) FILTER (WHERE i.status = 'generated')::int AS generated_items,
+          b."totalItems",
+          b."completedItems",
+          b."failedItems",
+          b."approvedItems",
+          b.status
+        FROM content_production_batches b
+        LEFT JOIN content_production_items i ON i."batchId" = b.id
+        GROUP BY b.id
+      ), violations AS (
+        SELECT id FROM derived
+        WHERE "totalItems" <> total_items
+          OR "completedItems" <> completed_items
+          OR "failedItems" <> failed_items
+          OR "approvedItems" <> approved_items
+          OR status <> CASE
+            WHEN total_items > 0 AND reviewed_items = total_items THEN 'completed'
+            WHEN generated_items > 0 OR reviewed_items > 0 THEN 'reviewing'
+            WHEN active_items > 0 THEN 'queued'
+            ELSE 'draft'
+          END
+      )
+      SELECT id, count(*) OVER()::int AS total
+      FROM violations ORDER BY id LIMIT 20
     `,
   },
   {

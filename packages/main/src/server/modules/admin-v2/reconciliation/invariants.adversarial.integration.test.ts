@@ -37,6 +37,8 @@ describe("Admin cutover invariant adversarial release authority", () => {
   const referenceSetIds: string[] = [];
   const partialFactId = `${prefix}-partial-fact`;
   const partialRequestId = `${prefix}-partial-request`;
+  const missingPartialFactRequestId = `${prefix}-partial-without-fact`;
+  const creativeMismatchId = `${prefix}-creative-mismatch`;
 
   const validProvenance = {
     routeFingerprint: `${prefix}:route`,
@@ -330,12 +332,60 @@ describe("Admin cutover invariant adversarial release authority", () => {
         validFrom: new Date("2026-07-11T00:00:00.000Z"),
       },
     });
+    await prisma.generationJob.create({
+      data: {
+        id: missingPartialFactRequestId,
+        userId,
+        mode: "image",
+        controls: {},
+        presetIds: [],
+        outputCount: 2,
+        deliveredOutputCount: 1,
+        status: "completed",
+      },
+    });
+    await prisma.generationDelivery.create({
+      data: {
+        id: `${prefix}-missing-fact-delivery`,
+        requestId: missingPartialFactRequestId,
+        artifactId: `${prefix}-missing-fact-artifact`,
+        targetType: "gallery",
+        targetId: userId,
+        status: "delivered",
+        deliveredAt: new Date("2026-07-11T00:00:00.000Z"),
+      },
+    });
+    await prisma.contentProductionBatch.create({
+      data: {
+        id: creativeMismatchId,
+        title: "Deliberately stale child projection",
+        purpose: "model_eval",
+        targetType: "none",
+        presetIds: [],
+        totalItems: 2,
+        completedItems: 2,
+        approvedItems: 2,
+        status: "completed",
+        createdById: userId,
+        items: {
+          create: [
+            { id: `${creativeMismatchId}-item-1`, itemIndex: 0, status: "queued", tags: [] },
+            { id: `${creativeMismatchId}-item-2`, itemIndex: 1, status: "failed", tags: [] },
+          ],
+        },
+      },
+    });
   });
 
   afterAll(async () => {
     await prisma.generationFulfillmentFact.deleteMany({ where: { id: partialFactId } });
-    await prisma.generationDelivery.deleteMany({ where: { requestId: partialRequestId } });
-    await prisma.generationJob.deleteMany({ where: { id: partialRequestId } });
+    await prisma.generationDelivery.deleteMany({
+      where: { requestId: { in: [partialRequestId, missingPartialFactRequestId] } },
+    });
+    await prisma.generationJob.deleteMany({
+      where: { id: { in: [partialRequestId, missingPartialFactRequestId] } },
+    });
+    await prisma.contentProductionBatch.deleteMany({ where: { id: creativeMismatchId } });
     await prisma.characterServing.deleteMany({ where: { id: { startsWith: prefix } } });
     await prisma.characterRelease.deleteMany({ where: { id: { in: releaseIds } } });
     await prisma.characterRevision.deleteMany({ where: { projectId: { in: projectIds } } });
@@ -398,9 +448,19 @@ describe("Admin cutover invariant adversarial release authority", () => {
         ]),
       }),
       expect.objectContaining({
+        key: "serving_default_route_unqualified",
+        status: "failed",
+        sampleIds: expect.arrayContaining([`${prefix}-legacy-missing-identity-reference-release`]),
+      }),
+      expect.objectContaining({
         key: "partial_request_delivery_count_mismatch",
         status: "failed",
-        sampleIds: expect.arrayContaining([partialRequestId]),
+        sampleIds: expect.arrayContaining([partialRequestId, missingPartialFactRequestId]),
+      }),
+      expect.objectContaining({
+        key: "creative_run_child_projection_mismatch",
+        status: "failed",
+        sampleIds: expect.arrayContaining([creativeMismatchId]),
       }),
     ]));
   });
