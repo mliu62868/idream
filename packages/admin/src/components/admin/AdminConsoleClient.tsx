@@ -2547,8 +2547,8 @@ function renderSection(
         manageIncident: ctx.permissions.has("ops.incident.manage"),
       }} view={subview} />;
     }
-    if (section.view === "assets") return <AssetsSection view={subview} />;
-    if (section.view === "placements") return <PlacementsSection view={subview} />;
+    if (section.view === "assets") return <AssetsSection canReview={ctx.permissions.has("content.asset.review")} view={subview} />;
+    if (section.view === "placements") return <PlacementsSection canPublish={ctx.permissions.has("creative.placement.publish")} view={subview} />;
     if (section.view === "official") {
       return <CharacterWorkspace permissions={{
         read: ctx.canRead,

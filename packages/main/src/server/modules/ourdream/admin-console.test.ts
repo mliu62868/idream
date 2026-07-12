@@ -1680,6 +1680,9 @@ describe("generation config control plane", () => {
         }),
       ]),
     );
+    const assetDetail = await api("GET", `admin/content/assets/${assetId}`, { userId: admin, role: "admin" });
+    expectOk(assetDetail);
+    expect(assetDetail.data.asset).toMatchObject({ id: assetId, platformStatus: "approved" });
 
     const placement = await api("POST", "admin/content/placements", {
       userId: admin,
@@ -1700,6 +1703,9 @@ describe("generation config control plane", () => {
       targetId: character.id,
       status: "published",
     });
+    const placementDetail = await api("GET", `admin/content/placements/${placement.data.placement.id}`, { userId: admin, role: "admin" });
+    expectOk(placementDetail);
+    expect(placementDetail.data.placement).toMatchObject({ id: placement.data.placement.id, mediaAssetId: assetId });
 
     const audits = await prisma.adminAuditLog.findMany({
       where: {

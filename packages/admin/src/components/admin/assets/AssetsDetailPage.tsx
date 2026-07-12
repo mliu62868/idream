@@ -44,7 +44,7 @@ function InfoGrid({ items }: { items: { label: string; value: ReactNode }[] }) {
   );
 }
 
-export function AssetsDetailPage({ id }: { id: string }) {
+export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: string }) {
   const { t, value } = useAdminI18n();
   const [rows, setRows] = useState<ContentAsset[]>([]);
   const [loading, setLoading] = useState(true);
@@ -57,8 +57,8 @@ export function AssetsDetailPage({ id }: { id: string }) {
     setLoading(true);
     setError(null);
     try {
-      const data = await apiGet<{ items: ContentAsset[] }>(`${ASSETS_LIST}?search=${encodeURIComponent(id)}&limit=25`);
-      setRows(data.items);
+      const data = await apiGet<{ asset: ContentAsset }>(`${ASSETS_LIST}/${encodeURIComponent(id)}`);
+      setRows([data.asset]);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : t("Request failed"));
     } finally {
@@ -151,14 +151,14 @@ export function AssetsDetailPage({ id }: { id: string }) {
     );
   }
 
-  const actions = (
+  const actions = canReview ? (
     <>
       <GhostButton onClick={() => setPending("save")}>{t("Save")}</GhostButton>
       <PrimaryButton onClick={() => setPending("approve")}>{t("Approve")}</PrimaryButton>
       <DangerButton onClick={() => setPending("reject")}>{t("Reject")}</DangerButton>
       <DangerButton onClick={() => setPending("archive")}>{t("Archive")}</DangerButton>
     </>
-  );
+  ) : null;
 
   return (
     <DetailPage

@@ -44,6 +44,7 @@ import {
 } from "./characters/official";
 import {
   listTemplates,
+  getTemplate,
   createTemplate,
   updateTemplate,
   setTemplateActive,
@@ -68,6 +69,7 @@ import {
   createProductionBatch,
   estimateProductionBatch,
   getContentAsset,
+  getPlacement,
   getProductionBatch,
   listContentAssets,
   listPlacements,
@@ -524,6 +526,7 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
     }
     if (id === "recipes") {
       if (!action && method === "GET") return listRecipes(request);
+      if (action && !child && method === "GET") return getRecipe(request, action);
       if (!action && method === "POST") return createRecipe(request);
       if (action && !child && method === "PATCH") return patchRecipe(request, action);
       if (action && child === "publish" && method === "POST") {
@@ -535,6 +538,7 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
     }
     if (id === "presets") {
       if (!action && method === "GET") return listAdminPresets(request);
+      if (action && !child && method === "GET") return getAdminPreset(request, action);
       if (!action && method === "POST") return createAdminPreset(request);
       if (action && !child && method === "PATCH") return patchAdminPreset(request, action);
     }
@@ -683,6 +687,7 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
   if (resource === "content" && id === "placements") {
     if (!action && method === "GET") return listPlacements(request);
     if (!action && method === "POST") return createPlacement(request);
+    if (action && !child && method === "GET") return getPlacement(request, action);
     if (action && !child && method === "PATCH") return patchPlacement(request, action);
   }
   // A — 官方角色 CMS
@@ -695,6 +700,7 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
   // B — 角色创建模板库
   if (resource === "content" && id === "templates") {
     if (!action && method === "GET") return listTemplates(request);
+    if (action && !child && method === "GET") return getTemplate(request, action);
     if (!action && method === "POST") return createTemplate(request);
     if (action && !child && method === "PATCH") return updateTemplate(request, action);
     if (action && child === "active" && method === "POST") return setTemplateActive(request, action);
@@ -2770,6 +2776,13 @@ async function listRecipes(request: Request) {
   });
 }
 
+async function getRecipe(request: Request, id: string) {
+  await actorWithPermission(request, "generation.config.read");
+  const recipe = await prisma.generationRecipe.findUnique({ where: { id } });
+  if (!recipe) throw Errors.notFound("Generation recipe not found");
+  return ok({ recipe });
+}
+
 async function createRecipe(request: Request) {
   const actor = await actorWithPermission(request, "generation.config.write");
   const body = recipeSchema.parse(await jsonBody(request));
@@ -2948,6 +2961,13 @@ async function listAdminPresets(request: Request) {
   });
 }
 
+async function getAdminPreset(request: Request, id: string) {
+  await actorWithPermission(request, "generation.config.read");
+  const preset = await prisma.generationPreset.findUnique({ where: { id } });
+  if (!preset || preset.scope !== "built_in") throw Errors.notFound("Built-in preset not found");
+  return ok({ preset });
+}
+
 async function createAdminPreset(request: Request) {
   const actor = await actorWithPermission(request, "generation.config.write");
   const body = presetAdminSchema.parse(await jsonBody(request));
@@ -3002,14 +3022,20 @@ async function patchAdminPreset(request: Request, id: string) {
 //         而不再改 seed/代码。读 billing.read（admin+support），写 config.pricing.write（admin only）。
 // INVARIANTS: 每个 mode 至多一个 active 规则（发布时归档同 mode 旧 active）；ruleKey 维护版本号与回滚链。
 // EXAMPLE: image baseCost 5→4 走 create(draft) → publish（旧 active 归档），可一键 rollback 回 v1。
+const pricingRuleListQuerySchema = z.object({
+  search: z.string().trim().min(1).max(200).optional(),
+  mode: z.string().trim().min(1).max(80).optional(),
+  status: z.enum(["draft", "active", "archived"]).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  cursor: z.string().min(1).optional(),
+}).strict();
+
 async function listPricingRules(request: Request) {
   await actorWithPermission(request, "billing.read");
   const url = new URL(request.url);
-  const search = url.searchParams.get("search")?.trim() || undefined;
-  const mode = url.searchParams.get("mode") ?? undefined;
-  const status = url.searchParams.get("status") ?? undefined;
-  const limitParam = url.searchParams.get("limit");
-  const limit = limitParam ? clampInt(limitParam, 1, 100, 100) : null;
+  const query = pricingRuleListQuerySchema.parse(Object.fromEntries(url.searchParams));
+  const { search, mode, status } = query;
+  const limit = query.limit ?? null;
   const queryIdentity = { search, mode, status };
   const cursorKeys = adminListCursorKeys(url, "pricing_rules", queryIdentity);
   const cursorWhere: Prisma.PricingRuleWhereInput | undefined = cursorKeys ? (() => {
@@ -3658,14 +3684,19 @@ function featureFlagConfirmation(key: string, enabled: boolean | undefined) {
   return `${key}:${enabled === false ? "disabled" : "enabled"}`;
 }
 
+const featureFlagListQuerySchema = z.object({
+  search: z.string().trim().min(1).max(200).optional(),
+  enabled: z.enum(["true", "false"]).transform((value) => value === "true").optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  cursor: z.string().min(1).optional(),
+}).strict();
+
 async function listFeatureFlags(request: Request) {
   await actorWithPermission(request, "ops.queue.read");
   const url = new URL(request.url);
-  const search = url.searchParams.get("search")?.trim() || undefined;
-  const enabledParam = url.searchParams.get("enabled");
-  const enabled = enabledParam === "true" ? true : enabledParam === "false" ? false : undefined;
-  const limitParam = url.searchParams.get("limit");
-  const limit = limitParam ? clampInt(limitParam, 1, 100, 100) : null;
+  const query = featureFlagListQuerySchema.parse(Object.fromEntries(url.searchParams));
+  const { search, enabled } = query;
+  const limit = query.limit ?? null;
   const queryIdentity = { search, enabled };
   const cursorKeys = adminListCursorKeys(url, "feature_flags", queryIdentity);
   const cursorKey = cursorKeys ? adminCursorString(cursorKeys, 0, "feature_flags") : undefined;

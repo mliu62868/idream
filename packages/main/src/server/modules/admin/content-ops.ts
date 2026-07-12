@@ -876,6 +876,13 @@ export async function listPlacements(request: Request) {
   });
 }
 
+export async function getPlacement(request: Request, id: string) {
+  await actorWithPermission(request, "creative.placement.read");
+  const placement = await prisma.mediaAssetPlacement.findUnique({ where: { id }, include: placementInclude });
+  if (!placement) throw Errors.notFound("Placement not found");
+  return ok({ placement: placementDTO(placement) });
+}
+
 export async function createPlacement(request: Request) {
   const actor = await actorWithPermission(request, "creative.placement.publish");
   const body = placementCreateSchema.parse(await jsonBody(request));

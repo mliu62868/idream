@@ -67,8 +67,8 @@ export function RecipesDetailPage({ id }: { id: string }) {
     setLoading(true);
     setError(null);
     try {
-      const data = await apiGet<{ items: Recipe[] }>(`${RECIPES_LIST}?search=${encodeURIComponent(id)}&limit=25`);
-      setRows(data.items);
+      const data = await apiGet<{ recipe: Recipe }>(`${RECIPES_LIST}/${encodeURIComponent(id)}`);
+      setRows([data.recipe]);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : t("Request failed"));
     } finally {

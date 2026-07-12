@@ -552,7 +552,14 @@ export async function buildTodayProjection(input: {
         select: { releaseId: true },
       })
     : [];
-  const monitorActionReleaseIds = new Set(monitorActionRows.map((item) => item.releaseId));
+  const monitorCandidateIds = monitorActionRows.map((item) => item.releaseId);
+  const currentMonitorServings = monitorCandidateIds.length > 0
+    ? await prisma.characterServing.findMany({
+        where: { currentReleaseId: { in: monitorCandidateIds } },
+        select: { currentReleaseId: true },
+      })
+    : [];
+  const monitorActionReleaseIds = new Set(currentMonitorServings.flatMap((item) => item.currentReleaseId ? [item.currentReleaseId] : []));
   const preferences = await prisma.operationalWorkPreference.findMany({ where: { actorId: input.actor.id } });
   const pinnedKeys = new Set(preferences.filter((item) => item.pinned).map((item) => `${item.sourceType}:${item.sourceId}`));
   const snoozed = preferences.filter((item) => item.snoozedUntil && item.snoozedUntil > now);

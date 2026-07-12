@@ -126,6 +126,13 @@ export async function listTemplates(request: Request): Promise<Response> {
   });
 }
 
+export async function getTemplate(request: Request, id: string): Promise<Response> {
+  await actorWithPermission(request, "content.read");
+  const template = await prisma.characterTemplate.findUnique({ where: { id } });
+  if (!template) throw Errors.notFound("Character starter not found");
+  return ok({ template });
+}
+
 // POST /api/v1/admin/content/templates — 新建模板。perm: content.template.write
 export async function createTemplate(request: Request): Promise<Response> {
   const actor = await actorWithPermission(request, "content.template.write");

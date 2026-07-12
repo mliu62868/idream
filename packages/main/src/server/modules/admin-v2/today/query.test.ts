@@ -202,12 +202,14 @@ describe("Today domain roots", () => {
   const actorId = `today-root-admin-${suffix}`;
   const projectId = `today-project-${suffix}`;
   const releaseId = `today-release-${suffix}`;
+  const servingId = `today-serving-${suffix}`;
   const creativeRunId = `today-creative-${suffix}`;
 
   beforeAll(async () => {
     await prisma.user.create({
       data: { id: actorId, email: `${actorId}@example.test`, role: "admin", status: "active" },
     });
+    await prisma.character.create({ data: { id: `character-${suffix}`, name: "Today release character", age: 24, description: "Release monitor fixture", source: "official", appearance: {}, advancedDetails: {} } });
     await prisma.characterProject.create({
       data: {
         id: projectId,
@@ -232,6 +234,7 @@ describe("Today domain roots", () => {
         status: "in_review",
       },
     });
+    await prisma.characterServing.create({ data: { id: servingId, characterId: `character-${suffix}`, currentReleaseId: releaseId, state: "live" } });
     await prisma.contentProductionBatch.create({
       data: {
         id: creativeRunId,
@@ -257,12 +260,14 @@ describe("Today domain roots", () => {
 
   afterAll(async () => {
     await prisma.operationalWorkPreference.deleteMany({ where: { actorId } });
-    await prisma.releaseMonitor.deleteMany({ where: { releaseId } });
+    await prisma.releaseMonitor.deleteMany({ where: { releaseId: { in: [releaseId, `today-superseded-release-${suffix}`] } } });
+    await prisma.characterServing.deleteMany({ where: { id: servingId } });
     await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: { in: [projectId, creativeRunId] } } });
     await prisma.adminAuditLog.deleteMany({ where: { actorId, targetId: { in: [projectId, creativeRunId] } } });
     await prisma.contentProductionBatch.deleteMany({ where: { id: creativeRunId } });
-    await prisma.characterRelease.deleteMany({ where: { id: releaseId } });
+    await prisma.characterRelease.deleteMany({ where: { projectId } });
     await prisma.characterProject.deleteMany({ where: { id: projectId } });
+    await prisma.character.deleteMany({ where: { id: `character-${suffix}` } });
     await prisma.user.deleteMany({ where: { id: actorId } });
     await prisma.$disconnect();
   });
@@ -322,7 +327,9 @@ describe("Today domain roots", () => {
   });
 
   it("re-enters a published Release when monitor authority requires rollback review", async () => {
+    const historicalReleaseId = `today-superseded-release-${suffix}`;
     await prisma.characterRelease.update({ where: { id: releaseId }, data: { status: "published", readiness: "ready" } });
+    await prisma.characterRelease.create({ data: { id: historicalReleaseId, projectId, revisionId: `old-revision-${suffix}`, characterContentVersionId: `old-content-${suffix}`, generationProvenance: {}, releasePlacementManifest: {}, snapshotHash: `old-snapshot-${suffix}`, readiness: "ready", status: "superseded" } });
     await prisma.releaseMonitor.create({
       data: {
         releaseId,
@@ -333,6 +340,7 @@ describe("Today domain roots", () => {
         verification: { recommendation: "rollback_review", operationalPassed: false },
       },
     });
+    await prisma.releaseMonitor.create({ data: { releaseId: historicalReleaseId, window: "24h", status: "action_required", baseline: {}, observed: {}, verification: { recommendation: "rollback_review" } } });
     const projection = await buildTodayProjection({
       actor: { id: actorId, role: "admin" },
       permissions: resolvePermissions("admin"),
@@ -344,6 +352,9 @@ describe("Today domain roots", () => {
       expect.objectContaining({ sourceId: releaseId, verificationState: "failed", recommendedAction: "Investigate monitor evidence and keep or rollback" }),
     ]));
     expect(projection.recentlyResolved.items.some((item) => item.sourceId === releaseId)).toBe(false);
+    expect(projection.nextBestActions.items.some((item) => item.sourceId === historicalReleaseId)).toBe(false);
+    await prisma.releaseMonitor.deleteMany({ where: { releaseId: historicalReleaseId } });
+    await prisma.characterRelease.delete({ where: { id: historicalReleaseId } });
   });
 });
 

@@ -76,8 +76,8 @@ export function StartersDetailPage({ id }: { id: string }) {
     setLoading(true);
     setError(null);
     try {
-      const data = await apiGet<{ items: Starter[] }>(`${STARTERS_LIST}?search=${encodeURIComponent(id)}&limit=25`);
-      setRows(data.items);
+      const data = await apiGet<{ template: Starter }>(`${STARTERS_LIST}/${encodeURIComponent(id)}`);
+      setRows([data.template]);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : t("Request failed"));
     } finally {

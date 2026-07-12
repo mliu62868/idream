@@ -15,7 +15,7 @@ import { ALL_STATUSES, placementsListPath, type Placement } from "./placements-a
 
 // SPEC: 铺位列表页 —— 缩略图 + slot/目标/状态表格；关键词搜索 + 状态筛选（spec §7 列表页）。
 // INTENT: 浏览页只浏览；创建在 /new，发布/暂停/归档在详情页。
-export function PlacementsListPage() {
+export function PlacementsListPage({ canPublish }: { canPublish: boolean }) {
   const { t, value } = useAdminI18n();
   const [rows, setRows] = useState<Placement[]>([]);
   const [loading, setLoading] = useState(true);
@@ -63,13 +63,13 @@ export function PlacementsListPage() {
     return () => window.clearTimeout(timer);
   }, [cursor, ready, reload, search]);
 
-  const newAction = (
+  const newAction = canPublish ? (
     <Link href="/admin/content/placements/new">
       <PrimaryButton>
         <Plus className="h-4 w-4" /> {t("New placement")}
       </PrimaryButton>
     </Link>
-  );
+  ) : null;
 
   const tableRows: DataTableRow[] = rows.map((row) => ({
     id: row.id,

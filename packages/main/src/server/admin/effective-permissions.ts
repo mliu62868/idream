@@ -35,7 +35,15 @@ export async function effectivePermissions(
   for (const permission of expandGrantBundles(
     bundleRows.map((row) => row.bundleKey).filter(isGrantBundleKey),
   )) base.add(permission);
-  return applyOverrides(base, overrides);
+  const resolved = applyOverrides(base, overrides);
+  const explicitlyRevoked = new Set(overrides.filter((row) => row.effect === "revoke").map((row) => row.permissionKey));
+  const addCompatibility = (legacy: PermissionKey, canonical: PermissionKey) => {
+    if (resolved.has(legacy) && !explicitlyRevoked.has(canonical)) resolved.add(canonical);
+  };
+  addCompatibility("content.asset.read", "creative.asset.read");
+  addCompatibility("content.asset.read", "creative.placement.read");
+  addCompatibility("content.placement.write", "creative.placement.publish");
+  return resolved;
 }
 
 export async function userHasPermission(

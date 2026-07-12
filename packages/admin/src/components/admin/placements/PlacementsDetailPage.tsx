@@ -37,7 +37,7 @@ function InfoGrid({ items }: { items: { label: string; value: ReactNode }[] }) {
   );
 }
 
-export function PlacementsDetailPage({ id }: { id: string }) {
+export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; id: string }) {
   const { t, value } = useAdminI18n();
   const [rows, setRows] = useState<Placement[]>([]);
   const [loading, setLoading] = useState(true);
@@ -48,8 +48,8 @@ export function PlacementsDetailPage({ id }: { id: string }) {
     setLoading(true);
     setError(null);
     try {
-      const data = await apiGet<{ items: Placement[] }>(`${PLACEMENTS_BASE}?search=${encodeURIComponent(id)}&limit=25`);
-      setRows(data.items);
+      const data = await apiGet<{ placement: Placement }>(`${PLACEMENTS_BASE}/${encodeURIComponent(id)}`);
+      setRows([data.placement]);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : t("Request failed"));
     } finally {
@@ -117,13 +117,13 @@ export function PlacementsDetailPage({ id }: { id: string }) {
     );
   }
 
-  const actions = (
+  const actions = canPublish ? (
     <>
       <GhostButton onClick={() => setPending("paused")}>{t("Pause")}</GhostButton>
       <PrimaryButton onClick={() => setPending("published")}>{t("Publish")}</PrimaryButton>
       <DangerButton onClick={() => setPending("archived")}>{t("Archive")}</DangerButton>
     </>
-  );
+  ) : null;
 
   return (
     <DetailPage

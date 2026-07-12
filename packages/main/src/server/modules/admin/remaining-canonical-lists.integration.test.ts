@@ -262,6 +262,12 @@ describe("remaining canonical admin lists", () => {
     }
   });
 
+  it("rejects malformed canonical pricing, profile, and flag queries at the boundary", async () => {
+    await expect(call(["pricing", "rules"], "limit=1junk")).resolves.toMatchObject({ response: { status: 400 } });
+    await expect(call(["generation", "model-profiles"], "status=mystery")).resolves.toMatchObject({ response: { status: 400 } });
+    await expect(call(["feature-flags"], "enabled=banana")).resolves.toMatchObject({ response: { status: 400 } });
+  });
+
   it("continues from encoded sort keys when the cursor row is deleted", async () => {
     const first = await call(["audit-log"], `search=${token}&limit=1`);
     const firstData = first.body.data as { items: Array<{ id: string }>; pageInfo: PageInfo };
