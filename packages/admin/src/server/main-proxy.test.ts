@@ -59,7 +59,7 @@ describe("Admin main HTTP proxy", () => {
     await expect(response.json()).resolves.toEqual({ ok: true });
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(renderPrometheusMetrics()).toContain(
-      'admin_http_requests_total{method="POST",outcome="completed",routeClass="command",surface="legacy_v1"} 1',
+      'admin_http_requests_total{domain="unscoped",method="POST",outcome="completed",readAuthority="not_applicable",routeClass="command",surface="legacy_v1"} 1',
     );
     expect(renderPrometheusMetrics()).toContain(
       'admin_legacy_v1_requests_total{method="POST",outcome="completed"} 1',
@@ -96,7 +96,7 @@ describe("Admin main HTTP proxy", () => {
       error: { code: "admin_upstream_unavailable" },
     });
     expect(renderPrometheusMetrics()).toContain(
-      'admin_http_requests_total{method="GET",outcome="unavailable",routeClass="today",surface="admin_v2"} 1',
+      'admin_http_requests_total{domain="today",method="GET",outcome="unavailable",readAuthority="canonical_v2",routeClass="today",surface="admin_v2"} 1',
     );
   });
 
@@ -130,10 +130,10 @@ describe("Admin main HTTP proxy", () => {
     });
     expect(fetchMock).not.toHaveBeenCalled();
     expect(renderPrometheusMetrics()).toContain(
-      'admin_proxy_kill_switch_total{scope="read"} 1',
+      'admin_proxy_kill_switch_total{domain="today",readAuthority="global_kill_switch",scope="read"} 1',
     );
     expect(renderPrometheusMetrics()).toContain(
-      'admin_proxy_kill_switch_total{scope="write"} 1',
+      'admin_proxy_kill_switch_total{domain="case",readAuthority="global_kill_switch",scope="write"} 1',
     );
   });
 
@@ -150,7 +150,106 @@ describe("Admin main HTTP proxy", () => {
 
     expect(response.status).toBe(200);
     expect(renderPrometheusMetrics()).toContain(
-      'admin_http_requests_total{method="POST",outcome="completed",routeClass="command",surface="admin_v2"} 1',
+      'admin_http_requests_total{domain="case",method="POST",outcome="completed",readAuthority="canonical_write",routeClass="command",surface="admin_v2"} 1',
     );
+  });
+
+  it("rolls back one domain read through a same-contract HTTP authority without changing another domain", async () => {
+    vi.stubEnv("ADMIN_CASE_READ_AUTHORITY", "compatibility_http");
+    vi.stubEnv("ADMIN_CASE_COMPATIBILITY_READ_URL", "https://previous-main.internal");
+    const targets: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (target: URL) => {
+      targets.push(target.toString());
+      return Response.json({ ok: true, data: [] });
+    }));
+
+    const caseResponse = await proxyToMain(
+      new Request("http://admin.local/api/v2/admin/cases?status=open"),
+      "/api/v2/admin/cases",
+    );
+    const incidentResponse = await proxyToMain(
+      new Request("http://admin.local/api/v2/admin/incidents?status=open"),
+      "/api/v2/admin/incidents",
+    );
+
+    expect(targets).toEqual([
+      "https://previous-main.internal/api/v2/admin/cases?status=open",
+      "http://127.0.0.1:3000/api/v2/admin/incidents?status=open",
+    ]);
+    expect(caseResponse.headers.get("x-idream-admin-domain")).toBe("case");
+    expect(caseResponse.headers.get("x-idream-admin-read-authority")).toBe("compatibility_http");
+    expect(incidentResponse.headers.get("x-idream-admin-domain")).toBe("incident");
+    expect(incidentResponse.headers.get("x-idream-admin-read-authority")).toBe("canonical_v2");
+    expect(renderPrometheusMetrics()).toContain(
+      'admin_http_requests_total{domain="case",method="GET",outcome="completed",readAuthority="compatibility_http",routeClass="list",surface="admin_v2"} 1',
+    );
+    expect(renderPrometheusMetrics()).toContain(
+      'admin_http_requests_total{domain="incident",method="GET",outcome="completed",readAuthority="canonical_v2",routeClass="list",surface="admin_v2"} 1',
+    );
+  });
+
+  it("returns explicit unavailable instead of mapping a v2 read to a non-equivalent legacy DTO", async () => {
+    vi.stubEnv("ADMIN_TODAY_READ_AUTHORITY", "compatibility_http");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await proxyToMain(
+      new Request("http://admin.local/api/v2/admin/today"),
+      "/api/v2/admin/today",
+    );
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("x-idream-admin-domain")).toBe("today");
+    expect(response.headers.get("x-idream-admin-read-authority")).toBe("unavailable");
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "admin_today_compatibility_read_unconfigured" },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps writes on canonical authority even when the domain read uses compatibility HTTP", async () => {
+    vi.stubEnv("ADMIN_CASE_READ_AUTHORITY", "compatibility_http");
+    vi.stubEnv("ADMIN_CASE_COMPATIBILITY_READ_URL", "https://previous-main.internal");
+    vi.stubEnv("ADMIN_CASE_WRITE_AUTHORITY", "legacy_v1");
+    const fetchMock = vi.fn(async (target: URL) => {
+      expect(target.toString()).toContain("/api/v2/admin/cases/case-1/commands/close");
+      return Response.json({ ok: true, data: { accepted: true } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await proxyToMain(
+      new Request("http://admin.local/api/v2/admin/cases/case-1/commands/close", {
+        method: "POST",
+        body: "{}",
+      }),
+      "/api/v2/admin/cases/case-1/commands/close",
+    );
+
+    expect(response.status).toBe(200);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      "http://127.0.0.1:3000/api/v2/admin/cases/case-1/commands/close",
+    );
+    expect(response.headers.get("x-idream-admin-domain")).toBe("case");
+    expect(response.headers.get("x-idream-admin-read-authority")).toBe("canonical_write");
+  });
+
+  it("applies the global kill switch before invalid domain read configuration", async () => {
+    vi.stubEnv("ADMIN_V2_READ_KILL_SWITCH", "true");
+    vi.stubEnv("ADMIN_CHARACTER_READ_AUTHORITY", "legacy_v1");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await proxyToMain(
+      new Request("http://admin.local/api/v2/admin/characters"),
+      "/api/v2/admin/characters",
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "admin_v2_read_kill_switch_active" },
+    });
+    expect(response.headers.get("x-idream-admin-domain")).toBe("character");
+    expect(response.headers.get("x-idream-admin-read-authority")).toBe("global_kill_switch");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

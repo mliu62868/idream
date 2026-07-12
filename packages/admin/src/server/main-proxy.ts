@@ -1,8 +1,12 @@
 import { incrementCounter, observeHistogram } from "@idream/shared";
 import { BFF_HEADER, BFF_USER_HEADER, signBffContext } from "@idream/shared/bff";
 import { randomUUID } from "node:crypto";
-
-const mainWebURL = (process.env.MAIN_WEB_URL ?? "http://127.0.0.1:3000").replace(/\/$/, "");
+import {
+  adminCutoverDomainForPath,
+  canonicalMainBaseUrl,
+  resolveAdminDomainReadRoute,
+  type AdminCutoverDomain,
+} from "./domain-cutover";
 
 const requestHopByHopHeaders = [
   "connection",
@@ -32,14 +36,15 @@ export async function proxyToMain(request: Request, pathname: string): Promise<R
   const startedAt = performance.now();
   const surface = proxySurface(pathname);
   const routeClass = proxyRouteClass(pathname, request.method);
+  const domain = adminCutoverDomainForPath(pathname);
   const killSwitch = activeAdminV2KillSwitch(pathname, request.method);
   if (killSwitch) {
     incrementCounter(
       "admin_proxy_kill_switch_total",
       "Admin v2 requests rejected by the fail-closed cutover kill switch",
-      { scope: killSwitch },
+      { domain: domain ?? "unscoped", readAuthority: "global_kill_switch", scope: killSwitch },
     );
-    recordProxyMetrics(request.method, "kill_switch", surface, routeClass, startedAt);
+    recordProxyMetrics(request.method, "kill_switch", surface, routeClass, startedAt, domain, "global_kill_switch");
     return Response.json(
       {
         ok: false,
@@ -48,11 +53,46 @@ export async function proxyToMain(request: Request, pathname: string): Promise<R
           message: `Admin v2 ${killSwitch} traffic is temporarily disabled by release control`,
         },
       },
-      { status: 503, headers: { "retry-after": "0" } },
+      {
+        status: 503,
+        headers: provenanceHeaders(domain, "global_kill_switch", { "retry-after": "0" }),
+      },
     );
   }
+
+  const readRoute = resolveAdminDomainReadRoute({
+    method: request.method,
+    pathname,
+    environment: process.env,
+  });
+  if (readRoute.kind === "unavailable") {
+    recordProxyMetrics(request.method, "read_unavailable", surface, routeClass, startedAt, readRoute.domain, readRoute.readAuthority);
+    return Response.json(
+      {
+        ok: false,
+        error: {
+          code: readRoute.code,
+          message: readRoute.message,
+          details: { domain: readRoute.domain, readAuthority: readRoute.readAuthority },
+        },
+      },
+      {
+        status: 503,
+        headers: provenanceHeaders(readRoute.domain, readRoute.readAuthority, { "retry-after": "0" }),
+      },
+    );
+  }
+
+  const readAuthority = readRoute.kind === "selected"
+    ? readRoute.readAuthority
+    : request.method === "GET" || request.method === "HEAD" || request.method === "OPTIONS"
+      ? surface === "legacy_v1" ? "legacy_v1" : surface === "admin_v2" ? "canonical_v2" : "not_applicable"
+      : domain ? "canonical_write" : "not_applicable";
+  const upstreamBaseUrl = readRoute.kind === "selected"
+    ? readRoute.upstreamBaseUrl
+    : canonicalMainBaseUrl(process.env);
   const incomingURL = new URL(request.url);
-  const upstreamURL = new URL(pathname, `${mainWebURL}/`);
+  const upstreamURL = new URL(pathname, `${upstreamBaseUrl}/`);
   upstreamURL.search = incomingURL.search;
 
   const headers = new Headers(request.headers);
@@ -80,7 +120,7 @@ export async function proxyToMain(request: Request, pathname: string): Promise<R
     headers.set(BFF_HEADER, signature);
     headers.set(BFF_USER_HEADER, JSON.stringify(context));
   } else if (process.env.APP_ENV === "production") {
-    recordProxyMetrics(request.method, "configuration_error", surface, routeClass, startedAt);
+    recordProxyMetrics(request.method, "configuration_error", surface, routeClass, startedAt, domain, readAuthority);
     return Response.json(
       {
         ok: false,
@@ -89,7 +129,7 @@ export async function proxyToMain(request: Request, pathname: string): Promise<R
           message: "Admin authority transport is not configured",
         },
       },
-      { status: 503 },
+      { status: 503, headers: provenanceHeaders(domain, readAuthority) },
     );
   }
 
@@ -103,14 +143,15 @@ export async function proxyToMain(request: Request, pathname: string): Promise<R
     });
     const responseHeaders = new Headers(upstream.headers);
     for (const name of responseHopByHopHeaders) responseHeaders.delete(name);
-    recordProxyMetrics(request.method, upstream.status < 500 ? "completed" : "upstream_error", surface, routeClass, startedAt);
+    recordProxyMetrics(request.method, upstream.status < 500 ? "completed" : "upstream_error", surface, routeClass, startedAt, domain, readAuthority);
+    addProvenanceHeaders(responseHeaders, domain, readAuthority);
     return new Response(upstream.body, {
       status: upstream.status,
       statusText: upstream.statusText,
       headers: responseHeaders,
     });
   } catch {
-    recordProxyMetrics(request.method, "unavailable", surface, routeClass, startedAt);
+    recordProxyMetrics(request.method, "unavailable", surface, routeClass, startedAt, domain, readAuthority);
     return Response.json(
       {
         ok: false,
@@ -119,7 +160,7 @@ export async function proxyToMain(request: Request, pathname: string): Promise<R
           message: "Admin authority is temporarily unavailable",
         },
       },
-      { status: 503 },
+      { status: 503, headers: provenanceHeaders(domain, readAuthority) },
     );
   }
 }
@@ -149,8 +190,16 @@ function proxyRouteClass(pathname: string, method: string) {
   return "list";
 }
 
-function recordProxyMetrics(method: string, outcome: string, surface: string, routeClass: string, startedAt: number) {
-  const labels = { method, outcome, routeClass, surface };
+function recordProxyMetrics(
+  method: string,
+  outcome: string,
+  surface: string,
+  routeClass: string,
+  startedAt: number,
+  domain: AdminCutoverDomain | null,
+  readAuthority: string,
+) {
+  const labels = { domain: domain ?? "unscoped", method, outcome, readAuthority, routeClass, surface };
   incrementCounter(
     "admin_http_requests_total",
     "Requests handled by the Admin HTTP BFF",
@@ -169,4 +218,23 @@ function recordProxyMetrics(method: string, outcome: string, surface: string, ro
       { method, outcome },
     );
   }
+}
+
+function provenanceHeaders(
+  domain: AdminCutoverDomain | null,
+  readAuthority: string,
+  initial: HeadersInit = {},
+) {
+  const headers = new Headers(initial);
+  addProvenanceHeaders(headers, domain, readAuthority);
+  return headers;
+}
+
+function addProvenanceHeaders(
+  headers: Headers,
+  domain: AdminCutoverDomain | null,
+  readAuthority: string,
+) {
+  if (domain) headers.set("x-idream-admin-domain", domain);
+  headers.set("x-idream-admin-read-authority", readAuthority);
 }
