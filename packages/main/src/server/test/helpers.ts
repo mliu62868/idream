@@ -331,6 +331,7 @@ export async function purgeTestData(prefix: string) {
     await prisma.adminCase.deleteMany({ where: { id: { in: derivedCaseIds } } });
   }
 
+  await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: sw } });
   await prisma.moderationReview.deleteMany({ where: { OR: [{ id: sw }, { reportId: sw }] } });
   await prisma.adminAuditLog.deleteMany({
     where: { OR: [{ id: sw }, { actorId: sw }, { targetId: sw }] },

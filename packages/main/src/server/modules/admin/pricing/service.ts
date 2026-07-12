@@ -7,8 +7,8 @@ import { enforceApproval } from "@/server/modules/admin/shared/legacy-approval";
 import {
   actorWithPermission,
   jsonBody,
-  writeAudit,
 } from "@/server/modules/admin/shared/legacy-primitives";
+import { persistTransactionalAdminMutation } from "@/server/modules/admin/shared/transactional-mutation";
 import {
   decodeAdminListCursor,
   encodeAdminListCursor,
@@ -100,25 +100,37 @@ export async function createPricingRule(request: Request) {
   const actor = await actorWithPermission(request, "config.pricing.write");
   const body = pricingRuleSchema.parse(await jsonBody(request));
   if (body.confirmation !== body.ruleKey) throw Errors.badRequest("Confirmation did not match pricing rule key");
-  const latest = await prisma.pricingRule.findFirst({ where: { ruleKey: body.ruleKey }, orderBy: { version: "desc" } });
-  const rule = await prisma.pricingRule.create({
-    data: {
-      ruleKey: body.ruleKey,
-      label: body.label,
-      mode: body.mode,
-      baseCost: body.baseCost,
-      multiplier: body.multiplier,
-      effectiveFrom: body.effectiveFrom ? new Date(body.effectiveFrom) : null,
-      version: (latest?.version ?? 0) + 1,
-      status: "draft",
-    },
-  });
-  await writeAudit(request, actor, {
-    action: "config.pricing.create",
-    targetType: "pricing_rule",
-    targetId: rule.id,
-    reason: body.reason,
-    after: pricingAuditSnapshot(rule),
+  const rule = await prisma.$transaction(async (tx) => {
+    const latest = await tx.pricingRule.findFirst({ where: { ruleKey: body.ruleKey }, orderBy: { version: "desc" } });
+    const created = await tx.pricingRule.create({
+      data: {
+        ruleKey: body.ruleKey,
+        label: body.label,
+        mode: body.mode,
+        baseCost: body.baseCost,
+        multiplier: body.multiplier,
+        effectiveFrom: body.effectiveFrom ? new Date(body.effectiveFrom) : null,
+        version: (latest?.version ?? 0) + 1,
+        status: "draft",
+      },
+    });
+    const after = pricingAuditSnapshot(created);
+    await persistTransactionalAdminMutation(tx, request, actor, {
+      audit: {
+        action: "config.pricing.create",
+        targetType: "pricing_rule",
+        targetId: created.id,
+        reason: body.reason,
+        after,
+      },
+      event: {
+        eventType: "config.pricing.rule.created.v2",
+        aggregateType: "pricing_rule",
+        aggregateId: created.id,
+        payload: { ruleId: created.id, ...after },
+      },
+    });
+    return created;
   });
   return ok({ rule });
 }
@@ -126,26 +138,39 @@ export async function createPricingRule(request: Request) {
 export async function patchPricingRule(request: Request, id: string) {
   const actor = await actorWithPermission(request, "config.pricing.write");
   const body = pricingRulePatchSchema.parse(await jsonBody(request));
-  const before = await prisma.pricingRule.findUnique({ where: { id } });
-  if (!before) throw Errors.notFound("Pricing rule not found");
-  if (before.status !== "draft") throw Errors.badRequest("Only draft pricing rules can be edited");
-  const updated = await prisma.pricingRule.update({
-    where: { id },
-    data: {
-      label: body.label,
-      baseCost: body.baseCost,
-      multiplier: body.multiplier,
-      effectiveFrom: body.effectiveFrom === undefined
-        ? undefined
-        : body.effectiveFrom === null ? null : new Date(body.effectiveFrom),
-    },
-  });
-  await writeAudit(request, actor, {
-    action: "config.pricing.update",
-    targetType: "pricing_rule",
-    targetId: id,
-    before: pricingAuditSnapshot(before),
-    after: pricingAuditSnapshot(updated),
+  const updated = await prisma.$transaction(async (tx) => {
+    const before = await tx.pricingRule.findUnique({ where: { id } });
+    if (!before) throw Errors.notFound("Pricing rule not found");
+    if (before.status !== "draft") throw Errors.badRequest("Only draft pricing rules can be edited");
+    const changed = await tx.pricingRule.update({
+      where: { id },
+      data: {
+        label: body.label,
+        baseCost: body.baseCost,
+        multiplier: body.multiplier,
+        effectiveFrom: body.effectiveFrom === undefined
+          ? undefined
+          : body.effectiveFrom === null ? null : new Date(body.effectiveFrom),
+      },
+    });
+    const beforeSnapshot = pricingAuditSnapshot(before);
+    const after = pricingAuditSnapshot(changed);
+    await persistTransactionalAdminMutation(tx, request, actor, {
+      audit: {
+        action: "config.pricing.update",
+        targetType: "pricing_rule",
+        targetId: id,
+        before: beforeSnapshot,
+        after,
+      },
+      event: {
+        eventType: "config.pricing.rule.updated.v2",
+        aggregateType: "pricing_rule",
+        aggregateId: id,
+        payload: { ruleId: id, ...after },
+      },
+    });
+    return changed;
   });
   return ok({ rule: updated });
 }
@@ -169,15 +194,29 @@ export async function publishPricingRule(request: Request, id: string) {
       where: { id },
       data: { status: "active", effectiveFrom, publishedAt: new Date(), archivedAt: null },
     });
+    const before = previous ? pricingAuditSnapshot(previous) : null;
+    const after = pricingAuditSnapshot(published);
+    await persistTransactionalAdminMutation(tx, request, actor, {
+      audit: {
+        action: "config.pricing.publish",
+        targetType: "pricing_rule",
+        targetId: id,
+        reason: body.reason,
+        before,
+        after,
+      },
+      event: {
+        eventType: "config.pricing.rule.published.v2",
+        aggregateType: "pricing_rule",
+        aggregateId: id,
+        payload: {
+          ruleId: id,
+          previousActiveId: previous?.id ?? null,
+          ...after,
+        },
+      },
+    });
     return { previous, published };
-  });
-  await writeAudit(request, actor, {
-    action: "config.pricing.publish",
-    targetType: "pricing_rule",
-    targetId: id,
-    reason: body.reason,
-    before: previous ? pricingAuditSnapshot(previous) : null,
-    after: pricingAuditSnapshot(published),
   });
   return ok({ rule: published, previousActiveId: previous?.id ?? null });
 }
@@ -185,31 +224,50 @@ export async function publishPricingRule(request: Request, id: string) {
 export async function rollbackPricingRule(request: Request, id: string) {
   const actor = await actorWithPermission(request, "config.pricing.write");
   const body = rollbackSchema.parse(await jsonBody(request));
-  const current = await prisma.pricingRule.findUnique({ where: { id } });
-  if (!current) throw Errors.notFound("Pricing rule not found");
-  assertTargetConfirmation(body.confirmation, current.id);
-  const previous = await prisma.pricingRule.findFirst({
-    where: { ruleKey: current.ruleKey, status: "archived", version: { lt: current.version } },
-    orderBy: { version: "desc" },
-  });
-  if (!previous) throw Errors.notFound("No previous pricing rule version to roll back to");
-  const restored = await prisma.$transaction(async (tx) => {
+  const { current, restored } = await prisma.$transaction(async (tx) => {
+    const current = await tx.pricingRule.findUnique({ where: { id } });
+    if (!current) throw Errors.notFound("Pricing rule not found");
+    assertTargetConfirmation(body.confirmation, current.id);
+    const previous = await tx.pricingRule.findFirst({
+      where: { ruleKey: current.ruleKey, status: "archived", version: { lt: current.version } },
+      orderBy: { version: "desc" },
+    });
+    if (!previous) throw Errors.notFound("No previous pricing rule version to roll back to");
     await tx.pricingRule.updateMany({
       where: { mode: current.mode, status: "active" },
       data: { status: "archived", archivedAt: new Date() },
     });
-    return tx.pricingRule.update({
+    const restored = await tx.pricingRule.update({
       where: { id: previous.id },
       data: { status: "active", publishedAt: new Date(), archivedAt: null },
     });
-  });
-  await writeAudit(request, actor, {
-    action: "config.pricing.rollback",
-    targetType: "pricing_rule",
-    targetId: current.id,
-    reason: body.reason,
-    before: pricingAuditSnapshot(current),
-    after: pricingAuditSnapshot(restored),
+    const before = pricingAuditSnapshot(current);
+    const after = pricingAuditSnapshot(restored);
+    await persistTransactionalAdminMutation(tx, request, actor, {
+      audit: {
+        action: "config.pricing.rollback",
+        targetType: "pricing_rule",
+        targetId: current.id,
+        reason: body.reason,
+        before,
+        after,
+      },
+      event: {
+        eventType: "config.pricing.rule.rolled_back.v2",
+        aggregateType: "pricing_rule",
+        aggregateId: current.id,
+        payload: {
+          fromRuleId: current.id,
+          restoredRuleId: restored.id,
+          fromVersion: current.version,
+          toVersion: restored.version,
+          ruleKey: restored.ruleKey,
+          mode: restored.mode,
+          status: restored.status,
+        },
+      },
+    });
+    return { current, restored };
   });
   return ok({ rule: restored, fromVersion: current.version, toVersion: restored.version });
 }

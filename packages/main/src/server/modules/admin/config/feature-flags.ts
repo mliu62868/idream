@@ -6,8 +6,8 @@ import {
   actorWithPermission,
   jsonBody,
   toInputJson,
-  writeAudit,
 } from "@/server/modules/admin/shared/legacy-primitives";
+import { persistTransactionalAdminMutation } from "@/server/modules/admin/shared/transactional-mutation";
 import { decodeAdminListCursor, encodeAdminListCursor } from "@/server/modules/admin-v2/shared/list-cursor";
 
 const flagPatchSchema = z.object({
@@ -68,35 +68,47 @@ export async function patchFeatureFlag(request: Request, key: string) {
   if (body.confirmation !== featureFlagConfirmation(key, body.enabled)) {
     throw Errors.badRequest("Confirmation did not match feature flag action");
   }
-  const before = await prisma.featureFlag.findUnique({ where: { key } });
-  if (before?.hardPolicy) throw Errors.forbidden("Hard safety policy flags cannot be changed");
-  const updated = await prisma.featureFlag.upsert({
-    where: { key },
-    update: {
-      enabled: body.enabled,
-      rolloutPercent: body.rolloutPercent,
-      targetRoles: body.targetRoles ? toInputJson(body.targetRoles) : undefined,
-      targetPlans: body.targetPlans ? toInputJson(body.targetPlans) : undefined,
-      description: body.description,
-      version: { increment: 1 },
-    },
-    create: {
-      key,
-      label: key,
-      description: body.description,
-      enabled: body.enabled ?? false,
-      rolloutPercent: body.rolloutPercent ?? 0,
-      targetRoles: toInputJson(body.targetRoles ?? []),
-      targetPlans: toInputJson(body.targetPlans ?? []),
-    },
-  });
-  await writeAudit(request, actor, {
-    action: "config.feature_flag.write",
-    targetType: "feature_flag",
-    targetId: key,
-    reason: body.reason,
-    before: before ? flagAuditSnapshot(before) : null,
-    after: flagAuditSnapshot(updated),
+  const updated = await prisma.$transaction(async (tx) => {
+    const before = await tx.featureFlag.findUnique({ where: { key } });
+    if (before?.hardPolicy) throw Errors.forbidden("Hard safety policy flags cannot be changed");
+    const changed = await tx.featureFlag.upsert({
+      where: { key },
+      update: {
+        enabled: body.enabled,
+        rolloutPercent: body.rolloutPercent,
+        targetRoles: body.targetRoles ? toInputJson(body.targetRoles) : undefined,
+        targetPlans: body.targetPlans ? toInputJson(body.targetPlans) : undefined,
+        description: body.description,
+        version: { increment: 1 },
+      },
+      create: {
+        key,
+        label: key,
+        description: body.description,
+        enabled: body.enabled ?? false,
+        rolloutPercent: body.rolloutPercent ?? 0,
+        targetRoles: toInputJson(body.targetRoles ?? []),
+        targetPlans: toInputJson(body.targetPlans ?? []),
+      },
+    });
+    const after = flagAuditSnapshot(changed);
+    await persistTransactionalAdminMutation(tx, request, actor, {
+      audit: {
+        action: "config.feature_flag.write",
+        targetType: "feature_flag",
+        targetId: key,
+        reason: body.reason,
+        before: before ? flagAuditSnapshot(before) : null,
+        after,
+      },
+      event: {
+        eventType: "config.feature_flag.changed.v2",
+        aggregateType: "feature_flag",
+        aggregateId: key,
+        payload: after,
+      },
+    });
+    return changed;
   });
   return ok({ flag: updated });
 }
