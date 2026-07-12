@@ -101,13 +101,24 @@ export const incidentActionPlanExecuteRequestSchema = z
   })
   .strict();
 
-export const adminBackfillRequestSchema = z
+export const adminBackfillStartRequestSchema = z
   .object({
     dryRun: z.boolean().default(true),
     cursor: z.string().trim().min(1).optional(),
     batchSize: z.number().int().min(1).max(500).optional(),
   })
   .strict();
+
+export const adminBackfillContinuationRequestSchema = z
+  .object({
+    runId: adminIdSchema,
+  })
+  .strict();
+
+export const adminBackfillRequestSchema = z.union([
+  adminBackfillContinuationRequestSchema,
+  adminBackfillStartRequestSchema,
+]);
 
 const adminBackfillCommonResultSchema = z.object({
   runId: adminIdSchema,
@@ -289,4 +300,5 @@ export type IncidentActionPlanExecuteRequest = z.infer<
   typeof incidentActionPlanExecuteRequestSchema
 >;
 export type AdminBackfillRequest = z.infer<typeof adminBackfillRequestSchema>;
+export type AdminBackfillStartRequest = z.infer<typeof adminBackfillStartRequestSchema>;
 export type AdminBackfillResult = z.infer<typeof adminBackfillResultSchema>;

@@ -33,9 +33,22 @@ export type ProductionBackfillDomain = (typeof PRODUCTION_BACKFILL_DOMAINS)[numb
 export type ProductionBackfillMode = "dry_run" | "apply";
 
 type BackfillActor = { readonly id: string; readonly role: string };
+type BackfillContinuationInput = { readonly runId: string; readonly batchKey?: string };
+type BackfillStartInput = {
+  readonly dryRun: boolean;
+  readonly cursor?: string;
+  readonly batchSize?: number;
+  readonly stableRunId?: string;
+  readonly optionsHash?: string;
+  readonly batchKey?: string;
+};
+type ActorBackfillStartInput = BackfillStartInput & { readonly actor: BackfillActor };
+type IncidentBackfillStartInput = BackfillStartInput & { readonly actor?: BackfillActor };
 
 export interface ProductionBackfillOptions {
   readonly runId?: string;
+  readonly batchKey?: string;
+  readonly expectedDomain?: ProductionBackfillDomain;
   readonly stableRunId?: string;
   readonly optionsHash?: string;
   readonly domain?: ProductionBackfillDomain;
@@ -54,6 +67,27 @@ type BackfillSummary = {
   mismatch: number;
   skipped: number;
 };
+
+type BackfillBatchState = {
+  readonly activeKey?: string;
+  readonly lastCompletedKey?: string;
+};
+
+function batchStateOf(value: Prisma.JsonValue): BackfillBatchState {
+  const state = record(value).httpBatch;
+  if (!state || typeof state !== "object" || Array.isArray(state)) return {};
+  const source = state as Record<string, unknown>;
+  return {
+    activeKey: typeof source.activeKey === "string" ? source.activeKey : undefined,
+    lastCompletedKey: typeof source.lastCompletedKey === "string"
+      ? source.lastCompletedKey
+      : undefined,
+  };
+}
+
+function persistedSummary(summary: BackfillSummary, batchState: BackfillBatchState) {
+  return toInputJson({ ...summary, httpBatch: batchState });
+}
 
 type IncidentCandidate = {
   readonly entityType: "generation_attempt";
@@ -354,8 +388,58 @@ export async function runProductionBackfillBatch(db: PrismaClient, options: Prod
     });
   }
   if (!run) run = await createRun(db, options);
+  if (options.expectedDomain && run.domain !== options.expectedDomain) {
+    throw Errors.conflict("Backfill Run belongs to a different domain", {
+      runId: run.id,
+      expectedDomain: options.expectedDomain,
+      actualDomain: run.domain,
+    });
+  }
   if (!PRODUCTION_BACKFILL_DOMAINS.includes(run.domain as ProductionBackfillDomain)) {
     throw new Error(`Backfill run ${run.id} has unsupported domain ${run.domain}`);
+  }
+  if (options.stableRunId && run.status === "paused") {
+    return {
+      runId: run.id,
+      status: "paused" as const,
+      nextCursor: run.cursor,
+      summary: summaryOf(run.summary),
+      report: {},
+      reportHash: "",
+    };
+  }
+  const priorBatchState = batchStateOf(run.summary);
+  if (options.runId && options.batchKey && run.status === "paused") {
+    if (priorBatchState.lastCompletedKey === options.batchKey) {
+      return {
+        runId: run.id,
+        status: "paused" as const,
+        nextCursor: run.cursor,
+        summary: summaryOf(run.summary),
+        report: {},
+        reportHash: "",
+      };
+    }
+    const claim = await db.adminBackfillRun.updateMany({
+      where: { id: run.id, status: "paused", updatedAt: run.updatedAt },
+      data: {
+        status: "running",
+        summary: persistedSummary(summaryOf(run.summary), {
+          activeKey: options.batchKey,
+          lastCompletedKey: priorBatchState.lastCompletedKey,
+        }),
+      },
+    });
+    if (claim.count !== 1) {
+      throw Errors.conflict("Backfill Run batch was claimed by another continuation", {
+        runId: run.id,
+      });
+    }
+    run = await db.adminBackfillRun.findUniqueOrThrow({ where: { id: run.id } });
+  } else if (options.runId && options.batchKey && run.status === "running") {
+    throw Errors.conflict("Backfill Run already has an active continuation", {
+      runId: run.id,
+    });
   }
   if (run.status === "completed") {
     return {
@@ -378,6 +462,9 @@ export async function runProductionBackfillBatch(db: PrismaClient, options: Prod
   const actor = actorFromRun(run.before);
   const { batch, hasMore } = await fetchCandidates(db, run);
   const summary = summaryOf(run.summary);
+  const activeBatchState: BackfillBatchState = options.batchKey
+    ? { activeKey: options.batchKey, lastCompletedKey: priorBatchState.lastCompletedKey }
+    : priorBatchState;
   const dryRun = run.mode === "dry_run";
   let nextCursor = run.cursor;
 
@@ -433,16 +520,23 @@ export async function runProductionBackfillBatch(db: PrismaClient, options: Prod
       });
       await tx.adminBackfillRun.update({
         where: { id: run.id },
-        data: { cursor: candidateCursor, summary: toInputJson(summary) },
+        data: { cursor: candidateCursor, summary: persistedSummary(summary, activeBatchState) },
       });
     });
     nextCursor = candidateCursor;
   }
 
   if (hasMore) {
+    const completedBatchState = options.batchKey
+      ? { lastCompletedKey: options.batchKey }
+      : priorBatchState;
     await db.adminBackfillRun.update({
       where: { id: run.id },
-      data: { status: "paused", cursor: nextCursor, summary: toInputJson(summary) },
+      data: {
+        status: "paused",
+        cursor: nextCursor,
+        summary: persistedSummary(summary, completedBatchState),
+      },
     });
     return { runId: run.id, status: "paused" as const, nextCursor, summary, report: {}, reportHash: "" };
   }
@@ -453,13 +547,16 @@ export async function runProductionBackfillBatch(db: PrismaClient, options: Prod
   const after = await domainCounts(db, domain, initialCursor, run.stopAtId);
   const report = await reconciliationReport(db, run, after, summary);
   const reportHash = canonicalSha256(report);
+  const completedBatchState = options.batchKey
+    ? { lastCompletedKey: options.batchKey }
+    : priorBatchState;
   await db.adminBackfillRun.update({
     where: { id: run.id },
     data: {
       status: "completed",
       cursor: nextCursor,
       after: toInputJson(after),
-      summary: toInputJson(summary),
+      summary: persistedSummary(summary, completedBatchState),
       report: toInputJson(report),
       reportHash,
       finishedAt: new Date(),
@@ -484,24 +581,22 @@ async function legacyItems(db: PrismaClient, runId: string) {
   return db.adminBackfillItem.findMany({ where: { runId }, orderBy: [{ entityType: "asc" }, { entityId: "asc" }] });
 }
 
-export async function backfillGenerationIncidents(input: {
-  readonly dryRun: boolean;
-  readonly cursor?: string;
-  readonly batchSize?: number;
-  readonly actor?: BackfillActor;
-  readonly stableRunId?: string;
-  readonly optionsHash?: string;
-}) {
+export async function backfillGenerationIncidents(
+  input: BackfillContinuationInput | IncidentBackfillStartInput,
+) {
   const db = prisma;
-  const result = await runProductionBackfillBatch(db, {
-    domain: "generation_incident_v1",
-    mode: input.dryRun ? "dry_run" : "apply",
-    batchSize: input.batchSize,
-    initialCursor: input.cursor,
-    actor: input.actor ?? { id: "system:production-backfill", role: "system" },
-    stableRunId: input.stableRunId,
-    optionsHash: input.optionsHash,
-  });
+  const result = await runProductionBackfillBatch(db, "runId" in input
+    ? { runId: input.runId, batchKey: input.batchKey, expectedDomain: "generation_incident_v1" }
+    : {
+        domain: "generation_incident_v1",
+        mode: input.dryRun ? "dry_run" : "apply",
+        batchSize: input.batchSize,
+        initialCursor: input.cursor,
+        actor: input.actor ?? { id: "system:production-backfill", role: "system" },
+        batchKey: input.batchKey,
+        stableRunId: input.stableRunId,
+        optionsHash: input.optionsHash,
+      });
   const run = await db.adminBackfillRun.findUniqueOrThrow({ where: { id: result.runId } });
   const beforeOccurrences = Number(record(run.before).targetCount ?? 0);
   const afterOccurrences = Number(
@@ -513,7 +608,7 @@ export async function backfillGenerationIncidents(input: {
     runId: result.runId,
     status: result.status,
     optionsHash: run.optionsHash,
-    dryRun: input.dryRun,
+    dryRun: run.mode === "dry_run",
     scanned: result.summary.scanned,
     eligible: result.summary.eligible,
     applied: result.summary.applied,
@@ -525,24 +620,22 @@ export async function backfillGenerationIncidents(input: {
   });
 }
 
-export async function backfillCustomerCases(input: {
-  readonly dryRun: boolean;
-  readonly cursor?: string;
-  readonly batchSize?: number;
-  readonly actor: BackfillActor;
-  readonly stableRunId?: string;
-  readonly optionsHash?: string;
-}) {
+export async function backfillCustomerCases(
+  input: BackfillContinuationInput | ActorBackfillStartInput,
+) {
   const db = prisma;
-  const result = await runProductionBackfillBatch(db, {
-    domain: "customer_case_v1",
-    mode: input.dryRun ? "dry_run" : "apply",
-    batchSize: input.batchSize,
-    initialCursor: input.cursor,
-    actor: input.actor,
-    stableRunId: input.stableRunId,
-    optionsHash: input.optionsHash,
-  });
+  const result = await runProductionBackfillBatch(db, "runId" in input
+    ? { runId: input.runId, batchKey: input.batchKey, expectedDomain: "customer_case_v1" }
+    : {
+        domain: "customer_case_v1",
+        mode: input.dryRun ? "dry_run" : "apply",
+        batchSize: input.batchSize,
+        initialCursor: input.cursor,
+        actor: input.actor,
+        batchKey: input.batchKey,
+        stableRunId: input.stableRunId,
+        optionsHash: input.optionsHash,
+      });
   const run = await db.adminBackfillRun.findUniqueOrThrow({ where: { id: result.runId } });
   const beforeCases = Number(record(run.before).targetCount ?? 0);
   const afterCases = Number(
@@ -555,7 +648,7 @@ export async function backfillCustomerCases(input: {
     runId: result.runId,
     status: result.status,
     optionsHash: run.optionsHash,
-    dryRun: input.dryRun,
+    dryRun: run.mode === "dry_run",
     scanned: result.summary.scanned,
     eligible: result.summary.eligible,
     applied: result.summary.applied,
@@ -567,24 +660,22 @@ export async function backfillCustomerCases(input: {
   });
 }
 
-export async function backfillReviewCases(input: {
-  readonly dryRun: boolean;
-  readonly cursor?: string;
-  readonly batchSize?: number;
-  readonly actor: BackfillActor;
-  readonly stableRunId?: string;
-  readonly optionsHash?: string;
-}) {
+export async function backfillReviewCases(
+  input: BackfillContinuationInput | ActorBackfillStartInput,
+) {
   const db = prisma;
-  const result = await runProductionBackfillBatch(db, {
-    domain: "review_case_v1",
-    mode: input.dryRun ? "dry_run" : "apply",
-    batchSize: input.batchSize,
-    initialCursor: input.cursor,
-    actor: input.actor,
-    stableRunId: input.stableRunId,
-    optionsHash: input.optionsHash,
-  });
+  const result = await runProductionBackfillBatch(db, "runId" in input
+    ? { runId: input.runId, batchKey: input.batchKey, expectedDomain: "review_case_v1" }
+    : {
+        domain: "review_case_v1",
+        mode: input.dryRun ? "dry_run" : "apply",
+        batchSize: input.batchSize,
+        initialCursor: input.cursor,
+        actor: input.actor,
+        batchKey: input.batchKey,
+        stableRunId: input.stableRunId,
+        optionsHash: input.optionsHash,
+      });
   const run = await db.adminBackfillRun.findUniqueOrThrow({ where: { id: result.runId } });
   const beforeCases = Number(record(run.before).targetCount ?? 0);
   const afterCases = Number(
@@ -597,7 +688,7 @@ export async function backfillReviewCases(input: {
     runId: result.runId,
     status: result.status,
     optionsHash: run.optionsHash,
-    dryRun: input.dryRun,
+    dryRun: run.mode === "dry_run",
     scanned: result.summary.scanned,
     eligible: result.summary.eligible,
     applied: result.summary.applied,

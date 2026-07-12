@@ -16,7 +16,15 @@ export function POST(request: Request) {
       actor,
       domain: "customer_case_v1",
       body,
-      execute: ({ stableRunId, optionsHash }) => backfillCustomerCases({ ...body, actor, stableRunId, optionsHash }),
+      execute: (identity) => identity.kind === "continuation"
+        ? backfillCustomerCases({ runId: identity.runId, batchKey: identity.batchKey })
+        : backfillCustomerCases({
+            ...identity.body,
+            actor,
+            batchKey: identity.batchKey,
+            stableRunId: identity.runId,
+            optionsHash: identity.optionsHash,
+          }),
     });
   });
 }

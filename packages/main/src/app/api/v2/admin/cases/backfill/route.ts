@@ -15,7 +15,15 @@ export function POST(request: Request) {
       actor,
       domain: "review_case_v1",
       body,
-      execute: ({ stableRunId, optionsHash }) => backfillReviewCases({ ...body, actor, stableRunId, optionsHash }),
+      execute: (identity) => identity.kind === "continuation"
+        ? backfillReviewCases({ runId: identity.runId, batchKey: identity.batchKey })
+        : backfillReviewCases({
+            ...identity.body,
+            actor,
+            batchKey: identity.batchKey,
+            stableRunId: identity.runId,
+            optionsHash: identity.optionsHash,
+          }),
     });
   });
 }

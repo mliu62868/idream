@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   adminCommandAcceptedSchema,
   adminCommandHeadersSchema,
+  adminBackfillRequestSchema,
   adminErrorResponseSchema,
   adminListResponseSchema,
   approvalBindingSchema,
@@ -27,6 +28,13 @@ import {
 const now = "2026-07-11T12:00:00.000Z";
 
 describe("Admin API v2 public contracts", () => {
+  it("separates new backfill options from persisted Run continuation", () => {
+    expect(adminBackfillRequestSchema.parse({})).toEqual({ dryRun: true });
+    expect(adminBackfillRequestSchema.parse({ runId: "run_1" })).toEqual({ runId: "run_1" });
+    expect(adminBackfillRequestSchema.safeParse({ runId: "run_1", dryRun: false }).success).toBe(false);
+    expect(adminBackfillRequestSchema.safeParse({ runId: "run_1", batchSize: 20 }).success).toBe(false);
+  });
+
   it("requires authoritative totals and provenance for every Today queue", () => {
     const emptyQueue = { totalCount: 0, items: [] };
     expect(todayProjectionSchema.safeParse({

@@ -15,12 +15,15 @@ export function POST(request: Request) {
       actor,
       domain: "generation_incident_v1",
       body,
-      execute: ({ stableRunId, optionsHash }) => backfillGenerationIncidents({
-        ...body,
-        actor,
-        stableRunId,
-        optionsHash,
-      }),
+      execute: (identity) => identity.kind === "continuation"
+        ? backfillGenerationIncidents({ runId: identity.runId, batchKey: identity.batchKey })
+        : backfillGenerationIncidents({
+            ...identity.body,
+            actor,
+            batchKey: identity.batchKey,
+            stableRunId: identity.runId,
+            optionsHash: identity.optionsHash,
+          }),
     });
   });
 }
