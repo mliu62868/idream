@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  ADMIN_V2_API_OPERATIONS,
   findAdminV2ApiOperation,
   renderPrometheusMetrics,
   requireExecutableAdminV2Contract,
@@ -26,6 +27,23 @@ afterEach(() => {
 });
 
 describe("Admin main HTTP proxy", () => {
+  it("binds every declared operation response to the runtime BFF contract gate", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (target: URL, init: RequestInit) =>
+      validV2Response(init.method ?? "GET", target.pathname)));
+
+    for (const operation of ADMIN_V2_API_OPERATIONS) {
+      const pathname = operation.route.replace(/:[^/]+/g, "fixture");
+      const response = await proxyToMain(
+        new Request(`http://admin.local${pathname}`, {
+          method: operation.method,
+          body: operation.method === "GET" ? undefined : "{}",
+        }),
+        pathname,
+      );
+      expect(response.status, operation.id).toBe(200);
+    }
+  });
+
   it("fails closed when a successful Admin v2 response violates its manifest contract", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ok: true, data: {} })));
 
