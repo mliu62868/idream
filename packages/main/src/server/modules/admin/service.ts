@@ -1,10 +1,5 @@
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
-import {
-  isPermissionKey,
-} from "@/server/admin/permissions";
-import { effectivePermissions } from "@/server/admin/effective-permissions";
-import { getAuthCtx, requireUser } from "@/server/lib/auth";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { AppError, Errors } from "@/server/lib/errors";
@@ -16,7 +11,6 @@ import {
   jsonBody,
   toInputJson,
   writeAudit,
-  type AdminActor,
 } from "@/server/modules/admin/shared/legacy-primitives";
 export {
   actorWithPermission,
@@ -30,7 +24,6 @@ import {
   decodeAdminListCursor,
   encodeAdminListCursor,
 } from "@/server/modules/admin-v2/shared/list-cursor";
-import { redeemCodeHash, redeemCodeHashCandidates } from "@/server/lib/redeem-codes";
 import {
   listOfficialCharacters,
   createOfficialCharacter,
@@ -108,7 +101,6 @@ import {
   rollbackPricingRule,
 } from "./pricing/service";
 export { DUAL_APPROVAL_FLAG, LEDGER_APPROVAL_THRESHOLD } from "./shared/legacy-approval";
-import { synchronizeSupportCaseFromRequest } from "@/server/modules/admin-v2/cases/service";
 export { enqueueGenerationAttempt } from "@/server/modules/generation/attempt-dispatch";
 import {
   getUserDetail,
@@ -140,11 +132,28 @@ import {
   uploadModelImport,
 } from "./generation/config/service";
 import { appealDecision, moderationDecision, moderationQueue } from "./moderation/service";
+import {
+  escalateSupportRequest,
+  listSupportRequests,
+  patchSupportRequest,
+  viewPlaintext,
+} from "./support/service";
+import {
+  createRedeemCode,
+  disableRedeemCode,
+  listRedeemCodes,
+  listReferrals,
+} from "./promo/service";
+import {
+  approveApproval,
+  createApproval,
+  listApprovals,
+  rejectApproval,
+} from "./approvals/service";
 
 const FEATURED_SETTING_KEY = "feed.featured";
 
 type ApiMethod = "GET" | "POST" | "PATCH" | "DELETE" | "PUT";
-type PlaintextFields = Record<string, string | null>;
 
 const recipeSchema = z.object({
   recipeKey: z.string().trim().min(1).max(120),
@@ -181,15 +190,6 @@ const presetAdminSchema = z.object({
   status: z.enum(["active", "archived"]).default("active"),
 });
 
-const plaintextViewSchema = z.object({
-  targetType: z.enum(["generation_job", "media"]),
-  targetId: z.string().trim().min(1).max(160),
-  ticketId: z.string().trim().max(160).optional(),
-  legalHoldId: z.string().trim().max(160).optional(),
-  reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.string().trim().min(1).max(160),
-});
-
 const savedViewCreateSchema = z.object({
   scope: z.string().trim().min(1).max(80),
   label: z.string().trim().min(1).max(120),
@@ -210,55 +210,6 @@ const contentStatusSchema = z.object({
 
 const featuredPutSchema = z.object({
   characterIds: z.array(z.string().trim().min(1).max(160)).max(24),
-  reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.string().trim().min(1).max(160),
-});
-
-const redeemCodeCreateSchema = z.object({
-  code: z.string().trim().min(4).max(80),
-  reward: z
-    .object({
-      dreamcoins: z.number().int().min(0).max(1_000_000).optional(),
-      note: z.string().trim().max(200).optional(),
-    })
-    .passthrough(),
-  maxRedemptions: z.number().int().min(1).max(1_000_000).nullable().optional(),
-  expiresAt: z.string().datetime().nullable().optional(),
-  reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.string().trim().min(1).max(160),
-});
-
-const promoDisableSchema = z.object({
-  reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.string().trim().min(1).max(160),
-});
-
-const supportRequestPatchSchema = z.object({
-  status: z.enum(["received", "open", "waiting_on_user", "resolved", "closed"]).optional(),
-  assignedToId: z.string().trim().min(1).max(160).nullable().optional(),
-  priority: z.number().int().min(1).max(5).optional(),
-  resolutionNotes: z.string().trim().max(2_000).nullable().optional(),
-  reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.string().trim().min(1).max(160),
-});
-
-const supportRequestEscalateSchema = z.object({
-  reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.string().trim().min(1).max(160),
-});
-
-// requestedById≠approvedById、approver 须持 permissionKey、状态单向（ADMIN_CONSOLE_PLAN §11 Phase4）。
-const approvalCreateSchema = z.object({
-  permissionKey: z.string().trim().min(1).max(80),
-  action: z.string().trim().min(1).max(120),
-  targetType: z.string().trim().min(1).max(80),
-  targetId: z.string().trim().min(1).max(160),
-  payload: z.record(z.string(), z.unknown()).default({}),
-  reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.string().trim().min(1).max(160),
-});
-
-const approvalDecisionSchema = z.object({
   reason: z.string().trim().min(3).max(2_000),
   confirmation: z.string().trim().min(1).max(160),
 });
@@ -1172,356 +1123,6 @@ function percentile(sorted: number[], p: number) {
   return sorted[index];
 }
 
-async function listSupportRequests(request: Request) {
-  await actorWithPermission(request, "support.request.read");
-  const url = new URL(request.url);
-  const ticketId = url.searchParams.get("ticketId")?.trim() || undefined;
-  const userId = url.searchParams.get("userId")?.trim() || undefined;
-  const assignedToId = url.searchParams.get("assignedToId")?.trim() || undefined;
-  const category = url.searchParams.get("category")?.trim() || undefined;
-  const search = url.searchParams.get("search")?.trim() || undefined;
-  const sla = supportSlaStateFromUnknown(url.searchParams.get("sla"));
-  const requestedStatuses = url.searchParams
-    .get("status")
-    ?.split(",")
-    .map((status) => status.trim())
-    .filter(Boolean);
-  const statusFilter = requestedStatuses?.length && !requestedStatuses.includes("all")
-    ? requestedStatuses.includes("active")
-      ? { notIn: ["resolved", "closed"] }
-      : { in: requestedStatuses }
-    : undefined;
-  const where: Prisma.SupportRequestWhereInput = {
-    ticketId,
-    userId,
-    assignedToId,
-    category,
-    status: statusFilter,
-    ...(search ? { OR: [
-      { ticketId: { contains: search, mode: "insensitive" } },
-      { userId: { contains: search, mode: "insensitive" } },
-      { subject: { contains: search, mode: "insensitive" } },
-      { description: { contains: search, mode: "insensitive" } },
-      { resolutionNotes: { contains: search, mode: "insensitive" } },
-      { sourcePath: { contains: search, mode: "insensitive" } },
-      { user: { is: { email: { contains: search, mode: "insensitive" } } } },
-      { assignedTo: { is: { email: { contains: search, mode: "insensitive" } } } },
-    ] } : {}),
-  };
-  const limit = clampInt(url.searchParams.get("limit"), 1, 100, 25);
-  const queryIdentity = { ticketId, userId, assignedToId, category, sla, statuses: requestedStatuses ?? [], search, sort: "priority_created_asc" };
-  const cursorKeys = url.searchParams.get("cursor")
-    ? decodeAdminListCursor(url.searchParams.get("cursor")!, "support_requests", queryIdentity)
-    : null;
-  let [scanPriority, scanAt, scanTicketId] = cursorKeys
-    ? [z.number().int().parse(cursorKeys[0]), new Date(z.string().parse(cursorKeys[1])), z.string().min(1).parse(cursorKeys[2])]
-    : [null, null, null];
-  if (scanAt && Number.isNaN(scanAt.getTime())) throw Errors.badRequest("support_requests cursor timestamp is invalid");
-  const matches: Array<ReturnType<typeof supportRequestDTO>> = [];
-  const rawByTicket = new Map<string, { priority: number; createdAt: Date; ticketId: string }>();
-  const batchSize = 100;
-  let exhausted = false;
-  while (matches.length <= limit && !exhausted) {
-    const items = await prisma.supportRequest.findMany({
-      where: {
-        AND: [
-          where,
-          ...(scanPriority !== null && scanAt && scanTicketId ? [{ OR: [
-            { priority: { gt: scanPriority } },
-            { priority: scanPriority, createdAt: { gt: scanAt } },
-            { priority: scanPriority, createdAt: scanAt, ticketId: { gt: scanTicketId } },
-          ] }] : []),
-        ],
-      },
-      include: {
-        assignedTo: { select: { id: true, email: true, displayName: true, role: true } },
-        user: { select: { id: true, email: true, displayName: true, role: true } },
-      },
-      orderBy: [{ priority: "asc" }, { createdAt: "asc" }, { ticketId: "asc" }],
-      take: batchSize,
-    });
-    if (items.length === 0) {
-      exhausted = true;
-      break;
-    }
-    for (const item of items) {
-      const dto = supportRequestDTO(item);
-      if (sla !== "all" && dto.slaState !== sla) continue;
-      matches.push(dto);
-      rawByTicket.set(item.ticketId, { priority: item.priority, createdAt: item.createdAt, ticketId: item.ticketId });
-    }
-    const last = items.at(-1)!;
-    scanPriority = last.priority;
-    scanAt = last.createdAt;
-    scanTicketId = last.ticketId;
-    exhausted = items.length < batchSize;
-  }
-  const page = matches.slice(0, limit);
-  const hasNextPage = matches.length > limit || !exhausted;
-  const last = page.at(-1) ? rawByTicket.get(page.at(-1)!.ticketId) : null;
-  return ok({
-    items: page,
-    pageInfo: {
-      endCursor: hasNextPage && last
-        ? encodeAdminListCursor("support_requests", queryIdentity, [last.priority, last.createdAt.toISOString(), last.ticketId])
-        : null,
-      hasNextPage,
-    },
-    asOf: new Date().toISOString(),
-    freshness: "fresh",
-  });
-}
-
-async function patchSupportRequest(request: Request, ticketId: string) {
-  const actor = await actorWithPermission(request, "support.request.write");
-  const body = supportRequestPatchSchema.parse(await jsonBody(request));
-  if (body.confirmation !== ticketId && body.confirmation !== "UPDATE") {
-    throw Errors.badRequest("Support request updates require ticket confirmation");
-  }
-  const before = await prisma.supportRequest.findUnique({ where: { ticketId } });
-  if (!before) throw Errors.notFound("Support request not found");
-  const terminal = body.status === "resolved" || body.status === "closed";
-  const updated = await prisma.$transaction(async (tx) => {
-    const row = await tx.supportRequest.update({
-      where: { ticketId },
-      data: {
-        assignedToId: body.assignedToId === undefined ? undefined : body.assignedToId,
-        priority: body.priority,
-        resolutionNotes: body.resolutionNotes === undefined ? undefined : body.resolutionNotes,
-        resolvedAt: body.status === undefined ? undefined : terminal ? new Date() : null,
-        status: body.status,
-      },
-      include: {
-        assignedTo: { select: { id: true, email: true, displayName: true, role: true } },
-        user: { select: { id: true, email: true, displayName: true, role: true } },
-      },
-    });
-    await synchronizeSupportCaseFromRequest(tx, row);
-    return row;
-  });
-
-  await writeAudit(request, actor, {
-    action: "support.request.update",
-    targetType: "support_request",
-    targetId: ticketId,
-    reason: body.reason,
-    before: {
-      assignedToId: before.assignedToId,
-      priority: before.priority,
-      resolutionNotes: before.resolutionNotes,
-      status: before.status,
-    },
-    after: {
-      assignedToId: updated.assignedToId,
-      priority: updated.priority,
-      resolutionNotes: updated.resolutionNotes,
-      status: updated.status,
-    },
-  });
-
-  return ok({ request: supportRequestDTO(updated) });
-}
-
-async function escalateSupportRequest(request: Request, ticketId: string) {
-  const actor = await actorWithPermission(request, "support.request.write");
-  const body = supportRequestEscalateSchema.parse(await jsonBody(request));
-  if (body.confirmation !== ticketId && body.confirmation !== "ESCALATE") {
-    throw Errors.badRequest("Support escalation requires ticket confirmation");
-  }
-  const before = await prisma.supportRequest.findUnique({
-    where: { ticketId },
-    include: {
-      assignedTo: { select: { id: true, email: true, displayName: true, role: true } },
-      user: { select: { id: true, email: true, displayName: true, role: true } },
-    },
-  });
-  if (!before) throw Errors.notFound("Support request not found");
-  if (before.status === "resolved" || before.status === "closed") {
-    throw Errors.badRequest("Resolved or closed support requests cannot be escalated");
-  }
-  const beforeSla = supportRequestSla(before);
-  if (beforeSla.state !== "overdue" && beforeSla.state !== "due_soon") {
-    throw Errors.badRequest("Only due-soon or overdue support requests can be escalated");
-  }
-  const escalatedAt = new Date();
-  const updated = await prisma.$transaction(async (tx) => {
-    const row = await tx.supportRequest.update({
-      where: { ticketId },
-      data: {
-        assignedToId: before.assignedToId ?? actor.id,
-        priority: 1,
-        slaEscalatedAt: escalatedAt,
-        slaEscalatedById: actor.id,
-        slaEscalationReason: body.reason,
-        status: before.status === "received" ? "open" : before.status,
-      },
-      include: {
-        assignedTo: { select: { id: true, email: true, displayName: true, role: true } },
-        user: { select: { id: true, email: true, displayName: true, role: true } },
-      },
-    });
-    await synchronizeSupportCaseFromRequest(tx, row);
-    return row;
-  });
-
-  await writeAudit(request, actor, {
-    action: "support.request.escalate",
-    targetType: "support_request",
-    targetId: ticketId,
-    reason: body.reason,
-    before: {
-      assignedToId: before.assignedToId,
-      priority: before.priority,
-      slaEscalatedAt: before.slaEscalatedAt,
-      slaState: beforeSla.state,
-      status: before.status,
-    },
-    after: {
-      assignedToId: updated.assignedToId,
-      priority: updated.priority,
-      slaEscalatedAt: updated.slaEscalatedAt,
-      slaState: supportRequestSla(updated).state,
-      status: updated.status,
-    },
-  });
-
-  return ok({ request: supportRequestDTO(updated) });
-}
-
-type SupportRequestRow = Prisma.SupportRequestGetPayload<{
-  include: {
-    assignedTo: { select: { id: true; email: true; displayName: true; role: true } };
-    user: { select: { id: true; email: true; displayName: true; role: true } };
-  };
-}>;
-
-function supportRequestDTO(request: SupportRequestRow) {
-  const sla = supportRequestSla(request);
-  return {
-    id: request.id,
-    ticketId: request.ticketId,
-    userId: request.userId,
-    userEmail: request.user.email,
-    userName: request.user.displayName ?? request.user.email,
-    category: request.category,
-    subject: request.subject,
-    description: request.description,
-    diagnosticConsent: request.diagnosticConsent,
-    sourcePath: request.sourcePath,
-    status: request.status,
-    priority: request.priority,
-    assignedToId: request.assignedToId,
-    assignedToEmail: request.assignedTo?.email ?? null,
-    assignedToName: request.assignedTo?.displayName ?? request.assignedTo?.email ?? null,
-    slaEscalatedAt: request.slaEscalatedAt?.toISOString() ?? null,
-    slaEscalatedById: request.slaEscalatedById,
-    slaEscalationReason: request.slaEscalationReason,
-    resolutionNotes: request.resolutionNotes,
-    resolvedAt: request.resolvedAt?.toISOString() ?? null,
-    slaDueAt: sla.dueAt?.toISOString() ?? null,
-    slaHoursRemaining: sla.hoursRemaining,
-    slaState: sla.state,
-    createdAt: request.createdAt.toISOString(),
-    updatedAt: request.updatedAt.toISOString(),
-  };
-}
-
-const supportSlaHoursByPriority = new Map([
-  [1, 4],
-  [2, 12],
-  [3, 24],
-  [4, 48],
-  [5, 72],
-]);
-
-type SupportSlaState = "all" | "overdue" | "due_soon" | "on_track" | "paused" | "closed";
-
-function supportSlaStateFromUnknown(value: string | null): SupportSlaState {
-  if (value === "overdue" || value === "due_soon" || value === "on_track" || value === "paused" || value === "closed") {
-    return value;
-  }
-  return "all";
-}
-
-function supportRequestSla(request: SupportRequestRow) {
-  if (request.status === "resolved" || request.status === "closed") {
-    return { dueAt: null, hoursRemaining: null, state: "closed" as const };
-  }
-  if (request.status === "waiting_on_user") {
-    return { dueAt: null, hoursRemaining: null, state: "paused" as const };
-  }
-  const hours = supportSlaHoursByPriority.get(request.priority) ?? 24;
-  const dueAt = new Date(request.createdAt.getTime() + hours * 60 * 60 * 1000);
-  const hoursRemaining = Math.ceil((dueAt.getTime() - Date.now()) / (60 * 60 * 1000));
-  const state = hoursRemaining < 0 ? "overdue" : hoursRemaining <= 4 ? "due_soon" : "on_track";
-  return { dueAt, hoursRemaining, state };
-}
-
-async function viewPlaintext(request: Request) {
-  const actor = await actorWithPermission(request, "support.plaintext.view");
-  const body = plaintextViewSchema.parse(await jsonBody(request));
-  if (body.confirmation !== body.targetId) {
-    throw Errors.badRequest("Confirmation did not match plaintext target");
-  }
-  const target = await plaintextTarget(body.targetType, body.targetId);
-  if (!target) throw Errors.notFound("Plaintext target not found");
-  const grant = body.ticketId
-    ? await prisma.supportConsentGrant.findFirst({
-        where: {
-          userId: target.ownerId,
-          ticketId: body.ticketId,
-          targetType: body.targetType,
-          targetId: body.targetId,
-          expiresAt: { gt: new Date() },
-        },
-      })
-    : null;
-  const hold = body.legalHoldId
-    ? await prisma.legalHold.findFirst({
-        where: {
-          id: body.legalHoldId,
-          targetType: body.targetType,
-          targetId: body.targetId,
-          status: "active",
-        },
-      })
-    : null;
-  if (!grant && !hold) {
-    throw Errors.forbidden("Plaintext view requires active support consent or legal hold");
-  }
-  const plaintext = hold
-    ? target.plaintext
-    : plaintextAllowedByConsent(target.plaintext, grant?.scope);
-  if (Object.keys(plaintext).length === 0) {
-    throw Errors.forbidden("Plaintext view grant does not authorize any plaintext fields");
-  }
-
-  await writeAudit(request, actor, {
-    action: "support.plaintext.view",
-    targetType: body.targetType,
-    targetId: body.targetId,
-    reason: body.reason,
-    after: {
-      ticketId: grant?.ticketId ?? null,
-      legalHoldId: hold?.id ?? null,
-      viewedFields: Object.keys(plaintext),
-    },
-  });
-
-  return ok({
-    target: {
-      type: body.targetType,
-      id: body.targetId,
-      ownerId: target.ownerId,
-    },
-    plaintext,
-    authorization: {
-      ticketId: grant?.ticketId ?? null,
-      legalHoldId: hold?.id ?? null,
-    },
-  });
-}
-
 // ── F1 Saved Views（owner-scoped 个人 UI 偏好；不入审计，见 ADMIN_PHASE2_DESIGN §4） ──
 async function listSavedViews(request: Request) {
   const actor = await actorWithPermission(request, "dashboard.read");
@@ -1815,277 +1416,6 @@ async function putFeaturedCharacters(request: Request) {
   return ok({ characterIds: validIds, skipped: unique.filter((id) => !validSet.has(id)) });
 }
 
-// ── F4 Redeem code / Referral 运营面 ──
-async function listRedeemCodes(request: Request) {
-  await actorWithPermission(request, "growth.promo.read");
-  const url = new URL(request.url);
-  const search = url.searchParams.get("search")?.trim() || undefined;
-  const status = url.searchParams.get("status") ?? undefined;
-  const limit = clampInt(url.searchParams.get("limit"), 1, 100, 100);
-  const queryIdentity = { search, status };
-  const cursorKeys = adminListCursorKeys(url, "redeem_codes", queryIdentity);
-  const cursorWhere: Prisma.RedeemCodeWhereInput | undefined = cursorKeys ? (() => {
-    const createdAt = adminCursorDate(cursorKeys, 0, "redeem_codes");
-    const id = adminCursorString(cursorKeys, 1, "redeem_codes");
-    return { OR: [{ createdAt: { lt: createdAt } }, { createdAt, id: { lt: id } }] };
-  })() : undefined;
-  const codes = await prisma.redeemCode.findMany({
-    where: { status, id: search ? { contains: search } : undefined, AND: cursorWhere },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    take: limit + 1,
-    include: { _count: { select: { redemptions: true } } },
-  });
-  // 不回明文 code（只存 hash），运营按 id + reward 元数据管理。
-  const page = codes.slice(0, limit);
-  const items = page.map((code) => ({
-    id: code.id,
-    reward: code.reward,
-    status: code.status,
-    maxRedemptions: code.maxRedemptions,
-    redemptions: code._count.redemptions,
-    expiresAt: code.expiresAt,
-    createdAt: code.createdAt,
-  }));
-  return ok({
-    items,
-    pageInfo: adminListPageInfo("redeem_codes", queryIdentity, page, codes.length > limit, (row) => [
-      row.createdAt.toISOString(),
-      row.id,
-    ]),
-  });
-}
-
-async function createRedeemCode(request: Request) {
-  const actor = await actorWithPermission(request, "growth.promo.write");
-  const body = redeemCodeCreateSchema.parse(await jsonBody(request));
-  if (body.confirmation !== body.code) {
-    throw Errors.badRequest("Confirmation did not match");
-  }
-  const codeHash = redeemCodeHash(body.code);
-  const existing = await prisma.redeemCode.findFirst({
-    where: { codeHash: { in: redeemCodeHashCandidates(body.code) } },
-  });
-  if (existing) throw Errors.badRequest("Redeem code already exists");
-  const code = await prisma.redeemCode.create({
-    data: {
-      codeHash,
-      reward: toInputJson(body.reward),
-      status: "active",
-      maxRedemptions: body.maxRedemptions ?? null,
-      expiresAt: body.expiresAt ? new Date(body.expiresAt) : null,
-    },
-  });
-  // 审计不写明文 code，只记 id + reward 元数据。
-  await writeAudit(request, actor, {
-    action: "promo.redeem_code.create",
-    targetType: "redeem_code",
-    targetId: code.id,
-    reason: body.reason,
-    after: { reward: body.reward, maxRedemptions: code.maxRedemptions, expiresAt: code.expiresAt },
-  });
-  return ok({ id: code.id, status: code.status });
-}
-
-async function disableRedeemCode(request: Request, id: string) {
-  const actor = await actorWithPermission(request, "growth.promo.write");
-  const body = promoDisableSchema.parse(await jsonBody(request));
-  const before = await prisma.redeemCode.findUnique({ where: { id } });
-  if (!before) throw Errors.notFound("Redeem code not found");
-  assertTargetConfirmation(body.confirmation, before.id);
-  const after = await prisma.redeemCode.update({ where: { id }, data: { status: "disabled" } });
-  await writeAudit(request, actor, {
-    action: "promo.redeem_code.disable",
-    targetType: "redeem_code",
-    targetId: id,
-    reason: body.reason,
-    before: { status: before.status },
-    after: { status: after.status },
-  });
-  return ok({ id: after.id, status: after.status });
-}
-
-async function listReferrals(request: Request) {
-  await actorWithPermission(request, "growth.promo.read");
-  const url = new URL(request.url);
-  const search = url.searchParams.get("search")?.trim() || undefined;
-  const inviterId = url.searchParams.get("inviterId") ?? undefined;
-  const status = url.searchParams.get("status") ?? undefined;
-  const limit = clampInt(url.searchParams.get("limit"), 1, 100, 100);
-  const queryIdentity = { search, inviterId, status };
-  const cursorKeys = adminListCursorKeys(url, "referrals", queryIdentity);
-  const cursorWhere: Prisma.ReferralWhereInput | undefined = cursorKeys ? (() => {
-    const createdAt = adminCursorDate(cursorKeys, 0, "referrals");
-    const id = adminCursorString(cursorKeys, 1, "referrals");
-    return { OR: [{ createdAt: { lt: createdAt } }, { createdAt, id: { lt: id } }] };
-  })() : undefined;
-  const rows = await prisma.referral.findMany({
-    where: {
-      inviterId,
-      status,
-      OR: search
-        ? [
-            { id: { contains: search } },
-            { inviterId: { contains: search } },
-            { inviteeId: { contains: search } },
-            { code: { contains: search } },
-          ]
-        : undefined,
-      AND: cursorWhere,
-    },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    take: limit + 1,
-  });
-  const page = rows.slice(0, limit);
-  return ok({
-    items: page,
-    pageInfo: adminListPageInfo("referrals", queryIdentity, page, rows.length > limit, (row) => [
-      row.createdAt.toISOString(),
-      row.id,
-    ]),
-  });
-}
-
-// ── F5 双人审批（AdminActionRequest）──
-async function listApprovals(request: Request) {
-  await actorWithPermission(request, "admin.approval.review");
-  const url = new URL(request.url);
-  const search = url.searchParams.get("search")?.trim() || undefined;
-  const status = url.searchParams.get("status") ?? "pending";
-  const limit = clampInt(url.searchParams.get("limit"), 1, 100, 100);
-  const queryIdentity = { search, status };
-  const cursorKeys = adminListCursorKeys(url, "approvals", queryIdentity);
-  const cursorWhere: Prisma.AdminActionRequestWhereInput | undefined = cursorKeys ? (() => {
-    const createdAt = adminCursorDate(cursorKeys, 0, "approvals");
-    const id = adminCursorString(cursorKeys, 1, "approvals");
-    return { OR: [{ createdAt: { lt: createdAt } }, { createdAt, id: { lt: id } }] };
-  })() : undefined;
-  const rows = await prisma.adminActionRequest.findMany({
-    where: {
-      status,
-      OR: search
-        ? [
-            { id: { contains: search } },
-            { action: { contains: search } },
-            { permissionKey: { contains: search } },
-            { targetId: { contains: search } },
-            { requestedById: { contains: search } },
-          ]
-        : undefined,
-      AND: cursorWhere,
-    },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    take: limit + 1,
-  });
-  const page = rows.slice(0, limit);
-  return ok({
-    items: page,
-    pageInfo: adminListPageInfo("approvals", queryIdentity, page, rows.length > limit, (row) => [
-      row.createdAt.toISOString(),
-      row.id,
-    ]),
-  });
-}
-
-async function createApproval(request: Request) {
-  // 发起方须持目标 action 的 permission key（不能请求自己无权做的事）。
-  const ctx = await getAuthCtx(request);
-  const user = requireUser(ctx);
-  const body = approvalCreateSchema.parse(await jsonBody(request));
-  if (body.confirmation !== approvalRequestConfirmation(body.targetId, body.action)) {
-    throw Errors.badRequest("Confirmation did not match approval target");
-  }
-  if (!isPermissionKey(body.permissionKey)) throw Errors.badRequest("Unknown permission key");
-  const perms = await effectivePermissions(user.id, user.role);
-  if (!perms.has(body.permissionKey)) {
-    throw Errors.forbidden("Cannot request an action you lack permission for", {
-      permission: body.permissionKey,
-    });
-  }
-  const actor: AdminActor = { id: user.id, role: user.role };
-  const created = await prisma.adminActionRequest.create({
-    data: {
-      requestedById: actor.id,
-      permissionKey: body.permissionKey,
-      action: body.action,
-      targetType: body.targetType,
-      targetId: body.targetId,
-      payload: toInputJson(body.payload),
-      status: "pending",
-      reason: body.reason,
-    },
-  });
-  await writeAudit(request, actor, {
-    action: "admin.approval.request",
-    targetType: body.targetType,
-    targetId: body.targetId,
-    reason: body.reason,
-    after: { requestId: created.id, permissionKey: body.permissionKey, action: body.action },
-  });
-  return ok({ request: created });
-}
-
-function approvalRequestConfirmation(targetId: string, action: string) {
-  return `${targetId}:${action}`;
-}
-
-async function approveApproval(request: Request, id: string) {
-  const actor = await actorWithPermission(request, "admin.approval.review");
-  const body = approvalDecisionSchema.parse(await jsonBody(request));
-  const req = await prisma.adminActionRequest.findUnique({ where: { id } });
-  if (!req) throw Errors.notFound("Approval request not found");
-  assertTargetConfirmation(body.confirmation, req.id);
-  if (req.status !== "pending") throw Errors.badRequest("Approval request is not pending");
-  // 不变量：审批人 ≠ 发起人。
-  if (req.requestedById === actor.id) {
-    throw Errors.badRequest("Approver must differ from requester");
-  }
-  // 不变量：审批人须持该请求声明的 permission key。
-  if (!isPermissionKey(req.permissionKey)) {
-    throw Errors.badRequest("Request has an unknown permission key");
-  }
-  const perms = await effectivePermissions(actor.id, actor.role);
-  if (!perms.has(req.permissionKey)) {
-    throw Errors.forbidden("Approver lacks the permission required by this request", {
-      permission: req.permissionKey,
-    });
-  }
-  const updated = await prisma.adminActionRequest.update({
-    where: { id },
-    data: { status: "approved", approvedById: actor.id, decidedAt: new Date() },
-  });
-  await writeAudit(request, actor, {
-    action: "admin.approval.approve",
-    targetType: req.targetType,
-    targetId: req.targetId,
-    reason: body.reason,
-    before: { status: "pending" },
-    after: { status: "approved", requestId: updated.id, permissionKey: req.permissionKey },
-  });
-  return ok({ request: updated });
-}
-
-async function rejectApproval(request: Request, id: string) {
-  const actor = await actorWithPermission(request, "admin.approval.review");
-  const body = approvalDecisionSchema.parse(await jsonBody(request));
-  const req = await prisma.adminActionRequest.findUnique({ where: { id } });
-  if (!req) throw Errors.notFound("Approval request not found");
-  assertTargetConfirmation(body.confirmation, req.id);
-  if (req.status !== "pending") throw Errors.badRequest("Approval request is not pending");
-  const updated = await prisma.adminActionRequest.update({
-    where: { id },
-    data: { status: "rejected", approvedById: actor.id, decidedAt: new Date() },
-  });
-  await writeAudit(request, actor, {
-    action: "admin.approval.reject",
-    targetType: req.targetType,
-    targetId: req.targetId,
-    reason: body.reason,
-    before: { status: "pending" },
-    after: { status: "rejected", requestId: updated.id },
-  });
-  return ok({ request: updated });
-}
-
 // ── F6 Chat 运营面（代理到 chat 服务内部 admin 只读 API；尊重 DB 边界，默认不回明文） ──
 // INTENT: chat 服务不可达/未配置时降级返回 configured:false（与既有 chat BFF 降级一致），不抛 500。
 type ChatAdminProxyResult = {
@@ -2249,32 +1579,6 @@ function recipeAuditSnapshot(template: {
   };
 }
 
-async function plaintextTarget(
-  targetType: "generation_job" | "media",
-  targetId: string,
-): Promise<{ ownerId: string; plaintext: PlaintextFields } | null> {
-  if (targetType === "generation_job") {
-    const job = await prisma.generationJob.findUnique({ where: { id: targetId } });
-    if (!job) return null;
-    return {
-      ownerId: job.userId,
-      plaintext: {
-        prompt: job.prompt,
-        negativePrompt: job.negativePrompt,
-      },
-    };
-  }
-
-  const media = await prisma.mediaAsset.findUnique({ where: { id: targetId } });
-  if (!media) return null;
-  return {
-    ownerId: media.ownerId,
-    plaintext: {
-      prompt: media.prompt,
-    },
-  };
-}
-
 // SPEC: 双人审批硬门控（ADMIN_PHASE3_DESIGN §5.2）。feature flag `dual_approval_enforced`
 // 开启时，高危执行端点须先存在一条 action+targetId 匹配且 status=approved 的 AdminActionRequest；
 // 执行前消费它（status=consumed，一次性防重放）。flag 关闭（受控 beta 默认）→ 不强制，行为不变。
@@ -2287,25 +1591,6 @@ function jsonStringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
     : [];
-}
-
-function plaintextAllowedByConsent(
-  plaintext: PlaintextFields,
-  scope: Prisma.JsonValue | undefined,
-) {
-  const fields = consentScopeFields(scope);
-  const output: PlaintextFields = {};
-  for (const [field, value] of Object.entries(plaintext)) {
-    if (fields.has(field)) output[field] = value;
-  }
-  return output;
-}
-
-function consentScopeFields(scope: Prisma.JsonValue | undefined) {
-  if (!isRecord(scope)) return new Set<string>();
-  const fields = scope.fields;
-  if (!Array.isArray(fields)) return new Set<string>();
-  return new Set(fields.filter((field): field is string => typeof field === "string"));
 }
 
 function adminListCursorKeys(
