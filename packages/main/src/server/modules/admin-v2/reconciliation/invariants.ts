@@ -88,6 +88,35 @@ const sqlChecks: readonly SqlInvariant[] = [
     `,
   },
   {
+    key: "live_serving_legacy_projection_mismatch",
+    description: "Live official Serving authority must match the legacy runtime projection",
+    evidence: "CharacterServing live pointer joined to Character status/visibility/avatar and the Release avatar manifest",
+    query: Prisma.sql`
+      SELECT c.id, count(*) OVER()::int AS total
+      FROM character_serving s
+      JOIN characters c ON c.id = s."characterId"
+      JOIN character_releases r ON r.id = s."currentReleaseId"
+      WHERE c.source = 'official' AND c."deletedAt" IS NULL AND s.state = 'live'
+        AND (
+          c.status <> 'approved'
+          OR c.visibility <> 'public'
+          OR c."imageAssetId" IS DISTINCT FROM (
+            SELECT placement->>'assetId'
+            FROM jsonb_array_elements(
+              CASE
+                WHEN jsonb_typeof(r."releasePlacementManifest"->'placements') = 'array'
+                  THEN r."releasePlacementManifest"->'placements'
+                ELSE '[]'::jsonb
+              END
+            ) AS placement
+            WHERE placement->>'slotKey' = 'character_avatar'
+            LIMIT 1
+          )
+        )
+      ORDER BY c.id LIMIT 20
+    `,
+  },
+  {
     key: "serving_validation_stale",
     description: "Current and scheduled Releases require a passing validation for the exact snapshot and policy",
     evidence: `ReleaseValidationRun snapshotHash + ${CHARACTER_RELEASE_POLICY_VERSION}`,

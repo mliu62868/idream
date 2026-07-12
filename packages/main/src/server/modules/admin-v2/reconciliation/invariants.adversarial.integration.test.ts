@@ -307,6 +307,11 @@ describe("Admin cutover invariant adversarial release authority", () => {
       where: { characterId: officialNotLive.characterId },
       data: { state: "paused" },
     });
+    const officialLiveProjectionMismatch = await createReleaseGraph("official-live-projection-mismatch");
+    await prisma.character.update({
+      where: { id: officialLiveProjectionMismatch.characterId },
+      data: { source: "official", visibility: "private", status: "archived", imageAssetId: null },
+    });
     const crossCharacter = await createReleaseGraph("cross-character");
     const servingCharacterId = `${prefix}-cross-serving-character`;
     characterIds.push(servingCharacterId);
@@ -681,6 +686,11 @@ describe("Admin cutover invariant adversarial release authority", () => {
         key: "official_public_character_not_live",
         status: "failed",
         sampleIds: expect.arrayContaining([`${prefix}-official-not-live-character`]),
+      }),
+      expect.objectContaining({
+        key: "live_serving_legacy_projection_mismatch",
+        status: "failed",
+        sampleIds: expect.arrayContaining([`${prefix}-official-live-projection-mismatch-character`]),
       }),
       expect.objectContaining({
         key: "partial_request_delivery_count_mismatch",

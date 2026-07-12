@@ -358,4 +358,65 @@ describe("Support and billing Case depth", () => {
       where: { caseId: result.adminCase.id, sourceType: "case_recurrence", sourceId: prior.id },
     })).resolves.toBeTruthy();
   });
+
+  it("requires a resolved review Case to reopen before accepting another decision", async () => {
+    const caseId = `resolved-review-case-${suffix}`;
+    const evidenceId = `resolved-review-evidence-${suffix}`;
+    const reviewCase = await prisma.adminCase.create({
+      data: {
+        id: caseId,
+        type: "content_report",
+        targetType: "user",
+        targetId: customerId,
+        caseKey: `resolved-review-${suffix}`,
+        activeKey: `content_report:user:${customerId}:resolved-review-${suffix}`,
+        status: "in_progress",
+      },
+    });
+    await prisma.caseEvidence.create({
+      data: {
+        id: evidenceId,
+        caseId,
+        sourceType: "content_report",
+        sourceId: `report-${suffix}`,
+        snapshot: { finding: "fixture" },
+        occurredAt: new Date(),
+      },
+    });
+    const resolved = await recordReviewCaseDecisionAtomic({
+      caseId,
+      actor: { id: actorId, role: "admin" },
+      expectedVersion: reviewCase.version,
+      decision: "actioned",
+      summary: "Resolve after downstream verification.",
+      evidenceRefs: [evidenceId],
+      downstreamVerified: true,
+      requestId: `resolve-review-${suffix}`,
+    });
+    expect(resolved).toMatchObject({ status: "resolved", activeKey: null });
+
+    await expect(recordReviewCaseDecisionAtomic({
+      caseId,
+      actor: { id: actorId, role: "admin" },
+      expectedVersion: resolved.version,
+      decision: "actioned",
+      summary: "Attempt a new decision without reopening.",
+      evidenceRefs: [evidenceId],
+      downstreamVerified: false,
+      requestId: `repeat-review-${suffix}`,
+    })).rejects.toMatchObject({ code: "conflict" });
+
+    const reentered = await verifyReviewCase({
+      caseId,
+      actor: { id: actorId, role: "admin" },
+      expectedVersion: resolved.version,
+      state: "failed",
+      evidenceRefs: [evidenceId],
+      requestId: `failed-reverification-${suffix}`,
+    });
+    expect(reentered).toMatchObject({
+      status: "in_progress",
+      activeKey: `content_report:user:${customerId}:resolved-review-${suffix}`,
+    });
+  });
 });

@@ -126,6 +126,29 @@ describe("Admin final release gate", () => {
     ]));
   });
 
+  it("blocks evidence and signoffs that claim to occur after the manifest was generated", () => {
+    const input = productionEvidence();
+    input.workflows.character.observedAt = "2026-07-12T00:00:00.000Z";
+    input.signoffs.product.signedAt = "2026-07-12T00:00:00.000Z";
+    const report = evaluateAdminReleaseGate(input, new Date("2026-07-11T00:00:00.000Z"));
+    expect(report.blockers.map((blocker) => blocker.code)).toEqual(expect.arrayContaining([
+      "workflow_character_evidence_from_future",
+      "product_signoff_missing",
+    ]));
+  });
+
+  it("requires the two zero-traffic business cycles to be distinct", () => {
+    const input = productionEvidence();
+    input.runtime.legacyTrafficCycles = [
+      { cycle: "2026-W28", requests: 0 },
+      { cycle: "2026-W28", requests: 0 },
+    ];
+    const report = evaluateAdminReleaseGate(input, new Date("2026-07-11T00:00:00.000Z"));
+    expect(report.blockers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "legacy_traffic_cycles_not_distinct" }),
+    ]));
+  });
+
   it("fails closed on malformed evidence instead of throwing", () => {
     expect(evaluateAdminReleaseGate({ environment: "production" }, new Date("2026-07-11T00:00:00.000Z"))).toMatchObject({
       status: "blocked",

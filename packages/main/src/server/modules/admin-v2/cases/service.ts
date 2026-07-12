@@ -851,7 +851,9 @@ export async function recordReviewCaseDecision(
       actionEndpoint: `/api/v2/admin/cases/${current.id}/actions`,
     });
   }
-  if (["closed"].includes(current.status)) throw Errors.conflict("Closed case must be reopened before a new decision");
+  if (["closed", "resolved"].includes(current.status)) {
+    throw Errors.conflict("Terminal case must be reopened before a new decision");
+  }
   const evidence = await db.caseEvidence.count({
     where: { caseId: current.id, id: { in: [...input.evidenceRefs] } },
   });
@@ -1017,7 +1019,9 @@ export async function verifyReviewCase(input: {
       where: { id: current.id, version: current.version },
       data: {
         status: input.state === "failed" ? "in_progress" : "resolved",
-        activeKey: input.state === "failed" ? current.activeKey : null,
+        activeKey: input.state === "failed"
+          ? current.activeKey ?? `${current.type}:${current.targetType}:${current.targetId}:${current.caseKey}`
+          : null,
         verificationState: input.state,
         resolution: toInputJson(resolution),
         version: { increment: 1 },

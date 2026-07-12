@@ -77,6 +77,44 @@ describe("Admin production canary runner", () => {
       iterations: 11,
       requests: [{ name: "unsafe", method: "POST", path: "/api/v2/admin/cases/x/commands/close", expectedStatuses: [202], idempotencyKeyPrefix: "x", body: {} }],
     }, { fetch, writeConfirmation: "I_UNDERSTAND_THIS_MUTATES_PRODUCTION" })).rejects.toThrow();
+    await expect(runAdminCanary({
+      schemaVersion: 1,
+      environment: "production",
+      mode: "read",
+      baseUrl: "https://[::1]",
+      iterations: 1,
+      requests: [{ name: "loopback", method: "GET", path: "/api/v2/admin/today", expectedStatuses: [200] }],
+    }, { fetch })).rejects.toThrow("non-local");
+    await expect(runAdminCanary({
+      schemaVersion: 1,
+      environment: "production",
+      mode: "read",
+      baseUrl: "https://admin.example.test",
+      iterations: 1,
+      requests: [{ name: "false success", method: "GET", path: "/api/v2/admin/today", expectedStatuses: [500] }],
+    }, { fetch })).rejects.toThrow();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("never forwards production credentials to a path that URL parsing resolves off-origin", async () => {
+    const fetch = vi.fn<AdminCanaryFetch>(async () => new Response("{}", { status: 200 }));
+    await expect(runAdminCanary({
+      schemaVersion: 1,
+      environment: "production",
+      mode: "read",
+      baseUrl: "https://admin.example.test",
+      iterations: 1,
+      requests: [{
+        name: "credential exfiltration attempt",
+        method: "GET",
+        path: "/\\evil.example.test/collect",
+        expectedStatuses: [200],
+      }],
+    }, {
+      fetch,
+      cookie: "production-session",
+      authorization: "Bearer production-secret",
+    })).rejects.toThrow(/origin-relative|same origin/i);
     expect(fetch).not.toHaveBeenCalled();
   });
 

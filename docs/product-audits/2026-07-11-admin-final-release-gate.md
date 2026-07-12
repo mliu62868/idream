@@ -12,12 +12,13 @@ It fails closed unless all of the following are true:
 
 - The manifest is production evidence generated within 24 hours.
 - The observation window covers at least seven complete days.
+- Every named evidence timestamp and DRI sign-off is present by manifest generation time; future-dated claims fail closed.
 - State invariant violations, unavailable invariant checks, and unknown shadow mismatches are zero.
 - Golden metrics and the NS-01/PRD decision are consistent.
 - Character, Creative, Incident, Case, and Today E2E evidence includes automatic verification.
 - Fresh/repeat/current-snapshot migration, old-app rollback + forward-fix, backfill dry-run, shadow comparison, and module rollback all pass.
 - Permission matrix, atomic Audit/Outbox, high-risk confirmation, responsive flows, URL/server query state, and WCAG gates all pass.
-- Production-table load, dependency failure injection, dispatcher restart, projector lag recovery and kill-switch drill pass; read and write canaries contain real samples inside the observation window; the error budget is not exceeded; legacy v1 traffic is zero for two consecutive business cycles.
+- Production-table load, dependency failure injection, dispatcher restart, projector lag recovery and kill-switch drill pass; read and write canaries contain real samples inside the observation window; the error budget is not exceeded; legacy v1 traffic is zero for two distinct consecutive business cycles.
 - Product, Engineering, Data, Design, Operations, and Release DRIs sign `go` after the observation window ends.
 
 Malformed, local, staging, stale, incomplete, failed, unsigned, or sample-free evidence returns `status=blocked` and exits with code 2. This prevents the local 1118-test suite or production-like load harness from being presented as production Go authority.
@@ -37,6 +38,8 @@ Both increment `admin_proxy_kill_switch_total{scope=read|write}`. A read kill sw
 
 - A read plan accepts only GET/HEAD.
 - A write plan accepts only mutation methods, requires an idempotency-key prefix, is capped at ten iterations per invocation, and requires `ADMIN_CANARY_WRITE_CONFIRMATION=I_UNDERSTAND_THIS_MUTATES_PRODUCTION`.
+- Expected statuses are restricted to 2xx. A plan cannot relabel an HTTP failure as canary success.
+- Request paths must remain origin-relative and resolve to the configured HTTPS origin; local/loopback targets and cross-origin backslash URL ambiguities are rejected before credentials are attached or any request is sent.
 - Authentication comes only from `ADMIN_CANARY_COOKIE` or `ADMIN_CANARY_AUTHORIZATION`; neither is emitted in the report.
 - Any timeout, transport failure, or unexpected status fails the run. The runner never changes authority endpoints or falls back to v1.
 

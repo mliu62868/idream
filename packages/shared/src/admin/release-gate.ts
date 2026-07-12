@@ -135,7 +135,7 @@ export function evaluateAdminReleaseGate(input: unknown, now = new Date()) {
   if (evidence.truth.unavailableInvariantChecks > 0) block("invariant_check_unavailable", "Unavailable invariant checks block cutover.", "truth.unavailableInvariantChecks");
   if (evidence.truth.unknownShadowMismatches > 0) block("unknown_shadow_mismatch", "Unknown shadow mismatches must be zero.", "truth.unknownShadowMismatches");
 
-  const namedEvidence: ReadonlyArray<readonly [string, string, { status: "pass" | "fail" }]> = [
+  const namedEvidence: ReadonlyArray<readonly [string, string, { status: "pass" | "fail"; observedAt: string }]> = [
     ["metric_golden_dataset_failed", "truth.metricGoldenDataset", evidence.truth.metricGoldenDataset],
     ["north_star_decision_inconsistent", "truth.northStarDecisionConsistent", evidence.truth.northStarDecisionConsistent],
     ["workflow_character_failed", "workflows.character", evidence.workflows.character],
@@ -167,6 +167,14 @@ export function evaluateAdminReleaseGate(input: unknown, now = new Date()) {
   ];
   for (const [code, path, result] of namedEvidence) {
     if (result.status !== "pass") block(code, `${path} did not pass.`, path);
+    const observedAt = new Date(result.observedAt).getTime();
+    if (observedAt > generatedAt.getTime() || observedAt > now.getTime()) {
+      block(
+        `${code.replace(/_(failed|inconsistent)$/, "")}_evidence_from_future`,
+        `${path} was observed after the evidence manifest was generated.`,
+        `${path}.observedAt`,
+      );
+    }
   }
 
   if (evidence.runtime.readCanary.sampleSize === 0) block("read_canary_missing_samples", "Read canary must contain real production samples.", "runtime.readCanary.sampleSize");
@@ -181,9 +189,19 @@ export function evaluateAdminReleaseGate(input: unknown, now = new Date()) {
   if (evidence.runtime.legacyTrafficCycles.slice(-2).some((cycle) => cycle.requests !== 0)) {
     block("legacy_traffic_not_zero", "Legacy v1 traffic must be zero for two consecutive business cycles.", "runtime.legacyTrafficCycles");
   }
+  const finalTrafficCycles = evidence.runtime.legacyTrafficCycles.slice(-2);
+  if (new Set(finalTrafficCycles.map((cycle) => cycle.cycle)).size !== finalTrafficCycles.length) {
+    block("legacy_traffic_cycles_not_distinct", "Legacy traffic evidence must name two distinct business cycles.", "runtime.legacyTrafficCycles");
+  }
 
   for (const [role, signoff] of Object.entries(evidence.signoffs)) {
-    if (signoff.decision !== "go" || new Date(signoff.signedAt).getTime() < endedAt.getTime()) {
+    const signedAt = new Date(signoff.signedAt).getTime();
+    if (
+      signoff.decision !== "go"
+      || signedAt < endedAt.getTime()
+      || signedAt > generatedAt.getTime()
+      || signedAt > now.getTime()
+    ) {
       block(`${role}_signoff_missing`, `${role} must sign Go after the observation window completes.`, `signoffs.${role}`);
     }
   }

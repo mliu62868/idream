@@ -4,8 +4,13 @@ import { z } from "zod";
 const canaryRequestSchema = z.object({
   name: z.string().min(1).max(120),
   method: z.enum(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]),
-  path: z.string().startsWith("/").refine((value) => !value.startsWith("//"), "path must be origin-relative"),
-  expectedStatuses: z.array(z.number().int().min(100).max(599)).min(1),
+  path: z.string()
+    .startsWith("/")
+    .refine(
+      (value) => !value.startsWith("//") && !value.includes("\\"),
+      "path must be origin-relative",
+    ),
+  expectedStatuses: z.array(z.number().int().min(200).max(299)).min(1),
   idempotencyKeyPrefix: z.string().min(1).max(120).optional(),
   body: z.unknown().optional(),
 }).strict();
@@ -56,9 +61,16 @@ function percentile(values: readonly number[], quantile: number) {
 export async function runAdminCanary(input: unknown, options: AdminCanaryOptions = {}) {
   const plan = adminCanaryPlanSchema.parse(input);
   const baseUrl = new URL(plan.baseUrl);
-  if (baseUrl.protocol !== "https:" || ["localhost", "127.0.0.1", "::1"].includes(baseUrl.hostname)) {
+  if (baseUrl.protocol !== "https:" || isLocalHostname(baseUrl.hostname)) {
     throw new Error("Production Admin canary requires a non-local HTTPS base URL");
   }
+  const requestTargets = plan.requests.map((scenario) => {
+    const target = new URL(scenario.path, baseUrl);
+    if (target.origin !== baseUrl.origin) {
+      throw new Error("Production Admin canary requests must remain on the configured origin");
+    }
+    return target;
+  });
   if (plan.mode === "write" && options.writeConfirmation !== "I_UNDERSTAND_THIS_MUTATES_PRODUCTION") {
     throw new Error("Explicit production write confirmation is required");
   }
@@ -77,7 +89,7 @@ export async function runAdminCanary(input: unknown, options: AdminCanaryOptions
   }> = [];
 
   for (let iteration = 0; iteration < plan.iterations; iteration += 1) {
-    for (const scenario of plan.requests) {
+    for (const [scenarioIndex, scenario] of plan.requests.entries()) {
       const headers = new Headers({
         accept: "application/json",
         "x-admin-canary-run-id": runId,
@@ -89,7 +101,7 @@ export async function runAdminCanary(input: unknown, options: AdminCanaryOptions
       if (plan.mode === "write") headers.set("idempotency-key", `${scenario.idempotencyKeyPrefix}:${runId}:${iteration}`);
       const sampleStartedAt = performance.now();
       try {
-        const response = await request(new URL(scenario.path, baseUrl), {
+        const response = await request(requestTargets[scenarioIndex]!, {
           method: scenario.method,
           headers,
           body: scenario.body === undefined ? undefined : JSON.stringify(scenario.body),
@@ -137,4 +149,14 @@ export async function runAdminCanary(input: unknown, options: AdminCanaryOptions
     p95Ms: percentile(durations, 0.95),
     samples,
   };
+}
+
+function isLocalHostname(value: string) {
+  const hostname = value.toLowerCase().replace(/\.$/, "");
+  return hostname === "localhost"
+    || hostname.endsWith(".localhost")
+    || hostname === "0.0.0.0"
+    || hostname.startsWith("127.")
+    || hostname === "[::]"
+    || hostname === "[::1]";
 }
