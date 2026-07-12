@@ -3,6 +3,7 @@
 // INTENT: 只读、脱敏——绝不回明文 message.content / moderation.details；尊重 DB 边界
 // （main 不直连 chat DB，统一走这里）。鉴权在 web.ts 用 x-internal-token 完成，本模块只查数。
 // INVARIANTS: 仅 GET；未知路径 404；返回不含明文聊天内容。
+import { createHash } from "node:crypto";
 import type { Prisma } from "../generated/client/client.js";
 import { chatPrisma } from "./db.js";
 import { env } from "./env.js";
@@ -26,12 +27,19 @@ export async function dispatchChatAdmin(req: ChatAdminRequest): Promise<ChatAdmi
   if (req.method !== "GET") return { status: 405, body: { error: "method_not_allowed" } };
   const rest = req.path.slice(PREFIX.length).replace(/\/+$/, "");
 
-  if (rest === "/overview") return { status: 200, body: await overview() };
-  if (rest === "/provider-health") return { status: 200, body: await providerHealth() };
-  if (rest === "/sessions") return { status: 200, body: await sessions(req.query) };
-  if (rest === "/usage") return { status: 200, body: await usage(req.query) };
-  if (rest === "/moderation-events") {
-    return { status: 200, body: await moderationEvents(req.query) };
+  try {
+    if (rest === "/overview") return { status: 200, body: await overview() };
+    if (rest === "/provider-health") return { status: 200, body: await providerHealth() };
+    if (rest === "/sessions") return { status: 200, body: await sessions(req.query) };
+    if (rest === "/usage") return { status: 200, body: await usage(req.query) };
+    if (rest === "/moderation-events") {
+      return { status: 200, body: await moderationEvents(req.query) };
+    }
+  } catch (error) {
+    if (error instanceof ChatAdminCursorError) {
+      return { status: 400, body: { error: "invalid_cursor", message: error.message } };
+    }
+    throw error;
   }
   return { status: 404, body: { error: "not_found", path: req.path } };
 }
@@ -181,15 +189,32 @@ async function sessions(query?: Record<string, string>) {
   const characterId = cleanParam(query?.characterId);
   const status = cleanParam(query?.status);
   const limit = clampLimit(query?.limit);
+  const queryIdentity = { userId, characterId, status: status && status !== "all" ? status : "all" };
+  const cursorKeys = decodeChatAdminCursor(query?.cursor, "sessions", queryIdentity);
   const where: Prisma.ChatSessionWhereInput = {};
   if (userId) where.userId = userId;
   if (characterId) where.characterId = characterId;
   if (status && status !== "all") where.status = status;
   else where.status = { not: "deleted" };
+  if (cursorKeys) {
+    const lastMessageValue = cursorKeys[0];
+    const createdAt = chatCursorDate(cursorKeys, 1, "sessions");
+    const id = chatCursorString(cursorKeys, 2, "sessions");
+    where.AND = lastMessageValue === null
+      ? { lastMessageAt: null, OR: [{ createdAt: { lt: createdAt } }, { createdAt, id: { lt: id } }] }
+      : {
+          OR: [
+            { lastMessageAt: { lt: chatCursorDate(cursorKeys, 0, "sessions") } },
+            { lastMessageAt: chatCursorDate(cursorKeys, 0, "sessions"), createdAt: { lt: createdAt } },
+            { lastMessageAt: chatCursorDate(cursorKeys, 0, "sessions"), createdAt, id: { lt: id } },
+            { lastMessageAt: null },
+          ],
+        };
+  }
   const rows = await chatPrisma.chatSession.findMany({
     where,
-    orderBy: [{ lastMessageAt: "desc" }, { createdAt: "desc" }],
-    take: limit,
+    orderBy: [{ lastMessageAt: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }, { id: "desc" }],
+    take: limit + 1,
     select: {
       id: true,
       userId: true,
@@ -217,7 +242,8 @@ async function sessions(query?: Record<string, string>) {
     },
   });
   // 不回明文 content：只暴露元数据 + 消息计数。
-  const items = rows.map((row) => ({
+  const page = rows.slice(0, limit);
+  const items = page.map((row) => ({
     id: row.id,
     userId: row.userId,
     characterId: row.characterId,
@@ -235,20 +261,40 @@ async function sessions(query?: Record<string, string>) {
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   }));
-  return { items };
+  return {
+    items,
+    pageInfo: chatAdminPageInfo("sessions", queryIdentity, page, rows.length > limit, (row) => [
+      row.lastMessageAt?.toISOString() ?? null,
+      row.createdAt.toISOString(),
+      row.id,
+    ]),
+  };
 }
 
 async function usage(query?: Record<string, string>) {
   const userId = cleanParam(query?.userId);
   const limit = clampLimit(query?.limit);
   const periodStart = startOfUtcDay();
+  const queryIdentity = { userId, periodStart: periodStart.toISOString() };
+  const cursorKeys = decodeChatAdminCursor(query?.cursor, "usage", queryIdentity);
+  const cursorWhere: Prisma.ChatUsageWhereInput | undefined = cursorKeys ? (() => {
+    const messagesUsed = chatCursorNumber(cursorKeys, 0, "usage");
+    const updatedAt = chatCursorDate(cursorKeys, 1, "usage");
+    const id = chatCursorString(cursorKeys, 2, "usage");
+    return { OR: [
+      { messagesUsed: { lt: messagesUsed } },
+      { messagesUsed, updatedAt: { lt: updatedAt } },
+      { messagesUsed, updatedAt, id: { lt: id } },
+    ] };
+  })() : undefined;
   const rows = await chatPrisma.chatUsage.findMany({
     where: {
       periodStart,
       ...(userId ? { userId } : {}),
+      AND: cursorWhere,
     },
-    orderBy: [{ messagesUsed: "desc" }, { updatedAt: "desc" }],
-    take: limit,
+    orderBy: [{ messagesUsed: "desc" }, { updatedAt: "desc" }, { id: "desc" }],
+    take: limit + 1,
     select: {
       id: true,
       userId: true,
@@ -260,8 +306,9 @@ async function usage(query?: Record<string, string>) {
     },
   });
 
+  const page = rows.slice(0, limit);
   const items = await Promise.all(
-    rows.map(async (row) => {
+    page.map(async (row) => {
       const [entitlement, activeSessions, messages24h] = await Promise.all([
         chatPrisma.chatEntitlementView.findUnique({ where: { userId: row.userId } }),
         chatPrisma.chatSession.count({
@@ -301,7 +348,15 @@ async function usage(query?: Record<string, string>) {
       };
     }),
   );
-  return { items, freeDailyLimit: FREE_DAILY_MESSAGES };
+  return {
+    items,
+    freeDailyLimit: FREE_DAILY_MESSAGES,
+    pageInfo: chatAdminPageInfo("usage", queryIdentity, page, rows.length > limit, (row) => [
+      row.messagesUsed,
+      row.updatedAt.toISOString(),
+      row.id,
+    ]),
+  };
 }
 
 async function moderationEvents(query?: Record<string, string>) {
@@ -311,16 +366,23 @@ async function moderationEvents(query?: Record<string, string>) {
   const policyCode = cleanParam(query?.policyCode);
   const targetType = cleanParam(query?.targetType);
   const targetId = cleanParam(query?.targetId);
+  const queryIdentity = { status, layer, policyCode, targetType, targetId };
+  const cursorKeys = decodeChatAdminCursor(query?.cursor, "moderation_events", queryIdentity);
   const where: Prisma.ChatModerationEventWhereInput = {};
   if (status && status !== "all") where.status = status;
   if (layer && layer !== "all") where.layer = layer;
   if (policyCode) where.policyCode = policyCode;
   if (targetType && targetType !== "all") where.targetType = targetType;
   if (targetId) where.targetId = targetId;
-  const items = await chatPrisma.chatModerationEvent.findMany({
+  if (cursorKeys) {
+    const createdAt = chatCursorDate(cursorKeys, 0, "moderation_events");
+    const id = chatCursorString(cursorKeys, 1, "moderation_events");
+    where.AND = { OR: [{ createdAt: { lt: createdAt } }, { createdAt, id: { lt: id } }] };
+  }
+  const rows = await chatPrisma.chatModerationEvent.findMany({
     where,
-    orderBy: { createdAt: "desc" },
-    take: limit,
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: limit + 1,
     // details（Json）可能含明文，故脱敏不返回。
     select: {
       id: true,
@@ -333,7 +395,76 @@ async function moderationEvents(query?: Record<string, string>) {
       createdAt: true,
     },
   });
-  return { items };
+  const items = rows.slice(0, limit);
+  return {
+    items,
+    pageInfo: chatAdminPageInfo("moderation_events", queryIdentity, items, rows.length > limit, (row) => [
+      row.createdAt.toISOString(),
+      row.id,
+    ]),
+  };
+}
+
+class ChatAdminCursorError extends Error {}
+
+function cursorQueryHash(value: unknown) {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function decodeChatAdminCursor(raw: string | undefined, scope: string, queryIdentity: unknown) {
+  if (!raw) return undefined;
+  try {
+    const value = JSON.parse(Buffer.from(raw, "base64url").toString("utf8")) as unknown;
+    if (!isRecord(value) || value.version !== 1 || value.scope !== scope || value.queryHash !== cursorQueryHash(queryIdentity)) {
+      throw new Error("cursor query mismatch");
+    }
+    const keys = value.keys;
+    if (!Array.isArray(keys) || keys.length === 0) {
+      throw new Error("cursor keys are invalid");
+    }
+    return keys as unknown[];
+  } catch {
+    throw new ChatAdminCursorError(`${scope} cursor is invalid for the selected query`);
+  }
+}
+
+function chatCursorString(keys: readonly unknown[], index: number, scope: string) {
+  const value = keys[index];
+  if (typeof value !== "string" || !value) throw new ChatAdminCursorError(`${scope} cursor key is invalid`);
+  return value;
+}
+
+function chatCursorNumber(keys: readonly unknown[], index: number, scope: string) {
+  const value = keys[index];
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new ChatAdminCursorError(`${scope} cursor key is invalid`);
+  return value;
+}
+
+function chatCursorDate(keys: readonly unknown[], index: number, scope: string) {
+  const value = new Date(chatCursorString(keys, index, scope));
+  if (Number.isNaN(value.getTime())) throw new ChatAdminCursorError(`${scope} cursor timestamp is invalid`);
+  return value;
+}
+
+function chatAdminPageInfo<T>(
+  scope: string,
+  queryIdentity: unknown,
+  page: readonly T[],
+  hasNextPage: boolean,
+  keys: (row: T) => readonly (string | number | boolean | null)[],
+) {
+  const last = page.at(-1);
+  return {
+    hasNextPage,
+    endCursor: hasNextPage && last
+      ? Buffer.from(JSON.stringify({
+          version: 1,
+          scope,
+          queryHash: cursorQueryHash(queryIdentity),
+          keys: keys(last),
+        }), "utf8").toString("base64url")
+      : null,
+  };
 }
 
 function cleanParam(raw: string | undefined): string | undefined {

@@ -92,6 +92,11 @@ import { GlobalAdminSearch } from "@/features/search/GlobalAdminSearch";
 import { CharacterWorkspace } from "@/features/characters/CharacterWorkspace";
 import { CreativeRunWorkspace } from "@/features/creative/CreativeRunWorkspace";
 import { JobsView as GenerationJobsWorkspace } from "@/features/jobs/JobsView";
+import {
+  buildCompatibilityListUrl,
+  readCompatibilityListQuery,
+  type CompatibilityListQuery,
+} from "@/features/compatibility-lists/query";
 
 type Actor = {
   id: string;
@@ -109,6 +114,10 @@ type AdminConsoleClientProps = {
 };
 
 type Row = Record<string, unknown>;
+
+type PageInfo = { endCursor: string | null; hasNextPage: boolean };
+const emptyPageInfo: PageInfo = { endCursor: null, hasNextPage: false };
+type ListQuery = CompatibilityListQuery;
 
 type SavedView = {
   id: string;
@@ -166,6 +175,9 @@ type ConfigData = {
   profiles: Row[];
   flags: Row[];
   recentJobs: Row[];
+  profilePageInfo: PageInfo;
+  flagPageInfo: PageInfo;
+  query: ListQuery;
 };
 
 type ConfigTab = "profiles" | "settings";
@@ -228,19 +240,19 @@ type ChatOpsFilters = {
 type SectionData =
   | { kind: "dashboard"; data: DashboardData }
   | { kind: "config"; data: ConfigData; slice: ConfigSlice }
-  | { kind: "moderation"; reports: Row[]; blockedMedia: Row[]; appeals: Row[] }
+  | { kind: "moderation"; reports: Row[]; blockedMedia: Row[]; appeals: Row[]; pageInfo: { reports: PageInfo; blockedMedia: PageInfo; appeals: PageInfo }; query: ListQuery }
   | { kind: "users"; rows: Row[] }
   | { kind: "access"; rows: Row[] }
-  | { kind: "billing"; rows: Row[]; subscriptions: Row[]; reconciliation: ReconciliationData }
-  | { kind: "pricing"; rows: Row[] }
-  | { kind: "deadletter"; rows: Row[] }
+  | { kind: "billing"; rows: Row[]; subscriptions: Row[]; reconciliation: ReconciliationData; pageInfo: { ledger: PageInfo; subscriptions: PageInfo }; query: ListQuery }
+  | { kind: "pricing"; rows: Row[]; pageInfo: PageInfo; query: ListQuery }
+  | { kind: "deadletter"; rows: Row[]; pageInfo: PageInfo; query: ListQuery }
   | { kind: "analytics"; data: AnalyticsWorkspaceData }
   | { kind: "risk"; data: AbuseData }
   | { kind: "providers"; data: ProviderOpsData }
-  | { kind: "content"; characters: Row[]; featured: Row[]; featuredIds: string[] }
-  | { kind: "promo"; codes: Row[]; referrals: Row[] }
+  | { kind: "content"; characters: Row[]; featured: Row[]; featuredIds: string[]; pageInfo: PageInfo; query: ListQuery }
+  | { kind: "promo"; codes: Row[]; referrals: Row[]; pageInfo: { codes: PageInfo; referrals: PageInfo }; query: ListQuery }
   | { kind: "support"; rows: Row[] }
-  | { kind: "approvals"; rows: Row[] }
+  | { kind: "approvals"; rows: Row[]; pageInfo: PageInfo; query: ListQuery }
   // 自取数视图（组件内部 fetch），section 只需一个标记，不在此预取数据。
   | {
       kind: "selfFetch";
@@ -275,8 +287,10 @@ type SectionData =
       sessions: Row[];
       usage: Row[];
       events: Row[];
+      pageInfo: { sessions: PageInfo; usage: PageInfo; events: PageInfo };
+      query: ListQuery;
     }
-  | { kind: "audit"; rows: Row[]; command: AdminCommandStatus | null };
+  | { kind: "audit"; rows: Row[]; command: AdminCommandStatus | null; pageInfo: PageInfo; query: ListQuery };
 
 type PendingAction = {
   title: string;
@@ -606,7 +620,8 @@ export function AdminConsoleClient({
 }: AdminConsoleClientProps) {
   const sidebarNavRef = useRef<HTMLElement | null>(null);
   const { sectionId, view: subview } = parseAdminPath(initialSection);
-  const commandId = new URLSearchParams(initialSection.split("?", 2)[1] ?? "").get("commandId");
+  const initialRouteParams = new URLSearchParams(initialSection.split("?", 2)[1] ?? "");
+  const commandId = initialRouteParams.get("commandId");
   const activeItem = adminSectionItem(sectionId);
   const permissions = useMemo(() => new Set(initialPermissions), [initialPermissions]);
   const canAccessActiveSection = sectionIsPermitted(sectionId, permissions);
@@ -635,7 +650,7 @@ export function AdminConsoleClient({
   const [pricingDraft, setPricingDraft] = useState<PricingDraft>(defaultPricingDraft);
   const [pricingBusy, setPricingBusy] = useState(false);
   const [permissionForm, setPermissionForm] = useState<PermissionForm>(defaultPermissionForm);
-  const [chatOpsFilters, setChatOpsFilters] = useState<ChatOpsFilters>(defaultChatOpsFilters);
+  const [chatOpsFilters, setChatOpsFilters] = useState<ChatOpsFilters>(() => chatOpsFiltersFromParams(initialRouteParams));
   const [locale, setLocale] = useState<AdminLocale>("en");
   const [localeReady, setLocaleReady] = useState(false);
   const t = (key: string, values?: Record<string, string | number>) =>
@@ -678,6 +693,7 @@ export function AdminConsoleClient({
         commandId,
         workMode: nextWorkMode,
         includeLegacyAnalytics: permissions.has("analytics.export"),
+        searchParams: new URLSearchParams(window.location.search),
       }));
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Failed to load admin data");
@@ -694,6 +710,31 @@ export function AdminConsoleClient({
     // sectionId is derived from the route; load should run when the route changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sectionId, commandId, initialAccess, canAccessActiveSection]);
+
+  useEffect(() => {
+    const onPopState = () => {
+      const filters = chatOpsFiltersFromParams(new URLSearchParams(window.location.search));
+      setChatOpsFilters(filters);
+      void load(filters);
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+    // load intentionally reads the restored URL at event time.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sectionId]);
+
+  function updateRouteQuery(updates: Record<string, string | null>, clearCursors: readonly string[] = []) {
+    const nextUrl = buildCompatibilityListUrl(window.location.pathname, window.location.search, updates, clearCursors);
+    window.history.pushState(null, "", nextUrl);
+    const params = new URLSearchParams(window.location.search);
+    if (sectionId === "chat") {
+      const filters = chatOpsFiltersFromParams(params);
+      setChatOpsFilters(filters);
+      void load(filters);
+    } else {
+      void load();
+    }
+  }
 
   function openAction(action: PendingAction) {
     setReason("");
@@ -1086,8 +1127,9 @@ export function AdminConsoleClient({
                 setChatOpsFilters,
                 applyChatOpsFilters: (next) => {
                   setChatOpsFilters(next);
-                  void load(next);
+                  updateRouteQuery(chatOpsFiltersToRouteQuery(next), ["chatSessionCursor", "chatUsageCursor", "chatEventCursor"]);
                 },
+                updateQuery: updateRouteQuery,
                 reload: () => void load(),
                 permissions,
                 canRead: canAccessActiveSection,
@@ -1314,16 +1356,31 @@ function NavLink({ active, item }: { active: boolean; item: NavItem }) {
   );
 }
 
-async function fetchGenerationConfig(): Promise<ConfigData> {
+async function fetchGenerationConfig(params: URLSearchParams): Promise<ConfigData> {
+  const query = listQuery(params, ["configSearch", "profileMode", "profileStatus", "flagEnabled", "profileCursor", "flagCursor"]);
   const [profiles, flags, jobs] = await Promise.all([
-    apiGet<{ items: Row[] }>("/api/v1/admin/generation/model-profiles"),
-    apiGet<{ items: Row[] }>("/api/v1/admin/feature-flags"),
+    apiGet<{ items: Row[]; pageInfo: PageInfo }>(`/api/v1/admin/generation/model-profiles${queryString({
+      search: query.configSearch,
+      mode: query.profileMode,
+      status: query.profileStatus,
+      cursor: query.profileCursor,
+      limit: "25",
+    })}`),
+    apiGet<{ items: Row[]; pageInfo: PageInfo }>(`/api/v1/admin/feature-flags${queryString({
+      search: query.configSearch,
+      enabled: query.flagEnabled,
+      cursor: query.flagCursor,
+      limit: "25",
+    })}`),
     apiGet<{ items: Row[] }>("/api/v1/admin/generation/jobs?mode=image&limit=12"),
   ]);
   return {
     profiles: profiles.items,
     flags: flags.items,
     recentJobs: jobs.items,
+    profilePageInfo: profiles.pageInfo ?? emptyPageInfo,
+    flagPageInfo: flags.pageInfo ?? emptyPageInfo,
+    query,
   };
 }
 
@@ -1334,16 +1391,26 @@ async function fetchSection(
     commandId?: string | null;
     workMode?: WorkMode;
     includeLegacyAnalytics?: boolean;
+    searchParams?: URLSearchParams;
   } = {},
 ): Promise<SectionData> {
+  const params = options.searchParams ?? new URLSearchParams();
   if (sectionId === "generation/jobs") {
     return { kind: "selfFetch", view: "jobs" };
   }
   if (sectionId === "ops/incidents") return { kind: "selfFetch", view: "incidents" };
   if (sectionId === "cases") return { kind: "selfFetch", view: "cases" };
   if (sectionId === "generation/dead-letter") {
-    const payload = await apiGet<{ items: Row[] }>("/api/v1/admin/generation/dead-letter");
-    return { kind: "deadletter", rows: payload.items };
+    const query = listQuery(params, ["deadSearch", "deadMode", "deadStatus", "deadError", "deadCursor"]);
+    const payload = await apiGet<{ items: Row[]; pageInfo: PageInfo }>(`/api/v1/admin/generation/dead-letter${queryString({
+      search: query.deadSearch,
+      mode: query.deadMode,
+      status: query.deadStatus,
+      errorCode: query.deadError,
+      cursor: query.deadCursor,
+      limit: "25",
+    })}`);
+    return { kind: "deadletter", rows: payload.items, pageInfo: payload.pageInfo ?? emptyPageInfo, query };
   }
   if (sectionId === "generation/models") {
     return fetchSection("generation/config", options);
@@ -1356,17 +1423,28 @@ async function fetchSection(
   if (sectionId === "generation/presets") return { kind: "selfFetch", view: "presets" };
   const configSlice = configSliceForSection(sectionId);
   if (configSlice) {
-    return { kind: "config", data: await fetchGenerationConfig(), slice: configSlice };
+    return { kind: "config", data: await fetchGenerationConfig(params), slice: configSlice };
   }
   if (sectionId === "moderation") {
-    const payload = await apiGet<{ reports: Row[]; blockedMedia: Row[]; appeals: Row[] }>(
-      "/api/v1/admin/moderation/queue",
+    const query = listQuery(params, ["moderationSearch", "moderationStatus", "moderationTargetType", "reportCursor", "mediaCursor", "appealCursor"]);
+    const payload = await apiGet<{ reports: Row[]; blockedMedia: Row[]; appeals: Row[]; pageInfo: { reports: PageInfo; blockedMedia: PageInfo; appeals: PageInfo } }>(
+      `/api/v1/admin/moderation/queue${queryString({
+        search: query.moderationSearch,
+        status: query.moderationStatus,
+        targetType: query.moderationTargetType,
+        reportCursor: query.reportCursor,
+        mediaCursor: query.mediaCursor,
+        appealCursor: query.appealCursor,
+        limit: "25",
+      })}`,
     );
     return {
       kind: "moderation",
       reports: payload.reports,
       blockedMedia: payload.blockedMedia,
       appeals: payload.appeals,
+      pageInfo: payload.pageInfo ?? { reports: emptyPageInfo, blockedMedia: emptyPageInfo, appeals: emptyPageInfo },
+      query,
     };
   }
   if (sectionId === "users") return { kind: "users", rows: [] };
@@ -1375,9 +1453,10 @@ async function fetchSection(
     return { kind: "access", rows: payload.items };
   }
   if (sectionId === "billing") {
+    const query = listQuery(params, ["billingSearch", "ledgerReason", "subscriptionStatus", "ledgerCursor", "subscriptionCursor"]);
     const [ledger, subscriptions, reconciliation] = await Promise.all([
-      apiGet<{ items: Row[] }>("/api/v1/admin/billing/ledger"),
-      apiGet<{ items: Row[] }>("/api/v1/admin/billing/subscriptions"),
+      apiGet<{ items: Row[]; pageInfo: PageInfo }>(`/api/v1/admin/billing/ledger${queryString({ search: query.billingSearch, reason: query.ledgerReason, cursor: query.ledgerCursor, limit: "25" })}`),
+      apiGet<{ items: Row[]; pageInfo: PageInfo }>(`/api/v1/admin/billing/subscriptions${queryString({ search: query.billingSearch, status: query.subscriptionStatus, cursor: query.subscriptionCursor, limit: "25" })}`),
       apiGet<ReconciliationData>("/api/v1/admin/billing/reconciliation"),
     ]);
     return {
@@ -1385,11 +1464,14 @@ async function fetchSection(
       rows: ledger.items,
       subscriptions: subscriptions.items,
       reconciliation,
+      pageInfo: { ledger: ledger.pageInfo ?? emptyPageInfo, subscriptions: subscriptions.pageInfo ?? emptyPageInfo },
+      query,
     };
   }
   if (sectionId === "pricing") {
-    const payload = await apiGet<{ items: Row[] }>("/api/v1/admin/pricing/rules");
-    return { kind: "pricing", rows: payload.items };
+    const query = listQuery(params, ["pricingSearch", "pricingMode", "pricingStatus", "pricingCursor"]);
+    const payload = await apiGet<{ items: Row[]; pageInfo: PageInfo }>(`/api/v1/admin/pricing/rules${queryString({ search: query.pricingSearch, mode: query.pricingMode, status: query.pricingStatus, cursor: query.pricingCursor, limit: "25" })}`);
+    return { kind: "pricing", rows: payload.items, pageInfo: payload.pageInfo ?? emptyPageInfo, query };
   }
   if (sectionId === "analytics") {
     const [legacy, canonical] = await Promise.all([
@@ -1405,21 +1487,23 @@ async function fetchSection(
     return { kind: "risk", data: payload };
   }
   if (sectionId === "audit-log") {
+    const query = listQuery(params, ["auditSearch", "auditAction", "auditActor", "auditTargetType", "auditCursor"]);
     const [payload, command] = await Promise.all([
-      apiGet<{ items: Row[] }>("/api/v1/admin/audit-log"),
+      apiGet<{ items: Row[]; pageInfo: PageInfo }>(`/api/v1/admin/audit-log${queryString({ search: query.auditSearch, action: query.auditAction, actorId: query.auditActor, targetType: query.auditTargetType, cursor: query.auditCursor, limit: "25" })}`),
       options.commandId
         ? apiGet<AdminCommandStatus>(`/api/v2/admin/commands/${encodeURIComponent(options.commandId)}`)
         : Promise.resolve(null),
     ]);
-    return { kind: "audit", rows: payload.items, command };
+    return { kind: "audit", rows: payload.items, command, pageInfo: payload.pageInfo ?? emptyPageInfo, query };
   }
   if (sectionId === "support") {
     const payload = await apiGet<{ items: Row[] }>("/api/v1/admin/support/requests");
     return { kind: "support", rows: payload.items };
   }
   if (sectionId === "content") {
+    const query = listQuery(params, ["contentSearch", "contentStatus", "contentVisibility", "contentCursor"]);
     const [characters, featured] = await Promise.all([
-      apiGet<{ items: Row[] }>("/api/v1/admin/content/characters"),
+      apiGet<{ items: Row[]; pageInfo: PageInfo }>(`/api/v1/admin/content/characters${queryString({ search: query.contentSearch, status: query.contentStatus, visibility: query.contentVisibility, cursor: query.contentCursor, limit: "25" })}`),
       apiGet<{ items: Row[]; characterIds: string[] }>("/api/v1/admin/content/featured"),
     ]);
     return {
@@ -1427,6 +1511,8 @@ async function fetchSection(
       characters: characters.items,
       featured: featured.items,
       featuredIds: featured.characterIds,
+      pageInfo: characters.pageInfo ?? emptyPageInfo,
+      query,
     };
   }
   if (sectionId === "content/production") return { kind: "selfFetch", view: "production" };
@@ -1445,18 +1531,21 @@ async function fetchSection(
   if (sectionId === "generation/workflows") return { kind: "selfFetch", view: "workflows" };
   if (sectionId === "generation/metrics") return { kind: "selfFetch", view: "generation-metrics" };
   if (sectionId === "promo") {
+    const query = listQuery(params, ["promoSearch", "promoStatus", "referralStatus", "promoCursor", "referralCursor"]);
     const [codes, referrals] = await Promise.all([
-      apiGet<{ items: Row[] }>("/api/v1/admin/promo/redeem-codes"),
-      apiGet<{ items: Row[] }>("/api/v1/admin/promo/referrals"),
+      apiGet<{ items: Row[]; pageInfo: PageInfo }>(`/api/v1/admin/promo/redeem-codes${queryString({ search: query.promoSearch, status: query.promoStatus, cursor: query.promoCursor, limit: "25" })}`),
+      apiGet<{ items: Row[]; pageInfo: PageInfo }>(`/api/v1/admin/promo/referrals${queryString({ search: query.promoSearch, status: query.referralStatus, cursor: query.referralCursor, limit: "25" })}`),
     ]);
-    return { kind: "promo", codes: codes.items, referrals: referrals.items };
+    return { kind: "promo", codes: codes.items, referrals: referrals.items, pageInfo: { codes: codes.pageInfo ?? emptyPageInfo, referrals: referrals.pageInfo ?? emptyPageInfo }, query };
   }
   if (sectionId === "approvals") {
-    const payload = await apiGet<{ items: Row[] }>("/api/v1/admin/approvals?status=pending");
-    return { kind: "approvals", rows: payload.items };
+    const query = listQuery(params, ["approvalSearch", "approvalStatus", "approvalCursor"]);
+    const payload = await apiGet<{ items: Row[]; pageInfo: PageInfo }>(`/api/v1/admin/approvals${queryString({ search: query.approvalSearch, status: query.approvalStatus || "pending", cursor: query.approvalCursor, limit: "25" })}`);
+    return { kind: "approvals", rows: payload.items, pageInfo: payload.pageInfo ?? emptyPageInfo, query };
   }
   if (sectionId === "chat") {
     const filters = options.chatOps ?? defaultChatOpsFilters;
+    const routeQuery = listQuery(params, ["chatUserId", "chatCharacterId", "chatSessionStatus", "chatEventStatus", "chatEventLayer", "chatPolicyCode", "chatTargetId", "chatLimit", "chatSessionCursor", "chatUsageCursor", "chatEventCursor"]);
     const common = {
       userId: filters.userId,
       limit: filters.limit,
@@ -1465,14 +1554,16 @@ async function fetchSection(
       ...common,
       characterId: filters.characterId,
       status: filters.sessionStatus,
+      cursor: routeQuery.chatSessionCursor,
     });
-    const usageQuery = queryString(common);
+    const usageQuery = queryString({ ...common, cursor: routeQuery.chatUsageCursor });
     const eventQuery = queryString({
       limit: filters.limit,
       status: filters.eventStatus,
       layer: filters.eventLayer,
       policyCode: filters.policyCode,
       targetId: filters.targetId,
+      cursor: routeQuery.chatEventCursor,
     });
     const [overview, providerHealth, sessions, events] = await Promise.all([
       apiGet<{
@@ -1482,17 +1573,17 @@ async function fetchSection(
       }>(
         "/api/v1/admin/chat/overview",
       ),
-      apiGet<{ configured: boolean; diagnostics?: ChatOpsDiagnostics; items?: Row[] }>(
+      apiGet<{ configured: boolean; diagnostics?: ChatOpsDiagnostics; items?: Row[]; pageInfo?: PageInfo }>(
         "/api/v1/admin/chat/provider-health",
       ),
-      apiGet<{ configured: boolean; diagnostics?: ChatOpsDiagnostics; items?: Row[] }>(
+      apiGet<{ configured: boolean; diagnostics?: ChatOpsDiagnostics; items?: Row[]; pageInfo?: PageInfo }>(
         `/api/v1/admin/chat/sessions${sessionQuery}`,
       ),
-      apiGet<{ configured: boolean; diagnostics?: ChatOpsDiagnostics; items?: Row[] }>(
+      apiGet<{ configured: boolean; diagnostics?: ChatOpsDiagnostics; items?: Row[]; pageInfo?: PageInfo }>(
         `/api/v1/admin/chat/moderation-events${eventQuery}`,
       ),
     ]);
-    const usage = await apiGet<{ configured: boolean; diagnostics?: ChatOpsDiagnostics; items?: Row[] }>(
+    const usage = await apiGet<{ configured: boolean; diagnostics?: ChatOpsDiagnostics; items?: Row[]; pageInfo?: PageInfo }>(
       `/api/v1/admin/chat/usage${usageQuery}`,
     );
     const configured = overview.configured || providerHealth.configured || sessions.configured || events.configured || usage.configured;
@@ -1512,6 +1603,12 @@ async function fetchSection(
       sessions: sessions.items ?? [],
       usage: usage.items ?? [],
       events: events.items ?? [],
+      pageInfo: {
+        sessions: sessions.pageInfo ?? emptyPageInfo,
+        usage: usage.pageInfo ?? emptyPageInfo,
+        events: events.pageInfo ?? emptyPageInfo,
+      },
+      query: routeQuery,
     };
   }
 
@@ -1531,6 +1628,37 @@ function queryString(params: Record<string, string | undefined>) {
   }
   const serialized = query.toString();
   return serialized ? `?${serialized}` : "";
+}
+
+function listQuery(params: URLSearchParams, keys: readonly string[]): ListQuery {
+  return readCompatibilityListQuery(params, keys);
+}
+
+function chatOpsFiltersFromParams(params: URLSearchParams): ChatOpsFilters {
+  const limit = params.get("chatLimit");
+  return {
+    userId: params.get("chatUserId")?.trim() ?? "",
+    characterId: params.get("chatCharacterId")?.trim() ?? "",
+    sessionStatus: params.get("chatSessionStatus")?.trim() || defaultChatOpsFilters.sessionStatus,
+    eventStatus: params.get("chatEventStatus")?.trim() || defaultChatOpsFilters.eventStatus,
+    eventLayer: params.get("chatEventLayer")?.trim() || defaultChatOpsFilters.eventLayer,
+    policyCode: params.get("chatPolicyCode")?.trim() ?? "",
+    targetId: params.get("chatTargetId")?.trim() ?? "",
+    limit: ["25", "50", "100"].includes(limit ?? "") ? limit! : defaultChatOpsFilters.limit,
+  };
+}
+
+function chatOpsFiltersToRouteQuery(filters: ChatOpsFilters) {
+  return {
+    chatUserId: filters.userId,
+    chatCharacterId: filters.characterId,
+    chatSessionStatus: filters.sessionStatus,
+    chatEventStatus: filters.eventStatus,
+    chatEventLayer: filters.eventLayer,
+    chatPolicyCode: filters.policyCode,
+    chatTargetId: filters.targetId,
+    chatLimit: filters.limit,
+  };
 }
 
 function canCreateModelProfile(draft: ModelDraft) {
@@ -2288,6 +2416,7 @@ function renderSection(
     chatOpsFilters: ChatOpsFilters;
     setChatOpsFilters: (value: ChatOpsFilters) => void;
     applyChatOpsFilters: (value: ChatOpsFilters) => void;
+    updateQuery: (updates: Record<string, string | null>, clearCursors?: readonly string[]) => void;
     reload: () => void | Promise<void>;
     permissions: ReadonlySet<AdminPermissionKey>;
     canRead: boolean;
@@ -2306,6 +2435,7 @@ function renderSection(
         reload={ctx.reload}
         selectedProfileId={ctx.selectedProfileId}
         setSelectedProfileId={ctx.setSelectedProfileId}
+        updateQuery={ctx.updateQuery}
       />
     );
   }
@@ -2316,6 +2446,9 @@ function renderSection(
         blockedMedia={section.blockedMedia}
         openAction={ctx.openAction}
         reports={section.reports}
+        pageInfo={section.pageInfo}
+        query={section.query}
+        updateQuery={ctx.updateQuery}
       />
     );
   }
@@ -2341,6 +2474,9 @@ function renderSection(
         rows={section.rows}
         setAdjustment={ctx.setAdjustment}
         subscriptions={section.subscriptions}
+        pageInfo={section.pageInfo}
+        query={section.query}
+        updateQuery={ctx.updateQuery}
       />
     );
   }
@@ -2353,11 +2489,14 @@ function renderSection(
         onDraftChange={ctx.setPricingDraft}
         openAction={ctx.openAction}
         rows={section.rows}
+        pageInfo={section.pageInfo}
+        query={section.query}
+        updateQuery={ctx.updateQuery}
       />
     );
   }
   if (section.kind === "deadletter") {
-    return <DeadLetterView rows={section.rows} openAction={ctx.openAction} />;
+    return <DeadLetterView rows={section.rows} openAction={ctx.openAction} pageInfo={section.pageInfo} query={section.query} updateQuery={ctx.updateQuery} />;
   }
   if (section.kind === "analytics") return <AnalyticsView data={section.data} />;
   if (section.kind === "risk") return <RiskView data={section.data} />;
@@ -2370,6 +2509,9 @@ function renderSection(
         featuredIds={section.featuredIds}
         openAction={ctx.openAction}
         reload={ctx.reload}
+        pageInfo={section.pageInfo}
+        query={section.query}
+        updateQuery={ctx.updateQuery}
       />
     );
   }
@@ -2380,6 +2522,9 @@ function renderSection(
         openAction={ctx.openAction}
         referrals={section.referrals}
         reload={ctx.reload}
+        pageInfo={section.pageInfo}
+        query={section.query}
+        updateQuery={ctx.updateQuery}
       />
     );
   }
@@ -2387,7 +2532,7 @@ function renderSection(
     return <SupportRequestsView rows={section.rows} openAction={ctx.openAction} />;
   }
   if (section.kind === "approvals") {
-    return <ApprovalsView rows={section.rows} openAction={ctx.openAction} />;
+    return <ApprovalsView rows={section.rows} openAction={ctx.openAction} pageInfo={section.pageInfo} query={section.query} updateQuery={ctx.updateQuery} />;
   }
   if (section.kind === "selfFetch") {
     if (section.view === "jobs") {
@@ -2454,13 +2599,15 @@ function renderSection(
         overview={section.overview}
         onApplyFilters={ctx.applyChatOpsFilters}
         onFiltersChange={ctx.setChatOpsFilters}
+        pageInfo={section.pageInfo}
+        updateQuery={ctx.updateQuery}
         providerHealth={section.providerHealth}
         sessions={section.sessions}
         usage={section.usage}
       />
     );
   }
-  return <AuditView command={section.command} rows={section.rows} />;
+    return <AuditView command={section.command} rows={section.rows} pageInfo={section.pageInfo} query={section.query} updateQuery={ctx.updateQuery} />;
 }
 
 function ConfigOverviewHeader() {
@@ -2910,12 +3057,14 @@ function ConfigView({
   reload,
   selectedProfileId,
   setSelectedProfileId,
+  updateQuery,
 }: {
   data: ConfigData;
   openAction: (action: PendingAction) => void;
   reload: () => void | Promise<void>;
   selectedProfileId: string | null;
   setSelectedProfileId: (value: string | null) => void;
+  updateQuery: (updates: Record<string, string | null>, clearCursors?: readonly string[]) => void;
 }) {
   const { locale, t } = useAdminI18n();
   const [initialUrlState] = useState(() => readConfigUrlState());
@@ -2964,16 +3113,30 @@ function ConfigView({
     <div className="space-y-6">
       <ConfigOverviewHeader />
       <ConfigTabNav active={configTab} counts={tabCounts} onChange={setConfigTab} />
+      <ServerListToolbar
+        cursorKeys={["profileCursor", "flagCursor"]}
+        fields={[
+          { key: "configSearch", label: "Search" },
+          { key: "profileMode", label: "Profile mode", options: ["image", "video"] },
+          { key: "profileStatus", label: "Profile status", options: ["draft", "active", "archived"] },
+          { key: "flagEnabled", label: "Flag state", options: ["true", "false"] },
+        ]}
+        query={data.query}
+        updateQuery={updateQuery}
+      />
 
       {configTab === "profiles" && (
         <OperatorFlow
           detail={<ProfileDetail jobs={data.recentJobs} onOpenAction={openAction} onReload={reload} profile={selectedProfile} />}
-          empty={t("No built-in generation profiles are seeded yet.")}
+          empty={t(queryIsFiltered(data.query, ["configSearch", "profileMode", "profileStatus"])
+            ? "No generation profiles match these filters."
+            : "No built-in generation profiles are seeded yet.")}
           items={profileItems}
           onSelect={setSelectedProfileId}
           selectedId={selectedProfileId}
         />
       )}
+      {configTab === "profiles" ? <CanonicalPager cursorKey="profileCursor" pageInfo={data.profilePageInfo} updateQuery={updateQuery} /> : null}
 
       {configTab === "settings" && (
         <DataTable
@@ -2981,8 +3144,10 @@ function ConfigView({
           columns={["key", "enabled", "rolloutPercent", "version", "hardPolicy"]}
           rows={data.flags}
           title="Feature Flags"
+          empty={queryIsFiltered(data.query, ["configSearch", "flagEnabled"]) ? "No feature flags match these filters" : "No feature flags exist yet"}
         />
       )}
+      {configTab === "settings" ? <CanonicalPager cursorKey="flagCursor" pageInfo={data.flagPageInfo} updateQuery={updateQuery} /> : null}
     </div>
   );
 }
@@ -4540,14 +4705,25 @@ function ModerationView({
   blockedMedia,
   appeals,
   openAction,
+  pageInfo,
+  query,
+  updateQuery,
 }: {
   reports: Row[];
   blockedMedia: Row[];
   appeals: Row[];
   openAction: (action: PendingAction) => void;
+  pageInfo: { reports: PageInfo; blockedMedia: PageInfo; appeals: PageInfo };
+  query: ListQuery;
+  updateQuery: (updates: Record<string, string | null>, clearCursors?: readonly string[]) => void;
 }) {
   return (
     <div className="space-y-6">
+      <ServerListToolbar cursorKeys={["reportCursor", "mediaCursor", "appealCursor"]} fields={[
+        { key: "moderationSearch", label: "Search" },
+        { key: "moderationStatus", label: "Report status", options: ["open", "triaged", "reviewing", "actioned", "closed"] },
+        { key: "moderationTargetType", label: "Target type", options: ["character", "media", "message"] },
+      ]} query={query} updateQuery={updateQuery} />
       <DataTable
         actions={(row) => {
           const id = stringValue(row.id);
@@ -4596,12 +4772,16 @@ function ModerationView({
         columns={["id", "targetType", "targetId", "category", "status", "priority", "createdAt"]}
         rows={reports}
         title="Reports"
+        empty={queryIsFiltered(query, ["moderationSearch", "moderationStatus", "moderationTargetType"]) ? "No reports match these filters" : "No reports require review"}
       />
+      <CanonicalPager cursorKey="reportCursor" pageInfo={pageInfo.reports} updateQuery={updateQuery} />
       <DataTable
         columns={["id", "ownerId", "type", "safetyStatus", "createdAt"]}
         rows={blockedMedia}
         title="Blocked Media"
+        empty={query.moderationSearch ? "No blocked media match this search" : "No blocked media require review"}
       />
+      <CanonicalPager cursorKey="mediaCursor" pageInfo={pageInfo.blockedMedia} updateQuery={updateQuery} />
       <DataTable
         actions={(row) => {
           const id = stringValue(row.id);
@@ -4670,7 +4850,9 @@ function ModerationView({
         columns={["id", "userId", "targetType", "targetId", "status", "createdAt"]}
         rows={appeals}
         title="Appeals"
+        empty={query.moderationSearch ? "No appeals match this search" : "No appeals require review"}
       />
+      <CanonicalPager cursorKey="appealCursor" pageInfo={pageInfo.appeals} updateQuery={updateQuery} />
     </div>
   );
 }
@@ -4804,6 +4986,9 @@ function BillingView({
   adjustment,
   setAdjustment,
   openAction,
+  pageInfo,
+  query,
+  updateQuery,
 }: {
   rows: Row[];
   subscriptions: Row[];
@@ -4811,11 +4996,19 @@ function BillingView({
   adjustment: { userId: string; delta: string };
   setAdjustment: (value: { userId: string; delta: string }) => void;
   openAction: (action: PendingAction) => void;
+  pageInfo: { ledger: PageInfo; subscriptions: PageInfo };
+  query: ListQuery;
+  updateQuery: (updates: Record<string, string | null>, clearCursors?: readonly string[]) => void;
 }) {
   const { locale, t } = useAdminI18n();
 
   return (
     <div className="space-y-5">
+      <ServerListToolbar cursorKeys={["ledgerCursor", "subscriptionCursor"]} fields={[
+        { key: "billingSearch", label: "Search user, email, subscription, or source" },
+        { key: "ledgerReason", label: "Ledger reason", options: ["signup_bonus", "subscription_grant", "generation_spend", "refund", "redeem", "referral", "admin_adjust"] },
+        { key: "subscriptionStatus", label: "Subscription status", options: ["checkout_created", "checkout_completed", "active", "past_due", "canceled", "expired"] },
+      ]} query={query} updateQuery={updateQuery} />
       <div className="rounded-lg grid gap-px overflow-hidden border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-3">
         <Metric
           label="Net coins (window)"
@@ -4852,7 +5045,9 @@ function BillingView({
         ]}
         rows={subscriptions}
         title="Subscriptions"
+        empty={queryIsFiltered(query, ["billingSearch", "subscriptionStatus"]) ? "No subscriptions match these filters" : "No subscriptions exist yet"}
       />
+      <CanonicalPager cursorKey="subscriptionCursor" pageInfo={pageInfo.subscriptions} updateQuery={updateQuery} />
       <div className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_140px_auto]">
           <input
@@ -4902,7 +5097,9 @@ function BillingView({
         columns={["id", "userId", "userEmail", "delta", "balanceAfter", "reason", "sourceId", "createdAt"]}
         rows={rows}
         title="Ledger"
+        empty={queryIsFiltered(query, ["billingSearch", "ledgerReason"]) ? "No ledger entries match these filters" : "No ledger entries exist yet"}
       />
+      <CanonicalPager cursorKey="ledgerCursor" pageInfo={pageInfo.ledger} updateQuery={updateQuery} />
     </div>
   );
 }
@@ -4914,6 +5111,9 @@ function PricingView({
   onDraftChange,
   openAction,
   rows,
+  pageInfo,
+  query,
+  updateQuery,
 }: {
   busy: boolean;
   draft: PricingDraft;
@@ -4921,11 +5121,19 @@ function PricingView({
   onDraftChange: (value: PricingDraft) => void;
   openAction: (action: PendingAction) => void;
   rows: Row[];
+  pageInfo: PageInfo;
+  query: ListQuery;
+  updateQuery: (updates: Record<string, string | null>, clearCursors?: readonly string[]) => void;
 }) {
   const { t } = useAdminI18n();
 
   return (
     <div className="space-y-6">
+      <ServerListToolbar cursorKeys={["pricingCursor"]} fields={[
+        { key: "pricingSearch", label: "Search" },
+        { key: "pricingMode", label: "Mode", options: ["image", "video", "voice"] },
+        { key: "pricingStatus", label: "Status", options: ["draft", "active", "archived"] },
+      ]} query={query} updateQuery={updateQuery} />
       <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -5045,7 +5253,9 @@ function PricingView({
         ]}
         rows={rows}
         title="Pricing Rules"
+        empty={queryIsFiltered(query, ["pricingSearch", "pricingMode", "pricingStatus"]) ? "No pricing rules match these filters" : "No pricing rules exist yet"}
       />
+      <CanonicalPager cursorKey="pricingCursor" pageInfo={pageInfo} updateQuery={updateQuery} />
     </div>
   );
 }
@@ -5053,9 +5263,15 @@ function PricingView({
 function DeadLetterView({
   rows,
   openAction,
+  pageInfo,
+  query,
+  updateQuery,
 }: {
   rows: Row[];
   openAction: (action: PendingAction) => void;
+  pageInfo: PageInfo;
+  query: ListQuery;
+  updateQuery: (updates: Record<string, string | null>, clearCursors?: readonly string[]) => void;
 }) {
   const { locale, t, value } = useAdminI18n();
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -5181,6 +5397,12 @@ function DeadLetterView({
 
   return (
     <div className="space-y-4">
+      <ServerListToolbar cursorKeys={["deadCursor"]} fields={[
+        { key: "deadSearch", label: "Search job, user, provider, or error" },
+        { key: "deadMode", label: "Mode", options: ["image", "video"] },
+        { key: "deadStatus", label: "Status", options: ["failed", "blocked"] },
+        { key: "deadError", label: "Error code" },
+      ]} query={query} updateQuery={updateQuery} />
       <div className="rounded-lg flex flex-wrap items-center gap-3 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-4 py-3">
         <label className="flex items-center gap-2 text-xs text-[var(--ad-text-muted)]">
           <input
@@ -5246,8 +5468,9 @@ function DeadLetterView({
         columns={columns}
         rows={rows}
         title="Dead-letter Queue"
-        empty={t("No dead-letter jobs")}
+        empty={t(queryIsFiltered(query, ["deadSearch", "deadMode", "deadStatus", "deadError"]) ? "No dead-letter jobs match these filters" : "No dead-letter jobs")}
       />
+      <CanonicalPager cursorKey="deadCursor" pageInfo={pageInfo} updateQuery={updateQuery} />
     </div>
   );
 }
@@ -5383,9 +5606,15 @@ function ProviderOpsView({ data }: { data: ProviderOpsData }) {
   );
 }
 
-function AuditView({ command, rows }: { command: AdminCommandStatus | null; rows: Row[] }) {
+function AuditView({ command, rows, pageInfo, query, updateQuery }: { command: AdminCommandStatus | null; rows: Row[]; pageInfo: PageInfo; query: ListQuery; updateQuery: (updates: Record<string, string | null>, clearCursors?: readonly string[]) => void }) {
   return (
     <div className="space-y-5">
+      <ServerListToolbar cursorKeys={["auditCursor"]} fields={[
+        { key: "auditSearch", label: "Search" },
+        { key: "auditAction", label: "Exact action" },
+        { key: "auditActor", label: "Actor ID" },
+        { key: "auditTargetType", label: "Target type" },
+      ]} query={query} updateQuery={updateQuery} />
       {command ? (
         <DataTable
           columns={["commandId", "commandType", "targetType", "targetId", "status", "verificationState", "needsReconciliation", "updatedAt"]}
@@ -5406,7 +5635,9 @@ function AuditView({ command, rows }: { command: AdminCommandStatus | null; rows
         columns={["id", "actorId", "actorRole", "action", "targetType", "targetId", "reason", "createdAt"]}
         rows={rows}
         title="Audit"
+        empty={queryIsFiltered(query, ["auditSearch", "auditAction", "auditActor", "auditTargetType"]) ? "No audit events match these filters" : "No audit events exist yet"}
       />
+      <CanonicalPager cursorKey="auditCursor" pageInfo={pageInfo} updateQuery={updateQuery} />
     </div>
   );
 }
@@ -5417,12 +5648,18 @@ function ContentView({
   featuredIds,
   openAction,
   reload,
+  pageInfo,
+  query,
+  updateQuery,
 }: {
   characters: Row[];
   featured: Row[];
   featuredIds: string[];
   openAction: (action: PendingAction) => void;
   reload: () => void;
+  pageInfo: PageInfo;
+  query: ListQuery;
+  updateQuery: (updates: Record<string, string | null>, clearCursors?: readonly string[]) => void;
 }) {
   const { t } = useAdminI18n();
   const [featuredInput, setFeaturedInput] = useState(featuredIds.join(", "));
@@ -5457,6 +5694,11 @@ function ContentView({
 
   return (
     <div className="space-y-5">
+      <ServerListToolbar cursorKeys={["contentCursor"]} fields={[
+        { key: "contentSearch", label: "Search" },
+        { key: "contentStatus", label: "Status", options: ["draft", "pending_review", "approved", "rejected", "removed", "archived"] },
+        { key: "contentVisibility", label: "Visibility", options: ["private", "unlisted", "public"] },
+      ]} query={query} updateQuery={updateQuery} />
       <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <h2 className="text-sm font-semibold">{t("Featured curation")}</h2>
         <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
@@ -5545,7 +5787,9 @@ function ContentView({
         columns={["id", "name", "gender", "style", "visibility", "status", "createdAt"]}
         rows={characters}
         title="Characters"
+        empty={queryIsFiltered(query, ["contentSearch", "contentStatus", "contentVisibility"]) ? "No characters match these filters" : "No characters exist yet"}
       />
+      <CanonicalPager cursorKey="contentCursor" pageInfo={pageInfo} updateQuery={updateQuery} />
     </div>
   );
 }
@@ -5555,11 +5799,17 @@ function PromoView({
   referrals,
   openAction,
   reload,
+  pageInfo,
+  query,
+  updateQuery,
 }: {
   codes: Row[];
   referrals: Row[];
   openAction: (action: PendingAction) => void;
   reload: () => void;
+  pageInfo: { codes: PageInfo; referrals: PageInfo };
+  query: ListQuery;
+  updateQuery: (updates: Record<string, string | null>, clearCursors?: readonly string[]) => void;
 }) {
   const { t } = useAdminI18n();
   const [code, setCode] = useState("");
@@ -5603,6 +5853,11 @@ function PromoView({
 
   return (
     <div className="space-y-5">
+      <ServerListToolbar cursorKeys={["promoCursor", "referralCursor"]} fields={[
+        { key: "promoSearch", label: "Search" },
+        { key: "promoStatus", label: "Code status", options: ["active", "disabled", "expired"] },
+        { key: "referralStatus", label: "Referral status", options: ["pending", "qualified", "rewarded", "rejected"] },
+      ]} query={query} updateQuery={updateQuery} />
       <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <h2 className="text-sm font-semibold">{t("Create redeem code")}</h2>
         <p className="mt-1 text-xs text-[var(--ad-text-muted)]">明文 code 仅用于生成 hash，不入库、不回显、不入审计。</p>
@@ -5674,12 +5929,16 @@ function PromoView({
         columns={["id", "status", "reward", "maxRedemptions", "redemptions", "expiresAt", "createdAt"]}
         rows={codes}
         title="Redeem codes"
+        empty={queryIsFiltered(query, ["promoSearch", "promoStatus"]) ? "No redeem codes match these filters" : "No redeem codes exist yet"}
       />
+      <CanonicalPager cursorKey="promoCursor" pageInfo={pageInfo.codes} updateQuery={updateQuery} />
       <DataTable
         columns={["id", "inviterId", "inviteeId", "status", "rewardStatus", "createdAt"]}
         rows={referrals}
         title="Referrals"
+        empty={queryIsFiltered(query, ["promoSearch", "referralStatus"]) ? "No referrals match these filters" : "No referrals exist yet"}
       />
+      <CanonicalPager cursorKey="referralCursor" pageInfo={pageInfo.referrals} updateQuery={updateQuery} />
     </div>
   );
 }
@@ -6335,12 +6594,22 @@ function supportSlaFromUnknown(value: unknown): SupportSlaFilter {
 function ApprovalsView({
   rows,
   openAction,
+  pageInfo,
+  query,
+  updateQuery,
 }: {
   rows: Row[];
   openAction: (action: PendingAction) => void;
+  pageInfo: PageInfo;
+  query: ListQuery;
+  updateQuery: (updates: Record<string, string | null>, clearCursors?: readonly string[]) => void;
 }) {
   return (
     <div className="space-y-4">
+      <ServerListToolbar cursorKeys={["approvalCursor"]} fields={[
+        { key: "approvalSearch", label: "Search" },
+        { key: "approvalStatus", label: "Status", options: ["pending", "approved", "rejected", "canceled"] },
+      ]} query={query} updateQuery={updateQuery} />
       <p className="text-xs text-[var(--ad-text-muted)]">
         高危操作复核队列。审批人须 ≠ 发起人，且持该请求声明的 permission key（不变量在服务端强制）。
       </p>
@@ -6383,7 +6652,9 @@ function ApprovalsView({
         columns={["id", "action", "permissionKey", "targetType", "targetId", "requestedById", "reason", "createdAt"]}
         rows={rows}
         title="Pending approvals"
+        empty={queryIsFiltered(query, ["approvalSearch", "approvalStatus"]) ? "No approval requests match these filters" : "No approval requests are pending"}
       />
+      <CanonicalPager cursorKey="approvalCursor" pageInfo={pageInfo} updateQuery={updateQuery} />
     </div>
   );
 }
@@ -6399,6 +6670,8 @@ function ChatOpsView({
   filters,
   onApplyFilters,
   onFiltersChange,
+  pageInfo,
+  updateQuery,
 }: {
   configured: boolean;
   diagnostics: ChatOpsDiagnostics | null;
@@ -6410,6 +6683,8 @@ function ChatOpsView({
   filters: ChatOpsFilters;
   onApplyFilters: (value: ChatOpsFilters) => void;
   onFiltersChange: (value: ChatOpsFilters) => void;
+  pageInfo: { sessions: PageInfo; usage: PageInfo; events: PageInfo };
+  updateQuery: (updates: Record<string, string | null>) => void;
 }) {
   const { locale, t } = useAdminI18n();
   const o = overview ?? {};
@@ -6586,7 +6861,9 @@ function ChatOpsView({
         ]}
         rows={usage}
         title="Chat usage and quota"
+        empty={filters.userId ? "No chat usage matches this user" : "No chat usage exists for the current product day"}
       />
+      <CanonicalPager cursorKey="chatUsageCursor" pageInfo={pageInfo.usage} updateQuery={updateQuery} />
       <DataTable
         columns={[
           "id",
@@ -6603,12 +6880,16 @@ function ChatOpsView({
         ]}
         rows={sessions}
         title="Recent chat sessions (no plaintext)"
+        empty={filters.userId || filters.characterId || filters.sessionStatus !== "all" ? "No chat sessions match these filters" : "No chat sessions exist yet"}
       />
+      <CanonicalPager cursorKey="chatSessionCursor" pageInfo={pageInfo.sessions} updateQuery={updateQuery} />
       <DataTable
         columns={["id", "targetType", "targetId", "layer", "status", "policyCode", "confidence", "createdAt"]}
         rows={events}
         title="Chat moderation events"
+        empty={filters.eventStatus !== "all" || filters.eventLayer !== "all" || filters.policyCode || filters.targetId ? "No chat events match these filters" : "No chat events exist yet"}
       />
+      <CanonicalPager cursorKey="chatEventCursor" pageInfo={pageInfo.events} updateQuery={updateQuery} />
     </div>
   );
 }
@@ -6637,16 +6918,77 @@ function metricNumber(value: unknown): number {
   return typeof value === "number" ? value : 0;
 }
 
+type ServerQueryField = {
+  key: string;
+  label: string;
+  options?: readonly string[];
+};
+
+function ServerListToolbar({
+  query,
+  fields,
+  cursorKeys,
+  updateQuery,
+}: {
+  query: ListQuery;
+  fields: readonly ServerQueryField[];
+  cursorKeys: readonly string[];
+  updateQuery: (updates: Record<string, string | null>, clearCursors?: readonly string[]) => void;
+}) {
+  const { t } = useAdminI18n();
+
+  function apply(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    updateQuery(Object.fromEntries(fields.map((field) => [field.key, String(form.get(field.key) ?? "")])), cursorKeys);
+  }
+
+  return (
+    <form className="rounded-lg grid gap-3 border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-2 xl:grid-cols-4" key={fields.map((field) => `${field.key}:${query[field.key] ?? ""}`).join("|")} onSubmit={apply}>
+      {fields.map((field) => field.options ? (
+        <label className="grid gap-1" key={field.key}>
+          <span className="text-xs font-medium text-[var(--ad-text-muted)]">{t(field.label)}</span>
+          <select className="h-11 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm" defaultValue={query[field.key] ?? ""} name={field.key}>
+            <option value="">{t("All")}</option>
+            {field.options.map((option) => <option key={option} value={option}>{t(option)}</option>)}
+          </select>
+        </label>
+      ) : (
+        <label className="grid gap-1" key={field.key}>
+          <span className="text-xs font-medium text-[var(--ad-text-muted)]">{t(field.label)}</span>
+          <input className="h-11 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm" defaultValue={query[field.key] ?? ""} name={field.key} type="search" />
+        </label>
+      ))}
+      <div className="flex items-end gap-2">
+        <button className="inline-flex h-11 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white" type="submit"><Search className="h-4 w-4" />{t("Apply")}</button>
+        <button className="inline-flex h-11 items-center gap-2 rounded-md border border-[var(--ad-border)] px-4 text-sm" onClick={() => updateQuery(Object.fromEntries(fields.map((field) => [field.key, null])), cursorKeys)} type="button"><RotateCcw className="h-4 w-4" />{t("Reset")}</button>
+      </div>
+    </form>
+  );
+}
+
+function CanonicalPager({ pageInfo, cursorKey, updateQuery }: { pageInfo: PageInfo; cursorKey: string; updateQuery: (updates: Record<string, string | null>) => void }) {
+  const { t } = useAdminI18n();
+  if (!pageInfo.hasNextPage || !pageInfo.endCursor) return null;
+  return <button className="inline-flex h-11 items-center gap-2 rounded-md border border-[var(--ad-border)] px-4 text-sm" onClick={() => updateQuery({ [cursorKey]: pageInfo.endCursor })} type="button">{t("Next page")}<ChevronRight className="h-4 w-4" /></button>;
+}
+
+function queryIsFiltered(query: ListQuery, keys: readonly string[]) {
+  return keys.some((key) => Boolean(query[key]));
+}
+
 function DataTable({
   title,
   rows,
   columns,
   actions,
+  empty,
 }: {
   title: string;
   rows: Row[];
   columns: string[];
   actions?: (row: Row) => React.ReactNode;
+  empty?: string;
 }) {
   const { column: columnLabel, locale, t } = useAdminI18n();
 
@@ -6691,7 +7033,7 @@ function DataTable({
             {rows.length === 0 ? (
               <tr>
                 <td className="px-3 py-8 text-center text-sm text-[var(--ad-text-muted)]" colSpan={columns.length + (actions ? 1 : 0)}>
-                  {t("Empty")}
+                  {t(empty ?? "No records exist yet")}
                 </td>
               </tr>
             ) : null}

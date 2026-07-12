@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
+import { decodeAdminListCursor, encodeAdminListCursor } from "@/server/modules/admin-v2/shared/list-cursor";
 import {
   type Announcement,
   readAnnouncements,
@@ -50,8 +51,48 @@ const deleteSchema = z
 
 export async function listAdminAnnouncements(request: Request): Promise<Response> {
   await actorWithPermission(request, PROMO_READ);
-  const items = await readAnnouncements();
-  return ok({ items });
+  const url = new URL(request.url);
+  const search = url.searchParams.get("search")?.trim().toLocaleLowerCase() || undefined;
+  const level = url.searchParams.get("level")?.trim() || undefined;
+  const activeParam = url.searchParams.get("active");
+  const active = activeParam === "true" ? true : activeParam === "false" ? false : undefined;
+  const limit = Math.max(1, Math.min(100, Number.parseInt(url.searchParams.get("limit") ?? "25", 10) || 25));
+  const queryIdentity = { search, level, active, sort: "created_desc" };
+  const cursorKeys = url.searchParams.get("cursor")
+    ? decodeAdminListCursor(url.searchParams.get("cursor")!, "announcements", queryIdentity)
+    : undefined;
+  const cursorCreatedAt = cursorKeys ? announcementCursorDate(cursorKeys[0]) : null;
+  const cursorId = cursorKeys ? announcementCursorId(cursorKeys[1]) : null;
+  const matches = (await readAnnouncements())
+    .filter((item) => !search || [item.id, item.title, item.body, item.href ?? ""].some((value) => value.toLocaleLowerCase().includes(search)))
+    .filter((item) => !level || item.level === level)
+    .filter((item) => active === undefined || item.active === active)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
+    .filter((item) => !cursorCreatedAt || item.createdAt < cursorCreatedAt || (item.createdAt === cursorCreatedAt && item.id < cursorId!));
+  const page = matches.slice(0, limit);
+  const hasNextPage = matches.length > limit;
+  const last = page.at(-1);
+  return ok({
+    items: page,
+    pageInfo: {
+      hasNextPage,
+      endCursor: hasNextPage && last
+        ? encodeAdminListCursor("announcements", queryIdentity, [last.createdAt, last.id])
+        : null,
+    },
+  });
+}
+
+function announcementCursorDate(value: unknown) {
+  if (typeof value !== "string" || Number.isNaN(new Date(value).getTime())) {
+    throw Errors.badRequest("announcements cursor timestamp is invalid");
+  }
+  return value;
+}
+
+function announcementCursorId(value: unknown) {
+  if (typeof value !== "string" || !value) throw Errors.badRequest("announcements cursor id is invalid");
+  return value;
 }
 
 export async function createAnnouncement(request: Request): Promise<Response> {

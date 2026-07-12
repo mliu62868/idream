@@ -22,7 +22,7 @@ import { effectivePermissions } from "@/server/admin/effective-permissions";
 import { getAuthCtx, requireUser, type ActorRole } from "@/server/lib/auth";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
-import { Errors } from "@/server/lib/errors";
+import { AppError, Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import {
   actorWithPermission,
@@ -1237,25 +1237,44 @@ async function discardGenerationJob(request: Request, jobId: string) {
 async function deadLetterQueue(request: Request) {
   await actorWithPermission(request, "ops.queue.read");
   const url = new URL(request.url);
+  const search = url.searchParams.get("search")?.trim() || undefined;
   const statusParam = url.searchParams.get("status");
-  const statuses = statusParam
+  const statuses = statusParam && statusParam !== "all"
     ? statusParam.split(",").map((status) => status.trim()).filter(Boolean)
     : ["failed", "blocked"];
   const errorCode = url.searchParams.get("errorCode")?.trim() || undefined;
   const mode = url.searchParams.get("mode")?.trim();
+  const limit = clampInt(url.searchParams.get("limit"), 1, 100, 100);
+  const queryIdentity = { search, statuses, errorCode, mode: mode && mode !== "all" ? mode : undefined };
+  const cursorKeys = adminListCursorKeys(url, "generation_dead_letter", queryIdentity);
+  const cursorWhere: Prisma.GenerationJobWhereInput | undefined = cursorKeys ? (() => {
+    const updatedAt = adminCursorDate(cursorKeys, 0, "generation_dead_letter");
+    const id = adminCursorString(cursorKeys, 1, "generation_dead_letter");
+    return { OR: [{ updatedAt: { lt: updatedAt } }, { updatedAt, id: { lt: id } }] };
+  })() : undefined;
   const jobs = await prisma.generationJob.findMany({
     where: {
       status: { in: statuses },
       errorCode: errorCode ? { contains: errorCode } : undefined,
       mode: mode && mode !== "all" ? mode : undefined,
+      OR: search
+        ? [
+            { id: { contains: search } },
+            { userId: { contains: search } },
+            { errorCode: { contains: search } },
+            { provider: { contains: search } },
+          ]
+        : undefined,
+      AND: cursorWhere,
     },
     include: { assets: true, events: { orderBy: { createdAt: "asc" } } },
-    orderBy: { updatedAt: "desc" },
-    take: clampInt(url.searchParams.get("limit"), 1, 200, 100),
+    orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+    take: limit + 1,
   });
-  const refundedIds = await refundedJobIds(jobs.map((job) => job.id));
+  const page = jobs.slice(0, limit);
+  const refundedIds = await refundedJobIds(page.map((job) => job.id));
   return ok({
-    items: jobs.map((job) => ({
+    items: page.map((job) => ({
       ...redactJob(job),
       ledgerState: refundedIds.has(job.id) ? "refunded" : "reserved",
       retryEligibility: deriveGenerationJobState({
@@ -1270,6 +1289,13 @@ async function deadLetterQueue(request: Request) {
           : [],
       }).retryEligibility,
     })),
+    pageInfo: adminListPageInfo(
+      "generation_dead_letter",
+      queryIdentity,
+      page,
+      jobs.length > limit,
+      (row) => [row.updatedAt.toISOString(), row.id],
+    ),
   });
 }
 
@@ -1395,12 +1421,44 @@ function deadLetterBatchConfirmation(jobIds: string[]) {
 async function listModelProfiles(request: Request) {
   await actorWithPermission(request, "generation.config.read");
   const url = new URL(request.url);
+  const search = url.searchParams.get("search")?.trim() || undefined;
   const mode = url.searchParams.get("mode") ?? undefined;
+  const status = url.searchParams.get("status") ?? undefined;
+  const limitParam = url.searchParams.get("limit");
+  const limit = limitParam ? clampInt(limitParam, 1, 100, 100) : null;
+  const queryIdentity = { search, mode, status };
+  const cursorKeys = adminListCursorKeys(url, "generation_profiles", queryIdentity);
+  const cursorWhere: Prisma.GenerationModelProfileWhereInput | undefined = cursorKeys ? (() => {
+    const profileKey = adminCursorString(cursorKeys, 0, "generation_profiles");
+    const version = adminCursorNumber(cursorKeys, 1, "generation_profiles");
+    const id = adminCursorString(cursorKeys, 2, "generation_profiles");
+    return { OR: [
+      { profileKey: { gt: profileKey } },
+      { profileKey, version: { lt: version } },
+      { profileKey, version, id: { gt: id } },
+    ] };
+  })() : undefined;
   const profiles = await prisma.generationModelProfile.findMany({
-    where: { mode },
-    orderBy: [{ profileKey: "asc" }, { version: "desc" }],
+    where: {
+      mode,
+      status,
+      OR: search
+        ? [{ id: { contains: search } }, { profileKey: { contains: search } }, { label: { contains: search } }]
+        : undefined,
+      AND: cursorWhere,
+    },
+    orderBy: [{ profileKey: "asc" }, { version: "desc" }, { id: "asc" }],
+    take: limit === null ? undefined : limit + 1,
   });
-  return ok({ items: profiles });
+  const page = limit === null ? profiles : profiles.slice(0, limit);
+  return ok({
+    items: page,
+    pageInfo: adminListPageInfo("generation_profiles", queryIdentity, page, limit !== null && profiles.length > limit, (row) => [
+      row.profileKey,
+      row.version,
+      row.id,
+    ]),
+  });
 }
 
 type ModelImportKind = z.infer<typeof modelImportKindSchema>;
@@ -2908,13 +2966,44 @@ async function patchAdminPreset(request: Request, id: string) {
 async function listPricingRules(request: Request) {
   await actorWithPermission(request, "billing.read");
   const url = new URL(request.url);
+  const search = url.searchParams.get("search")?.trim() || undefined;
   const mode = url.searchParams.get("mode") ?? undefined;
   const status = url.searchParams.get("status") ?? undefined;
+  const limitParam = url.searchParams.get("limit");
+  const limit = limitParam ? clampInt(limitParam, 1, 100, 100) : null;
+  const queryIdentity = { search, mode, status };
+  const cursorKeys = adminListCursorKeys(url, "pricing_rules", queryIdentity);
+  const cursorWhere: Prisma.PricingRuleWhereInput | undefined = cursorKeys ? (() => {
+    const ruleKey = adminCursorString(cursorKeys, 0, "pricing_rules");
+    const version = adminCursorNumber(cursorKeys, 1, "pricing_rules");
+    const id = adminCursorString(cursorKeys, 2, "pricing_rules");
+    return { OR: [
+      { ruleKey: { gt: ruleKey } },
+      { ruleKey, version: { lt: version } },
+      { ruleKey, version, id: { gt: id } },
+    ] };
+  })() : undefined;
   const rules = await prisma.pricingRule.findMany({
-    where: { mode, status },
-    orderBy: [{ ruleKey: "asc" }, { version: "desc" }],
+    where: {
+      mode,
+      status,
+      OR: search
+        ? [{ id: { contains: search } }, { ruleKey: { contains: search } }, { label: { contains: search } }]
+        : undefined,
+      AND: cursorWhere,
+    },
+    orderBy: [{ ruleKey: "asc" }, { version: "desc" }, { id: "asc" }],
+    take: limit === null ? undefined : limit + 1,
   });
-  return ok({ items: rules });
+  const page = limit === null ? rules : rules.slice(0, limit);
+  return ok({
+    items: page,
+    pageInfo: adminListPageInfo("pricing_rules", queryIdentity, page, limit !== null && rules.length > limit, (row) => [
+      row.ruleKey,
+      row.version,
+      row.id,
+    ]),
+  });
 }
 
 async function createPricingRule(request: Request) {
@@ -3052,6 +3141,7 @@ async function rollbackPricingRule(request: Request, id: string) {
 async function moderationQueue(request: Request) {
   await actorWithPermission(request, "safety.review.read");
   const url = new URL(request.url);
+  const search = url.searchParams.get("search")?.trim() || undefined;
   const id = url.searchParams.get("id")?.trim() || undefined;
   const targetType = url.searchParams.get("targetType")?.trim() || undefined;
   const targetId = url.searchParams.get("targetId")?.trim() || undefined;
@@ -3060,41 +3150,111 @@ async function moderationQueue(request: Request) {
     ?.split(",")
     .map((status) => status.trim())
     .filter(Boolean);
-  const statuses = requestedStatuses?.length
+  const statuses = requestedStatuses?.length && !requestedStatuses.includes("all")
     ? requestedStatuses
     : ["open", "triaged", "reviewing"];
+  const limit = clampInt(url.searchParams.get("limit"), 1, 100, 100);
+  const queryIdentity = { search, id, targetType, targetId, statuses };
+  const reportCursorKeys = adminListCursorKeys(url, "moderation_reports", queryIdentity, "reportCursor");
+  const mediaCursorKeys = adminListCursorKeys(url, "moderation_blocked_media", queryIdentity, "mediaCursor");
+  const appealCursorKeys = adminListCursorKeys(url, "moderation_appeals", queryIdentity, "appealCursor");
   const reportWhere: Prisma.ContentReportWhereInput = {
     id,
     targetType,
     targetId,
     status: { in: statuses },
+    OR: search
+      ? [
+          { id: { contains: search } },
+          { targetId: { contains: search } },
+          { category: { contains: search } },
+          { description: { contains: search } },
+        ]
+      : undefined,
+    AND: reportCursorKeys ? (() => {
+      const priority = adminCursorNumber(reportCursorKeys, 0, "moderation_reports");
+      const createdAt = adminCursorDate(reportCursorKeys, 1, "moderation_reports");
+      const cursorId = adminCursorString(reportCursorKeys, 2, "moderation_reports");
+      return { OR: [
+        { priority: { gt: priority } },
+        { priority, createdAt: { lt: createdAt } },
+        { priority, createdAt, id: { lt: cursorId } },
+      ] };
+    })() : undefined,
   };
   const reports = await prisma.contentReport.findMany({
     where: reportWhere,
     include: { reporter: true, reviews: true },
-    orderBy: [{ priority: "asc" }, { createdAt: "desc" }],
-    take: clampInt(url.searchParams.get("limit"), 1, 200, 100),
+    orderBy: [{ priority: "asc" }, { createdAt: "desc" }, { id: "desc" }],
+    take: limit + 1,
   });
   const blockedMedia = await prisma.mediaAsset.findMany({
-    where: { safetyStatus: "blocked", deletedAt: null },
-    orderBy: { createdAt: "asc" },
-    take: 50,
+    where: {
+      safetyStatus: "blocked",
+      deletedAt: null,
+      OR: search
+        ? [{ id: { contains: search } }, { ownerId: { contains: search } }, { type: { contains: search } }]
+        : undefined,
+      AND: mediaCursorKeys ? (() => {
+        const createdAt = adminCursorDate(mediaCursorKeys, 0, "moderation_blocked_media");
+        const cursorId = adminCursorString(mediaCursorKeys, 1, "moderation_blocked_media");
+        return { OR: [{ createdAt: { gt: createdAt } }, { createdAt, id: { gt: cursorId } }] };
+      })() : undefined,
+    },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    take: limit + 1,
   });
   const appeals = await prisma.appeal.findMany({
-    where: { status: "open" },
-    orderBy: { createdAt: "asc" },
-    take: 50,
+    where: {
+      status: "open",
+      OR: search
+        ? [
+            { id: { contains: search } },
+            { userId: { contains: search } },
+            { targetId: { contains: search } },
+            { appealText: { contains: search } },
+          ]
+        : undefined,
+      AND: appealCursorKeys ? (() => {
+        const createdAt = adminCursorDate(appealCursorKeys, 0, "moderation_appeals");
+        const cursorId = adminCursorString(appealCursorKeys, 1, "moderation_appeals");
+        return { OR: [{ createdAt: { gt: createdAt } }, { createdAt, id: { gt: cursorId } }] };
+      })() : undefined,
+    },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    take: limit + 1,
   });
+  const reportPage = reports.slice(0, limit);
+  const mediaPage = blockedMedia.slice(0, limit);
+  const appealPage = appeals.slice(0, limit);
   return ok({
-    reports,
-    blockedMedia: blockedMedia.map((asset) => ({
+    reports: reportPage,
+    blockedMedia: mediaPage.map((asset) => ({
       id: asset.id,
       ownerId: asset.ownerId,
       type: asset.type,
       safetyStatus: asset.safetyStatus,
       createdAt: asset.createdAt,
     })),
-    appeals,
+    appeals: appealPage,
+    pageInfo: {
+      reports: adminListPageInfo("moderation_reports", queryIdentity, reportPage, reports.length > limit, (row) => [
+        row.priority,
+        row.createdAt.toISOString(),
+        row.id,
+      ]),
+      blockedMedia: adminListPageInfo(
+        "moderation_blocked_media",
+        queryIdentity,
+        mediaPage,
+        blockedMedia.length > limit,
+        (row) => [row.createdAt.toISOString(), row.id],
+      ),
+      appeals: adminListPageInfo("moderation_appeals", queryIdentity, appealPage, appeals.length > limit, (row) => [
+        row.createdAt.toISOString(),
+        row.id,
+      ]),
+    },
   });
 }
 
@@ -3250,16 +3410,38 @@ function appealOutcomeConfirmation(outcome: z.infer<typeof appealDecisionSchema>
 async function billingLedger(request: Request) {
   await actorWithPermission(request, "billing.read");
   const url = new URL(request.url);
+  const search = url.searchParams.get("search")?.trim() || undefined;
   const userId = url.searchParams.get("userId") ?? undefined;
   const reason = url.searchParams.get("reason") ?? undefined;
+  const limit = clampInt(url.searchParams.get("limit"), 1, 100, 50);
+  const queryIdentity = { search, userId, reason };
+  const cursorKeys = adminListCursorKeys(url, "billing_ledger", queryIdentity);
+  const cursorWhere: Prisma.DreamcoinLedgerWhereInput | undefined = cursorKeys ? (() => {
+    const createdAt = adminCursorDate(cursorKeys, 0, "billing_ledger");
+    const id = adminCursorString(cursorKeys, 1, "billing_ledger");
+    return { OR: [{ createdAt: { lt: createdAt } }, { createdAt, id: { lt: id } }] };
+  })() : undefined;
   const entries = await prisma.dreamcoinLedger.findMany({
-    where: { userId, reason },
+    where: {
+      userId,
+      reason,
+      OR: search
+        ? [
+            { id: { contains: search } },
+            { userId: { contains: search } },
+            { sourceId: { contains: search } },
+            { user: { email: { contains: search } } },
+          ]
+        : undefined,
+      AND: cursorWhere,
+    },
     include: { user: true },
-    orderBy: { createdAt: "desc" },
-    take: clampInt(url.searchParams.get("limit"), 1, 100, 50),
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: limit + 1,
   });
+  const page = entries.slice(0, limit);
   return ok({
-    items: entries.map((entry) => ({
+    items: page.map((entry) => ({
       id: entry.id,
       userId: entry.userId,
       userEmail: entry.user.email,
@@ -3269,6 +3451,10 @@ async function billingLedger(request: Request) {
       sourceId: entry.sourceId,
       createdAt: entry.createdAt,
     })),
+    pageInfo: adminListPageInfo("billing_ledger", queryIdentity, page, entries.length > limit, (row) => [
+      row.createdAt.toISOString(),
+      row.id,
+    ]),
   });
 }
 
@@ -3277,16 +3463,39 @@ async function billingLedger(request: Request) {
 async function listSubscriptions(request: Request) {
   await actorWithPermission(request, "billing.read");
   const url = new URL(request.url);
+  const search = url.searchParams.get("search")?.trim() || undefined;
   const userId = url.searchParams.get("userId")?.trim() || undefined;
   const status = url.searchParams.get("status")?.trim() || undefined;
+  const limit = clampInt(url.searchParams.get("limit"), 1, 100, 50);
+  const queryIdentity = { search, userId, status };
+  const cursorKeys = adminListCursorKeys(url, "billing_subscriptions", queryIdentity);
+  const cursorWhere: Prisma.SubscriptionWhereInput | undefined = cursorKeys ? (() => {
+    const createdAt = adminCursorDate(cursorKeys, 0, "billing_subscriptions");
+    const id = adminCursorString(cursorKeys, 1, "billing_subscriptions");
+    return { OR: [{ createdAt: { lt: createdAt } }, { createdAt, id: { lt: id } }] };
+  })() : undefined;
   const subscriptions = await prisma.subscription.findMany({
-    where: { userId, status },
+    where: {
+      userId,
+      status,
+      OR: search
+        ? [
+            { id: { contains: search } },
+            { userId: { contains: search } },
+            { providerSubscriptionId: { contains: search } },
+            { user: { email: { contains: search } } },
+            { plan: { slug: { contains: search } } },
+          ]
+        : undefined,
+      AND: cursorWhere,
+    },
     include: { plan: true, user: true },
-    orderBy: { createdAt: "desc" },
-    take: clampInt(url.searchParams.get("limit"), 1, 100, 50),
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: limit + 1,
   });
+  const page = subscriptions.slice(0, limit);
   return ok({
-    items: subscriptions.map((subscription) => ({
+    items: page.map((subscription) => ({
       id: subscription.id,
       userId: subscription.userId,
       userEmail: subscription.user.email,
@@ -3299,6 +3508,13 @@ async function listSubscriptions(request: Request) {
       providerSubscriptionId: subscription.providerSubscriptionId,
       createdAt: subscription.createdAt,
     })),
+    pageInfo: adminListPageInfo(
+      "billing_subscriptions",
+      queryIdentity,
+      page,
+      subscriptions.length > limit,
+      (row) => [row.createdAt.toISOString(), row.id],
+    ),
   });
 }
 
@@ -3405,8 +3621,31 @@ function featureFlagConfirmation(key: string, enabled: boolean | undefined) {
 
 async function listFeatureFlags(request: Request) {
   await actorWithPermission(request, "ops.queue.read");
-  const flags = await prisma.featureFlag.findMany({ orderBy: { key: "asc" } });
-  return ok({ items: flags });
+  const url = new URL(request.url);
+  const search = url.searchParams.get("search")?.trim() || undefined;
+  const enabledParam = url.searchParams.get("enabled");
+  const enabled = enabledParam === "true" ? true : enabledParam === "false" ? false : undefined;
+  const limitParam = url.searchParams.get("limit");
+  const limit = limitParam ? clampInt(limitParam, 1, 100, 100) : null;
+  const queryIdentity = { search, enabled };
+  const cursorKeys = adminListCursorKeys(url, "feature_flags", queryIdentity);
+  const cursorKey = cursorKeys ? adminCursorString(cursorKeys, 0, "feature_flags") : undefined;
+  const flags = await prisma.featureFlag.findMany({
+    where: {
+      enabled,
+      OR: search
+        ? [{ key: { contains: search } }, { label: { contains: search } }, { description: { contains: search } }]
+        : undefined,
+      AND: cursorKey ? { key: { gt: cursorKey } } : undefined,
+    },
+    orderBy: { key: "asc" },
+    take: limit === null ? undefined : limit + 1,
+  });
+  const page = limit === null ? flags : flags.slice(0, limit);
+  return ok({
+    items: page,
+    pageInfo: adminListPageInfo("feature_flags", queryIdentity, page, limit !== null && flags.length > limit, (row) => [row.key]),
+  });
 }
 
 async function patchFeatureFlag(request: Request, key: string) {
@@ -3713,15 +3952,45 @@ function percentile(sorted: number[], p: number) {
 async function auditLog(request: Request) {
   await actorWithPermission(request, "audit.read");
   const url = new URL(request.url);
+  const search = url.searchParams.get("search")?.trim() || undefined;
   const action = url.searchParams.get("action") ?? undefined;
   const actorId = url.searchParams.get("actorId") ?? undefined;
   const targetType = url.searchParams.get("targetType") ?? undefined;
+  const limit = clampInt(url.searchParams.get("limit"), 1, 100, 80);
+  const queryIdentity = { search, action, actorId, targetType };
+  const cursorKeys = adminListCursorKeys(url, "audit_log", queryIdentity);
+  const cursorWhere: Prisma.AdminAuditLogWhereInput | undefined = cursorKeys ? (() => {
+    const createdAt = adminCursorDate(cursorKeys, 0, "audit_log");
+    const id = adminCursorString(cursorKeys, 1, "audit_log");
+    return { OR: [{ createdAt: { lt: createdAt } }, { createdAt, id: { lt: id } }] };
+  })() : undefined;
   const logs = await prisma.adminAuditLog.findMany({
-    where: { action, actorId, targetType },
-    orderBy: { createdAt: "desc" },
-    take: clampInt(url.searchParams.get("limit"), 1, 200, 80),
+    where: {
+      action,
+      actorId,
+      targetType,
+      OR: search
+        ? [
+            { id: { contains: search } },
+            { action: { contains: search } },
+            { actorId: { contains: search } },
+            { targetId: { contains: search } },
+            { reason: { contains: search } },
+          ]
+        : undefined,
+      AND: cursorWhere,
+    },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: limit + 1,
   });
-  return ok({ items: logs });
+  const page = logs.slice(0, limit);
+  return ok({
+    items: page,
+    pageInfo: adminListPageInfo("audit_log", queryIdentity, page, logs.length > limit, (row) => [
+      row.createdAt.toISOString(),
+      row.id,
+    ]),
+  });
 }
 
 async function listSupportRequests(request: Request) {
@@ -4118,16 +4387,35 @@ async function listContentCharacters(request: Request) {
   const visibility = url.searchParams.get("visibility") ?? undefined;
   const creatorId = url.searchParams.get("creatorId") ?? undefined;
   const sort = url.searchParams.get("sort") ?? "recent";
+  const limit = clampInt(url.searchParams.get("limit"), 1, 100, 60);
+  const queryIdentity = { search, status, visibility, creatorId, sort };
+  const cursorKeys = adminListCursorKeys(url, "content_characters", queryIdentity);
+  const cursorWhere: Prisma.CharacterWhereInput | undefined = cursorKeys ? (() => {
+    const id = adminCursorString(cursorKeys, 1, "content_characters");
+    if (sort === "popular") {
+      if (cursorKeys[0] === null) {
+        return { stats: { is: null }, id: { lt: id } };
+      }
+      const chatsCount = adminCursorNumber(cursorKeys, 0, "content_characters");
+      return { OR: [
+        { stats: { is: { chatsCount: { lt: chatsCount } } } },
+        { stats: { is: { chatsCount } }, id: { lt: id } },
+        { stats: { is: null } },
+      ] };
+    }
+    const createdAt = adminCursorDate(cursorKeys, 0, "content_characters");
+    return { OR: [{ createdAt: { lt: createdAt } }, { createdAt, id: { lt: id } }] };
+  })() : undefined;
   const where: Prisma.CharacterWhereInput = { status, visibility, creatorId, deletedAt: null };
   if (search) {
     where.OR = [{ id: { contains: search } }, { name: { contains: search } }];
   }
-  const orderBy: Prisma.CharacterOrderByWithRelationInput =
-    sort === "popular" ? { stats: { chatsCount: "desc" } } : { createdAt: "desc" };
+  if (cursorWhere) where.AND = cursorWhere;
+  const orderBy: Prisma.CharacterOrderByWithRelationInput = { createdAt: "desc" };
   const items = await prisma.character.findMany({
     where,
-    orderBy,
-    take: clampInt(url.searchParams.get("limit"), 1, 100, 60),
+    orderBy: [orderBy, { id: "desc" }],
+    take: sort === "popular" ? undefined : limit + 1,
     select: {
       id: true,
       name: true,
@@ -4149,7 +4437,17 @@ async function listContentCharacters(request: Request) {
       stats: { select: { chatsCount: true, likesCount: true, viewsCount: true } },
     },
   });
-  return ok({ items });
+  const orderedItems = sort === "popular"
+    ? items.sort((a, b) => (b.stats?.chatsCount ?? -1) - (a.stats?.chatsCount ?? -1) || b.id.localeCompare(a.id))
+    : items;
+  const page = orderedItems.slice(0, limit);
+  return ok({
+    items: page,
+    pageInfo: adminListPageInfo("content_characters", queryIdentity, page, orderedItems.length > limit, (row) => [
+      sort === "popular" ? row.stats?.chatsCount ?? null : row.createdAt.toISOString(),
+      row.id,
+    ]),
+  });
 }
 
 async function getContentCharacter(request: Request, id: string) {
@@ -4310,15 +4608,25 @@ async function putFeaturedCharacters(request: Request) {
 async function listRedeemCodes(request: Request) {
   await actorWithPermission(request, "growth.promo.read");
   const url = new URL(request.url);
+  const search = url.searchParams.get("search")?.trim() || undefined;
   const status = url.searchParams.get("status") ?? undefined;
+  const limit = clampInt(url.searchParams.get("limit"), 1, 100, 100);
+  const queryIdentity = { search, status };
+  const cursorKeys = adminListCursorKeys(url, "redeem_codes", queryIdentity);
+  const cursorWhere: Prisma.RedeemCodeWhereInput | undefined = cursorKeys ? (() => {
+    const createdAt = adminCursorDate(cursorKeys, 0, "redeem_codes");
+    const id = adminCursorString(cursorKeys, 1, "redeem_codes");
+    return { OR: [{ createdAt: { lt: createdAt } }, { createdAt, id: { lt: id } }] };
+  })() : undefined;
   const codes = await prisma.redeemCode.findMany({
-    where: { status },
-    orderBy: { createdAt: "desc" },
-    take: 100,
+    where: { status, id: search ? { contains: search } : undefined, AND: cursorWhere },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: limit + 1,
     include: { _count: { select: { redemptions: true } } },
   });
   // 不回明文 code（只存 hash），运营按 id + reward 元数据管理。
-  const items = codes.map((code) => ({
+  const page = codes.slice(0, limit);
+  const items = page.map((code) => ({
     id: code.id,
     reward: code.reward,
     status: code.status,
@@ -4327,7 +4635,13 @@ async function listRedeemCodes(request: Request) {
     expiresAt: code.expiresAt,
     createdAt: code.createdAt,
   }));
-  return ok({ items });
+  return ok({
+    items,
+    pageInfo: adminListPageInfo("redeem_codes", queryIdentity, page, codes.length > limit, (row) => [
+      row.createdAt.toISOString(),
+      row.id,
+    ]),
+  });
 }
 
 async function createRedeemCode(request: Request) {
@@ -4382,27 +4696,83 @@ async function disableRedeemCode(request: Request, id: string) {
 async function listReferrals(request: Request) {
   await actorWithPermission(request, "growth.promo.read");
   const url = new URL(request.url);
+  const search = url.searchParams.get("search")?.trim() || undefined;
   const inviterId = url.searchParams.get("inviterId") ?? undefined;
   const status = url.searchParams.get("status") ?? undefined;
-  const items = await prisma.referral.findMany({
-    where: { inviterId, status },
-    orderBy: { createdAt: "desc" },
-    take: 100,
+  const limit = clampInt(url.searchParams.get("limit"), 1, 100, 100);
+  const queryIdentity = { search, inviterId, status };
+  const cursorKeys = adminListCursorKeys(url, "referrals", queryIdentity);
+  const cursorWhere: Prisma.ReferralWhereInput | undefined = cursorKeys ? (() => {
+    const createdAt = adminCursorDate(cursorKeys, 0, "referrals");
+    const id = adminCursorString(cursorKeys, 1, "referrals");
+    return { OR: [{ createdAt: { lt: createdAt } }, { createdAt, id: { lt: id } }] };
+  })() : undefined;
+  const rows = await prisma.referral.findMany({
+    where: {
+      inviterId,
+      status,
+      OR: search
+        ? [
+            { id: { contains: search } },
+            { inviterId: { contains: search } },
+            { inviteeId: { contains: search } },
+            { code: { contains: search } },
+          ]
+        : undefined,
+      AND: cursorWhere,
+    },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: limit + 1,
   });
-  return ok({ items });
+  const page = rows.slice(0, limit);
+  return ok({
+    items: page,
+    pageInfo: adminListPageInfo("referrals", queryIdentity, page, rows.length > limit, (row) => [
+      row.createdAt.toISOString(),
+      row.id,
+    ]),
+  });
 }
 
 // ── F5 双人审批（AdminActionRequest）──
 async function listApprovals(request: Request) {
   await actorWithPermission(request, "admin.approval.review");
   const url = new URL(request.url);
+  const search = url.searchParams.get("search")?.trim() || undefined;
   const status = url.searchParams.get("status") ?? "pending";
-  const items = await prisma.adminActionRequest.findMany({
-    where: { status },
-    orderBy: { createdAt: "desc" },
-    take: 100,
+  const limit = clampInt(url.searchParams.get("limit"), 1, 100, 100);
+  const queryIdentity = { search, status };
+  const cursorKeys = adminListCursorKeys(url, "approvals", queryIdentity);
+  const cursorWhere: Prisma.AdminActionRequestWhereInput | undefined = cursorKeys ? (() => {
+    const createdAt = adminCursorDate(cursorKeys, 0, "approvals");
+    const id = adminCursorString(cursorKeys, 1, "approvals");
+    return { OR: [{ createdAt: { lt: createdAt } }, { createdAt, id: { lt: id } }] };
+  })() : undefined;
+  const rows = await prisma.adminActionRequest.findMany({
+    where: {
+      status,
+      OR: search
+        ? [
+            { id: { contains: search } },
+            { action: { contains: search } },
+            { permissionKey: { contains: search } },
+            { targetId: { contains: search } },
+            { requestedById: { contains: search } },
+          ]
+        : undefined,
+      AND: cursorWhere,
+    },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: limit + 1,
   });
-  return ok({ items });
+  const page = rows.slice(0, limit);
+  return ok({
+    items: page,
+    pageInfo: adminListPageInfo("approvals", queryIdentity, page, rows.length > limit, (row) => [
+      row.createdAt.toISOString(),
+      row.id,
+    ]),
+  });
 }
 
 async function createApproval(request: Request) {
@@ -4530,6 +4900,11 @@ async function proxyChatAdmin(path: string): Promise<ChatAdminProxyResult> {
       headers: { "x-internal-token": env.INTERNAL_TOKEN },
     });
     if (!res.ok) {
+      if (res.status === 400) {
+        throw Errors.badRequest("Chat admin query was rejected by the authority service", {
+          upstreamStatus: res.status,
+        });
+      }
       return {
         configured: false,
         data: null,
@@ -4553,7 +4928,8 @@ async function proxyChatAdmin(path: string): Promise<ChatAdminProxyResult> {
         diagnostics: { reason: "bad_json", serviceUrlConfigured: true },
       };
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof AppError) throw error;
     // 故意降级：chat 服务暂不可达不应让 admin 控制台整体 500。
     return {
       configured: false,
@@ -4590,9 +4966,11 @@ async function chatOpsSessions(request: Request) {
   const userId = url.searchParams.get("userId");
   const characterId = url.searchParams.get("characterId");
   const status = url.searchParams.get("status");
+  const cursor = url.searchParams.get("cursor");
   if (userId) params.set("userId", userId);
   if (characterId) params.set("characterId", characterId);
   if (status) params.set("status", status);
+  if (cursor) params.set("cursor", cursor);
   params.set("limit", String(clampInt(url.searchParams.get("limit"), 1, 100, 50)));
   const result = await proxyChatAdmin(`/internal/admin/sessions?${params.toString()}`);
   return ok({
@@ -4607,7 +4985,9 @@ async function chatOpsUsage(request: Request) {
   const url = new URL(request.url);
   const params = new URLSearchParams();
   const userId = url.searchParams.get("userId");
+  const cursor = url.searchParams.get("cursor");
   if (userId) params.set("userId", userId);
+  if (cursor) params.set("cursor", cursor);
   params.set("limit", String(clampInt(url.searchParams.get("limit"), 1, 100, 50)));
   const result = await proxyChatAdmin(`/internal/admin/usage?${params.toString()}`);
   return ok({
@@ -4626,11 +5006,13 @@ async function chatOpsModerationEvents(request: Request) {
   const policyCode = url.searchParams.get("policyCode");
   const targetType = url.searchParams.get("targetType");
   const targetId = url.searchParams.get("targetId");
+  const cursor = url.searchParams.get("cursor");
   if (status) params.set("status", status);
   if (layer) params.set("layer", layer);
   if (policyCode) params.set("policyCode", policyCode);
   if (targetType) params.set("targetType", targetType);
   if (targetId) params.set("targetId", targetId);
+  if (cursor) params.set("cursor", cursor);
   params.set("limit", String(clampInt(url.searchParams.get("limit"), 1, 100, 50)));
   const result = await proxyChatAdmin(`/internal/admin/moderation-events?${params.toString()}`);
   return ok({
@@ -5238,6 +5620,49 @@ export function clampInt(value: string | null, min: number, max: number, fallbac
   const parsed = value ? Number.parseInt(value, 10) : fallback;
   if (!Number.isFinite(parsed)) return fallback;
   return Math.max(min, Math.min(max, parsed));
+}
+
+function adminListCursorKeys(
+  url: URL,
+  scope: string,
+  queryIdentity: unknown,
+  parameter = "cursor",
+) {
+  const raw = url.searchParams.get(parameter);
+  if (!raw) return undefined;
+  return decodeAdminListCursor(raw, scope, queryIdentity);
+}
+
+function adminCursorString(keys: readonly unknown[], index: number, scope: string) {
+  const value = keys[index];
+  if (typeof value !== "string" || !value) throw Errors.badRequest(`${scope} cursor key is invalid`);
+  return value;
+}
+
+function adminCursorNumber(keys: readonly unknown[], index: number, scope: string) {
+  const value = keys[index];
+  if (typeof value !== "number" || !Number.isFinite(value)) throw Errors.badRequest(`${scope} cursor key is invalid`);
+  return value;
+}
+
+function adminCursorDate(keys: readonly unknown[], index: number, scope: string) {
+  const value = new Date(adminCursorString(keys, index, scope));
+  if (Number.isNaN(value.getTime())) throw Errors.badRequest(`${scope} cursor timestamp is invalid`);
+  return value;
+}
+
+function adminListPageInfo<T>(
+  scope: string,
+  queryIdentity: unknown,
+  page: readonly T[],
+  hasNextPage: boolean,
+  keys: (row: T) => readonly (string | number | boolean | null)[],
+) {
+  const last = page.at(-1);
+  return {
+    endCursor: hasNextPage && last ? encodeAdminListCursor(scope, queryIdentity, keys(last)) : null,
+    hasNextPage,
+  };
 }
 
 function stripSensitive(value: unknown): unknown {

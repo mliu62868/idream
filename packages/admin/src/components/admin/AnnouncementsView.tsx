@@ -2,10 +2,11 @@
 
 // SPEC: 公告/banner 后台面板（ADMIN_PHASE4_DESIGN §3）。新建 / 启停 / 删除，写后 refetch。
 // INTENT: 自取数、无 props；样式对齐 TagsView。启停/删除经 inline typed confirmation。
-import { useEffect, useState } from "react";
-import { Loader2, Plus, RefreshCcw, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { ChevronRight, Loader2, Plus, RefreshCcw, Search, Trash2 } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { buildCompatibilityListUrl, readCompatibilityListQuery } from "@/features/compatibility-lists/query";
 
 type Announcement = {
   id: string;
@@ -44,24 +45,51 @@ export function AnnouncementsView() {
   const [error, setError] = useState<string | null>(null);
   const [actionDraft, setActionDraft] = useState<AnnouncementActionDraft | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
+  const [query, setQuery] = useState({ announcementSearch: "", announcementLevel: "", announcementActive: "", announcementCursor: "" });
+  const [pageInfo, setPageInfo] = useState<{ endCursor: string | null; hasNextPage: boolean }>({ endCursor: null, hasNextPage: false });
 
-  async function load() {
+  const load = useCallback(async (params = new URLSearchParams(window.location.search)) => {
     setLoading(true);
     setError(null);
     try {
-      const data = await apiGet<{ items: Announcement[] }>("/api/v1/admin/announcements");
+      const restored = readCompatibilityListQuery(params, ["announcementSearch", "announcementLevel", "announcementActive", "announcementCursor"]);
+      setQuery(restored as typeof query);
+      const apiParams = new URLSearchParams();
+      if (restored.announcementSearch) apiParams.set("search", restored.announcementSearch);
+      if (restored.announcementLevel) apiParams.set("level", restored.announcementLevel);
+      if (restored.announcementActive) apiParams.set("active", restored.announcementActive);
+      if (restored.announcementCursor) apiParams.set("cursor", restored.announcementCursor);
+      apiParams.set("limit", "25");
+      const data = await apiGet<{ items: Announcement[]; pageInfo: { endCursor: string | null; hasNextPage: boolean } }>(`/api/v1/admin/announcements?${apiParams.toString()}`);
       setItems(data.items);
+      setPageInfo(data.pageInfo);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Load failed");
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0);
-    return () => window.clearTimeout(timer);
-  }, []);
+    const onPopState = () => void load(new URLSearchParams(window.location.search));
+    window.addEventListener("popstate", onPopState);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("popstate", onPopState);
+    };
+  }, [load]);
+
+  function navigate(updates: Record<string, string | null>, clearCursor = false) {
+    const next = buildCompatibilityListUrl(
+      window.location.pathname,
+      window.location.search,
+      updates,
+      clearCursor ? ["announcementCursor"] : [],
+    );
+    window.history.pushState(null, "", next);
+    void load(new URLSearchParams(window.location.search));
+  }
 
   function startAction(kind: AnnouncementActionDraft["kind"], item: Announcement) {
     setError(null);
@@ -95,6 +123,19 @@ export function AnnouncementsView() {
 
   return (
     <div className="space-y-5">
+      <form className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-4" onSubmit={(event) => {
+        event.preventDefault();
+        navigate({ announcementSearch: query.announcementSearch, announcementLevel: query.announcementLevel, announcementActive: query.announcementActive }, true);
+      }}>
+        <input aria-label={t("Search announcements")} className={inputClass} onChange={(event) => setQuery({ ...query, announcementSearch: event.target.value })} placeholder={t("Search")} type="search" value={query.announcementSearch} />
+        <select className={inputClass} onChange={(event) => setQuery({ ...query, announcementLevel: event.target.value })} value={query.announcementLevel}>
+          <option value="">{t("All levels")}</option><option value="info">info</option><option value="promo">promo</option><option value="warning">warning</option>
+        </select>
+        <select className={inputClass} onChange={(event) => setQuery({ ...query, announcementActive: event.target.value })} value={query.announcementActive}>
+          <option value="">{t("All states")}</option><option value="true">{t("Active")}</option><option value="false">{t("Inactive")}</option>
+        </select>
+        <button className="inline-flex h-10 items-center justify-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white" type="submit"><Search className="h-4 w-4" />{t("Apply")}</button>
+      </form>
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold">{t("Announcements")} ({items.length})</h2>
         <button
@@ -200,13 +241,16 @@ export function AnnouncementsView() {
             {items.length === 0 && !loading ? (
               <tr>
                 <td className="px-3 py-6 text-center text-xs text-[var(--ad-text-muted)]" colSpan={4}>
-                  {t("No announcements.")}
+                  {t(query.announcementSearch || query.announcementLevel || query.announcementActive ? "No announcements match these filters." : "No announcements.")}
                 </td>
               </tr>
             ) : null}
           </tbody>
         </table>
       </section>
+      {pageInfo.hasNextPage && pageInfo.endCursor ? (
+        <button className="inline-flex h-11 items-center gap-2 rounded-md border border-[var(--ad-border)] px-4 text-sm" onClick={() => navigate({ announcementCursor: pageInfo.endCursor })} type="button">{t("Next page")}<ChevronRight className="h-4 w-4" /></button>
+      ) : null}
     </div>
   );
 }
