@@ -2,6 +2,7 @@ import type { AdminPermissionKey, TodaySourceType } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
+import { assertIncidentReadable } from "@/server/modules/admin-v2/incidents/scope";
 
 type Actor = { id: string; role: string };
 
@@ -59,9 +60,9 @@ async function assertReadableSource(
   }
   if (sourceType === "ops_incident") {
     if (!permissions.has("ops.incident.read")) throw Errors.forbidden("Incident is outside the actor's read scope");
-    const row = await prisma.opsIncident.findUnique({ where: { id: sourceId }, select: { ownerId: true } });
+    const row = await prisma.opsIncident.findUnique({ where: { id: sourceId }, select: { id: true } });
     if (!row) throw Errors.notFound("Incident not found");
-    if (actor.role === "support" && row.ownerId !== actor.id) {
+    if (!await assertIncidentReadable(prisma, actor, sourceId)) {
       throw Errors.forbidden("Incident is outside the actor's permission scope");
     }
     return;

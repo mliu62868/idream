@@ -4,6 +4,7 @@ import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import { actorWithPermission } from "@/server/modules/admin/service";
+import { assertIncidentReadable, incidentReadScopeWhere } from "./scope";
 
 function record(value: Prisma.JsonValue | null) {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -61,11 +62,11 @@ export async function listIncidents(request: Request) {
   const actor = await actorWithPermission(request, "ops.incident.read");
     const url = new URL(request.url);
     const query = incidentQuerySchema.parse(Object.fromEntries(url.searchParams));
-    const where: Prisma.OpsIncidentWhereInput = {
+    const scope = await incidentReadScopeWhere(prisma, actor);
+    const where: Prisma.OpsIncidentWhereInput = { AND: [scope, {
       status: query.status,
       severity: query.severity,
       ownerId: query.ownerId,
-      ...(actor.role === "support" ? { ownerId: actor.id } : {}),
       ...(query.cursor ? { id: { gt: query.cursor } } : {}),
       ...(query.search
         ? {
@@ -75,7 +76,7 @@ export async function listIncidents(request: Request) {
             ],
           }
         : {}),
-    };
+    }] };
     const rows = await prisma.opsIncident.findMany({
       where,
       orderBy: { id: "asc" },
@@ -95,7 +96,7 @@ export async function getIncidentDetail(request: Request, incidentId: string) {
   const actor = await actorWithPermission(request, "ops.incident.read");
   const incident = await prisma.opsIncident.findUnique({ where: { id: incidentId } });
   if (!incident) throw Errors.notFound("Incident not found");
-  if (actor.role === "support" && incident.ownerId !== actor.id) {
+  if (!await assertIncidentReadable(prisma, actor, incident.id)) {
     throw Errors.forbidden("Incident is outside the actor's assigned scope");
   }
   const [occurrences, actionPlans, activity, postmortem] = await Promise.all([

@@ -3,6 +3,7 @@ import { prisma } from "@/server/lib/db";
 import { ok } from "@/server/lib/http";
 import { actorWithPermission } from "@/server/modules/admin/service";
 import { effectiveCharacterIdsForPermission, effectivePermissions } from "@/server/admin/effective-permissions";
+import { incidentReadScopeWhere } from "@/server/modules/admin-v2/incidents/scope";
 
 const querySchema = z.object({
   q: z.string().trim().min(2).max(160),
@@ -17,6 +18,9 @@ export async function globalAdminSearch(request: Request) {
     ? await effectiveCharacterIdsForPermission(actor.id, actor.role, "character.project.read")
     : new Set<string>();
   const contains = { contains: query.q, mode: "insensitive" as const };
+  const incidentScope = permissions.has("ops.incident.read")
+    ? await incidentReadScopeWhere(prisma, actor)
+    : null;
   const [customers, characters, runs, cases, incidents, jobs] = await Promise.all([
     permissions.has("customer.read")
       ? prisma.user.findMany({ where: { role: "user", OR: [{ id: contains }, { email: contains }, { displayName: contains }, { name: contains }] }, orderBy: [{ updatedAt: "desc" }, { id: "desc" }], take: query.limit })
@@ -30,8 +34,8 @@ export async function globalAdminSearch(request: Request) {
     permissions.has("case.read")
       ? prisma.adminCase.findMany({ where: { ...(actor.role === "support" ? { type: { in: ["support_request", "billing_dispute"] } } : {}), OR: [{ id: contains }, { targetId: contains }, { caseKey: contains }] }, orderBy: [{ updatedAt: "desc" }, { id: "desc" }], take: query.limit })
       : [],
-    permissions.has("ops.incident.read")
-      ? prisma.opsIncident.findMany({ where: { ...(actor.role === "support" ? { ownerId: actor.id } : {}), OR: [{ id: contains }, { signature: contains }, { suspectedCause: contains }] }, orderBy: [{ updatedAt: "desc" }, { id: "desc" }], take: query.limit })
+    incidentScope
+      ? prisma.opsIncident.findMany({ where: { AND: [incidentScope, { OR: [{ id: contains }, { signature: contains }, { suspectedCause: contains }] }] }, orderBy: [{ updatedAt: "desc" }, { id: "desc" }], take: query.limit })
       : [],
     permissions.has("generation.job.read")
       ? prisma.generationJob.findMany({ where: { OR: [{ id: contains }, { userId: contains }, { errorCode: contains }, { profileId: contains }] }, orderBy: [{ updatedAt: "desc" }, { id: "desc" }], take: query.limit })

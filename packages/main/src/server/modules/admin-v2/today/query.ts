@@ -20,6 +20,7 @@ import { env } from "@/server/lib/env";
 import { AppError } from "@/server/lib/errors";
 import { fail, ok } from "@/server/lib/http";
 import { actorWithPermission } from "@/server/modules/admin/service";
+import { incidentReadScopeWhere } from "@/server/modules/admin-v2/incidents/scope";
 
 const QUEUE_LIMIT = 10;
 const RANKING_POLICY_VERSION = "today-ranking-v1";
@@ -319,12 +320,12 @@ function scopedCaseWhere(
   return actor.role === "support" ? { type: { in: ["support_request", "billing_dispute"] } } : {};
 }
 
-function scopedIncidentWhere(
+async function scopedIncidentWhere(
   actor: { id: string; role: string },
   permissions: ReadonlySet<AdminPermissionKey>,
-): Prisma.OpsIncidentWhereInput | null {
+): Promise<Prisma.OpsIncidentWhereInput | null> {
   if (!permissions.has("ops.incident.read")) return null;
-  return actor.role === "support" ? { ownerId: actor.id } : {};
+  return incidentReadScopeWhere(prisma, actor);
 }
 
 function readableCommandWhere(permissions: ReadonlySet<AdminPermissionKey>): Prisma.ControlPlaneCommandWhereInput | null {
@@ -508,7 +509,7 @@ export async function buildTodayProjection(input: {
   endOfToday.setUTCHours(23, 59, 59, 999);
   const recentCutoff = new Date(now.getTime() - 24 * 60 * 60 * 1_000);
   const caseScope = scopedCaseWhere(input.actor, input.permissions);
-  const incidentScope = scopedIncidentWhere(input.actor, input.permissions);
+  const incidentScope = await scopedIncidentWhere(input.actor, input.permissions);
   const releaseReadable = input.permissions.has("character.release.read");
   const creativeReadable = input.permissions.has("creative.run.read");
   const projects = releaseReadable
