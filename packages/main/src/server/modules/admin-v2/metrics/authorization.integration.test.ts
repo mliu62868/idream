@@ -7,11 +7,13 @@ describe("Metric v2 authorization", () => {
   const suffix = randomUUID();
   const growthOperatorId = `metric-growth-operator-${suffix}`;
   const deniedOperatorId = `metric-denied-operator-${suffix}`;
+  const technicalOperatorId = `metric-technical-operator-${suffix}`;
 
   beforeAll(async () => {
     await prisma.user.createMany({ data: [
       { id: growthOperatorId, email: `${growthOperatorId}@example.test`, role: "support" },
       { id: deniedOperatorId, email: `${deniedOperatorId}@example.test`, role: "support" },
+      { id: technicalOperatorId, email: `${technicalOperatorId}@example.test`, role: "ops" },
     ] });
     await prisma.adminUserGrantBundle.create({ data: {
       userId: growthOperatorId,
@@ -23,7 +25,7 @@ describe("Metric v2 authorization", () => {
 
   afterAll(async () => {
     await prisma.adminUserGrantBundle.deleteMany({ where: { userId: growthOperatorId } });
-    await prisma.user.deleteMany({ where: { id: { in: [growthOperatorId, deniedOperatorId] } } });
+    await prisma.user.deleteMany({ where: { id: { in: [growthOperatorId, deniedOperatorId, technicalOperatorId] } } });
     await prisma.$disconnect();
   });
 
@@ -37,7 +39,25 @@ describe("Metric v2 authorization", () => {
   }
 
   it("accepts the v2 growth_operator grant and rejects an operator without metric read", async () => {
-    await expect(getMetrics(request(growthOperatorId))).resolves.toMatchObject({ status: 200 });
+    const response = await getMetrics(request(growthOperatorId));
+    expect(response.status).toBe(200);
+    const envelope = await response.json() as { data: { definitions: unknown[]; cards: unknown[] } };
+    expect(envelope.data.definitions.length).toBeGreaterThan(0);
+    expect(envelope.data.cards.length).toBeGreaterThan(0);
     await expect(getMetrics(request(deniedOperatorId))).resolves.toMatchObject({ status: 403 });
+  });
+
+  it("limits the base ops role to technical quality evidence", async () => {
+    const response = await getMetrics(new Request("http://localhost/api/v2/admin/metrics", {
+      headers: {
+        "x-idream-user-id": technicalOperatorId,
+        "x-idream-role": "ops",
+      },
+    }));
+    expect(response.status).toBe(200);
+    const envelope = await response.json() as { data: { definitions: unknown[]; cards: unknown[]; quality: unknown } };
+    expect(envelope.data.definitions).toEqual([]);
+    expect(envelope.data.cards).toEqual([]);
+    expect(envelope.data.quality).toBeTruthy();
   });
 });

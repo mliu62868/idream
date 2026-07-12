@@ -11,6 +11,7 @@ import { prisma } from "@/server/lib/db";
 import { AppError, Errors } from "@/server/lib/errors";
 import { fail, ok } from "@/server/lib/http";
 import { actorWithPermission } from "@/server/modules/admin/service";
+import { effectivePermissionScope } from "@/server/admin/effective-permissions";
 import { canonicalSha256 } from "../shared/canonical-json";
 import { toInputJson } from "../shared/prisma-json";
 import { evaluateMetricCertification, REQUIRED_METRIC_QUALITY_CHECKS } from "./certification";
@@ -438,9 +439,12 @@ export async function materializeMetricSnapshots(db: PrismaClient, asOf = new Da
 
 export async function getMetricDashboard(request: Request) {
   try {
-    await actorWithPermission(request, "analytics.metric.read");
+    const actor = await actorWithPermission(request, "analytics.metric.read");
     const data = await buildMetricDashboardData(prisma, parseAsOf(request));
-    return ok(data, { headers: { "Cache-Control": "no-store" } });
+    const scope = await effectivePermissionScope(actor.id, actor.role, "analytics.metric.read");
+    return ok(scope === "technical_metrics"
+      ? { ...data, definitions: [], cards: [] }
+      : data, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     if (error instanceof AppError) return fail(error);
     throw error;

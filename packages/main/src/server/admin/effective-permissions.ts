@@ -2,7 +2,11 @@ import type { ActorRole } from "@/server/lib/auth";
 import { prisma } from "@/server/lib/db";
 import { applyOverrides, resolvePermissions, type PermissionKey } from "./permissions";
 import { expandGrantBundles, type AdminGrantBundleKey } from "./permissions";
-import { ADMIN_GRANT_BUNDLES } from "@idream/shared";
+import {
+  ADMIN_GRANT_BUNDLES,
+  ADMIN_ROLE_PERMISSION_SCOPES,
+  type AdminPermissionScope,
+} from "@idream/shared";
 
 function isGrantBundleKey(value: string): value is AdminGrantBundleKey {
   return Object.hasOwn(ADMIN_GRANT_BUNDLES, value);
@@ -40,6 +44,34 @@ export async function userHasPermission(
   key: PermissionKey,
 ): Promise<boolean> {
   return (await effectivePermissions(userId, role)).has(key);
+}
+
+export async function effectivePermissionScope(
+  userId: string,
+  role: ActorRole | undefined,
+  key: PermissionKey,
+): Promise<AdminPermissionScope | null> {
+  const [overrides, bundleRows] = await Promise.all([
+    prisma.adminUserPermission.findMany({ where: { userId, permissionKey: key } }),
+    prisma.adminUserGrantBundle.findMany({
+      where: {
+        userId,
+        revokedAt: null,
+        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+      },
+      select: { bundleKey: true },
+    }),
+  ]);
+  if (overrides.some((row) => row.effect === "grant")) return null;
+  for (const row of bundleRows) {
+    if (!isGrantBundleKey(row.bundleKey)) continue;
+    const bundle = ADMIN_GRANT_BUNDLES[row.bundleKey];
+    if (!new Set<string>(bundle.permissions).has(key)) continue;
+    return Object.hasOwn(bundle.scopes, key)
+      ? bundle.scopes[key as keyof typeof bundle.scopes] as AdminPermissionScope
+      : null;
+  }
+  return role ? ADMIN_ROLE_PERMISSION_SCOPES[role]?.[key] ?? null : null;
 }
 
 export async function effectiveCharacterIdsForPermission(
