@@ -346,6 +346,7 @@ function ReleasePanel({ data, permissions, reload }: { data: CharacterWorkspaceD
   const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const validationIdempotencyKey = useRef<string | null>(null);
 
   const command = async (kind: "publish" | "schedule" | "rollback", releaseId: string, version: number) => {
     const expectedConfirmation = `${data.character.id}:${releaseId}:${kind}`;
@@ -430,13 +431,16 @@ function ReleasePanel({ data, permissions, reload }: { data: CharacterWorkspaceD
     setBusy("validate");
     setError(null);
     try {
+      validationIdempotencyKey.current ??= crypto.randomUUID();
       await adminV2Request(`/api/v2/admin/characters/${data.character.id}/releases/${candidate.release.id}/validation`, {
         method: "POST",
+        idempotencyKey: validationIdempotencyKey.current,
         body: {
           entityVersion: candidate.release.version,
           confirmation: confirmation.trim(),
         },
       });
+      validationIdempotencyKey.current = null;
       setConfirmation("");
       await reload();
     } catch (cause) {
@@ -549,7 +553,7 @@ function MonitorPanel({ data, permissions, reload }: { data: CharacterWorkspaceD
   const [error, setError] = useState<string | null>(null);
   const refresh = async (window: "24h" | "72h") => {
     if (!current) return; setBusy(true); setError(null);
-    try { await adminV2Request(`/api/v2/admin/characters/${data.character.id}/releases/${current.release.id}/monitors/${window}/refresh`, { method: "POST", body: { entityVersion: current.release.version } }); await reload(); }
+    try { await adminV2Request(`/api/v2/admin/characters/${data.character.id}/releases/${current.release.id}/monitors/${window}/refresh`, { method: "POST", idempotencyKey: `character-release-monitor:${current.release.id}:${window}:${current.release.version}`, body: { entityVersion: current.release.version } }); await reload(); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Monitor refresh failed"); }
     finally { setBusy(false); }
   };
