@@ -102,19 +102,43 @@ describe("canonical metric engine", () => {
         { subscriptionId: "paid-companion", userId: "companion", activeAt: windowStart, endedAt: null, eligible: true },
         { subscriptionId: "paid-creator", userId: "creator", activeAt: windowStart, endedAt: null, eligible: true },
       ],
-    }), new Date("2026-07-20T00:00:00Z"));
+    }), new Date("2026-07-19T23:59:59Z"));
 
-    expect(result.metrics["north_star.wpcu"]).toMatchObject({ numerator: 2, publicationStatus: "official" });
+    expect(result.metrics["north_star.wpcu"]).toMatchObject({
+      numerator: 2,
+      publicationStatus: "official",
+      definitionVersion: 2,
+      window: "current_utc_calendar_week",
+    });
     expect(result.metrics["north_star.wscu"]).toMatchObject({ numerator: 1, publicationStatus: "shadow" });
     expect(result.metrics["diagnostic.wsr"]).toMatchObject({ numerator: 1, publicationStatus: "diagnostic" });
     expect(result.metrics["guardrail.wscru"]).toMatchObject({ numerator: 1, publicationStatus: "shadow" });
     expect(result.metrics["business.wpscu"]).toMatchObject({ numerator: 1, publicationStatus: "shadow" });
     expect(result.metrics["north_star.wscu"].window).toBe("rolling_7d_utc");
     expect(result.metrics["north_star.wscu"].definitionVersion).toBe(1);
-    expect(result.metrics["north_star.wscu"].asOf.toISOString()).toBe("2026-07-20T00:00:00.000Z");
+    expect(result.metrics["north_star.wscu"].asOf.toISOString()).toBe("2026-07-19T23:59:59.000Z");
     expect(result.metrics["north_star.wscu"].sampleSize).toBeGreaterThan(0);
     expect(result.metrics["north_star.wscu"].qualityState).toBe("directional");
     expect(result.metrics["north_star.wscu"].value).toBe(1);
+  });
+
+  it("uses the UTC Monday calendar-week boundary for the official WPCU", () => {
+    const result = evaluateCanonicalMetrics(dataset({
+      chatExchanges: [
+        ...exchanges({ userId: "previous-week", characterId: "c1", sessionId: "old", at: "2026-07-12T23:59:00Z", count: 1 }),
+        ...exchanges({ userId: "current-week", characterId: "c1", sessionId: "new", at: "2026-07-13T00:01:00Z", count: 1 }),
+      ],
+      subscriptions: [
+        { subscriptionId: "paid-old", userId: "previous-week", activeAt: new Date("2026-07-01T00:00:00Z"), endedAt: null, eligible: true },
+        { subscriptionId: "paid-new", userId: "current-week", activeAt: new Date("2026-07-01T00:00:00Z"), endedAt: null, eligible: true },
+      ],
+    }), new Date("2026-07-15T12:00:00Z"));
+
+    expect(result.metrics["north_star.wpcu"]).toMatchObject({
+      numerator: 1,
+      sampleSize: 1,
+      window: "current_utc_calendar_week",
+    });
   });
 
   it("does not count a subscription outside the user's signup cohort as D7 or D30 conversion", () => {

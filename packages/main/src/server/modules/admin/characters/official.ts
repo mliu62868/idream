@@ -11,10 +11,9 @@
 //   - 文本（name/description/advancedDetails）变更必重新 moderate 并重算 systemPrompt。
 // EXAMPLE: POST /api/v1/admin/content/official { name, age:24, gender, style, description, reason }
 //          → ok({ character }) with source="official", status="draft".
-import type { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
+import type { Prisma } from "@prisma/client";
 import { z } from "zod";
-import { buildCharacterSystemPrompt } from "@idream/shared";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
@@ -23,16 +22,15 @@ import {
   actorWithPermission,
   clampInt,
   jsonBody,
-  toInputJson,
-  writeAudit,
 } from "@/server/modules/admin/service";
-import {
-  characterVisualProfileCreateData,
-  createActiveCharacterVisualProfileVersion,
-  moderateText,
-} from "@/server/modules/ourdream/service";
+import { moderateText } from "@/server/modules/ourdream/service";
 import { acceptControlPlaneCommand } from "@/server/modules/admin-v2/shared/control-plane-command";
 import { executeCharacterReleaseCommand } from "@/server/modules/admin-v2/characters/release-executor";
+import { createCharacterProject } from "@/server/modules/admin-v2/characters/creation";
+import {
+  getCharacterProjectDraftForResume,
+  updateCharacterProjectDraft,
+} from "@/server/modules/admin-v2/characters/workspace";
 
 const OFFICIAL_PERMISSION = "content.official.write" as const;
 
@@ -70,39 +68,6 @@ const stateSchema = z.object({
   reason: z.string().min(3),
 });
 
-// SPEC: 小写、空格→`-`、去掉非 [a-z0-9-]，并裁掉首尾连字符。
-function slugify(value: string): string {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "-")
-    .replace(/[^a-z0-9-]/g, "")
-    .replace(/^-+|-+$/g, "");
-}
-
-// 整体替换该角色的 CharacterTag：先清空，再按 slug upsert Tag 并连接。
-async function syncTags(
-  tx: Prisma.TransactionClient,
-  characterId: string,
-  tags: string[],
-) {
-  await tx.characterTag.deleteMany({ where: { characterId } });
-  const seen = new Set<string>();
-  for (const raw of tags) {
-    const label = raw.trim();
-    if (!label) continue;
-    const slug = slugify(label);
-    if (!slug || seen.has(slug)) continue;
-    seen.add(slug);
-    const tag = await tx.tag.upsert({
-      where: { slug },
-      create: { slug, label },
-      update: {},
-    });
-    await tx.characterTag.create({ data: { characterId, tagId: tag.id } });
-  }
-}
-
 const officialInclude = {
   stats: true,
   tags: { include: { tag: true } },
@@ -117,6 +82,27 @@ function tagLabels(character: {
   tags: { tag: { label: string } }[];
 }): string[] {
   return character.tags.map((link) => link.tag.label);
+}
+
+function jsonRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function text(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function stringList(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]) {
+  const normalized = (values: readonly string[]) => [...new Set(values.map((value) => value.trim().toLowerCase()).filter(Boolean))].sort();
+  return JSON.stringify(normalized(left)) === JSON.stringify(normalized(right));
 }
 
 export async function listOfficialCharacters(
@@ -221,70 +207,61 @@ export async function createOfficialCharacter(
     throw Errors.forbidden("Character failed safety checks", moderation);
   }
 
-  const systemPrompt = buildCharacterSystemPrompt({
-    name: body.name,
-    age: body.age,
-    description: body.description,
-    style: body.style,
-    gender: body.gender,
-    tags: body.tags,
-    appearance: body.appearance,
-    advancedDetails: body.advancedDetails,
-  });
-
-  const character = await prisma.$transaction(async (tx) => {
-    const created = await tx.character.create({
-      data: {
-        creatorId: actor.id,
-        name: body.name,
-        age: body.age,
-        description: body.description,
-        systemPrompt,
-        source: "official",
-        status: "draft",
-        visibility: "private",
-        style: body.style,
-        gender: body.gender,
-        appearance: toInputJson(body.appearance),
-        advancedDetails: toInputJson(body.advancedDetails),
+  const idempotencyKey = request.headers.get("idempotency-key")?.trim();
+  if (!idempotencyKey) throw Errors.badRequest("Idempotency-Key is required for Character Project creation");
+  const advanced = jsonRecord(body.advancedDetails);
+  const appearance = jsonRecord(body.appearance);
+  const created = await createCharacterProject({
+    actor,
+    idempotencyKey,
+    requestId: request.headers.get("x-request-id") ?? randomUUID(),
+    legacyTagLabels: body.tags,
+    request: {
+      positioning: {
+        audience: "Unspecified legacy draft audience; complete in Character Studio",
+        companionNeed: "Unspecified legacy draft companion need; complete in Character Studio",
+        hypothesis: "Legacy draft requires an explicit value hypothesis before release",
+        differentiation: "Legacy draft requires explicit differentiation before release",
       },
-    });
-    await tx.characterVisualProfile.create({
-      data: characterVisualProfileCreateData({
-        characterId: created.id,
-        version: 1,
-        status: "active",
-        style: body.style,
+      persona: {
         name: body.name,
         age: body.age,
-        description: body.description,
         gender: body.gender,
-        appearance: body.appearance as Prisma.JsonValue,
-        advancedDetails: body.advancedDetails as Prisma.JsonValue,
-        anchorAssetIds: [],
-        createdFrom: "admin_official_create",
-      }),
-    });
-    await tx.characterStats.create({ data: { characterId: created.id } });
-    await syncTags(tx, created.id, body.tags);
-    return tx.character.findUniqueOrThrow({
-      where: { id: created.id },
-      include: officialInclude,
-    });
-  });
-
-  await writeAudit(request, actor, {
-    action: "content.official.create",
-    targetType: "character",
-    targetId: character.id,
-    reason: body.reason,
-    after: {
-      name: character.name,
-      status: character.status,
-      source: character.source,
+        relationshipArchetype: text(advanced.relationshipArchetype) || text(advanced.relationship) || "Unspecified relationship archetype",
+        characterPromise: body.description,
+        personality: text(advanced.personality) || "Unspecified personality; complete before release",
+        tone: text(advanced.tone) || "Unspecified tone; complete before release",
+        backstory: text(advanced.backstory) || "Unspecified backstory; complete before release",
+        firstMessage: text(advanced.firstMessage) || "Draft opening message; complete before release.",
+        exampleDialogue: stringList(advanced.exampleDialogue).length > 0
+          ? stringList(advanced.exampleDialogue)
+          : ["Draft example dialogue; complete before release."],
+      },
+      visualDirection: {
+        identityAnchor: text(appearance.identityAnchor) || `${body.name} canonical identity anchor requires production evidence`,
+        stableTraits: stringList(appearance.stableTraits).length > 0
+          ? stringList(appearance.stableTraits)
+          : ["Unspecified stable trait; complete before release"],
+        style: body.style,
+        referenceDirection: text(appearance.referenceDirection) || "Unspecified reference direction; complete before release",
+      },
+      commercialIntent: {
+        ownerId: actor.id,
+        plannedLaunchAt: null,
+        targetPlacementKeys: [],
+        successCriteria: ["Complete explicit Character Project success criteria before release"],
+        productionPackage: "Legacy draft requires an explicit production package before release",
+        qaPlan: "Legacy draft requires persona, visual, mobile, desktop, and conversation QA before release",
+      },
+      reason: { code: "legacy_official_create_adapter", summary: body.reason },
+      confirmation: "CREATE CHARACTER",
     },
   });
-  return ok({ character });
+  const character = await prisma.character.findUniqueOrThrow({
+    where: { id: created.characterId },
+    include: officialInclude,
+  });
+  return ok({ character, ...created });
 }
 
 export async function updateOfficialCharacter(
@@ -292,6 +269,7 @@ export async function updateOfficialCharacter(
   id: string,
 ): Promise<Response> {
   const actor = await actorWithPermission(request, OFFICIAL_PERMISSION);
+  await actorWithPermission(request, "character.project.write", { characterId: id });
   const body = updateSchema.parse(await jsonBody(request));
 
   const existing = await prisma.character.findUnique({
@@ -302,112 +280,66 @@ export async function updateOfficialCharacter(
     throw Errors.notFound("Official character not found");
   }
 
-  // 合并补丁与现值，便于重算 moderation/systemPrompt。
-  const next = {
-    name: body.name ?? existing.name,
-    age: body.age ?? existing.age,
-    description: body.description ?? existing.description,
-    style: body.style ?? existing.style,
-    gender: body.gender ?? existing.gender,
-    appearance: body.appearance ?? existing.appearance,
-    advancedDetails: body.advancedDetails ?? existing.advancedDetails,
-    tags: body.tags ?? tagLabels(existing),
-  };
-
-  const textChanged =
-    body.name !== undefined ||
-    body.description !== undefined ||
-    body.advancedDetails !== undefined;
-  const visualIdentityChanged =
-    body.name !== undefined ||
-    body.age !== undefined ||
-    body.gender !== undefined ||
-    body.style !== undefined ||
-    body.description !== undefined ||
-    body.appearance !== undefined ||
-    body.advancedDetails !== undefined;
-
-  const data: Prisma.CharacterUpdateInput = {
-    name: next.name,
-    age: next.age,
-    description: next.description,
-    style: next.style,
-    gender: next.gender,
-    appearance: toInputJson(next.appearance),
-    advancedDetails: toInputJson(next.advancedDetails),
-  };
-
-  if (textChanged) {
-    const moderation = await moderateText(
-      "character",
-      id,
-      `${next.name} ${next.description} ${JSON.stringify(next.advancedDetails)}`,
-      "input",
-    );
-    if (moderation.status === "blocked") {
-      throw Errors.forbidden("Character failed safety checks", moderation);
-    }
-    data.systemPrompt = buildCharacterSystemPrompt({
-      name: next.name,
-      age: next.age,
-      description: next.description,
-      style: next.style,
-      gender: next.gender,
-      tags: next.tags,
-      appearance: next.appearance,
-      advancedDetails: next.advancedDetails,
+  if (body.tags && !sameStrings(body.tags, tagLabels(existing))) {
+    throw Errors.conflict("Legacy profile edit cannot mutate live taxonomy; use the Taxonomy workspace", {
+      deepLink: "/admin/characters/taxonomy",
     });
   }
-
-  const character = await prisma.$transaction(async (tx) => {
-    await tx.character.update({ where: { id }, data });
-    if (body.tags !== undefined) {
-      await syncTags(tx, id, body.tags);
-    }
-    if (visualIdentityChanged) {
-      await createActiveCharacterVisualProfileVersion(
-        tx,
-        {
-          id,
-          name: next.name,
-          age: next.age,
-          description: next.description,
-          style: next.style,
-          gender: next.gender,
-          appearance: next.appearance as Prisma.JsonValue,
-          advancedDetails: next.advancedDetails as Prisma.JsonValue,
-          imageAssetId: existing.imageAssetId,
-        },
-        {
-          createdFrom: "admin_official_update",
-        },
-      );
-    }
-    return tx.character.findUniqueOrThrow({
-      where: { id },
-      include: officialInclude,
-    });
-  });
-
-  await writeAudit(request, actor, {
-    action: "content.official.update",
-    targetType: "character",
-    targetId: id,
+  const resumed = await getCharacterProjectDraftForResume(id);
+  const advanced = jsonRecord(body.advancedDetails);
+  const appearance = jsonRecord(body.appearance);
+  const persona = {
+    ...resumed.draft.persona,
+    ...(body.name !== undefined ? { name: body.name } : {}),
+    ...(body.age !== undefined ? { age: body.age } : {}),
+    ...(body.gender !== undefined ? { gender: body.gender } : {}),
+    ...(body.description !== undefined ? { characterPromise: body.description } : {}),
+    ...(text(advanced.relationshipArchetype) ? { relationshipArchetype: text(advanced.relationshipArchetype) } : {}),
+    ...(text(advanced.personality) ? { personality: text(advanced.personality) } : {}),
+    ...(text(advanced.tone) ? { tone: text(advanced.tone) } : {}),
+    ...(text(advanced.backstory) ? { backstory: text(advanced.backstory) } : {}),
+    ...(text(advanced.firstMessage) ? { firstMessage: text(advanced.firstMessage) } : {}),
+    ...(stringList(advanced.exampleDialogue).length > 0 ? { exampleDialogue: stringList(advanced.exampleDialogue) } : {}),
+  };
+  const visualDirection = {
+    ...resumed.draft.visualDirection,
+    ...(body.style !== undefined ? { style: body.style } : {}),
+    ...(text(appearance.identityAnchor) ? { identityAnchor: text(appearance.identityAnchor) } : {}),
+    ...(stringList(appearance.stableTraits).length > 0 ? { stableTraits: stringList(appearance.stableTraits) } : {}),
+    ...(text(appearance.referenceDirection) ? { referenceDirection: text(appearance.referenceDirection) } : {}),
+  };
+  const moderation = await moderateText(
+    "character",
+    id,
+    `${persona.name} ${persona.characterPromise} ${JSON.stringify(persona)}`,
+    "input",
+  );
+  if (moderation.status === "blocked") {
+    throw Errors.forbidden("Character failed safety checks", moderation);
+  }
+  const project = await updateCharacterProjectDraft({
+    characterId: id,
+    expectedVersion: resumed.authority.projectVersion,
+    actor,
+    ownerId: resumed.draft.commercialIntent.ownerId,
+    audience: resumed.draft.positioning.audience,
+    companionNeed: resumed.draft.positioning.companionNeed,
+    hypothesis: resumed.draft.positioning.hypothesis,
+    differentiation: resumed.draft.positioning.differentiation,
+    targetPlacementKeys: resumed.draft.commercialIntent.targetPlacementKeys,
+    successCriteria: resumed.draft.commercialIntent.successCriteria,
+    productionPackage: resumed.draft.commercialIntent.productionPackage,
+    qaPlan: resumed.draft.commercialIntent.qaPlan,
+    plannedLaunchAt: resumed.draft.commercialIntent.plannedLaunchAt,
+    content: { persona, visualDirection },
     reason: body.reason,
-    before: {
-      name: existing.name,
-      description: existing.description,
-      status: existing.status,
-      tags: tagLabels(existing),
-    },
-    after: {
-      name: character.name,
-      description: character.description,
-      status: character.status,
-      tags: tagLabels(character),
-    },
+    requestId: request.headers.get("x-request-id") ?? randomUUID(),
   });
-  return ok({ character });
+  const character = await prisma.character.findUniqueOrThrow({
+    where: { id },
+    include: officialInclude,
+  });
+  return ok({ character, project, deepLink: resumed.authority.deepLink });
 }
 
 export async function setOfficialState(

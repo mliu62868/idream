@@ -177,6 +177,23 @@ export async function recordGenerationAttemptEvent(
         completionManifestRef: input.completionManifestRef,
       },
     });
+    if (input.outcome === "failed" || input.outcome === "unknown") {
+      await tx.mainOutboxEvent.upsert({
+        where: { id: `generation_incident_correlation_${input.attemptId}` },
+        create: {
+          id: `generation_incident_correlation_${input.attemptId}`,
+          eventType: "generation.incident.correlate.v2",
+          aggregateType: "generation_attempt",
+          aggregateId: input.attemptId,
+          payload: toInputJson({
+            attemptId: input.attemptId,
+            terminalEventId: input.eventId,
+            outcome: input.outcome,
+          }),
+        },
+        update: {},
+      });
+    }
   } else if (input.status) {
     await tx.generationAttempt.update({
       where: { id: input.attemptId },

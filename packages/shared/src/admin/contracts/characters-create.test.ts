@@ -81,9 +81,8 @@ describe("Character Project create contract", () => {
   });
 
   it("accepts immutable content autosave through the versioned Project PATCH contract", () => {
-    const result = characterProjectDraftPatchRequestSchema.safeParse({
+    const validPatch = {
       entityVersion: 1,
-      phase: "idea",
       ownerId: "operator-1",
       audience: validCreate.positioning.audience,
       companionNeed: validCreate.positioning.companionNeed,
@@ -99,7 +98,12 @@ describe("Character Project create contract", () => {
         visualDirection: validCreate.visualDirection,
       },
       reason: "Autosave Character creation wizard",
-    });
+    };
+    const result = characterProjectDraftPatchRequestSchema.safeParse(validPatch);
     expect(result.success).toBe(true);
+    expect(characterProjectDraftPatchRequestSchema.safeParse({
+      ...validPatch,
+      phase: "launch_ready",
+    }).success).toBe(false);
   });
 });

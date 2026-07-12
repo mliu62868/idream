@@ -32,7 +32,7 @@ type Permissions = {
 };
 
 type ProjectDraft = Pick<CharacterWorkspaceDetail["project"],
-  "phase" | "ownerId" | "audience" | "companionNeed" | "hypothesis" | "differentiation" |
+  "ownerId" | "audience" | "companionNeed" | "hypothesis" | "differentiation" |
   "targetPlacementKeys" | "successCriteria" | "productionPackage" | "qaPlan" | "plannedLaunchAt">;
 
 const tabs = ["project", "preview", "release", "monitor", "portfolio"] as const;
@@ -134,7 +134,6 @@ function CharacterPortfolio({ permissions }: { permissions: Permissions }) {
 
 function ProjectEditor({ data, permissions, onReload }: { data: CharacterWorkspaceDetail; permissions: Permissions; onReload: () => Promise<void> }) {
   const initial = useMemo<ProjectDraft>(() => ({
-    phase: data.project.phase,
     ownerId: data.project.ownerId,
     audience: data.project.audience,
     companionNeed: data.project.companionNeed,
@@ -185,7 +184,6 @@ function ProjectEditor({ data, permissions, onReload }: { data: CharacterWorkspa
     <div className="grid gap-5 xl:grid-cols-[1fr_320px]">
       <fieldset className="grid gap-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 sm:grid-cols-2" disabled={disabled}>
         <legend className="px-2 text-sm font-semibold">Strategy and release intent</legend>
-        <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Phase<select className={`${fieldClass} mt-1`} onChange={(event) => set("phase", event.target.value as ProjectDraft["phase"])} value={draft.phase}>{["idea", "planned", "producing", "qa", "launch_ready", "live_management"].map((phase) => <option key={phase}>{phase}</option>)}</select></label>
         <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Owner ID<input className={`${fieldClass} mt-1`} onChange={(event) => set("ownerId", event.target.value || null)} value={draft.ownerId ?? ""} /></label>
         <label className="text-xs font-semibold text-[var(--ad-text-muted)] sm:col-span-2">Audience<textarea className={`${textAreaClass} mt-1`} onChange={(event) => set("audience", event.target.value)} value={draft.audience} /></label>
         <label className="text-xs font-semibold text-[var(--ad-text-muted)] sm:col-span-2">Companion need<textarea className={`${textAreaClass} mt-1`} onChange={(event) => set("companionNeed", event.target.value)} value={draft.companionNeed} /></label>

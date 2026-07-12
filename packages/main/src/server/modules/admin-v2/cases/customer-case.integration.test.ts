@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import {
   backfillCustomerCases,
+  recordReviewCaseDecisionAtomic,
   reopenOrRecurCase,
   recordCustomerCaseAction,
   waitCase,
@@ -162,8 +163,22 @@ describe("Support and billing Case depth", () => {
       requestId: `case-action-${suffix}`,
     });
     expect(updated).toMatchObject({ status: "in_progress", verificationState: "pending" });
+    expect(updated.resolution).toMatchObject({
+      summary: "Confirmed the delivery URL is no longer available.",
+      decision: "diagnostic_reviewed",
+      verification: { state: "pending" },
+    });
     expect(updated.version).toBe(supportCase.version + 1);
     expect(await prisma.decisionRecord.count({ where: { sourceType: "admin_case", sourceId: supportCase.id } })).toBe(1);
+    await expect(recordReviewCaseDecisionAtomic({
+      caseId: supportCase.id,
+      actor: { id: actorId, role: "support" },
+      expectedVersion: updated.version,
+      decision: "actioned",
+      summary: "Attempt to bypass typed Support actions.",
+      evidenceRefs: [evidence.id],
+      requestId: `case-generic-decision-${suffix}`,
+    })).rejects.toMatchObject({ code: "bad_request" });
     const waiting = await waitCase({
       caseId: supportCase.id,
       actor: { id: actorId, role: "support" },

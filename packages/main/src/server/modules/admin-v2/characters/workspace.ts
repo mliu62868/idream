@@ -291,7 +291,6 @@ export async function updateCharacterProjectDraft(input: {
   readonly characterId: string;
   readonly expectedVersion: number;
   readonly actor: AdminActor;
-  readonly phase?: string;
   readonly ownerId: string | null;
   readonly audience: string;
   readonly companionNeed: string;
@@ -309,16 +308,12 @@ export async function updateCharacterProjectDraft(input: {
   readonly reason: string;
   readonly requestId: string;
 }) {
-  if (input.phase === "retired") {
-    throw Errors.conflict("Retirement must use the verified Character retirement command");
-  }
   return prisma.$transaction(async (tx) => {
     const project = await tx.characterProject.findFirst({ where: { characterId: input.characterId } });
     if (!project) throw Errors.notFound("Character Project not found");
     const changed = await tx.characterProject.updateMany({
       where: { id: project.id, version: input.expectedVersion },
       data: {
-        ...(input.phase ? { phase: input.phase } : {}),
         ownerId: input.ownerId,
         audience: toInputJson({
           audience: input.audience,

@@ -1,4 +1,10 @@
 import type { Appeal, ContentReport, Prisma, PrismaClient, SupportRequest } from "@prisma/client";
+import {
+  APPEAL_CASE_DECISIONS,
+  BILLING_CASE_ACTIONS,
+  CONTENT_REPORT_CASE_DECISIONS,
+  SUPPORT_CASE_ACTIONS,
+} from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { toInputJson } from "../shared/prisma-json";
@@ -17,17 +23,10 @@ const BILLING_CATEGORIES = new Set([
   "refund",
   "subscription",
 ]);
-const SUPPORT_ACTIONS = new Set([
-  "diagnostic_reviewed",
-  "reply_requested",
-  "incident_escalated",
-  "account_guidance_provided",
-]);
-const BILLING_ACTIONS = new Set([
-  "ledger_reconciled",
-  "refund_requested",
-  "subscription_corrected",
-]);
+const SUPPORT_ACTION_SET = new Set<string>(SUPPORT_CASE_ACTIONS);
+const BILLING_ACTION_SET = new Set<string>(BILLING_CASE_ACTIONS);
+const CONTENT_REPORT_DECISION_SET = new Set<string>(CONTENT_REPORT_CASE_DECISIONS);
+const APPEAL_DECISION_SET = new Set<string>(APPEAL_CASE_DECISIONS);
 
 function reportCaseKey(report: Pick<ContentReport, "category">) {
   return `review:${report.category.trim().toLowerCase()}`;
@@ -834,6 +833,24 @@ export async function recordReviewCaseDecision(
   if (input.expectedVersion !== undefined && current.version !== input.expectedVersion) {
     throw Errors.conflict("Case version changed");
   }
+  if (!CONTENT_REPORT_DECISION_SET.has(input.decision) && current.type === "content_report") {
+    throw Errors.badRequest("Decision is not valid for a Content Report Case", {
+      caseType: current.type,
+      decision: input.decision,
+    });
+  }
+  if (!APPEAL_DECISION_SET.has(input.decision) && current.type === "appeal") {
+    throw Errors.badRequest("Decision is not valid for an Appeal Case", {
+      caseType: current.type,
+      decision: input.decision,
+    });
+  }
+  if (!["content_report", "appeal"].includes(current.type)) {
+    throw Errors.badRequest("Support and Billing Cases require the subtype action endpoint", {
+      caseType: current.type,
+      actionEndpoint: `/api/v2/admin/cases/${current.id}/actions`,
+    });
+  }
   if (["closed"].includes(current.status)) throw Errors.conflict("Closed case must be reopened before a new decision");
   const evidence = await db.caseEvidence.count({
     where: { caseId: current.id, id: { in: [...input.evidenceRefs] } },
@@ -986,7 +1003,7 @@ export async function recordCustomerCaseAction(input: {
     if (!["support_request", "billing_dispute"].includes(current.type)) {
       throw Errors.badRequest("Customer Case actions only apply to Support/Billing subtypes");
     }
-    const allowed = current.type === "billing_dispute" ? BILLING_ACTIONS : SUPPORT_ACTIONS;
+    const allowed = current.type === "billing_dispute" ? BILLING_ACTION_SET : SUPPORT_ACTION_SET;
     if (!allowed.has(input.action)) {
       throw Errors.badRequest("Action is not valid for this Case subtype", {
         caseType: current.type,
@@ -1014,20 +1031,34 @@ export async function recordCustomerCaseAction(input: {
       canonicalOutcomeRef = `incident:${incident.id}`;
     }
     const priorActions = Array.isArray(currentResolution.actions) ? currentResolution.actions : [];
+    const decidedAt = new Date();
     const action = {
       action: input.action,
       summary: input.summary,
       evidenceRefs: [...input.evidenceRefs],
       outcomeRef: canonicalOutcomeRef,
       actorId: input.actor.id,
-      performedAt: new Date().toISOString(),
+      performedAt: decidedAt.toISOString(),
     };
     const updated = await tx.adminCase.update({
       where: { id: current.id, version: current.version },
       data: {
         status: "in_progress",
         verificationState: "pending",
-        resolution: toInputJson({ ...currentResolution, actions: [...priorActions, action] }),
+        resolution: toInputJson({
+          ...currentResolution,
+          summary: input.summary,
+          decision: input.action,
+          evidenceRefs: [...input.evidenceRefs],
+          decidedById: input.actor.id,
+          decidedAt: decidedAt.toISOString(),
+          verification: {
+            state: "pending",
+            evidenceRefs: [...input.evidenceRefs],
+            verifiedAt: null,
+          },
+          actions: [...priorActions, action],
+        }),
         version: { increment: 1 },
       },
     });

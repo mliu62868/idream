@@ -35,7 +35,6 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       characterId: id,
       expectedVersion: body.entityVersion,
       actor,
-      phase: body.phase,
       ownerId: body.ownerId,
       audience: body.audience,
       companionNeed: body.companionNeed,

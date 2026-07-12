@@ -62,7 +62,7 @@ export interface CanonicalMetricResult {
   readonly maturity: "mature" | "immature" | "insufficient_data";
   readonly window: string;
   readonly timezone: "UTC";
-  readonly definitionVersion: 1;
+  readonly definitionVersion: number;
   readonly publicationStatus: MetricPublicationStatus;
   readonly qualityState: "certified" | "directional";
   readonly asOf: Date;
@@ -159,6 +159,7 @@ function countMetric(input: {
   publicationStatus: MetricPublicationStatus;
   qualityState: "certified" | "directional";
   asOf: Date;
+  definitionVersion?: number;
 }): CanonicalMetricResult {
   return {
     numerator: input.numerator,
@@ -170,11 +171,22 @@ function countMetric(input: {
     maturity: input.sampleSize > 0 ? "mature" : "insufficient_data",
     window: input.window,
     timezone: "UTC",
-    definitionVersion: 1,
+    definitionVersion: input.definitionVersion ?? 1,
     publicationStatus: input.publicationStatus,
     qualityState: input.qualityState,
     asOf: input.asOf,
   };
+}
+
+export function utcCalendarWeekStart(asOf: Date) {
+  const start = new Date(Date.UTC(
+    asOf.getUTCFullYear(),
+    asOf.getUTCMonth(),
+    asOf.getUTCDate(),
+  ));
+  const mondayOffset = (start.getUTCDay() + 6) % 7;
+  start.setUTCDate(start.getUTCDate() - mondayOffset);
+  return start;
 }
 
 function firstEpisodeByPair(episodes: readonly QualifiedConversationEpisode[]) {
@@ -308,19 +320,22 @@ export function evaluateCanonicalMetrics(
   }
 
   const rollingWindowStart = new Date(asOf.getTime() - 7 * DAY_MS);
+  const calendarWeekStart = utcCalendarWeekStart(asOf);
   const rollingEpisodes = qualifiedEpisodes.filter((episode) => episode.startedAt >= rollingWindowStart && episode.startedAt < asOf);
   const rollingDeliveries = deliveries.filter((delivery) => delivery.occurredAt >= rollingWindowStart && delivery.occurredAt < asOf);
   const coreActivityUsers = new Set([
     ...exchanges
-      .filter((exchange) => exchange.occurredAt >= rollingWindowStart && exchange.occurredAt < asOf)
+      .filter((exchange) => exchange.occurredAt >= calendarWeekStart && exchange.occurredAt < asOf)
       .map((exchange) => exchange.userId),
-    ...rollingDeliveries.map((delivery) => delivery.userId),
+    ...deliveries
+      .filter((delivery) => delivery.occurredAt >= calendarWeekStart && delivery.occurredAt < asOf)
+      .map((delivery) => delivery.userId),
   ]);
   const payingCoreUsers = new Set([...coreActivityUsers].filter((userId) =>
     subscriptions.some((subscription) =>
       subscription.userId === userId &&
       subscription.activeAt < asOf &&
-      (subscription.endedAt === null || subscription.endedAt > rollingWindowStart),
+      (subscription.endedAt === null || subscription.endedAt > calendarWeekStart),
     ),
   ));
   const sustained = sustainedPairs(qualifiedEpisodes, rollingWindowStart, asOf);
@@ -367,7 +382,7 @@ export function evaluateCanonicalMetrics(
       twentyExchange: deepSessionGroups.size,
     },
     metrics: {
-      "north_star.wpcu": countMetric({ numerator: payingCoreUsers.size, sampleSize: coreActivityUsers.size, window: "rolling_7d_utc", publicationStatus: "official", qualityState: "certified", asOf }),
+      "north_star.wpcu": countMetric({ numerator: payingCoreUsers.size, sampleSize: coreActivityUsers.size, window: "current_utc_calendar_week", publicationStatus: "official", qualityState: "certified", definitionVersion: 2, asOf }),
       "north_star.wscu": countMetric({ numerator: sustainedUsers.size, sampleSize: new Set(rollingEpisodes.map((row) => row.userId)).size, window: "rolling_7d_utc", publicationStatus: "shadow", qualityState: "directional", asOf }),
       "diagnostic.wsr": countMetric({ numerator: sustained.length, sampleSize: firstEpisodeByPair(rollingEpisodes).size, window: "rolling_7d_utc", publicationStatus: "diagnostic", qualityState: "directional", asOf }),
       "guardrail.wscru": countMetric({ numerator: sustainedCreationUsers.size, sampleSize: creationByUser.size, window: "rolling_7d_utc", publicationStatus: "shadow", qualityState: "directional", asOf }),

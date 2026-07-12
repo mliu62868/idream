@@ -14,6 +14,7 @@ import {
   executeIncidentActionPlanCommand,
   verifyIncidentActionPlanCommands,
 } from "@/server/modules/admin-v2/incidents/action-executor";
+import { dispatchGenerationIncidentCorrelation } from "@/server/modules/admin-v2/incidents/service";
 
 const COMMAND_TYPES = [
   "character.release.schedule",
@@ -70,9 +71,10 @@ export async function drainAdminCommands(
     else failed += 1;
   }
   const dispatched = await dispatchCreativeRetryOutbox(db, { limit: input.limit });
+  const incidentCorrelation = await dispatchGenerationIncidentCorrelation(db, { limit: input.limit });
   const verified = await verifyCreativeRetryCommands(db, { limit: input.limit });
   const incidentActions = await verifyIncidentActionPlanCommands(db, { limit: input.limit });
-  return { examined: commands.length, succeeded, failed, verifying, dispatched, verified, incidentActions };
+  return { examined: commands.length, succeeded, failed, verifying, dispatched, incidentCorrelation, verified, incidentActions };
 }
 
 export const drainCharacterReleaseCommands = drainAdminCommands;

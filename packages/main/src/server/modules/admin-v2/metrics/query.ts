@@ -14,7 +14,7 @@ import { actorWithPermission } from "@/server/modules/admin/service";
 import { canonicalSha256 } from "../shared/canonical-json";
 import { toInputJson } from "../shared/prisma-json";
 import { evaluateMetricCertification, REQUIRED_METRIC_QUALITY_CHECKS } from "./certification";
-import { evaluateCanonicalMetrics, type CanonicalMetricDataset } from "./engine";
+import { evaluateCanonicalMetrics, type CanonicalMetricDataset, utcCalendarWeekStart } from "./engine";
 import { loadCanonicalMetricDataset, reconcileCanonicalMetricFacts } from "./projector";
 
 const FRESHNESS_SLO_MS = 60 * 60 * 1_000;
@@ -33,6 +33,14 @@ function parseAsOf(request: Request): Date {
 
 function factsValidFrom(): Date {
   return new Date(Math.min(...CANONICAL_DEFINITIONS.map((definition) => new Date(definition.validFrom).getTime())));
+}
+
+function metricWindowStart(definition: MetricDefinition, asOf: Date) {
+  if (definition.key === "north_star.wpcu") return utcCalendarWeekStart(asOf);
+  if (["north_star.wscu", "diagnostic.wsr", "guardrail.wscru", "business.wpscu"].includes(definition.key)) {
+    return new Date(asOf.getTime() - 7 * 24 * 60 * 60 * 1_000);
+  }
+  return new Date(definition.validFrom);
 }
 
 function filterDatasetFrom(dataset: CanonicalMetricDataset, validFrom: Date): CanonicalMetricDataset {
@@ -271,7 +279,7 @@ export async function materializeMetricSnapshots(db: PrismaClient, asOf = new Da
   const rawDataset = await loadCanonicalMetricDataset(db);
   const dataset = filterDatasetFrom(rawDataset, factsValidFrom());
   const quality = await qualityReport(db, asOf);
-  const windowStart = new Date(asOf.getTime() - 7 * 24 * 60 * 60 * 1_000);
+  const qualityWindowStart = factsValidFrom();
   await db.$transaction(async (tx) => {
     for (const check of quality.checks) {
       await tx.dataQualityCheck.create({
@@ -282,7 +290,7 @@ export async function materializeMetricSnapshots(db: PrismaClient, asOf = new Da
           observed: toInputJson({ value: check.observed }),
           threshold: toInputJson({ expression: check.threshold }),
           evidence: toInputJson({ asOf: asOf.toISOString(), observed: check.observed, threshold: check.threshold }),
-          windowStart,
+          windowStart: qualityWindowStart,
           windowEnd: asOf,
           checkedAt: asOf,
         },
@@ -300,6 +308,7 @@ export async function materializeMetricSnapshots(db: PrismaClient, asOf = new Da
   await db.$transaction(async (tx) => {
     for (const card of cards) {
       const definition = DEFINITION_BY_KEY.get(card.key) as MetricDefinition;
+      const windowStart = metricWindowStart(definition, asOf);
       await tx.metricSnapshot.upsert({
         where: {
           metricKey_definitionVersion_windowStart_windowEnd_asOf: {

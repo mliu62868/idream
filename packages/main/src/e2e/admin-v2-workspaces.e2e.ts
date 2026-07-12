@@ -276,10 +276,11 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await expect(page.getByRole("heading", { level: 4, name: "Evidence" })).toBeVisible();
     await expect(page.getByText("Customer supplied immutable reproduction evidence.")).toBeVisible();
     await page.getByLabel("Audit reason").fill("Evidence and downstream outcome reviewed");
-    await page.getByLabel("Decision", { exact: true }).fill("restore_access");
+    await page.getByLabel("Customer action", { exact: true }).selectOption("account_guidance_provided");
+    await page.getByLabel("Outcome reference").fill(`guidance:${caseTargetId}`);
     await page.getByLabel("Resolution summary").fill("Restored the expected customer access and checked the resulting entitlement.");
-    await page.getByRole("button", { name: "Record decision" }).click();
-    await expect(page.getByRole("status").filter({ hasText: "Case decision recorded" })).toBeVisible();
+    await page.getByRole("button", { name: "Record action" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Customer Case action recorded" })).toBeVisible();
     await page.getByRole("button", { name: "Verify outcome" }).click();
     await expect(page.getByRole("status").filter({ hasText: "Downstream outcome verified" })).toBeVisible();
     await page.getByLabel("Type confirmation").fill(`${caseId}:close`);
@@ -291,7 +292,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       select: { status: true, verificationState: true, activeKey: true },
     })).toEqual({ status: "closed", verificationState: "passed", activeKey: null });
     await expect.poll(async () => prisma.decisionRecord.count({
-      where: { sourceId: caseId, decision: "restore_access" },
+      where: { sourceId: caseId, decision: "account_guidance_provided" },
     })).toBe(1);
     await expect.poll(async () => prisma.adminAuditLog.count({
       where: { targetId: { in: [creativeItemId, incidentId, caseId] } },

@@ -1138,20 +1138,13 @@ async function requeueGenerationJob(request: Request, jobId: string) {
     });
   }
 
-  await prisma.generationJob.update({
-    where: { id: job.id },
-    data: { status: "queued", errorCode: null },
-  });
-  await enqueueExistingGenerationJob(job);
-  await writeAudit(request, actor, {
-    action: "ops.deadletter.requeue",
-    targetType: "generation_job",
-    targetId: job.id,
-    reason: body.reason,
-    before: { status: job.status, errorCode: job.errorCode },
-    after: { status: "queued" },
-  });
-  return ok({ queued: true });
+  const attempt = await prisma.$transaction((tx) => stageGenerationRetry(tx, {
+    request,
+    actor,
+    job,
+    reason: body.reason ?? "Operator requeue requested",
+  }));
+  return ok({ queued: true, attemptId: attempt.id, attemptNo: attempt.attemptNo });
 }
 
 async function discardGenerationJob(request: Request, jobId: string) {
@@ -1254,6 +1247,7 @@ async function requeueDeadLetterBatch(request: Request) {
   const refundedIds = await refundedJobIds(body.jobIds);
   const requeued: string[] = [];
   const skipped: { id: string; reason: string }[] = [];
+  const eligibleJobs: typeof jobs = [];
   for (const job of jobs) {
     const retryEligibility = deriveGenerationJobState({
       status: job.status,
@@ -1270,13 +1264,14 @@ async function requeueDeadLetterBatch(request: Request) {
       skipped.push({ id: job.id, reason: retryEligibility.reason });
       continue;
     }
-    await prisma.generationJob.update({
-      where: { id: job.id },
-      data: { status: "queued", errorCode: null },
-    });
-    await enqueueExistingGenerationJob(job);
+    eligibleJobs.push(job);
     requeued.push(job.id);
   }
+  await prisma.$transaction(async (tx) => {
+    for (const job of eligibleJobs) {
+      await stageGenerationRetry(tx, { request, actor, job, reason: body.reason });
+    }
+  });
   for (const id of missingIds(body.jobIds, jobs)) skipped.push({ id, reason: "not_found" });
   await writeAudit(request, actor, {
     action: "ops.deadletter.requeue",
@@ -4856,11 +4851,115 @@ type ExistingGenerationJob = {
   model: string | null;
   profileId?: string | null;
   profileVersion?: number | null;
+  provider?: string | null;
   orientation: string | null;
   outputCount: number;
   seed?: string | null;
   referenceAssetIds?: Prisma.JsonValue | null;
 };
+
+async function stageGenerationRetry(
+  tx: Prisma.TransactionClient,
+  input: {
+    readonly request: Request;
+    readonly actor: AdminActor;
+    readonly job: ExistingGenerationJob & {
+      readonly status: string;
+      readonly errorCode?: string | null;
+      readonly version?: number;
+    };
+    readonly reason: string;
+  },
+) {
+  await tx.$queryRaw`SELECT id FROM "generation_jobs" WHERE id = ${input.job.id} FOR UPDATE`;
+  const current = await tx.generationJob.findUniqueOrThrow({ where: { id: input.job.id } });
+  if (current.status !== input.job.status) {
+    throw Errors.conflict("Generation Request changed before retry staging", {
+      expectedStatus: input.job.status,
+      actualStatus: current.status,
+    });
+  }
+  const latest = await tx.generationAttempt.findFirst({
+    where: { requestId: current.id },
+    orderBy: { attemptNo: "desc" },
+  });
+  if (latest && latest.status !== "failed") {
+    throw Errors.conflict("Latest Generation Attempt is not safe for operator retry", {
+      attemptId: latest.id,
+      attemptNo: latest.attemptNo,
+      status: latest.status,
+    });
+  }
+  if (latest?.retryability === "not_retryable") {
+    throw Errors.conflict("Latest Generation Attempt is explicitly non-replayable", {
+      attemptId: latest.id,
+      retryability: latest.retryability,
+    });
+  }
+  const attempt = await tx.generationAttempt.create({
+    data: {
+      requestId: current.id,
+      attemptNo: (latest?.attemptNo ?? 0) + 1,
+      provider: latest?.provider ?? current.provider,
+      profileKey: latest?.profileKey ?? current.profileId,
+      profileVersion: latest?.profileVersion ?? current.profileVersion,
+      workflowKey: latest?.workflowKey ?? current.model,
+      workflowVersion: latest?.workflowVersion,
+      status: "queued",
+    },
+  });
+  await recordGenerationAttemptQueuedEvent(tx, attempt);
+  const updated = await tx.generationJob.update({
+    where: { id: current.id },
+    data: {
+      status: "queued",
+      errorCode: null,
+      completedAt: null,
+      finishedAt: null,
+      deliveredOutputCount: 0,
+      version: { increment: 1 },
+    },
+  });
+  await tx.mainOutboxEvent.create({
+    data: {
+      id: `generation_retry_${current.id}_${attempt.attemptNo}`,
+      eventType: "generation.retry.dispatch.v2",
+      aggregateType: "generation_request",
+      aggregateId: current.id,
+      payload: toInputJson({
+        generationJobId: current.id,
+        attemptId: attempt.id,
+        attemptNo: attempt.attemptNo,
+      }),
+    },
+  });
+  await tx.adminAuditLog.create({
+    data: {
+      actorId: input.actor.id,
+      actorRole: input.actor.role,
+      action: "ops.deadletter.requeue.item",
+      targetType: "generation_job",
+      targetId: current.id,
+      reason: input.reason,
+      before: toInputJson({
+        status: current.status,
+        errorCode: current.errorCode,
+        version: current.version,
+        latestAttemptId: latest?.id ?? null,
+        latestAttemptNo: latest?.attemptNo ?? null,
+      }),
+      after: toInputJson({
+        status: updated.status,
+        version: updated.version,
+        attemptId: attempt.id,
+        attemptNo: attempt.attemptNo,
+        dispatchState: "pending",
+      }),
+      requestId: input.request.headers.get("x-request-id") ?? randomUUID(),
+    },
+  });
+  return attempt;
+}
 
 export async function enqueueExistingGenerationJob(job: ExistingGenerationJob) {
   return enqueueGenerationAttempt(job);

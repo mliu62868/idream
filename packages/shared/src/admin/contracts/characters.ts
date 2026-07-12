@@ -487,7 +487,6 @@ export const characterPerformanceReconciliationSchema = z.object({
 export const characterProjectDraftPatchRequestSchema = z
   .object({
     entityVersion: z.number().int().nonnegative(),
-    phase: characterProjectPhaseSchema.optional(),
     ownerId: adminIdSchema.nullable(),
     audience: z.string().trim().min(1).max(2_000),
     companionNeed: z.string().trim().min(1).max(2_000),

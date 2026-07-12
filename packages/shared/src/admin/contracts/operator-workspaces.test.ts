@@ -8,7 +8,6 @@ describe("operator workspace contracts", () => {
   it("requires an optimistic version and an auditable reason for project autosave", () => {
     const result = characterProjectDraftPatchRequestSchema.safeParse({
       entityVersion: 3,
-      phase: "qa",
       ownerId: null,
       audience: "People seeking a calm evening companion",
       companionNeed: "A predictable decompression ritual",
@@ -23,6 +22,10 @@ describe("operator workspace contracts", () => {
     expect(characterProjectDraftPatchRequestSchema.safeParse({
       ...(result.success ? result.data : {}),
       reason: "",
+    }).success).toBe(false);
+    expect(characterProjectDraftPatchRequestSchema.safeParse({
+      ...(result.success ? result.data : {}),
+      phase: "launch_ready",
     }).success).toBe(false);
   });
 

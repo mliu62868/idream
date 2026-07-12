@@ -19,6 +19,10 @@ function commandScope(actorId: string) {
   return `${env.APP_ENV}:${actorId}:${CREATE_COMMAND}`;
 }
 
+function tagSlug(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "").replace(/^-+|-+$/g, "");
+}
+
 async function resolveExisting(input: {
   actorId: string;
   idempotencyKey: string;
@@ -57,8 +61,10 @@ export async function createCharacterProject(input: {
   request: CharacterProjectCreateRequest;
   idempotencyKey: string;
   requestId: string;
+  legacyTagLabels?: readonly string[];
 }): Promise<CharacterProjectCreateResponse> {
-  const requestHash = canonicalSha256({ commandType: CREATE_COMMAND, payload: input.request });
+  const legacyTagLabels = [...new Set((input.legacyTagLabels ?? []).map((label) => label.trim()).filter(Boolean))];
+  const requestHash = canonicalSha256({ commandType: CREATE_COMMAND, payload: input.request, legacyTagLabels });
   const prior = await resolveExisting({
     actorId: input.actor.id,
     idempotencyKey: input.idempotencyKey,
@@ -129,6 +135,21 @@ export async function createCharacterProject(input: {
           advancedDetails: toInputJson({ ...personaSnapshot, ...openingSnapshot }),
         },
       });
+      await tx.characterStats.create({ data: { characterId } });
+      for (const label of legacyTagLabels) {
+        const slug = tagSlug(label);
+        if (!slug) continue;
+        const tag = await tx.tag.upsert({
+          where: { slug },
+          create: { slug, label },
+          update: {},
+        });
+        await tx.characterTag.upsert({
+          where: { characterId_tagId: { characterId, tagId: tag.id } },
+          create: { characterId, tagId: tag.id },
+          update: {},
+        });
+      }
       await tx.characterContentVersion.create({
         data: {
           id: contentVersionId,

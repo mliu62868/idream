@@ -449,15 +449,36 @@ export async function purgeTestData(prefix: string) {
   }
   if (projectCharacterIds.length > 0) {
     const profiles = await prisma.characterVisualProfile.findMany({ where: { characterId: { in: projectCharacterIds } }, select: { id: true } });
-    await prisma.referenceSetRevision.deleteMany({ where: { visualProfileId: { in: profiles.map((profile) => profile.id) } } });
+    const referenceSets = await prisma.referenceSetRevision.findMany({
+      where: { visualProfileId: { in: profiles.map((profile) => profile.id) } },
+      select: { id: true },
+    });
+    await prisma.characterVisualReferenceSnapshot.deleteMany({
+      where: { referenceSetRevisionId: { in: referenceSets.map((referenceSet) => referenceSet.id) } },
+    });
+    await prisma.referenceSetRevision.deleteMany({ where: { id: { in: referenceSets.map((referenceSet) => referenceSet.id) } } });
     await prisma.characterContentVersion.deleteMany({ where: { characterId: { in: projectCharacterIds } } });
   }
   await prisma.generationRouteQualification.deleteMany({ where: { OR: [{ id: sw }, { routeFingerprint: sw }] } });
 
   // Characters cascade: stats, tags, likes, submissions, chat sessions, messages.
   await prisma.character.deleteMany({ where: { OR: [{ id: sw }, { creatorId: sw }] } });
+  // Media cascades most dependents, but immutable release reference snapshots
+  // deliberately use RESTRICT. Discover the exact media purge set first so
+  // official characters (which intentionally have no creatorId) cannot leave
+  // a snapshot that makes fixture cleanup order-dependent.
+  const purgeMedia = await prisma.mediaAsset.findMany({
+    where: { OR: [{ id: sw }, { ownerId: sw }] },
+    select: { id: true },
+  });
+  const purgeMediaIds = purgeMedia.map((asset) => asset.id);
+  if (purgeMediaIds.length > 0) {
+    await prisma.characterVisualReferenceSnapshot.deleteMany({
+      where: { mediaAssetId: { in: purgeMediaIds } },
+    });
+  }
   // Media cascade: likes, collection items.
-  await prisma.mediaAsset.deleteMany({ where: { OR: [{ id: sw }, { ownerId: sw }] } });
+  await prisma.mediaAsset.deleteMany({ where: { id: { in: purgeMediaIds } } });
   await prisma.generationPreset.deleteMany({ where: { OR: [{ id: sw }, { ownerId: sw }] } });
   await prisma.characterDraft.deleteMany({ where: { OR: [{ id: sw }, { ownerId: sw }] } });
   await prisma.ageGateAcceptance.deleteMany({

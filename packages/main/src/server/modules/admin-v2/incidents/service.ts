@@ -97,9 +97,10 @@ async function refreshIncidentImpact(db: Db, incidentId: string) {
 
 export async function correlateFailedGenerationAttempt(
   attemptId: string,
-  options: { readonly joinGapMs?: number } = {},
+  options: { readonly joinGapMs?: number; readonly db?: PrismaClient } = {},
 ) {
-  const result = await prisma.$transaction(async (tx) => {
+  const database = options.db ?? prisma;
+  const result = await database.$transaction(async (tx) => {
     const existingOccurrence = await tx.opsIncidentOccurrence.findUnique({
       where: { occurrenceKey: `generation-attempt:${attemptId}` },
     });
@@ -203,6 +204,85 @@ export async function correlateFailedGenerationAttempt(
     return { incident: { ...updated, impact }, observedAt, recorded: true as const };
   });
   return result.incident;
+}
+
+export async function dispatchGenerationIncidentCorrelation(
+  db: PrismaClient,
+  input: { readonly limit?: number } = {},
+) {
+  const rows = await db.mainOutboxEvent.findMany({
+    where: {
+      eventType: "generation.incident.correlate.v2",
+      status: { in: ["pending", "dispatched"] },
+      nextRunAt: { lte: new Date() },
+    },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    take: Math.min(100, Math.max(1, input.limit ?? 25)),
+  });
+  let correlated = 0;
+  let unavailable = 0;
+  let failed = 0;
+  for (const row of rows) {
+    const payload = asRecord(row.payload);
+    const attemptId = typeof payload.attemptId === "string" ? payload.attemptId : null;
+    try {
+      if (!attemptId) throw new Error("Incident correlation outbox payload is invalid");
+      const attempt = await db.generationAttempt.findUnique({ where: { id: attemptId } });
+      if (!attempt) throw new Error("Generation Attempt for Incident correlation is missing");
+      if (!stableSignature(attempt)) {
+        await db.$transaction(async (tx) => {
+          await tx.mainOutboxEvent.update({
+            where: { id: row.id },
+            data: {
+              status: "delivered",
+              attempts: { increment: 1 },
+              deliveredAt: new Date(),
+              lastError: toInputJson({ code: "insufficient_stable_signature", attemptId }),
+            },
+          });
+          await tx.adminAuditLog.create({
+            data: {
+              actorId: "system",
+              actorRole: "system",
+              action: "incident.correlation.unavailable",
+              targetType: "generation_attempt",
+              targetId: attemptId,
+              reason: "Failed Attempt lacks stable provider/profile/workflow/error signature evidence",
+              after: toInputJson({ attemptId, outcome: attempt.status }),
+              requestId: `incident-correlation-unavailable:${attemptId}`,
+            },
+          });
+        });
+        unavailable += 1;
+        continue;
+      }
+      await correlateFailedGenerationAttempt(attemptId, { db });
+      await db.mainOutboxEvent.update({
+        where: { id: row.id },
+        data: {
+          status: "delivered",
+          attempts: { increment: 1 },
+          deliveredAt: new Date(),
+          lastError: Prisma.DbNull,
+        },
+      });
+      correlated += 1;
+    } catch (error) {
+      await db.mainOutboxEvent.update({
+        where: { id: row.id },
+        data: {
+          status: "pending",
+          attempts: { increment: 1 },
+          nextRunAt: new Date(Date.now() + 30_000),
+          lastError: toInputJson({
+            message: error instanceof Error ? error.message : "Incident correlation failed",
+          }),
+        },
+      });
+      failed += 1;
+    }
+  }
+  return { examined: rows.length, correlated, unavailable, failed };
 }
 
 export async function backfillGenerationIncidents(input: {

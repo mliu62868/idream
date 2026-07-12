@@ -22,10 +22,34 @@ export const caseAssignmentRequestSchema = z
   })
   .strict();
 
+export const CONTENT_REPORT_CASE_DECISIONS = [
+  "actioned",
+  "no_violation",
+  "duplicate",
+  "escalated",
+  "closed",
+] as const;
+export const APPEAL_CASE_DECISIONS = ["upheld", "overturned", "modified", "open"] as const;
+export const REVIEW_CASE_DECISIONS = [
+  ...CONTENT_REPORT_CASE_DECISIONS,
+  ...APPEAL_CASE_DECISIONS,
+] as const;
+export const SUPPORT_CASE_ACTIONS = [
+  "diagnostic_reviewed",
+  "reply_requested",
+  "incident_escalated",
+  "account_guidance_provided",
+] as const;
+export const BILLING_CASE_ACTIONS = [
+  "ledger_reconciled",
+  "refund_requested",
+  "subscription_corrected",
+] as const;
+
 export const caseDecisionRequestSchema = z
   .object({
     entityVersion: z.number().int().nonnegative(),
-    decision: z.string().trim().min(1),
+    decision: z.enum(REVIEW_CASE_DECISIONS),
     summary: z.string().trim().min(1).max(4_000),
     evidenceRefs: z.array(adminIdSchema).min(1),
     confidence: z.number().min(0).max(1).optional(),
@@ -49,15 +73,7 @@ export const caseVerificationRequestSchema = z
 export const customerCaseActionRequestSchema = z
   .object({
     entityVersion: z.number().int().nonnegative(),
-    action: z.enum([
-      "diagnostic_reviewed",
-      "reply_requested",
-      "incident_escalated",
-      "account_guidance_provided",
-      "ledger_reconciled",
-      "refund_requested",
-      "subscription_corrected",
-    ]),
+    action: z.enum([...SUPPORT_CASE_ACTIONS, ...BILLING_CASE_ACTIONS]),
     summary: z.string().trim().min(1).max(4_000),
     evidenceRefs: z.array(adminIdSchema).min(1),
     outcomeRef: z.string().trim().min(1).max(500),

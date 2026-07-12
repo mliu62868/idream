@@ -44,6 +44,7 @@ function makeRequest(
     "x-idream-role": opts.role,
   };
   if (opts.body !== undefined) headers["content-type"] = "application/json";
+  if (method === "POST") headers["idempotency-key"] = crypto.randomUUID();
   return new Request(`http://localhost/api/v1/admin/content/official${path}`, {
     method,
     headers,
@@ -169,20 +170,20 @@ describe("official character CMS", () => {
     expect(character.status).toBe("draft");
     expect(character.visibility).toBe("private");
     expect(character.systemPrompt).toBeTruthy();
-    expect(character.visualProfiles).toHaveLength(1);
-    expect(character.visualProfiles[0]).toMatchObject({
-      version: 1,
-      status: "active",
-      createdFrom: "admin_official_create",
-    });
+    expect(character.visualProfiles).toHaveLength(0);
     // 去重 + slug：Bubbly 只连一次，"Sci Fi" → "sci-fi"。
     const slugs = character.tags.map((t) => t.tag.slug).sort();
     expect(slugs).toEqual(["bubbly", "sci-fi"]);
 
     const audit = await prisma.adminAuditLog.findFirst({
-      where: { action: "content.official.create", targetId: character.id },
+      where: { action: "character.project.created" },
     });
     expect(audit).not.toBeNull();
+    const project = await prisma.characterProject.findFirstOrThrow({ where: { characterId: character.id } });
+    expect(await prisma.characterProject.count({ where: { characterId: character.id } })).toBe(1);
+    expect(await prisma.characterContentVersion.count({ where: { characterId: character.id } })).toBe(1);
+    expect(await prisma.characterRevision.count({ where: { projectId: project.id } })).toBe(1);
+    expect(await prisma.characterServing.count({ where: { characterId: character.id } })).toBe(1);
 
     // 出现在 list 中。
     const listResult = await call(
@@ -195,13 +196,10 @@ describe("official character CMS", () => {
       visualProfile: { version: number; status: string } | null;
     }[];
     const listed = items.find((c) => c.id === character.id);
-    expect(listed?.visualProfile).toMatchObject({
-      version: 1,
-      status: "active",
-    });
+    expect(listed?.visualProfile).toBeNull();
   });
 
-  it("versions the visual profile when official identity fields change", async () => {
+  it("versions immutable draft content without fabricating a qualified Visual Identity", async () => {
     const admin = await seedActor("admin", "visual-version");
     const created = await call(
       createOfficialCharacter(
@@ -237,17 +235,17 @@ describe("official character CMS", () => {
     );
     expect(updated.ok).toBe(true);
 
-    const profiles = await prisma.characterVisualProfile.findMany({
+    const project = await prisma.characterProject.findFirstOrThrow({ where: { characterId: id } });
+    expect(await prisma.characterContentVersion.count({ where: { characterId: id } })).toBe(2);
+    expect(await prisma.characterRevision.count({ where: { projectId: project.id } })).toBe(2);
+    expect(await prisma.characterVisualProfile.count({ where: { characterId: id } })).toBe(0);
+    const latest = await prisma.characterContentVersion.findFirstOrThrow({
       where: { characterId: id },
-      orderBy: { version: "asc" },
+      orderBy: { version: "desc" },
     });
-    expect(
-      profiles.map((profile) => [profile.version, profile.status]),
-    ).toEqual([
-      [1, "archived"],
-      [2, "active"],
-    ]);
-    expect(profiles[1]?.identityPrompt).toContain("amber eyes");
+    expect(latest.personaSnapshot).toMatchObject({
+      characterPromise: "An official companion with silver hair and amber eyes.",
+    });
   });
 
   it("rejects age < 18 at the zod boundary (400)", async () => {
@@ -381,9 +379,10 @@ describe("official character CMS", () => {
         userId: admin,
         role: "admin",
         body: {
-          tags: ["complete"],
           appearance: {
-            visualBrief: "Warm cinematic portrait with a stable silhouette.",
+            identityAnchor: "Warm cinematic portrait with a stable silhouette.",
+            stableTraits: ["stable silhouette", "warm portrait lighting"],
+            referenceDirection: "Canonical front-facing identity reference",
           },
           advancedDetails: {
             personality: "composed, observant",
@@ -395,8 +394,24 @@ describe("official character CMS", () => {
       }),
       id,
     );
-    const activeProfile = await prisma.characterVisualProfile.findFirstOrThrow({
-      where: { characterId: id, status: "active" },
+    const activeProfile = await prisma.characterVisualProfile.create({
+      data: {
+        characterId: id,
+        version: 1,
+        status: "active",
+        style: "realistic",
+        identityPrompt: "Warm cinematic portrait with a stable silhouette.",
+        faceTraits: {},
+        hairTraits: {},
+        bodyTraits: {},
+        signatureTraits: {},
+        styleTraits: {},
+        anchorAssetIds: [media.id],
+        referenceAssetIds: [media.id],
+        adapterRefs: {},
+        createdFrom: "test_qualified_identity",
+        evidenceState: "qualified",
+      },
     });
     await prisma.characterVisualProfile.update({
       where: { id: activeProfile.id },
@@ -414,41 +429,13 @@ describe("official character CMS", () => {
       data: { imageAssetId: media.id },
     });
 
-    const contentVersion = await prisma.characterContentVersion.create({
-      data: {
-        id: `${P}publish-content`,
-        characterId: id,
-        version: 1,
-        contentHash: `${P}publish-content-hash`,
-        personaSnapshot: {
-          systemPrompt: "Stay in persona.",
-          description: "Complete release.",
-        },
-        openingSnapshot: {
-          firstMessage: "You made it. Sit down and tell me what happened.",
-        },
-        appearanceSnapshot: { style: "realistic" },
-        sourceType: "test",
-      },
+    const project = await prisma.characterProject.findFirstOrThrow({ where: { characterId: id } });
+    const revision = await prisma.characterRevision.findFirstOrThrow({
+      where: { projectId: project.id },
+      orderBy: { revision: "desc" },
     });
-    const project = await prisma.characterProject.create({
-      data: {
-        id: `${P}publish-project`,
-        characterId: id,
-        phase: "launch_ready",
-        audience: { segment: "test" },
-        successCriteria: ["healthy release"],
-        activeKey: `official:${id}`,
-      },
-    });
-    const revision = await prisma.characterRevision.create({
-      data: {
-        id: `${P}publish-revision`,
-        projectId: project.id,
-        revision: 1,
-        characterContentVersionId: contentVersion.id,
-        projectSnapshot: {},
-      },
+    const contentVersion = await prisma.characterContentVersion.findUniqueOrThrow({
+      where: { id: revision.characterContentVersionId },
     });
     const referenceSet = await prisma.referenceSetRevision.create({
       data: {
@@ -531,9 +518,9 @@ describe("official character CMS", () => {
         readiness: "ready",
       },
     });
-    await prisma.characterServing.create({
+    await prisma.characterServing.update({
+      where: { characterId: id },
       data: {
-        characterId: id,
         state: "inactive",
         scheduledReleaseId: release.id,
         scheduledAt: new Date(),

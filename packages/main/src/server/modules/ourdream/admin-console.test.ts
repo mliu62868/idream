@@ -2666,6 +2666,16 @@ describe("dead-letter operations console", () => {
     const owner = `${P}dl-rq-owner`;
     await createUser({ id: owner });
     await makeJob(`${P}dl-rq-failed`, owner, "failed", 5);
+    await prisma.generationAttempt.create({
+      data: {
+        id: `${P}dl-rq-attempt-1`,
+        requestId: `${P}dl-rq-failed`,
+        attemptNo: 1,
+        status: "failed",
+        retryability: "operator_retry",
+        finishedAt: new Date(),
+      },
+    });
     await makeJob(`${P}dl-rq-refunded`, owner, "failed", 5);
     await prisma.dreamcoinLedger.create({
       data: {
@@ -2712,6 +2722,19 @@ describe("dead-letter operations console", () => {
     expect(await prisma.generationJob.findUnique({ where: { id: `${P}dl-rq-failed` } })).toMatchObject({
       status: "queued",
     });
+    expect(await prisma.generationAttempt.findMany({
+      where: { requestId: `${P}dl-rq-failed` },
+      orderBy: { attemptNo: "asc" },
+    })).toEqual([
+      expect.objectContaining({ id: `${P}dl-rq-attempt-1`, attemptNo: 1, status: "failed" }),
+      expect.objectContaining({ attemptNo: 2, status: "queued" }),
+    ]);
+    expect(await prisma.mainOutboxEvent.findFirst({
+      where: { aggregateId: `${P}dl-rq-failed`, eventType: "generation.retry.dispatch.v2" },
+    })).toMatchObject({ status: "pending" });
+    expect(await prisma.adminAuditLog.findFirst({
+      where: { actorId: admin, action: "ops.deadletter.requeue.item", targetId: `${P}dl-rq-failed` },
+    })).not.toBeNull();
     const audit = await prisma.adminAuditLog.findFirstOrThrow({
       where: { actorId: admin, action: "ops.deadletter.requeue" },
     });

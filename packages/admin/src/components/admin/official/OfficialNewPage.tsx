@@ -213,6 +213,7 @@ export function OfficialNewPage() {
         OFFICIAL_LIST,
         "POST",
         officialPayload({ ...draft, reason: EMPTY_DRAFT.reason }),
+        { "idempotency-key": crypto.randomUUID() },
       );
       window.localStorage.removeItem(DRAFT_STORAGE_KEY);
       const newId = created.item?.id ?? created.character?.id;

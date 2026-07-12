@@ -164,10 +164,8 @@ export function OfficialDetailPage({ id }: { id: string }) {
         summary: "This updates the character project but does not publish it.",
         submitLabel: t("Save changes"),
         onSubmit: async (reason) => {
-          await apiWrite(`${OFFICIAL_LIST}/${id}`, "PATCH", officialPayload({ ...draft, reason }));
-          await reload();
-          setMode("view");
-          setDraft(null);
+          const result = await apiWrite<{ deepLink?: string }>(`${OFFICIAL_LIST}/${id}`, "PATCH", officialPayload({ ...draft, reason }));
+          window.location.href = result.deepLink ?? `/admin/characters/${id}`;
         },
       };
     }

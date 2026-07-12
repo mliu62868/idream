@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { characterWorkspaceDetailSchema } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { POST as refreshReleaseMonitor } from "@/app/api/v2/admin/characters/[id]/releases/[releaseId]/monitors/[window]/refresh/route";
+import { PATCH as patchCharacterProjectRoute } from "@/app/api/v2/admin/characters/[id]/project/route";
 import { GET as getCharacterWorkspaceRoute } from "@/app/api/v2/admin/characters/[id]/route";
 import { getCharacterWorkspace, updateCharacterProjectDraft } from "./workspace";
 
@@ -133,7 +134,6 @@ describe("Character operator workspace", () => {
       characterId,
       expectedVersion: 1,
       actor: { id: `workspace-actor-${suffix}`, role: "admin" },
-      phase: "launch_ready",
       ownerId: null,
       audience: "People decompressing after demanding work",
       companionNeed: "A reliable transition out of work mode",
@@ -167,7 +167,7 @@ describe("Character operator workspace", () => {
       reason: "Autosave Character Project changes",
       requestId,
     });
-    expect(saved).toMatchObject({ phase: "launch_ready", version: 2 });
+    expect(saved).toMatchObject({ phase: "qa", version: 2 });
     expect(await prisma.adminAuditLog.count({ where: { requestId } })).toBe(1);
     expect(await prisma.mainOutboxEvent.count({ where: { aggregateId: projectId } })).toBe(1);
     expect(await prisma.characterContentVersion.findMany({ where: { characterId } })).toHaveLength(2);
@@ -231,7 +231,6 @@ describe("Character operator workspace", () => {
       characterId,
       expectedVersion: 1,
       actor: { id: `workspace-actor-${suffix}`, role: "admin" },
-      phase: "retired",
       ownerId: null,
       audience: "stale",
       companionNeed: "stale",
@@ -246,9 +245,55 @@ describe("Character operator workspace", () => {
       requestId: `${requestId}-conflict`,
     })).rejects.toMatchObject({ status: 409 });
     expect(await prisma.characterProject.findUniqueOrThrow({ where: { id: projectId } })).toMatchObject({
-      phase: "launch_ready",
+      phase: "qa",
       version: 3,
     });
+  });
+
+  it("rejects project PATCH without write authority and mismatched If-Match", async () => {
+    const body = {
+      entityVersion: 3,
+      ownerId: null,
+      audience: "People decompressing after demanding work",
+      companionNeed: "A reliable transition out of work mode",
+      hypothesis: "A more specific opening improves qualified conversation",
+      differentiation: "Calm direction without generic affirmation",
+      targetPlacementKeys: ["feed_card"],
+      successCriteria: ["QCE improves without D7 regression"],
+      productionPackage: "Identity set and feed card",
+      qaPlan: "Five-turn mobile and desktop preview",
+      plannedLaunchAt: null,
+      reason: "Verify the Project PATCH boundary",
+    };
+    const forbidden = await patchCharacterProjectRoute(
+      new Request(`http://localhost/api/v2/admin/characters/${characterId}/project`, {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          "if-match": "3",
+          "x-idream-user-id": readOnlyActorId,
+          "x-idream-role": "user",
+        },
+        body: JSON.stringify(body),
+      }),
+      { params: Promise.resolve({ id: characterId }) },
+    );
+    expect(forbidden.status).toBe(403);
+
+    const mismatched = await patchCharacterProjectRoute(
+      new Request(`http://localhost/api/v2/admin/characters/${characterId}/project`, {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          "if-match": "2",
+          "x-idream-user-id": "seed-admin-user",
+          "x-idream-role": "admin",
+        },
+        body: JSON.stringify(body),
+      }),
+      { params: Promise.resolve({ id: characterId }) },
+    );
+    expect(mismatched.status).toBe(400);
   });
 
   it("does not let a read-only release grant refresh monitor authority", async () => {
