@@ -47,10 +47,14 @@ describe("Generation Request cancellation", () => {
     await prisma.$disconnect();
   });
 
-  it("cancels once, refunds captured spend once, and suppresses a late manifest", async () => {
+  it("replays the same cancellation, rejects key collisions, refunds once, and suppresses a late manifest", async () => {
     const input = { requestId: jobId, expectedVersion: 1, actor: { id: actorId, role: "admin" }, reason: "User requested cancellation", idempotencyKey, traceId: `cancel-trace-${suffix}` };
     const cancelled = await cancelGenerationRequest(input);
     await expect(cancelGenerationRequest(input)).resolves.toEqual(cancelled);
+    await expect(cancelGenerationRequest({
+      ...input,
+      reason: "A different cancellation payload",
+    })).rejects.toMatchObject({ status: 409 });
     expect(cancelled).toMatchObject({ requestId: jobId, status: "cancelled", version: 2, refundAmount: 10 });
     await expect(prisma.generationAttempt.findUnique({ where: { id: attemptId } })).resolves.toMatchObject({ status: "cancelled", retryability: "not_retryable" });
     await expect(prisma.generationSettlementLink.count({ where: { requestId: jobId } })).resolves.toBe(2);

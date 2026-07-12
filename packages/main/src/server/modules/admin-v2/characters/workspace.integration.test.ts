@@ -306,6 +306,20 @@ describe("Character operator workspace", () => {
     );
     expect(forbidden.status).toBe(403);
 
+    const missingPrecondition = await patchCharacterProjectRoute(
+      new Request(`http://localhost/api/v2/admin/characters/${characterId}/project`, {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          "x-idream-user-id": "seed-admin-user",
+          "x-idream-role": "admin",
+        },
+        body: JSON.stringify(body),
+      }),
+      { params: Promise.resolve({ id: characterId }) },
+    );
+    expect(missingPrecondition.status).toBe(400);
+
     const mismatched = await patchCharacterProjectRoute(
       new Request(`http://localhost/api/v2/admin/characters/${characterId}/project`, {
         method: "PATCH",

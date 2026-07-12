@@ -28,7 +28,10 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     const actor = await actorWithPermission(request, "character.project.write", { characterId: id });
     const body = characterProjectDraftPatchRequestSchema.parse(await request.json());
     const headerVersion = ifMatchVersion(request);
-    if (headerVersion !== null && headerVersion !== body.entityVersion) {
+    if (headerVersion === null) {
+      throw Errors.badRequest("If-Match must contain the Character Project version");
+    }
+    if (headerVersion !== body.entityVersion) {
       throw Errors.badRequest("If-Match and entityVersion must identify the same Project revision");
     }
     return updateCharacterProjectDraft({

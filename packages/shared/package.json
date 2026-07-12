@@ -13,6 +13,8 @@
     "./admin/contracts": "./src/admin/contracts/index.ts",
     "./admin/permissions": "./src/admin/permissions.ts",
     "./admin/api-manifest": "./src/admin/api-manifest.ts",
+    "./admin/contract-registry": "./src/admin/contract-registry.ts",
+    "./admin/mutation-transport": "./src/admin/mutation-transport.ts",
     "./admin/workspace-access": "./src/admin/workspace-access.ts",
     "./admin/errors": "./src/admin/errors.ts",
     "./admin/release-gate": "./src/admin/release-gate.ts",
