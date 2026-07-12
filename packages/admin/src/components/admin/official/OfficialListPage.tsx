@@ -7,9 +7,9 @@ import { apiGet } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { FilterBar } from "@/components/admin/ui/FilterBar";
-import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { GhostButton, PrimaryButton } from "@/components/admin/ui/buttons";
 import { StatusPill } from "@/components/admin/ui/StatusPill";
+import type { WorkspaceHistoryMode } from "@/lib/admin-v2-api";
 import { cn } from "@/lib/utils";
 import {
   characterReadiness,
@@ -22,6 +22,15 @@ import {
   type ThumbAsset,
   visualSourceImage,
 } from "./official-api";
+import {
+  buildOfficialListApiQuery,
+  defaultOfficialListQuery,
+  observeOfficialListUrl,
+  parseOfficialListQuery,
+  type OfficialListQuery,
+  writeOfficialListUrl,
+} from "./query";
+import { OfficialListEmptyState } from "./OfficialListEmptyState";
 
 type ListResponse = {
   items: OfficialRow[];
@@ -56,22 +65,16 @@ export function OfficialListPage() {
   const [thumbs, setThumbs] = useState<Map<string, string>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [search, setSearch] = useState("");
-  const [gender, setGender] = useState("all");
-  const [style, setStyle] = useState("all");
-  const [status, setStatus] = useState("all");
-  const [page, setPage] = useState(1);
+  const [listQuery, setListQuery] = useState<OfficialListQuery>(defaultOfficialListQuery);
+  const [queryReady, setQueryReady] = useState(false);
   const [total, setTotal] = useState(0);
   const [totalPages, setTotalPages] = useState(1);
+  const { gender, page, search, status, style } = listQuery;
+  const filtered = Boolean(
+    search.trim() || gender !== "all" || style !== "all" || status !== "all" || page > 1,
+  );
 
-  const query = useMemo(() => {
-    const params = new URLSearchParams({ page: String(page), limit: "24" });
-    if (search.trim()) params.set("search", search.trim());
-    if (gender !== "all") params.set("gender", gender);
-    if (style !== "all") params.set("style", style);
-    if (status !== "all") params.set("status", status);
-    return params.toString();
-  }, [gender, page, search, status, style]);
+  const query = useMemo(() => buildOfficialListApiQuery(listQuery).toString(), [listQuery]);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -93,13 +96,28 @@ export function OfficialListPage() {
   }, [query, t]);
 
   useEffect(() => {
+    const read = () => parseOfficialListQuery(new URLSearchParams(window.location.search));
+    const restore = (next: OfficialListQuery) => {
+      setListQuery(next);
+      setQueryReady(true);
+    };
+    restore(read());
+    return observeOfficialListUrl(window, restore);
+  }, []);
+
+  useEffect(() => {
+    if (!queryReady) return;
     const timer = window.setTimeout(() => void reload(), search.trim() ? 220 : 0);
     return () => window.clearTimeout(timer);
-  }, [reload, search]);
+  }, [queryReady, reload, search]);
 
-  function updateFilter(callback: () => void) {
-    setPage(1);
-    callback();
+  function navigate(next: OfficialListQuery, mode: WorkspaceHistoryMode) {
+    setListQuery(next);
+    writeOfficialListUrl(next, mode);
+  }
+
+  function updateFilter(patch: Partial<OfficialListQuery>, mode: WorkspaceHistoryMode) {
+    navigate({ ...listQuery, ...patch, page: 1 }, mode);
   }
 
   const allOption = { value: "all", label: t("All") };
@@ -120,13 +138,13 @@ export function OfficialListPage() {
 
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <FilterBar
-          onSearch={(value) => updateFilter(() => setSearch(value))}
+          onSearch={(value) => updateFilter({ search: value }, "replace")}
           search={search}
           searchPlaceholder="Search name or character ID"
           selects={[
-            { name: t("Gender"), value: gender, onChange: (value) => updateFilter(() => setGender(value)), options: [allOption, ...GENDERS.map((item) => ({ value: item, label: value(item) }))] },
-            { name: t("Style"), value: style, onChange: (value) => updateFilter(() => setStyle(value)), options: [allOption, ...STYLES.map((item) => ({ value: item, label: value(item) }))] },
-            { name: t("Status"), value: status, onChange: (value) => updateFilter(() => setStatus(value)), options: [allOption, { value: "draft", label: "Draft" }, { value: "approved", label: value("approved") }, { value: "archived", label: value("archived") }] },
+            { name: t("Gender"), value: gender, onChange: (next) => updateFilter({ gender: next as OfficialListQuery["gender"] }, "push"), options: [allOption, ...GENDERS.map((item) => ({ value: item, label: value(item) }))] },
+            { name: t("Style"), value: style, onChange: (next) => updateFilter({ style: next as OfficialListQuery["style"] }, "push"), options: [allOption, ...STYLES.map((item) => ({ value: item, label: value(item) }))] },
+            { name: t("Status"), value: status, onChange: (next) => updateFilter({ status: next as OfficialListQuery["status"] }, "push"), options: [allOption, { value: "draft", label: "Draft" }, { value: "approved", label: value("approved") }, { value: "archived", label: value("archived") }] },
           ]}
         />
         <p className="text-xs tabular-nums text-[var(--ad-text-muted)]">{total} characters</p>
@@ -139,10 +157,9 @@ export function OfficialListPage() {
           {[0, 1, 2, 3, 4].map((item) => <div className="h-16 animate-pulse rounded-lg bg-black/[0.04]" key={item} />)}
         </div>
       ) : rows.length === 0 ? (
-        <EmptyState
-          action={<Link href="/admin/content/official/new"><PrimaryButton><Plus className="h-4 w-4" /> New character project</PrimaryButton></Link>}
-          hint="Create a private draft, then complete its persona, visual identity, artwork, and preview."
-          title="No character projects match these filters."
+        <OfficialListEmptyState
+          filtered={filtered}
+          onClear={() => navigate(defaultOfficialListQuery, "push")}
         />
       ) : (
         <section className="overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
@@ -222,8 +239,8 @@ export function OfficialListPage() {
         <div className="mt-4 flex items-center justify-between gap-3">
           <p className="text-xs tabular-nums text-[var(--ad-text-muted)]">Page {page} of {totalPages}</p>
           <div className="flex gap-2">
-            <GhostButton disabled={page <= 1 || loading} onClick={() => setPage((current) => Math.max(1, current - 1))}><ChevronLeft className="h-4 w-4" /> Previous</GhostButton>
-            <GhostButton disabled={page >= totalPages || loading} onClick={() => setPage((current) => Math.min(totalPages, current + 1))}>Next <ChevronRight className="h-4 w-4" /></GhostButton>
+            <GhostButton disabled={page <= 1 || loading} onClick={() => navigate({ ...listQuery, page: Math.max(1, page - 1) }, "push")}><ChevronLeft className="h-4 w-4" /> Previous</GhostButton>
+            <GhostButton disabled={page >= totalPages || loading} onClick={() => navigate({ ...listQuery, page: Math.min(totalPages, page + 1) }, "push")}>Next <ChevronRight className="h-4 w-4" /></GhostButton>
           </div>
         </div>
       ) : null}
