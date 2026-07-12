@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { evaluateSignedAdminReleaseGate } from "@/server/admin/admin-release-evidence-signing";
+import { evaluateAdminReleaseGate } from "@idream/shared/admin/release-gate";
 
 async function main() {
   const evidencePath = process.argv[2] ?? process.env.ADMIN_RELEASE_EVIDENCE_PATH;
@@ -24,7 +24,7 @@ async function main() {
   const publicKeyPem = publicKeyPath
     ? await readFile(resolve(publicKeyPath)).catch(() => undefined)
     : undefined;
-  const report = evaluateSignedAdminReleaseGate(input, {
+  const report = evaluateAdminReleaseGate(input, {
     publicKeyPem,
     expectedKeyId,
   });

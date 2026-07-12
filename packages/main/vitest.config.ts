@@ -64,6 +64,10 @@ export default defineConfig({
         "../shared/src/contracts/index.ts",
         import.meta.url,
       ).pathname,
+      "@idream/shared/admin/release-gate": new URL(
+        "../shared/src/admin/release-gate.ts",
+        import.meta.url,
+      ).pathname,
       "@idream/shared/admin": new URL("../shared/src/admin/index.ts", import.meta.url).pathname,
       "@idream/shared/admin/contracts": new URL(
         "../shared/src/admin/contracts/index.ts",

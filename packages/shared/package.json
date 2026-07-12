@@ -13,6 +13,7 @@
     "./admin/contracts": "./src/admin/contracts/index.ts",
     "./admin/permissions": "./src/admin/permissions.ts",
     "./admin/errors": "./src/admin/errors.ts",
+    "./admin/release-gate": "./src/admin/release-gate.ts",
     "./bff": "./src/bff/signing.ts",
     "./media/generated-image-sanity": "./src/media/generated-image-sanity.ts",
     "./media/mock-video": "./src/media/mock-video.ts",

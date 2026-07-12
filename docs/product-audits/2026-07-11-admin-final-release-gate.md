@@ -26,7 +26,7 @@ ADMIN_RELEASE_EVIDENCE_KEY_ID=release-2026-q3 \
 bun run --cwd packages/main admin:readiness:release-gate -- signed-v3-evidence.json
 ```
 
-The signer and verifier deliberately use different key files. The private key is only read by the signing command; the gate only receives the independently trusted public key. The signed payload covers all sign-off actors, evidence references, observations, canary samples and truth counts, so editing any of them invalidates the signature.
+The signer and verifier deliberately use different key files. The signer accepts only PKCS8 `PRIVATE KEY` PEM; the gate accepts only SPKI `PUBLIC KEY` PEM and explicitly rejects private-key input even though generic crypto APIs can derive a public key from it. The signed payload covers all sign-off actors, evidence references, observations, canary samples and truth counts, so editing any of them invalidates the signature. The Node-only release-gate module is exposed through the dedicated `@idream/shared/admin/release-gate` entrypoint rather than the browser-safe Admin barrel, and its public evaluator always performs cryptographic verification—there is no exported semantic-only bypass.
 
 It fails closed unless all of the following are true:
 

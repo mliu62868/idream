@@ -1,15 +1,32 @@
+import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  evaluateAdminReleaseGate as evaluateReleaseGateSemantics,
-  type AdminReleaseGateEvidence,
+  evaluateAdminReleaseGate as evaluateSignedReleaseGate,
+  signAdminReleaseEvidence,
 } from "./release-gate";
 
+const pair = generateKeyPairSync("ed25519");
+const privateKeyPem = pair.privateKey.export({ format: "pem", type: "pkcs8" }).toString();
+const publicKeyPem = pair.publicKey.export({ format: "pem", type: "spki" }).toString();
+
 function evaluateAdminReleaseGate(input: unknown, now: Date) {
-  return evaluateReleaseGateSemantics(input, now, {
-    verified: true,
-    algorithm: "Ed25519",
-    keyId: "release-2026-q3",
-    manifestDigest: "a".repeat(64),
+  let candidate = input;
+  if (input && typeof input === "object" && "provenance" in input) {
+    const { provenance: _, ...unsigned } = input as Record<string, unknown>;
+    try {
+      candidate = signAdminReleaseEvidence(unsigned, {
+        privateKeyPem,
+        keyId: "release-2026-q3",
+        signedAt: new Date("2026-07-11T00:00:00.000Z"),
+      });
+    } catch {
+      candidate = input;
+    }
+  }
+  return evaluateSignedReleaseGate(candidate, {
+    publicKeyPem,
+    expectedKeyId: "release-2026-q3",
+    now,
   });
 }
 
@@ -40,8 +57,8 @@ const canaryEvidence = (mode: "read" | "write") => ({
   }],
 });
 
-function productionEvidence(): AdminReleaseGateEvidence {
-  return {
+function productionEvidence() {
+  return signAdminReleaseEvidence({
     schemaVersion: 3 as const,
     environment: "production" as const,
     generatedAt: "2026-07-11T00:00:00.000Z",
@@ -121,13 +138,11 @@ function productionEvidence(): AdminReleaseGateEvidence {
       operations: { actor: "operations-dri", decision: "go" as const, signedAt: "2026-07-10T12:00:00.000Z" },
       release: { actor: "release-dri", decision: "go" as const, signedAt: "2026-07-10T12:00:00.000Z" },
     },
-    provenance: {
-      algorithm: "Ed25519" as const,
-      keyId: "release-2026-q3",
-      signedAt: "2026-07-11T00:00:00.000Z",
-      signature: "A".repeat(86),
-    },
-  };
+  }, {
+    privateKeyPem,
+    keyId: "release-2026-q3",
+    signedAt: new Date("2026-07-11T00:00:00.000Z"),
+  });
 }
 
 describe("Admin final release gate", () => {
@@ -226,7 +241,7 @@ describe("Admin final release gate", () => {
     const input = { ...productionEvidence(), schemaVersion: 2 };
     expect(evaluateAdminReleaseGate(input, new Date("2026-07-11T00:00:00.000Z"))).toMatchObject({
       status: "blocked",
-      blockers: [expect.objectContaining({ code: "evidence_schema_invalid" })],
+      blockers: [expect.objectContaining({ code: "evidence_signature_invalid" })],
     });
   });
 
@@ -235,14 +250,19 @@ describe("Admin final release gate", () => {
     input.runtime.errorBudget.failures = input.runtime.errorBudget.total + 1;
     expect(evaluateAdminReleaseGate(input, new Date("2026-07-11T00:00:00.000Z"))).toMatchObject({
       status: "blocked",
-      blockers: [expect.objectContaining({ code: "evidence_schema_invalid" })],
+      blockers: [expect.objectContaining({ code: "evidence_signature_invalid" })],
     });
   });
 
-  it("does not let the semantic evaluator authorize an unverified signature", () => {
-    expect(evaluateReleaseGateSemantics(productionEvidence(), new Date("2026-07-11T00:00:00.000Z"))).toMatchObject({
+  it("does not expose a semantic bypass for unsigned evidence", () => {
+    const { provenance: _, ...unsigned } = productionEvidence();
+    expect(evaluateSignedReleaseGate(unsigned, {
+      publicKeyPem,
+      expectedKeyId: "release-2026-q3",
+      now: new Date("2026-07-11T00:00:00.000Z"),
+    })).toMatchObject({
       status: "blocked",
-      blockers: [expect.objectContaining({ code: "evidence_signature_unverified" })],
+      blockers: [expect.objectContaining({ code: "evidence_signature_missing" })],
     });
   });
 
@@ -250,7 +270,7 @@ describe("Admin final release gate", () => {
     expect(evaluateAdminReleaseGate({ environment: "production" }, new Date("2026-07-11T00:00:00.000Z"))).toMatchObject({
       status: "blocked",
       decisionUse: "blocked",
-      blockers: [expect.objectContaining({ code: "evidence_schema_invalid" })],
+      blockers: [expect.objectContaining({ code: "evidence_signature_missing" })],
     });
   });
 });

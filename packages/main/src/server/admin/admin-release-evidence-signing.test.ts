@@ -1,9 +1,9 @@
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  evaluateSignedAdminReleaseGate,
+  evaluateAdminReleaseGate,
   signAdminReleaseEvidence,
-} from "./admin-release-evidence-signing";
+} from "@idream/shared/admin/release-gate";
 
 const observed = () => ({
   status: "pass" as const,
@@ -96,7 +96,7 @@ describe("signed Admin release evidence", () => {
       signedAt: new Date("2026-07-11T00:00:00.000Z"),
     });
     expect(JSON.stringify(signed)).not.toMatch(/PRIVATE KEY|PUBLIC KEY/);
-    expect(evaluateSignedAdminReleaseGate(signed, {
+    expect(evaluateAdminReleaseGate(signed, {
       publicKeyPem: keys.publicKeyPem,
       expectedKeyId: "release-2026-q3",
       now: new Date("2026-07-11T00:00:00.000Z"),
@@ -111,7 +111,7 @@ describe("signed Admin release evidence", () => {
       signedAt: new Date("2026-07-11T00:00:00.000Z"),
     });
     signed.truth.stateInvariantViolations = 1;
-    expect(evaluateSignedAdminReleaseGate(signed, {
+    expect(evaluateAdminReleaseGate(signed, {
       publicKeyPem: keys.publicKeyPem,
       expectedKeyId: "release-2026-q3",
       now: new Date("2026-07-11T00:00:00.000Z"),
@@ -126,17 +126,22 @@ describe("signed Admin release evidence", () => {
       keyId: "release-2026-q3",
       signedAt: new Date("2026-07-11T00:00:00.000Z"),
     });
-    expect(evaluateSignedAdminReleaseGate(signed, {
+    expect(evaluateAdminReleaseGate(signed, {
       publicKeyPem: wrong.publicKeyPem,
       expectedKeyId: "release-2026-q3",
       now: new Date("2026-07-11T00:00:00.000Z"),
     })).toMatchObject({ status: "blocked", blockers: [expect.objectContaining({ code: "evidence_signature_invalid" })] });
-    expect(evaluateSignedAdminReleaseGate({ ...signed, provenance: undefined }, {
+    expect(evaluateAdminReleaseGate(signed, {
+      publicKeyPem: signer.privateKeyPem,
+      expectedKeyId: "release-2026-q3",
+      now: new Date("2026-07-11T00:00:00.000Z"),
+    })).toMatchObject({ status: "blocked", blockers: [expect.objectContaining({ code: "evidence_signature_invalid" })] });
+    expect(evaluateAdminReleaseGate({ ...signed, provenance: undefined }, {
       publicKeyPem: signer.publicKeyPem,
       expectedKeyId: "release-2026-q3",
       now: new Date("2026-07-11T00:00:00.000Z"),
     })).toMatchObject({ status: "blocked", blockers: [expect.objectContaining({ code: "evidence_signature_missing" })] });
-    expect(evaluateSignedAdminReleaseGate(signed, {
+    expect(evaluateAdminReleaseGate(signed, {
       publicKeyPem: signer.publicKeyPem,
       expectedKeyId: "other-key",
       now: new Date("2026-07-11T00:00:00.000Z"),
