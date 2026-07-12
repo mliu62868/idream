@@ -110,6 +110,7 @@ export const navItems: NavItem[] = [
   item({ id: "chat", label: "Chat Operations", href: "/admin/ops/chat", icon: MessageSquare, group: "Platform Operations", permissions: ["chat.ops.read"] }),
 
   item({ id: "approvals", label: "Approvals", href: "/admin/system/approvals", icon: ClipboardCheck, group: "System", permissions: ["admin.approval.review"] }),
+  item({ id: "system/access", label: "Team Access", href: "/admin/system/access", icon: Users, group: "System", permissions: ["user.status.write", "user.role.write"] }),
   item({ id: "audit-log", label: "Audit Log", href: "/admin/system/audit", icon: History, group: "System", permissions: ["audit.read"] }),
 ];
 
@@ -138,7 +139,7 @@ export function defaultWorkModeForRole(role: string | undefined): WorkMode {
 }
 
 export function sectionIsPermitted(sectionId: string, permissions: ReadonlySet<string>) {
-  const navItem = navItems.find((candidate) => candidate.id === sectionId);
+  const navItem = ALL_SECTION_ITEMS.find((candidate) => candidate.id === sectionId);
   return Boolean(navItem?.permissions.some((permission) => permissions.has(permission)));
 }
 
@@ -153,13 +154,24 @@ export function navGroupsForPermissions(permissions: ReadonlySet<string>, mode: 
     .filter(({ items }) => items.length > 0);
 }
 
-const KNOWN_SECTION_IDS = new Set(navItems.map((navItem) => navItem.id));
+// These routes retain command parity while their Case equivalents are incomplete.
+// They stay out of primary navigation but remain directly addressable for saved links
+// and legacy operators; production traffic telemetry decides their eventual sunset.
+const HIDDEN_COMPATIBILITY_ITEMS: NavItem[] = [
+  item({ id: "moderation", label: "Moderation Cases", href: "/admin/moderation", icon: ShieldAlert, group: "Customer Operations", permissions: ["safety.review.read"] }),
+  item({ id: "support", label: "Support Cases", href: "/admin/support", icon: Ticket, group: "Customer Operations", permissions: ["support.request.read"] }),
+  item({ id: "risk", label: "Risk Cases", href: "/admin/risk", icon: ShieldAlert, group: "Customer Operations", permissions: ["audit.read"] }),
+];
+
+const ALL_SECTION_ITEMS = [...navItems, ...HIDDEN_COMPATIBILITY_ITEMS];
+const KNOWN_SECTION_IDS = new Set(ALL_SECTION_ITEMS.map((navItem) => navItem.id));
 const SECTION_ALIASES: Record<string, string> = {
   "generation/models": "generation/config",
-  moderation: "cases",
-  support: "cases",
-  risk: "cases",
 };
+
+export function adminSectionItem(sectionId: string) {
+  return ALL_SECTION_ITEMS.find((candidate) => candidate.id === sectionId) ?? navItems[0];
+}
 
 export type AdminSubview =
   | { kind: "list" }
@@ -199,7 +211,7 @@ const CANONICAL_LIST_SECTIONS: Record<string, string> = {
   "ops/recipes": "generation/recipes",
   "ops/chat": "chat",
   "system/approvals": "approvals",
-  "system/access": "users",
+  "system/access": "system/access",
   "system/audit": "audit-log",
   "system/config": "generation/config",
 };

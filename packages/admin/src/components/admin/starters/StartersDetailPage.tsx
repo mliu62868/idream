@@ -126,9 +126,10 @@ export function StartersDetailPage({ id }: { id: string }) {
     if (pending === "activate") {
       return {
         title: t("Publish"),
+        destructive: { expectedName: row.name },
         submitLabel: t("Publish"),
         onSubmit: async (reason) => {
-          await apiWrite(`${STARTERS_LIST}/${id}/active`, "POST", { active: true, reason });
+          await apiWrite(`${STARTERS_LIST}/${id}/active`, "POST", { active: true, reason, confirmation: id });
           await reload();
         },
       };
@@ -138,7 +139,7 @@ export function StartersDetailPage({ id }: { id: string }) {
       destructive: { expectedName: row.name },
       submitLabel: t("Offline"),
       onSubmit: async (reason) => {
-        await apiWrite(`${STARTERS_LIST}/${id}/active`, "POST", { active: false, reason });
+        await apiWrite(`${STARTERS_LIST}/${id}/active`, "POST", { active: false, reason, confirmation: id });
         await reload();
       },
     };

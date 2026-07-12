@@ -30,6 +30,7 @@ const zh: Record<string, string> = {
   "Apply Civitai config": "应用 Civitai 配置",
   "Approve": "通过",
   "Approvals": "审批",
+  "Team Access": "团队访问",
   "Archive": "归档",
   "Archived": "已归档",
   "Audit": "审计",

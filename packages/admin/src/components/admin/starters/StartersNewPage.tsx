@@ -66,10 +66,10 @@ export function StartersNewPage() {
     setCreating(true);
     setError(null);
     try {
-      const created = await apiWrite<{ item?: { id?: string } }>(
+      const created = await apiWrite<{ template?: { id?: string } }>(
         STARTERS_LIST, "POST", starterPayload({ ...draft, reason: EMPTY_DRAFT.reason }),
       );
-      const newId = created.item?.id;
+      const newId = created.template?.id;
       window.location.href = newId
         ? `/admin/content/templates/${newId}`
         : "/admin/content/templates";

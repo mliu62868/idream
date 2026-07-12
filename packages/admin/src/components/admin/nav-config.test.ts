@@ -18,7 +18,7 @@ const NAV_IDS = [
   "content/official", "content/templates", "content/tags", "content/review-queue",
   "cms", "cases", "chat", "users", "billing", "pricing", "promo",
   "announcements", "analytics", "insights", "experiments", "compliance", "ops/incidents",
-  "approvals", "audit-log",
+  "approvals", "system/access", "audit-log",
 ];
 
 describe("admin navigation information architecture", () => {
@@ -50,12 +50,15 @@ describe("admin navigation information architecture", () => {
     expect(parseAdminPath("growth/merchandising?view=announcements").sectionId).toBe("announcements");
   });
 
-  it("redirects retired raw queues into their authoritative domain root", () => {
+  it("retains compatibility routes until their Case commands reach parity", () => {
     for (const id of NAV_IDS) expect(normalizeSection(id)).toBe(id);
-    expect(normalizeSection("moderation")).toBe("cases");
-    expect(normalizeSection("support")).toBe("cases");
-    expect(normalizeSection("risk")).toBe("cases");
+    expect(normalizeSection("moderation")).toBe("moderation");
+    expect(normalizeSection("support")).toBe("support");
+    expect(normalizeSection("risk")).toBe("risk");
     expect(normalizeSection("generation/models")).toBe("generation/config");
+    expect(sectionIsPermitted("support", new Set(["support.request.read"]))).toBe(true);
+    expect(sectionIsPermitted("moderation", new Set(["safety.review.read"]))).toBe(true);
+    expect(navItems.some((item) => ["support", "moderation", "risk"].includes(item.id))).toBe(false);
   });
 
   it("redirects only entry aliases and preserves query state", () => {

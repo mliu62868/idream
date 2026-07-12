@@ -67,7 +67,7 @@ import {
   useAdminI18n,
 } from "@/components/admin/i18n";
 import {
-  navItems,
+  adminSectionItem,
   parseAdminPath,
   configSliceForSection,
   defaultWorkModeForRole,
@@ -224,6 +224,7 @@ type SectionData =
   | { kind: "config"; data: ConfigData; slice: ConfigSlice }
   | { kind: "moderation"; reports: Row[]; blockedMedia: Row[]; appeals: Row[] }
   | { kind: "users"; rows: Row[] }
+  | { kind: "access"; rows: Row[] }
   | { kind: "billing"; rows: Row[]; subscriptions: Row[]; reconciliation: ReconciliationData }
   | { kind: "pricing"; rows: Row[] }
   | { kind: "deadletter"; rows: Row[] }
@@ -612,7 +613,7 @@ export function AdminConsoleClient({
   const sidebarNavRef = useRef<HTMLElement | null>(null);
   const { sectionId, view: subview } = parseAdminPath(initialSection);
   const commandId = new URLSearchParams(initialSection.split("?", 2)[1] ?? "").get("commandId");
-  const activeItem = navItems.find((item) => item.id === sectionId) ?? navItems[0];
+  const activeItem = adminSectionItem(sectionId);
   const permissions = useMemo(() => new Set(initialPermissions), [initialPermissions]);
   const canAccessActiveSection = sectionIsPermitted(sectionId, permissions);
   const [workMode, setWorkMode] = useState<WorkMode>(() => defaultWorkModeForRole(actor?.role));
@@ -1317,8 +1318,10 @@ async function fetchSection(
       appeals: payload.appeals,
     };
   }
-  if (sectionId === "users") {
-    return { kind: "users", rows: [] };
+  if (sectionId === "users") return { kind: "users", rows: [] };
+  if (sectionId === "system/access") {
+    const payload = await apiGet<{ items: Row[] }>("/api/v1/admin/users?limit=100");
+    return { kind: "access", rows: payload.items };
   }
   if (sectionId === "billing") {
     const [ledger, subscriptions, reconciliation] = await Promise.all([
@@ -2265,6 +2268,16 @@ function renderSection(
   }
   if (section.kind === "users") {
     return <CustomerWorkspace />;
+  }
+  if (section.kind === "access") {
+    return (
+      <UsersView
+        openAction={ctx.openAction}
+        permissionForm={ctx.permissionForm}
+        rows={section.rows}
+        setPermissionForm={ctx.setPermissionForm}
+      />
+    );
   }
   if (section.kind === "billing") {
     return (
