@@ -90,10 +90,10 @@ export const GENERATION_ATTEMPT_STATES = [
 const GENERATION_ATTEMPT_AUTHORITY = defineTransitionAuthority(GENERATION_ATTEMPT_STATES, {
   queued: ["queued", "running", "succeeded", "failed", "cancelled", "unknown"],
   running: ["running", "succeeded", "failed", "cancelled", "unknown"],
-  succeeded: [],
-  failed: [],
-  cancelled: [],
-  unknown: [],
+  succeeded: ["succeeded"],
+  failed: ["failed"],
+  cancelled: ["cancelled"],
+  unknown: ["unknown"],
 });
 
 export function isGenerationAttemptTransitionAllowed(from: string, to: string) {
@@ -178,7 +178,7 @@ const ADMIN_CASE_AUTHORITY = defineTransitionAuthority(ADMIN_CASE_STATES, {
   triaged: ["triaged", "in_progress", "waiting", "resolved"],
   in_progress: ["in_progress", "waiting", "resolved"],
   waiting: ["waiting", "in_progress", "resolved"],
-  resolved: ["closed", "reopened"],
+  resolved: ["in_progress", "closed", "reopened"],
   closed: ["reopened"],
   reopened: ["triaged", "in_progress", "waiting", "resolved"],
 });

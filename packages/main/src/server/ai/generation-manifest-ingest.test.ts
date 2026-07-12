@@ -118,6 +118,23 @@ describe("generation completion manifest durable ingest", () => {
     await expect(prisma.mainOutboxEvent.count({ where: { id: outboxId } })).resolves.toBe(0);
   });
 
+  it("does not reopen a terminal business Attempt from a late manifest", async () => {
+    await prisma.generationAttempt.create({
+      data: { id: attemptId, requestId: manifest.generationJobId, attemptNo: 1, status: "succeeded", finishedAt: new Date() },
+    });
+    const input = {
+      manifestRef: `gen/completion-manifests/${attemptId}/late.json`,
+      manifestChecksum: generationManifestChecksum(manifest),
+      manifest,
+    };
+
+    await expect(ingestGenerationManifest(input)).rejects.toThrow("cannot reopen a terminal Generation Attempt");
+    await expect(prisma.generationAttempt.findUniqueOrThrow({ where: { id: attemptId } })).resolves.toMatchObject({ status: "succeeded" });
+    await expect(prisma.inboundEventReceipt.count({ where: { sourceService: "gen", sourceEventId: attemptId } })).resolves.toBe(0);
+    await expect(prisma.generationTransportExecution.count({ where: { attemptId } })).resolves.toBe(0);
+    await expect(prisma.generationArtifact.count({ where: { attemptId } })).resolves.toBe(0);
+  });
+
   it("archives late artifacts without delivery when the business Attempt is cancelled", async () => {
     const suffix = crypto.randomUUID();
     const userId = `late-user-${suffix}`;

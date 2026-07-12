@@ -15,6 +15,7 @@ import {
   isGenerationArtifactValidationTransitionAllowed,
   isGenerationTransportExecutionTransitionAllowed,
 } from "./generation-evidence-transition-authority";
+import { isGenerationAttemptTransitionAllowed } from "@/server/modules/admin-v2/shared/state-transition-authority";
 
 export async function ingestGenerationManifest(
   rawInput: unknown,
@@ -120,6 +121,11 @@ export async function ingestGenerationManifest(
         metadata: toInputJson({ attemptId: existingAttempt.id, manifestRef: input.manifestRef, assetCount: input.manifest.assets.length }),
       } });
       return { acknowledged: true, status: "persisted" as const, receiptId: createdReceipt.id };
+    }
+    if (existingAttempt && !isGenerationAttemptTransitionAllowed(existingAttempt.status, "running")) {
+      throw Errors.conflict("Completion manifest cannot reopen a terminal Generation Attempt", {
+        status: existingAttempt.status,
+      });
     }
     const attempt = await tx.generationAttempt.upsert({
       where: { id: input.manifest.attemptId },

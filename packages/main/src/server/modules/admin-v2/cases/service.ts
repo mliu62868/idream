@@ -777,6 +777,9 @@ export async function recordReviewCaseDecision(
       actionEndpoint: `/api/v2/admin/cases/${current.id}/actions`,
     });
   }
+  if (["resolved", "closed"].includes(current.status)) {
+    throw Errors.conflict("Terminal case must be reopened before a new decision");
+  }
   const nextStatus = input.downstreamVerified ? "resolved" : "in_progress";
   if (!isAdminCaseTransitionAllowed(current.status, nextStatus)) {
     throw Errors.conflict("Case cannot accept a decision from its present state", { status: current.status });
