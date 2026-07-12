@@ -157,4 +157,19 @@ describe("Admin v2 architecture boundaries", () => {
     expect(savedViews).toContain("export async function createSavedView");
     expect(savedViews).toContain("executeIdempotentDomainCommand");
   });
+
+  it("leaves the legacy dispatcher as a route table and compatibility export surface", async () => {
+    const root = path.join(process.cwd(), "src/server/modules/admin");
+    const dispatcher = await readFile(path.join(root, "service.ts"), "utf8");
+    const dashboard = await readFile(path.join(root, "dashboard/service.ts"), "utf8");
+    const generation = await readFile(path.join(root, "generation/catalog-admin.ts"), "utf8");
+    expect(dispatcher.match(/(?:export )?async function /g)).toEqual([
+      "export async function ",
+    ]);
+    expect(dispatcher).not.toContain("prisma.");
+    expect(dispatcher).not.toContain("z.object(");
+    expect(dashboard).toContain("export async function adminDashboard");
+    expect(generation).toContain("export async function listRecipes");
+    expect(generation).toContain("export async function listAdminPresets");
+  });
 });
