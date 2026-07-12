@@ -102,8 +102,8 @@ export const ADMIN_V2_API_OPERATIONS = [
   operation("GET", "/api/v2/admin/bootstrap", bootstrap(), "none", "adminBootstrapSchema"),
 
   operation("GET", "/api/v2/admin/cases", allOf("case.read"), "operationsCaseQuerySchema", "operationsCaseListResponseSchema"),
-  operation("POST", "/api/v2/admin/cases/backfill", allOf("case.decide"), "adminBackfillRequestSchema", "adminBackfillResultSchema"),
-  operation("POST", "/api/v2/admin/cases/backfill/customer", allOf("case.decide"), "adminBackfillRequestSchema", "adminBackfillResultSchema"),
+  operation("POST", "/api/v2/admin/cases/backfill", allOf("case.decide"), "adminBackfillRequestSchema+idempotency-key", "adminBackfillResultSchema"),
+  operation("POST", "/api/v2/admin/cases/backfill/customer", allOf("case.decide"), "adminBackfillRequestSchema+idempotency-key", "adminBackfillResultSchema"),
   operation("GET", "/api/v2/admin/cases/:id", allOf("case.read"), "path:id", "operationsCaseDetailSchema"),
   operation("POST", "/api/v2/admin/cases/:id/actions", allOf("case.decide"), "customerCaseActionRequestSchema+idempotency-key", "operationsCaseSchema"),
   operation("POST", "/api/v2/admin/cases/:id/assignment", allOf("case.assign"), "caseAssignmentRequestSchema+idempotency-key", "operationsCaseSchema"),
@@ -164,7 +164,7 @@ export const ADMIN_V2_API_OPERATIONS = [
   operation("POST", "/api/v2/admin/generation/requests/:id/commands/cancel", allOf("generation.job.requeue"), "generationRequestCancelSchema+idempotency-key", "generationRequestCancelResultSchema"),
 
   operation("GET", "/api/v2/admin/incidents", allOf("ops.incident.read"), "incidentQuerySchema", "incidentListResponseSchema"),
-  operation("POST", "/api/v2/admin/incidents/backfill", allOf("ops.incident.manage"), "adminBackfillRequestSchema", "adminBackfillResultSchema"),
+  operation("POST", "/api/v2/admin/incidents/backfill", allOf("ops.incident.manage"), "adminBackfillRequestSchema+idempotency-key", "adminBackfillResultSchema"),
   operation("GET", "/api/v2/admin/incidents/:id", allOf("ops.incident.read"), "path:id", "incidentDetailSchema"),
   operation("PATCH", "/api/v2/admin/incidents/:id", allOf("ops.incident.manage"), "incidentTriageRequestSchema+if-match", "incidentDetailSchema"),
   operation("POST", "/api/v2/admin/incidents/:id/action-plans/preview", allOf("ops.incident.manage"), "incidentActionPlanPreviewRequestSchema+idempotency-key", "incidentActionPlanSchema"),
@@ -195,8 +195,8 @@ export const ADMIN_V2_API_OPERATIONS = [
   operation("PUT", "/api/v2/admin/today/preferences", allOf("dashboard.read"), "operationalWorkPreferenceUpdateSchema+if-match", "operationalWorkPreferenceSchema"),
 
   operation("GET", "/api/v2/admin/users/:id/grant-bundles", allOf("user.role.write"), "path:id", "adminGrantBundleListSchema"),
-  operation("POST", "/api/v2/admin/users/:id/grant-bundles", allOf("user.role.write"), "adminGrantBundleWriteSchema", "adminGrantBundleMutationSchema"),
-  operation("DELETE", "/api/v2/admin/users/:id/grant-bundles/:bundleKey", allOf("user.role.write"), "adminGrantBundleRevokeSchema", "adminGrantBundleMutationSchema"),
+  operation("POST", "/api/v2/admin/users/:id/grant-bundles", allOf("user.role.write"), "adminGrantBundleWriteSchema+idempotency-key", "adminGrantBundleMutationSchema"),
+  operation("DELETE", "/api/v2/admin/users/:id/grant-bundles/:bundleKey", allOf("user.role.write"), "adminGrantBundleRevokeSchema+idempotency-key", "adminGrantBundleMutationSchema"),
 ] as const satisfies readonly AdminV2ApiOperation[];
 
 function routePatternRegex(route: AdminV2RoutePattern): RegExp {

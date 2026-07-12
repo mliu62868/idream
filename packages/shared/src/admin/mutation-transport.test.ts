@@ -47,7 +47,7 @@ describe("Admin v2 mutation transport invariant", () => {
   });
 
   it("fails closed with an exact actionable pending inventory", () => {
-    const pending = Object.entries(ADMIN_V2_MUTATION_TRANSPORT)
+    const pending = (Object.entries(ADMIN_V2_MUTATION_TRANSPORT) as Array<[string, AdminV2MutationTransport]>)
       .filter(([, transport]) => transport.status === "pending")
       .map(([operationId]) => operationId)
       .sort();
@@ -55,7 +55,7 @@ describe("Admin v2 mutation transport invariant", () => {
     expect(Object.keys(ADMIN_V2_PENDING_MUTATION_TRANSPORT).sort()).toEqual(
       pending,
     );
-    expect(pending).toHaveLength(5);
+    expect(pending).toHaveLength(0);
 
     for (const item of Object.values(ADMIN_V2_PENDING_MUTATION_TRANSPORT)) {
       expect(item.owner.length).toBeGreaterThan(2);

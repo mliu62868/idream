@@ -39,17 +39,6 @@ const ifMatch = (): AdminV2ImplementedMutationTransport => ({
   staleWrite: "reject",
 });
 
-const pending = (
-  owner: string,
-  reason: string,
-  requiredTransport: AdminV2PendingMutationTransport["requiredTransport"] = "Idempotency-Key",
-): AdminV2PendingMutationTransport => ({
-  status: "pending",
-  owner,
-  reason,
-  requiredTransport,
-});
-
 /**
  * Fail-closed transport inventory for every state-changing Admin v2 operation.
  *
@@ -58,8 +47,8 @@ const pending = (
  * release gates can enumerate these exact owners and block closure.
  */
 export const ADMIN_V2_MUTATION_TRANSPORT = {
-  "POST /api/v2/admin/cases/backfill": pending("case-platform", "Backfill can be retried after a timeout and has no request deduplication."),
-  "POST /api/v2/admin/cases/backfill/customer": pending("case-platform", "Customer backfill can be retried after a timeout and has no request deduplication."),
+  "POST /api/v2/admin/cases/backfill": idempotencyKey(),
+  "POST /api/v2/admin/cases/backfill/customer": idempotencyKey(),
   "POST /api/v2/admin/cases/:id/actions": idempotencyKey(),
   "POST /api/v2/admin/cases/:id/assignment": idempotencyKey(),
   "POST /api/v2/admin/cases/:id/commands/close": idempotencyKey(),
@@ -101,7 +90,7 @@ export const ADMIN_V2_MUTATION_TRANSPORT = {
   "POST /api/v2/admin/experiments/:id/commands/stop": idempotencyKey(),
   "POST /api/v2/admin/generation/requests/:id/commands/cancel": idempotencyKey(),
 
-  "POST /api/v2/admin/incidents/backfill": pending("incident-platform", "Incident backfill has no request identity for safe replay."),
+  "POST /api/v2/admin/incidents/backfill": idempotencyKey(),
   "PATCH /api/v2/admin/incidents/:id": ifMatch(),
   "POST /api/v2/admin/incidents/:id/action-plans/preview": idempotencyKey(),
   "POST /api/v2/admin/incidents/:id/action-plans/:planId/execute": idempotencyKey(),
@@ -117,13 +106,13 @@ export const ADMIN_V2_MUTATION_TRANSPORT = {
   "DELETE /api/v2/admin/saved-views/:id": ifMatch(),
   "POST /api/v2/admin/today/claim": idempotencyKey(),
   "PUT /api/v2/admin/today/preferences": ifMatch(),
-  "POST /api/v2/admin/users/:id/grant-bundles": pending("identity-access", "Grant retries can duplicate authorization audit events."),
-  "DELETE /api/v2/admin/users/:id/grant-bundles/:bundleKey": pending("identity-access", "Grant revocation has no optimistic concurrency precondition.", "If-Match"),
+  "POST /api/v2/admin/users/:id/grant-bundles": idempotencyKey(),
+  "DELETE /api/v2/admin/users/:id/grant-bundles/:bundleKey": idempotencyKey(),
 } as const satisfies Partial<Record<AdminV2OperationId, AdminV2MutationTransport>>;
 
-export const ADMIN_V2_PENDING_MUTATION_TRANSPORT = Object.fromEntries(
-  Object.entries(ADMIN_V2_MUTATION_TRANSPORT).filter(
+export const ADMIN_V2_PENDING_MUTATION_TRANSPORT: Readonly<Record<string, AdminV2PendingMutationTransport>> = Object.fromEntries(
+  (Object.entries(ADMIN_V2_MUTATION_TRANSPORT) as Array<[string, AdminV2MutationTransport]>).filter(
     (entry): entry is [string, AdminV2PendingMutationTransport] =>
       entry[1].status === "pending",
   ),
-) as Readonly<Record<string, AdminV2PendingMutationTransport>>;
+);

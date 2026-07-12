@@ -7,6 +7,7 @@ import type {
   SupportRequest,
 } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
+import { Errors } from "@/server/lib/errors";
 import {
   applyCustomerCaseBackfill,
   applyReviewCaseBackfill,
@@ -34,6 +35,8 @@ type BackfillActor = { readonly id: string; readonly role: string };
 
 export interface ProductionBackfillOptions {
   readonly runId?: string;
+  readonly stableRunId?: string;
+  readonly optionsHash?: string;
   readonly domain?: ProductionBackfillDomain;
   readonly mode?: ProductionBackfillMode;
   readonly batchSize?: number;
@@ -188,13 +191,14 @@ async function createRun(db: PrismaClient, options: ProductionBackfillOptions) {
   const beforeCounts = await domainCounts(db, options.domain, options.initialCursor ?? null, stopAtId);
   return db.adminBackfillRun.create({
     data: {
+      id: options.stableRunId,
       domain: options.domain,
       mode: options.mode,
       status: "running",
       cursor: options.initialCursor ?? null,
       stopAtId,
       batchSize,
-      optionsHash: canonicalSha256({
+      optionsHash: options.optionsHash ?? canonicalSha256({
         domain: options.domain,
         mode: options.mode,
         batchSize,
@@ -335,8 +339,19 @@ export async function runProductionBackfillBatch(db: PrismaClient, options: Prod
   if (options.runId && (options.domain || options.mode || options.batchSize || options.initialCursor || options.stopAtId || options.actor)) {
     throw new Error("runId resumes persisted options; do not submit new backfill options");
   }
-  let run = options.runId ? await db.adminBackfillRun.findUnique({ where: { id: options.runId } }) : null;
+  let run = options.runId
+    ? await db.adminBackfillRun.findUnique({ where: { id: options.runId } })
+    : options.stableRunId
+      ? await db.adminBackfillRun.findUnique({ where: { id: options.stableRunId } })
+      : null;
   if (options.runId && !run) throw new Error(`Backfill run ${options.runId} was not found`);
+  if (run && options.optionsHash && run.optionsHash !== options.optionsHash) {
+    throw Errors.conflict("Backfill run is bound to different options", {
+      runId: run.id,
+      existingOptionsHash: run.optionsHash,
+      submittedOptionsHash: options.optionsHash,
+    });
+  }
   if (!run) run = await createRun(db, options);
   if (!PRODUCTION_BACKFILL_DOMAINS.includes(run.domain as ProductionBackfillDomain)) {
     throw new Error(`Backfill run ${run.id} has unsupported domain ${run.domain}`);
@@ -472,18 +487,31 @@ export async function backfillGenerationIncidents(input: {
   readonly dryRun: boolean;
   readonly cursor?: string;
   readonly batchSize?: number;
+  readonly actor?: BackfillActor;
+  readonly stableRunId?: string;
+  readonly optionsHash?: string;
 }) {
   const db = prisma;
-  const before = await db.opsIncidentOccurrence.count();
   const result = await runProductionBackfillBatch(db, {
     domain: "generation_incident_v1",
     mode: input.dryRun ? "dry_run" : "apply",
     batchSize: input.batchSize,
     initialCursor: input.cursor,
-    actor: { id: "system:production-backfill", role: "system" },
+    actor: input.actor ?? { id: "system:production-backfill", role: "system" },
+    stableRunId: input.stableRunId,
+    optionsHash: input.optionsHash,
   });
+  const run = await db.adminBackfillRun.findUniqueOrThrow({ where: { id: result.runId } });
+  const beforeOccurrences = Number(record(run.before).targetCount ?? 0);
+  const afterOccurrences = Number(
+    record(run.after).targetCount ?? await db.opsIncidentOccurrence.count(),
+  );
   const items = await legacyItems(db, result.runId);
   return {
+    domain: "generation_incident_v1" as const,
+    runId: result.runId,
+    status: result.status,
+    optionsHash: run.optionsHash,
     dryRun: input.dryRun,
     scanned: result.summary.scanned,
     eligible: result.summary.eligible,
@@ -491,8 +519,8 @@ export async function backfillGenerationIncidents(input: {
     unavailable: items.filter((item) => item.classification === "unavailable").map((item) => ({ attemptId: item.entityId, reason: firstMismatchReason(item.mismatches) })),
     mismatches: items.filter((item) => item.classification === "mismatch").map((item) => ({ attemptId: item.entityId, reason: firstMismatchReason(item.mismatches) })),
     nextCursor: result.nextCursor,
-    beforeOccurrences: before,
-    afterOccurrences: await db.opsIncidentOccurrence.count(),
+    beforeOccurrences,
+    afterOccurrences,
   };
 }
 
@@ -501,18 +529,31 @@ export async function backfillCustomerCases(input: {
   readonly cursor?: string;
   readonly batchSize?: number;
   readonly actor: BackfillActor;
+  readonly stableRunId?: string;
+  readonly optionsHash?: string;
 }) {
   const db = prisma;
-  const before = await db.adminCase.count({ where: { type: { in: ["support_request", "billing_dispute"] } } });
   const result = await runProductionBackfillBatch(db, {
     domain: "customer_case_v1",
     mode: input.dryRun ? "dry_run" : "apply",
     batchSize: input.batchSize,
     initialCursor: input.cursor,
     actor: input.actor,
+    stableRunId: input.stableRunId,
+    optionsHash: input.optionsHash,
   });
+  const run = await db.adminBackfillRun.findUniqueOrThrow({ where: { id: result.runId } });
+  const beforeCases = Number(record(run.before).targetCount ?? 0);
+  const afterCases = Number(
+    record(run.after).targetCount
+      ?? await db.adminCase.count({ where: { type: { in: ["support_request", "billing_dispute"] } } }),
+  );
   const items = await legacyItems(db, result.runId);
   return {
+    domain: "customer_case_v1" as const,
+    runId: result.runId,
+    status: result.status,
+    optionsHash: run.optionsHash,
     dryRun: input.dryRun,
     scanned: result.summary.scanned,
     eligible: result.summary.eligible,
@@ -520,8 +561,8 @@ export async function backfillCustomerCases(input: {
     unavailable: [],
     mismatches: items.filter((item) => item.classification === "mismatch").map((item) => ({ sourceType: item.entityType, sourceId: item.entityId, reason: firstMismatchReason(item.mismatches) })),
     nextCursor: result.nextCursor,
-    beforeCases: before,
-    afterCases: await db.adminCase.count({ where: { type: { in: ["support_request", "billing_dispute"] } } }),
+    beforeCases,
+    afterCases,
   };
 }
 
@@ -530,18 +571,31 @@ export async function backfillReviewCases(input: {
   readonly cursor?: string;
   readonly batchSize?: number;
   readonly actor: BackfillActor;
+  readonly stableRunId?: string;
+  readonly optionsHash?: string;
 }) {
   const db = prisma;
-  const before = await db.adminCase.count({ where: { type: { in: ["content_report", "appeal"] } } });
   const result = await runProductionBackfillBatch(db, {
     domain: "review_case_v1",
     mode: input.dryRun ? "dry_run" : "apply",
     batchSize: input.batchSize,
     initialCursor: input.cursor,
     actor: input.actor,
+    stableRunId: input.stableRunId,
+    optionsHash: input.optionsHash,
   });
+  const run = await db.adminBackfillRun.findUniqueOrThrow({ where: { id: result.runId } });
+  const beforeCases = Number(record(run.before).targetCount ?? 0);
+  const afterCases = Number(
+    record(run.after).targetCount
+      ?? await db.adminCase.count({ where: { type: { in: ["content_report", "appeal"] } } }),
+  );
   const items = await legacyItems(db, result.runId);
   return {
+    domain: "review_case_v1" as const,
+    runId: result.runId,
+    status: result.status,
+    optionsHash: run.optionsHash,
     dryRun: input.dryRun,
     scanned: result.summary.scanned,
     eligible: result.summary.eligible,
@@ -549,7 +603,7 @@ export async function backfillReviewCases(input: {
     unavailable: [],
     mismatches: items.filter((item) => item.classification === "mismatch").map((item) => ({ sourceType: item.entityType, sourceId: item.entityId, reason: firstMismatchReason(item.mismatches) })),
     nextCursor: result.nextCursor,
-    beforeCases: before,
-    afterCases: await db.adminCase.count({ where: { type: { in: ["content_report", "appeal"] } } }),
+    beforeCases,
+    afterCases,
   };
 }

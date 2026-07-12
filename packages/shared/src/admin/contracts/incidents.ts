@@ -107,6 +107,47 @@ export const adminBackfillRequestSchema = z
   })
   .strict();
 
+const adminBackfillCommonResultSchema = z.object({
+  runId: adminIdSchema,
+  status: z.enum(["paused", "completed"]),
+  optionsHash: z.string().regex(/^[a-f0-9]{64}$/),
+  dryRun: z.boolean(),
+  scanned: z.number().int().nonnegative(),
+  eligible: z.number().int().nonnegative(),
+  applied: z.number().int().nonnegative(),
+  nextCursor: z.string().nullable(),
+});
+
+const adminBackfillMismatchSchema = z.object({
+  sourceType: z.string().trim().min(1),
+  sourceId: adminIdSchema,
+  reason: z.string().trim().min(1),
+}).strict();
+
+export const adminBackfillResultSchema = z.discriminatedUnion("domain", [
+  adminBackfillCommonResultSchema.extend({
+    domain: z.literal("generation_incident_v1"),
+    unavailable: z.array(z.object({ attemptId: adminIdSchema, reason: z.string().trim().min(1) }).strict()),
+    mismatches: z.array(z.object({ attemptId: adminIdSchema, reason: z.string().trim().min(1) }).strict()),
+    beforeOccurrences: z.number().int().nonnegative(),
+    afterOccurrences: z.number().int().nonnegative(),
+  }).strict(),
+  adminBackfillCommonResultSchema.extend({
+    domain: z.literal("customer_case_v1"),
+    unavailable: z.array(adminBackfillMismatchSchema),
+    mismatches: z.array(adminBackfillMismatchSchema),
+    beforeCases: z.number().int().nonnegative(),
+    afterCases: z.number().int().nonnegative(),
+  }).strict(),
+  adminBackfillCommonResultSchema.extend({
+    domain: z.literal("review_case_v1"),
+    unavailable: z.array(adminBackfillMismatchSchema),
+    mismatches: z.array(adminBackfillMismatchSchema),
+    beforeCases: z.number().int().nonnegative(),
+    afterCases: z.number().int().nonnegative(),
+  }).strict(),
+]);
+
 export const incidentStatusSchema = z.enum([
   "detected",
   "triaged",
@@ -213,3 +254,4 @@ export type IncidentActionPlanExecuteRequest = z.infer<
   typeof incidentActionPlanExecuteRequestSchema
 >;
 export type AdminBackfillRequest = z.infer<typeof adminBackfillRequestSchema>;
+export type AdminBackfillResult = z.infer<typeof adminBackfillResultSchema>;

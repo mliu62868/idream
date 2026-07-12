@@ -34,13 +34,13 @@ describe("Admin v2 executable contract registry", () => {
       expect(binding.schema.safeParse(binding.fixtures.valid).success, `${ref} positive`).toBe(true);
       expect(binding.schema.safeParse(binding.fixtures.invalid).success, `${ref} negative`).toBe(false);
     }
-    expect(executed.size).toBe(101);
+    expect(executed.size).toBe(106);
   });
 
   it("fails closed for every explicitly pending contract and reports an exact owner/reason", () => {
     const referenced = manifestBaseRefs();
     const pending = Object.entries(ADMIN_V2_PENDING_CONTRACTS);
-    expect(pending).toHaveLength(20);
+    expect(pending).toHaveLength(15);
 
     for (const [ref, evidence] of pending) {
       expect(referenced.has(ref), `${ref} is stale`).toBe(true);

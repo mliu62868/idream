@@ -31,26 +31,6 @@ const transportContracts = {
 } as const satisfies Record<string, z.ZodType>;
 
 export const ADMIN_V2_PENDING_CONTRACTS = {
-  adminBackfillResultSchema: {
-    owner: "packages/main/src/server/modules/admin-v2/cases/service.ts",
-    reason: "Case and Incident backfills return different reports and need a discriminated shared response contract.",
-  },
-  adminGrantBundleListSchema: {
-    owner: "packages/main/src/server/modules/admin-v2/permissions/grant-bundles.ts",
-    reason: "The grant-bundle list DTO is still assembled by the main service without a shared response schema.",
-  },
-  adminGrantBundleMutationSchema: {
-    owner: "packages/main/src/server/modules/admin-v2/permissions/grant-bundles.ts",
-    reason: "Grant and revoke responses expose Prisma rows and need a redacted shared mutation DTO.",
-  },
-  adminGrantBundleRevokeSchema: {
-    owner: "packages/main/src/server/modules/admin-v2/permissions/grant-bundles.ts",
-    reason: "The revoke request parser is route-local and has not moved to the shared Admin contract package.",
-  },
-  adminGrantBundleWriteSchema: {
-    owner: "packages/main/src/server/modules/admin-v2/permissions/grant-bundles.ts",
-    reason: "The grant request parser is route-local and has not moved to the shared Admin contract package.",
-  },
   customerListQuerySchema: {
     owner: "packages/main/src/server/modules/admin-v2/cases/customer-query.ts",
     reason: "Customer list query validation remains main-local and therefore cannot be executed by the shared registry.",
