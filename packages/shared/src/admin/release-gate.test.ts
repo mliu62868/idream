@@ -230,10 +230,16 @@ describe("Admin final release gate", () => {
     const artifact = core.truth.metricGoldenDataset.evidenceRefs[0]!;
     core.truth.metricGoldenDataset.evidenceRefs[0] = {
       ...artifact,
-      collector: { ...artifact.collector, signature: `${artifact.collector.signature.slice(0, -1)}A` },
+      collector: {
+        ...artifact.collector,
+        signature: `${artifact.collector.signature.slice(0, -1)}${artifact.collector.signature.endsWith("A") ? "B" : "A"}`,
+      },
     };
     const invalidArtifact = releaseEnvelope(core, signoffsFor(core));
-    expect(evaluateSignedReleaseGate(invalidArtifact, { trustRegistry })).toMatchObject({
+    expect(evaluateSignedReleaseGate(invalidArtifact, {
+      trustRegistry,
+      now: new Date("2026-07-11T00:00:00.000Z"),
+    })).toMatchObject({
       status: "blocked",
       blockers: [expect.objectContaining({ code: "evidence_artifact_signature_invalid" })],
     });
@@ -249,7 +255,10 @@ describe("Admin final release gate", () => {
       keyId: "collector-2026-q3",
     });
     const wrongIssuer = releaseEnvelope(wrongIssuerCore, signoffsFor(wrongIssuerCore));
-    expect(evaluateSignedReleaseGate(wrongIssuer, { trustRegistry })).toMatchObject({
+    expect(evaluateSignedReleaseGate(wrongIssuer, {
+      trustRegistry,
+      now: new Date("2026-07-11T00:00:00.000Z"),
+    })).toMatchObject({
       status: "blocked",
       blockers: [expect.objectContaining({ code: "evidence_artifact_key_untrusted" })],
     });
