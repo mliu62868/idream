@@ -55,7 +55,7 @@ describe("Admin v2 finite-state authority inventory", () => {
 
   it("excludes Creative execution, review, and deployment views because they are derived and not persisted axes", () => {
     const schema = source("prisma/schema.prisma");
-    const batch = schema.match(/model ContentProductionBatch \{(?<body>[\s\S]*?)\n\}/)?.groups?.body;
+    const batch = schema.match(/model ContentProductionBatch \{([\s\S]*?)\n\}/)?.[1];
     expect(batch).toBeDefined();
     expect(batch).not.toMatch(/\bexecutionOutcome\b/);
     expect(batch).not.toMatch(/\breviewState\b/);
