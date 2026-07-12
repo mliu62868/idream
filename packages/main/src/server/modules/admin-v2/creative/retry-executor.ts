@@ -203,10 +203,21 @@ export async function executeCreativeRetryCommand(
         });
         await recordGenerationAttemptQueuedEvent(tx, attempt);
         attemptIds.push(attempt.id);
-        await tx.contentProductionItem.update({
-          where: { id: item.id },
+        const itemUpdated = await tx.contentProductionItem.updateMany({
+          where: {
+            id: item.id,
+            batchId: run.id,
+            version: item.version,
+            status: item.status,
+            jobId: item.job.id,
+          },
           data: { status: "regenerate_requested", version: { increment: 1 } },
         });
+        if (itemUpdated.count !== 1) {
+          throw Errors.conflict("Creative item changed during retry execution", {
+            itemId: item.id,
+          });
+        }
         await tx.mainOutboxEvent.upsert({
           where: { id: `creative_retry_${claimed.id}_${item.id}` },
           create: {
@@ -227,14 +238,28 @@ export async function executeCreativeRetryCommand(
         });
       }
 
-      const updatedRun = await tx.contentProductionBatch.update({
-        where: { id: run.id },
+      const runUpdated = await tx.contentProductionBatch.updateMany({
+        where: {
+          id: run.id,
+          version: run.version,
+          lifecycleState: run.lifecycleState,
+          workflowStage: run.workflowStage,
+          verificationState: run.verificationState,
+        },
         data: {
           workflowStage: "generation",
           verificationState: "verifying",
           status: "queued",
           version: { increment: 1 },
         },
+      });
+      if (runUpdated.count !== 1) {
+        throw Errors.conflict("Creative Run changed during retry execution", {
+          runId: run.id,
+        });
+      }
+      const updatedRun = await tx.contentProductionBatch.findUniqueOrThrow({
+        where: { id: run.id },
       });
       await tx.adminAuditLog.create({
         data: {

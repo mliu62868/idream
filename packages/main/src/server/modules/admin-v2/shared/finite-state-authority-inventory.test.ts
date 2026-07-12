@@ -68,6 +68,25 @@ describe("Admin v2 finite-state authority inventory", () => {
     );
   });
 
+  it("binds every Creative item status writer to authority-checked versioned CAS", () => {
+    const writers = productionTypeScript.filter((path) => {
+      const contents = source(path);
+      return /contentProductionItem\.update(?:Many)?\(\{[\s\S]{0,700}?data:\s*\{[\s\S]{0,500}?status:/.test(contents);
+    });
+    expect(writers.sort()).toEqual([
+      "src/server/modules/admin-v2/creative/retry-executor.ts",
+      "src/server/modules/admin-v2/creative/workflow.ts",
+      "src/server/modules/admin/content-ops.ts",
+      "src/server/modules/admin/content-production-state.ts",
+    ]);
+    for (const path of writers) {
+      const contents = source(path);
+      expect(contents, path).toContain("isCreativeRunItemTransitionAllowed");
+      expect(contents, path).toContain("contentProductionItem.updateMany");
+      expect(contents, path).toContain("version:");
+    }
+  });
+
   it("funnels every ControlPlaneCommandAttempt mutation through one CAS authority", () => {
     const directWriters = productionTypeScript.filter((path) =>
       /controlPlaneCommandAttempt\.(?:update|updateMany)\(/.test(source(path)),

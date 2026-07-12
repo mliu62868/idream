@@ -25,6 +25,11 @@ interface TransitionGenerationRequestInput {
   readonly onConflict?: "throw" | "return-null";
 }
 
+export interface GenerationRequestTransitionResult {
+  readonly request: GenerationJob;
+  readonly disposition: "applied" | "duplicate";
+}
+
 function expectedStates(expected: GenerationRequestTransitionExpectation | undefined) {
   if (!expected?.from) return null;
   return Array.isArray(expected.from) ? expected.from : [expected.from];
@@ -51,6 +56,14 @@ export async function transitionGenerationRequest(
   tx: Prisma.TransactionClient,
   input: TransitionGenerationRequestInput,
 ): Promise<GenerationJob | null> {
+  const result = await transitionGenerationRequestWithDisposition(tx, input);
+  return result?.request ?? null;
+}
+
+export async function transitionGenerationRequestWithDisposition(
+  tx: Prisma.TransactionClient,
+  input: TransitionGenerationRequestInput,
+): Promise<GenerationRequestTransitionResult | null> {
   const current = await tx.generationJob.findUnique({ where: { id: input.requestId } });
   if (!current) {
     return conflict(input, "Generation Request does not exist", { requestId: input.requestId });
@@ -76,6 +89,9 @@ export async function transitionGenerationRequest(
       { requestId: input.requestId, version: current.version },
     );
   }
+  if (current.status === input.to) {
+    return { request: current, disposition: "duplicate" };
+  }
 
   const changed = await tx.generationJob.updateMany({
     where: {
@@ -97,5 +113,8 @@ export async function transitionGenerationRequest(
       version: current.version,
     });
   }
-  return tx.generationJob.findUniqueOrThrow({ where: { id: current.id } });
+  return {
+    request: await tx.generationJob.findUniqueOrThrow({ where: { id: current.id } }),
+    disposition: "applied",
+  };
 }

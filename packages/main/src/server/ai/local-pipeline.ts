@@ -26,7 +26,10 @@ import {
 } from "./schemas";
 import { hydratedImageReferenceInputs } from "./reference-images";
 import { recordGenerationAttemptEvent } from "./generation-attempt-events";
-import { transitionGenerationRequest } from "./generation-request-transition";
+import {
+  transitionGenerationRequest,
+  transitionGenerationRequestWithDisposition,
+} from "./generation-request-transition";
 import { ensureGenerationSettlementLinks, linkGenerationLedgerEntry } from "./generation-settlement";
 import {
   isGenerationArtifactArchiveTransitionAllowed,
@@ -1120,21 +1123,23 @@ function generationFinalizeDedupeKey(
 
 async function markGenerationModeratingInput(payload: ImageGeneratePayload | VideoGeneratePayload) {
   const transitioned = await prisma.$transaction(async (tx) => {
-    const updated = await transitionGenerationRequest(tx, {
+    const result = await transitionGenerationRequestWithDisposition(tx, {
       requestId: payload.generationJobId,
       to: "moderating_input",
       expected: { from: ["queued", "moderating_input"] },
       data: { errorCode: null },
       onConflict: "return-null",
     });
-    if (!updated) return false;
-    await appendGenerationEvent(
-      tx,
-      payload.generationJobId,
-      "moderating_input",
-      "Input moderation started",
-      { requestId: payload.requestId },
-    );
+    if (!result) return false;
+    if (result.disposition === "applied") {
+      await appendGenerationEvent(
+        tx,
+        payload.generationJobId,
+        "moderating_input",
+        "Input moderation started",
+        { requestId: payload.requestId },
+      );
+    }
     return true;
   });
   if (!transitioned) return null;
@@ -1148,15 +1153,15 @@ async function markGenerationModeratingInput(payload: ImageGeneratePayload | Vid
 
 async function markGenerationRunning(generationJobId: string, attemptId?: string) {
   return prisma.$transaction(async (tx) => {
-    const updated = await transitionGenerationRequest(tx, {
+    const result = await transitionGenerationRequestWithDisposition(tx, {
       requestId: generationJobId,
       to: "running",
       expected: { from: ["queued", "moderating_input", "running"] },
       data: { errorCode: null },
       onConflict: "return-null",
     });
-    if (!updated) return false;
-    if (attemptId) {
+    if (!result) return false;
+    if (attemptId && result.disposition === "applied") {
       const attempt = await tx.generationAttempt.findFirstOrThrow({
         where: { id: attemptId, requestId: generationJobId },
       });
@@ -1171,34 +1176,38 @@ async function markGenerationRunning(generationJobId: string, attemptId?: string
         startedAt,
       });
     }
-    await appendGenerationEvent(tx, generationJobId, "running", "Provider generation started", {});
+    if (result.disposition === "applied") {
+      await appendGenerationEvent(tx, generationJobId, "running", "Provider generation started", {});
+    }
     return true;
   });
 }
 
 async function markGenerationModeratingOutput(generationJobId: string, assetCount: number) {
   return prisma.$transaction(async (tx) => {
-    const updated = await transitionGenerationRequest(tx, {
+    const result = await transitionGenerationRequestWithDisposition(tx, {
       requestId: generationJobId,
       to: "moderating_output",
       expected: { from: ["queued", "moderating_input", "running", "moderating_output"] },
       onConflict: "return-null",
     });
-    if (!updated) return false;
-    await appendGenerationEvent(
-      tx,
-      generationJobId,
-      "provider_completed",
-      "Provider returned assets",
-      { assetCount },
-    );
-    await appendGenerationEvent(
-      tx,
-      generationJobId,
-      "moderating_output",
-      "Output moderation started",
-      { assetCount },
-    );
+    if (!result) return false;
+    if (result.disposition === "applied") {
+      await appendGenerationEvent(
+        tx,
+        generationJobId,
+        "provider_completed",
+        "Provider returned assets",
+        { assetCount },
+      );
+      await appendGenerationEvent(
+        tx,
+        generationJobId,
+        "moderating_output",
+        "Output moderation started",
+        { assetCount },
+      );
+    }
     return true;
   });
 }

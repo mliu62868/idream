@@ -1,5 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
+import { Errors } from "@/server/lib/errors";
+import { isCreativeRunItemTransitionAllowed } from "@/server/modules/admin-v2/shared/state-transition-authority";
 
 type DbClient = Prisma.TransactionClient | typeof prisma;
 
@@ -235,34 +237,41 @@ export async function markProductionItemGenerated(
   db: DbClient,
   input: { jobId: string; mediaAssetId: string },
 ) {
-  await db.contentProductionItem.updateMany({
-    where: {
-      jobId: input.jobId,
-      status: { notIn: ["approved", "rejected", "published"] },
-    },
+  const current = await db.contentProductionItem.findUnique({ where: { jobId: input.jobId } });
+  if (!current) return;
+  if (!isCreativeRunItemTransitionAllowed(current.status, "generated")) {
+    throw Errors.conflict("Generation completion cannot rewrite Creative item state", {
+      itemId: current.id,
+      from: current.status,
+      to: "generated",
+    });
+  }
+  const changed = await db.contentProductionItem.updateMany({
+    where: { id: current.id, status: current.status, version: current.version },
     data: {
       mediaAssetId: input.mediaAssetId,
       status: "generated",
+      version: { increment: 1 },
     },
   });
-  const item = await db.contentProductionItem.findFirst({
-    where: { jobId: input.jobId },
-    select: { batchId: true },
-  });
-  if (item) await refreshContentProductionBatchStats(db, item.batchId);
+  if (changed.count !== 1) throw Errors.conflict("Creative item changed during generation projection");
+  await refreshContentProductionBatchStats(db, current.batchId);
 }
 
 export async function markProductionItemFailed(db: DbClient, jobId: string) {
-  await db.contentProductionItem.updateMany({
-    where: {
-      jobId,
-      status: { notIn: ["approved", "rejected", "published"] },
-    },
-    data: { status: "failed" },
+  const current = await db.contentProductionItem.findUnique({ where: { jobId } });
+  if (!current) return;
+  if (!isCreativeRunItemTransitionAllowed(current.status, "failed")) {
+    throw Errors.conflict("Generation failure cannot rewrite Creative item state", {
+      itemId: current.id,
+      from: current.status,
+      to: "failed",
+    });
+  }
+  const changed = await db.contentProductionItem.updateMany({
+    where: { id: current.id, status: current.status, version: current.version },
+    data: { status: "failed", version: { increment: 1 } },
   });
-  const item = await db.contentProductionItem.findFirst({
-    where: { jobId },
-    select: { batchId: true },
-  });
-  if (item) await refreshContentProductionBatchStats(db, item.batchId);
+  if (changed.count !== 1) throw Errors.conflict("Creative item changed during failure projection");
+  await refreshContentProductionBatchStats(db, current.batchId);
 }

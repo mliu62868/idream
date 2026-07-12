@@ -1,13 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
-import { transitionGenerationRequest } from "./generation-request-transition";
+import {
+  transitionGenerationRequest,
+  transitionGenerationRequestWithDisposition,
+} from "./generation-request-transition";
 
 describe("Generation Request transition authority", () => {
   const suffix = randomUUID();
   const userId = `request-transition-user-${suffix}`;
   const raceJobId = `request-transition-race-${suffix}`;
   const terminalJobId = `request-transition-terminal-${suffix}`;
+  const replayJobId = `request-transition-replay-${suffix}`;
 
   beforeAll(async () => {
     await prisma.user.create({
@@ -39,12 +43,22 @@ describe("Generation Request transition authority", () => {
           version: 7,
           errorCode: "operator_cancelled",
         },
+        {
+          id: replayJobId,
+          userId,
+          mode: "image",
+          controls: {},
+          presetIds: [],
+          status: "running",
+          version: 4,
+          errorCode: "preserve_on_replay",
+        },
       ],
     });
   });
 
   afterAll(async () => {
-    await prisma.generationJob.deleteMany({ where: { id: { in: [raceJobId, terminalJobId] } } });
+    await prisma.generationJob.deleteMany({ where: { id: { in: [raceJobId, terminalJobId, replayJobId] } } });
     await prisma.user.delete({ where: { id: userId } });
     await prisma.$disconnect();
   });
@@ -83,5 +97,28 @@ describe("Generation Request transition authority", () => {
 
     const after = await prisma.generationJob.findUniqueOrThrow({ where: { id: terminalJobId } });
     expect(after).toEqual(before);
+  });
+
+  it("treats a stage self-transition as a replay no-op", async () => {
+    const result = await prisma.$transaction((tx) =>
+      transitionGenerationRequestWithDisposition(tx, {
+        requestId: replayJobId,
+        to: "running",
+        expected: { from: "running", version: 4 },
+        data: { errorCode: null },
+      }),
+    );
+
+    expect(result).toMatchObject({
+      disposition: "duplicate",
+      request: { status: "running", version: 4, errorCode: "preserve_on_replay" },
+    });
+    await expect(
+      prisma.generationJob.findUniqueOrThrow({ where: { id: replayJobId } }),
+    ).resolves.toMatchObject({
+      status: "running",
+      version: 4,
+      errorCode: "preserve_on_replay",
+    });
   });
 });
