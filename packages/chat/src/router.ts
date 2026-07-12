@@ -78,7 +78,14 @@ async function route(req: ChatRequest): Promise<ChatResponse> {
     if (method === "GET") return json(200, await listSessions(userId));
     if (method === "POST") {
       const b = body(req);
-      return json(201, await createSession({ userId, characterId: str(b.characterId), title: optStr(b.title) }));
+      return json(201, await createSession({
+        userId,
+        characterId: str(b.characterId),
+        title: optStr(b.title),
+        entryExposureId: optStr(b.entryExposureId),
+        entryJourneyId: optStr(b.journeyId),
+        entryPlacementId: optStr(b.placementId),
+      }));
     }
   }
 

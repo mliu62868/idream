@@ -129,6 +129,9 @@ model ChatSession {
   characterContentVersionId String? @map("character_content_version_id")
   characterReleaseId        String? @map("character_release_id")
   releasePinnedAt           DateTime? @map("release_pinned_at")
+  entryExposureId           String? @map("entry_exposure_id")
+  entryJourneyId            String? @map("entry_journey_id")
+  entryPlacementId          String? @map("entry_placement_id")
 
   messages    Message[]
   attachments MessageAttachment[]

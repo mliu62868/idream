@@ -634,6 +634,7 @@ function CommunityCharacterCard({
 }) {
   const cardRef = useRef<HTMLElement | null>(null);
   const impressionIdRef = useRef(clientEventId("character-impression"));
+  const [detailExposureId] = useState(() => clientEventId("character-detail"));
   const impressionRecordedRef = useRef(false);
   const detailRecordedRef = useRef(false);
 
@@ -685,7 +686,7 @@ function CommunityCharacterCard({
     trackCharacterExposure({
       characterId: character.id,
       eventType: "detail_view",
-      exposureId: clientEventId("character-detail"),
+      exposureId: detailExposureId,
       journeyId,
       parentExposureId: impressionIdRef.current,
       placementId: "community.leaderboard",
@@ -703,7 +704,7 @@ function CommunityCharacterCard({
       <Link
         aria-label={character.title}
         className="relative block aspect-[4/5]"
-        href={`/characters/${character.id}`}
+        href={`/characters/${character.id}?entryExposureId=${encodeURIComponent(detailExposureId)}&journeyId=${encodeURIComponent(journeyId)}&placementId=${encodeURIComponent("community.leaderboard")}`}
         onClick={recordDetailView}
       >
         <Image

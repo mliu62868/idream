@@ -14,6 +14,7 @@ import { incrementCounter, observeHistogram } from "@idream/shared";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { CanonicalMetricDataset } from "./engine";
 import { toInputJson } from "../shared/prisma-json";
+import { refreshCharacterFunnelForEvent } from "../characters/performance-projector";
 
 export interface MetricProductEvent {
   readonly id: string;
@@ -206,6 +207,16 @@ async function applyEvent(tx: Transaction, event: MetricProductEvent): Promise<M
       },
       update: {},
     });
+    if (fact.characterReleaseId && fact.placementId) {
+      await refreshCharacterFunnelForEvent(tx, {
+        characterId: fact.characterId,
+        characterContentVersionId: fact.characterContentVersionId,
+        characterReleaseId: fact.characterReleaseId,
+        placementId: fact.placementId,
+        productDay: utcProductDay(fact.occurredAt),
+        asOf: event.occurredAt,
+      });
+    }
     return { status: "applied", factType: "character_exposure", factId: fact.id };
   }
   if (!isEligibleServerOutcome(event)) {
@@ -214,6 +225,23 @@ async function applyEvent(tx: Transaction, event: MetricProductEvent): Promise<M
   const context = record(event.context);
   if (event.name === METRIC_PRODUCT_EVENTS.chatExchangeCompleted) {
     const payload = chatExchangeCompletedV2Schema.parse(event.props);
+    const entryExposure = payload.entryExposureId
+      ? await tx.characterExposureFact.findUnique({ where: { exposureId: payload.entryExposureId } })
+      : null;
+    const entryAttributionIsExact = Boolean(
+      entryExposure &&
+      entryExposure.eventType === "detail_view" &&
+      entryExposure.eligible &&
+      entryExposure.coverageState === "exact" &&
+      entryExposure.userId === payload.userId &&
+      entryExposure.characterId === payload.characterId &&
+      entryExposure.characterContentVersionId === payload.characterContentVersionId &&
+      entryExposure.characterReleaseId === payload.characterReleaseId &&
+      entryExposure.journeyId === payload.journeyId &&
+      entryExposure.placementId === payload.placementId &&
+      event.occurredAt.getTime() >= entryExposure.occurredAt.getTime() &&
+      event.occurredAt.getTime() - entryExposure.occurredAt.getTime() <= 24 * 60 * 60 * 1_000,
+    );
     const existing = await tx.chatExchangeFact.findUnique({ where: { exchangeId: payload.exchangeId } });
     if (existing && (
       existing.correctionRevision > payload.assistantAttemptNo ||
@@ -238,6 +266,9 @@ async function applyEvent(tx: Transaction, event: MetricProductEvent): Promise<M
         characterId: payload.characterId,
         characterContentVersionId: payload.characterContentVersionId,
         characterReleaseId: payload.characterReleaseId,
+        entryExposureId: entryAttributionIsExact ? payload.entryExposureId : null,
+        journeyId: entryAttributionIsExact ? payload.journeyId : null,
+        placementId: entryAttributionIsExact ? payload.placementId : null,
         environment: event.environment,
         dataClass: event.dataClass,
         trustClass: event.trustClass,
@@ -247,7 +278,9 @@ async function applyEvent(tx: Transaction, event: MetricProductEvent): Promise<M
         productDay,
         sourceUpdatedAt: event.occurredAt,
         validFrom: event.occurredAt,
-        coverageState: payload.characterReleaseId === null ? "exact_unattributed" : "exact",
+        coverageState: payload.characterReleaseId !== null && entryAttributionIsExact
+          ? "exact"
+          : "exact_unattributed",
       },
       update: {
         sourceService: event.sourceService,
@@ -257,12 +290,27 @@ async function applyEvent(tx: Transaction, event: MetricProductEvent): Promise<M
         assistantAttemptNo: payload.assistantAttemptNo,
         characterContentVersionId: payload.characterContentVersionId,
         characterReleaseId: payload.characterReleaseId,
+        entryExposureId: entryAttributionIsExact ? payload.entryExposureId : null,
+        journeyId: entryAttributionIsExact ? payload.journeyId : null,
+        placementId: entryAttributionIsExact ? payload.placementId : null,
         eligible: true,
         sourceUpdatedAt: event.occurredAt,
-        coverageState: payload.characterReleaseId === null ? "exact_unattributed" : "exact",
+        coverageState: payload.characterReleaseId !== null && entryAttributionIsExact
+          ? "exact"
+          : "exact_unattributed",
       },
     });
     await refreshCompanionDaily(tx, { userId: fact.userId, characterId: fact.characterId, productDay: fact.productDay });
+    if (fact.characterReleaseId && fact.placementId && fact.coverageState === "exact") {
+      await refreshCharacterFunnelForEvent(tx, {
+        characterId: fact.characterId,
+        characterContentVersionId: fact.characterContentVersionId,
+        characterReleaseId: fact.characterReleaseId,
+        placementId: fact.placementId,
+        productDay: fact.productDay,
+        asOf: event.occurredAt,
+      });
+    }
     return { status: "applied", factType: "chat_exchange", factId: fact.id };
   }
   if (event.name === METRIC_PRODUCT_EVENTS.chatExchangeCorrected) {
@@ -285,6 +333,16 @@ async function applyEvent(tx: Transaction, event: MetricProductEvent): Promise<M
         characterId: existing.characterId,
         productDay: existing.productDay,
       });
+      if (existing.characterReleaseId && existing.placementId && existing.coverageState === "exact") {
+        await refreshCharacterFunnelForEvent(tx, {
+          characterId: existing.characterId,
+          characterContentVersionId: existing.characterContentVersionId,
+          characterReleaseId: existing.characterReleaseId,
+          placementId: existing.placementId,
+          productDay: existing.productDay,
+          asOf: event.occurredAt,
+        });
+      }
     }
     return { status: "applied", factType: "chat_exchange_correction", factId: existing.id };
   }

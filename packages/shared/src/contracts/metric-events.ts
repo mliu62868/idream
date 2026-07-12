@@ -1,19 +1,34 @@
 import { z } from "zod";
 
-export const chatExchangeCompletedV2Schema = z.object({
-  exchangeId: z.string().min(1),
-  userMessageId: z.string().min(1),
-  assistantMessageId: z.string().min(1),
-  selectedAssistantMessageId: z.string().min(1),
-  assistantAttemptNo: z.number().int().positive(),
-  isRegeneration: z.boolean(),
-  sessionId: z.string().min(1),
-  engagementSessionId: z.string().min(1),
-  userId: z.string().min(1),
-  characterId: z.string().min(1),
-  characterContentVersionId: z.string().min(1),
-  characterReleaseId: z.string().min(1).nullable(),
-});
+export const chatExchangeCompletedV2Schema = z
+  .object({
+    exchangeId: z.string().min(1),
+    userMessageId: z.string().min(1),
+    assistantMessageId: z.string().min(1),
+    selectedAssistantMessageId: z.string().min(1),
+    assistantAttemptNo: z.number().int().positive(),
+    isRegeneration: z.boolean(),
+    sessionId: z.string().min(1),
+    engagementSessionId: z.string().min(1),
+    userId: z.string().min(1),
+    characterId: z.string().min(1),
+    characterContentVersionId: z.string().min(1),
+    characterReleaseId: z.string().min(1).nullable(),
+    entryExposureId: z.string().min(1).nullable().default(null),
+    journeyId: z.string().min(1).nullable().default(null),
+    placementId: z.string().min(1).nullable().default(null),
+  })
+  .superRefine((event, ctx) => {
+    const attribution = [event.entryExposureId, event.journeyId, event.placementId];
+    const populated = attribution.filter((value) => value !== null).length;
+    if (populated !== 0 && populated !== attribution.length) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["entryExposureId"],
+        message: "Entry exposure attribution must be complete or absent",
+      });
+    }
+  });
 
 export const chatExchangeCorrectionV2Schema = z.object({
   exchangeId: z.string().min(1),

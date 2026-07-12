@@ -356,7 +356,14 @@ export async function processGenerate(
 interface FinalizeInput {
   prisma: ChatPrismaClient;
   payload: GeneratePayload;
-  session: { id: string; userId: string; characterId: string };
+  session: {
+    id: string;
+    userId: string;
+    characterId: string;
+    entryExposureId: string | null;
+    entryJourneyId: string | null;
+    entryPlacementId: string | null;
+  };
   content: string;
   model: string;
   usage: { promptTokens: number; completionTokens: number };
@@ -493,6 +500,9 @@ async function finalize(input: FinalizeInput): Promise<boolean> {
               characterId: session.characterId,
               characterContentVersionId: actualContentVersionId,
               characterReleaseId: actualReleaseId,
+              entryExposureId: session.entryExposureId,
+              journeyId: session.entryJourneyId,
+              placementId: session.entryPlacementId,
             },
           });
         }

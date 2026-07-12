@@ -142,8 +142,16 @@ export function evaluateCharacterPerformance(input: {
     qceCount > firstSuccessfulExchanges ||
     sameCharacterD7Returns > sameCharacterD7EligiblePairs;
   const exactFunnel = input.funnelRows.length > 0 && input.funnelRows.every((row) => row.coverageState === "exact");
+  const directionalFunnel = input.funnelRows.length > 0 && input.funnelRows.every((row) =>
+    row.coverageState === "exact" ||
+    row.coverageState === "exact_through_same_character_d7_paid_attribution_unavailable",
+  );
   const exactExposure = input.exposureRows.length > 0 && exactExposures.length === input.exposureRows.length;
-  const qualityState = impossible || !exactFunnel || !exactExposure ? "invalid" as const : "certified" as const;
+  const qualityState = impossible || !directionalFunnel || !exactExposure
+    ? "invalid" as const
+    : exactFunnel
+      ? "certified" as const
+      : "directional" as const;
   const observationMature = input.releasePublishedAt.getTime() + days * DAY_MS <= input.asOf.getTime();
   const maturity = !observationMature
     ? "immature" as const
@@ -158,7 +166,8 @@ export function evaluateCharacterPerformance(input: {
     `grain:${input.characterContentVersionId}/${input.characterReleaseId}/${input.placementId ?? "all"}`,
     ...input.funnelRows.flatMap((row) => evidenceStrings(row.sourceEvidence)),
     ...(!exactExposure ? ["eligible_impression_or_detail_chain_not_exact"] : []),
-    ...(!exactFunnel ? ["funnel_projection_not_exact"] : []),
+    ...(!directionalFunnel ? ["funnel_projection_not_exact"] : []),
+    ...(directionalFunnel && !exactFunnel ? ["paid_attribution_unavailable"] : []),
     ...(impossible ? ["numerator_outside_denominator_cohort"] : []),
     ...(maturity === "insufficient_data" ? [`minimum_sample:${MIN_IMPRESSIONS}_impressions/${MIN_CHAT_STARTS}_chat_starts`] : []),
   ];
@@ -184,7 +193,7 @@ export function evaluateCharacterPerformance(input: {
     sampleSize: eligibleImpressions,
     maturity,
     qualityState,
-    coverageState: qualityState === "invalid" ? "invalid" : "exact",
+    coverageState: qualityState === "invalid" ? "invalid" : qualityState === "certified" ? "exact" : "partial",
     latestDataAt: latestTimes.length > 0 ? new Date(Math.max(...latestTimes)).toISOString() : null,
     evidence: evidence.length > 0 ? [...new Set(evidence)] : ["canonical_character_performance_v1"],
     contributionMargin: evaluateContributionMargin({ facts: input.economicsRows, authority: input.economicsAuthority }),

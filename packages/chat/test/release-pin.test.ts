@@ -11,7 +11,13 @@ const prisma = createChatPrisma();
 const superPool = new Pool({ connectionString: process.env.CHAT_TEST_SUPER_URL });
 
 const CHARACTER_ID = "release-pin-character";
-const USERS = ["release-pin-old", "release-pin-new", "release-pin-legacy", "release-pin-migrate"];
+const USERS = [
+  "release-pin-old",
+  "release-pin-new",
+  "release-pin-legacy",
+  "release-pin-migrate",
+  "release-pin-entry",
+];
 
 async function seedRelease(input: {
   releaseId: string;
@@ -96,6 +102,22 @@ afterAll(async () => {
 });
 
 describe("Character Release → Chat serving pin", () => {
+  it("pins complete entry attribution without treating it as release authority", async () => {
+    const session = await createSession({
+      userId: USERS[4],
+      characterId: CHARACTER_ID,
+      entryExposureId: "detail-exposure-1",
+      entryJourneyId: "journey-1",
+      entryPlacementId: "community.leaderboard",
+    }, { prisma });
+    expect(session).toMatchObject({
+      entryExposureId: "detail-exposure-1",
+      entryJourneyId: "journey-1",
+      entryPlacementId: "community.leaderboard",
+      characterReleaseId: "release-pin-v1",
+    });
+  });
+
   it("keeps an existing session on its immutable Release while new sessions use the new serving Release", async () => {
     const oldSession = await createSession({ userId: USERS[0], characterId: CHARACTER_ID }, { prisma });
     expect(oldSession.characterContentVersionId).toBe("content-pin-v1");

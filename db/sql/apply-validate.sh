@@ -21,6 +21,7 @@ psql_super -U "$SUPER" -d "$DB" -c "SET ROLE core_owner;" -f "$HERE/2026-07-08-c
 psql_super -U "$SUPER" -d "$DB" -c "SET ROLE chat_owner;" -f "$HERE/03_chat_tables.sql"
 psql_super -U "$SUPER" -d "$DB" -f "$HERE/04_grants.sql"
 psql_super -U "$SUPER" -d "$DB" -f "$HERE/2026-07-11-chat-session-release-pin.sql"
+psql_super -U "$SUPER" -d "$DB" -f "$HERE/2026-07-11-chat-entry-attribution.sql"
 echo "== applied =="
 
 echo "== positive: chat_service CAN read the 4 views + write chat.* =="

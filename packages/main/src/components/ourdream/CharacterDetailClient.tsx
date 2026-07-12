@@ -59,10 +59,17 @@ export function CharacterDetailClient({ id }: Readonly<{ id: string }>) {
     setBusy(true);
     setStatus("");
     try {
+      const entry = new URLSearchParams(window.location.search);
+      const entryExposureId = entry.get("entryExposureId");
+      const journeyId = entry.get("journeyId");
+      const placementId = entry.get("placementId");
+      const completeAttribution = entryExposureId && journeyId && placementId
+        ? { entryExposureId, journeyId, placementId }
+        : {};
       const response = await fetch("/api/v1/chat/sessions", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ characterId: character.id }),
+        body: JSON.stringify({ characterId: character.id, ...completeAttribution }),
       });
       if (response.status === 401) {
         window.location.assign(signupUrlForCurrentCharacter());

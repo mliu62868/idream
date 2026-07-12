@@ -123,6 +123,9 @@ function fakePrisma(
         characterId: "char_1",
         memoryEnabled: true,
         status: "active",
+        entryExposureId: "detail_v1",
+        entryJourneyId: "journey_v1",
+        entryPlacementId: "feed.hero",
       }),
     },
     $transaction: async <T>(callback: (client: typeof tx) => Promise<T>) => callback(tx),
@@ -294,6 +297,9 @@ describe("chat generate agent image tool", () => {
         engagementSessionId: "engagement_v1",
         characterContentVersionId: "content_v4",
         characterReleaseId: "release_v3",
+        entryExposureId: "detail_v1",
+        journeyId: "journey_v1",
+        placementId: "feed.hero",
       },
     });
   });

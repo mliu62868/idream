@@ -5,7 +5,10 @@ import {
   characterPortfolioDecisionRequestSchema,
   characterReleaseChangeMarkerSchema,
 } from "./characters";
-import { characterExposureRecordedV2Schema } from "../../contracts/metric-events";
+import {
+  characterExposureRecordedV2Schema,
+  chatExchangeCompletedV2Schema,
+} from "../../contracts/metric-events";
 
 const invalidMargin = {
   valueMicros: null,
@@ -97,6 +100,24 @@ describe("Character Portfolio v2 contracts", () => {
       userId: "user-1",
       visibleRatio: 1,
       visibleDurationMs: 0,
+    }).success).toBe(false);
+  });
+
+  it("requires complete entry attribution on chat exchange outcomes", () => {
+    expect(chatExchangeCompletedV2Schema.safeParse({
+      exchangeId: "exchange-1",
+      userMessageId: "user-message-1",
+      assistantMessageId: "assistant-message-1",
+      selectedAssistantMessageId: "assistant-message-1",
+      assistantAttemptNo: 1,
+      isRegeneration: false,
+      sessionId: "session-1",
+      engagementSessionId: "engagement-1",
+      userId: "user-1",
+      characterId: "character-1",
+      characterContentVersionId: "content-1",
+      characterReleaseId: "release-1",
+      entryExposureId: "detail-1",
     }).success).toBe(false);
   });
 });

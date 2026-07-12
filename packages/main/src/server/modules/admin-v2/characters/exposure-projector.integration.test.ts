@@ -31,6 +31,43 @@ describe("Character exposure v2 attribution projector", () => {
     };
   }
 
+  function exchangeEvent(
+    sourceEventId: string,
+    index: number,
+    attribution: { entryExposureId: string; journeyId: string; placementId: string },
+  ): MetricProductEvent {
+    sourceIds.push(sourceEventId);
+    return {
+      id: `canonical-${sourceEventId}`,
+      sourceService: "chat",
+      sourceEventId,
+      name: METRIC_PRODUCT_EVENTS.chatExchangeCompleted,
+      schemaVersion: 2,
+      occurredAt: new Date(`2026-07-10T00:0${index}:00.000Z`),
+      ingestedAt: new Date(`2026-07-10T00:0${index}:01.000Z`),
+      environment: "production",
+      dataClass: "customer",
+      trustClass: "canonical",
+      actor: { isInternal: false },
+      context: {},
+      props: {
+        exchangeId: `exposure-exchange-${suffix}-${index}`,
+        userMessageId: `exposure-user-message-${suffix}-${index}`,
+        assistantMessageId: `exposure-assistant-message-${suffix}-${index}`,
+        selectedAssistantMessageId: `exposure-assistant-message-${suffix}-${index}`,
+        assistantAttemptNo: 1,
+        isRegeneration: false,
+        sessionId: `exposure-chat-session-${suffix}`,
+        engagementSessionId: `exposure-engagement-${suffix}`,
+        userId: `exposure-user-${suffix}`,
+        characterId,
+        characterContentVersionId: contentId,
+        characterReleaseId: releaseId,
+        ...attribution,
+      },
+    };
+  }
+
   beforeAll(async () => {
     await prisma.characterContentVersion.create({
       data: { id: contentId, characterId, version: 1, contentHash: `exposure-hash-${suffix}`, personaSnapshot: {}, openingSnapshot: {}, appearanceSnapshot: {}, sourceType: "test" },
@@ -53,6 +90,9 @@ describe("Character exposure v2 attribution projector", () => {
 
   afterAll(async () => {
     await prisma.metricProjectionReceipt.deleteMany({ where: { sourceService: "web", sourceEventId: { in: sourceIds } } });
+    await prisma.metricProjectionReceipt.deleteMany({ where: { sourceService: "chat", sourceEventId: { in: sourceIds } } });
+    await prisma.characterFunnelDaily.deleteMany({ where: { characterId } });
+    await prisma.chatExchangeFact.deleteMany({ where: { characterId } });
     await prisma.characterExposureFact.deleteMany({ where: { characterId } });
     await prisma.characterRelease.delete({ where: { id: releaseId } });
     await prisma.characterProject.delete({ where: { id: projectId } });
@@ -107,5 +147,81 @@ describe("Character exposure v2 attribution projector", () => {
     expect(await prisma.characterExposureFact.findUnique({
       where: { exposureId: `exposure-invalid-detail-${suffix}` },
     })).toBeNull();
+  });
+
+  it("carries a verified detail entry into exact release/placement QCE projection", async () => {
+    const journeyId = `exposure-qce-journey-${suffix}`;
+    const impressionId = `exposure-qce-impression-${suffix}`;
+    const detailId = `exposure-qce-detail-${suffix}`;
+    const attribution = { entryExposureId: detailId, journeyId, placementId: "feed.qce" };
+    await projectCanonicalMetricEvent(prisma, event(`exposure-qce-impression-event-${suffix}`, {
+      exposureId: impressionId,
+      eventType: "eligible_impression",
+      userId: `exposure-user-${suffix}`,
+      journeyId,
+      characterId,
+      characterContentVersionId: contentId,
+      characterReleaseId: releaseId,
+      placementId: "feed.qce",
+      visibleRatio: 0.9,
+      visibleDurationMs: 700,
+    }));
+    await projectCanonicalMetricEvent(prisma, event(`exposure-qce-detail-event-${suffix}`, {
+      exposureId: detailId,
+      eventType: "detail_view",
+      parentExposureId: impressionId,
+      userId: `exposure-user-${suffix}`,
+      journeyId,
+      characterId,
+      characterContentVersionId: contentId,
+      characterReleaseId: releaseId,
+      placementId: "feed.qce",
+      visibleRatio: 1,
+      visibleDurationMs: 0,
+    }));
+    for (let index = 1; index <= 5; index += 1) {
+      expect(await projectCanonicalMetricEvent(
+        prisma,
+        exchangeEvent(`exposure-qce-exchange-event-${suffix}-${index}`, index, attribution),
+      )).toMatchObject({ status: "applied", factType: "chat_exchange" });
+    }
+    expect(await prisma.chatExchangeFact.count({
+      where: { characterId, placementId: "feed.qce", coverageState: "exact" },
+    })).toBe(5);
+    expect(await prisma.characterFunnelDaily.findFirstOrThrow({
+      where: {
+        characterId,
+        characterReleaseId: releaseId,
+        placementId: "feed.qce",
+        productDay: new Date("2026-07-10T00:00:00.000Z"),
+      },
+    })).toMatchObject({
+      eligibleImpressions: 1,
+      detailViews: 1,
+      firstSuccessfulExchanges: 1,
+      qceCount: 1,
+      projectionVersion: 2,
+      coverageState: "exact_through_same_character_d7_paid_attribution_unavailable",
+    });
+  });
+
+  it("keeps a forged entry claim canonical but explicitly unattributed", async () => {
+    const result = await projectCanonicalMetricEvent(
+      prisma,
+      exchangeEvent(`exposure-forged-exchange-event-${suffix}`, 6, {
+        entryExposureId: `exposure-qce-detail-${suffix}`,
+        journeyId: `forged-journey-${suffix}`,
+        placementId: "feed.qce",
+      }),
+    );
+    expect(result).toMatchObject({ status: "applied", factType: "chat_exchange" });
+    expect(await prisma.chatExchangeFact.findUniqueOrThrow({
+      where: { exchangeId: `exposure-exchange-${suffix}-6` },
+    })).toMatchObject({
+      coverageState: "exact_unattributed",
+      entryExposureId: null,
+      journeyId: null,
+      placementId: null,
+    });
   });
 });

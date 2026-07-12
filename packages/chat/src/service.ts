@@ -69,11 +69,23 @@ async function assertEligible(prisma: ChatPrismaClient, userId: string, characte
 }
 
 export async function createSession(
-  input: { userId: string; characterId: string; title?: string },
+  input: {
+    userId: string;
+    characterId: string;
+    title?: string;
+    entryExposureId?: string;
+    entryJourneyId?: string;
+    entryPlacementId?: string;
+  },
   override?: Partial<ChatContext>,
 ) {
   const { prisma } = ctx(override);
   const { character } = await assertEligible(prisma, input.userId, input.characterId);
+  const attributionValues = [input.entryExposureId, input.entryJourneyId, input.entryPlacementId];
+  const attributionCount = attributionValues.filter(Boolean).length;
+  if (attributionCount !== 0 && attributionCount !== attributionValues.length) {
+    throw new ChatError("invalid_entry_attribution", "entry attribution must be complete or absent", 400);
+  }
 
   // The product exposes one active conversation per user/character pair. The
   // advisory lock makes the read-then-create invariant true under concurrent
@@ -97,6 +109,9 @@ export async function createSession(
         characterContentVersionId: character.characterContentVersionId,
         characterReleaseId: character.characterReleaseId,
         releasePinnedAt: character.characterContentVersionId ? new Date() : null,
+        entryExposureId: input.entryExposureId ?? null,
+        entryJourneyId: input.entryJourneyId ?? null,
+        entryPlacementId: input.entryPlacementId ?? null,
       },
     });
     await recordOutbox(tx, {
@@ -108,6 +123,9 @@ export async function createSession(
         characterId: input.characterId,
         characterContentVersionId: character.characterContentVersionId,
         characterReleaseId: character.characterReleaseId,
+        entryExposureId: input.entryExposureId ?? null,
+        journeyId: input.entryJourneyId ?? null,
+        placementId: input.entryPlacementId ?? null,
       },
     });
     return created;

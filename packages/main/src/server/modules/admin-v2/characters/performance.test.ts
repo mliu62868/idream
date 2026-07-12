@@ -101,6 +101,47 @@ describe("canonical Character Performance", () => {
     });
   });
 
+  it("keeps verified funnel rates directional when only paid attribution is unavailable", () => {
+    const summary = evaluateCharacterPerformance({
+      characterContentVersionId: "content-v2",
+      characterReleaseId: "release-v2",
+      placementId: "feed.hero",
+      releasePublishedAt: new Date("2026-06-01T00:00:00.000Z"),
+      window: "7d",
+      asOf,
+      exposureRows: exposureRows(120, 60),
+      funnelRows: [{
+        eligibleImpressions: 120,
+        detailViews: 60,
+        firstSuccessfulExchanges: 30,
+        qceCount: 15,
+        relationshipActivations: 8,
+        sameCharacterD7EligiblePairs: 10,
+        sameCharacterD7Returns: 4,
+        paidAttributions: 0,
+        coverageState: "exact_through_same_character_d7_paid_attribution_unavailable",
+        latestDataAt: new Date("2026-07-10T02:00:00.000Z"),
+        sourceEvidence: ["paid_attribution:unavailable"],
+      }],
+      economicsRows: [],
+      economicsAuthority: {
+        cashCaptureComplete: false,
+        refundsComplete: false,
+        creditsComplete: false,
+        variableCostsComplete: false,
+      },
+    });
+    expect(summary).toMatchObject({
+      qualityState: "directional",
+      coverageState: "partial",
+      detailCtr: 0.5,
+      chatStartRate: 0.5,
+      qceRate: 0.5,
+      sameCharacterD7: 0.4,
+    });
+    expect(summary.evidence).toContain("paid_attribution_unavailable");
+  });
+
   it("can certify margin only when every audited authority is complete", () => {
     expect(evaluateContributionMargin({
       facts: [
