@@ -18,9 +18,10 @@ const adminBaseURL =
   process.env.PW_ADMIN_BASE_URL ??
   (() => {
     const url = new URL(baseURL);
-    url.port = "3001";
+    url.port = String(Number(basePort) + 1);
     return url.toString().replace(/\/$/, "");
   })();
+const adminPort = new URL(adminBaseURL).port || "3001";
 
 export default defineConfig({
   testDir: "src",
@@ -44,7 +45,7 @@ export default defineConfig({
   webServer: managedWebServer
     ? [
         {
-          command: `bun run dev -- --port ${basePort}`,
+          command: `BETTER_AUTH_URL=${baseURL} bun run dev -- --port ${basePort}`,
           url: baseURL,
           reuseExistingServer: true,
           timeout: 120_000,
@@ -52,8 +53,8 @@ export default defineConfig({
         ...(process.env.PW_ADMIN_BASE_URL
           ? []
           : [
-              {
-                command: "bun --cwd ../.. run --filter @idream/admin dev",
+            {
+                command: `MAIN_WEB_URL=${baseURL} bun run --cwd ../admin dev -- --port ${adminPort}`,
                 url: adminBaseURL,
                 reuseExistingServer: true,
                 timeout: 120_000,
