@@ -216,6 +216,14 @@ describe("Character Release command executor", () => {
         version: 1,
         contentHash: `${prefix}-content-hash`,
         personaSnapshot: {
+          name: "Released Snapshot Persona",
+          age: 29,
+          gender: "female",
+          relationshipArchetype: "trusted confidante",
+          characterPromise: "Complete immutable content.",
+          personality: "Grounded and attentive.",
+          tone: "Warm and concise.",
+          backstory: "A host who remembers the important details.",
           systemPrompt: "Stay in persona.",
           description: "Complete immutable content.",
         },
@@ -462,6 +470,8 @@ describe("Character Release command executor", () => {
     expect(
       await prisma.character.findUnique({ where: { id: characterId } }),
     ).toMatchObject({
+      name: "Released Snapshot Persona",
+      age: 29,
       status: "approved",
       visibility: "public",
       imageAssetId: mediaId,

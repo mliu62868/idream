@@ -87,6 +87,54 @@ function placementAssetId(value: Prisma.JsonValue): string | null {
     : null;
 }
 
+function releasedCharacterProjection(content: {
+  personaSnapshot: Prisma.JsonValue;
+  openingSnapshot: Prisma.JsonValue;
+  appearanceSnapshot: Prisma.JsonValue;
+}) {
+  const persona = record(content.personaSnapshot);
+  const opening = record(content.openingSnapshot);
+  const appearance = record(content.appearanceSnapshot);
+  const name = stringValue(persona.name);
+  const description = stringValue(persona.characterPromise) ?? stringValue(persona.description);
+  const age = typeof persona.age === "number" && Number.isInteger(persona.age) && persona.age >= 18
+    ? persona.age
+    : null;
+  const gender = stringValue(persona.gender);
+  const relationship = stringValue(persona.relationshipArchetype);
+  const style = stringValue(appearance.style);
+  const firstMessage = stringValue(opening.firstMessage);
+  if (!name || !description || age === null || !gender || !relationship || !style || !firstMessage) {
+    throw new ReleaseCommandError(
+      "release_content_projection_incomplete",
+      "Release content cannot produce the complete serving projection",
+      { name: Boolean(name), description: Boolean(description), age, gender, relationship, style, firstMessage: Boolean(firstMessage) },
+    );
+  }
+  const systemPrompt = stringValue(persona.systemPrompt) ?? [
+    stringValue(persona.personality),
+    stringValue(persona.tone),
+    stringValue(persona.backstory),
+  ].filter((value): value is string => value !== null).join("\n\n");
+  if (!systemPrompt) {
+    throw new ReleaseCommandError(
+      "release_content_projection_incomplete",
+      "Release content has no serving system prompt",
+    );
+  }
+  return {
+    name,
+    age,
+    description,
+    systemPrompt,
+    style,
+    gender,
+    relationship,
+    appearance: toInputJson(appearance),
+    advancedDetails: toInputJson({ ...persona, ...opening }),
+  };
+}
+
 export async function validateCharacterReleaseSnapshot(
   tx: Prisma.TransactionClient,
   release: Awaited<
@@ -298,7 +346,7 @@ export async function validateCharacterReleaseSnapshot(
       checkedAt: now,
     })),
   });
-  return { run, checks, failed, project, avatarAssetId };
+  return { run, checks, failed, project, content, avatarAssetId };
 }
 
 async function finishAttempt(
@@ -651,6 +699,7 @@ async function publishRelease(
   await tx.character.update({
     where: { id: characterId },
     data: {
+      ...releasedCharacterProjection(validation.content!),
       status: "approved",
       visibility: "public",
       imageAssetId: validation.avatarAssetId,

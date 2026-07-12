@@ -375,24 +375,6 @@ export async function updateCharacterProjectDraft(input: {
             createdById: input.actor.id,
           },
         });
-        await tx.character.updateMany({
-          where: { id: input.characterId, status: "draft", visibility: "private" },
-          data: {
-            name: input.content.persona.name,
-            age: input.content.persona.age,
-            description: input.content.persona.characterPromise,
-            systemPrompt: [
-              input.content.persona.personality,
-              input.content.persona.tone,
-              input.content.persona.backstory,
-            ].join("\n\n"),
-            style: input.content.visualDirection.style,
-            gender: input.content.persona.gender,
-            relationship: input.content.persona.relationshipArchetype,
-            appearance: toInputJson(snapshots.appearanceSnapshot),
-            advancedDetails: toInputJson({ ...snapshots.personaSnapshot, ...snapshots.openingSnapshot }),
-          },
-        });
         contentVersion = {
           id: createdContent.id,
           version: createdContent.version,

@@ -172,7 +172,10 @@ describe("Character operator workspace", () => {
     expect(await prisma.mainOutboxEvent.count({ where: { aggregateId: projectId } })).toBe(1);
     expect(await prisma.characterContentVersion.findMany({ where: { characterId } })).toHaveLength(2);
     expect(await prisma.characterRevision.findMany({ where: { projectId } })).toHaveLength(2);
-    expect(await prisma.character.findUniqueOrThrow({ where: { id: characterId } })).toMatchObject({ name: "Mara V2", age: 29 });
+    expect(await prisma.character.findUniqueOrThrow({ where: { id: characterId } })).toMatchObject({
+      name: "Mara",
+      age: 28,
+    });
 
     await prisma.character.update({ where: { id: characterId }, data: { status: "approved", visibility: "public" } });
     await prisma.characterRelease.update({ where: { id: releaseId }, data: { status: "published" } });
@@ -219,8 +222,8 @@ describe("Character operator workspace", () => {
     });
     expect(liveCandidate.version).toBe(3);
     expect(await prisma.character.findUniqueOrThrow({ where: { id: characterId } })).toMatchObject({
-      name: "Mara V2",
-      age: 29,
+      name: "Mara",
+      age: 28,
       status: "approved",
       visibility: "public",
     });
