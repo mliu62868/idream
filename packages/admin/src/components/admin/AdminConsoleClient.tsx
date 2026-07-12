@@ -50,12 +50,26 @@ import { InsightsView } from "@/components/admin/InsightsView";
 import { AnnouncementsView } from "@/components/admin/AnnouncementsView";
 import { ExperimentsView } from "@/components/admin/ExperimentsView";
 import { TodayView, type TodayData, type TodayLegacyData } from "@/components/admin/today/TodayView";
-import type { AdminCommandStatus, MetricDashboardResponse, TodayProjection } from "@idream/shared/admin";
+import {
+  generationJobListResponseSchema,
+  type AdminCommandStatus,
+  type GenerationJobListResponse,
+  type MetricDashboardResponse,
+  type TodayProjection,
+} from "@idream/shared/admin";
 import { PlacementsSection } from "@/components/admin/placements/PlacementsSection";
 import { OperatorFlow, type OperatorFlowItem } from "@/components/admin/generation/OperatorFlow";
 import { FailureReason } from "@/components/admin/generation/FailureReason";
 import { ReadonlyOpsView, type OpsColumn } from "@/components/admin/generation/ReadonlyOpsView";
 import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
+import {
+  buildGenerationJobQuery,
+  defaultGenerationJobQuery,
+  GENERATION_JOBS_REFRESH_EVENT,
+  generationJobStatusOptions,
+  parseGenerationJobQuery,
+  type GenerationJobQueryDraft,
+} from "@/features/jobs/query";
 import {
   AdminI18nProvider,
   adminDateLocale,
@@ -220,7 +234,6 @@ type ChatOpsFilters = {
 
 type SectionData =
   | { kind: "dashboard"; data: DashboardData }
-  | { kind: "jobs"; rows: Row[] }
   | { kind: "config"; data: ConfigData; slice: ConfigSlice }
   | { kind: "moderation"; reports: Row[]; blockedMedia: Row[]; appeals: Row[] }
   | { kind: "users"; rows: Row[] }
@@ -239,6 +252,7 @@ type SectionData =
   | {
       kind: "selfFetch";
       view:
+        | "jobs"
         | "official"
         | "production"
         | "assets"
@@ -733,6 +747,9 @@ export function AdminConsoleClient({
         setAdjustment({ userId: "", delta: "" });
       }
       await load();
+      if (completedEndpoint.startsWith("/api/v1/admin/generation/jobs/")) {
+        window.dispatchEvent(new Event(GENERATION_JOBS_REFRESH_EVENT));
+      }
     } catch (actionError) {
       setActionStatus(null);
       setError(actionError instanceof Error ? actionError.message : "Admin action failed");
@@ -901,17 +918,19 @@ export function AdminConsoleClient({
               </div>
               <div className="grid gap-2 sm:grid-cols-[1fr_auto] lg:ml-auto lg:flex lg:items-center">
                 <GlobalAdminSearch />
-                <div className="flex h-9 min-w-0 items-center gap-2 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 lg:w-[260px]">
-                  <Search className="h-4 w-4 shrink-0 text-[var(--ad-text-muted)]" />
-                  <input
-                    aria-label={t("Filter")}
-                    className="h-full min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-[var(--ad-text-muted)]"
-                    name="admin-filter"
-                    onChange={(event) => setQuery(event.target.value)}
-                    placeholder={t("Filter")}
-                    value={query}
-                  />
-                </div>
+                {sectionId !== "generation/jobs" ? (
+                  <div className="flex h-9 min-w-0 items-center gap-2 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 lg:w-[260px]">
+                    <Search className="h-4 w-4 shrink-0 text-[var(--ad-text-muted)]" />
+                    <input
+                      aria-label={t("Filter")}
+                      className="h-full min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-[var(--ad-text-muted)]"
+                      name="admin-filter"
+                      onChange={(event) => setQuery(event.target.value)}
+                      placeholder={t("Filter")}
+                      value={query}
+                    />
+                  </div>
+                ) : null}
                 <div className="flex flex-wrap items-center gap-2">
                   {actor.role === "admin" ? (
                     <label className="inline-flex h-9 items-center gap-2 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)]">
@@ -1295,8 +1314,7 @@ async function fetchSection(
   } = {},
 ): Promise<SectionData> {
   if (sectionId === "generation/jobs") {
-    const payload = await apiGet<{ items: Row[] }>("/api/v1/admin/generation/jobs?mode=image");
-    return { kind: "jobs", rows: payload.items };
+    return { kind: "selfFetch", view: "jobs" };
   }
   if (sectionId === "ops/incidents") return { kind: "selfFetch", view: "incidents" };
   if (sectionId === "cases") return { kind: "selfFetch", view: "cases" };
@@ -2256,7 +2274,6 @@ function renderSection(
   if (section.kind === "dashboard") {
     return <TodayView data={section.data} onPreferenceChanged={ctx.reload} workMode={ctx.workMode} />;
   }
-  if (section.kind === "jobs") return <JobsView rows={section.rows} openAction={ctx.openAction} />;
   if (section.kind === "config") {
     return (
       <ConfigView
@@ -2349,6 +2366,7 @@ function renderSection(
     return <ApprovalsView rows={section.rows} openAction={ctx.openAction} />;
   }
   if (section.kind === "selfFetch") {
+    if (section.view === "jobs") return <JobsView openAction={ctx.openAction} />;
     if (section.view === "production") {
       return <CreativeRunWorkspace permissions={{
         read: ctx.permissions.has("creative.run.read"),
@@ -2420,17 +2438,69 @@ function renderSection(
 }
 
 function JobsView({
-  rows,
   openAction,
 }: {
-  rows: Row[];
   openAction: (action: PendingAction) => void;
 }) {
   const { locale, t, value } = useAdminI18n();
+  const [jobQuery, setJobQuery] = useState<GenerationJobQueryDraft>(() => (
+    typeof window === "undefined"
+      ? defaultGenerationJobQuery
+      : parseGenerationJobQuery(new URLSearchParams(window.location.search))
+  ));
+  const initialJobQueryRef = useRef(jobQuery);
+  const [jobData, setJobData] = useState<GenerationJobListResponse | null>(null);
+  const [jobsBusy, setJobsBusy] = useState(true);
+  const [jobsError, setJobsError] = useState<string | null>(null);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [detail, setDetail] = useState<GenerationJobDetail | null>(null);
   const [detailBusy, setDetailBusy] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
+
+  const loadJobs = useCallback(async (next: GenerationJobQueryDraft) => {
+    const encoded = buildGenerationJobQuery(next);
+    setJobsBusy(true);
+    setJobsError(null);
+    // A changed URL must never keep rendering rows or freshness from the previous query.
+    setJobData(null);
+    if (typeof window !== "undefined") {
+      window.history.replaceState(null, "", `${window.location.pathname}?${encoded}`);
+    }
+    try {
+      setJobData(generationJobListResponseSchema.parse(
+        await apiGet<unknown>(`/api/v2/admin/jobs?${encoded}`),
+      ));
+    } catch (cause) {
+      setJobsError(cause instanceof Error ? cause.message : "Generation Jobs could not be loaded");
+    } finally {
+      setJobsBusy(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void loadJobs(initialJobQueryRef.current), 0);
+    return () => window.clearTimeout(timer);
+  }, [loadJobs]);
+
+  useEffect(() => {
+    const refresh = () => {
+      const current = parseGenerationJobQuery(new URLSearchParams(window.location.search));
+      setJobQuery(current);
+      void loadJobs(current);
+    };
+    window.addEventListener(GENERATION_JOBS_REFRESH_EVENT, refresh);
+    return () => window.removeEventListener(GENERATION_JOBS_REFRESH_EVENT, refresh);
+  }, [loadJobs]);
+
+  const updateJobQuery = (patch: Partial<GenerationJobQueryDraft>) => {
+    setJobQuery((current) => ({ ...current, ...patch, cursor: undefined }));
+  };
+
+  const applyJobQuery = () => {
+    const next = { ...jobQuery, cursor: undefined };
+    setJobQuery(next);
+    void loadJobs(next);
+  };
 
   async function openJobDetail(id: string) {
     if (!id) return;
@@ -2461,12 +2531,13 @@ function JobsView({
       label: "Created",
       render: (row) => compactDate(stringValue(row.createdAt), locale),
     },
-    { key: "status", label: "Status", render: (row) => value(stringValue(row.status)) },
+    { key: "requestOutcome", label: "Request outcome", render: (row) => value(stringValue(row.requestOutcome)) },
+    { key: "settlement", label: "Settlement", render: (row) => value(stringValue((row.settlement as Row | undefined)?.view)) },
     {
       key: "failure",
       label: "Failure reason",
       render: (row) =>
-        stringValue(row.status) === "failed" ? (
+        stringValue(row.requestOutcome) === "failed" ? (
           <FailureReason code={stringValue(row.errorCode)} />
         ) : (
           <span className="text-[var(--ad-text-muted)]">—</span>
@@ -2477,7 +2548,7 @@ function JobsView({
       label: "Actions",
       render: (row) => {
         const id = stringValue(row.id);
-        const status = stringValue(row.status);
+        const status = stringValue(row.legacyStatus);
         return (
           <div className="flex flex-wrap gap-1">
             <IconAction
@@ -2509,10 +2580,71 @@ function JobsView({
       },
     },
   ];
+  const rows: Row[] = jobData?.items.map((item) => ({ ...item })) ?? [];
+  const jobFilterClass = "h-10 w-full rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]";
 
   return (
     <div className="space-y-4">
-      <ReadonlyOpsView columns={columns} rows={rows} title="Generation Jobs" />
+      <form
+        className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"
+        onSubmit={(event) => {
+          event.preventDefault();
+          applyJobQuery();
+        }}
+      >
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <label className="text-xs font-semibold text-[var(--ad-text-muted)] sm:col-span-2">
+            Search authoritative fields
+            <input className={`${jobFilterClass} mt-1`} onChange={(event) => updateJobQuery({ search: event.target.value })} placeholder="Job, user, character, model, error…" value={jobQuery.search} />
+          </label>
+          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Mode<select className={`${jobFilterClass} mt-1`} onChange={(event) => updateJobQuery({ mode: event.target.value as GenerationJobQueryDraft["mode"] })} value={jobQuery.mode}><option value="all">All historical records</option><option value="image">Image</option><option value="video">Video (legacy records)</option></select></label>
+          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Legacy status filter<select className={`${jobFilterClass} mt-1`} onChange={(event) => updateJobQuery({ legacyStatus: event.target.value })} value={jobQuery.legacyStatus}><option value="">All</option>{generationJobStatusOptions.map((status) => <option key={status} value={status}>{value(status)}</option>)}</select></label>
+          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Provider<input className={`${jobFilterClass} mt-1`} list="job-provider-facets" onChange={(event) => updateJobQuery({ provider: event.target.value })} value={jobQuery.provider} /></label>
+          <datalist id="job-provider-facets">{jobData?.facets.providers.map((facet) => <option key={facet.value} value={facet.value}>{facet.count}</option>)}</datalist>
+          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Source type<input className={`${jobFilterClass} mt-1`} list="job-source-facets" onChange={(event) => updateJobQuery({ sourceType: event.target.value })} value={jobQuery.sourceType} /></label>
+          <datalist id="job-source-facets">{jobData?.facets.sourceTypes.map((facet) => <option key={facet.value} value={facet.value}>{facet.count}</option>)}</datalist>
+          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">User ID<input className={`${jobFilterClass} mt-1`} onChange={(event) => updateJobQuery({ userId: event.target.value })} value={jobQuery.userId} /></label>
+          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Character ID<input className={`${jobFilterClass} mt-1`} onChange={(event) => updateJobQuery({ characterId: event.target.value })} value={jobQuery.characterId} /></label>
+          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Sort<select className={`${jobFilterClass} mt-1`} onChange={(event) => updateJobQuery({ sort: event.target.value as GenerationJobQueryDraft["sort"] })} value={jobQuery.sort}><option value="created_desc">Newest created</option><option value="created_asc">Oldest created</option><option value="updated_desc">Recently changed</option><option value="cost_desc">Highest cost</option></select></label>
+          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Page size<select className={`${jobFilterClass} mt-1`} onChange={(event) => updateJobQuery({ limit: Number(event.target.value) })} value={jobQuery.limit}>{[10, 25, 50, 100].map((limit) => <option key={limit} value={limit}>{limit}</option>)}</select></label>
+        </div>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button className="min-h-10 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white disabled:opacity-50" disabled={jobsBusy} type="submit">Apply server query</button>
+          <button className="min-h-10 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" disabled={jobsBusy} onClick={() => { setJobQuery(defaultGenerationJobQuery); void loadJobs(defaultGenerationJobQuery); }} type="button">Reset</button>
+          {jobsBusy ? <span className="inline-flex items-center gap-2 text-xs text-[var(--ad-text-muted)]" role="status"><Loader2 className="h-4 w-4 animate-spin" /> Loading complete query</span> : null}
+        </div>
+      </form>
+
+      {jobsError ? <p className="rounded-lg bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">{jobsError}</p> : null}
+      {jobData ? (
+        <section aria-label="Generation Job query summary" className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+          {[
+            ["Matching jobs", jobData.summary.totalCount],
+            ["Dreamcoins cost", jobData.summary.totalCostDreamcoins],
+            ["Requested outputs", jobData.summary.totalOutputCount],
+            ["Delivered outputs", jobData.summary.totalDeliveredOutputCount],
+          ].map(([label, amount]) => <div className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3" key={label}><p className="text-xs text-[var(--ad-text-muted)]">{label}</p><p className="mt-1 text-lg font-semibold tabular-nums">{amount}</p></div>)}
+        </section>
+      ) : null}
+
+      <ReadonlyOpsView columns={columns} empty={jobsBusy ? "Loading authoritative jobs…" : "No jobs match the server query."} rows={rows} title="Generation Jobs" />
+      {jobData ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] px-4 py-3">
+          <p className="text-xs text-[var(--ad-text-muted)]">Showing {rows.length} of {jobData.summary.totalCount} matching jobs · fresh as of {compactDate(jobData.asOf, locale)}</p>
+          <button
+            className="min-h-10 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold disabled:opacity-50"
+            disabled={jobsBusy || !jobData.pageInfo.hasNextPage || !jobData.pageInfo.endCursor}
+            onClick={() => {
+              const next = { ...jobQuery, cursor: jobData.pageInfo.endCursor ?? undefined };
+              setJobQuery(next);
+              void loadJobs(next);
+            }}
+            type="button"
+          >
+            Next page
+          </button>
+        </div>
+      ) : null}
       {selectedJobId ? (
         <GenerationJobInspector
           detail={detail}
@@ -6954,7 +7086,6 @@ function filterSectionData(section: SectionData | null, query: string): SectionD
   const q = query.trim().toLowerCase();
   const filterRows = (rows: Row[]) =>
     rows.filter((row) => JSON.stringify(row).toLowerCase().includes(q));
-  if (section.kind === "jobs") return { ...section, rows: filterRows(section.rows) };
   if (section.kind === "users") return { ...section, rows: filterRows(section.rows) };
   if (section.kind === "billing") {
     return {
