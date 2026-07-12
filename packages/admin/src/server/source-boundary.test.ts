@@ -94,4 +94,16 @@ describe("admin source boundary", () => {
     expect(configFeature).toContain("export function GenerationConfigWorkspace");
     expect(deadLetterFeature).toContain("export function DeadLetterWorkspace");
   });
+
+  it("keeps migrated access and moderation domains out of the catch-all client", async () => {
+    const catchAll = await readFile(path.join(packageRoot, "src/components/admin/AdminConsoleClient.tsx"), "utf8");
+    const access = await readFile(path.join(packageRoot, "src/features/access/AccessWorkspace.tsx"), "utf8").catch(() => "");
+    const moderation = await readFile(path.join(packageRoot, "src/features/moderation/ModerationWorkspace.tsx"), "utf8").catch(() => "");
+
+    expect(catchAll).not.toContain("function UsersView");
+    expect(catchAll).not.toContain("function ModerationView");
+    expect(catchAll).not.toContain("/api/v1/admin/moderation/");
+    expect(access).toContain("export function AccessWorkspace");
+    expect(moderation).toContain("export function ModerationWorkspace");
+  });
 });

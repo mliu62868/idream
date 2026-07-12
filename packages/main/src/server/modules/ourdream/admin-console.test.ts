@@ -269,6 +269,15 @@ describe("admin appeal queue", () => {
         expect.objectContaining({ id: appeal.id, status: "open", targetId: charId }),
       ]),
     );
+    const scopedQueue = await api("GET", "admin/moderation/queue", {
+      userId: admin,
+      role: "admin",
+      query: { scope: "appeals", limit: 25 },
+    });
+    expectOk(scopedQueue);
+    expect(scopedQueue.data.reports).toEqual([]);
+    expect(scopedQueue.data.blockedMedia).toEqual([]);
+    expect(scopedQueue.data.appeals).toEqual(expect.arrayContaining([expect.objectContaining({ id: appeal.id })]));
 
     expectError(
       await api("PATCH", `admin/moderation/appeals/${appeal.id}`, {
@@ -283,15 +292,18 @@ describe("admin appeal queue", () => {
       403,
     );
 
+    const appealCommandKey = `${P}appeal-command-key`;
+    const appealBody = {
+      outcome: "overturned",
+      notes: "The original decision is overturned.",
+      reason: "Appeal accepted after reviewer check",
+      confirmation: "OVERTURN",
+    } as const;
     const resolved = await api("PATCH", `admin/moderation/appeals/${appeal.id}`, {
       userId: admin,
       role: "admin",
-      body: {
-        outcome: "overturned",
-        notes: "The original decision is overturned.",
-        reason: "Appeal accepted after reviewer check",
-        confirmation: "OVERTURN",
-      },
+      headers: { "idempotency-key": appealCommandKey },
+      body: appealBody,
     });
     expectOk(resolved);
     expect(resolved.data.appeal).toMatchObject({
@@ -302,6 +314,14 @@ describe("admin appeal queue", () => {
     });
     expect(resolved.data.appeal.resolvedAt).toEqual(expect.any(String));
     expect(resolved.data.target).toMatchObject({ targetRestored: true });
+    const replay = await api("PATCH", `admin/moderation/appeals/${appeal.id}`, {
+      userId: admin,
+      role: "admin",
+      headers: { "idempotency-key": appealCommandKey },
+      body: appealBody,
+    });
+    expectOk(replay);
+    expect(replay.data.replayed).toBe(true);
 
     const character = await prisma.character.findUniqueOrThrow({ where: { id: charId } });
     expect(character.status).toBe("approved");
@@ -323,6 +343,8 @@ describe("admin appeal queue", () => {
       status: "overturned",
       targetRestored: true,
     });
+    expect(await prisma.controlPlaneCommand.count({ where: { actorId: admin, targetId: appeal.id } })).toBe(1);
+    expect(await prisma.mainOutboxEvent.count({ where: { aggregateId: appeal.id, eventType: "admin.moderation.appeal_decided.v2" } })).toBe(1);
     const caseEvidence = await prisma.caseEvidence.findFirstOrThrow({
       where: { sourceType: "appeal", sourceId: appeal.id },
     });

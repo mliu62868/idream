@@ -14,6 +14,10 @@ const source = [
   readFileSync(new URL("../../features/config/query.ts", import.meta.url), "utf8"),
   readFileSync(new URL("../../features/dead-letter/DeadLetterWorkspace.tsx", import.meta.url), "utf8"),
   readFileSync(new URL("../../features/dead-letter/query.ts", import.meta.url), "utf8"),
+  readFileSync(new URL("../../features/access/AccessWorkspace.tsx", import.meta.url), "utf8"),
+  readFileSync(new URL("../../features/access/query.ts", import.meta.url), "utf8"),
+  readFileSync(new URL("../../features/moderation/ModerationWorkspace.tsx", import.meta.url), "utf8"),
+  readFileSync(new URL("../../features/moderation/query.ts", import.meta.url), "utf8"),
 ].join("\n");
 
 describe("remaining canonical admin list surfaces", () => {
@@ -23,6 +27,7 @@ describe("remaining canonical admin list surfaces", () => {
       "subscriptionCursor",
       "pricingCursor",
       "deadCursor",
+      "accessCursor",
       "reportCursor",
       "mediaCursor",
       "appealCursor",

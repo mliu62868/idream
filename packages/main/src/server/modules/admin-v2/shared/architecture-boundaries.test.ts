@@ -86,4 +86,18 @@ describe("Admin v2 architecture boundaries", () => {
     expect(configDomain).not.toContain(["@/server/modules/admin", "service"].join("/"));
     expect(deadLetterDomain).not.toContain(["@/server/modules/admin", "service"].join("/"));
   });
+
+  it("keeps moderation and access authorities out of the dispatcher monolith", async () => {
+    const dispatcher = await readFile(path.join(process.cwd(), "src/server/modules/admin/service.ts"), "utf8");
+    const moderation = await readFile(path.join(process.cwd(), "src/server/modules/admin/moderation/service.ts"), "utf8").catch(() => "");
+    const access = await readFile(path.join(process.cwd(), "src/server/modules/admin/users/service.ts"), "utf8");
+
+    expect(dispatcher).not.toContain("const adminDecisionSchema");
+    expect(dispatcher).not.toContain("async function moderationQueue");
+    expect(dispatcher).not.toContain("async function moderationDecision");
+    expect(moderation).toContain("export async function moderationQueue");
+    expect(moderation).not.toContain(["@/server/modules/admin", "service"].join("/"));
+    expect(dispatcher).not.toContain("async function listUsers");
+    expect(access).toContain("export async function listUsers");
+  });
 });

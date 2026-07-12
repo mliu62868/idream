@@ -3,6 +3,7 @@ import { prisma } from "@/server/lib/db";
 import { handle } from "@/server/lib/http";
 import { createUser, purgeTestData } from "@/server/test/helpers";
 import {
+  listUsers,
   setUserPermission,
   updateUserRole,
   updateUserStatus,
@@ -26,6 +27,23 @@ afterAll(async () => {
 });
 
 describe("idempotent user authority commands", () => {
+  it("applies server search, role/status filters, and stable cursor pagination", async () => {
+    const olderId = `${P}access-older`;
+    const newerId = `${P}access-newer`;
+    await createUser({ id: olderId, role: "support", email: `${P}match-older@example.test` });
+    await createUser({ id: newerId, role: "support", email: `${P}match-newer@example.test` });
+    await prisma.user.update({ where: { id: olderId }, data: { createdAt: new Date("2026-01-01T00:00:00.000Z") } });
+    await prisma.user.update({ where: { id: newerId }, data: { createdAt: new Date("2026-01-02T00:00:00.000Z") } });
+
+    const first = await callList(`q=${P}match&role=support&status=active&limit=1`);
+    expect(first.status).toBe(200);
+    const firstBody = await first.json();
+    expect(firstBody.data.items).toEqual([expect.objectContaining({ id: newerId })]);
+    expect(firstBody.data.pageInfo.hasNextPage).toBe(true);
+    const second = await callList(`q=${P}match&role=support&status=active&limit=1&cursor=${encodeURIComponent(firstBody.data.pageInfo.endCursor)}`);
+    expect(second.status).toBe(200);
+    expect((await second.json()).data.items).toEqual([expect.objectContaining({ id: olderId })]);
+  });
   it("replays an exact status request and conflicts on a changed canonical request", async () => {
     const targetId = `${P}status-target`;
     const key = `${P}status-key`;
@@ -130,6 +148,13 @@ function request(path: string, body: unknown, idempotencyKey: string | null, req
     },
     body: JSON.stringify(body),
   });
+}
+
+function callList(query: string) {
+  const req = new Request(`http://localhost/api/v1/admin/users?${query}`, {
+    headers: { "x-idream-user-id": actorId, "x-idream-role": "admin" },
+  });
+  return handle(() => listUsers(req))(req);
 }
 
 function callStatus(targetId: string, body: unknown, key: string | null, requestId: string) {

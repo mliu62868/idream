@@ -14,7 +14,6 @@ import { ok } from "@/server/lib/http";
 import { dreamcoinBalance } from "@/server/modules/admin/billing/ledger";
 import {
   actorWithPermission,
-  clampInt,
   jsonBody,
   type AdminActor,
 } from "@/server/modules/admin/shared/legacy-primitives";
@@ -25,6 +24,7 @@ import {
 import { canonicalRequestHash } from "@/server/modules/admin-v2/shared/control-plane-command";
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
+import { decodeAdminListCursor, encodeAdminListCursor } from "@/server/modules/admin-v2/shared/list-cursor";
 
 const statusChangeSchema = z.object({
   status: z.enum(["active", "suspended"]),
@@ -44,6 +44,15 @@ const permissionOverrideSchema = z.object({
   reason: z.string().trim().min(3).max(2_000),
   confirmation: z.string().trim().min(1).max(160),
 });
+
+const userListQuerySchema = z.object({
+  q: z.string().trim().min(1).max(200).optional(),
+  search: z.string().trim().min(1).max(200).optional(),
+  role: z.enum(["user", "moderator", "support", "ops", "analyst", "admin"]).optional(),
+  status: z.enum(["active", "suspended", "deleted"]).optional(),
+  cursor: z.string().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+}).strict();
 
 type UserCommandInput = {
   request: Request;
@@ -118,17 +127,31 @@ async function executeIdempotentUserCommand(input: UserCommandInput) {
 export async function listUsers(request: Request) {
   await actorWithPermission(request, "user.read");
   const url = new URL(request.url);
-  const q = url.searchParams.get("q")?.trim();
+  const query = userListQuerySchema.parse(Object.fromEntries(url.searchParams));
+  const q = query.q ?? query.search;
+  const limit = query.limit ?? 40;
+  const queryIdentity = { q, role: query.role, status: query.status };
+  const cursorKeys = query.cursor ? decodeAdminListCursor(query.cursor, "admin_users", queryIdentity) : null;
+  const [cursorCreatedAt, cursorId] = cursorKeys
+    ? z.tuple([z.string().datetime(), z.string().min(1)]).parse(cursorKeys)
+    : [null, null];
+  const cursorWhere: Prisma.UserWhereInput | undefined = cursorCreatedAt && cursorId ? {
+    OR: [
+      { createdAt: { lt: new Date(cursorCreatedAt) } },
+      { createdAt: new Date(cursorCreatedAt), id: { lt: cursorId } },
+    ],
+  } : undefined;
   const users = await prisma.user.findMany({
-    where: q
-      ? {
-          OR: [
+    where: {
+      role: query.role,
+      status: query.status,
+      OR: q ? [
             { id: { contains: q } },
             { email: { contains: q } },
             { displayName: { contains: q } },
-          ],
-        }
-      : undefined,
+          ] : undefined,
+      AND: cursorWhere,
+    },
     include: {
       subscriptions: {
         include: { plan: true },
@@ -136,11 +159,12 @@ export async function listUsers(request: Request) {
         take: 1,
       },
     },
-    orderBy: { createdAt: "desc" },
-    take: clampInt(url.searchParams.get("limit"), 1, 100, 40),
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: limit + 1,
   });
+  const page = users.slice(0, limit);
   const items = await Promise.all(
-    users.map(async (user) => ({
+    page.map(async (user) => ({
       id: user.id,
       email: user.email,
       displayName: user.displayName ?? user.name,
@@ -158,7 +182,16 @@ export async function listUsers(request: Request) {
     })),
   );
 
-  return ok({ items });
+  const last = page.at(-1);
+  return ok({
+    items,
+    pageInfo: {
+      endCursor: users.length > limit && last
+        ? encodeAdminListCursor("admin_users", queryIdentity, [last.createdAt.toISOString(), last.id])
+        : null,
+      hasNextPage: users.length > limit,
+    },
+  });
 }
 
 export async function getUserDetail(request: Request, userId: string) {

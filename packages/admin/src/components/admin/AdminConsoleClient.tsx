@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ADMIN_PERMISSION_KEYS, type AdminPermissionKey } from "@idream/shared/admin/permissions";
+import { type AdminPermissionKey } from "@idream/shared/admin/permissions";
 import { type FormEvent, type KeyboardEvent, type ReactNode, type WheelEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -83,6 +83,8 @@ import { PricingWorkspace } from "@/features/pricing/PricingWorkspace";
 import { BillingWorkspace } from "@/features/billing/BillingWorkspace";
 import { GenerationConfigWorkspace } from "@/features/config/GenerationConfigWorkspace";
 import { DeadLetterWorkspace } from "@/features/dead-letter/DeadLetterWorkspace";
+import { AccessWorkspace } from "@/features/access/AccessWorkspace";
+import { ModerationWorkspace } from "@/features/moderation/ModerationWorkspace";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import {
   buildCompatibilityListUrl,
@@ -213,9 +215,7 @@ type ChatOpsFilters = {
 
 type SectionData =
   | { kind: "dashboard"; data: DashboardData }
-  | { kind: "moderation"; reports: Row[]; blockedMedia: Row[]; appeals: Row[]; pageInfo: { reports: PageInfo; blockedMedia: PageInfo; appeals: PageInfo }; query: ListQuery }
   | { kind: "users"; rows: Row[] }
-  | { kind: "access"; rows: Row[] }
   | { kind: "analytics"; data: AnalyticsWorkspaceData }
   | { kind: "risk"; data: AbuseData }
   | { kind: "providers"; data: ProviderOpsData }
@@ -252,7 +252,9 @@ type SectionData =
         | "pricing"
         | "billing"
         | "config"
-        | "dead-letter";
+        | "dead-letter"
+        | "access"
+        | "moderation";
     }
   | {
       kind: "chatops";
@@ -275,18 +277,6 @@ type PendingAction = {
   reasonRequired: boolean;
   idempotencyKey?: string;
   body: (reason: string, confirmation: string) => Record<string, unknown>;
-};
-
-type PermissionForm = {
-  userId: string;
-  permissionKey: string;
-  effect: "grant" | "revoke" | "clear";
-};
-
-const defaultPermissionForm: PermissionForm = {
-  userId: "",
-  permissionKey: "billing.ledger.adjust",
-  effect: "grant",
 };
 
 const defaultChatOpsFilters: ChatOpsFilters = {
@@ -383,7 +373,6 @@ export function AdminConsoleClient({
   const [confirmation, setConfirmation] = useState("");
   const [actionStatus, setActionStatus] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
-  const [permissionForm, setPermissionForm] = useState<PermissionForm>(defaultPermissionForm);
   const [chatOpsFilters, setChatOpsFilters] = useState<ChatOpsFilters>(() => chatOpsFiltersFromParams(initialRouteParams));
   const [locale, setLocale] = useState<AdminLocale>("en");
   const [localeReady, setLocaleReady] = useState(false);
@@ -829,8 +818,6 @@ export function AdminConsoleClient({
             ) : (
               renderSection(data, subview, {
                 openAction,
-                permissionForm,
-                setPermissionForm,
                 chatOpsFilters,
                 setChatOpsFilters,
                 applyChatOpsFilters: (next) => {
@@ -1009,33 +996,9 @@ async function fetchSection(
   if (sectionId === "generation/recipes") return { kind: "selfFetch", view: "recipes" };
   if (sectionId === "generation/presets") return { kind: "selfFetch", view: "presets" };
   if (sectionId === "generation/config") return { kind: "selfFetch", view: "config" };
-  if (sectionId === "moderation") {
-    const query = listQuery(params, ["moderationSearch", "moderationStatus", "moderationTargetType", "reportCursor", "mediaCursor", "appealCursor"]);
-    const payload = await apiGet<{ reports: Row[]; blockedMedia: Row[]; appeals: Row[]; pageInfo: { reports: PageInfo; blockedMedia: PageInfo; appeals: PageInfo } }>(
-      `/api/v1/admin/moderation/queue${queryString({
-        search: query.moderationSearch,
-        status: query.moderationStatus,
-        targetType: query.moderationTargetType,
-        reportCursor: query.reportCursor,
-        mediaCursor: query.mediaCursor,
-        appealCursor: query.appealCursor,
-        limit: "25",
-      })}`,
-    );
-    return {
-      kind: "moderation",
-      reports: payload.reports,
-      blockedMedia: payload.blockedMedia,
-      appeals: payload.appeals,
-      pageInfo: payload.pageInfo ?? { reports: emptyPageInfo, blockedMedia: emptyPageInfo, appeals: emptyPageInfo },
-      query,
-    };
-  }
+  if (sectionId === "moderation") return { kind: "selfFetch", view: "moderation" };
   if (sectionId === "users") return { kind: "users", rows: [] };
-  if (sectionId === "system/access") {
-    const payload = await apiGet<{ items: Row[] }>("/api/v1/admin/users?limit=100");
-    return { kind: "access", rows: payload.items };
-  }
+  if (sectionId === "system/access") return { kind: "selfFetch", view: "access" };
   if (sectionId === "billing") {
     return { kind: "selfFetch", view: "billing" };
   }
@@ -1232,8 +1195,6 @@ function renderSection(
   subview: AdminSubview,
   ctx: {
     openAction: (action: PendingAction) => void;
-    permissionForm: PermissionForm;
-    setPermissionForm: (value: PermissionForm) => void;
     chatOpsFilters: ChatOpsFilters;
     setChatOpsFilters: (value: ChatOpsFilters) => void;
     applyChatOpsFilters: (value: ChatOpsFilters) => void;
@@ -1248,33 +1209,8 @@ function renderSection(
   if (section.kind === "dashboard") {
     return <TodayView data={section.data} onPreferenceChanged={ctx.reload} workMode={ctx.workMode} />;
   }
-  if (section.kind === "moderation") {
-    return (
-      <ModerationView
-        appeals={section.appeals}
-        blockedMedia={section.blockedMedia}
-        openAction={ctx.openAction}
-        reports={section.reports}
-        pageInfo={section.pageInfo}
-        query={section.query}
-        updateQuery={ctx.updateQuery}
-      />
-    );
-  }
   if (section.kind === "users") {
     return <CustomerWorkspace initialCustomerId={subview.kind === "detail" ? subview.id : null} />;
-  }
-  if (section.kind === "access") {
-    return (
-      <UsersView
-        canChangeStatus={ctx.permissions.has("user.status.write")}
-        canManagePermissions={ctx.permissions.has("user.role.write")}
-        openAction={ctx.openAction}
-        permissionForm={ctx.permissionForm}
-        rows={section.rows}
-        setPermissionForm={ctx.setPermissionForm}
-      />
-    );
   }
   if (section.kind === "analytics") return <AnalyticsView data={section.data} />;
   if (section.kind === "risk") return <RiskView data={section.data} />;
@@ -1390,6 +1326,15 @@ function renderSection(
         discard: ctx.permissions.has("ops.deadletter.write"),
       }} />;
     }
+    if (section.view === "access") {
+      return <AccessWorkspace permissions={{
+        changeStatus: ctx.permissions.has("user.status.write"),
+        managePermissions: ctx.permissions.has("user.role.write"),
+      }} />;
+    }
+    if (section.view === "moderation") {
+      return <ModerationWorkspace canDecide={ctx.permissions.has("safety.review.write")} />;
+    }
     return <ReviewQueueView />;
   }
   if (section.kind === "chatops") {
@@ -1411,290 +1356,6 @@ function renderSection(
     );
   }
   return null;
-}
-
-function ModerationView({
-  reports,
-  blockedMedia,
-  appeals,
-  openAction,
-  pageInfo,
-  query,
-  updateQuery,
-}: {
-  reports: Row[];
-  blockedMedia: Row[];
-  appeals: Row[];
-  openAction: (action: PendingAction) => void;
-  pageInfo: { reports: PageInfo; blockedMedia: PageInfo; appeals: PageInfo };
-  query: ListQuery;
-  updateQuery: (updates: Record<string, string | null>, clearCursors?: readonly string[]) => void;
-}) {
-  return (
-    <div className="space-y-6">
-      <ServerListToolbar cursorKeys={["reportCursor", "mediaCursor", "appealCursor"]} fields={[
-        { key: "moderationSearch", label: "Search" },
-        { key: "moderationStatus", label: "Report status", options: ["open", "triaged", "reviewing", "actioned", "closed"] },
-        { key: "moderationTargetType", label: "Target type", options: ["character", "media", "message"] },
-      ]} query={query} updateQuery={updateQuery} />
-      <DataTable
-        actions={(row) => {
-          const id = stringValue(row.id);
-          return (
-            <div className="flex flex-wrap gap-1">
-              <IconAction
-                icon={<ClipboardCheck className="h-4 w-4" />}
-                label="Action"
-                onClick={() =>
-                  openAction({
-                    title: `Action report ${id}`,
-                    endpoint: `/api/v1/admin/moderation/${id}/decision`,
-                    method: "POST",
-                    confirmText: "TAKEDOWN",
-                    reasonRequired: true,
-                    body: (actionReason) => ({
-                      decision: "actioned",
-                      policyCode: "manual_review",
-                      reason: actionReason,
-                      confirmation: "TAKEDOWN",
-                    }),
-                  })
-                }
-              />
-              <IconAction
-                icon={<Check className="h-4 w-4" />}
-                label="Close"
-                onClick={() =>
-                  openAction({
-                    title: `Close report ${id}`,
-                    endpoint: `/api/v1/admin/moderation/${id}/decision`,
-                    method: "POST",
-                    confirmText: id,
-                    reasonRequired: true,
-                    body: (actionReason) => ({
-                      decision: "no_violation",
-                      reason: actionReason,
-                      confirmation: id,
-                    }),
-                  })
-                }
-              />
-            </div>
-          );
-        }}
-        columns={["id", "targetType", "targetId", "category", "status", "priority", "createdAt"]}
-        rows={reports}
-        title="Reports"
-        empty={queryIsFiltered(query, ["moderationSearch", "moderationStatus", "moderationTargetType"]) ? "No reports match these filters" : "No reports require review"}
-      />
-      <CanonicalPager cursorKey="reportCursor" pageInfo={pageInfo.reports} updateQuery={updateQuery} />
-      <DataTable
-        columns={["id", "ownerId", "type", "safetyStatus", "createdAt"]}
-        rows={blockedMedia}
-        title="Blocked Media"
-        empty={query.moderationSearch ? "No blocked media match this search" : "No blocked media require review"}
-      />
-      <CanonicalPager cursorKey="mediaCursor" pageInfo={pageInfo.blockedMedia} updateQuery={updateQuery} />
-      <DataTable
-        actions={(row) => {
-          const id = stringValue(row.id);
-          return (
-            <div className="flex flex-wrap gap-1">
-              <IconAction
-                icon={<Check className="h-4 w-4" />}
-                label="Uphold"
-                onClick={() =>
-                  openAction({
-                    title: `Uphold appeal ${id}`,
-                    endpoint: `/api/v1/admin/moderation/appeals/${id}`,
-                    method: "PATCH",
-                    confirmText: "UPHOLD",
-                    reasonRequired: true,
-                    body: (actionReason, confirmation) => ({
-                      outcome: "upheld",
-                      notes: actionReason,
-                      reason: actionReason,
-                      confirmation,
-                    }),
-                  })
-                }
-              />
-              <IconAction
-                icon={<RotateCcw className="h-4 w-4" />}
-                label="Overturn"
-                onClick={() =>
-                  openAction({
-                    title: `Overturn appeal ${id}`,
-                    endpoint: `/api/v1/admin/moderation/appeals/${id}`,
-                    method: "PATCH",
-                    confirmText: "OVERTURN",
-                    reasonRequired: true,
-                    body: (actionReason, confirmation) => ({
-                      outcome: "overturned",
-                      notes: actionReason,
-                      reason: actionReason,
-                      confirmation,
-                    }),
-                  })
-                }
-              />
-              <IconAction
-                icon={<ClipboardCheck className="h-4 w-4" />}
-                label="Modify"
-                onClick={() =>
-                  openAction({
-                    title: `Modify appeal ${id}`,
-                    endpoint: `/api/v1/admin/moderation/appeals/${id}`,
-                    method: "PATCH",
-                    confirmText: "MODIFY",
-                    reasonRequired: true,
-                    body: (actionReason, confirmation) => ({
-                      outcome: "modified",
-                      notes: actionReason,
-                      reason: actionReason,
-                      confirmation,
-                    }),
-                  })
-                }
-              />
-            </div>
-          );
-        }}
-        columns={["id", "userId", "targetType", "targetId", "status", "createdAt"]}
-        rows={appeals}
-        title="Appeals"
-        empty={query.moderationSearch ? "No appeals match this search" : "No appeals require review"}
-      />
-      <CanonicalPager cursorKey="appealCursor" pageInfo={pageInfo.appeals} updateQuery={updateQuery} />
-    </div>
-  );
-}
-
-export function UsersView({
-  rows,
-  openAction,
-  permissionForm,
-  setPermissionForm,
-  canChangeStatus,
-  canManagePermissions,
-}: {
-  rows: Row[];
-  openAction: (action: PendingAction) => void;
-  permissionForm: PermissionForm;
-  setPermissionForm: (value: PermissionForm) => void;
-  canChangeStatus: boolean;
-  canManagePermissions: boolean;
-}) {
-  const { t, value: valueLabel } = useAdminI18n();
-
-  return (
-    <div className="space-y-5">
-      {canManagePermissions ? <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-        <h2 className="mb-1 text-sm font-semibold">{t("Permission override")}</h2>
-        <p className="mb-3 text-xs text-[var(--ad-text-muted)]">
-          按 user 精确 grant / revoke / clear 单个 permission key（不动 role）。admin only，写审计。
-        </p>
-        <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_140px_auto]">
-          <input
-            aria-label={t("Permission user ID")}
-            className="rounded-md h-10 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
-            onChange={(event) => setPermissionForm({ ...permissionForm, userId: event.target.value })}
-            placeholder={t("User ID")}
-            value={permissionForm.userId}
-          />
-          <select
-            aria-label={t("Permission key")}
-            className="rounded-md h-10 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
-            onChange={(event) =>
-              setPermissionForm({ ...permissionForm, permissionKey: event.target.value })
-            }
-            value={permissionForm.permissionKey}
-          >
-            {ADMIN_PERMISSION_KEYS.map((key) => (
-              <option key={key} value={key}>
-                {key}
-              </option>
-            ))}
-          </select>
-          <select
-            aria-label={t("Permission effect")}
-            className="rounded-md h-10 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
-            onChange={(event) =>
-              setPermissionForm({
-                ...permissionForm,
-                effect: event.target.value as PermissionForm["effect"],
-              })
-            }
-            value={permissionForm.effect}
-          >
-            {["grant", "revoke", "clear"].map((effect) => (
-              <option key={effect} value={effect}>
-                {valueLabel(effect)}
-              </option>
-            ))}
-          </select>
-          <button
-            className="inline-flex h-10 items-center justify-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
-            disabled={!permissionForm.userId.trim()}
-            onClick={() => {
-              const targetUserId = permissionForm.userId.trim();
-              const confirmationTarget = `${targetUserId}:${permissionForm.permissionKey}:${permissionForm.effect}`;
-              openAction({
-                title: `${permissionForm.effect} ${permissionForm.permissionKey}`,
-                endpoint: `/api/v1/admin/users/${targetUserId}/permissions`,
-                method: "POST",
-                idempotencyKey: crypto.randomUUID(),
-                confirmText: confirmationTarget,
-                reasonRequired: true,
-                body: (actionReason, actionConfirmation) => ({
-                  permissionKey: permissionForm.permissionKey,
-                  effect: permissionForm.effect,
-                  reason: actionReason,
-                  confirmation: actionConfirmation,
-                }),
-              });
-            }}
-            type="button"
-          >
-            <ShieldCheck className="h-4 w-4" />
-            {t("Apply")}
-          </button>
-        </div>
-      </section> : null}
-      <DataTable
-        actions={canChangeStatus ? (row) => {
-          const id = stringValue(row.id);
-          const status = stringValue(row.status);
-          const nextStatus = status === "suspended" ? "active" : "suspended";
-          const confirmationTarget = `${id}:${nextStatus}`;
-          return (
-            <IconAction
-              icon={nextStatus === "active" ? <Check className="h-4 w-4" /> : <Ban className="h-4 w-4" />}
-              label={nextStatus === "active" ? "Restore" : "Suspend"}
-              onClick={() =>
-                openAction({
-                  title: `${nextStatus === "active" ? "Restore" : "Suspend"} ${id}`,
-                  endpoint: `/api/v1/admin/users/${id}/status`,
-                  method: "POST",
-                  idempotencyKey: crypto.randomUUID(),
-                  confirmText: confirmationTarget,
-                  reasonRequired: true,
-                  body: (actionReason, actionConfirmation) => ({
-                    status: nextStatus,
-                    reason: actionReason,
-                    confirmation: actionConfirmation,
-                  }),
-                })
-              }
-            />
-          );
-        } : undefined}
-        columns={["id", "email", "displayName", "role", "status", "dreamcoins", "createdAt"]}
-        rows={rows}
-        title="Users"
-      />
-    </div>
-  );
 }
 
 function AnalyticsView({ data }: { data: AnalyticsWorkspaceData }) {
