@@ -368,7 +368,8 @@ export async function listCharacterPortfolioData(
   });
   const hasNextPage = projects.length > query.limit;
   const page = projects.slice(0, query.limit);
-  const items = await Promise.all(page.map(async (project) => {
+  const orphanProjectIds: string[] = [];
+  const projectedItems = await Promise.all(page.map(async (project) => {
     const [character, serving, latestDecision] = await Promise.all([
       db.character.findUnique({ where: { id: project.characterId } }),
       db.characterServing.findUnique({ where: { characterId: project.characterId } }),
@@ -377,7 +378,10 @@ export async function listCharacterPortfolioData(
         orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       }),
     ]);
-    if (!character) throw new Error(`Character Project ${project.id} has no Character`);
+    if (!character) {
+      orphanProjectIds.push(project.id);
+      return null;
+    }
     const currentRelease = serving?.currentReleaseId
       ? await db.characterRelease.findUnique({ where: { id: serving.currentReleaseId } })
       : null;
@@ -466,6 +470,19 @@ export async function listCharacterPortfolioData(
       },
     };
   }));
+  const items = projectedItems.filter((item): item is Exclude<typeof item, null> => item !== null);
+  const dataQuality: Array<{ code: string; severity: "warning" | "error"; message: string }> = [{
+    code: "character_margin_payment_authority_unavailable",
+    severity: "warning",
+    message: "Contribution margin is invalid until captured cash, refund, credit, and character attribution authorities are available.",
+  }];
+  if (orphanProjectIds.length > 0) {
+    dataQuality.push({
+      code: "character_project_orphan",
+      severity: "error",
+      message: `${orphanProjectIds.length} Character Project row(s) on this page have no Character authority and were excluded; cutover is blocked until reconciliation.`,
+    });
+  }
   return characterPortfolioResponseSchema.parse({
     items,
     pageInfo: {
@@ -473,12 +490,8 @@ export async function listCharacterPortfolioData(
       hasNextPage,
     },
     asOf: asOf.toISOString(),
-    freshness: "fresh",
-    dataQuality: [{
-      code: "character_margin_payment_authority_unavailable",
-      severity: "warning",
-      message: "Contribution margin is invalid until captured cash, refund, credit, and character attribution authorities are available.",
-    }],
+    freshness: orphanProjectIds.length > 0 ? "degraded" : "fresh",
+    dataQuality,
   });
 }
 

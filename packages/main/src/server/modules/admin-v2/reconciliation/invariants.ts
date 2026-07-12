@@ -48,6 +48,18 @@ type ServingPointer = {
 
 const sqlChecks: readonly SqlInvariant[] = [
   {
+    key: "character_project_orphan",
+    description: "Every CharacterProject must resolve to its Character authority",
+    evidence: "character_projects.characterId joined to characters.id",
+    query: Prisma.sql`
+      SELECT p.id, count(*) OVER()::int AS total
+      FROM character_projects p
+      LEFT JOIN characters c ON c.id = p."characterId"
+      WHERE c.id IS NULL
+      ORDER BY p.id LIMIT 20
+    `,
+  },
+  {
     key: "official_public_character_without_current_serving_release",
     description: "Official public Characters must have a current CharacterServing Release",
     evidence: "characters.source/visibility/status joined to character_serving.currentReleaseId",

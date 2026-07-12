@@ -831,7 +831,7 @@ export function AdminConsoleClient({
     <AdminI18nProvider locale={locale}>
     <>
     <a className="admin-skip-link" href="#admin-main-content">Skip to admin content</a>
-    <main className="min-h-screen bg-[var(--ad-canvas)] text-[var(--ad-ink)]">
+    <main className="min-h-screen overflow-x-hidden bg-[var(--ad-canvas)] text-[var(--ad-ink)]">
       <div className="flex min-h-screen">
         <aside
           className="sticky top-0 hidden h-screen w-[248px] shrink-0 overflow-hidden border-r border-[var(--ad-border)] bg-[var(--ad-surface)] lg:flex lg:flex-col"

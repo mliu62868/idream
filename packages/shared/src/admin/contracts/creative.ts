@@ -54,6 +54,28 @@ export const creativeExecutionOutcomeSchema = z.enum([
 ]);
 export const creativeReviewStateSchema = z.enum(["not_ready", "pending", "in_review", "complete"]);
 export const creativeDeploymentStateSchema = z.enum(["unplaced", "partially_placed", "placed"]);
+export const creativeSettlementViewSchema = z.enum([
+  "not_required",
+  "captured",
+  "partially_refunded",
+  "refunded",
+]);
+
+export const creativeRetryEligibilitySchema = z
+  .object({
+    eligibleItemIds: z.array(adminIdSchema).readonly(),
+    eligibleCount: z.number().int().nonnegative(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.eligibleItemIds.length !== value.eligibleCount) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["eligibleCount"],
+        message: "Eligible count must match the frozen item set",
+      });
+    }
+  });
 
 export const creativeRunCountsSchema = z
   .object({
@@ -226,6 +248,9 @@ export const creativeRunDetailSchema = creativeRunBaseSchema
   .omit({ errorClusters: true, relatedIncidentIds: true })
   .extend({
     title: z.string().trim().min(1),
+    settlementView: creativeSettlementViewSchema,
+    retryEligibility: creativeRetryEligibilitySchema,
+    legacyState: z.string().trim().min(1),
     items: z.array(creativeRunItemDetailSchema).readonly(),
   })
   .strict()

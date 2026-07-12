@@ -407,6 +407,53 @@ export async function purgeTestData(prefix: string) {
   await prisma.follow.deleteMany({ where: { OR: [{ followerId: sw }, { followeeId: sw }] } });
   await prisma.generationSettlementLink.deleteMany({ where: { requestId: sw } });
 
+  // Admin v2 character roots do not all carry database cascades because the
+  // expand/backfill phase must tolerate legacy rows. Purge them explicitly so
+  // tests cannot leave orphan Projects that poison Portfolio or cutover gates.
+  const characters = await prisma.character.findMany({
+    where: { OR: [{ id: sw }, { creatorId: sw }] },
+    select: { id: true },
+  });
+  const characterIds = characters.map((character) => character.id);
+  const projects = await prisma.characterProject.findMany({
+    where: {
+      OR: [
+        { id: sw },
+        ...(characterIds.length > 0 ? [{ characterId: { in: characterIds } }] : []),
+      ],
+    },
+    select: { id: true, characterId: true },
+  });
+  const projectIds = projects.map((project) => project.id);
+  const projectCharacterIds = [...new Set([...characterIds, ...projects.map((project) => project.characterId)])];
+  const releases = projectIds.length > 0
+    ? await prisma.characterRelease.findMany({ where: { projectId: { in: projectIds } }, select: { id: true } })
+    : [];
+  const releaseIds = releases.map((release) => release.id);
+  if (releaseIds.length > 0) {
+    const validationRuns = await prisma.releaseValidationRun.findMany({ where: { releaseId: { in: releaseIds } }, select: { id: true } });
+    await prisma.releaseCheckResult.deleteMany({ where: { validationRunId: { in: validationRuns.map((run) => run.id) } } });
+    await prisma.releaseValidationRun.deleteMany({ where: { releaseId: { in: releaseIds } } });
+    await prisma.releaseMonitor.deleteMany({ where: { releaseId: { in: releaseIds } } });
+    await prisma.characterReleaseEvent.deleteMany({ where: { releaseId: { in: releaseIds } } });
+  }
+  if (projectCharacterIds.length > 0) {
+    await prisma.characterServing.deleteMany({ where: { characterId: { in: projectCharacterIds } } });
+  }
+  if (releaseIds.length > 0) await prisma.characterRelease.deleteMany({ where: { id: { in: releaseIds } } });
+  if (projectIds.length > 0) {
+    await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: { in: projectIds } } });
+    await prisma.adminCollaborationActivity.deleteMany({ where: { targetId: { in: projectIds } } });
+    await prisma.characterRevision.deleteMany({ where: { projectId: { in: projectIds } } });
+    await prisma.characterProject.deleteMany({ where: { id: { in: projectIds } } });
+  }
+  if (projectCharacterIds.length > 0) {
+    const profiles = await prisma.characterVisualProfile.findMany({ where: { characterId: { in: projectCharacterIds } }, select: { id: true } });
+    await prisma.referenceSetRevision.deleteMany({ where: { visualProfileId: { in: profiles.map((profile) => profile.id) } } });
+    await prisma.characterContentVersion.deleteMany({ where: { characterId: { in: projectCharacterIds } } });
+  }
+  await prisma.generationRouteQualification.deleteMany({ where: { OR: [{ id: sw }, { routeFingerprint: sw }] } });
+
   // Characters cascade: stats, tags, likes, submissions, chat sessions, messages.
   await prisma.character.deleteMany({ where: { OR: [{ id: sw }, { creatorId: sw }] } });
   // Media cascade: likes, collection items.

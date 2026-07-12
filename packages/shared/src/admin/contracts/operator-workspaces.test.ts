@@ -41,6 +41,9 @@ describe("operator workspace contracts", () => {
       reviewState: "pending",
       deploymentState: "unplaced",
       verificationState: "pending",
+      settlementView: "not_required",
+      retryEligibility: { eligibleItemIds: [], eligibleCount: 0 },
+      legacyState: "completed",
       counts: { generated: 1, failed: 3, reviewed: 0, approved: 0, placed: 0, total: 4 },
       version: 2,
       createdAt: "2026-07-11T00:00:00.000Z",
@@ -48,5 +51,32 @@ describe("operator workspace contracts", () => {
       items: [],
     });
     expect(result.success).toBe(false);
+  });
+
+  it("accepts settlement and frozen retry evidence on a truthful creative detail", () => {
+    const result = creativeRunDetailSchema.safeParse({
+      id: "run-2",
+      title: "Campaign review",
+      purpose: "campaign",
+      target: { type: "campaign", id: "campaign-1" },
+      ownerId: null,
+      dueAt: null,
+      priority: "normal",
+      lifecycleState: "active",
+      workflowStage: "brief",
+      executionOutcome: "pending",
+      reviewState: "not_ready",
+      deploymentState: "unplaced",
+      verificationState: "pending",
+      settlementView: "not_required",
+      retryEligibility: { eligibleItemIds: [], eligibleCount: 0 },
+      legacyState: "draft",
+      counts: { generated: 0, failed: 0, reviewed: 0, approved: 0, placed: 0, total: 0 },
+      version: 1,
+      createdAt: "2026-07-11T00:00:00.000Z",
+      updatedAt: "2026-07-11T00:00:00.000Z",
+      items: [],
+    });
+    expect(result.success).toBe(true);
   });
 });

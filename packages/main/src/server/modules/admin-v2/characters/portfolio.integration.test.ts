@@ -308,4 +308,31 @@ describe("Character Portfolio authority/read model", () => {
     }));
     expect(allowed.status).toBe(200);
   });
+
+  it("keeps the Portfolio usable but degraded when reconciliation finds an orphan Project", async () => {
+    const orphanProjectId = `portfolio-orphan-${suffix}`;
+    await prisma.characterProject.create({
+      data: {
+        id: orphanProjectId,
+        characterId: `missing-character-${suffix}`,
+        phase: "qa",
+        audience: {},
+        successCriteria: [],
+      },
+    });
+    try {
+      const data = await listCharacterPortfolioData(prisma, characterPortfolioQuerySchema.parse({
+        phase: "qa",
+        limit: 20,
+      }), { asOf });
+      expect(data.items).toEqual([]);
+      expect(data.freshness).toBe("degraded");
+      expect(data.dataQuality).toContainEqual(expect.objectContaining({
+        code: "character_project_orphan",
+        severity: "error",
+      }));
+    } finally {
+      await prisma.characterProject.deleteMany({ where: { id: orphanProjectId } });
+    }
+  });
 });
