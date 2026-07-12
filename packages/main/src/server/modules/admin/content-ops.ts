@@ -28,6 +28,7 @@ import {
   encodeAdminListCursor,
   parseIsoCursorKey,
 } from "@/server/modules/admin-v2/shared/list-cursor";
+import { isCreativeRunItemTransitionAllowed } from "@/server/modules/admin-v2/shared/state-transition-authority";
 
 const productionPurposeSchema = z.enum([
   "character_cover",
@@ -1450,18 +1451,27 @@ async function syncPlacementTarget(
 }
 
 async function markPlacementItemPublished(db: Prisma.TransactionClient, mediaAssetId: string) {
-  const items = await db.contentProductionItem.findMany({
+  const item = await db.contentProductionItem.findUnique({
     where: { mediaAssetId },
-    select: { batchId: true },
+    select: { id: true, batchId: true, status: true, version: true },
   });
-  await db.contentProductionItem.updateMany({
-    where: { mediaAssetId, status: { in: ["approved", "generated"] } },
-    data: { status: "published" },
-  });
-  await patchAssetMetadata(db, mediaAssetId, { status: "published" });
-  for (const batchId of new Set(items.map((item) => item.batchId))) {
-    await refreshContentProductionBatchStats(db, batchId);
+  if (!item || !isCreativeRunItemTransitionAllowed(item.status, "published")) {
+    throw Errors.conflict("Placement source item is not approved for publication", {
+      mediaAssetId,
+      itemStatus: item?.status ?? null,
+    });
   }
+  const changed = await db.contentProductionItem.updateMany({
+    where: { id: item.id, status: item.status, version: item.version },
+    data: { status: "published", version: { increment: 1 } },
+  });
+  if (changed.count !== 1) {
+    throw Errors.conflict("Placement source item changed during publication", {
+      mediaAssetId,
+    });
+  }
+  await patchAssetMetadata(db, mediaAssetId, { status: "published" });
+  await refreshContentProductionBatchStats(db, item.batchId);
 }
 
 function validatePlacementTarget(slot: string, targetType: string) {
