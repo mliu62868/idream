@@ -3,7 +3,7 @@
 // INTENT: 导出走 JSON 信封带 csv 字符串（便于 UI 触发下载 + 测试），不回任何单用户明文。
 import { prisma } from "@/server/lib/db";
 import { ok } from "@/server/lib/http";
-import { actorWithPermission, clampInt } from "@/server/modules/admin/service";
+import { actorWithPermission, clampInt } from "@/server/modules/admin/shared/legacy-primitives";
 
 const ANALYTICS_EXPORT = "analytics.export" as const;
 const DAY_MS = 24 * 60 * 60 * 1000;

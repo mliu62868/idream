@@ -13,7 +13,7 @@ import {
   jsonBody,
   toInputJson,
   writeAudit,
-} from "@/server/modules/admin/service";
+} from "@/server/modules/admin/shared/legacy-primitives";
 
 const CONFIG_READ = "generation.config.read" as const;
 const CONFIG_WRITE = "generation.config.write" as const;

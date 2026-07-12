@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { createWriteStream, existsSync } from "node:fs";
 import { mkdir, open, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -25,11 +25,23 @@ import { env } from "@/server/lib/env";
 import { AppError, Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import {
+  adminAuditData,
   actorWithPermission,
+  clampInt,
+  hashHeader,
   jsonBody,
+  toInputJson,
+  writeAudit,
   type AdminActor,
-} from "@/server/modules/admin-v2/shared/authority";
-export { actorWithPermission, jsonBody, type AdminActor } from "@/server/modules/admin-v2/shared/authority";
+} from "@/server/modules/admin/shared/legacy-primitives";
+export {
+  actorWithPermission,
+  clampInt,
+  jsonBody,
+  toInputJson,
+  writeAudit,
+  type AdminActor,
+} from "@/server/modules/admin/shared/legacy-primitives";
 import {
   decodeAdminListCursor,
   encodeAdminListCursor,
@@ -106,6 +118,19 @@ import {
   deleteAnnouncement,
 } from "./announcements";
 import { listExperiments } from "./experiments";
+import {
+  createPricingRule,
+  listPricingRules,
+  patchPricingRule,
+  publishPricingRule,
+  rollbackPricingRule,
+} from "./pricing/service";
+import {
+  DUAL_APPROVAL_FLAG,
+  LEDGER_APPROVAL_THRESHOLD,
+  enforceApproval,
+} from "./shared/legacy-approval";
+export { DUAL_APPROVAL_FLAG, LEDGER_APPROVAL_THRESHOLD } from "./shared/legacy-approval";
 import {
   ensureReviewCaseForAppeal,
   ensureReviewCaseForReport,
@@ -372,31 +397,6 @@ const presetAdminSchema = z.object({
   controls: z.record(z.string(), z.unknown()).default({}),
   visibility: z.enum(["private", "public", "unlisted"]).default("public"),
   status: z.enum(["active", "archived"]).default("active"),
-});
-
-const pricingRuleSchema = z.object({
-  ruleKey: z.string().trim().min(1).max(120),
-  label: z.string().trim().min(1).max(120),
-  mode: z.enum(["image", "video", "voice"]).default("image"),
-  baseCost: z.number().int().min(0).max(100_000),
-  multiplier: z.number().min(0.1).max(20).default(1),
-  effectiveFrom: z.string().datetime().optional(),
-  reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.string().trim().min(1).max(160),
-});
-
-// ruleKey/mode 在 create 后不可改：避免一条 draft 的 mode 漂离其 ruleKey 版本谱系。
-const pricingRulePatchSchema = z.object({
-  label: z.string().trim().min(1).max(120).optional(),
-  baseCost: z.number().int().min(0).max(100_000).optional(),
-  multiplier: z.number().min(0.1).max(20).optional(),
-  effectiveFrom: z.string().datetime().nullable().optional(),
-});
-
-const pricingPublishSchema = z.object({
-  reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.string().trim().min(1).max(160),
-  effectiveFrom: z.string().datetime().optional(),
 });
 
 const plaintextViewSchema = z.object({
@@ -3017,192 +3017,6 @@ async function patchAdminPreset(request: Request, id: string) {
   return ok({ preset });
 }
 
-// SPEC: 定价规则控制面 —— draft→active→archived 版本化发布，复用 model-profile 范式。
-// INTENT: 接通已存在的 PricingRule（generationCost 已按 mode 读 active 规则），让改价可版本化/审计/回滚，
-//         而不再改 seed/代码。读 billing.read（admin+support），写 config.pricing.write（admin only）。
-// INVARIANTS: 每个 mode 至多一个 active 规则（发布时归档同 mode 旧 active）；ruleKey 维护版本号与回滚链。
-// EXAMPLE: image baseCost 5→4 走 create(draft) → publish（旧 active 归档），可一键 rollback 回 v1。
-const pricingRuleListQuerySchema = z.object({
-  search: z.string().trim().min(1).max(200).optional(),
-  mode: z.string().trim().min(1).max(80).optional(),
-  status: z.enum(["draft", "active", "archived"]).optional(),
-  limit: z.coerce.number().int().min(1).max(100).optional(),
-  cursor: z.string().min(1).optional(),
-}).strict();
-
-async function listPricingRules(request: Request) {
-  await actorWithPermission(request, "billing.read");
-  const url = new URL(request.url);
-  const query = pricingRuleListQuerySchema.parse(Object.fromEntries(url.searchParams));
-  const { search, mode, status } = query;
-  const limit = query.limit ?? null;
-  const queryIdentity = { search, mode, status };
-  const cursorKeys = adminListCursorKeys(url, "pricing_rules", queryIdentity);
-  const cursorWhere: Prisma.PricingRuleWhereInput | undefined = cursorKeys ? (() => {
-    const ruleKey = adminCursorString(cursorKeys, 0, "pricing_rules");
-    const version = adminCursorNumber(cursorKeys, 1, "pricing_rules");
-    const id = adminCursorString(cursorKeys, 2, "pricing_rules");
-    return { OR: [
-      { ruleKey: { gt: ruleKey } },
-      { ruleKey, version: { lt: version } },
-      { ruleKey, version, id: { gt: id } },
-    ] };
-  })() : undefined;
-  const rules = await prisma.pricingRule.findMany({
-    where: {
-      mode,
-      status,
-      OR: search
-        ? [{ id: { contains: search } }, { ruleKey: { contains: search } }, { label: { contains: search } }]
-        : undefined,
-      AND: cursorWhere,
-    },
-    orderBy: [{ ruleKey: "asc" }, { version: "desc" }, { id: "asc" }],
-    take: limit === null ? undefined : limit + 1,
-  });
-  const page = limit === null ? rules : rules.slice(0, limit);
-  return ok({
-    items: page,
-    pageInfo: adminListPageInfo("pricing_rules", queryIdentity, page, limit !== null && rules.length > limit, (row) => [
-      row.ruleKey,
-      row.version,
-      row.id,
-    ]),
-  });
-}
-
-async function createPricingRule(request: Request) {
-  const actor = await actorWithPermission(request, "config.pricing.write");
-  const body = pricingRuleSchema.parse(await jsonBody(request));
-  if (body.confirmation !== body.ruleKey) {
-    throw Errors.badRequest("Confirmation did not match pricing rule key");
-  }
-  const latest = await prisma.pricingRule.findFirst({
-    where: { ruleKey: body.ruleKey },
-    orderBy: { version: "desc" },
-  });
-  const rule = await prisma.pricingRule.create({
-    data: {
-      ruleKey: body.ruleKey,
-      label: body.label,
-      mode: body.mode,
-      baseCost: body.baseCost,
-      multiplier: body.multiplier,
-      effectiveFrom: body.effectiveFrom ? new Date(body.effectiveFrom) : null,
-      version: (latest?.version ?? 0) + 1,
-      status: "draft",
-    },
-  });
-  await writeAudit(request, actor, {
-    action: "config.pricing.create",
-    targetType: "pricing_rule",
-    targetId: rule.id,
-    reason: body.reason,
-    after: pricingAuditSnapshot(rule),
-  });
-  return ok({ rule });
-}
-
-async function patchPricingRule(request: Request, id: string) {
-  const actor = await actorWithPermission(request, "config.pricing.write");
-  const body = pricingRulePatchSchema.parse(await jsonBody(request));
-  const before = await prisma.pricingRule.findUnique({ where: { id } });
-  if (!before) throw Errors.notFound("Pricing rule not found");
-  if (before.status !== "draft") throw Errors.badRequest("Only draft pricing rules can be edited");
-  const updated = await prisma.pricingRule.update({
-    where: { id },
-    data: {
-      label: body.label,
-      baseCost: body.baseCost,
-      multiplier: body.multiplier,
-      effectiveFrom:
-        body.effectiveFrom === undefined
-          ? undefined
-          : body.effectiveFrom === null
-            ? null
-            : new Date(body.effectiveFrom),
-    },
-  });
-  await writeAudit(request, actor, {
-    action: "config.pricing.update",
-    targetType: "pricing_rule",
-    targetId: id,
-    before: pricingAuditSnapshot(before),
-    after: pricingAuditSnapshot(updated),
-  });
-  return ok({ rule: updated });
-}
-
-async function publishPricingRule(request: Request, id: string) {
-  const actor = await actorWithPermission(request, "config.pricing.write");
-  const body = pricingPublishSchema.parse(await jsonBody(request));
-  const { previous, published } = await prisma.$transaction(async (tx) => {
-    const rule = await tx.pricingRule.findUnique({ where: { id } });
-    if (!rule) throw Errors.notFound("Pricing rule not found");
-    assertTargetConfirmation(body.confirmation, rule.id);
-    if (rule.status !== "draft") throw Errors.badRequest("Only draft pricing rules can be published");
-    // 高危：改价发布在硬门控开启时需双人审批凭据（见 enforceApproval）。
-    await enforceApproval("config.pricing.publish", id, tx);
-    // 同 mode 旧 active 全部归档，保证 generationCost 读到的 active 唯一（资金侧 SSoT）。
-    const previous = await tx.pricingRule.findFirst({
-      where: { mode: rule.mode, status: "active" },
-    });
-    const effectiveFrom = body.effectiveFrom
-      ? new Date(body.effectiveFrom)
-      : (rule.effectiveFrom ?? new Date());
-    await tx.pricingRule.updateMany({
-      where: { mode: rule.mode, status: "active" },
-      data: { status: "archived", archivedAt: new Date() },
-    });
-    const published = await tx.pricingRule.update({
-      where: { id },
-      data: { status: "active", effectiveFrom, publishedAt: new Date(), archivedAt: null },
-    });
-    return { previous, published };
-  });
-  await writeAudit(request, actor, {
-    action: "config.pricing.publish",
-    targetType: "pricing_rule",
-    targetId: id,
-    reason: body.reason,
-    before: previous ? pricingAuditSnapshot(previous) : null,
-    after: pricingAuditSnapshot(published),
-  });
-  return ok({ rule: published, previousActiveId: previous?.id ?? null });
-}
-
-async function rollbackPricingRule(request: Request, id: string) {
-  const actor = await actorWithPermission(request, "config.pricing.write");
-  const body = rollbackSchema.parse(await jsonBody(request));
-  const current = await prisma.pricingRule.findUnique({ where: { id } });
-  if (!current) throw Errors.notFound("Pricing rule not found");
-  assertTargetConfirmation(body.confirmation, current.id);
-  const previous = await prisma.pricingRule.findFirst({
-    where: { ruleKey: current.ruleKey, status: "archived", version: { lt: current.version } },
-    orderBy: { version: "desc" },
-  });
-  if (!previous) throw Errors.notFound("No previous pricing rule version to roll back to");
-  const restored = await prisma.$transaction(async (tx) => {
-    await tx.pricingRule.updateMany({
-      where: { mode: current.mode, status: "active" },
-      data: { status: "archived", archivedAt: new Date() },
-    });
-    return tx.pricingRule.update({
-      where: { id: previous.id },
-      data: { status: "active", publishedAt: new Date(), archivedAt: null },
-    });
-  });
-  await writeAudit(request, actor, {
-    action: "config.pricing.rollback",
-    targetType: "pricing_rule",
-    targetId: current.id,
-    reason: body.reason,
-    before: pricingAuditSnapshot(current),
-    after: pricingAuditSnapshot(restored),
-  });
-  return ok({ rule: restored, fromVersion: current.version, toVersion: restored.version });
-}
-
 async function moderationQueue(request: Request) {
   await actorWithPermission(request, "safety.review.read");
   const url = new URL(request.url);
@@ -5124,50 +4938,6 @@ async function chatOpsModerationEvents(request: Request) {
   });
 }
 
-export async function writeAudit(
-  request: Request,
-  actor: AdminActor,
-  input: {
-    action: string;
-    targetType: string;
-    targetId: string;
-    reason?: string;
-    before?: unknown;
-    after?: unknown;
-  },
-) {
-  return prisma.adminAuditLog.create({
-    data: adminAuditData(request, actor, input),
-  });
-}
-
-function adminAuditData(
-  request: Request,
-  actor: AdminActor,
-  input: {
-    action: string;
-    targetType: string;
-    targetId: string;
-    reason?: string;
-    before?: unknown;
-    after?: unknown;
-  },
-) {
-  return {
-    actorId: actor.id,
-    actorRole: actor.role,
-    action: input.action,
-    targetType: input.targetType,
-    targetId: input.targetId,
-    reason: input.reason,
-    before: input.before === undefined ? undefined : toInputJson(stripSensitive(input.before)),
-    after: input.after === undefined ? undefined : toInputJson(stripSensitive(input.after)),
-    requestId: request.headers.get("x-request-id") ?? randomUUID(),
-    ipHash: hashHeader(request.headers.get("x-forwarded-for") ?? request.headers.get("x-real-ip")),
-    userAgent: request.headers.get("user-agent") ?? undefined,
-  };
-}
-
 async function appendAdminGenerationEvent(
   tx: Prisma.TransactionClient,
   jobId: string,
@@ -5343,24 +5113,6 @@ function recipeAuditSnapshot(template: {
   };
 }
 
-function pricingAuditSnapshot(rule: {
-  ruleKey: string;
-  mode: string;
-  baseCost: number;
-  multiplier: number;
-  version: number;
-  status: string;
-}) {
-  return {
-    ruleKey: rule.ruleKey,
-    mode: rule.mode,
-    baseCost: rule.baseCost,
-    multiplier: rule.multiplier,
-    version: rule.version,
-    status: rule.status,
-  };
-}
-
 function flagAuditSnapshot(flag: {
   key: string;
   enabled: boolean;
@@ -5492,39 +5244,6 @@ async function featureEnabled(key: string) {
 // 开启时，高危执行端点须先存在一条 action+targetId 匹配且 status=approved 的 AdminActionRequest；
 // 执行前消费它（status=consumed，一次性防重放）。flag 关闭（受控 beta 默认）→ 不强制，行为不变。
 // INVARIANTS: 无凭据→403；有凭据→放行并消费；同凭据二次执行→无可用凭据→403。
-export const DUAL_APPROVAL_FLAG = "dual_approval_enforced" as const;
-export const LEDGER_APPROVAL_THRESHOLD = 1000;
-
-async function enforceApproval(
-  action: string,
-  targetId: string,
-  db: Prisma.TransactionClient | typeof prisma = prisma,
-) {
-  const flag = await db.featureFlag.findUnique({ where: { key: DUAL_APPROVAL_FLAG } });
-  if (!flag?.enabled) return;
-  const approved = await db.adminActionRequest.findFirst({
-    where: { action, targetId, status: "approved" },
-    orderBy: { decidedAt: "desc" },
-  });
-  if (!approved) {
-    throw Errors.forbidden("Dual approval required: no approved request for this action", {
-      action,
-      targetId,
-    });
-  }
-  // 条件消费：并发下只有一个请求能从 approved → consumed；其余视为无可用凭据。
-  const consumed = await db.adminActionRequest.updateMany({
-    where: { id: approved.id, status: "approved" },
-    data: { status: "consumed" },
-  });
-  if (consumed.count !== 1) {
-    throw Errors.forbidden("Dual approval required: approved request was already consumed", {
-      action,
-      targetId,
-    });
-  }
-}
-
 async function stageGenerationRetry(
   tx: Prisma.TransactionClient,
   input: {
@@ -5675,10 +5394,6 @@ async function lockUserLedger(tx: Prisma.TransactionClient, userId: string) {
   await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId} FOR UPDATE`;
 }
 
-export function toInputJson(value: unknown): Prisma.InputJsonValue {
-  return value as Prisma.InputJsonValue;
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -5716,12 +5431,6 @@ function consentScopeFields(scope: Prisma.JsonValue | undefined) {
   const fields = scope.fields;
   if (!Array.isArray(fields)) return new Set<string>();
   return new Set(fields.filter((field): field is string => typeof field === "string"));
-}
-
-export function clampInt(value: string | null, min: number, max: number, fallback: number) {
-  const parsed = value ? Number.parseInt(value, 10) : fallback;
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.max(min, Math.min(max, parsed));
 }
 
 function adminListCursorKeys(
@@ -5765,25 +5474,6 @@ function adminListPageInfo<T>(
     endCursor: hasNextPage && last ? encodeAdminListCursor(scope, queryIdentity, keys(last)) : null,
     hasNextPage,
   };
-}
-
-function stripSensitive(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stripSensitive);
-  if (!isRecord(value)) return value;
-  const output: Record<string, unknown> = {};
-  for (const [key, child] of Object.entries(value)) {
-    if (["prompt", "negativePrompt", "body", "password", "token", "secret"].includes(key)) {
-      output[key] = "[redacted]";
-    } else {
-      output[key] = stripSensitive(child);
-    }
-  }
-  return output;
-}
-
-function hashHeader(value: string | null) {
-  if (!value) return undefined;
-  return createHash("sha256").update(value).digest("hex").slice(0, 24);
 }
 
 function isHardPolicyFlag(key: string) {

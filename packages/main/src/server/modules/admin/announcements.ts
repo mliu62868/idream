@@ -11,7 +11,7 @@ import {
   readAnnouncements,
   writeAnnouncements,
 } from "@/server/announcements/store";
-import { actorWithPermission, jsonBody, writeAudit } from "@/server/modules/admin/service";
+import { actorWithPermission, jsonBody, writeAudit } from "@/server/modules/admin/shared/legacy-primitives";
 
 const PROMO_READ = "growth.promo.read" as const;
 const PROMO_WRITE = "growth.promo.write" as const;

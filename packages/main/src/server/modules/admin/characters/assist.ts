@@ -5,7 +5,7 @@ import { z } from "zod";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import { providers } from "@/server/providers";
-import { actorWithPermission, jsonBody } from "@/server/modules/admin/service";
+import { actorWithPermission, jsonBody } from "@/server/modules/admin/shared/legacy-primitives";
 import { moderateText } from "@/server/modules/ourdream/service";
 
 const assistSchema = z.object({

@@ -2,7 +2,7 @@
 // INTENT: 只读，读 analytics.export。诚实标注：非随机分臂归因（需逐用户曝光埋点，延后）。
 import { prisma } from "@/server/lib/db";
 import { ok } from "@/server/lib/http";
-import { actorWithPermission } from "@/server/modules/admin/service";
+import { actorWithPermission } from "@/server/modules/admin/shared/legacy-primitives";
 
 export async function listExperiments(request: Request): Promise<Response> {
   await actorWithPermission(request, "analytics.export");

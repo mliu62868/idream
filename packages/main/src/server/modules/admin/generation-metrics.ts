@@ -4,7 +4,7 @@
 // INVARIANTS: 只读；generation.config.read 门；days ∈ [1,90] 默认 7。
 import { prisma } from "@/server/lib/db";
 import { ok } from "@/server/lib/http";
-import { actorWithPermission, clampInt } from "@/server/modules/admin/service";
+import { actorWithPermission, clampInt } from "@/server/modules/admin/shared/legacy-primitives";
 
 const CONFIG_READ = "generation.config.read" as const;
 

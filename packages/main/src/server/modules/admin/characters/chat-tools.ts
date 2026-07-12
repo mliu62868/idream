@@ -8,7 +8,7 @@ import { z } from "zod";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
-import { actorWithPermission, jsonBody, toInputJson, writeAudit } from "@/server/modules/admin/service";
+import { actorWithPermission, jsonBody, toInputJson, writeAudit } from "@/server/modules/admin/shared/legacy-primitives";
 
 const chatToolsSchema = z.object({
   imageToolEnabled: z.boolean(),

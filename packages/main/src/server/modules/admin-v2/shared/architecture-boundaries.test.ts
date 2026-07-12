@@ -29,4 +29,18 @@ describe("Admin v2 architecture boundaries", () => {
     }
     expect(offenders).toEqual([]);
   });
+
+  it("keeps legacy domain modules independent from the dispatcher monolith", async () => {
+    const root = path.join(process.cwd(), "src/server/modules/admin");
+    const files = (await sourceFiles(root)).filter((file) => !file.endsWith(`${path.sep}service.ts`));
+    const offenders: string[] = [];
+    const forbiddenImport = ["@/server/modules/admin", "service"].join("/");
+    for (const file of files) {
+      const source = await readFile(file, "utf8");
+      if (source.includes(forbiddenImport)) {
+        offenders.push(path.relative(process.cwd(), file));
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
 });

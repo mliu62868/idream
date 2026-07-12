@@ -13,7 +13,7 @@ import { MAIN_TO_CHAT_QUEUE, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contract
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
-import { actorWithPermission, clampInt, jsonBody, writeAudit } from "@/server/modules/admin/service";
+import { actorWithPermission, clampInt, jsonBody, writeAudit } from "@/server/modules/admin/shared/legacy-primitives";
 
 const COMPLIANCE_READ = "compliance.read" as const;
 const COMPLIANCE_WRITE = "compliance.write" as const;

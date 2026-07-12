@@ -27,7 +27,7 @@ import {
   jsonBody,
   toInputJson,
   writeAudit,
-} from "@/server/modules/admin/service";
+} from "@/server/modules/admin/shared/legacy-primitives";
 import {
   IDENTITY_ASSEMBLER_VERSION,
   assembleIdentityPrompt,

@@ -22,7 +22,7 @@ import {
   actorWithPermission,
   clampInt,
   jsonBody,
-} from "@/server/modules/admin/service";
+} from "@/server/modules/admin/shared/legacy-primitives";
 import { moderateText } from "@/server/modules/ourdream/service";
 import { acceptControlPlaneCommand } from "@/server/modules/admin-v2/shared/control-plane-command";
 import { executeCharacterReleaseCommand } from "@/server/modules/admin-v2/characters/release-executor";

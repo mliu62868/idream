@@ -14,7 +14,7 @@ import { loadWorkflowDescriptors, type WorkflowDescriptor } from "@idream/shared
 import { resolveExecutable } from "@idream/shared";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
-import { actorWithPermission } from "@/server/modules/admin/service";
+import { actorWithPermission } from "@/server/modules/admin/shared/legacy-primitives";
 
 const CONFIG_READ = "generation.config.read" as const;
 // health() 是就绪探测（诊断面板轮询），不是生成请求 —— 用固定短超时，不借用生成任务的

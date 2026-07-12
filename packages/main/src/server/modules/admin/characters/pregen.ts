@@ -6,7 +6,7 @@ import { z } from "zod";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
-import { actorWithPermission, jsonBody } from "@/server/modules/admin/service";
+import { actorWithPermission, jsonBody } from "@/server/modules/admin/shared/legacy-primitives";
 import {
   createProductionBatchCore,
   productionBatchDTO,

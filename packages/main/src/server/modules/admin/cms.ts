@@ -17,7 +17,7 @@ import {
   jsonBody,
   toInputJson,
   writeAudit,
-} from "@/server/modules/admin/service";
+} from "@/server/modules/admin/shared/legacy-primitives";
 
 const CMS_WRITE = "content.cms.write" as const;
 const CONTENT_READ = "content.read" as const;

@@ -5,7 +5,7 @@ import {
   jsonBody,
   toInputJson,
   writeAudit,
-} from "@/server/modules/admin/service";
+} from "@/server/modules/admin/shared/legacy-primitives";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
