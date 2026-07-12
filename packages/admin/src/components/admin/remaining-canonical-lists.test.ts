@@ -26,6 +26,8 @@ const source = [
   readFileSync(new URL("../../features/approvals/query.ts", import.meta.url), "utf8"),
   readFileSync(new URL("../../features/chat-ops/ChatOpsWorkspace.tsx", import.meta.url), "utf8"),
   readFileSync(new URL("../../features/chat-ops/query.ts", import.meta.url), "utf8"),
+  readFileSync(new URL("../../features/content-merchandising/ContentMerchandisingWorkspace.tsx", import.meta.url), "utf8"),
+  readFileSync(new URL("../../features/content-merchandising/query.ts", import.meta.url), "utf8"),
 ].join("\n");
 
 describe("remaining canonical admin list surfaces", () => {
