@@ -31,6 +31,7 @@ function CreateRunForm({ enabled }: { enabled: boolean }) {
   const [brief, setBrief] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID());
   if (!enabled) return null;
   const create = async () => {
     setBusy(true); setError(null);
@@ -39,7 +40,7 @@ function CreateRunForm({ enabled }: { enabled: boolean }) {
         "/api/v2/admin/creative/runs",
         {
           method: "POST",
-          idempotencyKey: crypto.randomUUID(),
+          idempotencyKey,
           body: {
             ...(title.trim() ? { title: title.trim() } : {}),
             purpose,
@@ -55,6 +56,7 @@ function CreateRunForm({ enabled }: { enabled: boolean }) {
           },
         },
       );
+      setIdempotencyKey(crypto.randomUUID());
       window.location.assign(`/admin/creative/runs/${result.batch.id}`);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Creative Run could not be launched");
@@ -167,11 +169,16 @@ function ReviewForm({ run, itemIndex, permissions, reload }: { run: CreativeRunD
   const [score, setScore] = useState("90");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [idempotencyKeys, setIdempotencyKeys] = useState(() => ({
+    approved: crypto.randomUUID(),
+    rejected: crypto.randomUUID(),
+  }));
   if (!item) return null;
   const decide = async (decision: "approved" | "rejected") => {
     setBusy(true); setError(null);
     try {
-      await adminV2Request(`/api/v2/admin/creative/runs/${run.id}/items/${item.id}/decisions`, { method: "POST", body: { entityVersion: run.version, decision, identityConsistency: decision === "approved" ? "passed" : "failed", score: Number(score), reason } });
+      await adminV2Request(`/api/v2/admin/creative/runs/${run.id}/items/${item.id}/decisions`, { method: "POST", idempotencyKey: idempotencyKeys[decision], body: { entityVersion: run.version, decision, identityConsistency: decision === "approved" ? "passed" : "failed", score: Number(score), reason } });
+      setIdempotencyKeys((current) => ({ ...current, [decision]: crypto.randomUUID() }));
       await reload();
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Review decision failed"); }
     finally { setBusy(false); }
@@ -187,9 +194,11 @@ function PlacementForm({ run, itemIndex, permissions, reload }: { run: CreativeR
   const [reason, setReason] = useState("Approved candidate selected for distribution slot");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [placementIdempotencyKey, setPlacementIdempotencyKey] = useState(() => crypto.randomUUID());
+  const [verificationIdempotencyKey, setVerificationIdempotencyKey] = useState(() => crypto.randomUUID());
   if (!item) return <div className="mt-4"><CollaborationPanel canWrite={permissions.write} targetId={run.id} targetType="creative_run" targetVersion={run.version} /></div>;
-  const place = async () => { if (!item.asset) return; setBusy(true); setError(null); try { await adminV2Request(`/api/v2/admin/creative/runs/${run.id}/placements`, { method: "POST", body: { entityVersion: run.version, itemId: item.id, assetId: item.asset.id, slot, targetType, targetId, reason } }); await reload(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Placement publish failed"); } finally { setBusy(false); } };
-  const verify = async () => { if (!item.placement) return; setBusy(true); setError(null); try { await adminV2Request(`/api/v2/admin/creative/runs/${run.id}/placements/${item.placement.id}/verification`, { method: "POST", body: { entityVersion: run.version, reason: "Verify the authoritative distribution slot and asset pointer" } }); await reload(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Placement verification failed"); } finally { setBusy(false); } };
+  const place = async () => { if (!item.asset) return; setBusy(true); setError(null); try { await adminV2Request(`/api/v2/admin/creative/runs/${run.id}/placements`, { method: "POST", idempotencyKey: placementIdempotencyKey, body: { entityVersion: run.version, itemId: item.id, assetId: item.asset.id, slot, targetType, targetId, reason } }); setPlacementIdempotencyKey(crypto.randomUUID()); await reload(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Placement publish failed"); } finally { setBusy(false); } };
+  const verify = async () => { if (!item.placement) return; setBusy(true); setError(null); try { await adminV2Request(`/api/v2/admin/creative/runs/${run.id}/placements/${item.placement.id}/verification`, { method: "POST", idempotencyKey: verificationIdempotencyKey, body: { entityVersion: run.version, reason: "Verify the authoritative distribution slot and asset pointer" } }); setVerificationIdempotencyKey(crypto.randomUUID()); await reload(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Placement verification failed"); } finally { setBusy(false); } };
   return <><section className="mt-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"><div className="flex items-center justify-between"><h3 className="font-semibold">Placement & verification</h3>{item.placement ? <StatusBadge value={item.placement.verificationState} /> : null}</div><p className="mt-2 text-xs text-[var(--ad-text-muted)]">Release-owned slots are deliberately excluded; character avatar/hero changes require a Character Release patch.</p><div className="mt-4 grid gap-3 sm:grid-cols-3"><label className="text-xs font-semibold text-[var(--ad-text-muted)]">Distribution slot<select className={`${fieldClass} mt-1`} onChange={(event) => setSlot(event.target.value)} value={slot}>{["feed_card", "homepage_strip", "seo_article", "campaign"].map((value) => <option key={value}>{value}</option>)}</select></label><label className="text-xs font-semibold text-[var(--ad-text-muted)]">Target type<input className={`${fieldClass} mt-1`} onChange={(event) => setTargetType(event.target.value)} value={targetType} /></label><label className="text-xs font-semibold text-[var(--ad-text-muted)]">Target ID<input className={`${fieldClass} mt-1`} onChange={(event) => setTargetId(event.target.value)} value={targetId} /></label></div><label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">Reason<textarea className={`${textAreaClass} mt-1`} onChange={(event) => setReason(event.target.value)} value={reason} /></label>{error ? <p className="mt-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}<div className="mt-4 flex flex-wrap gap-2"><WorkspaceButton disabled={!permissions.place || !item.asset || item.review?.decision !== "approved" || busy} onClick={() => void place()} tone="primary"><Send className="h-4 w-4" /> Publish placement</WorkspaceButton><WorkspaceButton disabled={!permissions.place || !item.placement || busy} onClick={() => void verify()}><RefreshCcw className="h-4 w-4" /> Verify live slot</WorkspaceButton></div></section><div className="mt-4"><CollaborationPanel canWrite={permissions.write} targetId={run.id} targetType="creative_run" targetVersion={run.version} /></div></>;
 }
 
@@ -197,17 +206,20 @@ function IncidentAttachment({ run, permissions, reload }: { run: CreativeRunDeta
   const [incidentId, setIncidentId] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID());
   const attach = async () => {
     setBusy(true); setError(null);
     try {
       await adminV2Request(`/api/v2/admin/creative/runs/${run.id}/commands/attach-incident`, {
         method: "POST",
+        idempotencyKey,
         body: {
           entityVersion: run.version,
           incidentId: incidentId.trim(),
           reason: "Attach failed Creative Attempts to the diagnosed platform Incident",
         },
       });
+      setIdempotencyKey(crypto.randomUUID());
       setIncidentId("");
       await reload();
     } catch (cause) {
@@ -225,13 +237,14 @@ function RunDetail({ id, permissions }: { id: string; permissions: Permissions }
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
+  const [retryIdempotencyKey, setRetryIdempotencyKey] = useState(() => crypto.randomUUID());
   const load = useCallback(async () => { setLoading(true); setError(null); try { setRun(await adminV2Request(`/api/v2/admin/creative/runs/${id}`, { schema: creativeRunDetailSchema })); } catch (cause) { setError(cause instanceof Error ? cause.message : "Creative Run could not be loaded"); } finally { setLoading(false); } }, [id]);
   useEffect(() => {
     if (!permissions.read) return;
     const timer = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(timer);
   }, [load, permissions.read]);
-  const retryFailed = async () => { if (!run) return; setRetrying(true); setError(null); try { await adminV2Request(`/api/v2/admin/creative/runs/${run.id}/commands/retry-failed`, { method: "POST", idempotencyKey: crypto.randomUUID(), body: { entityVersion: run.version, reason: { code: "operator_retry_failed", summary: "Retry only eligible failed Creative Run items" } } }); await load(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Failed items could not be retried"); } finally { setRetrying(false); } };
+  const retryFailed = async () => { if (!run) return; setRetrying(true); setError(null); try { await adminV2Request(`/api/v2/admin/creative/runs/${run.id}/commands/retry-failed`, { method: "POST", idempotencyKey: retryIdempotencyKey, body: { entityVersion: run.version, reason: { code: "operator_retry_failed", summary: "Retry only eligible failed Creative Run items" } } }); setRetryIdempotencyKey(crypto.randomUUID()); await load(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Failed items could not be retried"); } finally { setRetrying(false); } };
   if (!permissions.read) return denied();
   if (loading) return <LoadingWorkspace label="Loading Creative Run lineage and outcomes" />;
   if (!run) return <section className="rounded-xl bg-[var(--ad-red-bg)] p-5" role="alert">{error ?? "Creative Run not found"} <button className="ml-2 underline" onClick={() => void load()} type="button">Retry</button></section>;

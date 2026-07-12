@@ -49,7 +49,8 @@ describe("Incident correlation correction and close lifecycle", () => {
 
     const resolved = await prisma.opsIncident.update({ where: { id: incidentB }, data: { status: "resolved", verificationState: "passed", version: { increment: 1 } } });
     const closed = await closeIncidentWithPostmortem({ incidentId: incidentB, expectedVersion: resolved.version, actor, summary: "Recovered the generation route and reconciled every affected request.", rootCause: "Provider route regression", contributingFactors: ["Capacity alert lag"], correctiveActions: ["Add route canary"], evidenceRefs: [`monitor://${suffix}`], reason: "Postmortem reviewed", requestId: `close-${suffix}` });
-    expect(closed.incident).toMatchObject({ status: "closed", activeCorrelationKey: null });
+    expect(closed).toMatchObject({ incidentId: incidentB, status: "closed", verificationState: "passed" });
+    await expect(prisma.opsIncident.findUniqueOrThrow({ where: { id: incidentB } })).resolves.toMatchObject({ status: "closed", activeCorrelationKey: null });
     await expect(prisma.incidentPostmortem.findUnique({ where: { incidentId: incidentB } })).resolves.toMatchObject({ rootCause: "Provider route regression", createdById: actor.id });
   });
 });

@@ -26,7 +26,8 @@ export async function POST(request: Request, context: Context) {
       target: { type: "admin_case", id },
       expectedVersion: body.entityVersion,
       payload: body,
-      mutate: (tx) => recordCustomerCaseAction({
+      mutate: async (tx) => {
+        const updated = await recordCustomerCaseAction({
         caseId: id,
         actor,
         expectedVersion: body.entityVersion,
@@ -35,7 +36,9 @@ export async function POST(request: Request, context: Context) {
         evidenceRefs: body.evidenceRefs,
         outcomeRef: body.outcomeRef,
         requestId,
-      }, tx),
+        }, tx);
+        return { caseId: updated.id, status: updated.status, verificationState: updated.verificationState, version: updated.version };
+      },
     });
   });
 }

@@ -419,7 +419,12 @@ export async function verifyIncidentRecovery(input: {
         payload: toInputJson({ incidentId: current.id, state, evidenceRefs, version: updated.version }),
       },
     });
-    return updated;
+    return {
+      incidentId: updated.id,
+      status: updated.status,
+      verificationState: updated.verificationState,
+      version: updated.version,
+    };
   };
   return db
     ? execute(db)

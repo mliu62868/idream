@@ -25,7 +25,8 @@ export async function POST(request: Request, context: Context) {
       target: { type: "admin_case", id },
       expectedVersion: body.entityVersion,
       payload: body,
-      mutate: (tx) => verifyReviewCase({
+      mutate: async (tx) => {
+        const updated = await verifyReviewCase({
         caseId: id,
         actor,
         expectedVersion: body.entityVersion,
@@ -33,7 +34,9 @@ export async function POST(request: Request, context: Context) {
         evidenceRefs: body.evidenceRefs,
         overrideReason: body.overrideReason,
         requestId,
-      }, tx),
+        }, tx);
+        return { caseId: updated.id, status: updated.status, verificationState: updated.verificationState, version: updated.version };
+      },
     });
   });
 }

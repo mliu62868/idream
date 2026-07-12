@@ -28,7 +28,7 @@ export async function PATCH(request: Request, context: Context) {
     const actor = await actorWithPermission(request, "ops.incident.manage");
     const body = incidentTriageRequestSchema.parse(await request.json());
     requireMatchingIfMatch(request, body.entityVersion);
-    return triageIncident({
+    const updated = await triageIncident({
       incidentId: id,
       actor,
       expectedVersion: body.entityVersion,
@@ -42,5 +42,12 @@ export async function PATCH(request: Request, context: Context) {
       reason: body.reason,
       requestId: request.headers.get("x-request-id") ?? crypto.randomUUID(),
     });
+    return {
+      incidentId: updated.id,
+      status: updated.status,
+      severity: updated.severity,
+      ownerId: updated.ownerId,
+      version: updated.version,
+    };
   });
 }

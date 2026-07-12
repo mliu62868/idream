@@ -27,7 +27,16 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       target: { type: "admin_case", id },
       expectedVersion: body.entityVersion,
       payload: body,
-      mutate: (tx) => reopenOrRecurCase({ caseId: id, actor, expectedVersion: body.entityVersion, reason: body.reason, requestId }, tx),
+      mutate: async (tx) => {
+        const result = await reopenOrRecurCase({ caseId: id, actor, expectedVersion: body.entityVersion, reason: body.reason, requestId }, tx);
+        return {
+          mode: result.mode,
+          caseId: result.adminCase.id,
+          status: result.adminCase.status,
+          verificationState: result.adminCase.verificationState,
+          version: result.adminCase.version,
+        };
+      },
     });
   });
 }

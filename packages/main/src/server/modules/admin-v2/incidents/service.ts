@@ -689,7 +689,13 @@ export async function closeIncidentWithPostmortem(input: {
     const closed = await tx.opsIncident.update({ where: { id: incident.id }, data: { status: "closed", activeCorrelationKey: null, version: { increment: 1 }, mitigation: toInputJson({ ...asRecord(incident.mitigation), postmortemId: postmortem.id }) } });
     await tx.adminAuditLog.create({ data: { actorId: input.actor.id, actorRole: input.actor.role, action: "incident.closed_with_postmortem", targetType: "ops_incident", targetId: incident.id, reason: input.reason, before: toInputJson({ status: incident.status, version: incident.version }), after: toInputJson({ status: closed.status, version: closed.version, postmortemId: postmortem.id, evidenceRefs: input.evidenceRefs }), requestId: input.requestId } });
     await tx.mainOutboxEvent.create({ data: { eventType: "ops.incident.closed.v2", aggregateType: "ops_incident", aggregateId: incident.id, payload: toInputJson({ incidentId: incident.id, postmortemId: postmortem.id, version: closed.version }) } });
-    return { incident: closed, postmortem };
+    return {
+      incidentId: closed.id,
+      postmortemId: postmortem.id,
+      status: "closed" as const,
+      verificationState: closed.verificationState,
+      version: closed.version,
+    };
   };
   return db ? execute(db) : prisma.$transaction(execute);
 }

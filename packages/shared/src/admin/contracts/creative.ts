@@ -54,6 +54,11 @@ export const creativeRunCreateRequestSchema = z
     }
   });
 
+export const creativeRunCreateResultSchema = z.object({
+  batch: z.object({ id: adminIdSchema }).strict(),
+  replayed: z.boolean(),
+}).strict();
+
 export const creativeReviewDecisionRequestSchema = z.object({
   entityVersion: z.number().int().nonnegative(),
   decision: z.enum(["approved", "rejected"]),

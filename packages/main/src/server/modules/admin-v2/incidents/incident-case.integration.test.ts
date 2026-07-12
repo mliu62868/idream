@@ -289,7 +289,7 @@ describe("Incident and P0 Review Case authority loops", () => {
       requestId: `verify-${suffix}`,
       now: new Date(Date.now() + 16 * 60 * 1_000),
     });
-    expect(verified).toMatchObject({ status: "monitoring", verificationState: "passed" });
+    expect(verified).toMatchObject({ incidentId: first.id, status: "monitoring", verificationState: "passed" });
     const response = await resolveIncident(
       commandRequest(`/api/v2/admin/incidents/${first.id}/commands/resolve`, {
         entityVersion: 4,

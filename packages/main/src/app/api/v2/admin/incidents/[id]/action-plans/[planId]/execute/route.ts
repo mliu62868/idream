@@ -14,7 +14,7 @@ export async function POST(request: Request, context: Context) {
     const body = incidentActionPlanExecuteRequestSchema.parse(await request.json());
     const idempotencyKey = request.headers.get("idempotency-key")?.trim();
     if (!idempotencyKey) throw Errors.badRequest("Idempotency-Key is required");
-    return executeIncidentActionPlan({
+    const command = await executeIncidentActionPlan({
       incidentId: id,
       actionPlanId: planId,
       expectedVersion: body.entityVersion,
@@ -23,5 +23,11 @@ export async function POST(request: Request, context: Context) {
       idempotencyKey,
       requestId: request.headers.get("x-request-id") ?? crypto.randomUUID(),
     });
+    return {
+      status: "accepted" as const,
+      requestId: command.requestId,
+      commandId: command.id,
+      verificationDeepLink: `/admin/commands/${command.id}`,
+    };
   });
 }

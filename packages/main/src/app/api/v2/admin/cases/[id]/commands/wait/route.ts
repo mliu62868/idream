@@ -27,7 +27,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       target: { type: "admin_case", id },
       expectedVersion: body.entityVersion,
       payload: body,
-      mutate: (tx) => waitCase({ caseId: id, actor, expectedVersion: body.entityVersion, reason: body.reason, resumeAt: body.resumeAt ? new Date(body.resumeAt) : undefined, requestId }, tx),
+      mutate: async (tx) => {
+        const updated = await waitCase({ caseId: id, actor, expectedVersion: body.entityVersion, reason: body.reason, resumeAt: body.resumeAt ? new Date(body.resumeAt) : undefined, requestId }, tx);
+        return { caseId: updated.id, status: updated.status, verificationState: updated.verificationState, version: updated.version };
+      },
     });
   });
 }

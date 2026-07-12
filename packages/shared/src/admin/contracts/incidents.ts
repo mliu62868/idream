@@ -171,6 +171,41 @@ export const incidentStatusSchema = z.enum([
   "merged",
 ]);
 
+export const incidentRecoveryVerificationResultSchema = z.object({
+  incidentId: adminIdSchema,
+  status: incidentStatusSchema,
+  verificationState: adminVerificationStateSchema,
+  version: z.number().int().positive(),
+}).strict();
+
+export const incidentCloseResultSchema = z.object({
+  incidentId: adminIdSchema,
+  postmortemId: adminIdSchema,
+  status: z.literal("closed"),
+  verificationState: adminVerificationStateSchema,
+  version: z.number().int().positive(),
+}).strict();
+
+export const incidentTriageResultSchema = z.object({
+  incidentId: adminIdSchema,
+  status: incidentStatusSchema,
+  severity: adminSeveritySchema,
+  ownerId: adminIdSchema.nullable(),
+  version: z.number().int().positive(),
+}).strict();
+
+export const incidentMergeResultSchema = z.object({
+  targetIncidentId: adminIdSchema,
+  mergedIncidentIds: z.array(adminIdSchema).min(1).readonly(),
+  movedOccurrenceCount: z.number().int().nonnegative(),
+}).strict();
+
+export const incidentSplitResultSchema = z.object({
+  sourceIncidentId: adminIdSchema,
+  createdIncidentId: adminIdSchema,
+  movedOccurrenceIds: z.array(adminIdSchema).min(1).readonly(),
+}).strict();
+
 export const incidentImpactSchema = z
   .object({
     affectedRequests: z.number().int().nonnegative(),
@@ -292,6 +327,9 @@ export type IncidentResolveCommandRequest = z.infer<typeof incidentResolveComman
 export type IncidentTriageRequest = z.infer<typeof incidentTriageRequestSchema>;
 export type IncidentRecoveryVerificationRequest = z.infer<
   typeof incidentRecoveryVerificationRequestSchema
+>;
+export type IncidentRecoveryVerificationResult = z.infer<
+  typeof incidentRecoveryVerificationResultSchema
 >;
 export type IncidentActionPlanPreviewRequest = z.infer<
   typeof incidentActionPlanPreviewRequestSchema

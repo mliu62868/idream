@@ -9,6 +9,7 @@ import {
   adminListResponseSchema,
   adminPrioritySchema,
   adminSeveritySchema,
+  adminVerificationStateSchema,
   adminJsonValueSchema,
 } from "./common";
 
@@ -114,6 +115,17 @@ export const operationsCaseStatusSchema = z.enum([
   "closed",
   "reopened",
 ]);
+
+export const caseMutationResultSchema = z.object({
+  caseId: adminIdSchema,
+  status: operationsCaseStatusSchema,
+  verificationState: adminVerificationStateSchema,
+  version: z.number().int().positive(),
+}).strict();
+
+export const caseReopenResultSchema = caseMutationResultSchema.extend({
+  mode: z.enum(["reopened", "recurrence"]),
+}).strict();
 
 export const caseVerificationSchema = z
   .object({

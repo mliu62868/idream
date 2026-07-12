@@ -25,7 +25,8 @@ export async function POST(request: Request, context: Context) {
       target: { type: "admin_case", id },
       expectedVersion: body.entityVersion,
       payload: body,
-      mutate: (tx) => assignReviewCaseInTransaction(tx, {
+      mutate: async (tx) => {
+        const updated = await assignReviewCaseInTransaction(tx, {
         caseId: id,
         actor,
         expectedVersion: body.entityVersion,
@@ -34,7 +35,9 @@ export async function POST(request: Request, context: Context) {
         slaDueAt: body.slaDueAt ? new Date(body.slaDueAt) : undefined,
         reason: body.reason,
         requestId,
-      }),
+        });
+        return { caseId: updated.id, status: updated.status, verificationState: updated.verificationState, version: updated.version };
+      },
     });
   });
 }
