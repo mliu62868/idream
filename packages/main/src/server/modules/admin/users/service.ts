@@ -96,7 +96,8 @@ async function executeIdempotentUserCommand(input: UserCommandInput) {
       return { ...(existing.result as Record<string, unknown>), replayed: true };
     }
 
-    const command = await tx.controlPlaneCommand.create({
+    const result = { ...await input.execute(tx, requestId), replayed: false };
+    await tx.controlPlaneCommand.create({
       data: {
         scope,
         idempotencyKey,
@@ -108,13 +109,6 @@ async function executeIdempotentUserCommand(input: UserCommandInput) {
         requestHash,
         requestPayload: toInputJson(input.payload),
         retryMode: "idempotent",
-        status: "accepted",
-      },
-    });
-    const result = { ...await input.execute(tx, requestId), replayed: false };
-    await tx.controlPlaneCommand.update({
-      where: { id: command.id },
-      data: {
         status: "succeeded",
         result: toInputJson(result),
         finishedAt: new Date(),

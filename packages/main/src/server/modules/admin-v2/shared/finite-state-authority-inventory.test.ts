@@ -53,6 +53,18 @@ describe("Admin v2 finite-state authority inventory", () => {
     expect(authority).toContain("status: current.status");
   });
 
+  it("funnels every ControlPlaneCommand transition through one CAS authority", () => {
+    const directWriters = productionTypeScript.filter((path) =>
+      /controlPlaneCommand\.(?:update|updateMany)\(/.test(source(path)),
+    );
+    expect(directWriters).toEqual([
+      "src/server/modules/admin-v2/shared/control-plane-command-transition.ts",
+    ]);
+    const authority = source(directWriters[0]);
+    expect(authority).toContain("isControlPlaneCommandTransitionAllowed");
+    expect(authority).toContain("status: current.status");
+  });
+
   it("excludes Creative execution, review, and deployment views because they are derived and not persisted axes", () => {
     const schema = source("prisma/schema.prisma");
     const batch = schema.match(/model ContentProductionBatch \{([\s\S]*?)\n\}/)?.[1];

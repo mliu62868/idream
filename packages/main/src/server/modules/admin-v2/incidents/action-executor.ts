@@ -4,6 +4,7 @@ import { recordGenerationAttemptQueuedEvent } from "@/server/ai/generation-attem
 import { ensureGenerationSettlementLinks, linkGenerationLedgerEntry } from "@/server/ai/generation-settlement";
 import { claimControlPlaneCommand } from "../shared/control-plane-command";
 import { transitionControlPlaneCommandAttempt } from "../shared/control-plane-command-attempt";
+import { transitionControlPlaneCommand } from "../shared/control-plane-command-transition";
 import { toInputJson } from "../shared/prisma-json";
 
 function record(value: Prisma.JsonValue | null): Record<string, unknown> {
@@ -24,10 +25,11 @@ async function finishAttempt(
   result: Record<string, unknown>,
 ) {
   const now = new Date();
-  await tx.controlPlaneCommand.update({
-    where: { id: commandId },
+  await transitionControlPlaneCommand(tx, {
+    commandId,
+    to: status,
+    expected: { from: ["running", "verifying"], attemptCount: attemptNo },
     data: {
-      status,
       result: toInputJson(result),
       error: status === "failed" ? toInputJson(result) : Prisma.DbNull,
       leaseOwner: null,
@@ -56,10 +58,11 @@ async function failClaimedCommand(
     message: input.error instanceof Error ? input.error.message : "Incident action execution failed",
   };
   await db.$transaction(async (tx) => {
-    await tx.controlPlaneCommand.updateMany({
-      where: { id: input.commandId, status: "running", leaseOwner: input.workerId },
+    await transitionControlPlaneCommand(tx, {
+      commandId: input.commandId,
+      to: "failed",
+      expected: { from: "running", leaseOwner: input.workerId, attemptCount: input.attemptNo },
       data: {
-        status: "failed",
         error: toInputJson(result),
         leaseOwner: null,
         leaseExpiresAt: null,
@@ -194,10 +197,11 @@ export async function executeIncidentActionPlanCommand(
           attemptIds.push(attempt.id);
         }
         result.attemptIds = attemptIds;
-        await tx.controlPlaneCommand.update({
-          where: { id: claimed.id },
+        await transitionControlPlaneCommand(tx, {
+          commandId: claimed.id,
+          to: "verifying",
+          expected: { from: "running", leaseOwner: input.workerId, attemptCount: claimed.attemptCount },
           data: {
-            status: "verifying",
             result: toInputJson({ ...result, executionState: "verifying" }),
             leaseOwner: null,
             leaseExpiresAt: null,

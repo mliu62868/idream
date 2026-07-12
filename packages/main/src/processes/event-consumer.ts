@@ -28,6 +28,7 @@ import {
 } from "./chat-outbox";
 import { projectCanonicalMetricEvent } from "@/server/modules/admin-v2/metrics/projector";
 import { transitionControlPlaneCommandAttempt } from "@/server/modules/admin-v2/shared/control-plane-command-attempt";
+import { transitionControlPlaneCommand } from "@/server/modules/admin-v2/shared/control-plane-command-transition";
 
 function redisOptions(): RedisOptions {
   const url = new URL(env.REDIS_URL);
@@ -189,10 +190,11 @@ export async function applyChatEvent(event: InboundEvent): Promise<void> {
           throw new Error("session release migration verification payload changed");
         }
         const appliedAt = new Date(payload.appliedAt);
-        await tx.controlPlaneCommand.update({
-          where: { id: command.id },
+        await transitionControlPlaneCommand(tx, {
+          commandId: command.id,
+          to: "succeeded",
+          expected: { from: "verifying", attemptCount: command.attemptCount },
           data: {
-            status: "succeeded",
             result: {
               sessionId: payload.sessionId,
               characterId: payload.characterId,

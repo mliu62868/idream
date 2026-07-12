@@ -2,13 +2,13 @@ import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { claimControlPlaneCommand } from "../shared/control-plane-command";
 import { transitionControlPlaneCommandAttempt } from "../shared/control-plane-command-attempt";
+import { transitionControlPlaneCommand } from "../shared/control-plane-command-transition";
 import { toInputJson } from "../shared/prisma-json";
 import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { executeCreativeRetryCommand } from "../creative/retry-executor";
 import { executeIncidentActionPlanCommand } from "../incidents/action-executor";
 import {
   isAdminCaseTransitionAllowed,
-  isControlPlaneCommandTransitionAllowed,
   isIncidentTransitionAllowed,
 } from "../shared/state-transition-authority";
 
@@ -20,10 +20,11 @@ async function failCommand(commandId: string, attemptNo: number, error: unknown)
     message: error instanceof Error ? error.message : "Command execution failed",
   };
   await prisma.$transaction(async (tx) => {
-    await tx.controlPlaneCommand.updateMany({
-      where: { id: commandId, status: { in: ["running", "verifying"] }, leaseOwner: WORKER_ID },
+    await transitionControlPlaneCommand(tx, {
+      commandId,
+      to: "failed",
+      expected: { from: ["running", "verifying"], leaseOwner: WORKER_ID },
       data: {
-        status: "failed",
         error: toInputJson(payload),
         leaseOwner: null,
         leaseExpiresAt: null,
@@ -85,13 +86,11 @@ async function executeResolveIncident(commandId: string) {
         },
       });
       const result = { incidentId: incident.id, status: updated.status, version: updated.version, verificationState: updated.verificationState };
-      if (!isControlPlaneCommandTransitionAllowed(claimed.status, "succeeded")) {
-        throw Errors.conflict("Incident resolve command cannot succeed from its present state", { status: claimed.status });
-      }
-      const command = await tx.controlPlaneCommand.update({
-        where: { id: claimed.id },
+      const command = await transitionControlPlaneCommand(tx, {
+        commandId: claimed.id,
+        to: "succeeded",
+        expected: { from: "running", leaseOwner: WORKER_ID, attemptCount: claimed.attemptCount },
         data: {
-          status: "succeeded",
           result: toInputJson(result),
           leaseOwner: null,
           leaseExpiresAt: null,
@@ -158,13 +157,11 @@ async function executeCloseCase(commandId: string) {
         },
       });
       const result = { caseId: adminCase.id, status: updated.status, version: updated.version, verificationState: updated.verificationState };
-      if (!isControlPlaneCommandTransitionAllowed(claimed.status, "succeeded")) {
-        throw Errors.conflict("Case close command cannot succeed from its present state", { status: claimed.status });
-      }
-      const command = await tx.controlPlaneCommand.update({
-        where: { id: claimed.id },
+      const command = await transitionControlPlaneCommand(tx, {
+        commandId: claimed.id,
+        to: "succeeded",
+        expected: { from: "running", leaseOwner: WORKER_ID, attemptCount: claimed.attemptCount },
         data: {
-          status: "succeeded",
           result: toInputJson(result),
           leaseOwner: null,
           leaseExpiresAt: null,
@@ -277,10 +274,11 @@ async function executeMigrateSessionRelease(commandId: string) {
         },
         update: {},
       });
-      return tx.controlPlaneCommand.update({
-        where: { id: claimed.id },
+      return transitionControlPlaneCommand(tx, {
+        commandId: claimed.id,
+        to: "verifying",
+        expected: { from: "running", leaseOwner: WORKER_ID, attemptCount: claimed.attemptCount },
         data: {
-          status: "verifying",
           result: toInputJson({
             sessionId: claimed.targetId,
             dispatchEventId: eventId,

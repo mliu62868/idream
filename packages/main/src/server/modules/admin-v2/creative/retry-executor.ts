@@ -4,9 +4,12 @@ import { enqueueGenerationAttempt } from "@/server/modules/generation/attempt-di
 import { recordGenerationAttemptQueuedEvent } from "@/server/ai/generation-attempt-events";
 import { claimControlPlaneCommand } from "../shared/control-plane-command";
 import { transitionControlPlaneCommandAttempt } from "../shared/control-plane-command-attempt";
+import {
+  transitionControlPlaneCommand,
+  updateControlPlaneCommandMetadata,
+} from "../shared/control-plane-command-transition";
 import { toInputJson } from "../shared/prisma-json";
 import {
-  isControlPlaneCommandTransitionAllowed,
   isCreativeRunItemTransitionAllowed,
   isCreativeRunLifecycleTransitionAllowed,
   isCreativeRunVerificationTransitionAllowed,
@@ -56,14 +59,11 @@ async function failCommand(
     message: input.error instanceof Error ? input.error.message : "Creative retry execution failed",
   };
   await db.$transaction(async (tx) => {
-    await tx.controlPlaneCommand.updateMany({
-      where: {
-        id: input.commandId,
-        status: "running",
-        leaseOwner: input.workerId,
-      },
+    await transitionControlPlaneCommand(tx, {
+      commandId: input.commandId,
+      to: "failed",
+      expected: { from: "running", leaseOwner: input.workerId, attemptCount: input.attemptNo },
       data: {
-        status: "failed",
         error: toInputJson(error),
         leaseOwner: null,
         leaseExpiresAt: null,
@@ -241,13 +241,11 @@ export async function executeCreativeRetryCommand(
           requestId: claimed.requestId,
         },
       });
-      if (!isControlPlaneCommandTransitionAllowed(claimed.status, "verifying")) {
-        throw Errors.conflict("Creative retry command cannot enter verification", { status: claimed.status });
-      }
-      return tx.controlPlaneCommand.update({
-        where: { id: claimed.id },
+      return transitionControlPlaneCommand(tx, {
+        commandId: claimed.id,
+        to: "verifying",
+        expected: { from: "running", leaseOwner: input.workerId, attemptCount: claimed.attemptCount },
         data: {
-          status: "verifying",
           result: toInputJson({
             runId: run.id,
             runVersion: updatedRun.version,
@@ -359,10 +357,11 @@ export async function verifyCreativeRetryCommands(
     });
     if (!allTerminal || !outputProjected) {
       pending += 1;
-      await db.controlPlaneCommand.update({
-        where: { id: command.id },
+      await db.$transaction((tx) => updateControlPlaneCommandMetadata(tx, {
+        commandId: command.id,
+        expected: { from: "verifying", attemptCount: command.attemptCount },
         data: { heartbeatAt: new Date(), leaseExpiresAt: new Date(Date.now() + 60_000) },
-      });
+      }));
       continue;
     }
     const recoveredItemIds = attempts.flatMap((attempt) => {
@@ -404,10 +403,11 @@ export async function verifyCreativeRetryCommands(
         recoveredItemIds,
         verificationState: verificationPassed ? "passed" : "failed",
       };
-      await tx.controlPlaneCommand.update({
-        where: { id: command.id },
+      await transitionControlPlaneCommand(tx, {
+        commandId: command.id,
+        to: verificationPassed ? "succeeded" : "failed",
+        expected: { from: "verifying", attemptCount: command.attemptCount },
         data: {
-          status: verificationPassed ? "succeeded" : "failed",
           result: toInputJson(result),
           error: verificationPassed ? Prisma.DbNull : toInputJson({ code: "creative_retry_verification_failed", ...result }),
           needsReconciliation: false,

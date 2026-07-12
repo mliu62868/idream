@@ -53,7 +53,8 @@ async function executeIdempotentModerationCommand(input: ModerationCommandInput)
       if (existing.status !== "succeeded" || !existing.result) throw Errors.conflict("The original moderation command has not completed");
       return { ...(existing.result as Record<string, unknown>), replayed: true };
     }
-    const command = await tx.controlPlaneCommand.create({ data: {
+    const result = { ...await input.execute(tx, requestId), replayed: false };
+    await tx.controlPlaneCommand.create({ data: {
       scope,
       idempotencyKey,
       commandType: input.commandType,
@@ -64,10 +65,10 @@ async function executeIdempotentModerationCommand(input: ModerationCommandInput)
       requestHash,
       requestPayload: toInputJson(input.payload),
       retryMode: "idempotent",
-      status: "accepted",
+      status: "succeeded",
+      result: toInputJson(result),
+      finishedAt: new Date(),
     } });
-    const result = { ...await input.execute(tx, requestId), replayed: false };
-    await tx.controlPlaneCommand.update({ where: { id: command.id }, data: { status: "succeeded", result: toInputJson(result), finishedAt: new Date() } });
     return result;
   });
 }

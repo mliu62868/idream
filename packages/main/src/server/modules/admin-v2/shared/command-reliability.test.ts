@@ -12,6 +12,7 @@ import {
 import { ingestProductEvent } from "./product-event-store";
 import { canonicalSha256 } from "./canonical-json";
 import { transitionControlPlaneCommandAttempt } from "./control-plane-command-attempt";
+import { transitionControlPlaneCommand } from "./control-plane-command-transition";
 
 describe("Admin v2 command reliability", () => {
   beforeEach(async () => {
@@ -271,6 +272,54 @@ describe("Admin v2 command reliability", () => {
     await expect(prisma.controlPlaneCommandAttempt.findUniqueOrThrow({
       where: { commandId_attemptNo: { commandId: accepted.commandId, attemptNo: 1 } },
     })).resolves.toMatchObject({ status: "succeeded", finishedAt: succeededAt, error: null });
+  });
+
+  it("fails closed for illegal or racing ControlPlaneCommand transitions", async () => {
+    const illegal = await acceptControlPlaneCommand(prisma, {
+      environment: "test",
+      actor: { id: "admin-v2-test", role: "admin" },
+      idempotencyKey: randomUUID(),
+      commandType: "case.close",
+      target: { type: "admin_case", id: "case-command-transition-illegal" },
+      payload: {},
+      reason: "exercise command transition authority",
+      requestId: randomUUID(),
+    });
+    await expect(prisma.$transaction((tx) => transitionControlPlaneCommand(tx, {
+      commandId: illegal.commandId,
+      to: "succeeded",
+    }))).rejects.toThrow("accepted -> succeeded");
+    await expect(prisma.controlPlaneCommand.findUniqueOrThrow({ where: { id: illegal.commandId } }))
+      .resolves.toMatchObject({ status: "accepted" });
+
+    const racing = await acceptControlPlaneCommand(prisma, {
+      environment: "test",
+      actor: { id: "admin-v2-test", role: "admin" },
+      idempotencyKey: randomUUID(),
+      commandType: "case.close",
+      target: { type: "admin_case", id: "case-command-transition-race" },
+      payload: {},
+      reason: "exercise command transition CAS",
+      requestId: randomUUID(),
+    });
+    const results = await Promise.allSettled([
+      prisma.$transaction((tx) => transitionControlPlaneCommand(tx, {
+        commandId: racing.commandId,
+        to: "running",
+        expected: { from: "accepted", leaseOwner: null, attemptCount: 0 },
+        data: { leaseOwner: "worker-a", attemptCount: 1 },
+      })),
+      prisma.$transaction((tx) => transitionControlPlaneCommand(tx, {
+        commandId: racing.commandId,
+        to: "running",
+        expected: { from: "accepted", leaseOwner: null, attemptCount: 0 },
+        data: { leaseOwner: "worker-b", attemptCount: 1 },
+      })),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    await expect(prisma.controlPlaneCommand.findUniqueOrThrow({ where: { id: racing.commandId } }))
+      .resolves.toMatchObject({ status: "running", attemptCount: 1 });
   });
 });
 

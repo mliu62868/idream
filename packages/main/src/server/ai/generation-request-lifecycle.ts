@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
@@ -120,22 +121,7 @@ export async function retryGenerationRequest(input: {
         attemptId: latest.id,
       });
     }
-    const command = await tx.controlPlaneCommand.create({
-      data: {
-        scope,
-        idempotencyKey: input.idempotencyKey,
-        commandType: "generation.request.retry",
-        targetType: "generation_request",
-        targetId: job.id,
-        actorId: input.actor.id,
-        requestId: input.traceId,
-        requestHash,
-        requestPayload: toInputJson({ expectedVersion: input.expectedVersion, reason: input.reason }),
-        expectedVersion: input.expectedVersion,
-        retryMode: "idempotent",
-        status: "accepted",
-      },
-    });
+    const commandId = randomUUID();
     const attempt = await tx.generationAttempt.create({
       data: {
         requestId: job.id,
@@ -145,7 +131,7 @@ export async function retryGenerationRequest(input: {
         profileVersion: latest?.profileVersion ?? job.profileVersion,
         workflowKey: latest?.workflowKey ?? job.model,
         workflowVersion: latest?.workflowVersion,
-        sourceCommandId: command.id,
+        sourceCommandId: commandId,
         status: "queued",
       },
     });
@@ -162,16 +148,31 @@ export async function retryGenerationRequest(input: {
       },
     });
     const result = {
-      commandId: command.id,
+      commandId,
       requestId: job.id,
       attemptId: attempt.id,
       attemptNo: attempt.attemptNo,
       status: "queued" as const,
       version: updated.version,
     };
-    await tx.controlPlaneCommand.update({
-      where: { id: command.id },
-      data: { status: "succeeded", result: toInputJson(result), finishedAt: new Date() },
+    await tx.controlPlaneCommand.create({
+      data: {
+        id: commandId,
+        scope,
+        idempotencyKey: input.idempotencyKey,
+        commandType: "generation.request.retry",
+        targetType: "generation_request",
+        targetId: job.id,
+        actorId: input.actor.id,
+        requestId: input.traceId,
+        requestHash,
+        requestPayload: toInputJson({ expectedVersion: input.expectedVersion, reason: input.reason }),
+        expectedVersion: input.expectedVersion,
+        retryMode: "idempotent",
+        status: "succeeded",
+        result: toInputJson(result),
+        finishedAt: new Date(),
+      },
     });
     await tx.adminAuditLog.create({
       data: {
@@ -201,7 +202,7 @@ export async function retryGenerationRequest(input: {
           generationJobId: job.id,
           attemptId: attempt.id,
           attemptNo: attempt.attemptNo,
-          commandId: command.id,
+          commandId,
         }),
       },
     });

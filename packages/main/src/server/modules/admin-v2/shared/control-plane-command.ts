@@ -4,8 +4,8 @@ import { canonicalSha256 } from "./canonical-json";
 import { toInputJson } from "./prisma-json";
 import { Errors } from "@/server/lib/errors";
 import { logger } from "@/server/lib/logger";
-import { isControlPlaneCommandTransitionAllowed } from "./state-transition-authority";
 import { transitionControlPlaneCommandAttempt } from "./control-plane-command-attempt";
+import { transitionControlPlaneCommand } from "./control-plane-command-transition";
 
 export interface CanonicalCommandRequest {
   readonly commandType: string;
@@ -248,37 +248,29 @@ export async function claimControlPlaneCommand(
 ) {
   const now = input.now ?? new Date();
   const candidate = await db.controlPlaneCommand.findUnique({ where: { id: input.commandId } });
-  if (
-    !candidate ||
-    !isControlPlaneCommandTransitionAllowed(candidate.status, "running") ||
-    candidate.leaseOwner !== null ||
-    candidate.attemptCount >= candidate.maxAttempts
-  ) {
+  if (!candidate || candidate.status !== "accepted" || candidate.leaseOwner !== null || candidate.attemptCount >= candidate.maxAttempts) {
     return null;
   }
   const attemptNo = candidate.attemptCount + 1;
   const leaseExpiresAt = new Date(now.getTime() + Math.max(1, input.leaseMs));
   return db.$transaction(async (tx) => {
-    const claimed = await tx.controlPlaneCommand.updateMany({
-      where: {
-        id: input.commandId,
-        status: "accepted",
-        leaseOwner: null,
-        attemptCount: candidate.attemptCount,
-      },
+    const claimed = await transitionControlPlaneCommand(tx, {
+      commandId: input.commandId,
+      to: "running",
+      expected: { from: "accepted", leaseOwner: null, attemptCount: candidate.attemptCount },
       data: {
-        status: "running",
         leaseOwner: input.workerId,
         leaseExpiresAt,
         heartbeatAt: now,
         attemptCount: attemptNo,
       },
+      onConflict: "return-null",
     });
-    if (claimed.count !== 1) return null;
+    if (!claimed) return null;
     await tx.controlPlaneCommandAttempt.create({
       data: { commandId: input.commandId, attemptNo, status: "running", startedAt: now },
     });
-    return tx.controlPlaneCommand.findUniqueOrThrow({ where: { id: input.commandId } });
+    return claimed;
   });
 }
 
@@ -303,18 +295,16 @@ export async function reconcileExpiredCommandLeases(
       const exhausted = command.attemptCount >= command.maxAttempts;
       const canReplay = command.retryMode === "idempotent" && !exhausted;
       const nextStatus = canReplay ? "accepted" : "failed";
-      if (!isControlPlaneCommandTransitionAllowed(command.status, nextStatus)) {
-        throw new Error(`ControlPlaneCommand transition ${command.status} -> ${nextStatus} is not allowed`);
-      }
-      const updated = await tx.controlPlaneCommand.updateMany({
-        where: {
-          id: command.id,
-          status: command.status,
+      const updated = await transitionControlPlaneCommand(tx, {
+        commandId: command.id,
+        to: nextStatus,
+        expected: {
+          from: command.status === "running" ? "running" : "verifying",
           leaseOwner: command.leaseOwner,
           leaseExpiresAt: command.leaseExpiresAt,
+          attemptCount: command.attemptCount,
         },
         data: {
-          status: nextStatus,
           needsReconciliation: !canReplay,
           leaseOwner: null,
           leaseExpiresAt: null,
@@ -328,8 +318,9 @@ export async function reconcileExpiredCommandLeases(
                 retryMode: command.retryMode,
               }),
         },
+        onConflict: "return-null",
       });
-      if (updated.count !== 1) return;
+      if (!updated) return;
       await transitionControlPlaneCommandAttempt(tx, {
         commandId: command.id,
         attemptNo: command.attemptCount,

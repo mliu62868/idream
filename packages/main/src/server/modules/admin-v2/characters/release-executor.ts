@@ -1,6 +1,7 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { claimControlPlaneCommand } from "../shared/control-plane-command";
 import { transitionControlPlaneCommandAttempt } from "../shared/control-plane-command-attempt";
+import { transitionControlPlaneCommand } from "../shared/control-plane-command-transition";
 import { toInputJson } from "../shared/prisma-json";
 import {
   characterReleaseSnapshotHash,
@@ -402,10 +403,11 @@ async function failCommand(
     message: error.message,
     ...error.evidence,
   };
-  await tx.controlPlaneCommand.update({
-    where: { id: command.id },
+  await transitionControlPlaneCommand(tx, {
+    commandId: command.id,
+    to: "failed",
+    expected: { from: "running", leaseOwner: command.leaseOwner, attemptCount: command.attemptCount },
     data: {
-      status: "failed",
       error: toInputJson(errorBody),
       needsReconciliation: false,
       leaseOwner: null,
@@ -487,10 +489,11 @@ async function appendExecutionEvidence(
       }),
     },
   });
-  await tx.controlPlaneCommand.update({
-    where: { id: input.command.id },
+  await transitionControlPlaneCommand(tx, {
+    commandId: input.command.id,
+    to: "succeeded",
+    expected: { from: "running", attemptCount: input.command.attemptCount },
     data: {
-      status: "succeeded",
       result: toInputJson({
         ...input.result,
         releaseId: input.releaseId,
