@@ -6,6 +6,7 @@ import {
   recordReviewCaseDecisionAtomic,
   reopenOrRecurCase,
   recordCustomerCaseAction,
+  verifyReviewCase,
   waitCase,
 } from "./service";
 import { getCustomer360, listCustomers } from "./customer-query";
@@ -170,6 +171,14 @@ describe("Support and billing Case depth", () => {
     });
     expect(updated.version).toBe(supportCase.version + 1);
     expect(await prisma.decisionRecord.count({ where: { sourceType: "admin_case", sourceId: supportCase.id } })).toBe(1);
+    await expect(verifyReviewCase({
+      caseId: supportCase.id,
+      actor: { id: actorId, role: "support" },
+      expectedVersion: updated.version,
+      state: "passed",
+      evidenceRefs: [evidence.id],
+      requestId: `case-unproven-verification-${suffix}`,
+    })).rejects.toMatchObject({ code: "conflict" });
     await expect(recordReviewCaseDecisionAtomic({
       caseId: supportCase.id,
       actor: { id: actorId, role: "support" },
@@ -202,12 +211,32 @@ describe("Support and billing Case depth", () => {
     });
     const detailResponse = await getCaseDetail(new Request(`http://localhost/api/v2/admin/cases/${supportCase.id}`, { headers }), supportCase.id);
     expect((await detailResponse.json()).data.case.relatedIncidentIds).toEqual([incidentId]);
+    const verified = await verifyReviewCase({
+      caseId: supportCase.id,
+      actor: { id: actorId, role: "support" },
+      expectedVersion: escalated.version,
+      state: "passed",
+      evidenceRefs: [evidence.id],
+      requestId: `case-authority-verification-${suffix}`,
+    });
+    expect(verified).toMatchObject({ status: "resolved", verificationState: "passed" });
+    const verificationDecision = await prisma.decisionRecord.findFirstOrThrow({
+      where: { sourceType: "admin_case", sourceId: supportCase.id, decision: "verification_passed" },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(verificationDecision.outcome).toMatchObject({
+      verificationState: "passed",
+      authorityEvidence: `incident:${incidentId}:triaged`,
+    });
+    await expect(prisma.mainOutboxEvent.count({
+      where: { aggregateId: supportCase.id, eventType: "admin.case.verification.recorded.v2" },
+    })).resolves.toBe(1);
 
     await expect(
       recordCustomerCaseAction({
         caseId: supportCase.id,
         actor: { id: actorId, role: "support" },
-        expectedVersion: escalated.version,
+        expectedVersion: verified.version,
         action: "ledger_reconciled",
         summary: "Wrong subtype action.",
         evidenceRefs: [evidence.id],
@@ -245,7 +274,7 @@ describe("Support and billing Case depth", () => {
         id: customerId,
         displayName: "Case Customer",
         balanceDreamcoins: 500,
-        activeCaseCount: 2,
+        activeCaseCount: 1,
         subscriptionStatus: "active",
       })],
       pageInfo: { hasNextPage: false, endCursor: null },
@@ -276,7 +305,7 @@ describe("Support and billing Case depth", () => {
     const body = await response.json();
     expect(body.data).toMatchObject({
       customer: { id: customerId, displayName: "Case Customer", status: "active" },
-      overview: { balanceDreamcoins: 500, activeCaseCount: 2 },
+      overview: { balanceDreamcoins: 500, activeCaseCount: 1 },
       subscription: { id: subscriptionId, status: "active", plan: { id: planId } },
     });
     expect(body.data.cases.map((item: { type: string }) => item.type).sort()).toEqual([

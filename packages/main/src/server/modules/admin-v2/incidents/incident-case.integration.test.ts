@@ -394,15 +394,24 @@ describe("Incident and P0 Review Case authority loops", () => {
       }),
     );
     expect(decided).toMatchObject({ status: "in_progress", verificationState: "pending", version: 3 });
-    const verified = await verifyReviewCase({
+    await expect(verifyReviewCase({
       caseId,
       actor,
       expectedVersion: 3,
       state: "passed",
       evidenceRefs: [evidence[0]!.id],
       requestId: `case-verify-${suffix}`,
+    })).rejects.toMatchObject({ code: "conflict" });
+    const verified = await verifyReviewCase({
+      caseId,
+      actor,
+      expectedVersion: 3,
+      state: "overridden",
+      evidenceRefs: [evidence[0]!.id],
+      overrideReason: "Legacy content action has no machine-readable downstream authority yet",
+      requestId: `case-verify-override-${suffix}`,
     });
-    expect(verified).toMatchObject({ status: "resolved", verificationState: "passed", version: 4 });
+    expect(verified).toMatchObject({ status: "resolved", verificationState: "overridden", version: 4 });
 
     const response = await closeCase(
       commandRequest(`/api/v2/admin/cases/${caseId}/commands/close`, {
@@ -418,7 +427,7 @@ describe("Incident and P0 Review Case authority loops", () => {
       activeKey: null,
       version: 5,
     });
-    expect(await prisma.decisionRecord.count({ where: { sourceType: "admin_case", sourceId: caseId } })).toBe(1);
+    expect(await prisma.decisionRecord.count({ where: { sourceType: "admin_case", sourceId: caseId } })).toBe(2);
     expect(await prisma.adminAuditLog.count({ where: { targetType: "admin_case", targetId: caseId } })).toBeGreaterThanOrEqual(4);
   });
 
@@ -442,7 +451,7 @@ describe("Incident and P0 Review Case authority loops", () => {
     expect(caseBody.data.case).toMatchObject({ id: caseId, status: "closed", reportCount: 2 });
     expect(caseBody.data.evidence).toHaveLength(2);
     expect(caseBody.data.evidence.every((item: Record<string, unknown>) => !("snapshot" in item))).toBe(true);
-    expect(caseBody.data.decisions).toHaveLength(1);
+    expect(caseBody.data.decisions).toHaveLength(2);
     expect(caseBody.data.activity.length).toBeGreaterThanOrEqual(4);
 
     const deniedIncident = await getIncident(

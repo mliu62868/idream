@@ -921,6 +921,56 @@ export async function recordReviewCaseDecisionAtomic(
   return prisma.$transaction((tx) => recordReviewCaseDecision(tx, input));
 }
 
+async function deriveCaseOutcomeVerification(
+  tx: Prisma.TransactionClient,
+  current: { type: string; targetType: string; targetId: string; resolution: Prisma.JsonValue | null },
+) {
+  const resolution = current.resolution !== null && typeof current.resolution === "object" && !Array.isArray(current.resolution)
+    ? current.resolution as Record<string, Prisma.JsonValue | undefined>
+    : {};
+  const actions = Array.isArray(resolution.actions) ? resolution.actions : [];
+  const latest = actions.at(-1);
+  const action = latest !== null && typeof latest === "object" && !Array.isArray(latest)
+    ? latest as Record<string, Prisma.JsonValue | undefined>
+    : {};
+  const actionName = typeof action.action === "string" ? action.action : null;
+  const outcomeRef = typeof action.outcomeRef === "string" ? action.outcomeRef : null;
+  if (!actionName || !outcomeRef) {
+    return { passed: false, evidence: null, blocker: "case_action_outcome_authority_missing" } as const;
+  }
+  if (actionName === "incident_escalated") {
+    const incidentId = outcomeRef.startsWith("incident:") ? outcomeRef.slice("incident:".length) : outcomeRef;
+    const incident = await tx.opsIncident.findUnique({ where: { id: incidentId }, select: { id: true, status: true } });
+    return incident
+      ? { passed: true, evidence: `incident:${incident.id}:${incident.status}`, blocker: null } as const
+      : { passed: false, evidence: null, blocker: "linked_incident_not_found" } as const;
+  }
+  if (current.targetType !== "user") {
+    return { passed: false, evidence: null, blocker: "case_target_has_no_supported_downstream_verifier" } as const;
+  }
+  if (actionName === "ledger_reconciled" || actionName === "refund_requested") {
+    const expectedPrefix = actionName === "refund_requested" ? "refund:" : "ledger:";
+    if (!outcomeRef.startsWith(expectedPrefix)) {
+      return { passed: false, evidence: null, blocker: `outcome_ref_must_start_with_${expectedPrefix.slice(0, -1)}` } as const;
+    }
+    const ledger = await tx.dreamcoinLedger.findUnique({ where: { id: outcomeRef.slice(expectedPrefix.length) } });
+    const eligible = ledger?.userId === current.targetId &&
+      (actionName !== "refund_requested" || (ledger.reason === "refund" && ledger.delta > 0));
+    return eligible
+      ? { passed: true, evidence: `ledger:${ledger.id}:${ledger.reason}:${ledger.delta}`, blocker: null } as const
+      : { passed: false, evidence: null, blocker: "ledger_outcome_does_not_match_case_authority" } as const;
+  }
+  if (actionName === "subscription_corrected") {
+    const match = /^subscription:([^:]+):([^:]+)$/.exec(outcomeRef);
+    if (!match) return { passed: false, evidence: null, blocker: "subscription_outcome_requires_id_and_expected_status" } as const;
+    const subscription = await tx.subscription.findUnique({ where: { id: match[1] } });
+    return subscription?.userId === current.targetId && subscription.status === match[2]
+      ? { passed: true, evidence: `subscription:${subscription.id}:${subscription.status}`, blocker: null } as const
+      : { passed: false, evidence: null, blocker: "subscription_outcome_does_not_match_case_authority" } as const;
+  }
+  return { passed: false, evidence: null, blocker: `no_automatic_verifier_for_${actionName}` } as const;
+}
+
 export async function verifyReviewCase(input: {
   readonly caseId: string;
   readonly actor: Actor;
@@ -944,13 +994,22 @@ export async function verifyReviewCase(input: {
       where: { caseId: current.id, id: { in: [...input.evidenceRefs] } },
     });
     if (evidenceCount !== new Set(input.evidenceRefs).size) throw Errors.badRequest("Verification evidence is outside this Case");
+    const authority = await deriveCaseOutcomeVerification(tx, current);
+    if (input.state === "passed" && !authority.passed) {
+      throw Errors.conflict("Case outcome is not proven by downstream authority", {
+        blocker: authority.blocker,
+        requiredAction: "Record a supported downstream outcome or use an explicit audited override",
+      });
+    }
+    const verifiedAt = new Date();
     const resolution = {
       ...(current.resolution as Record<string, unknown>),
       verification: {
         state: input.state,
         evidenceRefs: [...input.evidenceRefs],
-        verifiedAt: new Date().toISOString(),
+        verifiedAt: verifiedAt.toISOString(),
         overrideReason: input.overrideReason ?? null,
+        authorityEvidence: authority.evidence,
       },
     };
     const updated = await tx.adminCase.update({
@@ -975,6 +1034,33 @@ export async function verifyReviewCase(input: {
         requestId: input.requestId,
       },
     });
+    await tx.decisionRecord.create({ data: {
+      sourceType: "admin_case",
+      sourceId: current.id,
+      question: `Verify ${current.type} action outcome`,
+      evidenceRefs: [...input.evidenceRefs],
+      decision: `verification_${input.state}`,
+      ownerId: input.actor.id,
+      successCriteria: ["downstream_outcome_verified"],
+      guardrails: ["authority_derived_or_explicit_override", "evidence_preserved"],
+      outcome: toInputJson({
+        verificationState: input.state,
+        authorityEvidence: authority.evidence,
+        overrideReason: input.overrideReason ?? null,
+        verifiedAt: verifiedAt.toISOString(),
+      }),
+    } });
+    await tx.mainOutboxEvent.create({ data: {
+      eventType: "admin.case.verification.recorded.v2",
+      aggregateType: "admin_case",
+      aggregateId: current.id,
+      payload: toInputJson({
+        caseId: current.id,
+        state: input.state,
+        authorityEvidence: authority.evidence,
+        version: updated.version,
+      }),
+    } });
     return updated;
   });
 }
