@@ -118,6 +118,7 @@ import {
   deleteAnnouncement,
 } from "./announcements";
 import { listExperiments } from "./experiments";
+import { listFeatureFlags, patchFeatureFlag } from "./config/feature-flags";
 import {
   createPricingRule,
   listPricingRules,
@@ -196,16 +197,6 @@ const deadLetterBatchSchema = z.object({
   jobIds: z.array(z.string().trim().min(1).max(160)).min(1).max(100),
   reason: z.string().trim().min(3).max(2_000),
   confirmation: z.string().trim().min(1).max(20_000),
-});
-
-const flagPatchSchema = z.object({
-  enabled: z.boolean().optional(),
-  rolloutPercent: z.number().int().min(0).max(100).optional(),
-  targetRoles: z.array(z.string()).optional(),
-  targetPlans: z.array(z.string()).optional(),
-  description: z.string().max(500).optional(),
-  reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.string().trim().min(1).max(160),
 });
 
 const ledgerAdjustmentSchema = z.object({
@@ -3493,88 +3484,6 @@ function ledgerAdjustmentConfirmation(userId: string, delta: number) {
   return `${userId}:${delta}`;
 }
 
-function featureFlagConfirmation(key: string, enabled: boolean | undefined) {
-  if (enabled === undefined) return `${key}:updated`;
-  return `${key}:${enabled === false ? "disabled" : "enabled"}`;
-}
-
-const featureFlagListQuerySchema = z.object({
-  search: z.string().trim().min(1).max(200).optional(),
-  enabled: z.enum(["true", "false"]).transform((value) => value === "true").optional(),
-  limit: z.coerce.number().int().min(1).max(100).optional(),
-  cursor: z.string().min(1).optional(),
-}).strict();
-
-async function listFeatureFlags(request: Request) {
-  await actorWithPermission(request, "ops.queue.read");
-  const url = new URL(request.url);
-  const query = featureFlagListQuerySchema.parse(Object.fromEntries(url.searchParams));
-  const { search, enabled } = query;
-  const limit = query.limit ?? null;
-  const queryIdentity = { search, enabled };
-  const cursorKeys = adminListCursorKeys(url, "feature_flags", queryIdentity);
-  const cursorKey = cursorKeys ? adminCursorString(cursorKeys, 0, "feature_flags") : undefined;
-  const flags = await prisma.featureFlag.findMany({
-    where: {
-      enabled,
-      OR: search
-        ? [{ key: { contains: search } }, { label: { contains: search } }, { description: { contains: search } }]
-        : undefined,
-      AND: cursorKey ? { key: { gt: cursorKey } } : undefined,
-    },
-    orderBy: { key: "asc" },
-    take: limit === null ? undefined : limit + 1,
-  });
-  const page = limit === null ? flags : flags.slice(0, limit);
-  return ok({
-    items: page,
-    pageInfo: adminListPageInfo("feature_flags", queryIdentity, page, limit !== null && flags.length > limit, (row) => [row.key]),
-  });
-}
-
-async function patchFeatureFlag(request: Request, key: string) {
-  const actor = await actorWithPermission(request, "config.feature_flag.write");
-  const body = flagPatchSchema.parse(await jsonBody(request));
-  if (isHardPolicyFlag(key)) {
-    throw Errors.forbidden("Hard safety policy flags cannot be changed");
-  }
-  const expectedConfirmation = featureFlagConfirmation(key, body.enabled);
-  if (body.confirmation !== expectedConfirmation) {
-    throw Errors.badRequest("Confirmation did not match feature flag action");
-  }
-  const before = await prisma.featureFlag.findUnique({ where: { key } });
-  if (before?.hardPolicy) throw Errors.forbidden("Hard safety policy flags cannot be changed");
-  const updated = await prisma.featureFlag.upsert({
-    where: { key },
-    update: {
-      enabled: body.enabled,
-      rolloutPercent: body.rolloutPercent,
-      targetRoles: body.targetRoles ? toInputJson(body.targetRoles) : undefined,
-      targetPlans: body.targetPlans ? toInputJson(body.targetPlans) : undefined,
-      description: body.description,
-      version: { increment: 1 },
-    },
-    create: {
-      key,
-      label: key,
-      description: body.description,
-      enabled: body.enabled ?? false,
-      rolloutPercent: body.rolloutPercent ?? 0,
-      targetRoles: toInputJson(body.targetRoles ?? []),
-      targetPlans: toInputJson(body.targetPlans ?? []),
-    },
-  });
-  await writeAudit(request, actor, {
-    action: "config.feature_flag.write",
-    targetType: "feature_flag",
-    targetId: key,
-    reason: body.reason,
-    before: before ? flagAuditSnapshot(before) : null,
-    after: flagAuditSnapshot(updated),
-  });
-  return ok({ flag: updated });
-}
-
 // SPEC: Phase-0 truth containment. Exact operational aggregates remain available,
 // while the legacy activation/conversion values are explicitly invalid until the
 // canonical fact + certified metric cutover.
@@ -5113,20 +5022,6 @@ function recipeAuditSnapshot(template: {
   };
 }
 
-function flagAuditSnapshot(flag: {
-  key: string;
-  enabled: boolean;
-  rolloutPercent: number;
-  version: number;
-}) {
-  return {
-    key: flag.key,
-    enabled: flag.enabled,
-    rolloutPercent: flag.rolloutPercent,
-    version: flag.version,
-  };
-}
-
 async function plaintextTarget(
   targetType: "generation_job" | "media",
   targetId: string,
@@ -5474,18 +5369,4 @@ function adminListPageInfo<T>(
     endCursor: hasNextPage && last ? encodeAdminListCursor(scope, queryIdentity, keys(last)) : null,
     hasNextPage,
   };
-}
-
-function isHardPolicyFlag(key: string) {
-  const normalized = key.toLowerCase();
-  const compact = normalized.replace(/[^a-z0-9]/g, "");
-  return (
-    normalized.includes("hard_policy") ||
-    compact.includes("hardpolicy") ||
-    normalized.includes("age_gate") ||
-    compact.includes("agegate") ||
-    normalized.includes("underage") ||
-    normalized.includes("minor_safety") ||
-    compact.includes("minorsafety")
-  );
 }
