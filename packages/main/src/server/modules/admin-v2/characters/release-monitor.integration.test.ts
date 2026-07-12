@@ -14,10 +14,22 @@ describe("Release route qualification and post-publish monitor", () => {
   const releaseId = `monitor-release-${suffix}`;
   const contentId = `monitor-content-${suffix}`;
   const qualificationId = `monitor-qualification-${suffix}`;
+  const ownerId = `monitor-owner-${suffix}`;
+  const assetId = `monitor-avatar-${suffix}`;
   const publishedAt = new Date("2026-07-07T00:00:00.000Z");
   const now = new Date("2026-07-11T00:00:00.000Z");
 
   beforeAll(async () => {
+    await prisma.user.create({ data: { id: ownerId, email: `${ownerId}@example.test`, role: "admin" } });
+    await prisma.mediaAsset.create({ data: {
+      id: assetId,
+      ownerId,
+      type: "image",
+      url: `/user-content/${assetId}/content.webp`,
+      visibility: "unlisted",
+      safetyStatus: "passed",
+      metadata: {},
+    } });
     await prisma.character.create({
       data: {
         id: characterId,
@@ -25,6 +37,9 @@ describe("Release route qualification and post-publish monitor", () => {
         age: 24,
         description: "Fixture for release monitoring.",
         source: "official",
+        status: "approved",
+        visibility: "public",
+        imageAssetId: assetId,
         appearance: {},
         advancedDetails: {},
       },
@@ -32,6 +47,16 @@ describe("Release route qualification and post-publish monitor", () => {
     await prisma.characterProject.create({
       data: { id: projectId, characterId, phase: "live_management", audience: {}, successCriteria: [] },
     });
+    await prisma.characterContentVersion.create({ data: {
+      id: contentId,
+      characterId,
+      version: 1,
+      contentHash: `monitor-content-hash-${suffix}`,
+      personaSnapshot: { name: "Release monitor character" },
+      openingSnapshot: { firstMessage: "Hello" },
+      appearanceSnapshot: {},
+      sourceType: "test",
+    } });
     await prisma.characterRelease.create({
       data: {
         id: releaseId,
@@ -39,7 +64,7 @@ describe("Release route qualification and post-publish monitor", () => {
         revisionId: `revision-${suffix}`,
         characterContentVersionId: contentId,
         generationProvenance: { routeFingerprint: `route-${suffix}` },
-        releasePlacementManifest: {},
+        releasePlacementManifest: { placements: [{ slotKey: "character_avatar", assetId, slotVersion: 1 }] },
         snapshotHash: `snapshot-${suffix}`,
         readiness: "ready",
         status: "published",
@@ -112,8 +137,11 @@ describe("Release route qualification and post-publish monitor", () => {
     await prisma.characterServing.delete({ where: { characterId } });
     await prisma.generationRouteQualification.delete({ where: { id: qualificationId } });
     await prisma.characterRelease.delete({ where: { id: releaseId } });
+    await prisma.characterContentVersion.delete({ where: { id: contentId } });
     await prisma.characterProject.delete({ where: { id: projectId } });
     await prisma.character.delete({ where: { id: characterId } });
+    await prisma.mediaAsset.delete({ where: { id: assetId } });
+    await prisma.user.delete({ where: { id: ownerId } });
     await prisma.$disconnect();
   });
 
@@ -156,8 +184,30 @@ describe("Release route qualification and post-publish monitor", () => {
     expect(result).toMatchObject({
       mature: true,
       recommendation: "keep",
-      observed: { exchangeCount: 1, uniqueUsers: 1, engagementSessions: 1 },
+      observed: {
+        exchangeCount: 1,
+        uniqueUsers: 1,
+        engagementSessions: 1,
+        operationalChecks: {
+          servingPointerLive: true,
+          publicProjectionLive: true,
+          immutableContentAvailable: true,
+          releaseAvatarRenderable: true,
+          chatAuthorityReady: true,
+        },
+      },
     });
     expect(result.monitor).toMatchObject({ status: "completed", window: "72h" });
+  });
+
+  it("opens action-required work when the actual serving pointer is unavailable", async () => {
+    await prisma.characterServing.update({ where: { characterId }, data: { state: "paused" } });
+    const result = await collectReleaseMonitorFacts(prisma, { releaseId, window: "24h", now });
+    expect(result).toMatchObject({
+      mature: true,
+      recommendation: "rollback_review",
+      observed: { operationalChecks: { servingPointerLive: false, chatAuthorityReady: false } },
+      monitor: { status: "action_required" },
+    });
   });
 });

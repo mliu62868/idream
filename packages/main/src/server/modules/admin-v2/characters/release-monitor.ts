@@ -146,6 +146,24 @@ function windowMs(window: MonitorWindow): number {
   return window === "24h" ? 24 * 60 * 60 * 1_000 : 72 * 60 * 60 * 1_000;
 }
 
+function releaseAvatarAssetId(manifestValue: Prisma.JsonValue) {
+  const manifest = record(manifestValue);
+  const placements = Array.isArray(manifest.placements) ? manifest.placements : [];
+  for (const value of placements) {
+    const placement = value !== null && typeof value === "object" && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {};
+    if (placement.slotKey === "character_avatar" && typeof placement.assetId === "string") return placement.assetId;
+  }
+  return null;
+}
+
+function percentile95(values: number[]) {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)] ?? null;
+}
+
 export async function collectReleaseMonitorFacts(
   db: PrismaClient,
   input: { readonly releaseId: string; readonly window: MonitorWindow; readonly now?: Date },
@@ -155,7 +173,14 @@ export async function collectReleaseMonitorFacts(
   if (!release?.publishedAt) throw new Error("published Release is required for monitoring");
   const windowEnd = new Date(release.publishedAt.getTime() + windowMs(input.window));
   const observationEnd = now < windowEnd ? now : windowEnd;
-  const [exchanges, generations] = await Promise.all([
+  const project = await db.characterProject.findUnique({ where: { id: release.projectId } });
+  if (!project) throw new Error("Release Project authority is required for monitoring");
+  const avatarAssetId = releaseAvatarAssetId(release.releasePlacementManifest);
+  const previousRelease = await db.characterRelease.findFirst({
+    where: { projectId: release.projectId, id: { not: release.id }, publishedAt: { lt: release.publishedAt } },
+    orderBy: { publishedAt: "desc" },
+  });
+  const [exchanges, generations, serving, character, contentVersion, avatarAsset, usageFacts, previousMonitor] = await Promise.all([
     db.chatExchangeFact.findMany({
       where: {
         characterReleaseId: release.id,
@@ -172,11 +197,40 @@ export async function collectReleaseMonitorFacts(
       },
       select: { outcome: true, deliveredOutputCount: true, expectedOutputCount: true, occurredAt: true },
     }),
+    db.characterServing.findUnique({ where: { characterId: project.characterId } }),
+    db.character.findUnique({ where: { id: project.characterId } }),
+    db.characterContentVersion.findUnique({ where: { id: release.characterContentVersionId } }),
+    avatarAssetId ? db.mediaAsset.findUnique({ where: { id: avatarAssetId } }) : Promise.resolve(null),
+    db.aiUsageFact.findMany({
+      where: {
+        releaseId: release.id,
+        environment: "production",
+        dataClass: "customer",
+        actorIsInternal: false,
+        occurredAt: { gte: release.publishedAt, lte: observationEnd },
+      },
+      select: { latencyMs: true, costMicros: true, occurredAt: true },
+    }),
+    previousRelease
+      ? db.releaseMonitor.findUnique({ where: { releaseId_window: { releaseId: previousRelease.id, window: input.window } } })
+      : Promise.resolve(null),
   ]);
   const mature = now.getTime() >= windowEnd.getTime();
   const failedGenerations = generations.filter((row) => row.outcome !== "succeeded").length;
   const generationFailureRate = generations.length > 0 ? failedGenerations / generations.length : null;
-  const recommendation = !mature
+  const latencyP95Ms = percentile95(usageFacts.flatMap((fact) => fact.latencyMs === null ? [] : [fact.latencyMs]));
+  const variableCostMicros = usageFacts.reduce((sum, fact) => sum + Number(fact.costMicros ?? 0), 0);
+  const operationalChecks = {
+    servingPointerLive: serving?.state === "live" && serving.currentReleaseId === release.id,
+    publicProjectionLive: character?.status === "approved" && character.visibility === "public" && character.deletedAt === null,
+    immutableContentAvailable: contentVersion?.characterId === project.characterId,
+    releaseAvatarRenderable: Boolean(avatarAssetId && avatarAsset && !avatarAsset.deletedAt && avatarAsset.safetyStatus === "passed"),
+    chatAuthorityReady: serving?.state === "live" && contentVersion?.characterId === project.characterId,
+  };
+  const operationalPassed = Object.values(operationalChecks).every(Boolean);
+  const recommendation = !operationalPassed
+    ? "rollback_review"
+    : !mature
     ? "continue_monitoring"
     : generations.length >= 10 && (generationFailureRate ?? 0) > 0.2
       ? "rollback_review"
@@ -193,6 +247,9 @@ export async function collectReleaseMonitorFacts(
     generationCount: generations.length,
     failedGenerations,
     generationFailureRate,
+    latencyP95Ms,
+    variableCostMicros,
+    operationalChecks,
     latestObservedAt: latestObservedAt?.toISOString() ?? null,
   };
   const monitor = await db.releaseMonitor.upsert({
@@ -200,26 +257,39 @@ export async function collectReleaseMonitorFacts(
     create: {
       releaseId: release.id,
       window: input.window,
-      status: mature ? "completed" : "monitoring",
-      baseline: {},
+      status: !operationalPassed ? "action_required" : mature ? "completed" : "monitoring",
+      baseline: toInputJson({
+        releaseId: previousRelease?.id ?? null,
+        observed: previousMonitor ? record(previousMonitor.observed) : null,
+      }),
       observed: toInputJson(observed),
       verification: toInputJson({
         maturity: mature ? "mature" : "immature",
         recommendation,
         asOf: now.toISOString(),
         windowEnd: windowEnd.toISOString(),
+        operationalPassed,
+        latencySloMs: 5_000,
+        latencyWithinSlo: latencyP95Ms === null ? null : latencyP95Ms <= 5_000,
       }),
       startedAt: release.publishedAt,
       finishedAt: mature ? now : null,
     },
     update: {
-      status: mature ? "completed" : "monitoring",
+      status: !operationalPassed ? "action_required" : mature ? "completed" : "monitoring",
+      baseline: toInputJson({
+        releaseId: previousRelease?.id ?? null,
+        observed: previousMonitor ? record(previousMonitor.observed) : null,
+      }),
       observed: toInputJson(observed),
       verification: toInputJson({
         maturity: mature ? "mature" : "immature",
         recommendation,
         asOf: now.toISOString(),
         windowEnd: windowEnd.toISOString(),
+        operationalPassed,
+        latencySloMs: 5_000,
+        latencyWithinSlo: latencyP95Ms === null ? null : latencyP95Ms <= 5_000,
       }),
       finishedAt: mature ? now : null,
     },
