@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { renderPrometheusMetrics, resetMetricsForTests } from "@idream/shared";
 import { prisma } from "@/server/lib/db";
+import { evaluateCanonicalMetrics } from "./engine";
 import {
   loadCanonicalMetricDataset,
   projectCanonicalMetricEvent,
@@ -115,6 +116,172 @@ describe("canonical metric fact projector", () => {
     expect(after.chatExchanges).toEqual([
       expect.objectContaining({ exchangeId: `${prefix}-exchange`, eligible: false }),
     ]);
+  });
+
+  it("replays regenerate, edit, delete, and selection corrections into exact activation and D1 metrics", async () => {
+    const replayId = `${prefix}-golden-replay`;
+    const replayUserId = `${replayId}-user`;
+    const characterId = `${replayId}-character`;
+    const d0 = new Date("2026-06-01T08:00:00.000Z");
+    const d1 = new Date("2026-06-02T08:00:00.000Z");
+    let sourceSequence = 0;
+
+    const completedEvent = (input: {
+      readonly exchangeId: string;
+      readonly occurredAt: Date;
+      readonly sessionId: string;
+      readonly attemptNo?: number;
+      readonly isRegeneration?: boolean;
+    }) => {
+      sourceSequence += 1;
+      const attemptNo = input.attemptNo ?? 1;
+      const assistantMessageId = `${input.exchangeId}-assistant-${attemptNo}`;
+      return {
+        id: `${replayId}-canonical-${sourceSequence}`,
+        sourceService: "chat",
+        sourceEventId: `${replayId}-source-${sourceSequence}`,
+        name: "chat.exchange.completed.v2",
+        schemaVersion: 2,
+        occurredAt: input.occurredAt,
+        ingestedAt: new Date(input.occurredAt.getTime() + 1_000),
+        environment: "production",
+        dataClass: "customer",
+        trustClass: "canonical",
+        actor: { userId: replayUserId, isInternal: false },
+        context: { characterId, characterContentVersionId: `${characterId}-content`, characterReleaseId: null },
+        props: {
+          exchangeId: input.exchangeId,
+          userMessageId: `${input.exchangeId}-user`,
+          assistantMessageId,
+          selectedAssistantMessageId: assistantMessageId,
+          assistantAttemptNo: attemptNo,
+          isRegeneration: input.isRegeneration ?? false,
+          sessionId: input.sessionId,
+          engagementSessionId: input.sessionId,
+          userId: replayUserId,
+          characterId,
+          characterContentVersionId: `${characterId}-content`,
+          characterReleaseId: null,
+        },
+      } as const;
+    };
+
+    const correctionEvent = (input: {
+      readonly exchangeId: string;
+      readonly correctionType: "selected" | "edited" | "deleted" | "superseded";
+      readonly correctionRevision: number;
+      readonly occurredAt: Date;
+      readonly selectedAssistantMessageId?: string;
+    }) => {
+      sourceSequence += 1;
+      return {
+        id: `${replayId}-canonical-${sourceSequence}`,
+        sourceService: "chat",
+        sourceEventId: `${replayId}-source-${sourceSequence}`,
+        name: "chat.exchange.corrected.v2",
+        schemaVersion: 2,
+        occurredAt: input.occurredAt,
+        ingestedAt: new Date(input.occurredAt.getTime() + 1_000),
+        environment: "production",
+        dataClass: "customer",
+        trustClass: "canonical",
+        actor: { userId: replayUserId, isInternal: false },
+        context: { characterId },
+        props: {
+          exchangeId: input.exchangeId,
+          correctionType: input.correctionType,
+          correctionRevision: input.correctionRevision,
+          selectedAssistantMessageId: input.selectedAssistantMessageId,
+          userId: replayUserId,
+        },
+      } as const;
+    };
+
+    await prisma.user.create({
+      data: { id: replayUserId, email: `${replayUserId}@example.test`, role: "user", status: "active" },
+    });
+    try {
+      sourceSequence += 1;
+      await projectCanonicalMetricEvent(prisma, {
+        id: `${replayId}-canonical-${sourceSequence}`,
+        sourceService: "main",
+        sourceEventId: `${replayId}-source-${sourceSequence}`,
+        name: "customer.signup.completed.v2",
+        schemaVersion: 2,
+        occurredAt: new Date("2026-06-01T00:00:00.000Z"),
+        ingestedAt: new Date("2026-06-01T00:00:01.000Z"),
+        environment: "production",
+        dataClass: "customer",
+        trustClass: "canonical",
+        actor: { userId: replayUserId, isInternal: false },
+        context: {},
+        props: { userId: replayUserId },
+      });
+
+      for (let index = 0; index < 5; index += 1) {
+        await projectCanonicalMetricEvent(prisma, completedEvent({
+          exchangeId: `${replayId}-d0-${index}`,
+          occurredAt: new Date(d0.getTime() + index * 1_000),
+          sessionId: `${replayId}-d0-session`,
+        }));
+      }
+      await projectCanonicalMetricEvent(prisma, completedEvent({
+        exchangeId: `${replayId}-d0-0`,
+        occurredAt: new Date(d0.getTime() + 10_000),
+        sessionId: `${replayId}-d0-session`,
+        attemptNo: 2,
+        isRegeneration: true,
+      }));
+      await projectCanonicalMetricEvent(prisma, correctionEvent({
+        exchangeId: `${replayId}-d0-4`,
+        correctionType: "edited",
+        correctionRevision: 2,
+        occurredAt: new Date(d0.getTime() + 20_000),
+      }));
+      await projectCanonicalMetricEvent(prisma, correctionEvent({
+        exchangeId: `${replayId}-d0-4`,
+        correctionType: "selected",
+        correctionRevision: 3,
+        selectedAssistantMessageId: `${replayId}-d0-4-assistant-1`,
+        occurredAt: new Date(d0.getTime() + 21_000),
+      }));
+      await projectCanonicalMetricEvent(prisma, correctionEvent({
+        exchangeId: `${replayId}-d0-3`,
+        correctionType: "deleted",
+        correctionRevision: 2,
+        occurredAt: new Date(d0.getTime() + 22_000),
+      }));
+      await projectCanonicalMetricEvent(prisma, completedEvent({
+        exchangeId: `${replayId}-d0-replacement`,
+        occurredAt: new Date(d0.getTime() + 23_000),
+        sessionId: `${replayId}-d0-session`,
+      }));
+      for (let index = 0; index < 5; index += 1) {
+        await projectCanonicalMetricEvent(prisma, completedEvent({
+          exchangeId: `${replayId}-d1-${index}`,
+          occurredAt: new Date(d1.getTime() + index * 1_000),
+          sessionId: `${replayId}-d1-session`,
+        }));
+      }
+
+      const canonical = await loadCanonicalMetricDataset(prisma, { userIds: [replayUserId] });
+      expect(canonical.chatExchanges.filter((exchange) => exchange.eligible)).toHaveLength(10);
+      expect(canonical.chatExchanges).toEqual(expect.arrayContaining([
+        expect.objectContaining({ exchangeId: `${replayId}-d0-0`, eligible: true }),
+        expect.objectContaining({ exchangeId: `${replayId}-d0-3`, eligible: false }),
+        expect.objectContaining({ exchangeId: `${replayId}-d0-4`, eligible: true }),
+      ]));
+      const metrics = evaluateCanonicalMetrics(canonical, new Date("2026-06-10T00:00:00.000Z"));
+      expect(metrics.metrics["activation.chat_24h"]).toMatchObject({ numerator: 1, denominator: 1, value: 1 });
+      expect(metrics.metrics["retention.same_character_d1"]).toMatchObject({ numerator: 1, denominator: 1, value: 1 });
+      expect(metrics.qualifiedEpisodes).toHaveLength(2);
+    } finally {
+      await prisma.companionEngagementDaily.deleteMany({ where: { userId: replayUserId } });
+      await prisma.chatExchangeFact.deleteMany({ where: { userId: replayUserId } });
+      await prisma.customerSignupFact.deleteMany({ where: { userId: replayUserId } });
+      await prisma.metricProjectionReceipt.deleteMany({ where: { sourceEventId: { startsWith: replayId } } });
+      await prisma.user.deleteMany({ where: { id: replayUserId } });
+    }
   });
 
   it("fails closed for untyped legacy messages and non-customer/internal events", async () => {
