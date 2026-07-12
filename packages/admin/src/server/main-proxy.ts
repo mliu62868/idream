@@ -32,6 +32,25 @@ export async function proxyToMain(request: Request, pathname: string): Promise<R
   const startedAt = performance.now();
   const surface = proxySurface(pathname);
   const routeClass = proxyRouteClass(pathname, request.method);
+  const killSwitch = activeAdminV2KillSwitch(pathname, request.method);
+  if (killSwitch) {
+    incrementCounter(
+      "admin_proxy_kill_switch_total",
+      "Admin v2 requests rejected by the fail-closed cutover kill switch",
+      { scope: killSwitch },
+    );
+    recordProxyMetrics(request.method, "kill_switch", surface, routeClass, startedAt);
+    return Response.json(
+      {
+        ok: false,
+        error: {
+          code: `admin_v2_${killSwitch}_kill_switch_active`,
+          message: `Admin v2 ${killSwitch} traffic is temporarily disabled by release control`,
+        },
+      },
+      { status: 503, headers: { "retry-after": "0" } },
+    );
+  }
   const incomingURL = new URL(request.url);
   const upstreamURL = new URL(pathname, `${mainWebURL}/`);
   upstreamURL.search = incomingURL.search;
@@ -103,6 +122,14 @@ export async function proxyToMain(request: Request, pathname: string): Promise<R
       { status: 503 },
     );
   }
+}
+
+function activeAdminV2KillSwitch(pathname: string, method: string): "read" | "write" | null {
+  if (!pathname.startsWith("/api/v2/admin")) return null;
+  const readOnly = method === "GET" || method === "HEAD" || method === "OPTIONS";
+  if (readOnly && process.env.ADMIN_V2_READ_KILL_SWITCH === "true") return "read";
+  if (!readOnly && process.env.ADMIN_V2_WRITE_KILL_SWITCH === "true") return "write";
+  return null;
 }
 
 function proxySurface(pathname: string) {

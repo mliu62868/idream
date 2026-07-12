@@ -403,14 +403,21 @@ describe("Incident and P0 Review Case authority loops", () => {
   it("aggregates reports into one typed Case and closes only after decision and verification", async () => {
     const sourceA = await prisma.contentReport.findUniqueOrThrow({ where: { id: reportA } });
     const sourceB = await prisma.contentReport.findUniqueOrThrow({ where: { id: reportB } });
-    const first = await ensureReviewCaseForReport(prisma, sourceA);
-    const second = await ensureReviewCaseForReport(prisma, sourceB);
+    // Start the lower-priority source first so the unique active Case can be
+    // created while the higher-priority source is concurrently joining it.
+    const [second, first] = await Promise.all([
+      ensureReviewCaseForReport(prisma, sourceB),
+      ensureReviewCaseForReport(prisma, sourceA),
+    ]);
     expect(second?.id).toBe(first?.id);
     const caseId = first?.id ?? "";
     createdCaseIds.push(caseId);
     const evidence = await prisma.caseEvidence.findMany({ where: { caseId }, orderBy: { sourceId: "asc" } });
     expect(evidence).toHaveLength(2);
-    expect(first).toMatchObject({ priority: "high", status: "new", version: 1 });
+    expect(await prisma.adminCase.findUniqueOrThrow({ where: { id: caseId } })).toMatchObject({
+      priority: "high",
+      status: "new",
+    });
 
     await expect(
       assignReviewCase({

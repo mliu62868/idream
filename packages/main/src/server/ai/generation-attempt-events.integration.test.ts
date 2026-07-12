@@ -139,6 +139,36 @@ describe("GenerationAttemptEvent authority", () => {
     });
   });
 
+  it("serializes concurrent success and failure terminals into exactly one authority outcome", async () => {
+    const base = {
+      attemptId,
+      occurredAt: new Date("2026-07-11T12:00:00.000Z"),
+    };
+    const results = await Promise.allSettled([
+      prisma.$transaction((tx) => recordGenerationAttemptEvent(tx, {
+        ...base,
+        eventId: `${attemptId}:concurrent-success`,
+        eventType: "generation.attempt.succeeded.v1",
+        outcome: "succeeded",
+        payload: { assets: 1 },
+      })),
+      prisma.$transaction((tx) => recordGenerationAttemptEvent(tx, {
+        ...base,
+        eventId: `${attemptId}:concurrent-failure`,
+        eventType: "generation.attempt.failed.v1",
+        outcome: "failed",
+        payload: { errorCode: "provider_timeout" },
+        errorCode: "provider_timeout",
+      })),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(await prisma.generationAttemptEvent.count({ where: { attemptId, terminalScope: "terminal" } })).toBe(1);
+    expect((await prisma.generationAttempt.findUniqueOrThrow({ where: { id: attemptId } })).status)
+      .toMatch(/^(succeeded|failed)$/);
+  });
+
   it("rejects gaps, stale sequences, and events after terminal", async () => {
     await expect(prisma.$transaction((tx) => recordGenerationAttemptEvent(tx, {
       eventId: `${attemptId}:gap`,

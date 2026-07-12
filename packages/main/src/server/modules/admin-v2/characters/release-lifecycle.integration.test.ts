@@ -78,15 +78,20 @@ describe("Character Release proposal and review lifecycle", () => {
     await expect(prisma.adminAuditLog.count({ where: { actorId, targetId: proposed.id } })).resolves.toBe(2);
     const validation = await validateCharacterRelease({ request, characterId, releaseId: proposed.id, expectedVersion: approved.version });
     expect(validation).toMatchObject({ result: "passed", readiness: "ready", snapshotHash: proposed.snapshotHash, policyVersion: CHARACTER_RELEASE_POLICY_VERSION });
-    const publishRequest = new Request(`http://localhost/api/v2/admin/characters/${characterId}/releases/${proposed.id}/commands/publish`, {
+    const acceptPublish = async (tab: string) => publishCharacterRelease(new Request(`http://localhost/api/v2/admin/characters/${characterId}/releases/${proposed.id}/commands/publish`, {
       method: "POST",
-      headers: { ...headers, "content-type": "application/json", "idempotency-key": `publish-${suffix}` },
+      headers: { ...headers, "content-type": "application/json", "idempotency-key": `publish-${tab}-${suffix}` },
       body: JSON.stringify({ entityVersion: approved.version, reason: { code: "launch_approved", summary: "Publish the reviewed and validated snapshot" }, confirmation: `${characterId}:${proposed.id}:publish` }),
-    });
-    const publishAccepted = await publishCharacterRelease(publishRequest, characterId, proposed.id);
-    expect(publishAccepted.status).toBe(202);
-    const publishCommandId = (await publishAccepted.json()).data.commandId as string;
-    await expect(executeCharacterReleaseCommand(prisma, { commandId: publishCommandId, workerId: `release-lifecycle-worker-${suffix}` })).resolves.toMatchObject({ status: "succeeded" });
+    }), characterId, proposed.id);
+    const acceptedFromTabs = await Promise.all([acceptPublish("tab-a"), acceptPublish("tab-b")]);
+    expect(acceptedFromTabs.map((response) => response.status)).toEqual([202, 202]);
+    const publishCommandIds = await Promise.all(acceptedFromTabs.map(async (response) => (await response.json()).data.commandId as string));
+    const publishOutcomes = await Promise.all(publishCommandIds.map((commandId, index) => executeCharacterReleaseCommand(prisma, {
+      commandId,
+      workerId: `release-lifecycle-worker-${index}-${suffix}`,
+    })));
+    expect(publishOutcomes.filter((outcome) => outcome.status === "succeeded")).toHaveLength(1);
+    expect(publishOutcomes.filter((outcome) => outcome.status === "failed")).toHaveLength(1);
     await expect(prisma.characterServing.findUnique({ where: { characterId } })).resolves.toMatchObject({ state: "live", currentReleaseId: proposed.id, version: 2 });
     const retireRequest = new Request(`http://localhost/api/v2/admin/characters/${characterId}/commands/retire`, {
       method: "POST",

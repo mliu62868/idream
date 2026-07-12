@@ -99,4 +99,41 @@ describe("Admin main HTTP proxy", () => {
       'admin_http_requests_total{method="GET",outcome="unavailable",routeClass="today",surface="admin_v2"} 1',
     );
   });
+
+  it("provides independent fail-closed read and write kill switches for v2 cutover", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    vi.stubEnv("ADMIN_V2_READ_KILL_SWITCH", "true");
+    const readBlocked = await proxyToMain(
+      new Request("http://admin.local/api/v2/admin/today"),
+      "/api/v2/admin/today",
+    );
+    expect(readBlocked.status).toBe(503);
+    await expect(readBlocked.json()).resolves.toMatchObject({
+      error: { code: "admin_v2_read_kill_switch_active" },
+    });
+
+    vi.stubEnv("ADMIN_V2_READ_KILL_SWITCH", "false");
+    vi.stubEnv("ADMIN_V2_WRITE_KILL_SWITCH", "true");
+    const writeBlocked = await proxyToMain(
+      new Request("http://admin.local/api/v2/admin/cases/case-1/commands/close", {
+        method: "POST",
+        body: "{}",
+      }),
+      "/api/v2/admin/cases/case-1/commands/close",
+    );
+    expect(writeBlocked.status).toBe(503);
+    expect(writeBlocked.headers.get("retry-after")).toBe("0");
+    await expect(writeBlocked.json()).resolves.toMatchObject({
+      error: { code: "admin_v2_write_kill_switch_active" },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(renderPrometheusMetrics()).toContain(
+      'admin_proxy_kill_switch_total{scope="read"} 1',
+    );
+    expect(renderPrometheusMetrics()).toContain(
+      'admin_proxy_kill_switch_total{scope="write"} 1',
+    );
+  });
 });

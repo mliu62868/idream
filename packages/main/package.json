@@ -56,6 +56,8 @@
     "admin:readiness:load": "tsx src/scripts/admin-production-like-readiness.ts",
     "admin:readiness:migrations": "node scripts/admin-migration-rehearsal.mjs",
     "admin:readiness:shadow": "tsx src/scripts/admin-shadow-report.ts",
+    "admin:readiness:release-gate": "tsx src/scripts/admin-release-gate.ts",
+    "admin:readiness:canary": "tsx src/scripts/admin-canary.ts",
     "probe:age": "tsx src/server/probe-age-verification.ts",
     "probe:blob": "tsx src/server/probe-blob-storage.ts",
     "probe:catalog": "tsx src/server/probe-public-catalog.ts",
