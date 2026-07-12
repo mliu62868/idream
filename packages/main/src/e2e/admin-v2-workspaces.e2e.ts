@@ -4,9 +4,12 @@ import { prisma } from "@/server/lib/db";
 const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 const actorId = "seed-admin-user";
 const creativeRunId = `e2e-v2-creative-${suffix}`;
+const creativeItemId = `e2e-v2-creative-item-${suffix}`;
+const creativeAssetId = `e2e-v2-creative-asset-${suffix}`;
 const incidentId = `e2e-v2-incident-${suffix}`;
 const caseId = `e2e-v2-case-${suffix}`;
 const caseTargetId = `e2e-v2-customer-${suffix}`;
+const caseEvidenceId = `e2e-v2-evidence-${suffix}`;
 const characterName = `E2E V2 Companion ${suffix}`;
 
 function adminBaseURL() {
@@ -54,6 +57,17 @@ async function expectNoHorizontalOverflow(page: Page) {
 test.describe.serial("Admin v2 operator workspaces", () => {
   test.describe.configure({ retries: 0 });
   test.beforeAll(async () => {
+    await prisma.mediaAsset.create({
+      data: {
+        id: creativeAssetId,
+        ownerId: actorId,
+        type: "image",
+        url: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Crect width='64' height='64' fill='%23d9d4c7'/%3E%3C/svg%3E",
+        visibility: "private",
+        safetyStatus: "passed",
+        metadata: { source: "admin_v2_playwright" },
+      },
+    });
     await prisma.contentProductionBatch.create({
       data: {
         id: creativeRunId,
@@ -62,12 +76,24 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         targetType: "campaign",
         targetId: `campaign-${suffix}`,
         presetIds: [],
-        totalItems: 0,
+        count: 1,
+        totalItems: 1,
+        completedItems: 1,
+        status: "reviewing",
         lifecycleState: "active",
-        workflowStage: "brief",
+        workflowStage: "review",
         verificationState: "pending",
         ownerId: actorId,
         createdById: actorId,
+        items: {
+          create: {
+            id: creativeItemId,
+            itemIndex: 0,
+            status: "generated",
+            mediaAssetId: creativeAssetId,
+            tags: [],
+          },
+        },
       },
     });
     await prisma.opsIncident.create({
@@ -76,7 +102,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         signature: `provider:profile:e2e-${suffix}`,
         signatureVersion: "v1",
         activeCorrelationKey: `e2e-active-${suffix}`,
-        status: "triaged",
+        status: "monitoring",
         severity: "high",
         ownerId: actorId,
         firstSeen: new Date(Date.now() - 60_000),
@@ -105,7 +131,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     });
     await prisma.caseEvidence.create({
       data: {
-        id: `e2e-v2-evidence-${suffix}`,
+        id: caseEvidenceId,
         caseId,
         sourceType: "support_message",
         sourceId: `support-message-${suffix}`,
@@ -131,10 +157,28 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       await prisma.characterProject.deleteMany({ where: { characterId: { in: characterIds } } });
       await prisma.character.deleteMany({ where: { id: { in: characterIds } } });
     }
+    const commandIds = (await prisma.controlPlaneCommand.findMany({
+      where: { targetId: { in: [creativeRunId, incidentId, caseId] } },
+      select: { id: true },
+    })).map((command) => command.id);
+    await prisma.controlPlaneCommandAttempt.deleteMany({ where: { commandId: { in: commandIds } } });
+    await prisma.controlPlaneCommand.deleteMany({ where: { id: { in: commandIds } } });
+    await prisma.mainOutboxEvent.deleteMany({
+      where: { aggregateId: { in: [creativeRunId, creativeItemId, incidentId, caseId] } },
+    });
+    await prisma.adminAuditLog.deleteMany({
+      where: { targetId: { in: [creativeRunId, creativeItemId, incidentId, caseId] } },
+    });
+    await prisma.decisionRecord.deleteMany({ where: { sourceId: caseId } });
+    await prisma.incidentPostmortem.deleteMany({ where: { incidentId } });
     await prisma.caseEvidence.deleteMany({ where: { caseId } });
     await prisma.adminCase.deleteMany({ where: { id: caseId } });
     await prisma.opsIncident.deleteMany({ where: { id: incidentId } });
+    await prisma.creativeReviewDecision.deleteMany({ where: { runItemId: creativeItemId } });
+    await prisma.mediaAssetPlacement.deleteMany({ where: { mediaAssetId: creativeAssetId } });
+    await prisma.contentProductionItem.deleteMany({ where: { id: creativeItemId } });
     await prisma.contentProductionBatch.deleteMany({ where: { id: creativeRunId } });
+    await prisma.mediaAsset.deleteMany({ where: { id: creativeAssetId } });
     await prisma.$disconnect();
   });
 
@@ -159,7 +203,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     expect(failures).toEqual([]);
   });
 
-  test("opens Creative, Incident, and Case authority details without losing URL state", async ({ page }) => {
+  test("closes Creative, Incident, and Case loops through UI and authoritative facts", async ({ page }) => {
     const failures = consoleFailures(page);
     await login(page);
     await page.setViewportSize({ width: 1366, height: 900 });
@@ -169,12 +213,61 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await page.locator(`a[href="/admin/creative/runs/${creativeRunId}"]`).click();
     await expect(page).toHaveURL(new RegExp(`/admin/creative/runs/${creativeRunId}$`));
     await expect(page.getByRole("heading", { level: 1, name: `E2E Creative Run ${suffix}` })).toBeVisible();
+    await page.getByRole("button", { name: "Approve" }).click();
+    await expect(page.getByText("approved · passed")).toBeVisible();
+    await page.getByLabel("Target type").fill("campaign");
+    await page.getByLabel("Target ID").fill(`campaign-${suffix}`);
+    await page.getByRole("button", { name: "Publish placement" }).click();
+    await expect(page.getByText("feed_card · verifying")).toBeVisible();
+    await page.getByRole("button", { name: "Verify live slot" }).click();
+    await expect(page.getByText("feed_card · passed")).toBeVisible();
+
+    await expect.poll(async () => prisma.contentProductionBatch.findUnique({
+      where: { id: creativeRunId },
+      select: { workflowStage: true, verificationState: true, version: true },
+    })).toEqual({ workflowStage: "verification", verificationState: "passed", version: 4 });
+    await expect.poll(async () => prisma.creativeReviewDecision.count({
+      where: { runItemId: creativeItemId, decision: "approved" },
+    })).toBe(1);
+    await expect.poll(async () => prisma.mediaAssetPlacement.count({
+      where: { mediaAssetId: creativeAssetId, status: "published", verificationState: "passed" },
+    })).toBe(1);
 
     await page.goto(`${adminBaseURL()}/admin/ops/incidents?search=${encodeURIComponent(suffix)}`);
     await expect(page.getByRole("heading", { level: 2, name: "Incidents" })).toBeVisible();
     await page.getByRole("button", { name: new RegExp(`E2E provider regression ${suffix}`) }).click();
     await expect(page).toHaveURL(new RegExp(`incident=${incidentId}`));
     await expect(page.getByRole("heading", { level: 3, name: `E2E provider regression ${suffix}` })).toBeVisible();
+    await page.getByLabel("Audit reason").fill("Recovery window and settlement reviewed");
+    await page.getByLabel("Evidence reference").fill(`monitor://e2e/${suffix}`);
+    for (const label of [
+      "Success rate recovered for the required window",
+      "Failure signature stopped growing",
+      "Backlog is recovering",
+      "Every failed request has a retry or terminal plan",
+      "Spend and refunds are reconciled",
+    ]) {
+      await page.getByLabel(label).check();
+    }
+    await page.getByRole("button", { name: "Mark recovery verified" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Recovery verification recorded" })).toBeVisible();
+    await page.getByRole("button", { name: "Resolve incident" }).click();
+    await expect(page.getByRole("heading", { level: 4, name: "Postmortem and close" })).toBeVisible();
+    await page.getByLabel("Summary", { exact: true }).fill("Provider route recovered and all affected requests were reconciled.");
+    await page.getByLabel("Root cause").fill("Provider route regression");
+    await page.getByLabel("Contributing factors (one per line)").fill("Capacity signal lag");
+    await page.getByLabel("Corrective actions (one per line)").fill("Add a route-level recovery canary");
+    await page.getByLabel("Type close confirmation").fill(`${incidentId}:close`);
+    await page.getByRole("button", { name: "Record postmortem and close" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Postmortem recorded and Incident closed" })).toBeVisible();
+
+    await expect.poll(async () => prisma.opsIncident.findUnique({
+      where: { id: incidentId },
+      select: { status: true, verificationState: true, activeCorrelationKey: true },
+    })).toEqual({ status: "closed", verificationState: "passed", activeCorrelationKey: null });
+    await expect.poll(async () => prisma.incidentPostmortem.count({
+      where: { incidentId, rootCause: "Provider route regression" },
+    })).toBe(1);
 
     await page.goto(`${adminBaseURL()}/admin/cases?view=mine&search=${encodeURIComponent(caseTargetId)}`);
     await expect(page.getByRole("heading", { level: 2, name: "Cases" })).toBeVisible();
@@ -182,8 +275,51 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await expect(page).toHaveURL(new RegExp(`case=${caseId}`));
     await expect(page.getByRole("heading", { level: 4, name: "Evidence" })).toBeVisible();
     await expect(page.getByText("Customer supplied immutable reproduction evidence.")).toBeVisible();
+    await page.getByLabel("Audit reason").fill("Evidence and downstream outcome reviewed");
+    await page.getByLabel("Decision", { exact: true }).fill("restore_access");
+    await page.getByLabel("Resolution summary").fill("Restored the expected customer access and checked the resulting entitlement.");
+    await page.getByRole("button", { name: "Record decision" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Case decision recorded" })).toBeVisible();
+    await page.getByRole("button", { name: "Verify outcome" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Downstream outcome verified" })).toBeVisible();
+    await page.getByLabel("Type confirmation").fill(`${caseId}:close`);
+    await page.getByRole("button", { name: "Close case", exact: true }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Case close command accepted" })).toBeVisible();
+
+    await expect.poll(async () => prisma.adminCase.findUnique({
+      where: { id: caseId },
+      select: { status: true, verificationState: true, activeKey: true },
+    })).toEqual({ status: "closed", verificationState: "passed", activeKey: null });
+    await expect.poll(async () => prisma.decisionRecord.count({
+      where: { sourceId: caseId, decision: "restore_access" },
+    })).toBe(1);
+    await expect.poll(async () => prisma.adminAuditLog.count({
+      where: { targetId: { in: [creativeItemId, incidentId, caseId] } },
+    })).toBeGreaterThanOrEqual(8);
 
     await expectNoHorizontalOverflow(page);
+    expect(failures).toEqual([]);
+  });
+
+  test("projects verified domain outcomes into Today recently resolved with working deep links", async ({ page }) => {
+    const failures = consoleFailures(page);
+    await login(page);
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto(`${adminBaseURL()}/admin/today`);
+    await expect(page.getByTestId("today-view")).toBeVisible();
+    await expect(page.getByText("Authoritative Today projection")).toBeVisible();
+
+    const resolved = page.getByTestId("today-queue-recently-resolved");
+    await expect(resolved.getByText(`user ${caseTargetId} is closed`)).toBeVisible();
+    await expect(resolved.getByText(`E2E provider regression ${suffix}`)).toBeVisible();
+    await resolved.locator(`a[href="/admin/cases/${caseId}"]`).click();
+    await expect(page).toHaveURL(new RegExp(`/admin/cases/${caseId}$`));
+    await expect(page.getByRole("heading", { level: 4, name: "Evidence" })).toBeVisible();
+
+    await page.goto(`${adminBaseURL()}/admin/today`);
+    await page.getByTestId("today-queue-recently-resolved").locator(`a[href="/admin/ops/incidents/${incidentId}"]`).click();
+    await expect(page).toHaveURL(new RegExp(`/admin/ops/incidents/${incidentId}$`));
+    await expect(page.getByRole("heading", { level: 3, name: `E2E provider regression ${suffix}` })).toBeVisible();
     expect(failures).toEqual([]);
   });
 
