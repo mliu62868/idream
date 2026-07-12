@@ -38,6 +38,54 @@ function successfulItem(index: number, status = "generated") {
 }
 
 describe("deriveCreativeRunState", () => {
+  it("derives exactly one execution outcome for every child-fact combination up to five items", () => {
+    const factKinds = ["success", "failed", "active"] as const;
+    for (let total = 0; total <= 5; total += 1) {
+      const combinationCount = factKinds.length ** total;
+      for (let encoded = 0; encoded < combinationCount; encoded += 1) {
+        let cursor = encoded;
+        const kinds = Array.from({ length: total }, () => {
+          const kind = factKinds[cursor % factKinds.length];
+          cursor = Math.floor(cursor / factKinds.length);
+          return kind;
+        });
+        const items = kinds.map((kind, index) => kind === "success"
+          ? successfulItem(index)
+          : kind === "failed"
+            ? failedItem(index)
+            : {
+                id: `active-${index}`,
+                status: "queued",
+                job: { id: `job-active-${index}`, status: "queued", errorCode: null, costDreamcoins: 0 },
+                asset: null,
+                placements: [],
+              });
+        const state = deriveCreativeRunState({
+          legacyStatus: "completed",
+          expectedItemCount: total,
+          items,
+          ledgerEntries: [],
+        });
+        const successful = kinds.filter((kind) => kind === "success").length;
+        const failed = kinds.filter((kind) => kind === "failed").length;
+        const active = kinds.filter((kind) => kind === "active").length;
+        const expectedOutcome = total === 0
+          ? "pending"
+          : active > 0
+            ? "running"
+            : successful === total
+              ? "succeeded"
+              : successful > 0
+                ? "partially_succeeded"
+                : "failed";
+
+        expect(state.executionOutcome, JSON.stringify({ kinds, state }, null, 2)).toBe(expectedOutcome);
+        expect(state.counts).toMatchObject({ generated: successful, failed, total });
+        expect(state.counts.generated + state.counts.failed).toBeLessThanOrEqual(total);
+      }
+    }
+  });
+
   it("derives 0/4 as failed even when the legacy batch says completed", () => {
     const state = deriveCreativeRunState({
       legacyStatus: "completed",
