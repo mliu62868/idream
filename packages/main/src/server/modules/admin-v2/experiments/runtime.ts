@@ -197,12 +197,24 @@ export async function recordExperimentExposure(
         dataClass: "customer" as const,
         actor: { type: "anonymous", anonymousId: assignment.subjectId, isInternal: false },
       };
+  const existingEvent = await db.analyticsEvent.findUnique({
+    where: {
+      sourceService_sourceEventId: {
+        sourceService: "main-experiment-runtime",
+        sourceEventId: input.exposureId,
+      },
+    },
+    select: { occurredAt: true, createdAt: true },
+  });
   const ingested = await ingestProductEvent(db, {
     sourceService: "main-experiment-runtime",
     sourceEventId: input.exposureId,
     eventType: METRIC_PRODUCT_EVENTS.experimentExposed,
     schemaVersion: 2,
-    occurredAt: new Date(input.occurredAt),
+    // The browser intentionally does not supply an authoritative clock. Replays
+    // therefore reuse the first server timestamp so idempotency is based on the
+    // experiment payload, not on when a retry happened to arrive.
+    occurredAt: existingEvent?.occurredAt ?? existingEvent?.createdAt ?? new Date(input.occurredAt),
     environment: options.environment,
     dataClass: classification.dataClass,
     trustClass: "typed_client",

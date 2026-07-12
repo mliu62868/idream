@@ -100,6 +100,16 @@ export const experimentArmAnalysisSchema = z.object({
   pValueVsControl: z.number().min(0).max(1).nullable(),
 }).strict();
 
+export const experimentGuardrailAnalysisSchema = z.object({
+  metricKey: z.string().min(1),
+  maxAbsoluteRegression: z.number().min(0).max(1),
+  controlRate: z.number().min(0).max(1).nullable(),
+  worstVariantRate: z.number().min(0).max(1).nullable(),
+  observedRegression: z.number().min(-1).max(1).nullable(),
+  state: z.enum(["passed", "failed", "blocked"]),
+  evidence: z.array(z.string().min(1)).readonly(),
+}).strict();
+
 export const experimentAnalysisResponseSchema = z.object({
   experimentId: adminIdSchema,
   experimentKey: z.string().min(1),
@@ -114,6 +124,7 @@ export const experimentAnalysisResponseSchema = z.object({
   decisionUse: z.enum(["eligible", "directional_only", "blocked"]),
   significance: z.enum(["significant", "not_significant", "unavailable"]),
   guardrailState: z.enum(["passed", "failed", "blocked"]),
+  guardrails: z.array(experimentGuardrailAnalysisSchema).min(1).readonly(),
   minimumMaturePerArm: z.number().int().positive(),
   qualityEvidence: z.array(z.string()),
   arms: z.array(experimentArmAnalysisSchema),

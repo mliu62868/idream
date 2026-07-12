@@ -4,7 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { ChevronDown, ChevronLeft, ChevronRight, Flag, HeartHandshake, Users } from "lucide-react";
 import type { ReactNode } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { authHrefForTarget } from "./authRedirect";
 
 // SPEC: campaign 投放位曝光/点击埋点，经既有 POST /api/v1/events/track。
@@ -45,6 +45,20 @@ function trackCharacterExposure(props: {
     navigator.sendBeacon("/api/v1/events/track", new Blob([payload], { type: "application/json" }));
     return;
   }
+  void fetch("/api/v1/events/track", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: payload,
+    keepalive: true,
+  }).catch(() => {});
+}
+
+function trackExperimentExposure(props: {
+  exposureId: string;
+  assignmentId: string;
+  surface: "community.leaderboard";
+}) {
+  const payload = JSON.stringify({ name: "experiment.exposed.v2", props });
   void fetch("/api/v1/events/track", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -112,6 +126,12 @@ type CommunityPayload = {
       collections?: Collection[];
     };
     collections?: Collection[];
+    experimentAssignment?: {
+      assignmentId: string;
+      variant: "control" | "relationship_first";
+      exposureId: string;
+      surface: "community.leaderboard";
+    } | null;
   };
   error?: { message?: string };
 };
@@ -166,6 +186,8 @@ export function CommunityWorkspace() {
   const [focusedCollectionId, setFocusedCollectionId] = useState("");
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(true);
+  const [rankingExperiment, setRankingExperiment] = useState<NonNullable<NonNullable<CommunityPayload["data"]>["experimentAssignment"]> | null>(null);
+  const rankingExposureRecordedRef = useRef(false);
 
   const query = useMemo(() => {
     const params = new URLSearchParams({ release });
@@ -187,6 +209,11 @@ export function CommunityWorkspace() {
   );
   const normalizedCampaignIndex = campaignIndex % visibleCampaigns.length;
   const activeCampaign = visibleCampaigns[normalizedCampaignIndex] ?? fallbackCampaign;
+  const recordRankingExposure = useCallback(() => {
+    if (!rankingExperiment || rankingExposureRecordedRef.current) return;
+    rankingExposureRecordedRef.current = true;
+    trackExperimentExposure(rankingExperiment);
+  }, [rankingExperiment]);
 
   const heroRef = useRef<HTMLDivElement | null>(null);
   const impressedCampaignIds = useRef<Set<string>>(new Set());
@@ -246,6 +273,8 @@ export function CommunityWorkspace() {
         return;
       }
       setCharacters(leaderboardPayload.data?.leaderboards?.characters ?? []);
+      setRankingExperiment(leaderboardPayload.data?.experimentAssignment ?? null);
+      rankingExposureRecordedRef.current = false;
       setDreamers(leaderboardPayload.data?.leaderboards?.dreamers ?? []);
       setCollections(collectionsPayload.data?.collections ?? []);
       setCampaigns(campaignResponse.ok && campaignPayload.ok !== false ? (campaignPayload.data?.campaigns ?? []) : []);
@@ -539,6 +568,7 @@ export function CommunityWorkspace() {
                 <CommunityCharacterCard
                   character={character}
                   key={character.id}
+                  onEligibleImpression={recordRankingExposure}
                   onFollow={follow}
                   onReport={report}
                 />
@@ -623,10 +653,12 @@ export function CommunityWorkspace() {
 function CommunityCharacterCard({
   character,
   onFollow,
+  onEligibleImpression,
   onReport,
 }: {
   character: CommunityCharacter;
   onFollow: (creatorId?: string | null) => Promise<void>;
+  onEligibleImpression: () => void;
   onReport: (characterId: string) => Promise<void>;
 }) {
   const cardRef = useRef<HTMLElement | null>(null);
@@ -655,6 +687,7 @@ function CommunityCharacterCard({
           timer = null;
           if (visibleRatio < 0.5 || impressionRecordedRef.current) return;
           impressionRecordedRef.current = true;
+          onEligibleImpression();
           trackCharacterExposure({
             contextToken: exposureContext.contextToken,
             characterId: character.id,
@@ -675,7 +708,7 @@ function CommunityCharacterCard({
       clearEligibilityTimer();
       observer.disconnect();
     };
-  }, [character.id, exposureContext]);
+  }, [character.id, exposureContext, onEligibleImpression]);
 
   function recordDetailView() {
     if (!exposureContext || !impressionRecordedRef.current || detailRecordedRef.current) return;

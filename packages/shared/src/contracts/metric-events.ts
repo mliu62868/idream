@@ -54,6 +54,12 @@ export const subscriptionEndedV2Schema = z.object({
   reason: z.string().min(1).optional(),
 });
 
+export const supportRequestSubmittedV2Schema = z.object({
+  supportRequestId: z.string().min(1),
+  userId: z.string().min(1),
+  category: z.string().min(1),
+});
+
 export const generationDeliveryCompletedV2Schema = z.object({
   requestId: z.string().min(1),
   artifactId: z.string().min(1),
@@ -128,9 +134,11 @@ export const METRIC_PRODUCT_EVENTS = {
   aiUsageRecorded: "ai.usage.recorded.v2",
   experimentExposed: "experiment.exposed.v2",
   characterExposureRecorded: "character.exposure.recorded.v2",
+  supportRequestSubmitted: "support.request.submitted.v2",
 } as const;
 
 export type ChatExchangeCompletedV2 = z.infer<typeof chatExchangeCompletedV2Schema>;
 export type ChatExchangeCorrectionV2 = z.infer<typeof chatExchangeCorrectionV2Schema>;
 export type ExperimentExposedV2 = z.infer<typeof experimentExposedV2Schema>;
 export type CharacterExposureRecordedV2 = z.infer<typeof characterExposureRecordedV2Schema>;
+export type SupportRequestSubmittedV2 = z.infer<typeof supportRequestSubmittedV2Schema>;

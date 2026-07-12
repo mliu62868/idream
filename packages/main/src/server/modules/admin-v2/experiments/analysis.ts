@@ -10,10 +10,13 @@ import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import { actorWithPermission } from "@/server/modules/admin/service";
 import { canonicalSha256 } from "../shared/canonical-json";
+import { selectQualityChecksForMetric } from "../metrics/query";
 
 const WINDOW_MS = 7 * 24 * 60 * 60 * 1_000;
 const PRIMARY_METRIC = "relationship.qce_activation.v1" as const;
+const SUPPORT_GUARDRAIL = "guardrail.support_contact_rate.v1" as const;
 const QUALITY_CHECK_KEYS = [
+  "metrics.server_outcome_completeness",
   "metrics.duplicate_effect",
   "metrics.impossible_state",
   "metrics.fixture_internal_leakage",
@@ -22,9 +25,6 @@ const QUALITY_CHECK_KEYS = [
   "metrics.eligible_fact_presence",
 ] as const;
 const QUALITY_FRESHNESS_MS = 60 * 60 * 1_000;
-const PRIMARY_DEFINITION = ADMIN_METRIC_REGISTRY.find((definition) => definition.key === PRIMARY_METRIC)
-  ?? (() => { throw new Error(`Missing canonical experiment metric definition: ${PRIMARY_METRIC}`); })();
-
 function normalCdf(value: number) {
   const sign = value < 0 ? -1 : 1;
   const x = Math.abs(value) / Math.sqrt(2);
@@ -94,9 +94,10 @@ export async function analyzeExperiment(
         const item = value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
         return typeof item.metricKey === "string" && item.metricKey !== PRIMARY_METRIC && typeof item.maxAbsoluteRegression === "number" && item.maxAbsoluteRegression >= 0 && item.maxAbsoluteRegression <= 1;
       })
-    : [{ metricKey: PRIMARY_METRIC, maxAbsoluteRegression: 0 }];
+    : [{ metricKey: SUPPORT_GUARDRAIL, maxAbsoluteRegression: 0.02 }];
+  const requiredMetricKeys = [PRIMARY_METRIC, ...new Set(guardrails.map((guardrail) => guardrail.metricKey))];
 
-  const [assignments, rawExposureFacts, metricDefinition, qualityChecks] = await Promise.all([
+  const [assignments, rawExposureFacts, metricDefinitions, qualityChecks] = await Promise.all([
     db.experimentAssignment.findMany({ where: { experimentId } }),
     db.experimentExposureFact.findMany({
       where: {
@@ -109,38 +110,42 @@ export async function analyzeExperiment(
       },
       orderBy: { occurredAt: "asc" },
     }),
-    db.metricDefinitionSnapshot.findUnique({
-      where: { key_version: { key: PRIMARY_METRIC, version: PRIMARY_DEFINITION.version } },
+    db.metricDefinitionSnapshot.findMany({
+      where: { OR: requiredMetricKeys.flatMap((key) => {
+        const definition = ADMIN_METRIC_REGISTRY.find((candidate) => candidate.key === key);
+        return definition ? [{ key, version: definition.version }] : [];
+      }) },
     }),
     db.dataQualityCheck.findMany({
       where: { checkKey: { in: [...QUALITY_CHECK_KEYS] }, checkedAt: { lte: asOf, gte: new Date(asOf.getTime() - QUALITY_FRESHNESS_MS) } },
       orderBy: { checkedAt: "desc" },
     }),
   ]);
-  const latestQualityStatus = new Map<string, (typeof qualityChecks)[number]>();
-  for (const check of qualityChecks) {
-    if (!latestQualityStatus.has(check.checkKey) && Array.isArray(check.metricKeys) && check.metricKeys.includes(PRIMARY_METRIC)) {
-      latestQualityStatus.set(check.checkKey, check);
-    }
-  }
-  const definitionEvidence = metricDefinition?.validationEvidence;
-  const certifiedMetricGate = metricDefinition !== null
-    && metricDefinition.qualityState === "certified"
-    && metricDefinition.lastValidatedAt !== null
-    && metricDefinition.effectiveAt <= asOf
-    && metricDefinition.queryHash === PRIMARY_DEFINITION.queryHash
-    && canonicalSha256(metricDefinition.definition) === canonicalSha256(PRIMARY_DEFINITION)
-    && ((Array.isArray(definitionEvidence) && definitionEvidence.length > 0)
-      || (definitionEvidence !== null && typeof definitionEvidence === "object" && Object.keys(definitionEvidence).length > 0))
-    && QUALITY_CHECK_KEYS.every((checkKey) => {
-      const check = latestQualityStatus.get(checkKey);
-      return check?.status === "passed"
-        && Array.isArray(check.metricKeys)
-        && check.metricKeys.includes(PRIMARY_METRIC)
-        && check.evidence !== null
-        && typeof check.evidence === "object"
-        && Object.keys(check.evidence).length > 0;
-    });
+  const definitionByKey = new Map(metricDefinitions.map((definition) => [definition.key, definition]));
+  const certifiedMetric = (metricKey: string) => {
+    const registryDefinition = ADMIN_METRIC_REGISTRY.find((definition) => definition.key === metricKey);
+    const definition = definitionByKey.get(metricKey);
+    const definitionEvidence = definition?.validationEvidence;
+    const selectedChecks = selectQualityChecksForMetric(qualityChecks, metricKey);
+    return Boolean(registryDefinition && definition
+      && definition.version === registryDefinition.version
+      && definition.qualityState === "certified"
+      && definition.lastValidatedAt !== null
+      && definition.effectiveAt <= asOf
+      && definition.queryHash === registryDefinition.queryHash
+      && canonicalSha256(definition.definition) === canonicalSha256(registryDefinition)
+      && ((Array.isArray(definitionEvidence) && definitionEvidence.length > 0)
+        || (definitionEvidence !== null && typeof definitionEvidence === "object" && Object.keys(definitionEvidence).length > 0))
+      && QUALITY_CHECK_KEYS.every((checkKey) => {
+        const check = selectedChecks.get(checkKey);
+        return check?.status === "passed"
+          && check.evidence !== null
+          && typeof check.evidence === "object"
+          && Object.keys(check.evidence).length > 0;
+      }));
+  };
+  const certifiedMetricGate = certifiedMetric(PRIMARY_METRIC);
+  const allMetricCertificationPassed = requiredMetricKeys.every(certifiedMetric);
   const assignmentKeys = new Set(assignments.map((assignment) => [
     assignment.experimentVersion,
     assignment.assignmentVersion,
@@ -182,8 +187,32 @@ export async function analyzeExperiment(
       },
       select: { userId: true, engagementSessionId: true, exchangeId: true, occurredAt: true },
     });
+  const [supportRequests, supportEvents] = earliest === null || userIds.length === 0
+    ? [[], []] as const
+    : await Promise.all([
+        db.supportRequest.findMany({
+          where: { userId: { in: userIds }, createdAt: { gte: earliest, lte: asOf } },
+          select: { id: true, userId: true, createdAt: true },
+        }),
+        db.analyticsEvent.findMany({
+          where: {
+            name: "support.request.submitted.v2",
+            userId: { in: userIds },
+            occurredAt: { gte: earliest, lte: asOf },
+            environment: "production",
+            dataClass: "customer",
+            trustClass: "canonical",
+          },
+          select: { sourceEventId: true, userId: true, occurredAt: true },
+        }),
+      ]);
+  const canonicalSupportIds = new Set(supportEvents.flatMap((event) =>
+    event.sourceEventId?.startsWith("support_request:") ? [event.sourceEventId.slice("support_request:".length)] : [],
+  ));
+  const missingSupportOutcomeEvents = supportRequests.filter((request) => !canonicalSupportIds.has(request.id)).length;
 
   const outcomeSubjects = new Set<string>();
+  const supportContactSubjects = new Set<string>();
   for (const exposure of matureUserExposures) {
     const windowEnd = new Date(exposure.occurredAt.getTime() + WINDOW_MS);
     const sessionExchanges = new Map<string, Set<string>>();
@@ -199,6 +228,14 @@ export async function analyzeExperiment(
     }
     if ([...sessionExchanges.values()].some((ids) => ids.size >= 5)) {
       outcomeSubjects.add(`${exposure.subjectType}:${exposure.subjectId}`);
+    }
+    if (supportRequests.some((request) =>
+      request.userId === exposure.subjectId &&
+      canonicalSupportIds.has(request.id) &&
+      request.createdAt >= exposure.occurredAt &&
+      request.createdAt < windowEnd
+    )) {
+      supportContactSubjects.add(`${exposure.subjectType}:${exposure.subjectId}`);
     }
   }
 
@@ -234,11 +271,74 @@ export async function analyzeExperiment(
       ? "immature" as const
       : "mature" as const;
   const allArmsMature = arms.length >= 2 && arms.every((arm) => arm.matureSubjects >= minimumMaturePerArm);
-  const qualityState = matureCount === 0 || assignmentJoinGaps > 0 ? "invalid" as const : allArmsMature && certifiedMetricGate ? "certified" as const : "directional" as const;
+  const guardrailAnalyses = guardrails.map((guardrail) => {
+    if (guardrail.metricKey !== SUPPORT_GUARDRAIL) {
+      return {
+        metricKey: guardrail.metricKey,
+        maxAbsoluteRegression: guardrail.maxAbsoluteRegression,
+        controlRate: null,
+        worstVariantRate: null,
+        observedRegression: null,
+        state: "blocked" as const,
+        evidence: ["unsupported_guardrail_metric"],
+      };
+    }
+    const rateByVariant = new Map(variantsResult.data.map((variant) => {
+      const mature = matureUserExposures.filter((exposure) => exposure.variant === variant.key);
+      const contacts = mature.filter((exposure) => supportContactSubjects.has(`${exposure.subjectType}:${exposure.subjectId}`)).length;
+      return [variant.key, mature.length > 0 ? contacts / mature.length : null] as const;
+    }));
+    const supportControlRate = rateByVariant.get(controlVariant) ?? null;
+    const variantRates = [...rateByVariant.entries()]
+      .filter(([variant, rate]) => variant !== controlVariant && rate !== null)
+      .map(([, rate]) => rate as number);
+    const worstVariantRate = variantRates.length > 0 ? Math.max(...variantRates) : null;
+    const observedRegression = supportControlRate === null || worstVariantRate === null
+      ? null
+      : worstVariantRate - supportControlRate;
+    const blockedReasons = [
+      ...(!allArmsMature ? ["guardrail_cohort_not_mature"] : []),
+      ...(!certifiedMetric(guardrail.metricKey) ? ["guardrail_metric_not_certified"] : []),
+      ...(missingSupportOutcomeEvents > 0 ? [`missing_canonical_support_outcomes:${missingSupportOutcomeEvents}`] : []),
+      ...(observedRegression === null ? ["guardrail_rate_unavailable"] : []),
+    ];
+    return {
+      metricKey: guardrail.metricKey,
+      maxAbsoluteRegression: guardrail.maxAbsoluteRegression,
+      controlRate: supportControlRate,
+      worstVariantRate,
+      observedRegression,
+      state: blockedReasons.length > 0
+        ? "blocked" as const
+        : observedRegression! > guardrail.maxAbsoluteRegression
+          ? "failed" as const
+          : "passed" as const,
+      evidence: blockedReasons.length > 0
+        ? blockedReasons
+        : [
+            `canonical_support_outcome_join_gaps:0`,
+            `observed_regression:${observedRegression}`,
+            `maximum_allowed_regression:${guardrail.maxAbsoluteRegression}`,
+          ],
+    };
+  });
+  const guardrailState = guardrailAnalyses.some((guardrail) => guardrail.state === "failed")
+    ? "failed" as const
+    : guardrailAnalyses.every((guardrail) => guardrail.state === "passed")
+      ? "passed" as const
+      : "blocked" as const;
+  const qualityState = matureCount === 0 || assignmentJoinGaps > 0 || missingSupportOutcomeEvents > 0
+    ? "invalid" as const
+    : allArmsMature && allMetricCertificationPassed
+      ? "certified" as const
+      : "directional" as const;
   const comparisons = arms.filter((arm) => arm.variant !== controlVariant);
   const significance = !allArmsMature ? "unavailable" as const : comparisons.some((arm) => (arm.pValueVsControl ?? 1) < 0.05) ? "significant" as const : "not_significant" as const;
-  const guardrailState = "blocked" as const;
-  const decisionUse = qualityState === "directional" ? "directional_only" as const : "blocked" as const;
+  const decisionUse = qualityState === "certified" && guardrailState === "passed"
+    ? "eligible" as const
+    : qualityState === "directional"
+      ? "directional_only" as const
+      : "blocked" as const;
   return experimentAnalysisResponseSchema.parse({
     experimentId: experiment.id,
     experimentKey: experiment.key,
@@ -253,14 +353,16 @@ export async function analyzeExperiment(
     decisionUse,
     significance,
     guardrailState,
+    guardrails: guardrailAnalyses,
     minimumMaturePerArm,
     qualityEvidence: [
       "denominator contains unique user subjects with a real eligible exposure and a fully matured 7-day window",
       "outcome requires at least five distinct eligible exchanges in one engagement session after first exposure",
       "anonymous exposures remain visible in exposedSubjects but are excluded from user QCE denominator",
       `assignment/exposure join gaps: ${assignmentJoinGaps}; any gap invalidates decision use`,
-      `primary metric certification: ${certifiedMetricGate ? "passed" : "blocked"}; requires the exact immutable registry snapshot and six fresh evidenced quality gates`,
-      `independent guardrails configured: ${guardrails.length}; decision use remains blocked until variant-level certified guardrail facts are available`,
+      `primary metric certification: ${certifiedMetricGate ? "passed" : "blocked"}; requires the exact immutable registry snapshot and seven fresh evidenced quality gates`,
+      `all metric certification: ${allMetricCertificationPassed ? "passed" : "blocked"}; independent guardrails configured: ${guardrails.length}`,
+      `canonical support outcome join gaps: ${missingSupportOutcomeEvents}`,
       `decision eligibility requires at least ${minimumMaturePerArm} mature exposed user subjects in every arm`,
       "95% intervals and two-sided p-values use a two-proportion normal approximation; production decisions remain blocked until all configured guardrails pass",
     ],

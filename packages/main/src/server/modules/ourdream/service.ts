@@ -42,6 +42,11 @@ import {
   idempotencyKeys,
 } from "@idream/shared/contracts";
 import { appendCanonicalMetricEvent } from "@/server/modules/admin-v2/metrics/event-writer";
+import {
+  ExperimentRuntimeError,
+  assignExperiment,
+  recordExperimentExposure,
+} from "@/server/modules/admin-v2/experiments/runtime";
 import { linkGenerationLedgerEntry } from "@/server/ai/generation-settlement";
 import {
   clearSessionCookie,
@@ -336,6 +341,12 @@ const characterExposureClientSchema = z.object({
     ctx.addIssue({ code: "custom", path: ["parentExposureId"], message: "Detail views require an exposure chain" });
   }
 });
+
+const experimentExposureClientSchema = z.object({
+  exposureId: z.string().min(1).max(200),
+  assignmentId: z.string().min(1).max(200),
+  surface: z.literal("community.leaderboard"),
+}).strict();
 
 const supportRequestSchema = z.object({
   category: z.enum(["account", "billing", "generation", "chat", "bug", "feature", "other"]),
@@ -4634,6 +4645,21 @@ async function policies() {
 async function track(request: Request) {
   const ctx = await getAuthCtx(request);
   const body = eventSchema.parse(await jsonBody(request));
+  if (body.name === METRIC_PRODUCT_EVENTS.experimentExposed) {
+    requireAgeGate(ctx);
+    const exposure = experimentExposureClientSchema.parse(body.props);
+    const subject = metricExposureSubject(ctx.userId, ctx.anonymousId);
+    if (!subject) throw Errors.badRequest("Experiment exposure needs an authenticated or anonymous subject");
+    const assignment = await prisma.experimentAssignment.findUnique({ where: { id: exposure.assignmentId } });
+    if (!assignment || assignment.subjectType !== subject.subjectType || assignment.subjectId !== subject.subjectId) {
+      throw Errors.badRequest("Experiment assignment does not belong to the current subject");
+    }
+    const recorded = await recordExperimentExposure(prisma, {
+      ...exposure,
+      occurredAt: new Date().toISOString(),
+    }, { environment: env.APP_ENV });
+    return ok({ exposure: recorded });
+  }
   if (body.name === METRIC_PRODUCT_EVENTS.characterExposureRecorded) {
     requireAgeGate(ctx);
     const exposure = characterExposureClientSchema.parse(body.props);
@@ -4751,6 +4777,18 @@ async function submitSupportRequest(request: Request) {
           diagnosticConsent: body.diagnosticConsent,
           sourcePath: body.sourcePath ?? null,
         }),
+      },
+    });
+    await appendCanonicalMetricEvent(tx, {
+      sourceEventId: `support_request:${created.id}`,
+      eventType: METRIC_PRODUCT_EVENTS.supportRequestSubmitted,
+      occurredAt: created.createdAt,
+      userId: user.id,
+      anonymousId: ctx.anonymousId,
+      payload: {
+        supportRequestId: created.id,
+        userId: user.id,
+        category: created.category,
       },
     });
     await ensureSupportCaseForRequest(tx, created);
@@ -5205,6 +5243,19 @@ async function community(request: Request, segments: string[]) {
   requireAgeGate(ctx);
   const [, view] = segments;
   const url = new URL(request.url);
+  const exposureSubject = metricExposureSubject(ctx.userId, ctx.anonymousId);
+  let rankingAssignment: Awaited<ReturnType<typeof assignExperiment>> | null = null;
+  if (exposureSubject) {
+    try {
+      rankingAssignment = await assignExperiment(prisma, "community.character-ranking.v1", {
+        subjectType: exposureSubject.subjectType,
+        subjectId: exposureSubject.subjectId,
+        eligibilitySnapshot: { surface: "community.leaderboard" },
+      });
+    } catch (error) {
+      if (!(error instanceof ExperimentRuntimeError) || error.code !== "definition_not_running") throw error;
+    }
+  }
   const publicCharacterWhere = {
     visibility: "public",
     status: "approved",
@@ -5261,6 +5312,13 @@ async function community(request: Request, segments: string[]) {
       ? communityDreamerRows({ creatorIds: followedCreatorIds, limit: followedCreatorIds.length })
       : Promise.resolve([]),
   ]);
+  const rankedCharacters = rankingAssignment?.status === "assigned" && rankingAssignment.variant === "relationship_first"
+    ? [...characters].sort((left, right) =>
+        (right.stats?.chatsCount ?? 0) - (left.stats?.chatsCount ?? 0) ||
+        (right.stats?.likesCount ?? 0) - (left.stats?.likesCount ?? 0) ||
+        left.id.localeCompare(right.id),
+      )
+    : characters;
   const dreamerRows = mergeCommunityDreamerRows(followedDreamerRows, topDreamerRows);
   const followingIds = new Set(followedCreatorIds);
   const dreamers = dreamerRows.map((dreamer) => ({
@@ -5273,11 +5331,10 @@ async function community(request: Request, segments: string[]) {
     chats: formatCount(numberFromDb(dreamer.chats)),
     isFollowing: followingIds.has(dreamer.id),
   }));
-  const exposureSubject = metricExposureSubject(ctx.userId, ctx.anonymousId);
   const exposureJourneyId = `community-journey-${cryptoRandomId("journey")}`;
   return ok({
     leaderboards: {
-      characters: characters.map((character) => ({
+      characters: rankedCharacters.map((character) => ({
         ...characterDTO(character, ctx.userId),
         exposureContext: exposureSubject && character.serving?.state === "live" &&
           character.serving.currentRelease?.status === "published"
@@ -5295,6 +5352,16 @@ async function community(request: Request, segments: string[]) {
       dreamers,
       collections: [],
     },
+    experimentAssignment: rankingAssignment?.status === "assigned" &&
+      rankingAssignment.assignmentId &&
+      (rankingAssignment.variant === "control" || rankingAssignment.variant === "relationship_first")
+      ? {
+          assignmentId: rankingAssignment.assignmentId,
+          variant: rankingAssignment.variant,
+          exposureId: `experiment-exposure-${cryptoRandomId("community-ranking")}`,
+          surface: "community.leaderboard",
+        }
+      : null,
   });
 }
 

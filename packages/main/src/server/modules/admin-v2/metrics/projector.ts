@@ -9,6 +9,7 @@ import {
   generationDeliveryCompletedV2Schema,
   subscriptionActivatedV2Schema,
   subscriptionEndedV2Schema,
+  supportRequestSubmittedV2Schema,
 } from "@idream/shared/contracts";
 import { incrementCounter, observeHistogram } from "@idream/shared";
 import { ADMIN_METRIC_REGISTRY } from "@idream/shared/admin";
@@ -84,6 +85,7 @@ const METRIC_EVENT_DESCRIPTORS = new Map<string, MetricEventDescriptor>([
   [METRIC_PRODUCT_EVENTS.aiUsageRecorded, { schema: aiUsageRecordedV2Schema, serverOutcome: true, allowedSources: new Set(["main", "gen"]) }],
   [METRIC_PRODUCT_EVENTS.experimentExposed, { schema: experimentExposedV2Schema, serverOutcome: false }],
   [METRIC_PRODUCT_EVENTS.characterExposureRecorded, { schema: characterExposureRecordedV2Schema, serverOutcome: false }],
+  [METRIC_PRODUCT_EVENTS.supportRequestSubmitted, { schema: supportRequestSubmittedV2Schema, serverOutcome: true, allowedSources: new Set(["main"]) }],
 ]);
 
 function hasOwn(recordValue: Record<string, unknown>, key: string): boolean {
@@ -369,6 +371,18 @@ async function applyEvent(tx: Transaction, event: MetricProductEvent): Promise<M
   }
   if (!isEligibleServerOutcome(event)) {
     return { status: "skipped", reason: "ineligible_data" };
+  }
+  if (event.name === METRIC_PRODUCT_EVENTS.supportRequestSubmitted) {
+    const payload = supportRequestSubmittedV2Schema.parse(event.props);
+    const authority = await tx.supportRequest.findUnique({
+      where: { id: payload.supportRequestId },
+      select: { id: true, userId: true, category: true, createdAt: true },
+    });
+    if (!authority || authority.userId !== payload.userId || authority.category !== payload.category ||
+      Math.abs(authority.createdAt.getTime() - event.occurredAt.getTime()) > MAX_SOURCE_CLOCK_SKEW_MS) {
+      return { status: "quarantined", reason: "missing_support_request_authority" };
+    }
+    return { status: "applied", factType: "support_request_authority", factId: authority.id };
   }
   const context = record(event.context);
   if (event.name === METRIC_PRODUCT_EVENTS.chatExchangeCompleted) {

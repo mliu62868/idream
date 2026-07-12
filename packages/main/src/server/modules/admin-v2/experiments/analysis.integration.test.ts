@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
+import { ADMIN_METRIC_REGISTRY } from "@idream/shared/admin";
 import { GET as analysisRoute } from "@/app/api/v2/admin/experiments/[id]/analysis/route";
 import { analyzeExperiment } from "./analysis";
 
@@ -142,8 +143,14 @@ describe("experiment exposed-cohort analysis", () => {
     ]);
     expect(analysis).toMatchObject({ significance: "unavailable", guardrailState: "blocked", minimumMaturePerArm: 100 });
     expect(analysis.qualityEvidence).toContain(
-      "primary metric certification: blocked; requires the exact immutable registry snapshot and six fresh evidenced quality gates",
+      "primary metric certification: blocked; requires the exact immutable registry snapshot and seven fresh evidenced quality gates",
     );
+    expect(analysis.guardrails).toEqual([
+      expect.objectContaining({
+        metricKey: "guardrail.support_contact_rate.v1",
+        state: "blocked",
+      }),
+    ]);
   });
 
   it("exposes the analysis only to experiment managers", async () => {
@@ -178,5 +185,144 @@ describe("experiment exposed-cohort analysis", () => {
       decisionUse: "blocked",
     });
     expect(analysis.arms.every((arm) => arm.rate === null && arm.absoluteLiftVsControl === null)).toBe(true);
+  });
+
+  it("allows decision use only with certified mature guardrails and fails closed on support-outcome gaps/regression", async () => {
+    const experiment = await prisma.experimentDefinition.create({
+      data: {
+        key: `guardrail-${suffix}`,
+        version: 1,
+        hypothesis: "Treatment improves QCE without increasing support burden",
+        eligibility: {},
+        variants: [{ key: "control", allocationBps: 5_000 }, { key: "treatment", allocationBps: 5_000 }],
+        salt: `guardrail-salt-${suffix}`,
+        metrics: {
+          primary: "relationship.qce_activation.v1",
+          controlVariant: "control",
+          minimumMaturePerArm: 20,
+          guardrails: [{ metricKey: "guardrail.support_contact_rate.v1", maxAbsoluteRegression: 0.02 }],
+        },
+        status: "running",
+      },
+    });
+    const subjectIds = Array.from({ length: 40 }, (_, index) => `${suffix}-guardrail-user-${index}`);
+    const definitionKeys = ["relationship.qce_activation.v1", "guardrail.support_contact_rate.v1"];
+    const checkKeys = [
+      "metrics.server_outcome_completeness",
+      "metrics.duplicate_effect",
+      "metrics.impossible_state",
+      "metrics.fixture_internal_leakage",
+      "metrics.authoritative_join_coverage",
+      "metrics.event_lag_p95",
+      "metrics.eligible_fact_presence",
+    ];
+    const supportRequestId = `${suffix}-guardrail-support`;
+    try {
+      await prisma.user.createMany({ data: subjectIds.map((id) => ({ id, email: `${id}@example.test`, role: "user" })) });
+      await prisma.experimentAssignment.createMany({ data: subjectIds.map((subjectId, index) => ({
+        experimentId: experiment.id,
+        experimentVersion: 1,
+        subjectType: "user",
+        subjectId,
+        assignmentVersion: `${experiment.id}:v1`,
+        variant: index < 20 ? "control" : "treatment",
+        eligibilitySnapshot: {},
+      })) });
+      await prisma.experimentExposureFact.createMany({ data: subjectIds.map((subjectId, index) => ({
+        exposureId: `${suffix}-guardrail-exposure-${index}`,
+        sourceService: "guardrail-test",
+        sourceEventId: `${suffix}-guardrail-exposure-${index}`,
+        experimentId: experiment.id,
+        experimentVersion: 1,
+        assignmentVersion: `${experiment.id}:v1`,
+        subjectType: "user",
+        subjectId,
+        variant: index < 20 ? "control" : "treatment",
+        eligible: true,
+        environment: "production",
+        dataClass: "customer",
+        trustClass: "typed_client",
+        occurredAt: matureAt,
+      })) });
+      for (const key of definitionKeys) {
+        const definition = ADMIN_METRIC_REGISTRY.find((candidate) => candidate.key === key);
+        if (!definition) throw new Error(`Missing test metric definition ${key}`);
+        await prisma.metricDefinitionSnapshot.create({ data: {
+          key,
+          version: definition.version,
+          definition: JSON.parse(JSON.stringify(definition)),
+          queryHash: definition.queryHash,
+          qualityState: "certified",
+          effectiveAt: new Date(definition.effectiveAt),
+          lastValidatedAt: new Date(asOf.getTime() - 60_000),
+          validationEvidence: { fixture: suffix, result: "passed" },
+        } });
+      }
+      await prisma.dataQualityCheck.createMany({ data: checkKeys.map((checkKey) => ({
+        checkKey,
+        status: "passed",
+        metricKeys: definitionKeys,
+        observed: { value: 0 },
+        threshold: { expression: "passed" },
+        evidence: { fixture: suffix, result: "passed" },
+        windowStart: matureAt,
+        windowEnd: asOf,
+        checkedAt: new Date(asOf.getTime() - 60_000),
+      })) });
+
+      await expect(analyzeExperiment(prisma, experiment.id, asOf)).resolves.toMatchObject({
+        qualityState: "certified",
+        decisionUse: "eligible",
+        guardrailState: "passed",
+        guardrails: [expect.objectContaining({ metricKey: "guardrail.support_contact_rate.v1", observedRegression: 0, state: "passed" })],
+      });
+
+      await prisma.supportRequest.create({ data: {
+        id: supportRequestId,
+        ticketId: `${suffix}-GUARDRAIL`,
+        userId: subjectIds[20],
+        category: "bug",
+        subject: "Guardrail support request",
+        description: "A canonical support outcome is required for experiment analysis.",
+        createdAt: new Date(matureAt.getTime() + 60 * 60 * 1_000),
+      } });
+      await expect(analyzeExperiment(prisma, experiment.id, asOf)).resolves.toMatchObject({
+        qualityState: "invalid",
+        decisionUse: "blocked",
+        guardrailState: "blocked",
+      });
+
+      await prisma.analyticsEvent.create({ data: {
+        id: `${suffix}-guardrail-support-event`,
+        userId: subjectIds[20],
+        name: "support.request.submitted.v2",
+        props: { supportRequestId, userId: subjectIds[20], category: "bug" },
+        sourceService: "main",
+        sourceEventId: `support_request:${supportRequestId}`,
+        payloadHash: `${suffix}-guardrail-support-hash`,
+        schemaVersion: 2,
+        occurredAt: new Date(matureAt.getTime() + 60 * 60 * 1_000),
+        environment: "production",
+        dataClass: "customer",
+        trustClass: "canonical",
+        actor: { userId: subjectIds[20], isInternal: false },
+        context: {},
+      } });
+      await expect(analyzeExperiment(prisma, experiment.id, asOf)).resolves.toMatchObject({
+        qualityState: "certified",
+        decisionUse: "blocked",
+        guardrailState: "failed",
+        guardrails: [expect.objectContaining({ observedRegression: 0.05, state: "failed" })],
+      });
+    } finally {
+      await prisma.analyticsEvent.deleteMany({ where: { id: `${suffix}-guardrail-support-event` } });
+      await prisma.supportRequest.deleteMany({ where: { id: supportRequestId } });
+      await prisma.dataQualityCheck.deleteMany({ where: { evidence: { path: ["fixture"], equals: suffix } } });
+      await prisma.metricDefinitionSnapshot.deleteMany({ where: { key: { in: definitionKeys } } });
+      await prisma.experimentExposureFact.deleteMany({ where: { experimentId: experiment.id } });
+      await prisma.experimentAssignment.deleteMany({ where: { experimentId: experiment.id } });
+      await prisma.experimentDefinition.delete({ where: { id: experiment.id } });
+      await prisma.user.deleteMany({ where: { id: { in: subjectIds } } });
+    }
   });
 });

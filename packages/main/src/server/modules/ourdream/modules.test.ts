@@ -901,6 +901,75 @@ describe("feed, community, policies, analytics", () => {
     await prisma.characterContentVersion.delete({ where: { id: contentVersionId } });
   });
 
+  it("applies a stable Community ranking assignment and records only a subject-bound real exposure", async () => {
+    const userId = `${P}community-experiment-user`;
+    const intruderId = `${P}community-experiment-intruder`;
+    const experimentId = `${P}community-ranking-experiment`;
+    await createUser({ id: userId });
+    await createUser({ id: intruderId });
+    await prisma.experimentDefinition.create({ data: {
+      id: experimentId,
+      key: "community.character-ranking.v1",
+      version: 1,
+      hypothesis: "Relationship-first ranking increases qualified conversations",
+      eligibility: { surface: "community.leaderboard" },
+      variants: [{ key: "control", allocationBps: 5_000 }, { key: "relationship_first", allocationBps: 5_000 }],
+      salt: `${P}community-ranking-salt`,
+      metrics: {
+        primary: "relationship.qce_activation.v1",
+        controlVariant: "control",
+        minimumMaturePerArm: 20,
+        guardrails: [{ metricKey: "guardrail.support_contact_rate.v1", maxAbsoluteRegression: 0.02 }],
+      },
+      status: "running",
+    } });
+    try {
+      const community = await api("GET", "community/leaderboards", { userId, ageGate: true });
+      expectOk(community);
+      const assignment = community.data.experimentAssignment as {
+        assignmentId: string;
+        exposureId: string;
+        surface: "community.leaderboard";
+        variant: string;
+      };
+      expect(assignment).toMatchObject({
+        assignmentId: expect.any(String),
+        exposureId: expect.any(String),
+        surface: "community.leaderboard",
+      });
+      expect(["control", "relationship_first"]).toContain(assignment.variant);
+
+      const body = { name: METRIC_PRODUCT_EVENTS.experimentExposed, props: {
+        exposureId: assignment.exposureId,
+        assignmentId: assignment.assignmentId,
+        surface: assignment.surface,
+      } };
+      const stolen = await api("POST", "events/track", { userId: intruderId, ageGate: true, body });
+      expectError(stolen, 400, "bad_request");
+      const recorded = await api("POST", "events/track", { userId, ageGate: true, body });
+      expectOk(recorded);
+      const replay = await api("POST", "events/track", { userId, ageGate: true, body });
+      expectOk(replay);
+      expect(replay.data.exposure.status).toBe("duplicate");
+      await expect(prisma.analyticsEvent.findUnique({
+        where: { sourceService_sourceEventId: { sourceService: "main-experiment-runtime", sourceEventId: assignment.exposureId } },
+      })).resolves.toMatchObject({
+        name: METRIC_PRODUCT_EVENTS.experimentExposed,
+        trustClass: "typed_client",
+        props: expect.objectContaining({ assignmentId: assignment.assignmentId, subjectId: userId, variant: assignment.variant }),
+      });
+    } finally {
+      const assignments = await prisma.experimentAssignment.findMany({ where: { experimentId }, select: { id: true } });
+      await prisma.metricProjectionReceipt.deleteMany({ where: { sourceEventId: { startsWith: "experiment-exposure-" } } });
+      const events = await prisma.analyticsEvent.findMany({ where: { sourceService: "main-experiment-runtime", actor: { path: ["userId"], equals: userId } }, select: { id: true } });
+      await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: { in: events.map((event) => event.id) } } });
+      await prisma.analyticsEvent.deleteMany({ where: { id: { in: events.map((event) => event.id) } } });
+      await prisma.experimentExposureFact.deleteMany({ where: { experimentId } });
+      await prisma.experimentAssignment.deleteMany({ where: { id: { in: assignments.map((assignment) => assignment.id) } } });
+      await prisma.experimentDefinition.deleteMany({ where: { id: experimentId } });
+    }
+  });
+
   it("creates a tracked support request for a signed-in adult user", async () => {
     const userId = `${P}support-requester`;
     await createUser({ id: userId });
@@ -942,6 +1011,19 @@ describe("feed, community, policies, analytics", () => {
       diagnosticConsent: true,
       sourcePath: "/helpdesk",
     });
+    const canonical = await prisma.analyticsEvent.findUnique({
+      where: { sourceService_sourceEventId: {
+        sourceService: "main",
+        sourceEventId: `support_request:${res.data.request.id}`,
+      } },
+    });
+    expect(canonical).toMatchObject({
+      name: METRIC_PRODUCT_EVENTS.supportRequestSubmitted,
+      schemaVersion: 2,
+      trustClass: "canonical",
+      props: expect.objectContaining({ supportRequestId: res.data.request.id, userId, category: "generation" }),
+    });
+    await expect(prisma.mainOutboxEvent.count({ where: { aggregateId: canonical?.id } })).resolves.toBe(1);
   });
 
   it("requires age gate before creating a support request", async () => {
