@@ -90,9 +90,15 @@ export async function moderationQueue(request: Request) {
     : ["open", "triaged", "reviewing"];
   const limit = clampInt(url.searchParams.get("limit"), 1, 100, 100);
   const queryIdentity = { search, id, targetType, targetId, statuses };
-  const reportCursorKeys = adminListCursorKeys(url, "moderation_reports", queryIdentity, "reportCursor");
-  const mediaCursorKeys = adminListCursorKeys(url, "moderation_blocked_media", queryIdentity, "mediaCursor");
-  const appealCursorKeys = adminListCursorKeys(url, "moderation_appeals", queryIdentity, "appealCursor");
+  const reportCursorKeys = !scope || scope === "reports"
+    ? adminListCursorKeys(url, "moderation_reports", queryIdentity, "reportCursor")
+    : undefined;
+  const mediaCursorKeys = !scope || scope === "media"
+    ? adminListCursorKeys(url, "moderation_blocked_media", queryIdentity, "mediaCursor")
+    : undefined;
+  const appealCursorKeys = !scope || scope === "appeals"
+    ? adminListCursorKeys(url, "moderation_appeals", queryIdentity, "appealCursor")
+    : undefined;
   const reportWhere: Prisma.ContentReportWhereInput = {
     id,
     targetType,

@@ -248,6 +248,19 @@ describe("remaining canonical admin lists", () => {
     expect(secondData.appeals[0]?.id).not.toBe(data.appeals[0]?.id);
   });
 
+  it("isolates malformed moderation cursors to the requested authority", async () => {
+    const result = await call(
+      ["moderation", "queue"],
+      `scope=media&search=${token}&limit=1&reportCursor=not-a-report-cursor`,
+    );
+    expect(result.response.status, JSON.stringify(result.body)).toBe(200);
+    expect(result.body.data).toMatchObject({
+      reports: [],
+      blockedMedia: [{ id: ids("media")[0] }],
+      appeals: [],
+    });
+  });
+
   it("preserves unbounded V1 defaults while the Admin UI opts into pagination", async () => {
     for (const testCase of [
       { segments: ["pricing", "rules"], query: `search=${token}` },

@@ -28,9 +28,9 @@ export function moderationQueuePath(query: ModerationQuery, scope: ModerationSco
   set(params, "search", query.search);
   set(params, "status", query.status);
   set(params, "targetType", query.targetType);
-  set(params, "reportCursor", query.reportCursor);
-  set(params, "mediaCursor", query.mediaCursor);
-  set(params, "appealCursor", query.appealCursor);
+  if (scope === "reports") set(params, "reportCursor", query.reportCursor);
+  if (scope === "media") set(params, "mediaCursor", query.mediaCursor);
+  if (scope === "appeals") set(params, "appealCursor", query.appealCursor);
   return `/api/v1/admin/moderation/queue?${params.toString()}`;
 }
 
