@@ -596,6 +596,38 @@ test("admin users and billing actions write audit trail and clear adjustment for
     await expect(ledgerRow.getByText("admin_adjust", { exact: true })).toBeVisible();
     await expect(ledgerRow.getByText("37", { exact: true })).toHaveCount(2);
 
+    const refreshLedgerId = `e2e-shell-refresh-${Date.now()}`;
+    await prisma.dreamcoinLedger.create({
+      data: {
+        id: refreshLedgerId,
+        userId: targetId,
+        delta: 9,
+        balanceAfter: 46,
+        reason: "admin_adjust",
+        sourceId: "shell-refresh-probe",
+        idempotencyKey: refreshLedgerId,
+      },
+    });
+    const subscriptionRoute = "**/api/v1/admin/billing/subscriptions**";
+    await page.route(subscriptionRoute, (route) => route.fulfill({
+      body: JSON.stringify({
+        ok: false,
+        error: { code: "dependency_unhealthy", message: "injected subscription read failure" },
+      }),
+      contentType: "application/json",
+      status: 200,
+    }));
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    await expect(page.getByRole("row").filter({ hasText: refreshLedgerId })).toHaveCount(1, {
+      timeout: 10_000,
+    });
+    await expect(page.getByRole("alert").filter({ hasText: "subscriptions authority refresh failed" })).toBeVisible();
+    await expect(page.getByRole("table", { name: "Subscriptions" })).toBeVisible();
+    await page.unroute(subscriptionRoute);
+    await page.getByRole("button", { name: "Retry subscriptions" }).click();
+    await expect(page.getByText(/Subscriptions: current client snapshot/)).toBeVisible();
+    await prisma.dreamcoinLedger.delete({ where: { id: refreshLedgerId } });
+
     await page.goto(`${adminURL}/admin/audit-log`);
     await expectAdminShellReady(page, "Audit Log");
     await page.getByRole("textbox", { name: "Search audit authority" }).fill(targetId);
@@ -630,6 +662,30 @@ test("admin users and billing actions write audit trail and clear adjustment for
     await prisma.adminUserPermission.deleteMany({ where: { userId: targetId } });
     await prisma.dreamcoinLedger.deleteMany({ where: { userId: targetId } });
     await prisma.user.deleteMany({ where: { id: { in: [admin.id, targetId] } } });
+  }
+});
+
+test("team access hides high-risk controls without their effective permissions", async ({ page }) => {
+  const support = await startRoleSession(page, "support");
+  const targetId = `e2e-access-readonly-${Date.now()}`;
+  await prisma.user.create({
+    data: {
+      id: targetId,
+      email: uniqueEmail("access-readonly"),
+      displayName: "Read-only access target",
+      emailVerified: true,
+    },
+  });
+
+  try {
+    await page.goto(`${adminBaseURL()}/admin/system/access`);
+    await expectAdminShellReady(page, "Team Access");
+    const targetRow = page.getByRole("row").filter({ hasText: targetId });
+    await expect(targetRow).toHaveCount(1);
+    await expect(page.getByText("Permission override", { exact: true })).toHaveCount(0);
+    await expect(targetRow.getByRole("button", { name: /Suspend|Restore/ })).toHaveCount(0);
+  } finally {
+    await prisma.user.deleteMany({ where: { id: { in: [support.id, targetId] } } });
   }
 });
 

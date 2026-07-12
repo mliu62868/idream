@@ -32,7 +32,8 @@ describe("Admin v2 architecture boundaries", () => {
 
   it("keeps legacy domain modules independent from the dispatcher monolith", async () => {
     const root = path.join(process.cwd(), "src/server/modules/admin");
-    const files = (await sourceFiles(root)).filter((file) => !file.endsWith(`${path.sep}service.ts`));
+    const dispatcher = path.join(root, "service.ts");
+    const files = (await sourceFiles(root)).filter((file) => file !== dispatcher);
     const offenders: string[] = [];
     const forbiddenImport = ["@/server/modules/admin", "service"].join("/");
     for (const file of files) {
@@ -59,5 +60,6 @@ describe("Admin v2 architecture boundaries", () => {
     expect(dispatcher).not.toContain("async function setUserPermission");
     expect(userDomain).toContain("export async function listUsers");
     expect(userDomain).toContain("export async function setUserPermission");
+    expect(userDomain).not.toContain(["@/server/modules/admin", "service"].join("/"));
   });
 });

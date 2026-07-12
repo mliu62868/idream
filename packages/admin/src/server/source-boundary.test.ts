@@ -68,5 +68,7 @@ describe("admin source boundary", () => {
     expect(catchAll).not.toContain("function BillingView");
     expect(billingFeature).toContain("export function BillingWorkspace");
     expect(billingFeature).toContain("/api/v1/admin/billing/adjustments");
+    expect(catchAll).toContain("window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT))");
+    expect(billingFeature).toContain("window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh)");
   });
 });

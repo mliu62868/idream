@@ -93,6 +93,7 @@ import { JobsView as GenerationJobsWorkspace } from "@/features/jobs/JobsView";
 import { AuditWorkspace } from "@/features/audit/AuditWorkspace";
 import { PricingWorkspace } from "@/features/pricing/PricingWorkspace";
 import { BillingWorkspace } from "@/features/billing/BillingWorkspace";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import {
   buildCompatibilityListUrl,
   readCompatibilityListQuery,
@@ -981,7 +982,10 @@ export function AdminConsoleClient({
                   </label>
                   <button
                     className="inline-flex h-9 items-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-sm text-[var(--ad-text)] hover:bg-black/[0.04]"
-                    onClick={() => void load()}
+                    onClick={() => {
+                      window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT));
+                      void load();
+                    }}
                     type="button"
                   >
                     {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
@@ -2350,6 +2354,8 @@ function renderSection(
   if (section.kind === "access") {
     return (
       <UsersView
+        canChangeStatus={ctx.permissions.has("user.status.write")}
+        canManagePermissions={ctx.permissions.has("user.role.write")}
         openAction={ctx.openAction}
         permissionForm={ctx.permissionForm}
         rows={section.rows}
@@ -4737,17 +4743,21 @@ export function UsersView({
   openAction,
   permissionForm,
   setPermissionForm,
+  canChangeStatus,
+  canManagePermissions,
 }: {
   rows: Row[];
   openAction: (action: PendingAction) => void;
   permissionForm: PermissionForm;
   setPermissionForm: (value: PermissionForm) => void;
+  canChangeStatus: boolean;
+  canManagePermissions: boolean;
 }) {
   const { t, value: valueLabel } = useAdminI18n();
 
   return (
     <div className="space-y-5">
-      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
+      {canManagePermissions ? <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <h2 className="mb-1 text-sm font-semibold">{t("Permission override")}</h2>
         <p className="mb-3 text-xs text-[var(--ad-text-muted)]">
           按 user 精确 grant / revoke / clear 单个 permission key（不动 role）。admin only，写审计。
@@ -4818,9 +4828,9 @@ export function UsersView({
             {t("Apply")}
           </button>
         </div>
-      </section>
+      </section> : null}
       <DataTable
-        actions={(row) => {
+        actions={canChangeStatus ? (row) => {
           const id = stringValue(row.id);
           const status = stringValue(row.status);
           const nextStatus = status === "suspended" ? "active" : "suspended";
@@ -4834,6 +4844,7 @@ export function UsersView({
                   title: `${nextStatus === "active" ? "Restore" : "Suspend"} ${id}`,
                   endpoint: `/api/v1/admin/users/${id}/status`,
                   method: "POST",
+                  idempotencyKey: crypto.randomUUID(),
                   confirmText: confirmationTarget,
                   reasonRequired: true,
                   body: (actionReason, actionConfirmation) => ({
@@ -4845,7 +4856,7 @@ export function UsersView({
               }
             />
           );
-        }}
+        } : undefined}
         columns={["id", "email", "displayName", "role", "status", "dreamcoins", "createdAt"]}
         rows={rows}
         title="Users"

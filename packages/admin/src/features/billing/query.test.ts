@@ -7,6 +7,7 @@ import {
   billingWorkspaceUrl,
   defaultBillingQuery,
   isBillingQueryFiltered,
+  parseLedgerAdjustmentDelta,
 } from "./query";
 
 describe("billing workspace query", () => {
@@ -46,5 +47,14 @@ describe("billing workspace query", () => {
   it("binds high-risk confirmation to both the target and signed delta", () => {
     expect(billingAdjustmentConfirmation(" user-1 ", 37)).toBe("user-1:37");
     expect(billingAdjustmentConfirmation("user-1", -5)).toBe("user-1:-5");
+  });
+
+  it("accepts only non-zero safe integer ledger deltas", () => {
+    expect(parseLedgerAdjustmentDelta("37")).toBe(37);
+    expect(parseLedgerAdjustmentDelta(" -5 ")).toBe(-5);
+    expect(parseLedgerAdjustmentDelta("0")).toBeNull();
+    expect(parseLedgerAdjustmentDelta("1.5")).toBeNull();
+    expect(parseLedgerAdjustmentDelta("1e3")).toBeNull();
+    expect(parseLedgerAdjustmentDelta("9007199254740992")).toBeNull();
   });
 });

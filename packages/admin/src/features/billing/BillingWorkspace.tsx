@@ -9,6 +9,7 @@ import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { createLatestRequestGate } from "@/lib/latest-request";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import {
   billingAdjustmentConfirmation,
   billingLedgerPath,
@@ -17,6 +18,7 @@ import {
   billingWorkspaceUrl,
   defaultBillingQuery,
   isBillingQueryFiltered,
+  parseLedgerAdjustmentDelta,
   type BillingQuery,
 } from "./query";
 
@@ -29,64 +31,122 @@ type BillingReconciliation = {
   byReason: BillingRecord[];
   totals: { net: number; entries: number };
 };
-type BillingSnapshot = {
-  ledger: BillingListResponse;
-  subscriptions: BillingListResponse;
-  reconciliation: BillingReconciliation;
-};
 type AdjustmentDraft = { userId: string; delta: string };
+type AuthorityState<T> = {
+  data: T | null;
+  error: string | null;
+  loading: boolean;
+  refreshedAt: string | null;
+};
 
 const emptyPageInfo: BillingPageInfo = { endCursor: null, hasNextPage: false };
 const emptyAdjustment: AdjustmentDraft = { userId: "", delta: "" };
+const emptyAuthorityState = <T,>(): AuthorityState<T> => ({
+  data: null,
+  error: null,
+  loading: true,
+  refreshedAt: null,
+});
 
 export function BillingWorkspace({ canAdjust }: { canAdjust: boolean }) {
   const [query, setQuery] = useState<BillingQuery>(() => currentQuery());
   const [queryDraft, setQueryDraft] = useState<BillingQuery>(() => currentQuery());
-  const [snapshot, setSnapshot] = useState<BillingSnapshot | null>(null);
+  const [ledgerState, setLedgerState] = useState<AuthorityState<BillingListResponse>>(emptyAuthorityState);
+  const [subscriptionState, setSubscriptionState] = useState<AuthorityState<BillingListResponse>>(emptyAuthorityState);
+  const [reconciliationState, setReconciliationState] = useState<AuthorityState<BillingReconciliation>>(emptyAuthorityState);
   const [adjustment, setAdjustment] = useState<AdjustmentDraft>(emptyAdjustment);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
-  const requestGate = useRef(createLatestRequestGate());
+  const requestGates = useRef({
+    ledger: createLatestRequestGate(),
+    subscriptions: createLatestRequestGate(),
+    reconciliation: createLatestRequestGate(),
+  });
   const initialQuery = useRef(query);
 
-  const load = useCallback(async (next: BillingQuery) => {
-    const request = requestGate.current.begin();
-    setLoading(true);
-    setError(null);
+  const loadLedger = useCallback(async (next: BillingQuery) => {
+    const request = requestGates.current.ledger.begin();
+    setLedgerState((current) => ({ ...current, error: null, loading: true }));
     try {
-      const [ledger, subscriptions, reconciliation] = await Promise.all([
-        apiGet<BillingListResponse>(billingLedgerPath(next)),
-        apiGet<BillingListResponse>(billingSubscriptionsPath(next)),
-        apiGet<BillingReconciliation>("/api/v1/admin/billing/reconciliation"),
-      ]);
+      const data = await apiGet<BillingListResponse>(billingLedgerPath(next));
       if (!request.isCurrent()) return;
-      setSnapshot({ ledger, subscriptions, reconciliation });
-      setRefreshedAt(new Date().toISOString());
+      setLedgerState({ data, error: null, loading: false, refreshedAt: new Date().toISOString() });
     } catch (cause) {
       if (request.isCurrent()) {
-        setError(cause instanceof Error ? cause.message : "Billing authority request failed");
+        setLedgerState((current) => ({
+          ...current,
+          error: cause instanceof Error ? cause.message : "Ledger authority request failed",
+          loading: false,
+        }));
       }
-    } finally {
-      if (request.isCurrent()) setLoading(false);
     }
   }, []);
 
+  const loadSubscriptions = useCallback(async (next: BillingQuery) => {
+    const request = requestGates.current.subscriptions.begin();
+    setSubscriptionState((current) => ({ ...current, error: null, loading: true }));
+    try {
+      const data = await apiGet<BillingListResponse>(billingSubscriptionsPath(next));
+      if (!request.isCurrent()) return;
+      setSubscriptionState({ data, error: null, loading: false, refreshedAt: new Date().toISOString() });
+    } catch (cause) {
+      if (request.isCurrent()) {
+        setSubscriptionState((current) => ({
+          ...current,
+          error: cause instanceof Error ? cause.message : "Subscription authority request failed",
+          loading: false,
+        }));
+      }
+    }
+  }, []);
+
+  const loadReconciliation = useCallback(async () => {
+    const request = requestGates.current.reconciliation.begin();
+    setReconciliationState((current) => ({ ...current, error: null, loading: true }));
+    try {
+      const data = await apiGet<BillingReconciliation>("/api/v1/admin/billing/reconciliation");
+      if (!request.isCurrent()) return;
+      setReconciliationState({ data, error: null, loading: false, refreshedAt: new Date().toISOString() });
+    } catch (cause) {
+      if (request.isCurrent()) {
+        setReconciliationState((current) => ({
+          ...current,
+          error: cause instanceof Error ? cause.message : "Reconciliation authority request failed",
+          loading: false,
+        }));
+      }
+    }
+  }, []);
+
+  const load = useCallback((next: BillingQuery) => {
+    void loadLedger(next);
+    void loadSubscriptions(next);
+    void loadReconciliation();
+  }, [loadLedger, loadReconciliation, loadSubscriptions]);
+
   useEffect(() => {
-    const gate = requestGate.current;
-    void load(initialQuery.current);
+    const gates = requestGates.current;
+    load(initialQuery.current);
     const restore = () => {
       const restored = currentQuery();
       setQuery(restored);
       setQueryDraft(restored);
-      void load(restored);
+      load(restored);
+    };
+    const refresh = () => {
+      const refreshed = currentQuery();
+      setQuery(refreshed);
+      setQueryDraft(refreshed);
+      load(refreshed);
     };
     window.addEventListener("popstate", restore);
+    window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
     return () => {
-      gate.invalidate();
+      gates.ledger.invalidate();
+      gates.subscriptions.invalidate();
+      gates.reconciliation.invalidate();
       window.removeEventListener("popstate", restore);
+      window.removeEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
     };
   }, [load]);
 
@@ -101,7 +161,7 @@ export function BillingWorkspace({ canAdjust }: { canAdjust: boolean }) {
     window.history[mode === "push" ? "pushState" : "replaceState"](null, "", url);
     setQuery(next);
     setQueryDraft(next);
-    void load(next);
+    load(next);
   }
 
   function apply(event: FormEvent<HTMLFormElement>) {
@@ -116,8 +176,8 @@ export function BillingWorkspace({ canAdjust }: { canAdjust: boolean }) {
   function requestAdjustment() {
     if (!canAdjust) return;
     const userId = adjustment.userId.trim();
-    const delta = Number(adjustment.delta);
-    if (!userId || !Number.isFinite(delta) || delta === 0) return;
+    const delta = parseLedgerAdjustmentDelta(adjustment.delta);
+    if (!userId || delta === null) return;
     const confirmationTarget = billingAdjustmentConfirmation(userId, delta);
     const idempotencyKey = crypto.randomUUID();
     setConfirmation({
@@ -142,9 +202,11 @@ export function BillingWorkspace({ canAdjust }: { canAdjust: boolean }) {
   }
 
   const filtered = isBillingQueryFiltered(query);
-  const ledger = snapshot?.ledger.items ?? [];
-  const subscriptions = snapshot?.subscriptions.items ?? [];
-  const reconciliation = snapshot?.reconciliation;
+  const ledger = ledgerState.data?.items ?? [];
+  const subscriptions = subscriptionState.data?.items ?? [];
+  const reconciliation = reconciliationState.data;
+  const loading = ledgerState.loading || subscriptionState.loading || reconciliationState.loading;
+  const initiallyLoading = !ledgerState.data && !subscriptionState.data && !reconciliationState.data && loading;
   return (
     <section aria-labelledby="billing-workspace-title" className="space-y-5">
       <div id="billing-workspace-title">
@@ -154,10 +216,12 @@ export function BillingWorkspace({ canAdjust }: { canAdjust: boolean }) {
         />
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--ad-text-muted)]" role="status">
-        <span>
-          Legacy compatibility authority · freshness watermark unavailable
-          {refreshedAt ? <> · refreshed <time dateTime={refreshedAt}>{new Date(refreshedAt).toLocaleTimeString()}</time></> : null}
-        </span>
+        <div className="flex flex-wrap gap-x-3 gap-y-1">
+          <span>Legacy compatibility authority · source freshness watermark unavailable</span>
+          <AuthorityFreshness label="Ledger" state={ledgerState} />
+          <AuthorityFreshness label="Subscriptions" state={subscriptionState} />
+          <AuthorityFreshness label="Reconciliation" state={reconciliationState} />
+        </div>
         {!canAdjust ? <strong>Read only · billing.ledger.adjust is not granted</strong> : null}
       </div>
 
@@ -185,21 +249,29 @@ export function BillingWorkspace({ canAdjust }: { canAdjust: boolean }) {
       ) : null}
 
       {notice ? <p className="rounded-md bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]" data-testid="admin-action-status" role="status">{notice}</p> : null}
-      {error ? <div className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}<button className="ml-3 min-h-8 rounded border border-current px-2 font-semibold" onClick={() => void load(query)} type="button">Retry</button></div> : null}
-      {loading && snapshot === null ? <BillingLoading /> : reconciliation ? (
+      <AuthorityError label="ledger" onRetry={() => void loadLedger(query)} state={ledgerState} />
+      <AuthorityError label="subscriptions" onRetry={() => void loadSubscriptions(query)} state={subscriptionState} />
+      <AuthorityError label="reconciliation" onRetry={() => void loadReconciliation()} state={reconciliationState} />
+      {initiallyLoading ? <BillingLoading /> : (
         <>
+          {reconciliation ? <>
           <div className="grid gap-px overflow-hidden rounded-lg border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-3">
             <Metric label="Net coins (window)" meta={`${reconciliation.totals.entries} ledger entries`} value={String(reconciliation.totals.net)} />
             <Metric label="Active subscriptions" meta="status = active" value={String(reconciliation.activeSubscriptions)} />
             <Metric label="Window" meta={date(reconciliation.window.to)} value={`${date(reconciliation.window.from)} →`} />
           </div>
           <DataTable caption="Reconciliation by reason" headers={["Reason", "Total delta", "Count"]} rows={tableRows(reconciliation.byReason, ["reason", "totalDelta", "count"], "reconciliation")} />
+          </> : null}
+          {subscriptionState.data ? <>
           <DataTable caption="Subscriptions" empty={<BillingEmpty filtered={Boolean(query.search || query.subscriptionStatus)} kind="subscriptions" onClear={clearFilters} />} headers={["ID", "User", "Email", "Plan", "Period", "Provider", "Status", "Period end", "Cancel at end"]} rows={tableRows(subscriptions, ["id", "userId", "userEmail", "plan", "billingPeriod", "provider", "status", "currentPeriodEnd", "cancelAtPeriodEnd"], "subscription")} />
-          <NextPageButton label="Next subscription page" loading={loading} onClick={() => navigate({ ...query, subscriptionCursor: snapshot.subscriptions.pageInfo?.endCursor ?? "" })} pageInfo={snapshot.subscriptions.pageInfo ?? emptyPageInfo} />
+          <NextPageButton label="Next subscription page" loading={subscriptionState.loading} onClick={() => navigate({ ...query, subscriptionCursor: subscriptionState.data?.pageInfo?.endCursor ?? "" })} pageInfo={subscriptionState.data.pageInfo ?? emptyPageInfo} />
+          </> : null}
+          {ledgerState.data ? <>
           <DataTable caption="Ledger" empty={<BillingEmpty filtered={Boolean(query.search || query.ledgerReason)} kind="ledger entries" onClear={clearFilters} />} headers={["ID", "User", "Email", "Delta", "Balance after", "Reason", "Source", "Created"]} rows={tableRows(ledger, ["id", "userId", "userEmail", "delta", "balanceAfter", "reason", "sourceId", "createdAt"], "ledger")} />
-          <NextPageButton label="Next ledger page" loading={loading} onClick={() => navigate({ ...query, ledgerCursor: snapshot.ledger.pageInfo?.endCursor ?? "" })} pageInfo={snapshot.ledger.pageInfo ?? emptyPageInfo} />
+          <NextPageButton label="Next ledger page" loading={ledgerState.loading} onClick={() => navigate({ ...query, ledgerCursor: ledgerState.data?.pageInfo?.endCursor ?? "" })} pageInfo={ledgerState.data.pageInfo ?? emptyPageInfo} />
+          </> : null}
         </>
-      ) : null}
+      )}
       {confirmation ? <ConfirmDialog onClose={() => setConfirmation(null)} spec={confirmation} /> : null}
     </section>
   );
@@ -207,6 +279,41 @@ export function BillingWorkspace({ canAdjust }: { canAdjust: boolean }) {
 
 function BillingLoading() {
   return <div aria-label="Loading billing authority" className="space-y-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" role="status"><span className="inline-flex items-center gap-2 text-sm text-[var(--ad-text-muted)]"><Loader2 className="h-4 w-4 animate-spin" />Loading billing authority</span>{[0, 1, 2].map((row) => <span aria-hidden="true" className="block h-12 animate-pulse rounded bg-black/5" key={row} />)}</div>;
+}
+
+function AuthorityFreshness<T>({ label, state }: { label: string; state: AuthorityState<T> }) {
+  if (state.loading && state.data) {
+    return <span>{label}: refreshing · showing snapshot from <time dateTime={state.refreshedAt ?? undefined}>{freshnessTime(state.refreshedAt)}</time></span>;
+  }
+  if (state.error && state.data) {
+    return <span>{label}: stale · last good <time dateTime={state.refreshedAt ?? undefined}>{freshnessTime(state.refreshedAt)}</time></span>;
+  }
+  if (state.error) return <span>{label}: unavailable</span>;
+  if (state.data) return <span>{label}: current client snapshot · <time dateTime={state.refreshedAt ?? undefined}>{freshnessTime(state.refreshedAt)}</time></span>;
+  return <span>{label}: refreshing · no snapshot yet</span>;
+}
+
+function AuthorityError<T>({
+  label,
+  onRetry,
+  state,
+}: {
+  label: string;
+  onRetry: () => void;
+  state: AuthorityState<T>;
+}) {
+  if (!state.error) return null;
+  return (
+    <div className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">
+      {label} authority refresh failed: {state.error}
+      <button className="ml-3 min-h-8 rounded border border-current px-2 font-semibold" onClick={onRetry} type="button">Retry {label}</button>
+      {state.data ? <span className="ml-2">The last good snapshot remains visible.</span> : null}
+    </div>
+  );
+}
+
+function freshnessTime(value: string | null) {
+  return value ? new Date(value).toLocaleTimeString() : "unknown";
 }
 
 function BillingEmpty({ filtered, kind, onClear }: { filtered: boolean; kind: string; onClear: () => void }) {
@@ -245,8 +352,7 @@ function tableRows(rows: BillingRecord[], keys: readonly string[], prefix: strin
 }
 
 function canAdjustLedger(draft: AdjustmentDraft) {
-  const delta = Number(draft.delta);
-  return Boolean(draft.userId.trim() && Number.isFinite(delta) && delta !== 0);
+  return Boolean(draft.userId.trim() && parseLedgerAdjustmentDelta(draft.delta) !== null);
 }
 
 function currentQuery() {

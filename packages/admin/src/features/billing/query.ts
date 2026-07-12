@@ -61,6 +61,13 @@ export function billingAdjustmentConfirmation(userId: string, delta: number) {
   return `${userId.trim()}:${delta}`;
 }
 
+export function parseLedgerAdjustmentDelta(value: string) {
+  const normalized = value.trim();
+  if (!/^-?\d+$/.test(normalized)) return null;
+  const parsed = Number(normalized);
+  return Number.isSafeInteger(parsed) && parsed !== 0 ? parsed : null;
+}
+
 function set(params: URLSearchParams, key: string, value: string) {
   const normalized = value.trim();
   if (normalized && normalized !== "all") params.set(key, normalized);
