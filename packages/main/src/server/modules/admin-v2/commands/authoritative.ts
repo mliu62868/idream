@@ -11,6 +11,7 @@ import {
   creativeRunRetryFailedCommandRequestSchema,
   incidentResolveCommandRequestSchema,
   type AdminCommandRequest,
+  type AdminCommandTargetType,
 } from "@idream/shared/admin";
 import { ZodError, type ZodType } from "zod";
 import { prisma } from "@/server/lib/db";
@@ -31,7 +32,7 @@ type JsonObject = Record<string, unknown>;
 
 interface CommandDefinition {
   readonly commandType: string;
-  readonly targetType: string;
+  readonly targetType: AdminCommandTargetType;
   readonly permission: PermissionKey;
   readonly retryMode: "idempotent" | "non_replayable";
 }

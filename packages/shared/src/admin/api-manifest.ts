@@ -88,7 +88,25 @@ function operation<const Method extends AdminV2HttpMethod, const Route extends A
 
 const collaborationRead = ["character.project.read", "creative.run.read", "case.read", "ops.incident.read"] as const;
 const collaborationWrite = ["character.project.write", "creative.run.write", "case.assign", "ops.incident.manage"] as const;
-const commandTargetRead = ["character.release.read", "creative.run.read", "ops.incident.read", "case.read"] as const;
+export const ADMIN_COMMAND_TARGET_READ_PERMISSIONS = {
+  admin_case: "case.read",
+  character_project: "character.project.read",
+  character_release: "character.release.read",
+  character_serving: "character.release.read",
+  chat_session: "character.release.read",
+  creative_run: "creative.run.read",
+  incident_action_plan: "ops.incident.read",
+  ops_incident: "ops.incident.read",
+} as const satisfies Record<string, AdminPermissionKey>;
+export type AdminCommandTargetType = keyof typeof ADMIN_COMMAND_TARGET_READ_PERMISSIONS;
+
+const commandTargetRead = [
+  "case.read",
+  "character.project.read",
+  "character.release.read",
+  "creative.run.read",
+  "ops.incident.read",
+] as const satisfies readonly (typeof ADMIN_COMMAND_TARGET_READ_PERMISSIONS)[AdminCommandTargetType][];
 const todayClaimWrite = ["case.assign", "ops.incident.manage", "character.project.write", "creative.run.write"] as const;
 
 /**

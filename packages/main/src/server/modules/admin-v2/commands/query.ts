@@ -1,4 +1,8 @@
-import { adminCommandStatusSchema } from "@idream/shared/admin";
+import {
+  ADMIN_COMMAND_TARGET_READ_PERMISSIONS,
+  adminCommandStatusSchema,
+  type AdminCommandTargetType,
+} from "@idream/shared/admin";
 import { AppError, Errors } from "@/server/lib/errors";
 import { fail, ok } from "@/server/lib/http";
 import { prisma } from "@/server/lib/db";
@@ -7,13 +11,15 @@ import {
 } from "@/server/modules/admin-v2/shared/authority";
 import type { PermissionKey } from "@/server/admin/permissions";
 
-function readPermission(targetType: string): PermissionKey {
-  if (targetType === "character_release") return "character.release.read";
-  if (targetType === "creative_run") return "creative.run.read";
-  if (targetType === "ops_incident") return "ops.incident.read";
-  if (targetType === "admin_case") return "case.read";
-  if (targetType === "chat_session") return "character.release.read";
-  return "audit.read";
+function isAdminCommandTargetType(targetType: string): targetType is AdminCommandTargetType {
+  return Object.hasOwn(ADMIN_COMMAND_TARGET_READ_PERMISSIONS, targetType);
+}
+
+export function commandTargetReadPermission(targetType: string): PermissionKey {
+  if (!isAdminCommandTargetType(targetType)) {
+    throw Errors.internal("Command target type has no declared read authority", { targetType });
+  }
+  return ADMIN_COMMAND_TARGET_READ_PERMISSIONS[targetType];
 }
 
 function verificationState(status: string) {
@@ -30,7 +36,7 @@ export async function getControlPlaneCommand(request: Request, commandId: string
     await actorWithPermission(request, "dashboard.read");
     const command = await prisma.controlPlaneCommand.findUnique({ where: { id: commandId } });
     if (!command) throw Errors.notFound("Admin command not found", { commandId });
-    await actorWithPermission(request, readPermission(command.targetType));
+    await actorWithPermission(request, commandTargetReadPermission(command.targetType));
     const data = adminCommandStatusSchema.parse({
       commandId: command.id,
       requestId: command.requestId,

@@ -3,6 +3,7 @@ import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  ADMIN_COMMAND_TARGET_READ_PERMISSIONS,
   ADMIN_V2_API_OPERATIONS,
   findAdminV2ApiOperation,
   resolveAdminV2ManifestAuthorization,
@@ -142,5 +143,9 @@ describe("Admin v2 API permission and contract manifest", () => {
       "dashboard.read",
       "case.read",
     ]);
+    expect(command?.authorization).toMatchObject({
+      kind: "all_of_and_one_of_by_resource",
+      oneOf: expect.arrayContaining([...new Set(Object.values(ADMIN_COMMAND_TARGET_READ_PERMISSIONS))]),
+    });
   });
 });

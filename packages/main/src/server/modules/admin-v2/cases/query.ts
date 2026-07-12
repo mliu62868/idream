@@ -1,5 +1,5 @@
 import { operationsCaseDetailSchema, operationsCaseQuerySchema } from "@idream/shared/admin";
-import type { Prisma } from "@prisma/client";
+import { Prisma, type AdminCase } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
@@ -127,6 +127,78 @@ function scopedCaseWhere(role: string, view: string, actorId: string): Prisma.Ad
   return where;
 }
 
+function supportSearchSql(search: string) {
+  const pattern = `%${search}%`;
+  return Prisma.sql`(
+    admin_case."targetId" ILIKE ${pattern}
+    OR admin_case."caseKey" ILIKE ${pattern}
+    OR EXISTS (
+      SELECT 1
+      FROM case_evidence AS evidence
+      INNER JOIN support_requests AS support_request
+        ON support_request.id = evidence."sourceId"
+      WHERE evidence."caseId" = admin_case.id
+        AND evidence."sourceType" = 'support_request'
+        AND (
+          support_request."ticketId" ILIKE ${pattern}
+          OR support_request.subject ILIKE ${pattern}
+          OR support_request.description ILIKE ${pattern}
+        )
+    )
+  )`;
+}
+
+async function searchedCasePage(input: {
+  role: string;
+  actorId: string;
+  query: ReturnType<typeof operationsCaseQuerySchema.parse>;
+  cursor: CaseCursor | null;
+}) {
+  const conditions: Prisma.Sql[] = [];
+  if (input.role === "support") {
+    conditions.push(Prisma.sql`admin_case.type IN ('support_request', 'billing_dispute')`);
+  }
+  if (input.query.view === "mine") conditions.push(Prisma.sql`admin_case."ownerId" = ${input.actorId}`);
+  if (input.query.view === "unassigned") conditions.push(Prisma.sql`admin_case."ownerId" IS NULL`);
+  if (input.query.view === "overdue") {
+    conditions.push(Prisma.sql`admin_case."slaDueAt" < NOW()`);
+    conditions.push(Prisma.sql`admin_case.status NOT IN ('resolved', 'closed')`);
+  }
+  if (input.query.view === "appeals") conditions.push(Prisma.sql`admin_case.type = 'appeal'`);
+  if (input.query.view === "recently_resolved") {
+    conditions.push(Prisma.sql`admin_case.status IN ('resolved', 'closed')`);
+    conditions.push(Prisma.sql`admin_case."updatedAt" >= ${new Date(Date.now() - 7 * 24 * 60 * 60 * 1_000)}`);
+  }
+  if (input.query.type) conditions.push(Prisma.sql`admin_case.type = ${input.query.type}`);
+  if (input.query.status) conditions.push(Prisma.sql`admin_case.status = ${input.query.status}`);
+  if (input.query.ownerId) conditions.push(Prisma.sql`admin_case."ownerId" = ${input.query.ownerId}`);
+  if (input.query.priority) conditions.push(Prisma.sql`admin_case.priority = ${input.query.priority}`);
+  if (input.cursor) {
+    const cursorUpdatedAt = new Date(input.cursor.updatedAt);
+    conditions.push(input.query.sort === "updated_asc"
+      ? Prisma.sql`(admin_case."updatedAt", admin_case.id) > (${cursorUpdatedAt}, ${input.cursor.id})`
+      : Prisma.sql`(admin_case."updatedAt", admin_case.id) < (${cursorUpdatedAt}, ${input.cursor.id})`);
+  }
+  conditions.push(supportSearchSql(input.query.search!));
+  const where = Prisma.join(conditions, " AND ");
+  const limit = input.query.limit + 1;
+  return input.query.sort === "updated_asc"
+    ? prisma.$queryRaw<AdminCase[]>(Prisma.sql`
+        SELECT admin_case.*
+        FROM admin_cases AS admin_case
+        WHERE ${where}
+        ORDER BY admin_case."updatedAt" ASC, admin_case.id ASC
+        LIMIT ${limit}
+      `)
+    : prisma.$queryRaw<AdminCase[]>(Prisma.sql`
+        SELECT admin_case.*
+        FROM admin_cases AS admin_case
+        WHERE ${where}
+        ORDER BY admin_case."updatedAt" DESC, admin_case.id DESC
+        LIMIT ${limit}
+      `);
+}
+
 export async function listCases(request: Request) {
   const actor = await actorWithPermission(request, "case.read");
   const url = new URL(request.url);
@@ -134,26 +206,6 @@ export async function listCases(request: Request) {
   const scope = scopedCaseWhere(actor.role, query.view, actor.id);
   const cursor = decodeCaseCursor(query.cursor);
   const cursorDirection = query.sort === "updated_asc" ? "gt" : "lt";
-  let searchedCaseIds: string[] = [];
-  if (query.search) {
-    const sources = await prisma.supportRequest.findMany({
-      where: {
-        OR: [
-          { ticketId: { contains: query.search, mode: "insensitive" } },
-          { subject: { contains: query.search, mode: "insensitive" } },
-          { description: { contains: query.search, mode: "insensitive" } },
-        ],
-      },
-      select: { id: true },
-      take: 500,
-    });
-    if (sources.length > 0) {
-      searchedCaseIds = (await prisma.caseEvidence.findMany({
-        where: { sourceType: "support_request", sourceId: { in: sources.map((item) => item.id) } },
-        select: { caseId: true },
-      })).map((item) => item.caseId);
-    }
-  }
   const where: Prisma.AdminCaseWhereInput = {
     AND: [
       scope,
@@ -170,26 +222,19 @@ export async function listCases(request: Request) {
               ],
             }
           : {}),
-        ...(query.search
-          ? {
-              OR: [
-                { targetId: { contains: query.search, mode: "insensitive" } },
-                { caseKey: { contains: query.search, mode: "insensitive" } },
-                ...(searchedCaseIds.length > 0 ? [{ id: { in: searchedCaseIds } }] : []),
-              ],
-            }
-          : {}),
       },
     ],
   };
-  const rows = await prisma.adminCase.findMany({
-    where,
-    orderBy: [
-      { updatedAt: query.sort === "updated_asc" ? "asc" : "desc" },
-      { id: query.sort === "updated_asc" ? "asc" : "desc" },
-    ],
-    take: query.limit + 1,
-  });
+  const rows = query.search
+    ? await searchedCasePage({ role: actor.role, actorId: actor.id, query, cursor })
+    : await prisma.adminCase.findMany({
+        where,
+        orderBy: [
+          { updatedAt: query.sort === "updated_asc" ? "asc" : "desc" },
+          { id: query.sort === "updated_asc" ? "asc" : "desc" },
+        ],
+        take: query.limit + 1,
+      });
   const hasNextPage = rows.length > query.limit;
   const pageRows = rows.slice(0, query.limit);
   const items = await Promise.all(pageRows.map(caseDto));
