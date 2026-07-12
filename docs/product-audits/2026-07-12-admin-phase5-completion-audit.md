@@ -17,15 +17,15 @@ The boundary is defined by authority, not by URL version or file size:
 | Requirement | Current evidence | Verdict |
 | --- | --- | --- |
 | Admin independently builds without main source aliases, Prisma or BullMQ | `packages/admin/src/server/source-boundary.test.ts`; no matching imports from `rg 'dispatchAdmin|dispatchV1|../main/src|@/server/lib/db|@prisma/client|bullmq' packages/admin/src packages/admin/tsconfig.json packages/admin/package.json packages/admin/next.config.ts` | Code-owned M7 boundary achieved |
-| Domain features replace the catch-all client | Today, Character, Creative, Incident, Case, Customer, Jobs, Audit, Pricing and now Billing are independent workspaces; `AdminConsoleClient.tsx` is reduced from 7,227 to 7,070 lines after wiring shared refresh and action permissions | In progress; more compatibility workspaces remain extractable now |
-| Main domain implementation leaves the dispatcher | Existing domain modules plus the new `admin/users/service.ts`; `service.ts` is reduced from 5,068 to 4,727 lines and imports domain handlers | In progress; generation/config/support/moderation/content/promo/approval/chat blocks remain extractable now |
+| Domain features replace the catch-all client | Today, Character, Creative, Incident, Case, Customer, Jobs, Billing, Users/Access, Config, Dead-letter, Moderation, Support, Content/Merchandising, Promo, Approvals, Chat, overviews and saved views are independent workspaces; `AdminConsoleClient.tsx` is a 983-line shell/delegator | Code-owned Phase 5 client extraction achieved |
+| Main domain implementation leaves the dispatcher | Domain services own validation/query/mutation; `admin/service.ts` is a 494-line route table and compatibility re-export with no Prisma/Zod/second handler authority | Code-owned Phase 5 server extraction achieved |
 | V1 writes do not create a second authority | Character and other migrated adapters delegate canonical executors; Billing and User writes now live in dedicated main domain modules. User mutations consume scoped ControlPlaneCommand receipts and commit state, Audit, Outbox and replay result atomically | Achieved for the extracted domains; audit remaining V1 blocks domain-by-domain before sunset |
 | Admin read/write proxy canary | Executable canary and independent read/write kill switches exist | Production evidence missing; external runtime action |
 | V1 usage reaches zero for two business cycles | Bounded telemetry and release-gate schema exist | Production evidence missing; external observation |
 | Constraints/invariants are zero and stable for seven days | Executable reconciliation and signed release gate exist; shared test DB correctly blocks with non-zero legacy violations | Production backfill/reconciliation/observation missing; external data/runtime action |
 | Production-like migration rehearsal and rollback | Fresh/repeat/previous-app/forward-fix rehearsal is automated and locally green | Local proof achieved; production snapshot/canary remains external |
 
-## Implemented in this slice
+## Implemented boundary
 
 ### Billing client boundary
 
@@ -46,18 +46,11 @@ The boundary is defined by authority, not by URL version or file size:
 - Shared redacted DTO presenters moved to `admin/shared/presenters.ts`, so the user domain does not import the dispatcher monolith.
 - Architecture tests prevent either the v2 tree or extracted legacy domain modules from importing `admin/service.ts`.
 
-## Code-owned work still available now
+## Code-owned Phase 5 status
 
-The following work does **not** need production telemetry and should continue as ordinary strangler extraction:
+Phase 5's code-owned extraction is complete. The remaining V1 paths are explicit compatibility adapters, tests and the BFF boundary; they are not a second catch-all authority and may not be deleted from static-search evidence alone. At this audited commit, `packages/admin/src` contains 169 textual `/api/v1/admin` references across 67 TypeScript/TSX files. This is an inventory signal, not a production traffic metric.
 
-1. Extract Config/model management and Dead Letter from `AdminConsoleClient.tsx`; move their request/query state into feature roots.
-2. Extract Access, Moderation, Support, Promo, Approvals and Chat compatibility workspaces, preserving server search/cursor and permission behavior.
-3. Split the main catch-all implementation into generation/config, moderation, support, content, promo/approval and chat modules; keep `dispatchAdmin` as a temporary route table only.
-4. Add canonical V2 contracts/routes for compatibility operations that lack an equivalent endpoint, then point the independent Admin features at those endpoints.
-5. Repeat source-boundary tests for every extracted domain and prohibit new V1 client calls outside an explicit compatibility allowlist.
-6. Replace the bounded Team Access `limit=100` read with authority-backed search and stable cursor before claiming §24.3's “all Admin lists” requirement.
-
-At this audited commit, `packages/admin/src` still contains 151 textual `/api/v1/admin` references across 39 TypeScript files. That count includes tests, API helpers and the BFF route, so it is an inventory signal rather than a traffic metric.
+The canonical v2 surface contains 84 operations, 130/130 executable contract refs and 55/55 declared mutation transports, all with pending=0. The Admin BFF validates successful responses in the real serving path; browser execution found and closed concrete Creative, Incident and Case mutation-response drift.
 
 ## Items that are external-only before deletion
 
@@ -73,11 +66,11 @@ Only after those observations pass may the BFF V1 route, main compatibility disp
 
 ## Verification
 
-- Admin full suite: 40 files, 140 tests passed.
-- Main User command, Admin compatibility and architecture: 3 files, 68 tests passed, including exact replay, hash conflict and injected Audit/Outbox rollback.
-- Main server-list/architecture focused suite: 3 files, 26 tests passed.
-- Admin and Main typecheck passed.
-- Admin and Main lint passed with no errors after cleanup.
-- Focused double-service compatibility E2E for Team Access + Billing passed 2/2, including exact `userId:delta` confirmation, partial Billing read failure with last-good snapshot + resource-only retry, Shell Refresh, persisted ledger/Audit evidence, success status/form reset, and read-only support action hiding.
+- Shared contract suite: 27 files / 116 tests passed; 130/130 refs and 55/55 mutation transports are executable with pending=0.
+- Production-like rollback-only load passed with Today p95 `532.874ms`, Support `408.721ms`, Jobs `94.012ms`, Events `238.292ms` across the documented 100k/1m datasets.
+- Focused Postgres Incident/Case/contract tests and the real Creative→Incident→Case browser authority loop passed after response-gate fixes.
+- Shared 27/116、Admin 60/198、Main 124 files / 756 passed + 1 skipped；root lint/typecheck/build passed。
+- `admin-v2-workspaces.e2e.ts` passed 9/9 across desktop, 375px and 834px with keyboard, focus, axe WCAG 2.2 AA and no-overflow gates.
+- Isolated transport chaos passed PostgreSQL/Redis reconnect plus consumer/dispatcher/projector restart checks; its report explicitly excludes real Prisma/BullMQ/domain-process release evidence.
 
 The local Next.js 16 guides used for this slice were `use-client.md`, `server-and-client-components.md`, `route-handlers.md` and the `route.ts` file-convention guide. The extracted Billing workspace is intentionally a narrow Client Component boundary; no legacy GET caching assumptions were introduced.
