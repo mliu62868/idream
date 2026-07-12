@@ -7,18 +7,25 @@ const evidence = (status: "pass" | "fail" = "pass") => ({
   evidenceRefs: ["run://admin-readiness/evidence"],
 });
 
-const canaryEvidence = (mode: "read" | "write", sampleSize: number) => ({
+const canaryEvidence = (mode: "read" | "write") => ({
   ...evidence(),
   mode,
   environment: "production" as const,
   runId: mode === "read" ? "13d64d65-962a-4a24-8ac1-490404a25581" : "a9399d08-9112-4a57-8e88-3382e8bf89c8",
   startedAt: "2026-07-10T00:00:00.000Z",
   endedAt: "2026-07-10T00:00:00.000Z",
-  sampleSize,
+  sampleSize: 1,
   failures: 0,
   availability: 1,
   p95Ms: mode === "read" ? 420 : 610,
-  samples: [],
+  samples: [{
+    name: `${mode} authority`,
+    method: mode === "read" ? "GET" as const : "POST" as const,
+    path: mode === "read" ? "/api/v2/admin/today" : "/api/v2/admin/cases/rehearsal/commands/close",
+    status: mode === "read" ? 200 : 202,
+    outcome: "pass" as const,
+    durationMs: mode === "read" ? 420 : 610,
+  }],
 });
 
 function productionEvidence(): AdminReleaseGateEvidence {
@@ -86,8 +93,8 @@ function productionEvidence(): AdminReleaseGateEvidence {
       dispatcherRestartRecovery: evidence(),
       projectorLagRecovery: evidence(),
       killSwitchDrill: evidence(),
-      readCanary: canaryEvidence("read", 1_000),
-      writeCanary: canaryEvidence("write", 100),
+      readCanary: canaryEvidence("read"),
+      writeCanary: canaryEvidence("write"),
       errorBudget: { total: 100_000, failures: 100, targetAvailability: 0.99 as const },
       legacyTrafficCycles: [
         { cycle: "2026-W27", startedAt: "2026-07-03T00:00:00.000Z", endedAt: "2026-07-06T00:00:00.000Z", requests: 0 },
@@ -128,6 +135,9 @@ describe("Admin final release gate", () => {
     input.observationWindow.startedAt = "2026-07-09T00:00:00.000Z";
     input.truth.unknownShadowMismatches = 1;
     input.runtime.writeCanary.sampleSize = 0;
+    input.runtime.writeCanary.samples = [];
+    input.runtime.writeCanary.availability = 0;
+    input.runtime.writeCanary.p95Ms = null;
     input.runtime.readCanary.observedAt = "2026-07-02T00:00:00.000Z";
     input.runtime.legacyTrafficCycles[1]!.requests = 2;
     const report = evaluateAdminReleaseGate(input, new Date("2026-07-11T00:00:00.000Z"));
@@ -174,7 +184,9 @@ describe("Admin final release gate", () => {
     expect(evaluateAdminReleaseGate(input, new Date("2026-07-11T00:00:00.000Z")).status).toBe("pass");
 
     input.runtime.writeCanary.failures = 1;
-    input.runtime.writeCanary.availability = 0.99;
+    input.runtime.writeCanary.availability = 0;
+    input.runtime.writeCanary.samples[0]!.status = 500;
+    input.runtime.writeCanary.samples[0]!.outcome = "unexpected_status";
     expect(evaluateAdminReleaseGate(input, new Date("2026-07-11T00:00:00.000Z")).blockers.map((blocker) => blocker.code)).toEqual(expect.arrayContaining([
       "write_canary_has_failures",
       "write_canary_availability_below_gate",

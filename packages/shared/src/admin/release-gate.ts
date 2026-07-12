@@ -7,6 +7,15 @@ const evidenceResultSchema = z.object({
   evidenceRefs: z.array(z.string().min(1)).min(1),
 }).strict();
 
+const canarySampleSchema = z.object({
+  name: z.string().min(1),
+  method: z.enum(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]),
+  path: z.string().refine((value) => value === "/api/v2/admin" || value.startsWith("/api/v2/admin/"), "sample path must target Admin v2"),
+  status: z.number().int().min(100).max(599).nullable(),
+  outcome: z.enum(["pass", "unexpected_status", "unavailable"]),
+  durationMs: z.number().nonnegative(),
+}).strict();
+
 const canaryResultSchema = evidenceResultSchema.extend({
   mode: z.enum(["read", "write"]),
   environment: z.literal("production"),
@@ -17,7 +26,25 @@ const canaryResultSchema = evidenceResultSchema.extend({
   failures: z.number().int().nonnegative(),
   availability: z.number().min(0).max(1),
   p95Ms: z.number().nonnegative().nullable(),
-}).passthrough();
+  samples: z.array(canarySampleSchema),
+}).strict().superRefine((value, context) => {
+  const failures = value.samples.filter((sample) => sample.outcome !== "pass").length;
+  if (value.sampleSize !== value.samples.length) {
+    context.addIssue({ code: "custom", path: ["sampleSize"], message: "sampleSize must equal samples.length" });
+  }
+  if (value.failures !== failures) {
+    context.addIssue({ code: "custom", path: ["failures"], message: "failures must equal non-pass samples" });
+  }
+  const expectedAvailability = value.samples.length === 0 ? 0 : (value.samples.length - failures) / value.samples.length;
+  if (Math.abs(value.availability - expectedAvailability) > Number.EPSILON) {
+    context.addIssue({ code: "custom", path: ["availability"], message: "availability must equal the sample outcomes" });
+  }
+  const sortedDurations = value.samples.map((sample) => sample.durationMs).sort((left, right) => left - right);
+  const expectedP95 = sortedDurations[Math.max(0, Math.ceil(sortedDurations.length * 0.95) - 1)] ?? null;
+  if (value.p95Ms !== expectedP95) {
+    context.addIssue({ code: "custom", path: ["p95Ms"], message: "p95Ms must equal the sample durations" });
+  }
+});
 
 const operationalSloEvidenceSchema = evidenceResultSchema.extend({
   observations: z.object({
