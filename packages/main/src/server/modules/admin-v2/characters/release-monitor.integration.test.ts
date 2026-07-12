@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { resolvePermissions } from "@/server/admin/permissions";
+import { drainAdminCommands } from "@/processes/admin-command-worker";
 import { prisma } from "@/server/lib/db";
 import { buildTodayProjection } from "@/server/modules/admin-v2/today/query";
 import {
@@ -181,6 +182,26 @@ describe("Release route qualification and post-publish monitor", () => {
     expect(await prisma.generationRouteQualification.findUniqueOrThrow({ where: { id: qualificationId } })).toMatchObject({
       result: "qualified",
     });
+  });
+
+  it("runs qualification invalidation from the persistent command worker", async () => {
+    await prisma.characterRelease.update({
+      where: { id: releaseId },
+      data: { readiness: "ready" },
+    });
+
+    const result = await drainAdminCommands(prisma, {
+      workerId: `qualification-worker-${suffix}`,
+      now: new Date("2026-07-07T01:00:00.000Z"),
+      routeQualificationPolicyVersion: "policy-v2",
+      routeQualificationEvaluatorVersion: "eval-v1",
+      routeQualificationReleaseIds: [releaseId],
+    });
+
+    expect(result.routeQualifications).toMatchObject({ examined: 1, stale: 1 });
+    await expect(
+      prisma.characterRelease.findUniqueOrThrow({ where: { id: releaseId } }),
+    ).resolves.toMatchObject({ readiness: "stale", status: "published" });
   });
 
   it("collects mature 72h facts with an explicit keep decision", async () => {

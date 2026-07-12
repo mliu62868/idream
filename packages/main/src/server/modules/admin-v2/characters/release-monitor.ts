@@ -59,17 +59,22 @@ export async function dispatchStaleReleaseRoutes(
     readonly now?: Date;
     readonly limit?: number;
     readonly releaseIds?: readonly string[];
+    readonly cursorId?: string;
   },
 ) {
   const now = input.now ?? new Date();
+  const limit = Math.min(500, Math.max(1, input.limit ?? 100));
   const releases = await db.characterRelease.findMany({
     where: {
       status: "published",
       readiness: { not: "stale" },
-      ...(input.releaseIds ? { id: { in: [...input.releaseIds] } } : {}),
+      AND: [
+        ...(input.releaseIds ? [{ id: { in: [...input.releaseIds] } }] : []),
+        ...(input.cursorId ? [{ id: { gt: input.cursorId } }] : []),
+      ],
     },
-    orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
-    take: Math.min(500, Math.max(1, input.limit ?? 100)),
+    orderBy: { id: "asc" },
+    take: limit,
   });
   let stale = 0;
   for (const release of releases) {
@@ -146,7 +151,11 @@ export async function dispatchStaleReleaseRoutes(
       stale += 1;
     });
   }
-  return { examined: releases.length, stale };
+  return {
+    examined: releases.length,
+    stale,
+    nextCursor: releases.length === limit ? releases.at(-1)?.id ?? null : null,
+  };
 }
 
 function windowMs(window: ReleaseMonitorWindow): number {

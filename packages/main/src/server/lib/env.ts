@@ -43,6 +43,7 @@ const EnvSchema = z.object({
   CRON_SECRET: z.string().min(16),
   REDIS_URL: z.string().url().default("redis://127.0.0.1:6379/0"),
   BULLMQ_PREFIX: z.string().min(1).default(`idream:${appEnv}`),
+  GENERATION_ROUTE_EVALUATOR_VERSION: z.string().min(1).default("identity-match-v1"),
   LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error", "fatal", "silent"]).default("info"),
   CHAT_PROVIDER: z.enum(["mock", "pipeline"]).default("mock"),
   IMAGE_PROVIDER: z.enum(["mock", "pipeline", "backend"]).default("mock"),

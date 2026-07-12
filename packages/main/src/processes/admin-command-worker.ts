@@ -1,9 +1,16 @@
 import { randomUUID } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
+import { env } from "@/server/lib/env";
 import { logger } from "@/server/lib/logger";
-import { executeCharacterReleaseCommand } from "@/server/modules/admin-v2/characters/release-executor";
-import { dispatchDueReleaseMonitors } from "@/server/modules/admin-v2/characters/release-monitor";
+import {
+  CHARACTER_RELEASE_POLICY_VERSION,
+  executeCharacterReleaseCommand,
+} from "@/server/modules/admin-v2/characters/release-executor";
+import {
+  dispatchDueReleaseMonitors,
+  dispatchStaleReleaseRoutes,
+} from "@/server/modules/admin-v2/characters/release-monitor";
 import { dispatchDueCharacterReleasePublishes } from "@/server/modules/admin-v2/characters/scheduled-release-dispatcher";
 import { executeAcceptedAdminCommand } from "@/server/modules/admin-v2/commands/executor";
 import { reconcileExpiredCommandLeases } from "@/server/modules/admin-v2/shared/control-plane-command";
@@ -45,6 +52,7 @@ const RECONCILE_INTERVAL_MS = 60_000;
 
 let running = true;
 let lastReconcileAt = 0;
+let routeQualificationCursor: string | null = null;
 
 export async function drainAdminCommands(
   db: PrismaClient,
@@ -53,9 +61,21 @@ export async function drainAdminCommands(
     readonly limit?: number;
     readonly environment?: string;
     readonly now?: Date;
+    readonly routeQualificationPolicyVersion?: string;
+    readonly routeQualificationEvaluatorVersion?: string;
+    readonly routeQualificationReleaseIds?: readonly string[];
   },
 ) {
   const now = input.now ?? new Date();
+  const routeQualifications = await dispatchStaleReleaseRoutes(db, {
+    currentPolicyVersion: input.routeQualificationPolicyVersion ?? CHARACTER_RELEASE_POLICY_VERSION,
+    currentEvaluatorVersion: input.routeQualificationEvaluatorVersion ?? env.GENERATION_ROUTE_EVALUATOR_VERSION,
+    now,
+    limit: input.limit,
+    releaseIds: input.routeQualificationReleaseIds,
+    cursorId: input.routeQualificationReleaseIds ? undefined : routeQualificationCursor ?? undefined,
+  });
+  if (!input.routeQualificationReleaseIds) routeQualificationCursor = routeQualifications.nextCursor;
   const scheduledReleases = await dispatchDueCharacterReleasePublishes(db, {
     dispatcherId: input.workerId,
     environment: input.environment,
@@ -114,6 +134,7 @@ export async function drainAdminCommands(
     failed,
     verifying,
     scheduledReleases,
+    routeQualifications,
     releaseMonitors,
     dispatched,
     incidentCorrelation,
@@ -131,7 +152,7 @@ export async function runAdminCommandWorkerLoop() {
     let processed = 0;
     try {
       const result = await drainAdminCommands(prisma, { workerId });
-      processed = result.examined + result.releaseMonitors.claimed;
+      processed = result.examined + result.releaseMonitors.claimed + result.routeQualifications.examined;
       const now = Date.now();
       if (now - lastReconcileAt >= RECONCILE_INTERVAL_MS) {
         lastReconcileAt = now;
