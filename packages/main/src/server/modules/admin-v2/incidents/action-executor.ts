@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { Errors } from "@/server/lib/errors";
 import { recordGenerationAttemptQueuedEvent } from "@/server/ai/generation-attempt-events";
+import { transitionGenerationRequest } from "@/server/ai/generation-request-transition";
 import { ensureGenerationSettlementLinks, linkGenerationLedgerEntry } from "@/server/ai/generation-settlement";
 import { claimControlPlaneCommand } from "../shared/control-plane-command";
 import { transitionControlPlaneCommandAttempt } from "../shared/control-plane-command-attempt";
@@ -157,6 +158,17 @@ export async function executeIncidentActionPlanCommand(
           if (!job || !latest || !["failed", "unknown"].includes(latest.status)) {
             throw Errors.conflict("Frozen retry target is no longer retryable", { occurrenceId: occurrence.id });
           }
+          await transitionGenerationRequest(tx, {
+            requestId: job.id,
+            to: "queued",
+            expected: { from: "failed", version: job.version },
+            data: {
+              errorCode: null,
+              completedAt: null,
+              finishedAt: null,
+              deliveredOutputCount: 0,
+            },
+          });
           const attempt = await tx.generationAttempt.create({
             data: {
               requestId: job.id,
@@ -171,10 +183,6 @@ export async function executeIncidentActionPlanCommand(
             },
           });
           await recordGenerationAttemptQueuedEvent(tx, attempt);
-          await tx.generationJob.update({
-            where: { id: job.id },
-            data: { status: "queued", errorCode: null, completedAt: null, finishedAt: null, deliveredOutputCount: 0, version: { increment: 1 } },
-          });
           await tx.mainOutboxEvent.upsert({
             where: { id: `incident_retry_${claimed.id}_${occurrence.id}` },
             create: {

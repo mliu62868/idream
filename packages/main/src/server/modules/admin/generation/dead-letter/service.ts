@@ -3,6 +3,7 @@ import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { ensureGenerationSettlementLinks } from "@/server/ai/generation-settlement";
 import { recordGenerationAttemptQueuedEvent } from "@/server/ai/generation-attempt-events";
+import { transitionGenerationRequest } from "@/server/ai/generation-request-transition";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
@@ -347,6 +348,17 @@ async function stageGenerationRetry(
   if (latest?.retryability === "not_retryable") {
     throw Errors.conflict("Latest Generation Attempt is explicitly non-replayable", { attemptId: latest.id, retryability: latest.retryability });
   }
+  const updated = await transitionGenerationRequest(tx, {
+    requestId: current.id,
+    to: "queued",
+    expected: { from: "failed", version: current.version },
+    data: {
+      errorCode: null,
+      completedAt: null,
+      finishedAt: null,
+      deliveredOutputCount: 0,
+    },
+  });
   const attempt = await tx.generationAttempt.create({
     data: {
       requestId: current.id,
@@ -360,10 +372,6 @@ async function stageGenerationRetry(
     },
   });
   await recordGenerationAttemptQueuedEvent(tx, attempt);
-  const updated = await tx.generationJob.update({
-    where: { id: current.id },
-    data: { status: "queued", errorCode: null, completedAt: null, finishedAt: null, deliveredOutputCount: 0, version: { increment: 1 } },
-  });
   await tx.mainOutboxEvent.create({
     data: {
       id: `generation_retry_${current.id}_${attempt.attemptNo}`,

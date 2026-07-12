@@ -6,9 +6,36 @@ function source(path: string) {
 }
 
 const productionTypeScript = globSync("src/**/*.ts")
-  .filter((path) => !path.endsWith(".test.ts") && !path.endsWith(".integration.test.ts"));
+  .filter((path) =>
+    !path.endsWith(".test.ts") &&
+    !path.endsWith(".integration.test.ts") &&
+    !path.endsWith(".e2e.ts"),
+  );
 
 describe("Admin v2 finite-state authority inventory", () => {
+  it("funnels every Generation Request status mutation through one versioned from-state CAS authority", () => {
+    const directWriters = productionTypeScript.filter((path) =>
+      /generationJob\.(?:update|updateMany)\(/.test(source(path)),
+    );
+    expect(directWriters.sort()).toEqual([
+      "src/server/ai/generation-request-transition.ts",
+      "src/server/modules/admin/generation/dead-letter/service.ts",
+    ]);
+
+    const authority = source("src/server/ai/generation-request-transition.ts");
+    expect(authority).toContain("isGenerationRequestTransitionAllowed");
+    expect(authority).toContain("status: current.status");
+    expect(authority).toContain("version: current.version");
+    expect(authority).toContain("version: { increment: 1 }");
+
+    const metadataOnlyWriter = source("src/server/modules/admin/generation/dead-letter/service.ts");
+    const metadataUpdate = metadataOnlyWriter.match(
+      /generationJob\.update\(\{[\s\S]{0,500}?data:\s*\{[\s\S]{0,300}?\}\s*,?\s*\}\)/,
+    )?.[0];
+    expect(metadataUpdate).toBeDefined();
+    expect(metadataUpdate).not.toMatch(/\bstatus\s*:/);
+  });
+
   it("binds every Character Project phase writer to the phase authority", () => {
     const writers = productionTypeScript.filter((path) => {
       const contents = source(path);

@@ -14,6 +14,7 @@ import {
   recordGenerationAttemptEvent,
   recordGenerationAttemptQueuedEvent,
 } from "@/server/ai/generation-attempt-events";
+import { transitionGenerationRequest } from "@/server/ai/generation-request-transition";
 import { dispatchAdmin } from "@/server/modules/admin/service";
 import {
   ensureReviewCaseForAppeal,
@@ -6490,6 +6491,17 @@ async function failQueuedGeneration(
 ) {
   await prisma.$transaction(async (tx) => {
     const failedAt = new Date();
+    await transitionGenerationRequest(tx, {
+      requestId: job.id,
+      to: "failed",
+      expected: { from: "queued" },
+      data: {
+        errorCode,
+        completedAt: null,
+        finishedAt: failedAt,
+        deliveredOutputCount: 0,
+      },
+    });
     if (job.costDreamcoins > 0) {
       await appendLedger(
         tx,
@@ -6500,10 +6512,6 @@ async function failQueuedGeneration(
         `generation:${job.id}:refund`,
       );
     }
-    await tx.generationJob.update({
-      where: { id: job.id },
-      data: { status: "failed", errorCode, completedAt: null, finishedAt: failedAt, deliveredOutputCount: 0, version: { increment: 1 } },
-    });
     const attempt = await tx.generationAttempt.findFirst({
       where: { requestId: job.id },
       orderBy: { attemptNo: "desc" },

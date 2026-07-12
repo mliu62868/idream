@@ -2,6 +2,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { Errors } from "@/server/lib/errors";
 import { enqueueGenerationAttempt } from "@/server/modules/generation/attempt-dispatch";
 import { recordGenerationAttemptQueuedEvent } from "@/server/ai/generation-attempt-events";
+import { transitionGenerationRequest } from "@/server/ai/generation-request-transition";
 import { claimControlPlaneCommand } from "../shared/control-plane-command";
 import { transitionControlPlaneCommandAttempt } from "../shared/control-plane-command-attempt";
 import {
@@ -169,6 +170,17 @@ export async function executeCreativeRetryCommand(
             reason: health.reason,
           });
         }
+        await transitionGenerationRequest(tx, {
+          requestId: item.job.id,
+          to: "queued",
+          expected: { from: "failed", version: item.job.version },
+          data: {
+            errorCode: null,
+            completedAt: null,
+            finishedAt: null,
+            deliveredOutputCount: 0,
+          },
+        });
         const attemptNo = (latest?.attemptNo ?? 0) + 1;
         const attempt = await tx.generationAttempt.upsert({
           where: {
@@ -191,10 +203,6 @@ export async function executeCreativeRetryCommand(
         });
         await recordGenerationAttemptQueuedEvent(tx, attempt);
         attemptIds.push(attempt.id);
-        await tx.generationJob.update({
-          where: { id: item.job.id },
-          data: { status: "queued", errorCode: null, completedAt: null, finishedAt: null, deliveredOutputCount: 0, version: { increment: 1 } },
-        });
         await tx.contentProductionItem.update({
           where: { id: item.id },
           data: { status: "regenerate_requested", version: { increment: 1 } },

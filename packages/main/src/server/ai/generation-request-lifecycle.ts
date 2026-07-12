@@ -11,7 +11,7 @@ import {
   recordGenerationAttemptQueuedEvent,
 } from "./generation-attempt-events";
 import { ensureGenerationSettlementLinks, linkGenerationLedgerEntry } from "./generation-settlement";
-import { isGenerationRequestAdminTransitionAllowed } from "@/server/modules/admin-v2/shared/state-transition-authority";
+import { transitionGenerationRequest } from "./generation-request-transition";
 
 export async function cancelGenerationRequest(input: {
   readonly requestId: string;
@@ -33,9 +33,21 @@ export async function cancelGenerationRequest(input: {
     const job = await tx.generationJob.findUnique({ where: { id: input.requestId } });
     if (!job) throw Errors.notFound("Generation Request not found");
     if (job.version !== input.expectedVersion) throw Errors.conflict("Generation Request changed before cancellation");
-    if (!isGenerationRequestAdminTransitionAllowed(job.status, "cancelled")) throw Errors.conflict("Only a processing Generation Request can be cancelled");
     await tx.$queryRaw`SELECT id FROM "generation_jobs" WHERE id = ${job.id} FOR UPDATE`;
     const cancelledAt = new Date();
+    const cancelled = await transitionGenerationRequest(tx, {
+      requestId: job.id,
+      to: "cancelled",
+      expected: {
+        from: ["queued", "moderating_input", "running", "moderating_output"],
+        version: input.expectedVersion,
+      },
+      data: {
+        completedAt: null,
+        finishedAt: cancelledAt,
+        deliveredOutputCount: 0,
+      },
+    });
     const attempt = await tx.generationAttempt.findFirst({ where: { requestId: job.id }, orderBy: { attemptNo: "desc" } });
     if (attempt && !["succeeded", "failed", "cancelled", "unknown"].includes(attempt.status)) {
       await recordGenerationAttemptEvent(tx, { eventId: `${attempt.id}:terminal`, attemptId: attempt.id, eventType: "generation.attempt.cancelled.v1", outcome: "cancelled", occurredAt: cancelledAt, payload: { requestId: job.id, reason: input.reason }, retryability: "not_retryable" });
@@ -49,7 +61,6 @@ export async function cancelGenerationRequest(input: {
       await linkGenerationLedgerEntry(tx, refund);
       refundAmount = refund.delta;
     }
-    const cancelled = await tx.generationJob.update({ where: { id: job.id }, data: { status: "cancelled", completedAt: null, finishedAt: cancelledAt, deliveredOutputCount: 0, version: { increment: 1 } } });
     const response = { requestId: job.id, status: cancelled.status, version: cancelled.version, finishedAt: cancelledAt.toISOString(), refundAmount };
     const command = await tx.controlPlaneCommand.create({ data: { scope, idempotencyKey: input.idempotencyKey, commandType: "generation.request.cancel", targetType: "generation_request", targetId: job.id, actorId: input.actor.id, requestId: input.traceId, requestHash, requestPayload: toInputJson({ expectedVersion: input.expectedVersion, reason: input.reason }), expectedVersion: input.expectedVersion, retryMode: "idempotent", status: "succeeded", result: toInputJson(response), finishedAt: cancelledAt } });
     await tx.adminAuditLog.create({ data: { actorId: input.actor.id, actorRole: input.actor.role, action: "generation.request.cancelled", targetType: "generation_request", targetId: job.id, reason: input.reason, before: toInputJson({ status: job.status, version: job.version }), after: toInputJson({ ...response, commandId: command.id }), requestId: input.traceId } });
@@ -95,9 +106,6 @@ export async function retryGenerationRequest(input: {
         currentVersion: job.version,
       });
     }
-    if (!isGenerationRequestAdminTransitionAllowed(job.status, "queued")) {
-      throw Errors.conflict("Only a failed Generation Request can be retried", { status: job.status });
-    }
     const delivered = await tx.generationDelivery.count({
       where: { requestId: job.id, status: "delivered" },
     });
@@ -121,6 +129,17 @@ export async function retryGenerationRequest(input: {
         attemptId: latest.id,
       });
     }
+    const updated = await transitionGenerationRequest(tx, {
+      requestId: job.id,
+      to: "queued",
+      expected: { from: "failed", version: input.expectedVersion },
+      data: {
+        errorCode: null,
+        completedAt: null,
+        finishedAt: null,
+        deliveredOutputCount: 0,
+      },
+    });
     const commandId = randomUUID();
     const attempt = await tx.generationAttempt.create({
       data: {
@@ -136,17 +155,6 @@ export async function retryGenerationRequest(input: {
       },
     });
     await recordGenerationAttemptQueuedEvent(tx, attempt);
-    const updated = await tx.generationJob.update({
-      where: { id: job.id },
-      data: {
-        status: "queued",
-        errorCode: null,
-        completedAt: null,
-        finishedAt: null,
-        deliveredOutputCount: 0,
-        version: { increment: 1 },
-      },
-    });
     const result = {
       commandId,
       requestId: job.id,

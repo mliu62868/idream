@@ -26,6 +26,7 @@ import {
 } from "./schemas";
 import { hydratedImageReferenceInputs } from "./reference-images";
 import { recordGenerationAttemptEvent } from "./generation-attempt-events";
+import { transitionGenerationRequest } from "./generation-request-transition";
 import { ensureGenerationSettlementLinks, linkGenerationLedgerEntry } from "./generation-settlement";
 import {
   isGenerationArtifactArchiveTransitionAllowed,
@@ -313,6 +314,7 @@ async function processImageGenerate(payloadValue: Prisma.JsonValue, jobMeta: Que
 
 async function runImageGenerate(payload: ImageGeneratePayload, jobMeta: QueueJob) {
   const inputModeration = await markGenerationModeratingInput(payload);
+  if (!inputModeration) return;
   if (inputModeration.status === "blocked") {
     await enqueueGenerationBlocked(
       payload,
@@ -322,7 +324,7 @@ async function runImageGenerate(payload: ImageGeneratePayload, jobMeta: QueueJob
     );
     return;
   }
-  await markGenerationRunning(payload.generationJobId, payload.attemptId);
+  if (!await markGenerationRunning(payload.generationJobId, payload.attemptId)) return;
   const referenceImages = await hydratedImageReferenceInputs(
     payload.referenceImages,
     providers.blob,
@@ -446,6 +448,7 @@ async function processVideoGenerate(payloadValue: Prisma.JsonValue, jobMeta: Que
 
 async function runVideoGenerate(payload: VideoGeneratePayload, jobMeta: QueueJob) {
   const inputModeration = await markGenerationModeratingInput(payload);
+  if (!inputModeration) return;
   if (inputModeration.status === "blocked") {
     await enqueueGenerationBlocked(
       payload,
@@ -455,7 +458,7 @@ async function runVideoGenerate(payload: VideoGeneratePayload, jobMeta: QueueJob
     );
     return;
   }
-  await markGenerationRunning(payload.generationJobId, payload.attemptId);
+  if (!await markGenerationRunning(payload.generationJobId, payload.attemptId)) return;
 
   const result = await providers.video.generate({
     prompt: payload.prompt,
@@ -655,7 +658,7 @@ async function finalizeGenerationCompleted(
     return;
   }
 
-  await markGenerationModeratingOutput(job.id, payload.assets.length);
+  if (!await markGenerationModeratingOutput(job.id, payload.assets.length)) return;
 
   const outputModeration = await moderateText(
     "generation_job",
@@ -758,15 +761,15 @@ async function finalizeGenerationCompleted(
     }
 
     const completedAt = new Date();
-    await tx.generationJob.update({
-      where: { id: job.id },
+    await transitionGenerationRequest(tx, {
+      requestId: job.id,
+      to: "completed",
+      expected: { from: "moderating_output" },
       data: {
-        status: "completed",
         completedAt,
         finishedAt: completedAt,
         deliveredOutputCount: Math.min(job.outputCount, payload.assets.length),
         errorCode: null,
-        version: { increment: 1 },
       },
     });
     if (attemptId) {
@@ -923,8 +926,8 @@ async function finalizeGenerationFailed(
   if (!job) return;
   const attempt = await resolveGenerationAttemptForFinalize(job.id, payload.attemptId);
   await removeGenerationWorkQueueJob(job.id, job.mode);
-  if (["completed", "blocked", "refunded"].includes(job.status)) return;
-  await refundGeneration(
+  if (["completed", "failed", "blocked", "refunded", "cancelled"].includes(job.status)) return;
+  const transitioned = await refundGeneration(
     job.userId,
     job.id,
     job.costDreamcoins,
@@ -934,7 +937,7 @@ async function finalizeGenerationFailed(
     attempt?.id,
     { attemptOutcome: payload.error.attemptOutcome, retryability: payload.error.retryability },
   );
-  await enqueueChatImageFailed(job.id, "failed", payload.error.code);
+  if (transitioned) await enqueueChatImageFailed(job.id, "failed", payload.error.code);
 }
 
 async function finalizeGenerationBlocked(
@@ -946,19 +949,8 @@ async function finalizeGenerationBlocked(
   if (!job) return;
   const attempt = await resolveGenerationAttemptForFinalize(job.id, payload.attemptId);
   await removeGenerationWorkQueueJob(job.id, job.mode);
-  if (["completed", "blocked", "refunded"].includes(job.status)) return;
-  await prisma.moderationEvent.create({
-    data: {
-      targetType: "generation_job",
-      targetId: job.id,
-      layer: payload.layer,
-      status: "blocked",
-      policyCode: payload.policyCode,
-      confidence: 1,
-      details: toInputJson({ message: payload.message }),
-    },
-  });
-  await refundGeneration(
+  if (["completed", "failed", "blocked", "refunded", "cancelled"].includes(job.status)) return;
+  const transitioned = await refundGeneration(
     job.userId,
     job.id,
     job.costDreamcoins,
@@ -966,8 +958,15 @@ async function finalizeGenerationBlocked(
     payload.policyCode,
     job.sourceType,
     attempt?.id,
+    {
+      moderation: {
+        layer: payload.layer,
+        policyCode: payload.policyCode,
+        message: payload.message,
+      },
+    },
   );
-  await enqueueChatImageFailed(job.id, "blocked", payload.policyCode);
+  if (transitioned) await enqueueChatImageFailed(job.id, "blocked", payload.policyCode);
 }
 
 async function resolveGenerationAttemptForFinalize(jobId: string, suppliedAttemptId?: string) {
@@ -1120,11 +1119,15 @@ function generationFinalizeDedupeKey(
 }
 
 async function markGenerationModeratingInput(payload: ImageGeneratePayload | VideoGeneratePayload) {
-  await prisma.$transaction(async (tx) => {
-    await tx.generationJob.updateMany({
-      where: { id: payload.generationJobId, status: { in: ["queued", "moderating_input"] } },
-      data: { status: "moderating_input", errorCode: null },
+  const transitioned = await prisma.$transaction(async (tx) => {
+    const updated = await transitionGenerationRequest(tx, {
+      requestId: payload.generationJobId,
+      to: "moderating_input",
+      expected: { from: ["queued", "moderating_input"] },
+      data: { errorCode: null },
+      onConflict: "return-null",
     });
+    if (!updated) return false;
     await appendGenerationEvent(
       tx,
       payload.generationJobId,
@@ -1132,7 +1135,9 @@ async function markGenerationModeratingInput(payload: ImageGeneratePayload | Vid
       "Input moderation started",
       { requestId: payload.requestId },
     );
+    return true;
   });
+  if (!transitioned) return null;
   return moderateText(
     "generation_job",
     payload.generationJobId,
@@ -1142,11 +1147,15 @@ async function markGenerationModeratingInput(payload: ImageGeneratePayload | Vid
 }
 
 async function markGenerationRunning(generationJobId: string, attemptId?: string) {
-  await prisma.$transaction(async (tx) => {
-    await tx.generationJob.updateMany({
-      where: { id: generationJobId, status: { in: ["queued", "moderating_input", "running"] } },
-      data: { status: "running", errorCode: null },
+  return prisma.$transaction(async (tx) => {
+    const updated = await transitionGenerationRequest(tx, {
+      requestId: generationJobId,
+      to: "running",
+      expected: { from: ["queued", "moderating_input", "running"] },
+      data: { errorCode: null },
+      onConflict: "return-null",
     });
+    if (!updated) return false;
     if (attemptId) {
       const attempt = await tx.generationAttempt.findFirstOrThrow({
         where: { id: attemptId, requestId: generationJobId },
@@ -1163,15 +1172,19 @@ async function markGenerationRunning(generationJobId: string, attemptId?: string
       });
     }
     await appendGenerationEvent(tx, generationJobId, "running", "Provider generation started", {});
+    return true;
   });
 }
 
 async function markGenerationModeratingOutput(generationJobId: string, assetCount: number) {
-  await prisma.$transaction(async (tx) => {
-    await tx.generationJob.updateMany({
-      where: { id: generationJobId, status: { in: ["running", "moderating_output"] } },
-      data: { status: "moderating_output" },
+  return prisma.$transaction(async (tx) => {
+    const updated = await transitionGenerationRequest(tx, {
+      requestId: generationJobId,
+      to: "moderating_output",
+      expected: { from: ["queued", "moderating_input", "running", "moderating_output"] },
+      onConflict: "return-null",
     });
+    if (!updated) return false;
     await appendGenerationEvent(
       tx,
       generationJobId,
@@ -1186,6 +1199,7 @@ async function markGenerationModeratingOutput(generationJobId: string, assetCoun
       "Output moderation started",
       { assetCount },
     );
+    return true;
   });
 }
 
@@ -1224,14 +1238,44 @@ async function refundGeneration(
   errorCode: string,
   sourceType: string,
   attemptId?: string,
-  terminal: { attemptOutcome?: "failed" | "unknown"; retryability?: "retryable" | "not_retryable" | "operator_retry" } = {},
+  terminal: {
+    attemptOutcome?: "failed" | "unknown";
+    retryability?: "retryable" | "not_retryable" | "operator_retry";
+    moderation?: { layer: string; policyCode: string; message: string };
+  } = {},
 ) {
   // INVARIANT: content_production jobs are never debited, so they must never be
   // credited on refund — their costDreamcoins is record-keeping only (ops batches
   // don't charge a wallet on creation).
   const isDebitedJob = sourceType !== "content_production_item";
-  await prisma.$transaction(async (tx) => {
+  return prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "generation_jobs" WHERE id = ${jobId} FOR UPDATE`;
+    const transitioned = await transitionGenerationRequest(tx, {
+      requestId: jobId,
+      to: status,
+      expected: { from: ["queued", "moderating_input", "running", "moderating_output"] },
+      data: {
+        errorCode,
+        completedAt: null,
+        finishedAt: new Date(),
+        deliveredOutputCount: 0,
+      },
+      onConflict: "return-null",
+    });
+    if (!transitioned) return false;
+    if (terminal.moderation) {
+      await tx.moderationEvent.create({
+        data: {
+          targetType: "generation_job",
+          targetId: jobId,
+          layer: terminal.moderation.layer,
+          status: "blocked",
+          policyCode: terminal.moderation.policyCode,
+          confidence: 1,
+          details: toInputJson({ message: terminal.moderation.message }),
+        },
+      });
+    }
     const settlement = isDebitedJob ? await ensureGenerationSettlementLinks(tx, jobId) : { refundable: 0 };
     const refundAmount = Math.min(cost, settlement.refundable);
     if (refundAmount > 0 && isDebitedJob) {
@@ -1244,10 +1288,6 @@ async function refundGeneration(
         `generation:${jobId}:refund`,
       );
     }
-    await tx.generationJob.update({
-      where: { id: jobId },
-      data: { status, errorCode, completedAt: null, finishedAt: new Date(), deliveredOutputCount: 0, version: { increment: 1 } },
-    });
     if (attemptId) {
       await recordTerminalArtifactDeliveryEvidence(tx, {
         requestId: jobId,
@@ -1287,6 +1327,7 @@ async function refundGeneration(
     await appendGenerationEvent(tx, jobId, "refunded", "Dreamcoins refunded", {
       amount: refundAmount,
     });
+    return true;
   });
 }
 

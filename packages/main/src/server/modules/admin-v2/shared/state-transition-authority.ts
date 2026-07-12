@@ -6,6 +6,7 @@ import {
   characterReleaseStatusSchema,
   characterServingStateSchema,
   creativeWorkflowStageSchema,
+  generationJobStatusSchema,
 } from "@idream/shared/admin";
 
 type StateOf<States extends readonly string[]> = States[number];
@@ -71,32 +72,22 @@ export function isCharacterServingTransitionAllowed(from: string, to: string) {
   return CHARACTER_SERVING_AUTHORITY.permits(from, to);
 }
 
-export const GENERATION_REQUEST_ADMIN_STATES = [
-  "queued",
-  "moderating_input",
-  "running",
-  "moderating_output",
-  "completed",
-  "failed",
-  "blocked",
-  "refunded",
-  "cancelled",
-] as const;
+export const GENERATION_REQUEST_STATES = generationJobStatusSchema.options;
 
-const GENERATION_REQUEST_ADMIN_AUTHORITY = defineTransitionAuthority(GENERATION_REQUEST_ADMIN_STATES, {
-  queued: ["cancelled"],
-  moderating_input: ["cancelled"],
-  running: ["cancelled"],
-  moderating_output: ["cancelled"],
-  completed: [],
-  failed: ["queued"],
-  blocked: [],
-  refunded: [],
-  cancelled: [],
+const GENERATION_REQUEST_AUTHORITY = defineTransitionAuthority(GENERATION_REQUEST_STATES, {
+  queued: ["moderating_input", "running", "moderating_output", "failed", "blocked", "cancelled"],
+  moderating_input: ["moderating_input", "running", "moderating_output", "failed", "blocked", "cancelled"],
+  running: ["running", "moderating_output", "completed", "failed", "blocked", "cancelled"],
+  moderating_output: ["moderating_output", "completed", "failed", "blocked", "cancelled"],
+  completed: ["completed"],
+  failed: ["queued", "failed"],
+  blocked: ["blocked"],
+  refunded: ["refunded"],
+  cancelled: ["cancelled"],
 });
 
-export function isGenerationRequestAdminTransitionAllowed(from: string, to: string) {
-  return GENERATION_REQUEST_ADMIN_AUTHORITY.permits(from, to);
+export function isGenerationRequestTransitionAllowed(from: string, to: string) {
+  return GENERATION_REQUEST_AUTHORITY.permits(from, to);
 }
 
 export const GENERATION_ATTEMPT_STATES = [

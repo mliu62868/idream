@@ -8,6 +8,7 @@ import { pipeline } from "node:stream/promises";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { recordGenerationAttemptEvent } from "@/server/ai/generation-attempt-events";
+import { transitionGenerationRequest } from "@/server/ai/generation-request-transition";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
@@ -1188,9 +1189,16 @@ export async function createProfileTestJob(request: Request, id: string) {
   } catch (error) {
     await prisma.$transaction(async (tx) => {
       const failedAt = new Date();
-      await tx.generationJob.update({
-        where: { id: job.id },
-        data: { status: "failed", errorCode: "queue_enqueue_failed", completedAt: null, finishedAt: failedAt, deliveredOutputCount: 0, version: { increment: 1 } },
+      await transitionGenerationRequest(tx, {
+        requestId: job.id,
+        to: "failed",
+        expected: { from: "queued", version: job.version },
+        data: {
+          errorCode: "queue_enqueue_failed",
+          completedAt: null,
+          finishedAt: failedAt,
+          deliveredOutputCount: 0,
+        },
       });
       const attempt = await tx.generationAttempt.findFirst({
         where: { requestId: job.id },
