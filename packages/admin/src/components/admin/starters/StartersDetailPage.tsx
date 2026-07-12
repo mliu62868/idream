@@ -189,7 +189,7 @@ export function StartersDetailPage({ id }: { id: string }) {
       statusLabel={row.isActive ? t("Published") : t("Inactive")}
       title={row.name}
     >
-      {error ? <p className="text-sm text-[var(--ad-red-text)]">{error}</p> : null}
+      {error ? <p role="alert" className="text-sm text-[var(--ad-red-text)]">{error}</p> : null}
 
       {mode === "edit" && draft ? (
         <>

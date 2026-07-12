@@ -83,7 +83,7 @@ export function ChatImageToolPanel({ characterId }: { characterId: string }) {
           {enabled ? t("Disable") : t("Enable")}
         </button>
       </div>
-      {error ? <p className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
+      {error ? <p role="alert" className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
     </section>
   );
 }

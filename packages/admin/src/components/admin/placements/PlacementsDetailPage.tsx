@@ -133,7 +133,7 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
       status={row.status}
       title={value(row.slot)}
     >
-      {error ? <p className="text-sm text-[var(--ad-red-text)]">{error}</p> : null}
+      {error ? <p role="alert" className="text-sm text-[var(--ad-red-text)]">{error}</p> : null}
 
       <AssetImage asset={row.asset} />
 

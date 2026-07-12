@@ -163,7 +163,7 @@ function DsarSection() {
           </div>
         </section>
       ) : null}
-      {err ? <p className="mt-2 text-xs text-[var(--ad-red-text)]">{err}</p> : null}
+      {err ? <p role="alert" className="mt-2 text-xs text-[var(--ad-red-text)]">{err}</p> : null}
       {note ? <p className="mt-2 text-xs text-[var(--ad-green-text)]">{note}</p> : null}
       {exported ? (
         <pre className="rounded-lg mt-3 max-h-80 overflow-auto border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 text-xs">
@@ -258,7 +258,7 @@ function AgeVerificationSection() {
           </button>
         </div>
       </div>
-      {error ? <p className="px-3 py-2 text-xs text-[var(--ad-red-text)]">{error}</p> : null}
+      {error ? <p role="alert" className="px-3 py-2 text-xs text-[var(--ad-red-text)]">{error}</p> : null}
       {notice ? <p className="px-3 py-2 text-xs text-[var(--ad-green-text)]">{notice}</p> : null}
       {overrideDraft ? (
         <section className="rounded-lg m-3 border border-[var(--ad-yellow-text)]/20 bg-[var(--ad-yellow-bg)] p-3">

@@ -110,7 +110,7 @@ export function TagsView() {
         purpose={t("Manage the tag vocabulary for characters.")}
         title={t("Tags")}
       />
-      {error ? <p className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
+      {error ? <p role="alert" className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
 
       <MergeSection reload={load} tags={tags} />
 

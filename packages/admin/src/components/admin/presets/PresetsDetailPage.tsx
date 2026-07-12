@@ -197,7 +197,7 @@ export function PresetsDetailPage({ id }: { id: string }) {
       status={row.status}
       title={row.label}
     >
-      {error ? <p className="text-sm text-[var(--ad-red-text)]">{error}</p> : null}
+      {error ? <p role="alert" className="text-sm text-[var(--ad-red-text)]">{error}</p> : null}
 
       {mode === "edit" && draft ? (
         <FormSection title={t("Basic info")}>

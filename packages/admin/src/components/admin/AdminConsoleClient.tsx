@@ -5462,7 +5462,7 @@ function ContentView({
             {t("Save featured")}
           </button>
         </div>
-        {err ? <p className="mt-2 text-xs text-[var(--ad-red-text)]">{err}</p> : null}
+        {err ? <p role="alert" className="mt-2 text-xs text-[var(--ad-red-text)]">{err}</p> : null}
       </section>
       <DataTable columns={["id", "name", "visibility", "status"]} rows={featured} title="Currently featured" />
       <DataTable
@@ -5628,7 +5628,7 @@ function PromoView({
             {t("Create")}
           </button>
         </div>
-        {err ? <p className="mt-2 text-xs text-[var(--ad-red-text)]">{err}</p> : null}
+        {err ? <p role="alert" className="mt-2 text-xs text-[var(--ad-red-text)]">{err}</p> : null}
       </section>
       <DataTable
         actions={(row) => {

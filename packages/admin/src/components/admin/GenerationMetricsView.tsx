@@ -115,7 +115,7 @@ export function GenerationMetricsView() {
           </button>
         </div>
       </div>
-      {error ? <p className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
+      {error ? <p role="alert" className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
 
       <ProfilesTable profiles={metrics?.profiles ?? []} t={t} />
       <RecipesTable recipes={metrics?.recipes ?? []} t={t} />

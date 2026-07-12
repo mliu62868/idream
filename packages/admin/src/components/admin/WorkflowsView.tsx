@@ -74,7 +74,7 @@ export function WorkflowsView() {
           {t("Refresh")}
         </button>
       </div>
-      {error ? <p className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
+      {error ? <p role="alert" className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
 
       <section className="rounded-lg overflow-hidden border border-[var(--ad-border)] bg-[var(--ad-surface)]">
         <table className="w-full text-left text-sm">

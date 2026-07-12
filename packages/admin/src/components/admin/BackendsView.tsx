@@ -139,7 +139,7 @@ export function BackendsView() {
           {t("Refresh")}
         </button>
       </div>
-      {error ? <p className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
+      {error ? <p role="alert" className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
 
       <ReadonlyOpsView
         columns={columns}

@@ -148,7 +148,7 @@ export function AnnouncementsView() {
           {t("Refresh")}
         </button>
       </div>
-      {error ? <p className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
+      {error ? <p role="alert" className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
 
       <CreateAnnouncementForm reload={load} />
 
@@ -356,7 +356,7 @@ function CreateAnnouncementForm({ reload }: { reload: () => void }) {
           {t("Create")}
         </button>
       </div>
-      {err ? <p className="mt-2 text-xs text-[var(--ad-red-text)]">{err}</p> : null}
+      {err ? <p role="alert" className="mt-2 text-xs text-[var(--ad-red-text)]">{err}</p> : null}
     </section>
   );
 }

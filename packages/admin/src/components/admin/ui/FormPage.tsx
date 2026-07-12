@@ -75,7 +75,7 @@ export function FormFooter({
 }) {
   return (
     <div className="sticky bottom-0 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-      {error ? <p className="mb-2 text-sm text-[var(--ad-red-text)]">{error}</p> : null}
+      {error ? <p role="alert" className="mb-2 text-sm text-[var(--ad-red-text)]">{error}</p> : null}
       {notice ? <p className="mb-2 text-sm text-[var(--ad-green-text)]">{notice}</p> : null}
       <div className="flex flex-wrap items-center gap-3">{children}</div>
     </div>

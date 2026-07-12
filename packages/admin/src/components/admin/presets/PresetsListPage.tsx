@@ -105,7 +105,7 @@ export function PresetsListPage() {
           },
         ]}
       />
-      {error ? <p className="mb-4 text-sm text-[var(--ad-red-text)]">{error}</p> : null}
+      {error ? <p role="alert" className="mb-4 text-sm text-[var(--ad-red-text)]">{error}</p> : null}
       {loading ? (
         <p className="text-sm text-[var(--ad-text-muted)]">{t("Loading…")}</p>
       ) : (

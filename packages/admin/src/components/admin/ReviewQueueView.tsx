@@ -172,7 +172,7 @@ export function ReviewQueueView() {
         角色人审队列：仅展示 status=pending 的提交。Approve 将角色置为 approved，Reject 置为 rejected，均需理由并审计。
       </p>
 
-      {error ? <p className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
+      {error ? <p role="alert" className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
 
       <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
@@ -499,7 +499,7 @@ function DecisionDialog({
             placeholder={t("Type {token} to confirm", { token: item.submissionId })}
             value={confirmation}
           />
-          {error ? <p className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
+          {error ? <p role="alert" className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
         </div>
         <div className="mt-4 flex justify-end gap-2">
           <button

@@ -192,7 +192,7 @@ function ProfileHealthSection() {
           </div>
         </section>
       ) : null}
-      {err ? <p className="mt-2 text-xs text-[var(--ad-red-text)]">{err}</p> : null}
+      {err ? <p role="alert" className="mt-2 text-xs text-[var(--ad-red-text)]">{err}</p> : null}
       {note ? <p className="mt-2 text-xs text-[var(--ad-green-text)]">{note}</p> : null}
       {health ? (
         <div className="rounded-lg mt-3 grid grid-cols-2 gap-px overflow-hidden border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
