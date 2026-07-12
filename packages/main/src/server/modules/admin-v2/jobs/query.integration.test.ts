@@ -25,6 +25,7 @@ describe("Generation Jobs v2 server query", () => {
   const artifactId = `jobs-artifact-authority-${suffix}`;
   const attemptEventId = `jobs-attempt-event-${suffix}`;
   const deliveryId = `jobs-delivery-${suffix}`;
+  const failedDeliveryId = `jobs-delivery-failed-${suffix}`;
   const ledgerId = `jobs-ledger-${suffix}`;
   const settlementLinkId = `jobs-settlement-${suffix}`;
   const sameCreatedAt = new Date("2026-07-11T12:00:00.000Z");
@@ -146,6 +147,14 @@ describe("Generation Jobs v2 server query", () => {
       status: "delivered",
       deliveredAt: sameCreatedAt,
     } });
+    await prisma.generationDelivery.create({ data: {
+      id: failedDeliveryId,
+      requestId: jobIds[0],
+      artifactId,
+      targetType: "user_library",
+      targetId: customerId,
+      status: "failed",
+    } });
     await prisma.dreamcoinLedger.create({ data: {
       id: ledgerId,
       userId: customerId,
@@ -170,7 +179,7 @@ describe("Generation Jobs v2 server query", () => {
     await prisma.controlPlaneCommand.deleteMany({ where: { id: { in: commands.map((command) => command.id) } } });
     await prisma.generationSettlementLink.deleteMany({ where: { id: settlementLinkId } });
     await prisma.dreamcoinLedger.deleteMany({ where: { id: ledgerId } });
-    await prisma.generationDelivery.deleteMany({ where: { id: deliveryId } });
+    await prisma.generationDelivery.deleteMany({ where: { id: { in: [deliveryId, failedDeliveryId] } } });
     const attempts = await prisma.generationAttempt.findMany({ where: { requestId: { in: jobIds } }, select: { id: true } });
     await prisma.generationTransportExecution.deleteMany({ where: { attemptId: { in: attempts.map((attempt) => attempt.id) } } });
     await prisma.generationArtifact.deleteMany({ where: { attemptId: { in: attempts.map((attempt) => attempt.id) } } });
@@ -350,6 +359,9 @@ describe("Generation Jobs v2 server query", () => {
     ]);
     expect(detail.events).toEqual([expect.objectContaining({ id: attemptEventId, outcome: "failed" })]);
     expect(detail.artifacts).toEqual([expect.objectContaining({ id: artifactId, validationState: "rejected" })]);
+    expect(detail.deliveries).toEqual([
+      expect.objectContaining({ id: failedDeliveryId, status: "failed", deliveredAt: null }),
+    ]);
     expect(detail.settlementEntries).toEqual([expect.objectContaining({ ledgerEntryId: ledgerId, deltaDreamcoins: -9 })]);
 
     const idempotencyKey = `jobs-v2-retry-${suffix}`;
