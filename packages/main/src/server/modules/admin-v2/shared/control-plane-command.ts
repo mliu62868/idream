@@ -4,6 +4,7 @@ import { canonicalSha256 } from "./canonical-json";
 import { toInputJson } from "./prisma-json";
 import { Errors } from "@/server/lib/errors";
 import { logger } from "@/server/lib/logger";
+import { isControlPlaneCommandTransitionAllowed } from "./state-transition-authority";
 
 export interface CanonicalCommandRequest {
   readonly commandType: string;
@@ -248,7 +249,7 @@ export async function claimControlPlaneCommand(
   const candidate = await db.controlPlaneCommand.findUnique({ where: { id: input.commandId } });
   if (
     !candidate ||
-    candidate.status !== "accepted" ||
+    !isControlPlaneCommandTransitionAllowed(candidate.status, "running") ||
     candidate.leaseOwner !== null ||
     candidate.attemptCount >= candidate.maxAttempts
   ) {
@@ -295,6 +296,10 @@ export async function reconcileExpiredCommandLeases(db: PrismaClient, now = new 
     await db.$transaction(async (tx) => {
       const exhausted = command.attemptCount >= command.maxAttempts;
       const canReplay = command.retryMode === "idempotent" && !exhausted;
+      const nextStatus = canReplay ? "accepted" : "failed";
+      if (!isControlPlaneCommandTransitionAllowed(command.status, nextStatus)) {
+        throw new Error(`ControlPlaneCommand transition ${command.status} -> ${nextStatus} is not allowed`);
+      }
       const updated = await tx.controlPlaneCommand.updateMany({
         where: {
           id: command.id,
@@ -303,7 +308,7 @@ export async function reconcileExpiredCommandLeases(db: PrismaClient, now = new 
           leaseExpiresAt: command.leaseExpiresAt,
         },
         data: {
-          status: canReplay ? "accepted" : "failed",
+          status: nextStatus,
           needsReconciliation: !canReplay,
           leaseOwner: null,
           leaseExpiresAt: null,

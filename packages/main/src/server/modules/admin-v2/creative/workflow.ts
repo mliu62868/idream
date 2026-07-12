@@ -4,6 +4,10 @@ import { Errors } from "@/server/lib/errors";
 import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { deriveCreativeRunState, type CreativeRunLedgerFact } from "@/server/modules/admin/content-production-state";
 import { toInputJson } from "../shared/prisma-json";
+import {
+  isCreativeRunItemTransitionAllowed,
+  isCreativeRunLifecycleTransitionAllowed,
+} from "../shared/state-transition-authority";
 import { resolveCommunityCampaignPlacements } from "@/server/modules/ourdream/community-campaigns";
 import {
   creativeRunListResponseSchema,
@@ -162,11 +166,20 @@ export async function recordCreativeReviewDecision(input: {
     if (run.version !== input.expectedVersion) {
       throw Errors.conflict("Creative Run changed before review", { currentVersion: run.version });
     }
+    if (!isCreativeRunLifecycleTransitionAllowed(run.lifecycleState, "active")) {
+      throw Errors.conflict("Creative Run is not active for review", { lifecycleState: run.lifecycleState });
+    }
     const item = await tx.contentProductionItem.findFirst({
       where: { id: input.itemId, batchId: run.id },
       include: { mediaAsset: true, job: { include: { assets: { orderBy: { createdAt: "asc" } } } } },
     });
     if (!item) throw Errors.notFound("Creative Run item not found");
+    if (!isCreativeRunItemTransitionAllowed(item.status, input.decision)) {
+      throw Errors.conflict("Creative Run item cannot enter the requested review state", {
+        from: item.status,
+        to: input.decision,
+      });
+    }
     const asset = item.mediaAsset ?? item.job?.assets[0] ?? null;
     if (!asset || asset.deletedAt || asset.safetyStatus !== "passed") {
       throw Errors.badRequest("Only a valid generated asset can be reviewed");
@@ -277,11 +290,17 @@ export async function publishDistributionPlacement(input: {
     if (run.version !== input.expectedVersion) {
       throw Errors.conflict("Creative Run changed before placement", { currentVersion: run.version });
     }
+    if (!isCreativeRunLifecycleTransitionAllowed(run.lifecycleState, run.lifecycleState)) {
+      throw Errors.conflict("Creative Run cannot accept placement in its present lifecycle", { lifecycleState: run.lifecycleState });
+    }
     const item = await tx.contentProductionItem.findFirst({
       where: { id: input.itemId, batchId: run.id, mediaAssetId: input.assetId },
       include: { mediaAsset: true },
     });
     if (!item || !item.mediaAsset) throw Errors.notFound("Approved Creative asset not found");
+    if (!isCreativeRunItemTransitionAllowed(item.status, "published")) {
+      throw Errors.conflict("Creative Run item must be approved before placement", { status: item.status });
+    }
     if (item.mediaAsset.deletedAt || item.mediaAsset.safetyStatus !== "passed") {
       throw Errors.badRequest("Placement asset is not valid");
     }
@@ -420,6 +439,13 @@ export async function verifyCreativePlacement(input: {
     };
     const passed = Object.values(checks).every(Boolean);
     const verificationState = passed ? "passed" : "failed";
+    const nextLifecycleState = passed ? "closed" : "active";
+    if (!isCreativeRunLifecycleTransitionAllowed(run.lifecycleState, nextLifecycleState)) {
+      throw Errors.conflict("Creative Run cannot accept placement verification in its present lifecycle", {
+        from: run.lifecycleState,
+        to: nextLifecycleState,
+      });
+    }
     const verifiedAt = new Date();
     await tx.mediaAssetPlacement.update({
       where: { id: placement.id },
@@ -441,7 +467,7 @@ export async function verifyCreativePlacement(input: {
       data: {
         workflowStage: "verification",
         verificationState,
-        lifecycleState: passed ? "closed" : "active",
+        lifecycleState: nextLifecycleState,
         status: passed ? "completed" : "reviewing",
         version: { increment: 1 },
       },

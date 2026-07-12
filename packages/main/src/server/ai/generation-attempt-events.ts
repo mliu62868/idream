@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
+import { isGenerationAttemptTransitionAllowed } from "@/server/modules/admin-v2/shared/state-transition-authority";
 
 export const GENERATION_ATTEMPT_TERMINAL_OUTCOMES = [
   "succeeded",
@@ -131,19 +132,10 @@ export async function recordGenerationAttemptEvent(
   }
 
   const attempt = await tx.generationAttempt.findUniqueOrThrow({ where: { id: input.attemptId } });
-  if (input.outcome) {
-    if (
-      GENERATION_ATTEMPT_TERMINAL_OUTCOMES.includes(
-        attempt.status as GenerationAttemptTerminalOutcome,
-      ) && attempt.status !== input.outcome
-    ) {
-      throw new GenerationAttemptEventConflictError(
-        `Attempt status ${attempt.status} conflicts with terminal outcome ${input.outcome}`,
-      );
-    }
-  } else if (GENERATION_ATTEMPT_TERMINAL_OUTCOMES.includes(attempt.status as GenerationAttemptTerminalOutcome)) {
+  const nextStatus = input.outcome ?? input.status;
+  if (nextStatus && !isGenerationAttemptTransitionAllowed(attempt.status, nextStatus)) {
     throw new GenerationAttemptEventConflictError(
-      `Generation Attempt ${input.attemptId} is already terminal (${attempt.status})`,
+      `Generation Attempt transition ${attempt.status} -> ${nextStatus} is not allowed`,
     );
   }
 

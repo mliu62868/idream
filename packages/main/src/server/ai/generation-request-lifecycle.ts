@@ -10,6 +10,7 @@ import {
   recordGenerationAttemptQueuedEvent,
 } from "./generation-attempt-events";
 import { ensureGenerationSettlementLinks, linkGenerationLedgerEntry } from "./generation-settlement";
+import { isGenerationRequestAdminTransitionAllowed } from "@/server/modules/admin-v2/shared/state-transition-authority";
 
 export async function cancelGenerationRequest(input: {
   readonly requestId: string;
@@ -31,7 +32,7 @@ export async function cancelGenerationRequest(input: {
     const job = await tx.generationJob.findUnique({ where: { id: input.requestId } });
     if (!job) throw Errors.notFound("Generation Request not found");
     if (job.version !== input.expectedVersion) throw Errors.conflict("Generation Request changed before cancellation");
-    if (!["queued", "moderating_input", "running", "moderating_output"].includes(job.status)) throw Errors.conflict("Only a processing Generation Request can be cancelled");
+    if (!isGenerationRequestAdminTransitionAllowed(job.status, "cancelled")) throw Errors.conflict("Only a processing Generation Request can be cancelled");
     await tx.$queryRaw`SELECT id FROM "generation_jobs" WHERE id = ${job.id} FOR UPDATE`;
     const cancelledAt = new Date();
     const attempt = await tx.generationAttempt.findFirst({ where: { requestId: job.id }, orderBy: { attemptNo: "desc" } });
@@ -93,7 +94,7 @@ export async function retryGenerationRequest(input: {
         currentVersion: job.version,
       });
     }
-    if (job.status !== "failed") {
+    if (!isGenerationRequestAdminTransitionAllowed(job.status, "queued")) {
       throw Errors.conflict("Only a failed Generation Request can be retried", { status: job.status });
     }
     const delivered = await tx.generationDelivery.count({

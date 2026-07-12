@@ -4,6 +4,7 @@ import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { canonicalSha256 } from "../shared/canonical-json";
 import { toInputJson } from "../shared/prisma-json";
+import { isIncidentTransitionAllowed } from "../shared/state-transition-authority";
 
 const INCIDENT_SIGNATURE_VERSION = "generation-error-v1";
 const OPEN_INCIDENT_STATUSES = ["detected", "triaged", "mitigating", "monitoring"] as const;
@@ -487,6 +488,9 @@ export async function executeIncidentActionPlan(input: {
       currentVersion: incident.version,
     });
   }
+  if (!isIncidentTransitionAllowed(incident.status, "mitigating")) {
+    throw Errors.conflict("Incident cannot enter mitigation from its present state", { status: incident.status });
+  }
   const snapshot = await occurrenceSnapshot(prisma, input.incidentId);
   const eligibleIds = eligibleOccurrenceIds(plan.action, snapshot);
   const skippedIds = snapshot.map((row) => row.id).filter((id) => !eligibleIds.includes(id)).sort();
@@ -647,7 +651,7 @@ export async function mergeIncidents(input: {
     if (sources.some((row) => !row)) throw Errors.notFound("One or more merge source Incidents were not found");
     for (const source of sources) {
       if (source!.version !== sourceVersions.get(source!.id)) throw Errors.conflict("A merge source changed before execution", { incidentId: source!.id });
-      if (["merged", "closed"].includes(source!.status)) throw Errors.conflict("Terminal merged or closed Incidents cannot be merge sources", { incidentId: source!.id });
+      if (!isIncidentTransitionAllowed(source!.status, "merged")) throw Errors.conflict("Incident cannot be merged from its present state", { incidentId: source!.id, status: source!.status });
     }
     const occurrences = await tx.opsIncidentOccurrence.findMany({ where: { incidentId: { in: sourceIds } } });
     for (const source of sources) {
@@ -683,7 +687,7 @@ export async function closeIncidentWithPostmortem(input: {
     const incident = await tx.opsIncident.findUnique({ where: { id: input.incidentId } });
     if (!incident) throw Errors.notFound("Incident not found");
     if (incident.version !== input.expectedVersion) throw Errors.conflict("Incident changed before close");
-    if (incident.status !== "resolved") throw Errors.conflict("Incident must be resolved before postmortem close");
+    if (!isIncidentTransitionAllowed(incident.status, "closed")) throw Errors.conflict("Incident must be resolved before postmortem close");
     if (!["passed", "overridden"].includes(incident.verificationState)) throw Errors.conflict("Recovery verification is required before close");
     const postmortem = await tx.incidentPostmortem.create({ data: { incidentId: incident.id, summary: input.summary, rootCause: input.rootCause, contributingFactors: [...input.contributingFactors], correctiveActions: [...input.correctiveActions], evidenceRefs: [...input.evidenceRefs], createdById: input.actor.id } });
     const closed = await tx.opsIncident.update({ where: { id: incident.id }, data: { status: "closed", activeCorrelationKey: null, version: { increment: 1 }, mitigation: toInputJson({ ...asRecord(incident.mitigation), postmortemId: postmortem.id }) } });

@@ -4,6 +4,11 @@ import { enqueueGenerationAttempt } from "@/server/modules/generation/attempt-di
 import { recordGenerationAttemptQueuedEvent } from "@/server/ai/generation-attempt-events";
 import { claimControlPlaneCommand } from "../shared/control-plane-command";
 import { toInputJson } from "../shared/prisma-json";
+import {
+  isControlPlaneCommandTransitionAllowed,
+  isCreativeRunItemTransitionAllowed,
+  isCreativeRunLifecycleTransitionAllowed,
+} from "../shared/state-transition-authority";
 
 const TERMINAL_ATTEMPT_STATES = new Set(["succeeded", "failed", "cancelled", "unknown"]);
 const HEALTHY_VERIFICATION_STATES = new Set(["passed", "verified", "manual_passed"]);
@@ -105,6 +110,9 @@ export async function executeCreativeRetryCommand(
           actualVersion: run.version,
         });
       }
+      if (!isCreativeRunLifecycleTransitionAllowed(run.lifecycleState, "active")) {
+        throw Errors.conflict("Creative Run is not active for retry", { lifecycleState: run.lifecycleState });
+      }
       const failedItemIds = stringArray(record(claimed.requestPayload).failedItemIds as Prisma.JsonValue);
       if (failedItemIds.length === 0) throw Errors.conflict("Retry command has no frozen failed-item set");
       const items = run.items.filter((item) => failedItemIds.includes(item.id));
@@ -114,7 +122,7 @@ export async function executeCreativeRetryCommand(
 
       const attemptIds: string[] = [];
       for (const item of items) {
-        if (item.status !== "failed" || !item.job) {
+        if (!isCreativeRunItemTransitionAllowed(item.status, "regenerate_requested") || !item.job) {
           throw Errors.conflict("Creative item is no longer retryable", { itemId: item.id });
         }
         const latest = await tx.generationAttempt.findFirst({
@@ -216,6 +224,9 @@ export async function executeCreativeRetryCommand(
           requestId: claimed.requestId,
         },
       });
+      if (!isControlPlaneCommandTransitionAllowed(claimed.status, "verifying")) {
+        throw Errors.conflict("Creative retry command cannot enter verification", { status: claimed.status });
+      }
       return tx.controlPlaneCommand.update({
         where: { id: claimed.id },
         data: {

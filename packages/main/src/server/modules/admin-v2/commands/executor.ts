@@ -5,6 +5,11 @@ import { toInputJson } from "../shared/prisma-json";
 import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { executeCreativeRetryCommand } from "../creative/retry-executor";
 import { executeIncidentActionPlanCommand } from "../incidents/action-executor";
+import {
+  isAdminCaseTransitionAllowed,
+  isControlPlaneCommandTransitionAllowed,
+  isIncidentTransitionAllowed,
+} from "../shared/state-transition-authority";
 
 const WORKER_ID = "admin-v2-inline-executor";
 
@@ -44,7 +49,7 @@ async function executeResolveIncident(commandId: string) {
       const incident = await tx.opsIncident.findUnique({ where: { id: claimed.targetId } });
       if (!incident) throw Errors.notFound("Incident not found during command execution");
       if (incident.version !== claimed.expectedVersion) throw Errors.conflict("Incident changed before resolve execution");
-      if (incident.status !== "monitoring" || !["passed", "overridden"].includes(incident.verificationState)) {
+      if (!isIncidentTransitionAllowed(incident.status, "resolved") || !["passed", "overridden"].includes(incident.verificationState)) {
         throw Errors.conflict("Incident recovery verification is not complete");
       }
       const updated = await tx.opsIncident.update({
@@ -77,6 +82,9 @@ async function executeResolveIncident(commandId: string) {
         },
       });
       const result = { incidentId: incident.id, status: updated.status, version: updated.version, verificationState: updated.verificationState };
+      if (!isControlPlaneCommandTransitionAllowed(claimed.status, "succeeded")) {
+        throw Errors.conflict("Incident resolve command cannot succeed from its present state", { status: claimed.status });
+      }
       const command = await tx.controlPlaneCommand.update({
         where: { id: claimed.id },
         data: {
@@ -113,7 +121,7 @@ async function executeCloseCase(commandId: string) {
       if (!adminCase) throw Errors.notFound("Case not found during command execution");
       if (adminCase.version !== claimed.expectedVersion) throw Errors.conflict("Case changed before close execution");
       if (
-        adminCase.status !== "resolved" ||
+        !isAdminCaseTransitionAllowed(adminCase.status, "closed") ||
         adminCase.resolution === null ||
         !["passed", "overridden"].includes(adminCase.verificationState)
       ) {
@@ -145,6 +153,9 @@ async function executeCloseCase(commandId: string) {
         },
       });
       const result = { caseId: adminCase.id, status: updated.status, version: updated.version, verificationState: updated.verificationState };
+      if (!isControlPlaneCommandTransitionAllowed(claimed.status, "succeeded")) {
+        throw Errors.conflict("Case close command cannot succeed from its present state", { status: claimed.status });
+      }
       const command = await tx.controlPlaneCommand.update({
         where: { id: claimed.id },
         data: {

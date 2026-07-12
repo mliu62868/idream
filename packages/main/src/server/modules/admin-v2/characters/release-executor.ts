@@ -7,6 +7,10 @@ import {
   referenceSetSnapshotHash,
 } from "./release-snapshot";
 import { releaseMonitorDueAt } from "./release-monitor";
+import {
+  isCharacterReleaseTransitionAllowed,
+  isCharacterServingTransitionAllowed,
+} from "../shared/state-transition-authority";
 
 export const CHARACTER_RELEASE_POLICY_VERSION = "character-release-policy-v2";
 
@@ -523,7 +527,7 @@ async function executeSchedule(
     );
   if (
     release.version !== command.expectedVersion ||
-    release.status !== "approved"
+    !isCharacterReleaseTransitionAllowed(release.status, "published")
   ) {
     throw new ReleaseCommandError(
       "release_version_conflict",
@@ -717,6 +721,13 @@ async function publishRelease(
       "Another Release is scheduled",
     );
   }
+  if (!isCharacterServingTransitionAllowed(serving.state, "live")) {
+    throw new ReleaseCommandError(
+      "serving_state_conflict",
+      "CharacterServing cannot become live from its present state",
+      { servingState: serving.state },
+    );
+  }
   const servingUpdate = await tx.characterServing.updateMany({
     where: {
       id: serving.id,
@@ -737,6 +748,21 @@ async function publishRelease(
       "CharacterServing changed while publishing",
     );
   if (serving.currentReleaseId) {
+    const currentRelease = await tx.characterRelease.findUnique({
+      where: { id: serving.currentReleaseId },
+      select: { status: true },
+    });
+    if (
+      currentRelease &&
+      !isCharacterReleaseTransitionAllowed(currentRelease.status, "superseded")
+    ) {
+      throw new ReleaseCommandError(
+        "current_release_transition_invalid",
+        "Current Release cannot be superseded from its present state",
+        { releaseId: serving.currentReleaseId, status: currentRelease.status },
+        true,
+      );
+    }
     await tx.characterRelease.updateMany({
       where: { id: serving.currentReleaseId, status: "published" },
       data: { status: "superseded", version: { increment: 1 } },
@@ -934,7 +960,10 @@ async function executeServingState(
   const retiring = command.commandType === "character.serving.retire";
   const expectedState = pausing || retiring ? "live" : "paused";
   const nextState = retiring ? "retired" : pausing ? "paused" : "live";
-  if (serving.state !== expectedState) {
+  if (
+    serving.state !== expectedState ||
+    !isCharacterServingTransitionAllowed(serving.state, nextState)
+  ) {
     throw new ReleaseCommandError(
       "serving_state_conflict",
       `Serving must be ${expectedState} before ${nextState}`,

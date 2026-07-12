@@ -381,6 +381,21 @@ describe("Creative retry through verified placement", () => {
     expect(mutationReceipts.filter(({ commandType }) => commandType === "creative.review.decision")).toHaveLength(1);
     expect(mutationReceipts.filter(({ commandType }) => commandType === "creative.placement.publish")).toHaveLength(2);
     expect(mutationReceipts.filter(({ commandType }) => commandType === "creative.placement.verify")).toHaveLength(2);
+
+    const publishedReview = await decideItem(
+      request(`/api/v2/admin/creative/runs/${runId}/items/${itemId}/decisions`, {
+        entityVersion: 9,
+        decision: "rejected",
+        identityConsistency: "failed",
+        reason: "A published immutable item cannot be rewritten by a later review",
+      }),
+      { params: Promise.resolve({ id: runId, itemId }) },
+    );
+    expect(publishedReview.status).toBe(409);
+    expect(await prisma.creativeReviewDecision.count({ where: { runItemId: itemId } })).toBe(1);
+    expect(await prisma.controlPlaneCommand.count({
+      where: { actorId: adminId, commandType: "creative.review.decision" },
+    })).toBe(1);
   });
 
   it("scans past non-matching derived outcomes without returning an unpageable false empty", async () => {

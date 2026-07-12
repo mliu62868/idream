@@ -4,6 +4,7 @@ import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { canonicalSha256 } from "../shared/canonical-json";
 import { toInputJson } from "../shared/prisma-json";
+import { isIncidentTransitionAllowed } from "../shared/state-transition-authority";
 
 type Actor = { readonly id: string; readonly role: string };
 type Db = Prisma.TransactionClient;
@@ -278,8 +279,9 @@ export async function triageIncidentInTransaction(
   const current = await tx.opsIncident.findUnique({ where: { id: input.incidentId } });
   if (!current) throw Errors.notFound("Incident not found");
   if (current.version !== input.expectedVersion) throw Errors.conflict("Incident version changed");
-  if (["resolved", "closed", "duplicate", "merged"].includes(current.status)) {
-    throw Errors.conflict("Terminal Incident cannot be triaged");
+  const nextStatus = current.status === "detected" ? "triaged" : current.status;
+  if (!isIncidentTransitionAllowed(current.status, nextStatus)) {
+    throw Errors.conflict("Incident cannot be triaged from its present state", { status: current.status });
   }
   if (input.ownerId) {
     const owner = await tx.user.findUnique({ where: { id: input.ownerId }, select: { role: true, status: true } });
@@ -295,7 +297,7 @@ export async function triageIncidentInTransaction(
   const updated = await tx.opsIncident.update({
     where: { id: current.id, version: current.version },
     data: {
-      status: current.status === "detected" ? "triaged" : current.status,
+      status: nextStatus,
       ownerId: input.ownerId,
       severity: input.severity,
       slaDueAt: input.slaDueAt,
@@ -354,7 +356,7 @@ export async function verifyIncidentRecovery(input: {
     const current = await tx.opsIncident.findUnique({ where: { id: input.incidentId } });
     if (!current) throw Errors.notFound("Incident not found");
     if (current.version !== input.expectedVersion) throw Errors.conflict("Incident version changed");
-    if (!["mitigating", "monitoring"].includes(current.status)) {
+    if (!isIncidentTransitionAllowed(current.status, "monitoring")) {
       throw Errors.conflict("Incident must be mitigating or monitoring before recovery verification");
     }
     const now = input.now ?? new Date();

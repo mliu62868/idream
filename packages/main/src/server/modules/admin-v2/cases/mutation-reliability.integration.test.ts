@@ -9,6 +9,7 @@ describe("Case mutation reliability", () => {
   const ownerId = `case-reliability-owner-${suffix}`;
   const caseId = `case-reliability-${suffix}`;
   const rollbackCaseId = `case-reliability-rollback-${suffix}`;
+  const terminalCaseId = `case-reliability-terminal-${suffix}`;
   const context = { params: Promise.resolve({ id: caseId }) };
 
   function assignmentRequest(headers: Record<string, string> = {}, body: Record<string, unknown> = {}) {
@@ -51,13 +52,23 @@ describe("Case mutation reliability", () => {
       priority: "normal",
       verificationState: "pending",
     } });
+    await prisma.adminCase.create({ data: {
+      id: terminalCaseId,
+      type: "support_request",
+      targetType: "user",
+      targetId: `terminal-customer-${suffix}`,
+      caseKey: `terminal-${suffix}`,
+      status: "closed",
+      priority: "normal",
+      verificationState: "passed",
+    } });
   });
 
   afterAll(async () => {
-    await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: { in: [caseId, rollbackCaseId] } } });
-    await prisma.adminAuditLog.deleteMany({ where: { targetId: { in: [caseId, rollbackCaseId] } } });
-    await prisma.controlPlaneCommand.deleteMany({ where: { targetId: { in: [caseId, rollbackCaseId] } } });
-    await prisma.adminCase.deleteMany({ where: { id: { in: [caseId, rollbackCaseId] } } });
+    await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: { in: [caseId, rollbackCaseId, terminalCaseId] } } });
+    await prisma.adminAuditLog.deleteMany({ where: { targetId: { in: [caseId, rollbackCaseId, terminalCaseId] } } });
+    await prisma.controlPlaneCommand.deleteMany({ where: { targetId: { in: [caseId, rollbackCaseId, terminalCaseId] } } });
+    await prisma.adminCase.deleteMany({ where: { id: { in: [caseId, rollbackCaseId, terminalCaseId] } } });
     await prisma.user.deleteMany({ where: { id: { in: [actorId, ownerId] } } });
     await prisma.$disconnect();
   });
@@ -66,6 +77,30 @@ describe("Case mutation reliability", () => {
     const response = await assignCaseRoute(assignmentRequest({ "x-request-id": `missing-${suffix}` }), context);
     expect(response.status).toBe(400);
     await expect(prisma.adminCase.findUniqueOrThrow({ where: { id: caseId } })).resolves.toMatchObject({ ownerId: null, version: 1 });
+  });
+
+  it("rejects assignment from a terminal Case without persisting side effects", async () => {
+    const response = await assignCaseRoute(new Request(`http://localhost/api/v2/admin/cases/${terminalCaseId}/assignment`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-idream-user-id": actorId,
+        "x-idream-role": "admin",
+        "x-request-id": `terminal-${suffix}`,
+        "idempotency-key": `terminal-${suffix}`,
+      },
+      body: JSON.stringify({ entityVersion: 1, ownerId, reason: "Terminal assignment must fail closed" }),
+    }), { params: Promise.resolve({ id: terminalCaseId }) });
+
+    expect(response.status).toBe(409);
+    await expect(prisma.adminCase.findUniqueOrThrow({ where: { id: terminalCaseId } })).resolves.toMatchObject({
+      status: "closed",
+      ownerId: null,
+      version: 1,
+    });
+    await expect(prisma.adminAuditLog.count({ where: { targetId: terminalCaseId } })).resolves.toBe(0);
+    await expect(prisma.mainOutboxEvent.count({ where: { aggregateId: terminalCaseId } })).resolves.toBe(0);
+    await expect(prisma.controlPlaneCommand.count({ where: { targetId: terminalCaseId } })).resolves.toBe(0);
   });
 
   it("replays the exact assignment result and rejects a changed payload", async () => {

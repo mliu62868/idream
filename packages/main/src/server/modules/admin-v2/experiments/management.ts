@@ -11,6 +11,7 @@ import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { canonicalJsonEqual, requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
+import { isExperimentTransitionAllowed } from "@/server/modules/admin-v2/shared/state-transition-authority";
 
 function definitionDto(row: Awaited<ReturnType<typeof prisma.experimentDefinition.findFirstOrThrow>>) {
   const rawMetrics = row.metrics !== null && typeof row.metrics === "object" && !Array.isArray(row.metrics) ? row.metrics : {};
@@ -156,7 +157,12 @@ async function transitionExperiment(request: Request, id: string, transition: "s
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${candidate.key}))`;
     const current = await tx.experimentDefinition.findUniqueOrThrow({ where: { id } });
     const expectedStatus = transition === "start" ? "draft" : "running";
-    if (current.status !== expectedStatus || current.stateVersion !== input.expectedStateVersion) throw Errors.conflict("Experiment lifecycle changed; reload before retrying");
+    const nextStatus = transition === "start" ? "running" : "stopped";
+    if (
+      current.status !== expectedStatus ||
+      !isExperimentTransitionAllowed(current.status, nextStatus) ||
+      current.stateVersion !== input.expectedStateVersion
+    ) throw Errors.conflict("Experiment lifecycle changed; reload before retrying");
     if (transition === "start") {
       const blockers = knownExperimentSurfaceBlockers(current);
       if (blockers.length > 0) {

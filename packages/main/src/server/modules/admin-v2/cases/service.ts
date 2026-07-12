@@ -8,6 +8,7 @@ import {
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { toInputJson } from "../shared/prisma-json";
+import { isAdminCaseTransitionAllowed } from "../shared/state-transition-authority";
 
 type Db = PrismaClient | Prisma.TransactionClient;
 type Actor = { readonly id: string; readonly role: string };
@@ -696,7 +697,10 @@ export async function assignReviewCaseInTransaction(
       throw Errors.badRequest("Case owner must be an active operator");
     }
   }
-  const nextStatus = current.status === "new" ? "triaged" : current.status;
+  const nextStatus = ["new", "reopened"].includes(current.status) ? "triaged" : current.status;
+  if (!isAdminCaseTransitionAllowed(current.status, nextStatus)) {
+    throw Errors.conflict("Case cannot be assigned from its present state", { status: current.status });
+  }
   const updated = await tx.adminCase.update({
     where: { id: current.id, version: current.version },
     data: {
@@ -773,8 +777,9 @@ export async function recordReviewCaseDecision(
       actionEndpoint: `/api/v2/admin/cases/${current.id}/actions`,
     });
   }
-  if (["closed", "resolved"].includes(current.status)) {
-    throw Errors.conflict("Terminal case must be reopened before a new decision");
+  const nextStatus = input.downstreamVerified ? "resolved" : "in_progress";
+  if (!isAdminCaseTransitionAllowed(current.status, nextStatus)) {
+    throw Errors.conflict("Case cannot accept a decision from its present state", { status: current.status });
   }
   const evidence = await db.caseEvidence.count({
     where: { caseId: current.id, id: { in: [...input.evidenceRefs] } },
@@ -795,7 +800,7 @@ export async function recordReviewCaseDecision(
   const updated = await db.adminCase.update({
     where: { id: current.id, version: current.version },
     data: {
-      status: input.downstreamVerified ? "resolved" : "in_progress",
+      status: nextStatus,
       activeKey: input.downstreamVerified ? null : current.activeKey,
       resolution: toInputJson(resolution),
       verificationState: input.downstreamVerified ? "passed" : "pending",
@@ -927,6 +932,13 @@ export async function verifyReviewCase(input: {
       });
     }
     const verifiedAt = new Date();
+    const nextStatus = input.state === "failed" ? "in_progress" : "resolved";
+    if (!isAdminCaseTransitionAllowed(current.status, nextStatus)) {
+      throw Errors.conflict("Case cannot accept verification from its present state", {
+        from: current.status,
+        to: nextStatus,
+      });
+    }
     const resolution = {
       ...(current.resolution as Record<string, unknown>),
       verification: {
@@ -940,7 +952,7 @@ export async function verifyReviewCase(input: {
     const updated = await tx.adminCase.update({
       where: { id: current.id, version: current.version },
       data: {
-        status: input.state === "failed" ? "in_progress" : "resolved",
+        status: nextStatus,
         activeKey: input.state === "failed"
           ? current.activeKey ?? `${current.type}:${current.targetType}:${current.targetId}:${current.caseKey}`
           : null,
@@ -1026,8 +1038,8 @@ export async function recordCustomerCaseAction(input: {
       });
     }
     if (current.version !== input.expectedVersion) throw Errors.conflict("Case version changed");
-    if (["resolved", "closed"].includes(current.status)) {
-      throw Errors.conflict("Terminal Case must be reopened before another action");
+    if (!isAdminCaseTransitionAllowed(current.status, "in_progress")) {
+      throw Errors.conflict("Case cannot accept an action from its present state", { status: current.status });
     }
     const evidenceCount = await tx.caseEvidence.count({
       where: { caseId: current.id, id: { in: [...input.evidenceRefs] } },
@@ -1129,7 +1141,7 @@ export async function waitCase(input: {
     if (!current) throw Errors.notFound("Case not found");
     assertCaseScope(current, input.actor);
     if (current.version !== input.expectedVersion) throw Errors.conflict("Case version changed");
-    if (!["new", "triaged", "in_progress", "reopened"].includes(current.status)) {
+    if (!isAdminCaseTransitionAllowed(current.status, "waiting")) {
       throw Errors.conflict("Only active Cases can enter waiting state");
     }
     const prior = current.resolution && typeof current.resolution === "object" && !Array.isArray(current.resolution)
@@ -1181,7 +1193,7 @@ export async function reopenOrRecurCase(input: {
     if (!current) throw Errors.notFound("Case not found");
     assertCaseScope(current, input.actor);
     if (current.version !== input.expectedVersion) throw Errors.conflict("Case version changed");
-    if (!["resolved", "closed"].includes(current.status)) throw Errors.conflict("Only terminal Cases can be reopened");
+    if (!isAdminCaseTransitionAllowed(current.status, "reopened")) throw Errors.conflict("Only terminal Cases can be reopened");
     const activeKey = `${current.type}:${current.targetType}:${current.targetId}:${current.caseKey}`;
     const existingActive = await tx.adminCase.findFirst({ where: { activeKey, id: { not: current.id } }, select: { id: true } });
     if (existingActive) throw Errors.conflict("A recurrence of this Case is already active", { activeCaseId: existingActive.id });
