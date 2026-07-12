@@ -1,4 +1,4 @@
-import { adminBootstrapSchema } from "@idream/shared/admin";
+import { adminBootstrapResponseSchema, adminBootstrapSchema } from "@idream/shared/admin";
 import { deriveAdminShellSignals } from "@/server/admin/shell-signals";
 import { DEV_ADMIN_ACCOUNT_HINTS } from "@/server/admin/dev-login-accounts";
 import { devLoginEnabled } from "@/server/admin/dev-login";
@@ -30,6 +30,6 @@ export async function GET(request: Request) {
       },
       shellSignals: deriveAdminShellSignals(process.env),
     });
-    return ok({ bootstrap });
+    return ok(adminBootstrapResponseSchema.parse({ bootstrap }));
   });
 }

@@ -1,9 +1,23 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { renderPrometheusMetrics, resetMetricsForTests } from "@idream/shared";
+import {
+  findAdminV2ApiOperation,
+  renderPrometheusMetrics,
+  requireExecutableAdminV2Contract,
+  resetMetricsForTests,
+} from "@idream/shared";
 import { BFF_HEADER, BFF_USER_HEADER, verifyBffContext, type BffContext } from "@idream/shared/bff";
 import { proxyToMain } from "./main-proxy";
 
 const SIGNING_SECRET = "admin-bff-test-secret-at-least-32-characters";
+
+function validV2Response(method: string, pathname: string) {
+  const operation = findAdminV2ApiOperation(method, pathname);
+  if (!operation) throw new Error(`Missing manifest operation for ${method} ${pathname}`);
+  return Response.json({
+    ok: true,
+    data: requireExecutableAdminV2Contract(operation.contract.response).fixtures.valid,
+  });
+}
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -12,6 +26,34 @@ afterEach(() => {
 });
 
 describe("Admin main HTTP proxy", () => {
+  it("fails closed when a successful Admin v2 response violates its manifest contract", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ok: true, data: {} })));
+
+    const response = await proxyToMain(
+      new Request("http://admin.local/api/v2/admin/bootstrap"),
+      "/api/v2/admin/bootstrap",
+    );
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "admin_v2_response_contract_violation",
+        operationId: "GET /api/v2/admin/bootstrap",
+      },
+    });
+  });
+
+  it("passes a manifest-valid Admin v2 response through unchanged", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => validV2Response("GET", "/api/v2/admin/bootstrap")));
+
+    const response = await proxyToMain(
+      new Request("http://admin.local/api/v2/admin/bootstrap"),
+      "/api/v2/admin/bootstrap",
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ ok: true, data: { bootstrap: {} } });
+  });
   it("forwards method, query, cookie, and body without hop-by-hop headers", async () => {
     vi.stubEnv("ADMIN_BFF_SIGNING_SECRET", SIGNING_SECRET);
     const fetchMock = vi.fn(async (target: URL, init: RequestInit) => {
@@ -138,7 +180,7 @@ describe("Admin main HTTP proxy", () => {
   });
 
   it("classifies every v2 mutation as a command for the command-accept SLO", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response('{"ok":true}', { status: 200 })));
+    vi.stubGlobal("fetch", vi.fn(async () => validV2Response("POST", "/api/v2/admin/cases/case-1/assignment")));
 
     const response = await proxyToMain(
       new Request("http://admin.local/api/v2/admin/cases/case-1/assignment", {
@@ -166,7 +208,7 @@ describe("Admin main HTTP proxy", () => {
         headers.get("x-idream-admin-domain"),
         headers.get("x-idream-admin-read-authority"),
       ]);
-      return Response.json({ ok: true, data: [] });
+      return validV2Response("GET", new URL(target).pathname);
     }));
 
     const caseResponse = await proxyToMain(
@@ -228,7 +270,7 @@ describe("Admin main HTTP proxy", () => {
     vi.stubEnv("ADMIN_CASE_WRITE_AUTHORITY", "legacy_v1");
     const fetchMock = vi.fn(async (target: URL) => {
       expect(target.toString()).toContain("/api/v2/admin/cases/case-1/commands/close");
-      return Response.json({ ok: true, data: { accepted: true } });
+      return validV2Response("POST", "/api/v2/admin/cases/case-1/commands/close");
     });
     vi.stubGlobal("fetch", fetchMock);
 

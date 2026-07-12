@@ -31,4 +31,8 @@ export const adminBootstrapSchema = z.object({
   shellSignals: adminShellSignalsSchema,
 });
 
+export const adminBootstrapResponseSchema = z.object({
+  bootstrap: adminBootstrapSchema,
+}).strict();
+
 export type AdminBootstrap = z.infer<typeof adminBootstrapSchema>;

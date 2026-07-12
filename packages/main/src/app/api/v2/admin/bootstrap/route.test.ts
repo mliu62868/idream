@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { adminBootstrapSchema } from "@idream/shared/admin";
+import { adminBootstrapResponseSchema } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { GET } from "./route";
 
@@ -31,8 +31,8 @@ describe("GET /api/v2/admin/bootstrap", () => {
       headers: { "x-idream-user-id": adminId, "x-idream-role": "admin" },
     }));
     expect(response.status).toBe(200);
-    const envelope = await response.json() as { data: { bootstrap: unknown } };
-    const bootstrap = adminBootstrapSchema.parse(envelope.data.bootstrap);
+    const envelope = await response.json() as { data: unknown };
+    const { bootstrap } = adminBootstrapResponseSchema.parse(envelope.data);
     expect(bootstrap.actor).toEqual({ id: adminId, role: "admin" });
     expect(bootstrap.canReadDashboard).toBe(true);
     expect(bootstrap.permissions).toContain("dashboard.read");
@@ -43,8 +43,8 @@ describe("GET /api/v2/admin/bootstrap", () => {
     const response = await GET(new Request("http://localhost/api/v2/admin/bootstrap", {
       headers: { "x-idream-user-id": userId, "x-idream-role": "user" },
     }));
-    const envelope = await response.json() as { data: { bootstrap: unknown } };
-    const bootstrap = adminBootstrapSchema.parse(envelope.data.bootstrap);
+    const envelope = await response.json() as { data: unknown };
+    const { bootstrap } = adminBootstrapResponseSchema.parse(envelope.data);
     expect(bootstrap.actor).toEqual({ id: userId, role: "user" });
     expect(bootstrap.canReadDashboard).toBe(false);
     expect(bootstrap.permissions).not.toContain("dashboard.read");

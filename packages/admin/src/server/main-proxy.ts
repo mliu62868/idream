@@ -1,4 +1,9 @@
-import { incrementCounter, observeHistogram } from "@idream/shared";
+import {
+  findAdminV2ApiOperation,
+  incrementCounter,
+  observeHistogram,
+  requireExecutableAdminV2Contract,
+} from "@idream/shared";
 import { BFF_HEADER, BFF_USER_HEADER, signBffContext } from "@idream/shared/bff";
 import { randomUUID } from "node:crypto";
 import {
@@ -167,11 +172,32 @@ export async function proxyToMain(request: Request, pathname: string): Promise<R
       cache: "no-store",
       redirect: "manual",
     });
+    let responseBody: BodyInit | null = upstream.body;
+    if (surface === "admin_v2" && upstream.ok) {
+      const rawBody = await upstream.text();
+      const violation = validateAdminV2SuccessResponse(request.method, pathname, rawBody);
+      if (violation) {
+        recordProxyMetrics(request.method, "contract_violation", surface, routeClass, startedAt, domain, readAuthority);
+        return Response.json(
+          {
+            ok: false,
+            error: {
+              code: "admin_v2_response_contract_violation",
+              message: "Admin authority returned a response outside its declared contract",
+              operationId: violation.operationId,
+              contractRef: violation.contractRef,
+            },
+          },
+          { status: 502, headers: provenanceHeaders(domain, readAuthority) },
+        );
+      }
+      responseBody = rawBody;
+    }
     const responseHeaders = new Headers(upstream.headers);
     for (const name of responseHopByHopHeaders) responseHeaders.delete(name);
     recordProxyMetrics(request.method, upstream.status < 500 ? "completed" : "upstream_error", surface, routeClass, startedAt, domain, readAuthority);
     addProvenanceHeaders(responseHeaders, domain, readAuthority);
-    return new Response(upstream.body, {
+    return new Response(responseBody, {
       status: upstream.status,
       statusText: upstream.statusText,
       headers: responseHeaders,
@@ -189,6 +215,28 @@ export async function proxyToMain(request: Request, pathname: string): Promise<R
       { status: 503, headers: provenanceHeaders(domain, readAuthority) },
     );
   }
+}
+
+function validateAdminV2SuccessResponse(method: string, pathname: string, rawBody: string) {
+  const operation = findAdminV2ApiOperation(method, pathname);
+  if (!operation) return { operationId: `${method} ${pathname}`, contractRef: "undeclared" };
+  let envelope: unknown;
+  try {
+    envelope = JSON.parse(rawBody) as unknown;
+  } catch {
+    return { operationId: operation.id, contractRef: operation.contract.response };
+  }
+  if (!isRecord(envelope) || envelope.ok !== true || !("data" in envelope)) {
+    return { operationId: operation.id, contractRef: operation.contract.response };
+  }
+  const contract = requireExecutableAdminV2Contract(operation.contract.response);
+  return contract.schema.safeParse(envelope.data).success
+    ? null
+    : { operationId: operation.id, contractRef: operation.contract.response };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function activeAdminV2KillSwitch(pathname: string, method: string): "read" | "write" | null {
