@@ -1,8 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { resolvePermissions } from "@/server/admin/permissions";
 import { prisma } from "@/server/lib/db";
+import { buildTodayProjection } from "@/server/modules/admin-v2/today/query";
 import {
   collectReleaseMonitorFacts,
+  dispatchDueReleaseMonitors,
   dispatchStaleReleaseRoutes,
   evaluateRouteQualification,
 } from "./release-monitor";
@@ -131,6 +134,7 @@ describe("Release route qualification and post-publish monitor", () => {
 
   afterAll(async () => {
     await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: releaseId } });
+    await prisma.adminAuditLog.deleteMany({ where: { targetType: "release_monitor", targetId: { startsWith: releaseId } } });
     await prisma.characterReleaseEvent.deleteMany({ where: { releaseId } });
     await prisma.releaseMonitor.deleteMany({ where: { releaseId } });
     await prisma.chatExchangeFact.deleteMany({ where: { characterReleaseId: releaseId } });
@@ -180,6 +184,7 @@ describe("Release route qualification and post-publish monitor", () => {
   });
 
   it("collects mature 72h facts with an explicit keep decision", async () => {
+    await prisma.characterRelease.update({ where: { id: releaseId }, data: { readiness: "ready" } });
     const result = await collectReleaseMonitorFacts(prisma, { releaseId, window: "72h", now });
     expect(result).toMatchObject({
       mature: true,
@@ -209,5 +214,194 @@ describe("Release route qualification and post-publish monitor", () => {
       observed: { operationalChecks: { servingPointerLive: false, chatAuthorityReady: false } },
       monitor: { status: "action_required" },
     });
+  });
+
+  it("dispatches each due window once across competing workers and re-enters Today on 72h failure", async () => {
+    await prisma.characterRelease.update({
+      where: { id: releaseId },
+      data: { readiness: "ready", status: "published" },
+    });
+    await prisma.characterServing.update({
+      where: { characterId },
+      data: { state: "live", currentReleaseId: releaseId },
+    });
+    await prisma.releaseMonitor.deleteMany({ where: { releaseId, window: { in: ["24h", "72h"] } } });
+    await prisma.adminAuditLog.deleteMany({ where: { targetType: "release_monitor", targetId: { startsWith: releaseId } } });
+    await prisma.mainOutboxEvent.deleteMany({
+      where: { aggregateId: releaseId, eventType: "character.release.monitor_evaluated.v2" },
+    });
+    await prisma.releaseMonitor.createMany({
+      data: (["24h", "72h"] as const).map((window) => ({
+        id: `${releaseId}:${window}`,
+        releaseId,
+        window,
+        status: "pending",
+        baseline: {},
+        observed: {},
+        verification: { state: "pending" },
+        startedAt: publishedAt,
+        dueAt: new Date(publishedAt.getTime() + (window === "24h" ? 24 : 72) * 60 * 60 * 1_000),
+      })),
+    });
+
+    const at24h = new Date(publishedAt.getTime() + 24 * 60 * 60 * 1_000);
+    const [left, right] = await Promise.all([
+      dispatchDueReleaseMonitors(prisma, { workerId: "monitor-worker-left", now: at24h }),
+      dispatchDueReleaseMonitors(prisma, { workerId: "monitor-worker-right", now: at24h }),
+    ]);
+    expect(left.evaluated + right.evaluated, JSON.stringify({ left, right })).toBe(1);
+    await expect(prisma.releaseMonitor.findUniqueOrThrow({
+      where: { releaseId_window: { releaseId, window: "24h" } },
+    })).resolves.toMatchObject({ status: "completed", leaseOwner: null, leaseExpiresAt: null });
+    await expect(prisma.releaseMonitor.findUniqueOrThrow({
+      where: { releaseId_window: { releaseId, window: "72h" } },
+    })).resolves.toMatchObject({ status: "pending" });
+
+    await dispatchDueReleaseMonitors(prisma, { workerId: "monitor-restart", now: at24h });
+    await expect(prisma.adminAuditLog.count({
+      where: { action: "character.release.monitor.evaluated", targetId: `${releaseId}:24h` },
+    })).resolves.toBe(1);
+    await expect(prisma.mainOutboxEvent.count({
+      where: { aggregateId: releaseId, eventType: "character.release.monitor_evaluated.v2" },
+    })).resolves.toBe(1);
+
+    await prisma.characterRelease.update({ where: { id: releaseId }, data: { readiness: "stale" } });
+    const at72h = new Date(publishedAt.getTime() + 72 * 60 * 60 * 1_000);
+    await dispatchDueReleaseMonitors(prisma, { workerId: "monitor-worker-72h", now: at72h });
+    await expect(prisma.releaseMonitor.findUniqueOrThrow({
+      where: { releaseId_window: { releaseId, window: "72h" } },
+    })).resolves.toMatchObject({ status: "action_required" });
+
+    const today = await buildTodayProjection({
+      actor: { id: ownerId, role: "admin" },
+      permissions: resolvePermissions("admin"),
+      now: at72h,
+      workMode: "character_producer",
+    });
+    expect(today.nextBestActions.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sourceType: "character_release",
+        sourceId: releaseId,
+        verificationState: "failed",
+      }),
+    ]));
+    await expect(prisma.adminAuditLog.count({
+      where: { action: "character.release.monitor.evaluated", targetId: { startsWith: `${releaseId}:` } },
+    })).resolves.toBe(2);
+    await expect(prisma.mainOutboxEvent.count({
+      where: { aggregateId: releaseId, eventType: "character.release.monitor_evaluated.v2" },
+    })).resolves.toBe(2);
+  });
+
+  it("reclaims an expired lease after worker restart without replaying evidence", async () => {
+    const monitorId = `${releaseId}:24h`;
+    const dueAt = new Date(publishedAt.getTime() + 24 * 60 * 60 * 1_000);
+    const restartedAt = new Date(dueAt.getTime() + 10 * 60 * 1_000);
+    await prisma.characterRelease.update({
+      where: { id: releaseId },
+      data: { readiness: "ready", status: "published" },
+    });
+    await prisma.characterServing.update({
+      where: { characterId },
+      data: { state: "live", currentReleaseId: releaseId },
+    });
+    await prisma.adminAuditLog.deleteMany({ where: { targetId: monitorId } });
+    await prisma.mainOutboxEvent.deleteMany({
+      where: { aggregateId: releaseId, eventType: "character.release.monitor_evaluated.v2" },
+    });
+    await prisma.releaseMonitor.upsert({
+      where: { releaseId_window: { releaseId, window: "24h" } },
+      create: {
+        id: monitorId,
+        releaseId,
+        window: "24h",
+        status: "pending",
+        baseline: {},
+        observed: {},
+        verification: { state: "pending" },
+        startedAt: publishedAt,
+        dueAt,
+        leaseOwner: "dead-worker",
+        leaseExpiresAt: new Date(dueAt.getTime() - 1),
+      },
+      update: {
+        status: "pending",
+        baseline: {},
+        observed: {},
+        verification: { state: "pending" },
+        finishedAt: null,
+        dueAt,
+        leaseOwner: "dead-worker",
+        leaseExpiresAt: new Date(dueAt.getTime() - 1),
+        nextAttemptAt: null,
+        attemptCount: 0,
+      },
+    });
+
+    await expect(dispatchDueReleaseMonitors(prisma, {
+      workerId: "replacement-worker",
+      now: restartedAt,
+    })).resolves.toMatchObject({ claimed: 1, evaluated: 1, completed: 1, failed: 0 });
+    await expect(prisma.releaseMonitor.findUniqueOrThrow({ where: { id: monitorId } })).resolves.toMatchObject({
+      status: "completed",
+      attemptCount: 1,
+      leaseOwner: null,
+    });
+
+    await expect(dispatchDueReleaseMonitors(prisma, {
+      workerId: "second-restart",
+      now: restartedAt,
+    })).resolves.toMatchObject({ claimed: 0, evaluated: 0 });
+    await expect(prisma.adminAuditLog.count({ where: { targetId: monitorId } })).resolves.toBe(1);
+    await expect(prisma.mainOutboxEvent.count({
+      where: { aggregateId: releaseId, eventType: "character.release.monitor_evaluated.v2" },
+    })).resolves.toBe(1);
+  });
+
+  it("closes a due monitor as superseded when its Release is no longer serving", async () => {
+    const monitorId = `${releaseId}:24h`;
+    const dueAt = new Date(publishedAt.getTime() + 24 * 60 * 60 * 1_000);
+    await prisma.adminAuditLog.deleteMany({ where: { targetId: monitorId } });
+    await prisma.mainOutboxEvent.deleteMany({
+      where: { aggregateId: releaseId, eventType: "character.release.monitor_evaluated.v2" },
+    });
+    await prisma.characterServing.update({ where: { characterId }, data: { currentReleaseId: null } });
+    await prisma.characterRelease.update({ where: { id: releaseId }, data: { status: "superseded" } });
+    await prisma.releaseMonitor.update({
+      where: { releaseId_window: { releaseId, window: "24h" } },
+      data: {
+        status: "pending",
+        baseline: {},
+        observed: {},
+        verification: { state: "pending" },
+        finishedAt: null,
+        dueAt,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        nextAttemptAt: null,
+        attemptCount: 0,
+      },
+    });
+
+    await expect(dispatchDueReleaseMonitors(prisma, {
+      workerId: "superseded-worker",
+      now: dueAt,
+    })).resolves.toMatchObject({ evaluated: 1, superseded: 1, failed: 0 });
+    await expect(prisma.releaseMonitor.findUniqueOrThrow({ where: { id: monitorId } })).resolves.toMatchObject({
+      status: "superseded",
+      verification: { state: "superseded", recommendation: "no_longer_serving" },
+    });
+    await expect(prisma.adminAuditLog.count({ where: { targetId: monitorId } })).resolves.toBe(1);
+    await expect(prisma.mainOutboxEvent.count({
+      where: { aggregateId: releaseId, eventType: "character.release.monitor_evaluated.v2" },
+    })).resolves.toBe(1);
+
+    const today = await buildTodayProjection({
+      actor: { id: ownerId, role: "admin" },
+      permissions: resolvePermissions("admin"),
+      now: dueAt,
+      workMode: "character_producer",
+    });
+    expect(today.nextBestActions.items.some((item) => item.sourceId === releaseId)).toBe(false);
   });
 });

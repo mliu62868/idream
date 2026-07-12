@@ -583,6 +583,26 @@ describe("Character Release command executor", () => {
       policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
       result: "passed",
     });
+    expect(
+      await prisma.releaseMonitor.findMany({
+        where: { releaseId: candidateReleaseId },
+        orderBy: { window: "asc" },
+        select: { window: true, status: true, startedAt: true, dueAt: true },
+      }),
+    ).toEqual([
+      {
+        window: "24h",
+        status: "pending",
+        startedAt: dueAt,
+        dueAt: new Date(dueAt.getTime() + 24 * 60 * 60 * 1_000),
+      },
+      {
+        window: "72h",
+        status: "pending",
+        startedAt: dueAt,
+        dueAt: new Date(dueAt.getTime() + 72 * 60 * 60 * 1_000),
+      },
+    ]);
   });
 
   it("fails closed on a tampered snapshot and leaves the serving pointer unchanged", async () => {

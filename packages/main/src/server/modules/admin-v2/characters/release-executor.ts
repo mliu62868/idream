@@ -6,6 +6,7 @@ import {
   characterVisualProfileSnapshotHash,
   referenceSetSnapshotHash,
 } from "./release-snapshot";
+import { releaseMonitorDueAt } from "./release-monitor";
 
 export const CHARACTER_RELEASE_POLICY_VERSION = "character-release-policy-v2";
 
@@ -779,6 +780,7 @@ async function publishRelease(
         observed: {},
         verification: { state: "pending" },
         startedAt: now,
+        dueAt: releaseMonitorDueAt(now, window),
       },
       update: {},
     });

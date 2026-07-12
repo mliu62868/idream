@@ -1,7 +1,14 @@
-import type { Prisma, PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import { toInputJson } from "../shared/prisma-json";
 
-type MonitorWindow = "24h" | "72h";
+export type ReleaseMonitorWindow = "24h" | "72h";
+
+const MONITOR_WINDOWS = ["24h", "72h"] as const satisfies readonly ReleaseMonitorWindow[];
+const DEFAULT_LEASE_MS = 5 * 60 * 1_000;
+const DEFAULT_RETRY_DELAY_MS = 30 * 1_000;
+const MONITOR_AUDIT_ACTION = "character.release.monitor.evaluated";
+const MONITOR_OUTBOX_EVENT = "character.release.monitor_evaluated.v2";
+const MONITOR_ACTOR_ID = "system:release-monitor-dispatcher";
 
 function record(value: Prisma.JsonValue | null | undefined): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -142,8 +149,12 @@ export async function dispatchStaleReleaseRoutes(
   return { examined: releases.length, stale };
 }
 
-function windowMs(window: MonitorWindow): number {
+function windowMs(window: ReleaseMonitorWindow): number {
   return window === "24h" ? 24 * 60 * 60 * 1_000 : 72 * 60 * 60 * 1_000;
+}
+
+export function releaseMonitorDueAt(publishedAt: Date, window: ReleaseMonitorWindow): Date {
+  return new Date(publishedAt.getTime() + windowMs(window));
 }
 
 function releaseAvatarAssetId(manifestValue: Prisma.JsonValue) {
@@ -165,8 +176,8 @@ function percentile95(values: number[]) {
 }
 
 export async function collectReleaseMonitorFacts(
-  db: PrismaClient,
-  input: { readonly releaseId: string; readonly window: MonitorWindow; readonly now?: Date },
+  db: Prisma.TransactionClient,
+  input: { readonly releaseId: string; readonly window: ReleaseMonitorWindow; readonly now?: Date },
 ) {
   const now = input.now ?? new Date();
   const release = await db.characterRelease.findUnique({ where: { id: input.releaseId } });
@@ -221,6 +232,7 @@ export async function collectReleaseMonitorFacts(
   const latencyP95Ms = percentile95(usageFacts.flatMap((fact) => fact.latencyMs === null ? [] : [fact.latencyMs]));
   const variableCostMicros = usageFacts.reduce((sum, fact) => sum + Number(fact.costMicros ?? 0), 0);
   const operationalChecks = {
+    releaseReadinessReady: release.readiness === "ready",
     servingPointerLive: serving?.state === "live" && serving.currentReleaseId === release.id,
     publicProjectionLive: character?.status === "approved" && character.visibility === "public" && character.deletedAt === null,
     immutableContentAvailable: contentVersion?.characterId === project.characterId,
@@ -295,4 +307,228 @@ export async function collectReleaseMonitorFacts(
     },
   });
   return { monitor, observed, mature, recommendation };
+}
+
+type DispatchFailure = {
+  readonly monitorId: string;
+  readonly message: string;
+};
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function monitorOccurrenceKey(monitor: { id: string; releaseId: string; window: string }): string {
+  return `release-monitor:${monitor.releaseId}:${monitor.window}:${monitor.id}`;
+}
+
+async function appendMonitorEvaluationEvidence(
+  tx: Prisma.TransactionClient,
+  input: {
+    readonly monitor: { id: string; releaseId: string; window: string };
+    readonly status: string;
+    readonly recommendation: string;
+    readonly characterId: string | null;
+    readonly observedAt: Date;
+  },
+) {
+  const occurrenceKey = monitorOccurrenceKey(input.monitor);
+  const evidence = {
+    occurrenceKey,
+    monitorId: input.monitor.id,
+    releaseId: input.monitor.releaseId,
+    characterId: input.characterId,
+    window: input.monitor.window,
+    status: input.status,
+    recommendation: input.recommendation,
+    observedAt: input.observedAt.toISOString(),
+  };
+  await tx.adminAuditLog.create({
+    data: {
+      id: `audit:${occurrenceKey}`,
+      actorId: MONITOR_ACTOR_ID,
+      actorRole: "system",
+      action: MONITOR_AUDIT_ACTION,
+      targetType: "release_monitor",
+      targetId: input.monitor.id,
+      reason: `Evaluate due ${input.monitor.window} Release Monitor`,
+      after: toInputJson(evidence),
+      requestId: occurrenceKey,
+      createdAt: input.observedAt,
+    },
+  });
+  await tx.mainOutboxEvent.create({
+    data: {
+      id: `outbox:${occurrenceKey}`,
+      eventType: MONITOR_OUTBOX_EVENT,
+      aggregateType: "character_release",
+      aggregateId: input.monitor.releaseId,
+      payload: toInputJson(evidence),
+      nextRunAt: input.observedAt,
+      createdAt: input.observedAt,
+    },
+  });
+}
+
+export async function dispatchDueReleaseMonitors(
+  db: PrismaClient,
+  input: {
+    readonly workerId: string;
+    readonly now?: Date;
+    readonly limit?: number;
+    readonly leaseMs?: number;
+    readonly retryDelayMs?: number;
+  },
+) {
+  const now = input.now ?? new Date();
+  const leaseMs = Math.max(1_000, input.leaseMs ?? DEFAULT_LEASE_MS);
+  const retryDelayMs = Math.max(1_000, input.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS);
+  const leaseExpiresAt = new Date(now.getTime() + leaseMs);
+  const candidates = await db.releaseMonitor.findMany({
+    where: {
+      window: { in: [...MONITOR_WINDOWS] },
+      status: { in: ["pending", "monitoring"] },
+      dueAt: { lte: now },
+      AND: [
+        { OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }] },
+        { OR: [{ leaseOwner: null }, { leaseExpiresAt: null }, { leaseExpiresAt: { lte: now } }] },
+      ],
+    },
+    orderBy: [{ dueAt: "asc" }, { id: "asc" }],
+    take: Math.min(500, Math.max(1, input.limit ?? 100)),
+    select: { id: true },
+  });
+  let claimed = 0;
+  let evaluated = 0;
+  let completed = 0;
+  let actionRequired = 0;
+  let superseded = 0;
+  const failures: DispatchFailure[] = [];
+
+  for (const candidate of candidates) {
+    const claim = await db.releaseMonitor.updateMany({
+      where: {
+        id: candidate.id,
+        window: { in: [...MONITOR_WINDOWS] },
+        status: { in: ["pending", "monitoring"] },
+        dueAt: { lte: now },
+        AND: [
+          { OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }] },
+          { OR: [{ leaseOwner: null }, { leaseExpiresAt: null }, { leaseExpiresAt: { lte: now } }] },
+        ],
+      },
+      data: {
+        leaseOwner: input.workerId,
+        leaseExpiresAt,
+        attemptCount: { increment: 1 },
+      },
+    });
+    if (claim.count !== 1) continue;
+    claimed += 1;
+
+    try {
+      const outcome = await db.$transaction(async (tx) => {
+        const locked = await tx.releaseMonitor.updateMany({
+          where: {
+            id: candidate.id,
+            leaseOwner: input.workerId,
+            status: { in: ["pending", "monitoring"] },
+          },
+          data: { leaseExpiresAt: new Date(now.getTime() + leaseMs) },
+        });
+        if (locked.count !== 1) return null;
+        const monitor = await tx.releaseMonitor.findUniqueOrThrow({ where: { id: candidate.id } });
+        if (monitor.window !== "24h" && monitor.window !== "72h") return null;
+        const release = await tx.characterRelease.findUnique({ where: { id: monitor.releaseId } });
+        const project = release
+          ? await tx.characterProject.findUnique({ where: { id: release.projectId } })
+          : null;
+        const serving = project
+          ? await tx.characterServing.findUnique({ where: { characterId: project.characterId } })
+          : null;
+        const isCurrentRelease = release?.status === "published" && serving?.currentReleaseId === release.id;
+
+        if (!release?.publishedAt || !project || !isCurrentRelease) {
+          const verification = {
+            state: "superseded",
+            recommendation: "no_longer_serving",
+            asOf: now.toISOString(),
+            releaseStatus: release?.status ?? "missing",
+            currentReleaseId: serving?.currentReleaseId ?? null,
+          };
+          await tx.releaseMonitor.update({
+            where: { id: monitor.id },
+            data: {
+              status: "superseded",
+              verification: toInputJson(verification),
+              finishedAt: now,
+              leaseOwner: null,
+              leaseExpiresAt: null,
+              nextAttemptAt: null,
+              lastError: Prisma.DbNull,
+            },
+          });
+          await appendMonitorEvaluationEvidence(tx, {
+            monitor,
+            status: "superseded",
+            recommendation: "no_longer_serving",
+            characterId: project?.characterId ?? null,
+            observedAt: now,
+          });
+          return "superseded" as const;
+        }
+
+        const result = await collectReleaseMonitorFacts(tx, {
+          releaseId: release.id,
+          window: monitor.window,
+          now,
+        });
+        await tx.releaseMonitor.update({
+          where: { id: monitor.id },
+          data: {
+            leaseOwner: null,
+            leaseExpiresAt: null,
+            nextAttemptAt: null,
+            lastError: Prisma.DbNull,
+          },
+        });
+        await appendMonitorEvaluationEvidence(tx, {
+          monitor,
+          status: result.monitor.status,
+          recommendation: result.recommendation,
+          characterId: project.characterId,
+          observedAt: now,
+        });
+        return result.monitor.status === "action_required" ? "action_required" as const : "completed" as const;
+      });
+      if (!outcome) continue;
+      evaluated += 1;
+      if (outcome === "action_required") actionRequired += 1;
+      else if (outcome === "superseded") superseded += 1;
+      else completed += 1;
+    } catch (error) {
+      const message = errorMessage(error);
+      failures.push({ monitorId: candidate.id, message });
+      await db.releaseMonitor.updateMany({
+        where: { id: candidate.id, leaseOwner: input.workerId, status: { in: ["pending", "monitoring"] } },
+        data: {
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          nextAttemptAt: new Date(now.getTime() + retryDelayMs),
+          lastError: toInputJson({ message, failedAt: now.toISOString() }),
+        },
+      });
+    }
+  }
+
+  return {
+    examined: candidates.length,
+    claimed,
+    evaluated,
+    completed,
+    actionRequired,
+    superseded,
+    failed: failures.length,
+    failures,
+  };
 }

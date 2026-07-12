@@ -3,6 +3,7 @@ import type { PrismaClient } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { logger } from "@/server/lib/logger";
 import { executeCharacterReleaseCommand } from "@/server/modules/admin-v2/characters/release-executor";
+import { dispatchDueReleaseMonitors } from "@/server/modules/admin-v2/characters/release-monitor";
 import { dispatchDueCharacterReleasePublishes } from "@/server/modules/admin-v2/characters/scheduled-release-dispatcher";
 import { executeAcceptedAdminCommand } from "@/server/modules/admin-v2/commands/executor";
 import { reconcileExpiredCommandLeases } from "@/server/modules/admin-v2/shared/control-plane-command";
@@ -67,6 +68,17 @@ export async function drainAdminCommands(
       "due Character Release dispatch partially failed",
     );
   }
+  const releaseMonitors = await dispatchDueReleaseMonitors(db, {
+    workerId: input.workerId,
+    now,
+    limit: input.limit,
+  });
+  if (releaseMonitors.failed > 0) {
+    logger.error(
+      { workerId: input.workerId, failures: releaseMonitors.failures },
+      "due Release Monitor dispatch partially failed",
+    );
+  }
   const commands = await db.controlPlaneCommand.findMany({
     where: { status: "accepted", commandType: { in: [...COMMAND_TYPES] } },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
@@ -102,6 +114,7 @@ export async function drainAdminCommands(
     failed,
     verifying,
     scheduledReleases,
+    releaseMonitors,
     dispatched,
     incidentCorrelation,
     verified,
@@ -118,7 +131,7 @@ export async function runAdminCommandWorkerLoop() {
     let processed = 0;
     try {
       const result = await drainAdminCommands(prisma, { workerId });
-      processed = result.examined;
+      processed = result.examined + result.releaseMonitors.claimed;
       const now = Date.now();
       if (now - lastReconcileAt >= RECONCILE_INTERVAL_MS) {
         lastReconcileAt = now;

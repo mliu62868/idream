@@ -1546,18 +1546,25 @@ model CharacterReleaseEvent {
 }
 
 model ReleaseMonitor {
-  id           String    @id @default(cuid())
-  releaseId    String
-  window       String
-  status       String
-  baseline     Json
-  observed     Json
-  verification Json
-  startedAt    DateTime  @default(now())
-  finishedAt   DateTime?
+  id             String    @id @default(cuid())
+  releaseId      String
+  window         String
+  status         String
+  baseline       Json
+  observed       Json
+  verification   Json
+  startedAt      DateTime  @default(now())
+  dueAt          DateTime?
+  leaseOwner     String?
+  leaseExpiresAt DateTime?
+  attemptCount   Int       @default(0)
+  nextAttemptAt  DateTime?
+  lastError      Json?
+  finishedAt     DateTime?
 
   @@unique([releaseId, window])
   @@index([status, startedAt])
+  @@index([status, dueAt, leaseExpiresAt])
   @@map("release_monitors")
 }
 
