@@ -1,44 +1,53 @@
-type TransitionMap = Readonly<Record<string, readonly string[]>>;
+import {
+  characterReleaseStatusSchema,
+  characterServingStateSchema,
+} from "@idream/shared/admin";
 
-function permitsTransition(
-  authority: TransitionMap,
-  from: string,
-  to: string,
+type StateOf<States extends readonly string[]> = States[number];
+type TransitionRows<States extends readonly string[]> = {
+  readonly [State in StateOf<States>]: readonly StateOf<States>[];
+};
+
+function defineTransitionAuthority<const States extends readonly string[]>(
+  states: States,
+  transitions: TransitionRows<States>,
 ) {
-  return Object.hasOwn(authority, from) && authority[from].includes(to);
+  const knownStates = new Set<string>(states);
+  return {
+    permits(from: string, to: string) {
+      if (!knownStates.has(from) || !knownStates.has(to)) return false;
+      return transitions[from as StateOf<States>].some((candidate) => candidate === to);
+    },
+  } as const;
 }
 
-export const CHARACTER_RELEASE_STATES = [
-  "draft",
-  "in_review",
-  "approved",
-  "published",
-  "superseded",
-] as const;
+export const CHARACTER_RELEASE_STATES = characterReleaseStatusSchema.options;
 
-const CHARACTER_RELEASE_TRANSITIONS = {
-  draft: [],
+const CHARACTER_RELEASE_AUTHORITY = defineTransitionAuthority(CHARACTER_RELEASE_STATES, {
+  draft: ["validating"],
+  validating: ["in_review"],
   in_review: ["draft", "approved"],
   approved: ["published"],
-  published: ["superseded"],
+  published: ["superseded", "withdrawn"],
   superseded: [],
-} as const satisfies TransitionMap;
+  withdrawn: [],
+});
 
 export function isCharacterReleaseTransitionAllowed(from: string, to: string) {
-  return permitsTransition(CHARACTER_RELEASE_TRANSITIONS, from, to);
+  return CHARACTER_RELEASE_AUTHORITY.permits(from, to);
 }
 
-export const CHARACTER_SERVING_STATES = ["inactive", "live", "paused", "retired"] as const;
+export const CHARACTER_SERVING_STATES = characterServingStateSchema.options;
 
-const CHARACTER_SERVING_TRANSITIONS = {
+const CHARACTER_SERVING_AUTHORITY = defineTransitionAuthority(CHARACTER_SERVING_STATES, {
   inactive: ["live"],
   live: ["live", "paused", "retired"],
   paused: ["live"],
   retired: [],
-} as const satisfies TransitionMap;
+});
 
 export function isCharacterServingTransitionAllowed(from: string, to: string) {
-  return permitsTransition(CHARACTER_SERVING_TRANSITIONS, from, to);
+  return CHARACTER_SERVING_AUTHORITY.permits(from, to);
 }
 
 export const GENERATION_REQUEST_ADMIN_STATES = [
@@ -53,7 +62,7 @@ export const GENERATION_REQUEST_ADMIN_STATES = [
   "cancelled",
 ] as const;
 
-const GENERATION_REQUEST_ADMIN_TRANSITIONS = {
+const GENERATION_REQUEST_ADMIN_AUTHORITY = defineTransitionAuthority(GENERATION_REQUEST_ADMIN_STATES, {
   queued: ["cancelled"],
   moderating_input: ["cancelled"],
   running: ["cancelled"],
@@ -63,10 +72,10 @@ const GENERATION_REQUEST_ADMIN_TRANSITIONS = {
   blocked: [],
   refunded: [],
   cancelled: [],
-} as const satisfies TransitionMap;
+});
 
 export function isGenerationRequestAdminTransitionAllowed(from: string, to: string) {
-  return permitsTransition(GENERATION_REQUEST_ADMIN_TRANSITIONS, from, to);
+  return GENERATION_REQUEST_ADMIN_AUTHORITY.permits(from, to);
 }
 
 export const GENERATION_ATTEMPT_STATES = [
@@ -78,30 +87,30 @@ export const GENERATION_ATTEMPT_STATES = [
   "unknown",
 ] as const;
 
-const GENERATION_ATTEMPT_TRANSITIONS = {
+const GENERATION_ATTEMPT_AUTHORITY = defineTransitionAuthority(GENERATION_ATTEMPT_STATES, {
   queued: ["queued", "running", "succeeded", "failed", "cancelled", "unknown"],
   running: ["running", "succeeded", "failed", "cancelled", "unknown"],
   succeeded: [],
   failed: [],
   cancelled: [],
   unknown: [],
-} as const satisfies TransitionMap;
+});
 
 export function isGenerationAttemptTransitionAllowed(from: string, to: string) {
-  return permitsTransition(GENERATION_ATTEMPT_TRANSITIONS, from, to);
+  return GENERATION_ATTEMPT_AUTHORITY.permits(from, to);
 }
 
 export const CREATIVE_RUN_LIFECYCLE_STATES = ["draft", "active", "closed", "archived"] as const;
 
-const CREATIVE_RUN_LIFECYCLE_TRANSITIONS = {
+const CREATIVE_RUN_LIFECYCLE_AUTHORITY = defineTransitionAuthority(CREATIVE_RUN_LIFECYCLE_STATES, {
   draft: ["active"],
   active: ["active", "closed"],
   closed: ["active", "closed"],
   archived: [],
-} as const satisfies TransitionMap;
+});
 
 export function isCreativeRunLifecycleTransitionAllowed(from: string, to: string) {
-  return permitsTransition(CREATIVE_RUN_LIFECYCLE_TRANSITIONS, from, to);
+  return CREATIVE_RUN_LIFECYCLE_AUTHORITY.permits(from, to);
 }
 
 export const CREATIVE_RUN_ITEM_STATES = [
@@ -114,7 +123,7 @@ export const CREATIVE_RUN_ITEM_STATES = [
   "failed",
 ] as const;
 
-const CREATIVE_RUN_ITEM_TRANSITIONS = {
+const CREATIVE_RUN_ITEM_AUTHORITY = defineTransitionAuthority(CREATIVE_RUN_ITEM_STATES, {
   queued: ["generated", "failed"],
   generated: ["approved", "rejected"],
   approved: ["approved", "rejected", "published"],
@@ -122,10 +131,10 @@ const CREATIVE_RUN_ITEM_TRANSITIONS = {
   regenerate_requested: ["generated", "failed"],
   published: ["published"],
   failed: ["regenerate_requested"],
-} as const satisfies TransitionMap;
+});
 
 export function isCreativeRunItemTransitionAllowed(from: string, to: string) {
-  return permitsTransition(CREATIVE_RUN_ITEM_TRANSITIONS, from, to);
+  return CREATIVE_RUN_ITEM_AUTHORITY.permits(from, to);
 }
 
 export const INCIDENT_STATES = [
@@ -139,7 +148,7 @@ export const INCIDENT_STATES = [
   "merged",
 ] as const;
 
-const INCIDENT_TRANSITIONS = {
+const INCIDENT_AUTHORITY = defineTransitionAuthority(INCIDENT_STATES, {
   detected: ["triaged", "mitigating"],
   triaged: ["triaged", "mitigating", "merged"],
   mitigating: ["mitigating", "monitoring"],
@@ -148,10 +157,10 @@ const INCIDENT_TRANSITIONS = {
   closed: [],
   duplicate: [],
   merged: [],
-} as const satisfies TransitionMap;
+});
 
 export function isIncidentTransitionAllowed(from: string, to: string) {
-  return permitsTransition(INCIDENT_TRANSITIONS, from, to);
+  return INCIDENT_AUTHORITY.permits(from, to);
 }
 
 export const ADMIN_CASE_STATES = [
@@ -164,7 +173,7 @@ export const ADMIN_CASE_STATES = [
   "reopened",
 ] as const;
 
-const ADMIN_CASE_TRANSITIONS = {
+const ADMIN_CASE_AUTHORITY = defineTransitionAuthority(ADMIN_CASE_STATES, {
   new: ["triaged", "in_progress", "waiting", "resolved"],
   triaged: ["triaged", "in_progress", "waiting", "resolved"],
   in_progress: ["in_progress", "waiting", "resolved"],
@@ -172,22 +181,22 @@ const ADMIN_CASE_TRANSITIONS = {
   resolved: ["closed", "reopened"],
   closed: ["reopened"],
   reopened: ["triaged", "in_progress", "waiting", "resolved"],
-} as const satisfies TransitionMap;
+});
 
 export function isAdminCaseTransitionAllowed(from: string, to: string) {
-  return permitsTransition(ADMIN_CASE_TRANSITIONS, from, to);
+  return ADMIN_CASE_AUTHORITY.permits(from, to);
 }
 
 export const EXPERIMENT_STATES = ["draft", "running", "stopped"] as const;
 
-const EXPERIMENT_TRANSITIONS = {
+const EXPERIMENT_AUTHORITY = defineTransitionAuthority(EXPERIMENT_STATES, {
   draft: ["running"],
   running: ["stopped"],
   stopped: [],
-} as const satisfies TransitionMap;
+});
 
 export function isExperimentTransitionAllowed(from: string, to: string) {
-  return permitsTransition(EXPERIMENT_TRANSITIONS, from, to);
+  return EXPERIMENT_AUTHORITY.permits(from, to);
 }
 
 export const CONTROL_PLANE_COMMAND_STATES = [
@@ -199,15 +208,15 @@ export const CONTROL_PLANE_COMMAND_STATES = [
   "cancelled",
 ] as const;
 
-const CONTROL_PLANE_COMMAND_TRANSITIONS = {
+const CONTROL_PLANE_COMMAND_AUTHORITY = defineTransitionAuthority(CONTROL_PLANE_COMMAND_STATES, {
   accepted: ["running"],
   running: ["accepted", "verifying", "succeeded", "failed"],
   verifying: ["accepted", "succeeded", "failed"],
   succeeded: [],
   failed: [],
   cancelled: [],
-} as const satisfies TransitionMap;
+});
 
 export function isControlPlaneCommandTransitionAllowed(from: string, to: string) {
-  return permitsTransition(CONTROL_PLANE_COMMAND_TRANSITIONS, from, to);
+  return CONTROL_PLANE_COMMAND_AUTHORITY.permits(from, to);
 }

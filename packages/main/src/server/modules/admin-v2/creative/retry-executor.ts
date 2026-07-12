@@ -110,7 +110,10 @@ export async function executeCreativeRetryCommand(
           actualVersion: run.version,
         });
       }
-      if (!isCreativeRunLifecycleTransitionAllowed(run.lifecycleState, "active")) {
+      if (
+        run.lifecycleState !== "active" ||
+        !isCreativeRunLifecycleTransitionAllowed(run.lifecycleState, run.lifecycleState)
+      ) {
         throw Errors.conflict("Creative Run is not active for retry", { lifecycleState: run.lifecycleState });
       }
       const failedItemIds = stringArray(record(claimed.requestPayload).failedItemIds as Prisma.JsonValue);

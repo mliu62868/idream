@@ -166,7 +166,10 @@ export async function recordCreativeReviewDecision(input: {
     if (run.version !== input.expectedVersion) {
       throw Errors.conflict("Creative Run changed before review", { currentVersion: run.version });
     }
-    if (!isCreativeRunLifecycleTransitionAllowed(run.lifecycleState, "active")) {
+    if (
+      run.lifecycleState !== "active" ||
+      !isCreativeRunLifecycleTransitionAllowed(run.lifecycleState, run.lifecycleState)
+    ) {
       throw Errors.conflict("Creative Run is not active for review", { lifecycleState: run.lifecycleState });
     }
     const item = await tx.contentProductionItem.findFirst({
