@@ -77,6 +77,44 @@ export const creativePlacementVerificationRequestSchema = z.object({
   reason: z.string().trim().min(3).max(2_000),
 });
 
+export const creativeRunAttachIncidentResultSchema = z.object({
+  runId: adminIdSchema,
+  incidentId: adminIdSchema,
+  relatedAttemptIds: z.array(adminIdSchema).readonly(),
+  runVersion: z.number().int().positive(),
+  incidentVersion: z.number().int().positive(),
+}).strict();
+
+export const creativeReviewDecisionResultSchema = z.object({
+  runId: adminIdSchema,
+  itemId: adminIdSchema,
+  decisionId: adminIdSchema,
+  decision: z.enum(["approved", "rejected"]),
+  workflowStage: z.enum(["brief", "directions", "generation", "review", "placement", "verification"]),
+  version: z.number().int().positive(),
+}).strict();
+
+export const creativePlacementPublishResultSchema = z.object({
+  runId: adminIdSchema,
+  placementId: adminIdSchema,
+  verificationState: adminVerificationStateSchema,
+  rollbackPlacementId: adminIdSchema.nullable(),
+  runVersion: z.number().int().positive(),
+}).strict();
+
+export const creativePlacementVerificationResultSchema = z.object({
+  runId: adminIdSchema,
+  placementId: adminIdSchema,
+  verificationState: adminVerificationStateSchema,
+  checks: z.object({
+    runtimeSurfaceSupported: z.boolean(),
+    placementVisibleInRuntime: z.boolean(),
+    renderedAssetMatches: z.boolean(),
+    assetValid: z.boolean(),
+  }).strict(),
+  runVersion: z.number().int().positive(),
+}).strict();
+
 export const creativeLifecycleStateSchema = z.enum(["draft", "active", "closed", "archived"]);
 export const creativeWorkflowStageSchema = z.enum([
   "brief",
@@ -308,3 +346,7 @@ export type CreativeRunRetryFailedCommandRequest = z.infer<
 export type CreativeReviewDecisionRequest = z.infer<typeof creativeReviewDecisionRequestSchema>;
 export type CreativePlacementPublishRequest = z.infer<typeof creativePlacementPublishRequestSchema>;
 export type CreativePlacementVerificationRequest = z.infer<typeof creativePlacementVerificationRequestSchema>;
+export type CreativeRunAttachIncidentResult = z.infer<typeof creativeRunAttachIncidentResultSchema>;
+export type CreativeReviewDecisionResult = z.infer<typeof creativeReviewDecisionResultSchema>;
+export type CreativePlacementPublishResult = z.infer<typeof creativePlacementPublishResultSchema>;
+export type CreativePlacementVerificationResult = z.infer<typeof creativePlacementVerificationResultSchema>;

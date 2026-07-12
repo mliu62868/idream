@@ -29,8 +29,8 @@ export async function attachCreativeRunToIncident(input: {
   readonly expectedVersion: number;
   readonly reason: string;
   readonly requestId: string;
-}) {
-  return prisma.$transaction(async (tx) => {
+}, db?: Prisma.TransactionClient) {
+  const execute = async (tx: Prisma.TransactionClient) => {
     const run = await tx.contentProductionBatch.findUnique({
       where: { id: input.runId },
       include: { items: { select: { jobId: true } } },
@@ -132,7 +132,8 @@ export async function attachCreativeRunToIncident(input: {
       runVersion: updatedRun.version,
       incidentVersion: updatedIncident.version,
     };
-  });
+  };
+  return db ? execute(db) : prisma.$transaction(execute);
 }
 
 async function ledgerFacts(jobIds: readonly string[]): Promise<CreativeRunLedgerFact[]> {
@@ -153,9 +154,9 @@ export async function recordCreativeReviewDecision(input: {
   readonly score?: number;
   readonly reason: string;
   readonly requestId: string;
-}) {
+}, db?: Prisma.TransactionClient) {
   if (input.reason.trim().length < 3) throw Errors.badRequest("Review reason is required");
-  return prisma.$transaction(async (tx) => {
+  const execute = async (tx: Prisma.TransactionClient) => {
     const run = await tx.contentProductionBatch.findUnique({ where: { id: input.runId } });
     if (!run) throw Errors.notFound("Creative Run not found");
     if (run.version !== input.expectedVersion) {
@@ -248,7 +249,8 @@ export async function recordCreativeReviewDecision(input: {
       workflowStage: updatedRun.workflowStage,
       version: updatedRun.version,
     };
-  });
+  };
+  return db ? execute(db) : prisma.$transaction(execute);
 }
 
 export async function publishDistributionPlacement(input: {
@@ -262,14 +264,14 @@ export async function publishDistributionPlacement(input: {
   readonly targetId: string;
   readonly reason: string;
   readonly requestId: string;
-}) {
+}, db?: Prisma.TransactionClient) {
   if (RELEASE_OWNED_SLOTS.has(input.slot)) {
     throw Errors.forbidden("Release-owned placements require a Character Release patch and publish command", {
       code: "release_owned_placement_requires_release_patch",
       slot: input.slot,
     });
   }
-  return prisma.$transaction(async (tx) => {
+  const execute = async (tx: Prisma.TransactionClient) => {
     const run = await tx.contentProductionBatch.findUnique({ where: { id: input.runId } });
     if (!run) throw Errors.notFound("Creative Run not found");
     if (run.version !== input.expectedVersion) {
@@ -381,7 +383,8 @@ export async function publishDistributionPlacement(input: {
       rollbackPlacementId: placement.rollbackPlacementId,
       runVersion: updatedRun.version,
     };
-  });
+  };
+  return db ? execute(db) : prisma.$transaction(execute);
 }
 
 export async function verifyCreativePlacement(input: {
@@ -391,8 +394,8 @@ export async function verifyCreativePlacement(input: {
   readonly expectedVersion: number;
   readonly reason: string;
   readonly requestId: string;
-}) {
-  return prisma.$transaction(async (tx) => {
+}, db?: Prisma.TransactionClient) {
+  const execute = async (tx: Prisma.TransactionClient) => {
     const run = await tx.contentProductionBatch.findUnique({ where: { id: input.runId } });
     if (!run) throw Errors.notFound("Creative Run not found");
     if (run.version !== input.expectedVersion) {
@@ -471,7 +474,8 @@ export async function verifyCreativePlacement(input: {
       },
     });
     return { runId: run.id, placementId: placement.id, verificationState, checks, runVersion: updatedRun.version };
-  });
+  };
+  return db ? execute(db) : prisma.$transaction(execute);
 }
 
 export async function listCreativeRuns(input: {

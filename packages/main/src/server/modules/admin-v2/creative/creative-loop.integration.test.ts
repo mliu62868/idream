@@ -27,16 +27,20 @@ describe("Creative retry through verified placement", () => {
   let commandId = "";
   let placementId = "";
   let unsupportedPlacementId = "";
-  const request = (path: string, body?: unknown) => new Request(`http://localhost${path}`, {
-    method: body ? "POST" : "GET",
-    headers: {
+  const request = (path: string, body?: unknown) => {
+    const headers: Record<string, string> = {
       "content-type": "application/json",
       "x-idream-user-id": adminId,
       "x-idream-role": "admin",
       "x-request-id": randomUUID(),
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+    };
+    if (body) headers["idempotency-key"] = `creative-loop-${suffix}-${randomUUID()}`;
+    return new Request(`http://localhost${path}`, {
+      method: body ? "POST" : "GET",
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  };
 
   beforeAll(async () => {
     await prisma.user.create({
@@ -132,7 +136,7 @@ describe("Creative retry through verified placement", () => {
     await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: { in: [runId, itemId, placementId || "missing"] } } });
     await prisma.adminAuditLog.deleteMany({ where: { actorId: adminId } });
     await prisma.controlPlaneCommandAttempt.deleteMany({ where: { commandId } });
-    await prisma.controlPlaneCommand.deleteMany({ where: { id: commandId || "missing" } });
+    await prisma.controlPlaneCommand.deleteMany({ where: { actorId: adminId } });
     await prisma.contentProductionItem.deleteMany({ where: { batchId: runId } });
     await prisma.contentProductionBatch.deleteMany({ where: { id: runId } });
     await prisma.mediaAsset.deleteMany({ where: { id: assetId } });
@@ -365,6 +369,18 @@ describe("Creative retry through verified placement", () => {
       status: "reviewing",
       verificationState: "failed",
     });
+    const mutationReceipts = await prisma.controlPlaneCommand.findMany({
+      where: {
+        actorId: adminId,
+        commandType: {
+          in: ["creative.review.decision", "creative.placement.publish", "creative.placement.verify"],
+        },
+      },
+      select: { commandType: true },
+    });
+    expect(mutationReceipts.filter(({ commandType }) => commandType === "creative.review.decision")).toHaveLength(1);
+    expect(mutationReceipts.filter(({ commandType }) => commandType === "creative.placement.publish")).toHaveLength(2);
+    expect(mutationReceipts.filter(({ commandType }) => commandType === "creative.placement.verify")).toHaveLength(2);
   });
 
   it("scans past non-matching derived outcomes without returning an unpageable false empty", async () => {

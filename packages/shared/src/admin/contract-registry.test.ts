@@ -34,7 +34,7 @@ describe("Admin v2 executable contract registry", () => {
       expect(binding.schema.safeParse(binding.fixtures.valid).success, `${ref} positive`).toBe(true);
       expect(binding.schema.safeParse(binding.fixtures.invalid).success, `${ref} negative`).toBe(false);
     }
-    expect(executed.size).toBe(97);
+    expect(executed.size).toBe(101);
   });
 
   it("fails closed for every explicitly pending contract and reports an exact owner/reason", () => {

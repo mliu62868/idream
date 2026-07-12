@@ -1,7 +1,13 @@
-import { creativePlacementPublishRequestSchema } from "@idream/shared/admin";
+import {
+  creativePlacementPublishRequestSchema,
+  creativePlacementPublishResultSchema,
+} from "@idream/shared/admin";
+import { env } from "@/server/lib/env";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 import { publishDistributionPlacement } from "@/server/modules/admin-v2/creative/workflow";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
+import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -13,17 +19,31 @@ export async function POST(request: Request, context: Context) {
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "creative.placement.publish");
     const body = creativePlacementPublishRequestSchema.parse(await request.json());
-    return publishDistributionPlacement({
-      runId: id,
-      itemId: body.itemId,
-      assetId: body.assetId,
+    const idempotencyKey = requireIdempotencyKey(request);
+    const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
+    return executeAtomicIdempotentMutation({
+      environment: env.APP_ENV,
       actor,
+      idempotencyKey,
+      requestId,
+      commandType: "creative.placement.publish",
+      target: { type: "creative_run", id },
       expectedVersion: body.entityVersion,
-      slot: body.slot,
-      targetType: body.targetType,
-      targetId: body.targetId,
-      reason: body.reason,
-      requestId: request.headers.get("x-request-id") ?? crypto.randomUUID(),
+      payload: body,
+      mutate: async (tx) => creativePlacementPublishResultSchema.parse(
+        await publishDistributionPlacement({
+          runId: id,
+          itemId: body.itemId,
+          assetId: body.assetId,
+          actor,
+          expectedVersion: body.entityVersion,
+          slot: body.slot,
+          targetType: body.targetType,
+          targetId: body.targetId,
+          reason: body.reason,
+          requestId,
+        }, tx),
+      ),
     });
   });
 }

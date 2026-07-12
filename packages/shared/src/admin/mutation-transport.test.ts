@@ -55,7 +55,7 @@ describe("Admin v2 mutation transport invariant", () => {
     expect(Object.keys(ADMIN_V2_PENDING_MUTATION_TRANSPORT).sort()).toEqual(
       pending,
     );
-    expect(pending).toHaveLength(9);
+    expect(pending).toHaveLength(5);
 
     for (const item of Object.values(ADMIN_V2_PENDING_MUTATION_TRANSPORT)) {
       expect(item.owner.length).toBeGreaterThan(2);

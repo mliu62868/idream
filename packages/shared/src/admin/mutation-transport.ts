@@ -90,11 +90,11 @@ export const ADMIN_V2_MUTATION_TRANSPORT = {
   "PUT /api/v2/admin/collaboration/:targetType/:targetId/watch": idempotencyKey(),
 
   "POST /api/v2/admin/creative/runs": idempotencyKey(),
-  "POST /api/v2/admin/creative/runs/:id/commands/attach-incident": pending("creative-operations", "Incident attachment retries can repeat cross-domain linkage events."),
+  "POST /api/v2/admin/creative/runs/:id/commands/attach-incident": idempotencyKey(),
   "POST /api/v2/admin/creative/runs/:id/commands/retry-failed": idempotencyKey(),
-  "POST /api/v2/admin/creative/runs/:id/items/:itemId/decisions": pending("creative-operations", "Review decision retries can duplicate item decision audit events."),
-  "POST /api/v2/admin/creative/runs/:id/placements": pending("creative-operations", "Placement publication has no collision-safe request identity."),
-  "POST /api/v2/admin/creative/runs/:id/placements/:placementId/verification": pending("creative-operations", "Placement verification retries can duplicate evidence records."),
+  "POST /api/v2/admin/creative/runs/:id/items/:itemId/decisions": idempotencyKey(),
+  "POST /api/v2/admin/creative/runs/:id/placements": idempotencyKey(),
+  "POST /api/v2/admin/creative/runs/:id/placements/:placementId/verification": idempotencyKey(),
 
   "POST /api/v2/admin/experiments": idempotencyKey(),
   "POST /api/v2/admin/experiments/:id/commands/start": idempotencyKey(),
