@@ -20,7 +20,7 @@
 | E2E Today | 已验证（浏览器） | `today/query.test.ts` 覆盖 verification failed re-entry；`admin-v2-workspaces.e2e.ts` 从已验证 Case/Incident 投影到 Recently resolved，并验证 canonical deep links | 生产 canary不由本地 Playwright 代替。 |
 | Component/A11y | 已验证（核心 Gate） | `operations/workspaces.test.tsx`、`collaboration.test.tsx`、`a11y-error-boundary.test.ts`；`admin-v2-workspaces.e2e.ts` 对六个核心 surface 执行 axe WCAG 2.2 AA，验证 dialog focus trap/restore、键盘 tab、375px 与 834px 四条核心流程无横向溢出 | 全部 compatibility 页面仍按各自 sunset 节奏治理，不冒充生产辅助技术人工验收。 |
 | Migration rehearsal | 已验证（本地） | `admin-migration-rehearsal.mjs` + readiness 命令覆盖 fresh/repeat/baseline/upgrade/rollback/forward-fix | 生产快照 backfill/shadow 仍必须在专用环境取证。 |
-| Load/Chaos | 部分 | `admin-production-like-readiness.ts` 覆盖 100k Jobs/Cases、1m Events；outbox/lease/projector recovery 单测；`release-executor.integration.test.ts` 覆盖 scheduled publish restart/并发；`release-monitor.integration.test.ts` 覆盖 due scan、CAS lease、过期重领、双 worker、确定性 Audit/Outbox、stale→Today 与 superseded 终结 | 真 DB/Redis process kill、网络分区、真实 Today handler 100k 路径与 production-like projector lag 尚未形成同一可重跑套件。 |
+| Load/Chaos | 部分（隔离 transport rehearsal 已验证） | `admin-production-like-readiness.ts` 覆盖 100k Jobs/Cases、1m Events 与真实 Today handler；`admin:readiness:chaos` 在专用端口由父 harness SIGKILL 临时 PostgreSQL/Redis 与挂起在精确故障点的 consumer/dispatcher/projector 子进程，再启动全新 recovery 子进程验证 lease recovery、commit-before-LREM ACK、无 ghost queued、provider boundary 单调用、Audit/Outbox/receipt 单副作用、watermark catch-up 与 replay no-op；scheduled publish 并发另由 `release-executor.integration.test.ts`、`release-monitor.integration.test.ts` 锁定 | chaos harness 使用隔离的最小 `chaos_*` transport schema，不等同于对真实 Prisma/领域模块做进程 kill；网络分区与真实模块 L3 仍须在集成环境演练。进入 schema-v5 Gate 前还必须保存为不可变 artifact 并由受信 collector 签名。 |
 
 ## §21.2 反例 fixture
 
@@ -34,7 +34,7 @@
 | schedule 后 policy/Identity/Reference stale；两个 scheduler 并发 | 已验证 | `release-executor.integration.test.ts` 覆盖 policy/route/reference drift、reschedule 后旧 occurrence 拒绝、双 scheduler/worker 只产生一份 Serving/Audit/Outbox/ReleaseEvent，并验证 restart replay。 |
 | full/partial/重复 refund，execution 不被账务覆盖 | 已验证 | `generation-request-lifecycle.integration.test.ts`、`incidents/action-executor.integration.test.ts`、`content-production-state.test.ts`、adversarial invariant。 |
 | completed/failed terminal 并发；transport retry 与 business retry 分离 | 已验证 | `generation-attempt-events.integration.test.ts`、`generation-transport-execution.integration.test.ts`、retry command tests。 |
-| Redis 丢失、receipt 后 projector 崩溃、payload conflict、main→chat 丢失 | 已验证（进程 seam） | main/chat outbox、durable ingest、event consumer recovery tests；真实 Redis kill 属 chaos 缺口。 |
+| Redis 丢失、receipt 后 projector 崩溃、payload conflict、main→chat 丢失 | 已验证（隔离 transport + process seam） | `admin:readiness:chaos` 实际 SIGKILL/restart 专用 Redis，并由父 harness SIGKILL fault 子进程、启动全新 recovery 子进程；main/chat outbox、durable ingest、payload conflict、event consumer recovery tests 补齐真实领域 seam。 |
 | manifest 已写但 main ingest 暂失败；ambiguous provider 不自动 retry | 已验证 | `packages/gen/src/pipeline.test.ts`、`generation-manifest-ingest.test.ts`。 |
 | 一个 Attempt 多个 TransportExecution、provider cost、technical success 下钻 | 已验证 | `jobs/query.integration.test.ts`；`GenerationJobDetailResponse` 与 Jobs inspector 现在展示每个 transport、cost、manifest 和 technical outcome。 |
 | chat duplicate/out-of-order/delay/regenerate/edit/delete/release switch/backfill | 已验证 | chat hot-path/reliability/release-pin/backfill 覆盖 transport 次序；`metrics/projector.test.ts` 的单一 golden replay 串起 regenerate/edit/delete/selection/replacement 并验证最终 canonical Activation/D1。 |
@@ -56,5 +56,5 @@
 ## 仍应作为发布阻断项跟踪
 
 - 29 个 pending contract ref 必须继续共享化并进入真实 Zod 正反 fixture；31 个 pending mutation 必须补齐幂等键或乐观锁的 replay/collision/failure semantics。机器可读 inventory 只是诚实 Gate，不是完成。
-- production-like 真 DB/Redis process kill、网络分区与 projector lag chaos 套件。
+- production-like 网络分区，以及直接运行真实 Prisma/dispatcher/projector 模块的进程 kill L3 演练；隔离 `chaos_*` transport schema 不替代该证据。
 - 生产 read/write canary、实时撤权/session、辅助技术人工验收和持续观察窗口；本地自动化不能签发这些外部证据。

@@ -38,6 +38,6 @@
 
 ## Verification and rollback
 
-- 本地门禁：`bun run test`、`bun run check`、`admin:readiness:shadow`、`admin:readiness:load`、`admin:readiness:migrations`。
+- 本地门禁：`bun run test`、`bun run check`、`admin:readiness:shadow`、`admin:readiness:load`、`admin:readiness:migrations`、`admin:readiness:chaos`。
 - 生产门禁：§19.4 invariant ledger、shadow mismatch、permission matrix、read/write canary、error budget、legacy traffic=0、两个成熟指标窗口和对应 DRI 签字。
 - 回滚：关闭 v2 read/write flag 或 BFF canary；停止 dispatcher；保留 additive schema、append-only evidence 与 pending outbox；修复后 forward replay。不得回滚为绕过 command 的任意状态 PATCH。

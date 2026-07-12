@@ -60,6 +60,7 @@
     "admin:readiness:release-gate": "tsx src/scripts/admin-release-gate.ts",
     "admin:readiness:sign": "tsx src/scripts/admin-release-sign.ts",
     "admin:readiness:canary": "tsx src/scripts/admin-canary.ts",
+    "admin:readiness:chaos": "tsx src/scripts/admin-dependency-chaos.ts",
     "probe:age": "tsx src/server/probe-age-verification.ts",
     "probe:blob": "tsx src/server/probe-blob-storage.ts",
     "probe:catalog": "tsx src/server/probe-public-catalog.ts",
