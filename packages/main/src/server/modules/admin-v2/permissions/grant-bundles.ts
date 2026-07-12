@@ -2,6 +2,8 @@ import type { AdminUserGrantBundle, Prisma } from "@prisma/client";
 import {
   ADMIN_GRANT_BUNDLES,
   adminGrantBundleKeySchema,
+  adminGrantBundleListSchema,
+  adminGrantBundleMutationSchema,
   type AdminGrantBundle,
   type AdminGrantBundleKey,
   type AdminGrantBundleRevoke,
@@ -53,7 +55,7 @@ export async function listUserGrantBundles(request: Request, userId: string) {
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
   });
   const now = Date.now();
-  return { user, items: rows.map((row) => grantBundleDto(row, now)) };
+  return adminGrantBundleListSchema.parse({ user, items: rows.map((row) => grantBundleDto(row, now)) });
 }
 
 export async function grantUserBundle(input: {
@@ -112,7 +114,7 @@ export async function grantUserBundle(input: {
         requestId: input.requestId,
       },
     });
-    const result = { bundle: grantBundleDto(row) };
+    const result = adminGrantBundleMutationSchema.parse({ bundle: grantBundleDto(row) });
     await tx.mainOutboxEvent.create({
       data: {
         eventType: "admin.grant_bundle.granted.v2",
@@ -158,7 +160,7 @@ export async function revokeUserBundle(input: {
         requestId: input.requestId,
       },
     });
-    const result = { bundle: grantBundleDto(row) };
+    const result = adminGrantBundleMutationSchema.parse({ bundle: grantBundleDto(row) });
     await tx.mainOutboxEvent.create({
       data: {
         eventType: "admin.grant_bundle.revoked.v2",

@@ -2,6 +2,13 @@ import { z } from "zod";
 import { adminIdSchema, adminIsoDateTimeSchema } from "./common";
 import { operationsCaseSchema } from "./cases";
 
+export const customerListQuerySchema = z.object({
+  search: z.string().trim().max(160).default(""),
+  status: z.string().trim().max(40).default(""),
+  limit: z.coerce.number().int().min(1).max(100).default(30),
+  cursor: z.string().trim().min(1).optional(),
+}).strict();
+
 export const customerListItemSchema = z.object({
   id: adminIdSchema,
   email: z.string().email(),
@@ -96,3 +103,4 @@ export const customer360Schema = z
 export type Customer360 = z.infer<typeof customer360Schema>;
 export type CustomerListItem = z.infer<typeof customerListItemSchema>;
 export type CustomerListResponse = z.infer<typeof customerListResponseSchema>;
+export type CustomerListQuery = z.infer<typeof customerListQuerySchema>;

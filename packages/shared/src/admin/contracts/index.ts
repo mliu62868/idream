@@ -12,3 +12,4 @@ export * from "./bootstrap";
 export * from "./collaboration";
 export * from "./jobs";
 export * from "./grant-bundles";
+export * from "./search";

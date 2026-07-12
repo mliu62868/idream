@@ -53,6 +53,26 @@ export const experimentDefinitionSchema = z.object({
   updatedAt: adminIsoDateTimeSchema,
 }).strict();
 
+export const experimentAnalysisQuerySchema = z.object({
+  asOf: adminIsoDateTimeSchema.optional(),
+}).strict();
+
+export const experimentDefinitionListQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  status: z.enum(["draft", "running", "stopped"]).optional(),
+  search: z.string().trim().min(1).max(200).optional(),
+  cursor: adminIdSchema.optional(),
+}).strict();
+
+export const experimentDefinitionListSchema = z.object({
+  items: z.array(experimentDefinitionSchema).readonly(),
+  pageInfo: z.object({
+    hasNextPage: z.boolean(),
+    endCursor: adminIdSchema.nullable(),
+  }).strict(),
+  asOf: adminIsoDateTimeSchema,
+}).strict();
+
 export const experimentAssignmentRequestSchema = z.object({
   subjectType: z.enum(["user", "anonymous"]),
   subjectId: adminIdSchema,
@@ -132,6 +152,7 @@ export const experimentAnalysisResponseSchema = z.object({
 
 export type ExperimentVariant = z.infer<typeof experimentVariantSchema>;
 export type ExperimentDefinition = z.infer<typeof experimentDefinitionSchema>;
+export type ExperimentAnalysisQuery = z.infer<typeof experimentAnalysisQuerySchema>;
 export type ExperimentAssignmentRequest = z.infer<typeof experimentAssignmentRequestSchema>;
 export type ExperimentAssignmentResponse = z.infer<typeof experimentAssignmentResponseSchema>;
 export type ExperimentExposureRequest = z.infer<typeof experimentExposureRequestSchema>;

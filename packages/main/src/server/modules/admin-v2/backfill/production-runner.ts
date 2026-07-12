@@ -6,6 +6,7 @@ import type {
   PrismaClient,
   SupportRequest,
 } from "@prisma/client";
+import { adminBackfillResultSchema } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import {
@@ -507,8 +508,8 @@ export async function backfillGenerationIncidents(input: {
     record(run.after).targetCount ?? await db.opsIncidentOccurrence.count(),
   );
   const items = await legacyItems(db, result.runId);
-  return {
-    domain: "generation_incident_v1" as const,
+  return adminBackfillResultSchema.parse({
+    domain: "generation_incident_v1",
     runId: result.runId,
     status: result.status,
     optionsHash: run.optionsHash,
@@ -521,7 +522,7 @@ export async function backfillGenerationIncidents(input: {
     nextCursor: result.nextCursor,
     beforeOccurrences,
     afterOccurrences,
-  };
+  });
 }
 
 export async function backfillCustomerCases(input: {
@@ -549,8 +550,8 @@ export async function backfillCustomerCases(input: {
       ?? await db.adminCase.count({ where: { type: { in: ["support_request", "billing_dispute"] } } }),
   );
   const items = await legacyItems(db, result.runId);
-  return {
-    domain: "customer_case_v1" as const,
+  return adminBackfillResultSchema.parse({
+    domain: "customer_case_v1",
     runId: result.runId,
     status: result.status,
     optionsHash: run.optionsHash,
@@ -563,7 +564,7 @@ export async function backfillCustomerCases(input: {
     nextCursor: result.nextCursor,
     beforeCases,
     afterCases,
-  };
+  });
 }
 
 export async function backfillReviewCases(input: {
@@ -591,8 +592,8 @@ export async function backfillReviewCases(input: {
       ?? await db.adminCase.count({ where: { type: { in: ["content_report", "appeal"] } } }),
   );
   const items = await legacyItems(db, result.runId);
-  return {
-    domain: "review_case_v1" as const,
+  return adminBackfillResultSchema.parse({
+    domain: "review_case_v1",
     runId: result.runId,
     status: result.status,
     optionsHash: run.optionsHash,
@@ -605,5 +606,5 @@ export async function backfillReviewCases(input: {
     nextCursor: result.nextCursor,
     beforeCases,
     afterCases,
-  };
+  });
 }

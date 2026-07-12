@@ -34,21 +34,16 @@ describe("Admin v2 executable contract registry", () => {
       expect(binding.schema.safeParse(binding.fixtures.valid).success, `${ref} positive`).toBe(true);
       expect(binding.schema.safeParse(binding.fixtures.invalid).success, `${ref} negative`).toBe(false);
     }
-    expect(executed.size).toBe(106);
+    expect(executed.size).toBe(manifestBaseRefs().size);
   });
 
-  it("fails closed for every explicitly pending contract and reports an exact owner/reason", () => {
+  it("hard-gates the manifest at zero pending contracts", () => {
     const referenced = manifestBaseRefs();
     const pending = Object.entries(ADMIN_V2_PENDING_CONTRACTS);
-    expect(pending).toHaveLength(15);
+    expect(pending).toHaveLength(0);
 
-    for (const [ref, evidence] of pending) {
-      expect(referenced.has(ref), `${ref} is stale`).toBe(true);
-      expect(evidence.owner).toMatch(/^packages\//);
-      expect(evidence.reason.length).toBeGreaterThanOrEqual(20);
-      expect(() => requireExecutableAdminV2Contract(ref)).toThrow(/not executable/);
-    }
     expect([...manifestBaseRefs()].filter((ref) => resolveAdminV2Contract(ref)?.kind === "pending").sort())
       .toEqual(Object.keys(ADMIN_V2_PENDING_CONTRACTS).sort());
+    expect([...referenced].filter((ref) => requireExecutableAdminV2Contract(ref))).toHaveLength(referenced.size);
   });
 });

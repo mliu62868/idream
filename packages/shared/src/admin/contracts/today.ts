@@ -29,6 +29,10 @@ export const todayWorkModeSchema = z.enum([
   "admin",
 ]);
 
+export const todayProjectionQuerySchema = z.object({
+  workMode: todayWorkModeSchema.optional(),
+}).strict();
+
 export const todayWorkItemSchema = z
   .object({
     sourceType: todaySourceTypeSchema,

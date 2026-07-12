@@ -1,5 +1,6 @@
 import {
   ADMIN_METRIC_REGISTRY,
+  experimentAnalysisQuerySchema,
   experimentAnalysisResponseSchema,
   experimentVariantSchema,
   type ExperimentAnalysisResponse,
@@ -372,9 +373,8 @@ export async function analyzeExperiment(
 
 export async function getExperimentAnalysis(request: Request, experimentId: string) {
   await actorWithPermission(request, "experiment.manage");
-  const rawAsOf = new URL(request.url).searchParams.get("asOf");
-  const asOf = rawAsOf ? new Date(rawAsOf) : new Date();
-  if (Number.isNaN(asOf.getTime())) throw Errors.badRequest("asOf must be an ISO timestamp");
+  const query = experimentAnalysisQuerySchema.parse(Object.fromEntries(new URL(request.url).searchParams));
+  const asOf = query.asOf ? new Date(query.asOf) : new Date();
   try {
     return ok(await analyzeExperiment(prisma, experimentId, asOf), {
       headers: { "cache-control": "no-store" },

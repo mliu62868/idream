@@ -1,5 +1,7 @@
 import {
   experimentDefinitionCreateSchema,
+  experimentDefinitionListQuerySchema,
+  experimentDefinitionListSchema,
   experimentDefinitionSchema,
   experimentLifecycleRequestSchema,
 } from "@idream/shared/admin";
@@ -67,22 +69,25 @@ export function knownExperimentSurfaceBlockers(input: {
 export async function listExperimentDefinitions(request: Request) {
   await actorWithPermission(request, "experiment.manage");
   const url = new URL(request.url);
-  const limit = Math.min(Math.max(Number(url.searchParams.get("limit") ?? 50), 1), 200);
-  const status = url.searchParams.get("status");
-  if (status && !["draft", "running", "stopped"].includes(status)) throw Errors.badRequest("Invalid experiment status");
-  const search = url.searchParams.get("search")?.trim();
-  const cursor = url.searchParams.get("cursor")?.trim();
+  const query = experimentDefinitionListQuerySchema.parse(Object.fromEntries(url.searchParams));
   const rows = await prisma.experimentDefinition.findMany({
     where: {
-      ...(status ? { status } : {}),
-      ...(search ? { OR: [{ key: { contains: search, mode: "insensitive" } }, { hypothesis: { contains: search, mode: "insensitive" } }] } : {}),
-      ...(cursor ? { id: { lt: cursor } } : {}),
+      ...(query.status ? { status: query.status } : {}),
+      ...(query.search ? { OR: [{ key: { contains: query.search, mode: "insensitive" } }, { hypothesis: { contains: query.search, mode: "insensitive" } }] } : {}),
+      ...(query.cursor ? { id: { lt: query.cursor } } : {}),
     },
     orderBy: { id: "desc" },
-    take: limit + 1,
+    take: query.limit + 1,
   });
-  const items = rows.slice(0, limit).map(definitionDto);
-  return ok({ items, pageInfo: { hasNextPage: rows.length > limit, endCursor: rows.length > limit ? items.at(-1)?.id ?? null : null }, asOf: new Date().toISOString() });
+  const items = rows.slice(0, query.limit).map(definitionDto);
+  return ok(experimentDefinitionListSchema.parse({
+    items,
+    pageInfo: {
+      hasNextPage: rows.length > query.limit,
+      endCursor: rows.length > query.limit ? items.at(-1)?.id ?? null : null,
+    },
+    asOf: new Date().toISOString(),
+  }));
 }
 
 export async function getExperimentDefinition(request: Request, id: string) {

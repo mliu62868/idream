@@ -1,18 +1,13 @@
-import { z } from "zod";
+import { globalAdminSearchQuerySchema, globalAdminSearchResponseSchema } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { ok } from "@/server/lib/http";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { effectiveCharacterIdsForPermission, effectivePermissions } from "@/server/admin/effective-permissions";
 import { incidentReadScopeWhere } from "@/server/modules/admin-v2/incidents/scope";
 
-const querySchema = z.object({
-  q: z.string().trim().min(2).max(160),
-  limit: z.coerce.number().int().min(1).max(20).default(8),
-});
-
 export async function globalAdminSearch(request: Request) {
   const actor = await actorWithPermission(request, "dashboard.read");
-  const query = querySchema.parse(Object.fromEntries(new URL(request.url).searchParams));
+  const query = globalAdminSearchQuerySchema.parse(Object.fromEntries(new URL(request.url).searchParams));
   const permissions = await effectivePermissions(actor.id, actor.role);
   const characterScope = permissions.has("character.project.read")
     ? await effectiveCharacterIdsForPermission(actor.id, actor.role, "character.project.read")
@@ -49,5 +44,5 @@ export async function globalAdminSearch(request: Request) {
     ...incidents.map((row) => ({ kind: "incident", id: row.id, title: row.suspectedCause ?? row.signature, subtitle: row.signature, href: `/admin/ops/incidents/${encodeURIComponent(row.id)}`, status: row.status, updatedAt: row.updatedAt.toISOString() })),
     ...jobs.map((row) => ({ kind: "generation_job", id: row.id, title: `${row.mode} generation`, subtitle: `${row.userId} · ${row.errorCode ?? row.profileId ?? "no error"}`, href: `/admin/ops/jobs?job=${encodeURIComponent(row.id)}`, status: row.status, updatedAt: row.updatedAt.toISOString() })),
   ].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.id.localeCompare(right.id)).slice(0, query.limit);
-  return ok({ items, query: query.q, asOf: new Date().toISOString() }, { headers: { "Cache-Control": "no-store" } });
+  return ok(globalAdminSearchResponseSchema.parse({ items, query: query.q, asOf: new Date().toISOString() }), { headers: { "Cache-Control": "no-store" } });
 }

@@ -30,6 +30,12 @@ export const savedViewUpdateSchema = z.object({
   queryState: savedViewQueryStateSchema.optional(),
 }).strict();
 
+export const savedViewListQuerySchema = z.object({
+  scope: collaborationTargetTypeSchema,
+}).strict();
+
+export const savedViewDeleteSchema = z.object({ deleted: z.literal(true) }).strict();
+
 export const collaborationActivityKindSchema = z.enum([
   "comment",
   "mention",

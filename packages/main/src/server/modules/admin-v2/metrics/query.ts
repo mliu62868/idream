@@ -2,6 +2,9 @@ import {
   ADMIN_METRIC_REGISTRY,
   metricCardSchema,
   metricDashboardResponseSchema,
+  metricDashboardQuerySchema,
+  metricQualityQuerySchema,
+  metricReconciliationQuerySchema,
   metricQualityReportSchema,
   metricReconciliationReportSchema,
   type MetricCard,
@@ -9,7 +12,7 @@ import {
 } from "@idream/shared/admin";
 import type { PrismaClient } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
-import { AppError, Errors } from "@/server/lib/errors";
+import { AppError } from "@/server/lib/errors";
 import { fail, ok } from "@/server/lib/http";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { effectivePermissionScope } from "@/server/admin/effective-permissions";
@@ -26,12 +29,9 @@ const CANONICAL_DEFINITIONS = ADMIN_METRIC_REGISTRY.filter((definition) =>
 );
 const DEFINITION_BY_KEY = new Map(CANONICAL_DEFINITIONS.map((definition) => [definition.key, definition]));
 
-function parseAsOf(request: Request): Date {
-  const raw = new URL(request.url).searchParams.get("asOf");
-  if (!raw) return new Date();
-  const parsed = new Date(raw);
-  if (Number.isNaN(parsed.getTime())) throw Errors.badRequest("asOf must be an ISO timestamp");
-  return parsed;
+function parseAsOf(request: Request, schema: typeof metricDashboardQuerySchema): Date {
+  const query = schema.parse(Object.fromEntries(new URL(request.url).searchParams));
+  return query.asOf ? new Date(query.asOf) : new Date();
 }
 
 function factsValidFrom(): Date {
@@ -525,7 +525,7 @@ export async function materializeMetricSnapshots(db: PrismaClient, asOf = new Da
 export async function getMetricDashboard(request: Request) {
   try {
     const actor = await actorWithPermission(request, "analytics.metric.read");
-    const data = await buildMetricDashboardData(prisma, parseAsOf(request));
+    const data = await buildMetricDashboardData(prisma, parseAsOf(request, metricDashboardQuerySchema));
     const scope = await effectivePermissionScope(actor.id, actor.role, "analytics.metric.read");
     return ok(scope === "technical_metrics"
       ? { ...data, definitions: [], cards: [] }
@@ -539,7 +539,7 @@ export async function getMetricDashboard(request: Request) {
 export async function getMetricQualityReport(request: Request) {
   try {
     await actorWithPermission(request, "analytics.metric.read");
-    const data = await qualityReport(prisma, parseAsOf(request));
+    const data = await qualityReport(prisma, parseAsOf(request, metricQualityQuerySchema));
     return ok(data, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     if (error instanceof AppError) return fail(error);
@@ -550,7 +550,7 @@ export async function getMetricQualityReport(request: Request) {
 export async function getMetricReconciliationReport(request: Request) {
   try {
     await actorWithPermission(request, "analytics.metric.read");
-    const asOf = parseAsOf(request);
+    const asOf = parseAsOf(request, metricReconciliationQuerySchema);
     const [quality, recentBackfills] = await Promise.all([
       qualityReport(prisma, asOf),
       prisma.metricBackfillRun.findMany({ orderBy: { startedAt: "desc" }, take: 20 }),

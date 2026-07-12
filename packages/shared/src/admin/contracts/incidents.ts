@@ -1,12 +1,14 @@
 import { z } from "zod";
 import {
   adminCursorQuerySchema,
+  adminAuditEntrySchema,
   adminCommandRequestSchema,
   adminIdSchema,
   adminIsoDateTimeSchema,
   adminListResponseSchema,
   adminSeveritySchema,
   adminVerificationStateSchema,
+  adminJsonValueSchema,
 } from "./common";
 
 export const incidentResolveCommandRequestSchema = adminCommandRequestSchema;
@@ -117,7 +119,6 @@ const adminBackfillCommonResultSchema = z.object({
   applied: z.number().int().nonnegative(),
   nextCursor: z.string().nullable(),
 });
-
 const adminBackfillMismatchSchema = z.object({
   sourceType: z.string().trim().min(1),
   sourceId: adminIdSchema,
@@ -214,6 +215,20 @@ export const incidentOccurrenceSchema = z
   })
   .strict();
 
+export const incidentOccurrenceAssignmentSchema = z.object({
+  id: adminIdSchema,
+  fromIncidentId: adminIdSchema,
+  toIncidentId: adminIdSchema,
+  action: z.string().trim().min(1),
+  actorId: adminIdSchema,
+  reason: z.string().trim().min(1),
+  createdAt: adminIsoDateTimeSchema,
+}).strict();
+
+export const incidentDetailOccurrenceSchema = incidentOccurrenceSchema.extend({
+  assignmentHistory: z.array(incidentOccurrenceAssignmentSchema).readonly(),
+});
+
 export const incidentActionPlanSchema = z
   .object({
     id: adminIdSchema,
@@ -224,11 +239,31 @@ export const incidentActionPlanSchema = z
     skippedOccurrenceIds: z.array(adminIdSchema).readonly(),
     occurrenceSetHash: z.string().trim().min(1),
     impact: incidentImpactSchema,
+    targetVersion: z.string().trim().min(1).nullable(),
     expiresAt: adminIsoDateTimeSchema,
     createdBy: adminIdSchema,
     createdAt: adminIsoDateTimeSchema,
   })
   .strict();
+
+export const incidentPostmortemSchema = z.object({
+  id: adminIdSchema,
+  summary: z.string().trim().min(1),
+  rootCause: z.string().trim().min(1),
+  contributingFactors: adminJsonValueSchema,
+  correctiveActions: adminJsonValueSchema,
+  evidenceRefs: adminJsonValueSchema,
+  createdById: adminIdSchema,
+  createdAt: adminIsoDateTimeSchema,
+}).strict();
+
+export const incidentDetailSchema = z.object({
+  incident: incidentSchema,
+  occurrences: z.array(incidentDetailOccurrenceSchema).readonly(),
+  actionPlans: z.array(incidentActionPlanSchema).readonly(),
+  postmortem: incidentPostmortemSchema.nullable(),
+  activity: z.array(adminAuditEntrySchema).readonly(),
+}).strict();
 
 export const incidentQuerySchema = adminCursorQuerySchema.extend({
   status: incidentStatusSchema.optional(),

@@ -49,6 +49,20 @@ export const generationSettlementViewSchema = z.enum([
   "refunded",
 ]);
 
+export const generationRequestCancelSchema = z.object({
+  entityVersion: z.number().int().positive(),
+  reason: z.string().trim().min(3).max(2_000),
+  confirmation: z.string().trim().min(1).max(300),
+}).strict();
+
+export const generationRequestCancelResultSchema = z.object({
+  requestId: adminIdSchema,
+  status: z.literal("cancelled"),
+  version: z.number().int().positive(),
+  finishedAt: adminIsoDateTimeSchema,
+  refundAmount: z.number().int().nonnegative(),
+}).strict();
+
 export const generationJobQuerySchema = adminCursorQuerySchema.extend({
   mode: z.enum(["all", "image", "video"]).default("image"),
   legacyStatus: generationJobStatusSchema.optional(),

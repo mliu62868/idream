@@ -5,6 +5,13 @@ import {
   adminListResponseSchema,
 } from "./common";
 
+export const metricAsOfQuerySchema = z.object({
+  asOf: adminIsoDateTimeSchema.optional(),
+}).strict();
+export const metricDashboardQuerySchema = metricAsOfQuerySchema;
+export const metricQualityQuerySchema = metricAsOfQuerySchema;
+export const metricReconciliationQuerySchema = metricAsOfQuerySchema;
+
 export const metricQualityStateSchema = z.enum(["certified", "directional", "invalid", "stale"]);
 export const metricDecisionUseSchema = z.enum(["allowed", "directional_only", "blocked"]);
 export const metricPublicationStatusSchema = z.enum(["official", "shadow", "diagnostic", "guardrail"]);

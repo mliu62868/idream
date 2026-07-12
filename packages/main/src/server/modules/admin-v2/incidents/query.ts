@@ -1,9 +1,10 @@
-import { incidentQuerySchema, incidentRecoveryChecksSchema } from "@idream/shared/admin";
+import { incidentDetailSchema, incidentQuerySchema, incidentRecoveryChecksSchema } from "@idream/shared/admin";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { adminAuditDto } from "@/server/modules/admin-v2/shared/dto";
 import { assertIncidentReadable, incidentReadScopeWhere } from "./scope";
 
 function record(value: Prisma.JsonValue | null) {
@@ -122,7 +123,7 @@ export async function getIncidentDetail(request: Request, incidentId: string) {
     where: { occurrenceId: { in: occurrences.map((row) => row.id) } },
     orderBy: { createdAt: "asc" },
   });
-  return ok({
+  return ok(incidentDetailSchema.parse({
     incident: incidentDto(incident),
     occurrences: occurrences.map((row) => ({
       id: row.id,
@@ -143,6 +144,7 @@ export async function getIncidentDetail(request: Request, incidentId: string) {
     })),
     actionPlans: actionPlans.map((row) => ({
       id: row.id,
+      incidentId: row.incidentId,
       action: row.action,
       incidentVersion: row.incidentVersion,
       occurrenceSetHash: row.eligibleIdsHash,
@@ -164,6 +166,6 @@ export async function getIncidentDetail(request: Request, incidentId: string) {
       createdById: postmortem.createdById,
       createdAt: postmortem.createdAt.toISOString(),
     } : null,
-    activity,
-  });
+    activity: activity.map(adminAuditDto),
+  }));
 }

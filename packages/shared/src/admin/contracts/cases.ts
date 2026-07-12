@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   adminCursorQuerySchema,
+  adminAuditEntrySchema,
   adminCommandRequestSchema,
   adminEntityRefSchema,
   adminIdSchema,
@@ -8,6 +9,7 @@ import {
   adminListResponseSchema,
   adminPrioritySchema,
   adminSeveritySchema,
+  adminJsonValueSchema,
 } from "./common";
 
 export const caseCloseCommandRequestSchema = adminCommandRequestSchema;
@@ -179,6 +181,32 @@ export const operationsCaseQuerySchema = adminCursorQuerySchema.extend({
 export const operationsCaseListResponseSchema = adminListResponseSchema(operationsCaseSchema).extend({
   query: operationsCaseQuerySchema.extend({ cursor: z.string().nullable() }),
 });
+
+export const caseDecisionRecordSchema = z.object({
+  id: adminIdSchema,
+  sourceType: z.string().trim().min(1),
+  sourceId: adminIdSchema,
+  releaseId: adminIdSchema.nullable(),
+  question: z.string().trim().min(1),
+  evidenceRefs: adminJsonValueSchema,
+  evidenceLevel: z.string().trim().min(1),
+  decision: z.string().trim().min(1),
+  confidence: z.number().nullable(),
+  ownerId: adminIdSchema,
+  successCriteria: adminJsonValueSchema,
+  guardrails: adminJsonValueSchema,
+  reviewAt: adminIsoDateTimeSchema.nullable(),
+  outcome: adminJsonValueSchema.nullable(),
+  createdAt: adminIsoDateTimeSchema,
+  updatedAt: adminIsoDateTimeSchema,
+}).strict();
+
+export const operationsCaseDetailSchema = z.object({
+  case: operationsCaseSchema,
+  evidence: z.array(caseEvidenceSchema).readonly(),
+  decisions: z.array(caseDecisionRecordSchema).readonly(),
+  activity: z.array(adminAuditEntrySchema).readonly(),
+}).strict();
 
 export type OperationsCase = z.infer<typeof operationsCaseSchema>;
 export type CaseEvidence = z.infer<typeof caseEvidenceSchema>;

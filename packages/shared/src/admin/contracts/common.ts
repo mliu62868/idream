@@ -2,6 +2,7 @@ import { z } from "zod";
 
 export const adminIdSchema = z.string().trim().min(1);
 export const adminIsoDateTimeSchema = z.string().datetime({ offset: true });
+export const adminJsonValueSchema = z.json();
 
 export const adminEnvironmentSchema = z.enum(["production", "staging", "development", "test"]);
 export const adminDataClassSchema = z.enum(["customer", "internal", "fixture", "audit"]);
@@ -187,6 +188,24 @@ export const adminCommandStatusSchema = z
     needsReconciliation: z.boolean(),
     createdAt: adminIsoDateTimeSchema,
     updatedAt: adminIsoDateTimeSchema,
+  })
+  .strict();
+
+export const adminAuditEntrySchema = z
+  .object({
+    id: adminIdSchema,
+    actorId: adminIdSchema,
+    actorRole: z.string().trim().min(1),
+    action: z.string().trim().min(1),
+    targetType: z.string().trim().min(1),
+    targetId: adminIdSchema,
+    reason: z.string().nullable(),
+    before: adminJsonValueSchema.nullable(),
+    after: adminJsonValueSchema.nullable(),
+    requestId: z.string().nullable(),
+    ipHash: z.string().nullable(),
+    userAgent: z.string().nullable(),
+    createdAt: adminIsoDateTimeSchema,
   })
   .strict();
 

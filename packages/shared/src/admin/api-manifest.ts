@@ -154,7 +154,7 @@ export const ADMIN_V2_API_OPERATIONS = [
   operation("GET", "/api/v2/admin/customers", allOf("customer.read"), "customerListQuerySchema", "customerListResponseSchema"),
   operation("GET", "/api/v2/admin/customers/:id", allOf("customer.read"), "path:id", "customer360Schema"),
 
-  operation("GET", "/api/v2/admin/experiments", allOf("experiment.manage"), "limit-query", "experimentDefinitionListSchema"),
+  operation("GET", "/api/v2/admin/experiments", allOf("experiment.manage"), "experimentDefinitionListQuerySchema", "experimentDefinitionListSchema"),
   operation("POST", "/api/v2/admin/experiments", allOf("experiment.manage"), "experimentDefinitionCreateSchema+idempotency-key", "experimentDefinitionSchema"),
   operation("GET", "/api/v2/admin/experiments/:id", allOf("experiment.manage"), "path:id", "experimentDefinitionSchema"),
   operation("GET", "/api/v2/admin/experiments/:id/analysis", allOf("experiment.manage"), "experimentAnalysisQuerySchema", "experimentAnalysisResponseSchema"),

@@ -1,5 +1,4 @@
-import { customer360Schema, customerListResponseSchema } from "@idream/shared/admin";
-import { z } from "zod";
+import { customer360Schema, customerListQuerySchema, customerListResponseSchema } from "@idream/shared/admin";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
@@ -8,13 +7,6 @@ import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority"
 import { caseDto } from "./query";
 
 const ACTIVE_CASE_STATUSES = ["new", "triaged", "in_progress", "waiting", "reopened"];
-
-const customerListQuerySchema = z.object({
-  search: z.string().trim().max(160).default(""),
-  status: z.string().trim().max(40).default(""),
-  limit: z.coerce.number().int().min(1).max(100).default(30),
-  cursor: z.string().trim().optional(),
-});
 
 function encodeCursor(row: { createdAt: Date; id: string }) {
   return Buffer.from(JSON.stringify({ createdAt: row.createdAt.toISOString(), id: row.id }), "utf8").toString("base64url");

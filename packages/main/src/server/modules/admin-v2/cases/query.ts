@@ -1,9 +1,10 @@
-import { operationsCaseQuerySchema } from "@idream/shared/admin";
+import { operationsCaseDetailSchema, operationsCaseQuerySchema } from "@idream/shared/admin";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { adminAuditDto } from "@/server/modules/admin-v2/shared/dto";
 
 function record(value: Prisma.JsonValue | null) {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -220,7 +221,7 @@ export async function getCaseDetail(request: Request, caseId: string) {
       take: 100,
     }),
   ]);
-  return ok({
+  return ok(operationsCaseDetailSchema.parse({
     case: await caseDto(adminCase),
     evidence: evidence.map((row) => {
       const snapshot = record(row.snapshot);
@@ -239,7 +240,12 @@ export async function getCaseDetail(request: Request, caseId: string) {
         access: "full",
       };
     }),
-    decisions,
-    activity,
-  });
+    decisions: decisions.map((row) => ({
+      ...row,
+      reviewAt: row.reviewAt?.toISOString() ?? null,
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+    })),
+    activity: activity.map(adminAuditDto),
+  }));
 }

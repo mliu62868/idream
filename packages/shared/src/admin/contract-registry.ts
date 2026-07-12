@@ -31,66 +31,6 @@ const transportContracts = {
 } as const satisfies Record<string, z.ZodType>;
 
 export const ADMIN_V2_PENDING_CONTRACTS = {
-  customerListQuerySchema: {
-    owner: "packages/main/src/server/modules/admin-v2/cases/customer-query.ts",
-    reason: "Customer list query validation remains main-local and therefore cannot be executed by the shared registry.",
-  },
-  experimentAnalysisQuerySchema: {
-    owner: "packages/main/src/server/modules/admin-v2/experiments/analysis.ts",
-    reason: "Experiment analysis parses asOf locally and has no exported shared query schema.",
-  },
-  experimentDefinitionListSchema: {
-    owner: "packages/main/src/server/modules/admin-v2/experiments/management.ts",
-    reason: "Experiment list output wraps definitions in a main-local envelope without a shared response schema.",
-  },
-  generationRequestCancelResultSchema: {
-    owner: "packages/main/src/app/api/v2/admin/generation/requests/[id]/commands/cancel/route.ts",
-    reason: "Generation cancellation returns a main lifecycle result that is not represented by a shared response schema.",
-  },
-  generationRequestCancelSchema: {
-    owner: "packages/main/src/app/api/v2/admin/generation/requests/[id]/commands/cancel/route.ts",
-    reason: "Generation cancellation request validation is Route Handler local and not exported from shared.",
-  },
-  globalAdminSearchQuerySchema: {
-    owner: "packages/main/src/server/modules/admin-v2/search/global-search.ts",
-    reason: "Global search query parsing is main-local and has not been promoted to a shared contract.",
-  },
-  globalAdminSearchResponseSchema: {
-    owner: "packages/main/src/server/modules/admin-v2/search/global-search.ts",
-    reason: "Permission-cropped global search results have no exported shared response DTO schema.",
-  },
-  incidentDetailSchema: {
-    owner: "packages/main/src/server/modules/admin-v2/incidents/query.ts",
-    reason: "Incident detail is a composite read model without an exported shared response schema.",
-  },
-  metricDashboardQuerySchema: {
-    owner: "packages/main/src/server/modules/admin-v2/metrics/query.ts",
-    reason: "Metric dashboard asOf parsing is main-local and has no exported shared query schema.",
-  },
-  metricQualityQuerySchema: {
-    owner: "packages/main/src/server/modules/admin-v2/metrics/query.ts",
-    reason: "Metric quality asOf parsing is main-local and has no exported shared query schema.",
-  },
-  metricReconciliationQuerySchema: {
-    owner: "packages/main/src/server/modules/admin-v2/metrics/query.ts",
-    reason: "Metric reconciliation asOf parsing is main-local and has no exported shared query schema.",
-  },
-  operationsCaseDetailSchema: {
-    owner: "packages/main/src/server/modules/admin-v2/cases/query.ts",
-    reason: "Case detail is a composite evidence read model without an exported shared response schema.",
-  },
-  savedViewDeleteSchema: {
-    owner: "packages/main/src/server/modules/admin-v2/collaboration/service.ts",
-    reason: "Saved-view deletion returns a local deleted flag envelope without a shared response schema.",
-  },
-  savedViewListQuerySchema: {
-    owner: "packages/main/src/server/modules/admin-v2/collaboration/service.ts",
-    reason: "Saved-view scope query validation is main-local and has no exported shared query schema.",
-  },
-  todayProjectionQuerySchema: {
-    owner: "packages/main/src/server/modules/admin-v2/today/query.ts",
-    reason: "Today workMode query selection is main-local and has no exported shared query schema.",
-  },
 } as const satisfies Record<string, ContractEvidence>;
 
 const bindingCache = new Map<string, ExecutableAdminV2Contract>();
@@ -145,7 +85,7 @@ const fixtureOverrides: Readonly<Record<string, unknown>> = {
 
 export function resolveAdminV2Contract(ref: string): AdminV2ContractBinding | null {
   const { baseRef, requirements } = splitRequirements(ref);
-  const pending = ADMIN_V2_PENDING_CONTRACTS[baseRef as keyof typeof ADMIN_V2_PENDING_CONTRACTS];
+  const pending = (ADMIN_V2_PENDING_CONTRACTS as Readonly<Record<string, ContractEvidence>>)[baseRef];
   if (pending) return { kind: "pending", fixtureKey: baseRef, ...pending };
 
   const transport = transportContracts[baseRef as keyof typeof transportContracts];

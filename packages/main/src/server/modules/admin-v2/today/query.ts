@@ -1,5 +1,6 @@
 import {
   todayProjectionSchema,
+  todayProjectionQuerySchema,
   type AdminPermissionKey,
   type TodayProjection,
   type TodayWorkMode,
@@ -1292,11 +1293,11 @@ export async function getTodayProjection(request: Request) {
   try {
     const actor = await actorWithPermission(request, "dashboard.read");
     const permissions = await effectivePermissions(actor.id, actor.role);
-    const requestedWorkMode = new URL(request.url).searchParams.get("workMode");
+    const query = todayProjectionQuerySchema.parse(Object.fromEntries(new URL(request.url).searchParams));
     const projection = await buildTodayProjection({
       actor,
       permissions,
-      workMode: isWorkMode(requestedWorkMode) ? requestedWorkMode : defaultWorkMode(actor.role),
+      workMode: query.workMode ?? defaultWorkMode(actor.role),
     });
     return ok(projection, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
@@ -1311,8 +1312,4 @@ function defaultWorkMode(role: string): TodayWorkMode {
   if (role === "ops") return "platform_ops";
   if (role === "analyst") return "growth_analyst";
   return "admin";
-}
-
-function isWorkMode(value: string | null): value is TodayWorkMode {
-  return value !== null && Object.hasOwn(MODE_SOURCE_ORDER, value);
 }

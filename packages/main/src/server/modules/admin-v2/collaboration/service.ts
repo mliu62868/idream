@@ -4,6 +4,8 @@ import {
   collaborationTargetTypeSchema,
   collaborationWatchSchema,
   savedViewCreateSchema,
+  savedViewDeleteSchema,
+  savedViewListQuerySchema,
   savedViewUpdateSchema,
   type AdminPermissionKey,
   type CollaborationTargetType,
@@ -373,7 +375,7 @@ function viewDto(view: Awaited<ReturnType<typeof prisma.adminSavedView.findFirst
 }
 
 export async function listSavedViewsV2(request: Request) {
-  const scope = collaborationTargetTypeSchema.parse(new URL(request.url).searchParams.get("scope"));
+  const { scope } = savedViewListQuerySchema.parse(Object.fromEntries(new URL(request.url).searchParams));
   const actor = await actorWithPermission(request, targetDescriptors[scope].read);
   const views = await prisma.adminSavedView.findMany({ where: { ownerId: actor.id, scope }, orderBy: [{ updatedAt: "desc" }, { id: "desc" }] });
   return ok({ items: views.map(viewDto) });
@@ -416,5 +418,5 @@ export async function deleteSavedViewV2(request: Request, id: string) {
   if (!Number.isInteger(expectedVersion) || expectedVersion < 1) throw Errors.badRequest("If-Match must contain the saved view version");
   const deleted = await prisma.adminSavedView.deleteMany({ where: { id, ownerId: actor.id, version: expectedVersion } });
   if (deleted.count !== 1) throw Errors.conflict("Saved view changed; reload before deleting");
-  return ok({ deleted: true });
+  return ok(savedViewDeleteSchema.parse({ deleted: true }));
 }
