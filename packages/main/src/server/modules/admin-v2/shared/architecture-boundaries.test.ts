@@ -119,4 +119,16 @@ describe("Admin v2 architecture boundaries", () => {
     expect(promo).toContain("export async function listRedeemCodes");
     expect(approvals).toContain("export async function listApprovals");
   });
+
+  it("keeps Chat Ops proxy authority out of the dispatcher monolith", async () => {
+    const root = path.join(process.cwd(), "src/server/modules/admin");
+    const dispatcher = await readFile(path.join(root, "service.ts"), "utf8");
+    const chat = await readFile(path.join(root, "chat/service.ts"), "utf8").catch(() => "");
+
+    expect(dispatcher).not.toContain("type ChatAdminProxyResult");
+    expect(dispatcher).not.toContain("async function proxyChatAdmin");
+    expect(dispatcher).not.toContain("async function chatOpsOverview");
+    expect(chat).toContain("export async function chatOpsOverview");
+    expect(chat).not.toContain(["@/server/modules/admin", "service"].join("/"));
+  });
 });

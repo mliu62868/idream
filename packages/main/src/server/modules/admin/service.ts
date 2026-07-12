@@ -1,8 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/server/lib/db";
-import { env } from "@/server/lib/env";
-import { AppError, Errors } from "@/server/lib/errors";
+import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import {
   adminAuditData,
@@ -150,6 +149,13 @@ import {
   listApprovals,
   rejectApproval,
 } from "./approvals/service";
+import {
+  chatOpsModerationEvents,
+  chatOpsOverview,
+  chatOpsProviderHealth,
+  chatOpsSessions,
+  chatOpsUsage,
+} from "./chat/service";
 
 const FEATURED_SETTING_KEY = "feed.featured";
 
@@ -1418,151 +1424,6 @@ async function putFeaturedCharacters(request: Request) {
 
 // ── F6 Chat 运营面（代理到 chat 服务内部 admin 只读 API；尊重 DB 边界，默认不回明文） ──
 // INTENT: chat 服务不可达/未配置时降级返回 configured:false（与既有 chat BFF 降级一致），不抛 500。
-type ChatAdminProxyResult = {
-  configured: boolean;
-  data: unknown | null;
-  diagnostics: {
-    reason?: "missing_url" | "unreachable" | "unauthorized" | "upstream_error" | "bad_json";
-    status?: number;
-    serviceUrlConfigured: boolean;
-  };
-};
-
-async function proxyChatAdmin(path: string): Promise<ChatAdminProxyResult> {
-  if (!env.CHAT_SERVICE_URL) {
-    return {
-      configured: false,
-      data: null,
-      diagnostics: { reason: "missing_url", serviceUrlConfigured: false },
-    };
-  }
-  try {
-    const res = await fetch(`${env.CHAT_SERVICE_URL}${path}`, {
-      headers: { "x-internal-token": env.INTERNAL_TOKEN },
-    });
-    if (!res.ok) {
-      if (res.status === 400) {
-        throw Errors.badRequest("Chat admin query was rejected by the authority service", {
-          upstreamStatus: res.status,
-        });
-      }
-      return {
-        configured: false,
-        data: null,
-        diagnostics: {
-          reason: res.status === 401 ? "unauthorized" : "upstream_error",
-          status: res.status,
-          serviceUrlConfigured: true,
-        },
-      };
-    }
-    try {
-      return {
-        configured: true,
-        data: (await res.json()) as unknown,
-        diagnostics: { serviceUrlConfigured: true },
-      };
-    } catch {
-      return {
-        configured: false,
-        data: null,
-        diagnostics: { reason: "bad_json", serviceUrlConfigured: true },
-      };
-    }
-  } catch (error) {
-    if (error instanceof AppError) throw error;
-    // 故意降级：chat 服务暂不可达不应让 admin 控制台整体 500。
-    return {
-      configured: false,
-      data: null,
-      diagnostics: { reason: "unreachable", serviceUrlConfigured: true },
-    };
-  }
-}
-
-async function chatOpsOverview(request: Request) {
-  await actorWithPermission(request, "chat.ops.read");
-  const result = await proxyChatAdmin("/internal/admin/overview");
-  return ok({
-    configured: result.configured,
-    diagnostics: result.diagnostics,
-    overview: isRecord(result.data) ? result.data : null,
-  });
-}
-
-async function chatOpsProviderHealth(request: Request) {
-  await actorWithPermission(request, "chat.ops.read");
-  const result = await proxyChatAdmin("/internal/admin/provider-health");
-  return ok({
-    configured: result.configured,
-    diagnostics: result.diagnostics,
-    ...(isRecord(result.data) ? result.data : { items: [] }),
-  });
-}
-
-async function chatOpsSessions(request: Request) {
-  await actorWithPermission(request, "chat.ops.read");
-  const url = new URL(request.url);
-  const params = new URLSearchParams();
-  const userId = url.searchParams.get("userId");
-  const characterId = url.searchParams.get("characterId");
-  const status = url.searchParams.get("status");
-  const cursor = url.searchParams.get("cursor");
-  if (userId) params.set("userId", userId);
-  if (characterId) params.set("characterId", characterId);
-  if (status) params.set("status", status);
-  if (cursor) params.set("cursor", cursor);
-  params.set("limit", String(clampInt(url.searchParams.get("limit"), 1, 100, 50)));
-  const result = await proxyChatAdmin(`/internal/admin/sessions?${params.toString()}`);
-  return ok({
-    configured: result.configured,
-    diagnostics: result.diagnostics,
-    ...(isRecord(result.data) ? result.data : { items: [] }),
-  });
-}
-
-async function chatOpsUsage(request: Request) {
-  await actorWithPermission(request, "chat.ops.read");
-  const url = new URL(request.url);
-  const params = new URLSearchParams();
-  const userId = url.searchParams.get("userId");
-  const cursor = url.searchParams.get("cursor");
-  if (userId) params.set("userId", userId);
-  if (cursor) params.set("cursor", cursor);
-  params.set("limit", String(clampInt(url.searchParams.get("limit"), 1, 100, 50)));
-  const result = await proxyChatAdmin(`/internal/admin/usage?${params.toString()}`);
-  return ok({
-    configured: result.configured,
-    diagnostics: result.diagnostics,
-    ...(isRecord(result.data) ? result.data : { items: [] }),
-  });
-}
-
-async function chatOpsModerationEvents(request: Request) {
-  await actorWithPermission(request, "chat.ops.read");
-  const url = new URL(request.url);
-  const params = new URLSearchParams();
-  const status = url.searchParams.get("status");
-  const layer = url.searchParams.get("layer");
-  const policyCode = url.searchParams.get("policyCode");
-  const targetType = url.searchParams.get("targetType");
-  const targetId = url.searchParams.get("targetId");
-  const cursor = url.searchParams.get("cursor");
-  if (status) params.set("status", status);
-  if (layer) params.set("layer", layer);
-  if (policyCode) params.set("policyCode", policyCode);
-  if (targetType) params.set("targetType", targetType);
-  if (targetId) params.set("targetId", targetId);
-  if (cursor) params.set("cursor", cursor);
-  params.set("limit", String(clampInt(url.searchParams.get("limit"), 1, 100, 50)));
-  const result = await proxyChatAdmin(`/internal/admin/moderation-events?${params.toString()}`);
-  return ok({
-    configured: result.configured,
-    diagnostics: result.diagnostics,
-    ...(isRecord(result.data) ? result.data : { items: [] }),
-  });
-}
-
 function recipeAuditSnapshot(template: {
   recipeKey: string;
   mode: string;

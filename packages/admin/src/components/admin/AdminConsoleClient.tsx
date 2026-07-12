@@ -81,6 +81,7 @@ import { ModerationWorkspace } from "@/features/moderation/ModerationWorkspace";
 import { SupportWorkspace } from "@/features/support/SupportWorkspace";
 import { PromoWorkspace } from "@/features/promo/PromoWorkspace";
 import { ApprovalsWorkspace } from "@/features/approvals/ApprovalsWorkspace";
+import { ChatOpsWorkspace } from "@/features/chat-ops/ChatOpsWorkspace";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import {
   buildCompatibilityListUrl,
@@ -142,23 +143,6 @@ type ProviderOpsData = {
   providers: Row[];
 };
 
-type ChatOpsDiagnostics = {
-  reason?: string;
-  status?: number;
-  serviceUrlConfigured: boolean;
-};
-
-type ChatOpsFilters = {
-  userId: string;
-  characterId: string;
-  sessionStatus: string;
-  eventStatus: string;
-  eventLayer: string;
-  policyCode: string;
-  targetId: string;
-  limit: string;
-};
-
 type SectionData =
   | { kind: "dashboard"; data: DashboardData }
   | { kind: "users"; rows: Row[] }
@@ -200,19 +184,8 @@ type SectionData =
         | "moderation"
         | "support"
         | "promo"
-        | "approvals";
-    }
-  | {
-      kind: "chatops";
-      configured: boolean;
-      diagnostics: ChatOpsDiagnostics | null;
-      overview: Record<string, unknown> | null;
-      providerHealth: Row[];
-      sessions: Row[];
-      usage: Row[];
-      events: Row[];
-      pageInfo: { sessions: PageInfo; usage: PageInfo; events: PageInfo };
-      query: ListQuery;
+        | "approvals"
+        | "chat";
     };
 
 type PendingAction = {
@@ -223,17 +196,6 @@ type PendingAction = {
   reasonRequired: boolean;
   idempotencyKey?: string;
   body: (reason: string, confirmation: string) => Record<string, unknown>;
-};
-
-const defaultChatOpsFilters: ChatOpsFilters = {
-  userId: "",
-  characterId: "",
-  sessionStatus: "active",
-  eventStatus: "all",
-  eventLayer: "all",
-  policyCode: "",
-  targetId: "",
-  limit: "50",
 };
 
 // SPEC: localStorage key for which folded sidebar nav groups the operator last expanded.
@@ -259,7 +221,6 @@ export function AdminConsoleClient({
 }: AdminConsoleClientProps) {
   const sidebarNavRef = useRef<HTMLElement | null>(null);
   const { sectionId, view: subview } = parseAdminPath(initialSection);
-  const initialRouteParams = new URLSearchParams(initialSection.split("?", 2)[1] ?? "");
   const activeItem = adminSectionItem(sectionId);
   const permissions = useMemo(() => new Set(initialPermissions), [initialPermissions]);
   const canAccessActiveSection = sectionIsPermitted(sectionId, permissions);
@@ -277,7 +238,6 @@ export function AdminConsoleClient({
   const [confirmation, setConfirmation] = useState("");
   const [actionStatus, setActionStatus] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
-  const [chatOpsFilters, setChatOpsFilters] = useState<ChatOpsFilters>(() => chatOpsFiltersFromParams(initialRouteParams));
   const [locale, setLocale] = useState<AdminLocale>("en");
   const [localeReady, setLocaleReady] = useState(false);
   const t = (key: string, values?: Record<string, string | number>) =>
@@ -310,13 +270,12 @@ export function AdminConsoleClient({
     return () => window.cancelAnimationFrame(frame);
   }, [actor?.role]);
 
-  async function load(nextChatOpsFilters: ChatOpsFilters = chatOpsFilters, nextWorkMode: WorkMode = workMode) {
+  async function load(nextWorkMode: WorkMode = workMode) {
     if (!initialAccess || !canAccessActiveSection) return;
     setLoading(true);
     setError(null);
     try {
       setData(await fetchSection(sectionId, {
-        chatOps: nextChatOpsFilters,
         workMode: nextWorkMode,
         includeLegacyAnalytics: permissions.has("analytics.export"),
         searchParams: new URLSearchParams(window.location.search),
@@ -339,9 +298,7 @@ export function AdminConsoleClient({
 
   useEffect(() => {
     const onPopState = () => {
-      const filters = chatOpsFiltersFromParams(new URLSearchParams(window.location.search));
-      setChatOpsFilters(filters);
-      void load(filters);
+      void load();
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
@@ -352,14 +309,7 @@ export function AdminConsoleClient({
   function updateRouteQuery(updates: Record<string, string | null>, clearCursors: readonly string[] = []) {
     const nextUrl = buildCompatibilityListUrl(window.location.pathname, window.location.search, updates, clearCursors);
     window.history.pushState(null, "", nextUrl);
-    const params = new URLSearchParams(window.location.search);
-    if (sectionId === "chat") {
-      const filters = chatOpsFiltersFromParams(params);
-      setChatOpsFilters(filters);
-      void load(filters);
-    } else {
-      void load();
-    }
+    void load();
   }
 
   function openAction(action: PendingAction) {
@@ -600,7 +550,7 @@ export function AdminConsoleClient({
                         onChange={(event) => {
                           const nextMode = event.target.value as WorkMode;
                           setWorkMode(nextMode);
-                          if (sectionId === "dashboard") void load(chatOpsFilters, nextMode);
+                          if (sectionId === "dashboard") void load(nextMode);
                           try {
                             window.localStorage.setItem(WORK_MODE_STORAGE_KEY, nextMode);
                           } catch {
@@ -719,12 +669,6 @@ export function AdminConsoleClient({
             ) : (
               renderSection(data, subview, {
                 openAction,
-                chatOpsFilters,
-                setChatOpsFilters,
-                applyChatOpsFilters: (next) => {
-                  setChatOpsFilters(next);
-                  updateRouteQuery(chatOpsFiltersToRouteQuery(next), ["chatSessionCursor", "chatUsageCursor", "chatEventCursor"]);
-                },
                 updateQuery: updateRouteQuery,
                 reload: () => void load(),
                 permissions,
@@ -870,7 +814,6 @@ function NavLink({ active, item }: { active: boolean; item: NavItem }) {
 async function fetchSection(
   sectionId: string,
   options: {
-    chatOps?: ChatOpsFilters;
     workMode?: WorkMode;
     includeLegacyAnalytics?: boolean;
     searchParams?: URLSearchParams;
@@ -950,74 +893,7 @@ async function fetchSection(
   if (sectionId === "generation/metrics") return { kind: "selfFetch", view: "generation-metrics" };
   if (sectionId === "promo") return { kind: "selfFetch", view: "promo" };
   if (sectionId === "approvals") return { kind: "selfFetch", view: "approvals" };
-  if (sectionId === "chat") {
-    const filters = options.chatOps ?? defaultChatOpsFilters;
-    const routeQuery = listQuery(params, ["chatUserId", "chatCharacterId", "chatSessionStatus", "chatEventStatus", "chatEventLayer", "chatPolicyCode", "chatTargetId", "chatLimit", "chatSessionCursor", "chatUsageCursor", "chatEventCursor"]);
-    const common = {
-      userId: filters.userId,
-      limit: filters.limit,
-    };
-    const sessionQuery = queryString({
-      ...common,
-      characterId: filters.characterId,
-      status: filters.sessionStatus,
-      cursor: routeQuery.chatSessionCursor,
-    });
-    const usageQuery = queryString({ ...common, cursor: routeQuery.chatUsageCursor });
-    const eventQuery = queryString({
-      limit: filters.limit,
-      status: filters.eventStatus,
-      layer: filters.eventLayer,
-      policyCode: filters.policyCode,
-      targetId: filters.targetId,
-      cursor: routeQuery.chatEventCursor,
-    });
-    const [overview, providerHealth, sessions, events] = await Promise.all([
-      apiGet<{
-        configured: boolean;
-        diagnostics?: ChatOpsDiagnostics;
-        overview: Record<string, unknown> | null;
-      }>(
-        "/api/v1/admin/chat/overview",
-      ),
-      apiGet<{ configured: boolean; diagnostics?: ChatOpsDiagnostics; items?: Row[]; pageInfo?: PageInfo }>(
-        "/api/v1/admin/chat/provider-health",
-      ),
-      apiGet<{ configured: boolean; diagnostics?: ChatOpsDiagnostics; items?: Row[]; pageInfo?: PageInfo }>(
-        `/api/v1/admin/chat/sessions${sessionQuery}`,
-      ),
-      apiGet<{ configured: boolean; diagnostics?: ChatOpsDiagnostics; items?: Row[]; pageInfo?: PageInfo }>(
-        `/api/v1/admin/chat/moderation-events${eventQuery}`,
-      ),
-    ]);
-    const usage = await apiGet<{ configured: boolean; diagnostics?: ChatOpsDiagnostics; items?: Row[]; pageInfo?: PageInfo }>(
-      `/api/v1/admin/chat/usage${usageQuery}`,
-    );
-    const configured = overview.configured || providerHealth.configured || sessions.configured || events.configured || usage.configured;
-    const diagnostics =
-      overview.diagnostics ??
-      providerHealth.diagnostics ??
-      sessions.diagnostics ??
-      events.diagnostics ??
-      usage.diagnostics ??
-      null;
-    return {
-      kind: "chatops",
-      configured,
-      diagnostics,
-      overview: overview.overview,
-      providerHealth: providerHealth.items ?? [],
-      sessions: sessions.items ?? [],
-      usage: usage.items ?? [],
-      events: events.items ?? [],
-      pageInfo: {
-        sessions: sessions.pageInfo ?? emptyPageInfo,
-        usage: usage.pageInfo ?? emptyPageInfo,
-        events: events.pageInfo ?? emptyPageInfo,
-      },
-      query: routeQuery,
-    };
-  }
+  if (sectionId === "chat") return { kind: "selfFetch", view: "chat" };
 
   const [legacy, projection] = await Promise.all([
     apiGet<TodayLegacyData>("/api/v1/admin/dashboard"),
@@ -1045,41 +921,11 @@ function listQuery(params: URLSearchParams, keys: readonly string[]): ListQuery 
   return readCompatibilityListQuery(params, keys);
 }
 
-function chatOpsFiltersFromParams(params: URLSearchParams): ChatOpsFilters {
-  const limit = params.get("chatLimit");
-  return {
-    userId: params.get("chatUserId")?.trim() ?? "",
-    characterId: params.get("chatCharacterId")?.trim() ?? "",
-    sessionStatus: params.get("chatSessionStatus")?.trim() || defaultChatOpsFilters.sessionStatus,
-    eventStatus: params.get("chatEventStatus")?.trim() || defaultChatOpsFilters.eventStatus,
-    eventLayer: params.get("chatEventLayer")?.trim() || defaultChatOpsFilters.eventLayer,
-    policyCode: params.get("chatPolicyCode")?.trim() ?? "",
-    targetId: params.get("chatTargetId")?.trim() ?? "",
-    limit: ["25", "50", "100"].includes(limit ?? "") ? limit! : defaultChatOpsFilters.limit,
-  };
-}
-
-function chatOpsFiltersToRouteQuery(filters: ChatOpsFilters) {
-  return {
-    chatUserId: filters.userId,
-    chatCharacterId: filters.characterId,
-    chatSessionStatus: filters.sessionStatus,
-    chatEventStatus: filters.eventStatus,
-    chatEventLayer: filters.eventLayer,
-    chatPolicyCode: filters.policyCode,
-    chatTargetId: filters.targetId,
-    chatLimit: filters.limit,
-  };
-}
-
 function renderSection(
   section: SectionData | null,
   subview: AdminSubview,
   ctx: {
     openAction: (action: PendingAction) => void;
-    chatOpsFilters: ChatOpsFilters;
-    setChatOpsFilters: (value: ChatOpsFilters) => void;
-    applyChatOpsFilters: (value: ChatOpsFilters) => void;
     updateQuery: (updates: Record<string, string | null>, clearCursors?: readonly string[]) => void;
     reload: () => void | Promise<void>;
     permissions: ReadonlySet<AdminPermissionKey>;
@@ -1212,25 +1058,10 @@ function renderSection(
     if (section.view === "approvals") {
       return <ApprovalsWorkspace canReview={ctx.permissions.has("admin.approval.review")} />;
     }
+    if (section.view === "chat") {
+      return <ChatOpsWorkspace canRead={ctx.permissions.has("chat.ops.read")} />;
+    }
     return <ReviewQueueView />;
-  }
-  if (section.kind === "chatops") {
-    return (
-      <ChatOpsView
-        configured={section.configured}
-        diagnostics={section.diagnostics}
-        events={section.events}
-        filters={ctx.chatOpsFilters}
-        overview={section.overview}
-        onApplyFilters={ctx.applyChatOpsFilters}
-        onFiltersChange={ctx.setChatOpsFilters}
-        pageInfo={section.pageInfo}
-        updateQuery={ctx.updateQuery}
-        providerHealth={section.providerHealth}
-        sessions={section.sessions}
-        usage={section.usage}
-      />
-    );
   }
   return null;
 }
@@ -1518,266 +1349,7 @@ function ContentView({
   );
 }
 
- function ChatOpsView({
-  configured,
-  diagnostics,
-  overview,
-  providerHealth,
-  sessions,
-  usage,
-  events,
-  filters,
-  onApplyFilters,
-  onFiltersChange,
-  pageInfo,
-  updateQuery,
-}: {
-  configured: boolean;
-  diagnostics: ChatOpsDiagnostics | null;
-  overview: Record<string, unknown> | null;
-  providerHealth: Row[];
-  sessions: Row[];
-  usage: Row[];
-  events: Row[];
-  filters: ChatOpsFilters;
-  onApplyFilters: (value: ChatOpsFilters) => void;
-  onFiltersChange: (value: ChatOpsFilters) => void;
-  pageInfo: { sessions: PageInfo; usage: PageInfo; events: PageInfo };
-  updateQuery: (updates: Record<string, string | null>) => void;
-}) {
-  const { locale, t } = useAdminI18n();
-  const o = overview ?? {};
-  return (
-    <div className="space-y-5">
-      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold">{t("Chat Service status")}</span>
-              <Status
-                locale={locale}
-                value={configured ? "connected" : "disconnected"}
-                tone={configured ? "good" : "warn"}
-              />
-            </div>
-            <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-              {configured
-                ? t("Internal admin API is reachable.")
-                : t(chatOpsDiagnosticText(diagnostics))}
-            </p>
-          </div>
-          <div className="grid min-w-[220px] gap-1 text-xs text-[var(--ad-text-muted)]">
-            <div className="flex justify-between gap-4">
-              <span>{t("CHAT_SERVICE_URL")}</span>
-              <span className="font-mono text-[var(--ad-text)]">
-                {diagnostics?.serviceUrlConfigured ? t("configured") : t("missing")}
-              </span>
-            </div>
-            {diagnostics?.status ? (
-              <div className="flex justify-between gap-4">
-                <span>{t("HTTP status")}</span>
-                <span className="font-mono text-[var(--ad-text)]">{diagnostics.status}</span>
-              </div>
-            ) : null}
-          </div>
-        </div>
-      </section>
-
-      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-        <div className="grid gap-3 lg:grid-cols-[1fr_1fr_160px_160px]">
-          <input
-            className="rounded-md h-10 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
-            onChange={(event) => onFiltersChange({ ...filters, userId: event.target.value })}
-            placeholder={t("User ID")}
-            value={filters.userId}
-          />
-          <input
-            className="rounded-md h-10 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
-            onChange={(event) => onFiltersChange({ ...filters, characterId: event.target.value })}
-            placeholder={t("Character ID")}
-            value={filters.characterId}
-          />
-          <select
-            className="rounded-md h-10 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
-            onChange={(event) => onFiltersChange({ ...filters, sessionStatus: event.target.value })}
-            value={filters.sessionStatus}
-          >
-            {["active", "archived", "deleted", "all"].map((status) => (
-              <option key={status} value={status}>
-                {t(status)}
-              </option>
-            ))}
-          </select>
-          <select
-            className="rounded-md h-10 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
-            onChange={(event) => onFiltersChange({ ...filters, limit: event.target.value })}
-            value={filters.limit}
-          >
-            {["25", "50", "100"].map((limit) => (
-              <option key={limit} value={limit}>
-                {t("{count} rows", { count: limit })}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="mt-3 grid gap-3 lg:grid-cols-[160px_160px_1fr_1fr_auto_auto]">
-          <select
-            className="rounded-md h-10 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
-            onChange={(event) => onFiltersChange({ ...filters, eventStatus: event.target.value })}
-            value={filters.eventStatus}
-          >
-            {["all", "blocked", "flagged", "passed"].map((status) => (
-              <option key={status} value={status}>
-                {t(status)}
-              </option>
-            ))}
-          </select>
-          <select
-            className="rounded-md h-10 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
-            onChange={(event) => onFiltersChange({ ...filters, eventLayer: event.target.value })}
-            value={filters.eventLayer}
-          >
-            {["all", "input", "output"].map((layer) => (
-              <option key={layer} value={layer}>
-                {t(layer)}
-              </option>
-            ))}
-          </select>
-          <input
-            className="rounded-md h-10 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
-            onChange={(event) => onFiltersChange({ ...filters, policyCode: event.target.value })}
-            placeholder={t("Policy code")}
-            value={filters.policyCode}
-          />
-          <input
-            className="rounded-md h-10 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
-            onChange={(event) => onFiltersChange({ ...filters, targetId: event.target.value })}
-            placeholder={t("Target ID")}
-            value={filters.targetId}
-          />
-          <button
-            className="rounded-md inline-flex h-10 items-center justify-center gap-2 border border-[var(--ad-border)] px-3 text-sm text-[var(--ad-text)] hover:bg-black/[0.04]"
-            onClick={() => onApplyFilters(filters)}
-            type="button"
-          >
-            <Search className="h-4 w-4" />
-            {t("Apply")}
-          </button>
-          <button
-            className="rounded-md inline-flex h-10 items-center justify-center gap-2 border border-[var(--ad-border)] px-3 text-sm text-[var(--ad-text-muted)] hover:bg-black/[0.04]"
-            onClick={() => {
-              onFiltersChange(defaultChatOpsFilters);
-              onApplyFilters(defaultChatOpsFilters);
-            }}
-            type="button"
-          >
-            <RotateCcw className="h-4 w-4" />
-            {t("Reset")}
-          </button>
-        </div>
-      </section>
-
-      <div className="rounded-lg grid gap-px overflow-hidden border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
-        <Metric label="Active sessions" value={metricNumber(o.activeSessions)} meta="status=active" />
-        <Metric label="Archived" value={metricNumber(o.archivedSessions)} meta="sessions" />
-        <Metric label="Messages 24h" value={metricNumber(o.messages24h)} meta="last 24h" />
-        <Metric label="Moderation 24h" value={metricNumber(o.moderationEvents24h)} meta="events" />
-      </div>
-      <div className="rounded-lg grid gap-px overflow-hidden border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
-        <Metric label="Messages used today" value={metricNumber(o.messagesUsedToday)} meta="quota ledger" />
-        <Metric label="Users at daily limit" value={metricNumber(o.usersAtDailyLimit)} meta="free tier" />
-        <Metric label="Unlimited users" value={metricNumber(o.unlimitedEntitlements)} meta="entitlements" />
-        <Metric label="Blocked moderation 24h" value={metricNumber(o.blockedModeration24h)} meta="events" />
-      </div>
-      <DataTable
-        columns={[
-          "provider",
-          "adapter",
-          "status",
-          "ok",
-          "model",
-          "endpoint",
-          "latencyMs",
-          "httpStatus",
-          "modelListed",
-          "error",
-        ]}
-        rows={providerHealth}
-        title="Chat provider health"
-      />
-      <DataTable
-        columns={[
-          "userId",
-          "modelTier",
-          "unlimitedMessages",
-          "messagesUsed",
-          "freeDailyLimit",
-          "freeRemaining",
-          "quotaStatus",
-          "activeSessions",
-          "messages24h",
-          "periodStart",
-        ]}
-        rows={usage}
-        title="Chat usage and quota"
-        empty={filters.userId ? "No chat usage matches this user" : "No chat usage exists for the current product day"}
-      />
-      <CanonicalPager cursorKey="chatUsageCursor" pageInfo={pageInfo.usage} updateQuery={updateQuery} />
-      <DataTable
-        columns={[
-          "id",
-          "userId",
-          "characterId",
-          "title",
-          "status",
-          "memoryEnabled",
-          "messageCount",
-          "lastMessageRole",
-          "lastMessageStatus",
-          "lastSafetyStatus",
-          "lastMessageAt",
-        ]}
-        rows={sessions}
-        title="Recent chat sessions (no plaintext)"
-        empty={filters.userId || filters.characterId || filters.sessionStatus !== "all" ? "No chat sessions match these filters" : "No chat sessions exist yet"}
-      />
-      <CanonicalPager cursorKey="chatSessionCursor" pageInfo={pageInfo.sessions} updateQuery={updateQuery} />
-      <DataTable
-        columns={["id", "targetType", "targetId", "layer", "status", "policyCode", "confidence", "createdAt"]}
-        rows={events}
-        title="Chat moderation events"
-        empty={filters.eventStatus !== "all" || filters.eventLayer !== "all" || filters.policyCode || filters.targetId ? "No chat events match these filters" : "No chat events exist yet"}
-      />
-      <CanonicalPager cursorKey="chatEventCursor" pageInfo={pageInfo.events} updateQuery={updateQuery} />
-    </div>
-  );
-}
-
-function chatOpsDiagnosticText(diagnostics: ChatOpsDiagnostics | null) {
-  if (!diagnostics) return "Chat Service is not connected.";
-  if (diagnostics.reason === "missing_url") {
-    return "Chat Service is not connected: CHAT_SERVICE_URL is missing.";
-  }
-  if (diagnostics.reason === "unauthorized") {
-    return "Chat Service rejected the internal admin token.";
-  }
-  if (diagnostics.reason === "bad_json") {
-    return "Chat Service responded, but the internal admin API returned invalid JSON.";
-  }
-  if (diagnostics.reason === "upstream_error") {
-    return "Chat Service internal admin API returned an error.";
-  }
-  if (diagnostics.reason === "unreachable") {
-    return "Chat Service is configured but unreachable.";
-  }
-  return "Chat Service is not connected.";
-}
-
-function metricNumber(value: unknown): number {
-  return typeof value === "number" ? value : 0;
-}
-
-type ServerQueryField = {
+ type ServerQueryField = {
   key: string;
   label: string;
   options?: readonly string[];

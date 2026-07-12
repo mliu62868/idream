@@ -123,4 +123,13 @@ describe("admin source boundary", () => {
     expect(promo).toContain("export function PromoWorkspace");
     expect(approvals).toContain("export function ApprovalsWorkspace");
   });
+
+  it("keeps the Chat Ops authority out of the catch-all client", async () => {
+    const catchAll = await readFile(path.join(packageRoot, "src/components/admin/AdminConsoleClient.tsx"), "utf8");
+    const chat = await readFile(path.join(packageRoot, "src/features/chat-ops/ChatOpsWorkspace.tsx"), "utf8").catch(() => "");
+
+    expect(catchAll).not.toContain("function ChatOpsView");
+    expect(catchAll).not.toContain("/api/v1/admin/chat/");
+    expect(chat).toContain("export function ChatOpsWorkspace");
+  });
 });

@@ -1021,6 +1021,36 @@ test("admin support inbox resolves a help desk request", async ({ page }) => {
   }
 });
 
+test("admin Chat Ops isolates authority failures and restores URL filters", async ({ page }) => {
+  const consoleFailures = collectConsoleFailures(page);
+  await startAdminSession(page);
+  await page.route("**/api/v1/admin/chat/usage**", async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({ ok: false, error: { code: "upstream_error", message: "usage unavailable" } }),
+      contentType: "application/json",
+      status: 500,
+    });
+  });
+
+  const adminURL = adminBaseURL();
+  await page.goto(`${adminURL}/admin/chat`);
+  await expectAdminShellReady(page, "Chat Operations");
+  await expect(page.getByText("Usage: unavailable", { exact: false })).toBeVisible();
+  await expect(page.getByRole("alert").filter({ hasText: "usage authority refresh failed" })).toBeVisible();
+  await expect(page.getByText("Sessions: current client snapshot", { exact: false })).toBeVisible();
+  await expect(page.getByText("CHAT_SERVICE_URL", { exact: false }).first()).toBeVisible();
+
+  await page.getByLabel("User ID", { exact: true }).fill("chat-user-1");
+  await page.getByRole("combobox", { name: /Session status/ }).selectOption("all");
+  await page.getByRole("button", { name: "Filter Chat Ops" }).click();
+  await expect(page).toHaveURL(/chatUserId=chat-user-1/);
+  await expect(page).toHaveURL(/chatSessionStatus=all/);
+  await page.goBack();
+  await expect(page.getByLabel("User ID", { exact: true })).toHaveValue("");
+  await expect(page.getByRole("combobox", { name: /Session status/ })).toHaveValue("active");
+  expect(consoleFailures.filter((message) => !message.includes("/api/v1/admin/chat/usage"))).toEqual([]);
+});
+
 test("admin support plaintext panel views consent-scoped generation prompt", async ({ page }) => {
   const consoleFailures = collectConsoleFailures(page);
 
