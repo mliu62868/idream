@@ -5,8 +5,14 @@ import {
   characterProjectPhaseSchema,
   characterReleaseStatusSchema,
   characterServingStateSchema,
+  creativeLifecycleStateSchema,
+  creativeRunItemStatusSchema,
   creativeWorkflowStageSchema,
+  experimentStatusSchema,
+  generationAttemptStatusSchema,
   generationJobStatusSchema,
+  incidentStatusSchema,
+  operationsCaseStatusSchema,
 } from "@idream/shared/admin";
 
 type StateOf<States extends readonly string[]> = States[number];
@@ -90,14 +96,7 @@ export function isGenerationRequestTransitionAllowed(from: string, to: string) {
   return GENERATION_REQUEST_AUTHORITY.permits(from, to);
 }
 
-export const GENERATION_ATTEMPT_STATES = [
-  "queued",
-  "running",
-  "succeeded",
-  "failed",
-  "cancelled",
-  "unknown",
-] as const;
+export const GENERATION_ATTEMPT_STATES = generationAttemptStatusSchema.options;
 
 const GENERATION_ATTEMPT_AUTHORITY = defineTransitionAuthority(GENERATION_ATTEMPT_STATES, {
   queued: ["queued", "running", "succeeded", "failed", "cancelled", "unknown"],
@@ -112,7 +111,7 @@ export function isGenerationAttemptTransitionAllowed(from: string, to: string) {
   return GENERATION_ATTEMPT_AUTHORITY.permits(from, to);
 }
 
-export const CREATIVE_RUN_LIFECYCLE_STATES = ["draft", "active", "closed", "archived"] as const;
+export const CREATIVE_RUN_LIFECYCLE_STATES = creativeLifecycleStateSchema.options;
 
 const CREATIVE_RUN_LIFECYCLE_AUTHORITY = defineTransitionAuthority(CREATIVE_RUN_LIFECYCLE_STATES, {
   draft: ["active"],
@@ -168,15 +167,7 @@ export function isCreativePlacementVerificationTransitionAllowed(from: string, t
   return CREATIVE_PLACEMENT_VERIFICATION_AUTHORITY.permits(from, to);
 }
 
-export const CREATIVE_RUN_ITEM_STATES = [
-  "queued",
-  "generated",
-  "approved",
-  "rejected",
-  "regenerate_requested",
-  "published",
-  "failed",
-] as const;
+export const CREATIVE_RUN_ITEM_STATES = creativeRunItemStatusSchema.options;
 
 const CREATIVE_RUN_ITEM_AUTHORITY = defineTransitionAuthority(CREATIVE_RUN_ITEM_STATES, {
   queued: ["generated", "failed"],
@@ -192,16 +183,7 @@ export function isCreativeRunItemTransitionAllowed(from: string, to: string) {
   return CREATIVE_RUN_ITEM_AUTHORITY.permits(from, to);
 }
 
-export const INCIDENT_STATES = [
-  "detected",
-  "triaged",
-  "mitigating",
-  "monitoring",
-  "resolved",
-  "closed",
-  "duplicate",
-  "merged",
-] as const;
+export const INCIDENT_STATES = incidentStatusSchema.options;
 
 const INCIDENT_AUTHORITY = defineTransitionAuthority(INCIDENT_STATES, {
   detected: ["triaged", "mitigating"],
@@ -218,15 +200,7 @@ export function isIncidentTransitionAllowed(from: string, to: string) {
   return INCIDENT_AUTHORITY.permits(from, to);
 }
 
-export const ADMIN_CASE_STATES = [
-  "new",
-  "triaged",
-  "in_progress",
-  "waiting",
-  "resolved",
-  "closed",
-  "reopened",
-] as const;
+export const ADMIN_CASE_STATES = operationsCaseStatusSchema.options;
 
 const ADMIN_CASE_AUTHORITY = defineTransitionAuthority(ADMIN_CASE_STATES, {
   new: ["triaged", "in_progress", "waiting", "resolved"],
@@ -242,7 +216,7 @@ export function isAdminCaseTransitionAllowed(from: string, to: string) {
   return ADMIN_CASE_AUTHORITY.permits(from, to);
 }
 
-export const EXPERIMENT_STATES = ["draft", "running", "stopped"] as const;
+export const EXPERIMENT_STATES = experimentStatusSchema.options;
 
 const EXPERIMENT_AUTHORITY = defineTransitionAuthority(EXPERIMENT_STATES, {
   draft: ["running"],
