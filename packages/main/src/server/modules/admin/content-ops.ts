@@ -508,17 +508,13 @@ export async function approveProductionItem(request: Request, id: string) {
   if (!asset) throw Errors.badRequest("Production item has no generated asset to approve");
 
   const updated = await auditedTransaction("content.production.item.approve", async (tx) => {
-    await tx.contentProductionItem.update({
-      where: { id },
-      data: {
+    await transitionContentProductionItem(tx, item, "approved", {
         mediaAssetId: asset.id,
-        status: "approved",
         reviewNote: body.reviewNote,
         rating: body.rating,
         tags: toInputJson(body.tags),
         reviewedById: actor.id,
         reviewedAt: new Date(),
-      },
     });
     await patchAssetMetadata(tx, asset.id, {
       status: "approved",
@@ -559,17 +555,13 @@ export async function rejectProductionItem(request: Request, id: string) {
   const item = await itemWithAsset(id);
   const asset = item.mediaAsset ?? item.job?.assets[0] ?? null;
   const updated = await auditedTransaction("content.production.item.reject", async (tx) => {
-    await tx.contentProductionItem.update({
-      where: { id },
-      data: {
+    await transitionContentProductionItem(tx, item, "rejected", {
         mediaAssetId: asset?.id,
-        status: "rejected",
         reviewNote: body.reviewNote,
         rating: body.rating,
         tags: toInputJson(body.tags),
         reviewedById: actor.id,
         reviewedAt: new Date(),
-      },
     });
     if (asset) {
       await patchAssetMetadata(tx, asset.id, {
@@ -733,19 +725,15 @@ export async function patchContentAsset(request: Request, id: string) {
       });
     }
     if (body.status && ["approved", "rejected", "published"].includes(body.status)) {
-      await tx.contentProductionItem.updateMany({
-        where: {
-          mediaAssetId: id,
-          status: { notIn: ["published"] },
-        },
-        data: {
-          status: body.status,
+      const item = await tx.contentProductionItem.findUnique({ where: { mediaAssetId: id } });
+      if (item) {
+        await transitionContentProductionItem(tx, item, body.status, {
           reviewedById: actor.id,
           reviewedAt: new Date(),
           tags: body.tags ? toInputJson(body.tags) : undefined,
           reviewNote: body.reviewNote,
-        },
-      });
+        });
+      }
       const items = await tx.contentProductionItem.findMany({
         where: { mediaAssetId: id },
         select: { batchId: true },
@@ -795,15 +783,16 @@ export async function bulkPatchContentAssets(request: Request) {
         });
       }
       if (body.status && ["approved", "rejected", "published"].includes(body.status)) {
-        await tx.contentProductionItem.updateMany({
-          where: { mediaAssetId: asset.id, status: { notIn: ["published"] } },
-          data: {
-            status: body.status,
+        const item = await tx.contentProductionItem.findUnique({
+          where: { mediaAssetId: asset.id },
+        });
+        if (item) {
+          await transitionContentProductionItem(tx, item, body.status, {
             tags: body.tags ? toInputJson(body.tags) : undefined,
             reviewedById: actor.id,
             reviewedAt: new Date(),
-          },
-        });
+          });
+        }
       }
       updatedIds.push(asset.id);
     }
@@ -1337,6 +1326,30 @@ async function itemWithAsset(id: string) {
   });
   if (!item) throw Errors.notFound("Production item not found");
   return item;
+}
+
+async function transitionContentProductionItem(
+  db: Prisma.TransactionClient,
+  current: { readonly id: string; readonly status: string; readonly version: number },
+  nextStatus: string,
+  data: Omit<Prisma.ContentProductionItemUncheckedUpdateManyInput, "status" | "version">,
+) {
+  if (!isCreativeRunItemTransitionAllowed(current.status, nextStatus)) {
+    throw Errors.conflict("Content production item transition is not allowed", {
+      itemId: current.id,
+      from: current.status,
+      to: nextStatus,
+    });
+  }
+  const changed = await db.contentProductionItem.updateMany({
+    where: { id: current.id, status: current.status, version: current.version },
+    data: { ...data, status: nextStatus, version: { increment: 1 } },
+  });
+  if (changed.count !== 1) {
+    throw Errors.conflict("Content production item changed during transition", {
+      itemId: current.id,
+    });
+  }
 }
 
 async function patchAssetMetadata(
