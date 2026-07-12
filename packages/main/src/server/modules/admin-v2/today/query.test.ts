@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { resolvePermissions } from "@/server/admin/permissions";
 import { prisma } from "@/server/lib/db";
 import { updateOperationalWorkPreference } from "./preferences";
+import { claimTodayWorkItem } from "./claim";
 import { buildTodayProjection, getTodayProjection } from "./query";
 
 describe("Today authoritative projection", () => {
@@ -123,6 +124,11 @@ describe("Today authoritative projection", () => {
     expect(projection.nextBestActions.totalCount).toBe(13);
     expect(projection.nextBestActions.items).toHaveLength(10);
     expect(projection.unassigned).toMatchObject({ totalCount: 1 });
+    expect(projection.unassigned.items[0]).toMatchObject({
+      sourceId: caseIds[12],
+      ownerId: null,
+      claim: { entityVersion: 1 },
+    });
     expect(projection.watching).toMatchObject({ totalCount: 1 });
     expect(projection.recentlyResolved).toMatchObject({ totalCount: 1 });
     expect(projection.myShift.items[0]).toMatchObject({
@@ -153,6 +159,42 @@ describe("Today authoritative projection", () => {
     const response = await getTodayProjection(new Request("http://localhost/api/v2/admin/today"));
     expect(response.status).toBe(401);
   });
+
+  it("claims an unassigned source object through its authoritative domain transaction", async () => {
+    const claimRequest = () => new Request("http://localhost/api/v2/admin/today/claim", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-idream-user-id": actorId,
+        "x-idream-role": "support",
+        "x-request-id": `today-claim-${suffix}`,
+      },
+      body: JSON.stringify({ sourceType: "admin_case", sourceId: caseIds[12], entityVersion: 1 }),
+    });
+    const response = await claimTodayWorkItem(claimRequest());
+
+    expect(response).toMatchObject({
+      sourceType: "admin_case",
+      sourceId: caseIds[12],
+      ownerId: actorId,
+      entityVersion: 2,
+    });
+    await expect(prisma.adminCase.findUniqueOrThrow({ where: { id: caseIds[12] } })).resolves.toMatchObject({
+      ownerId: actorId,
+      status: "triaged",
+      version: 2,
+    });
+    await expect(prisma.adminAuditLog.findFirstOrThrow({
+      where: { action: "case.assigned", targetId: caseIds[12], requestId: `today-claim-${suffix}` },
+    })).resolves.toBeDefined();
+    await expect(prisma.mainOutboxEvent.findFirstOrThrow({
+      where: { eventType: "admin.case.assigned.v2", aggregateId: caseIds[12] },
+    })).resolves.toBeDefined();
+    await expect(claimTodayWorkItem(claimRequest())).resolves.toEqual(response);
+    await expect(prisma.adminAuditLog.count({
+      where: { action: "case.assigned", targetId: caseIds[12], requestId: `today-claim-${suffix}` },
+    })).resolves.toBe(1);
+  });
 });
 
 describe("Today domain roots", () => {
@@ -170,7 +212,7 @@ describe("Today domain roots", () => {
       data: {
         id: projectId,
         characterId: `character-${suffix}`,
-        ownerId: actorId,
+        ownerId: null,
         phase: "qa",
         audience: {},
         successCriteria: [],
@@ -197,7 +239,7 @@ describe("Today domain roots", () => {
         purpose: "homepage",
         presetIds: [],
         createdById: actorId,
-        ownerId: actorId,
+        ownerId: null,
         dueAt: new Date("2026-07-11T18:00:00.000Z"),
         priority: "high",
         lifecycleState: "active",
@@ -215,6 +257,8 @@ describe("Today domain roots", () => {
 
   afterAll(async () => {
     await prisma.operationalWorkPreference.deleteMany({ where: { actorId } });
+    await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: { in: [projectId, creativeRunId] } } });
+    await prisma.adminAuditLog.deleteMany({ where: { actorId, targetId: { in: [projectId, creativeRunId] } } });
     await prisma.contentProductionBatch.deleteMany({ where: { id: creativeRunId } });
     await prisma.characterRelease.deleteMany({ where: { id: releaseId } });
     await prisma.characterProject.deleteMany({ where: { id: projectId } });
@@ -240,8 +284,40 @@ describe("Today domain roots", () => {
     ]));
     expect(projection.nextBestActions.items.some((item) => item.sourceId === creativeRunId)).toBe(false);
     expect(projection.watching.items).toEqual(expect.arrayContaining([
-      expect.objectContaining({ sourceType: "character_release", sourceId: releaseId }),
+      expect.objectContaining({
+        sourceType: "character_release",
+        sourceId: releaseId,
+        claim: { entityVersion: 1 },
+      }),
     ]));
+  });
+
+  it("claims Character and Creative roots with CAS, Audit and Outbox", async () => {
+    function request(sourceType: "character_release" | "creative_run", sourceId: string, requestId: string) {
+      return new Request("http://localhost/api/v2/admin/today/claim", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-idream-user-id": actorId,
+          "x-idream-role": "admin",
+          "x-request-id": requestId,
+        },
+        body: JSON.stringify({ sourceType, sourceId, entityVersion: 1 }),
+      });
+    }
+
+    await expect(claimTodayWorkItem(request("character_release", releaseId, `claim-character-${suffix}`))).resolves.toMatchObject({
+      ownerId: actorId,
+      entityVersion: 2,
+    });
+    await expect(claimTodayWorkItem(request("creative_run", creativeRunId, `claim-creative-${suffix}`))).resolves.toMatchObject({
+      ownerId: actorId,
+      entityVersion: 2,
+    });
+    await expect(prisma.characterProject.findUniqueOrThrow({ where: { id: projectId } })).resolves.toMatchObject({ ownerId: actorId, version: 2 });
+    await expect(prisma.contentProductionBatch.findUniqueOrThrow({ where: { id: creativeRunId } })).resolves.toMatchObject({ ownerId: actorId, version: 2 });
+    await expect(prisma.adminAuditLog.count({ where: { actorId, action: { in: ["character.project.claimed", "creative.run.claimed"] } } })).resolves.toBe(2);
+    await expect(prisma.mainOutboxEvent.count({ where: { aggregateId: { in: [projectId, creativeRunId] } } })).resolves.toBe(2);
   });
 });
 

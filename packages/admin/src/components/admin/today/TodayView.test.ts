@@ -30,6 +30,7 @@ const item = {
   environment: "test" as const,
   dataClass: "customer" as const,
   pinned: false,
+  claim: null,
 };
 
 function data(overrides: Partial<TodayData["projection"]> = {}): TodayData {
@@ -75,5 +76,16 @@ describe("Today authoritative projection", () => {
 
     expect(html).toContain("No matching work right now.");
     expect(html).not.toContain("Legacy source unavailable");
+  });
+
+  it("offers a direct Claim action only when the server returns a claim version", () => {
+    const claimable = { ...item, ownerId: null, claim: { entityVersion: 4 } };
+    const html = renderToStaticMarkup(createElement(TodayView, {
+      data: data({ unassigned: { totalCount: 1, items: [claimable] } }),
+      workMode: "support",
+    }));
+
+    expect(html).toContain(">Claim</button>");
+    expect(html).not.toContain("Open to claim");
   });
 });

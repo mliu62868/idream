@@ -2,7 +2,7 @@
 
 import type { TodayProjection, TodayWorkItem } from "@idream/shared/admin";
 import Link from "next/link";
-import { ArrowRight, Bell, CheckCircle2, Clock3, Eye, Inbox, Pin, UserRound } from "lucide-react";
+import { ArrowRight, Bell, CheckCircle2, Clock3, Eye, Inbox, Pin, UserPlus, UserRound } from "lucide-react";
 import { useState } from "react";
 import { useAdminI18n } from "@/components/admin/i18n";
 import type { WorkMode } from "@/components/admin/nav-config";
@@ -179,6 +179,28 @@ function WorkItem({ compact, item, onPreferenceChanged, watched }: { compact: bo
       setBusy(false);
     }
   }
+  async function claimItem() {
+    if (!item.claim) return;
+    setBusy(true);
+    setStatus("");
+    try {
+      await adminV2Request("/api/v2/admin/today/claim", {
+        method: "POST",
+        idempotencyKey: `today-claim:${item.sourceType}:${item.sourceId}:${item.claim.entityVersion}`,
+        body: {
+          sourceType: item.sourceType,
+          sourceId: item.sourceId,
+          entityVersion: item.claim.entityVersion,
+        },
+      });
+      setStatus("Claimed by you");
+      await onPreferenceChanged();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Claim failed");
+    } finally {
+      setBusy(false);
+    }
+  }
   return (
     <div className="p-4 transition-colors hover:bg-black/[0.025]">
       <div className="flex items-start gap-3">
@@ -202,7 +224,7 @@ function WorkItem({ compact, item, onPreferenceChanged, watched }: { compact: bo
             <button className="inline-flex min-h-9 items-center gap-1 rounded border border-[var(--ad-border)] px-2 text-xs disabled:opacity-50" disabled={busy} onClick={() => void updatePreference({ watching: !watched }, watched ? "Removed from Watching" : "Added to Watching")} type="button"><Eye className="h-3.5 w-3.5" />{watched ? t("Unwatch") : t("Watch")}</button>
             <button className="inline-flex min-h-9 items-center gap-1 rounded border border-[var(--ad-border)] px-2 text-xs disabled:opacity-50" disabled={busy} onClick={() => void updatePreference({ pinned: !item.pinned }, item.pinned ? "Unpinned" : "Pinned")} type="button"><Pin className="h-3.5 w-3.5" />{item.pinned ? t("Unpin") : t("Pin")}</button>
             <button className="inline-flex min-h-9 items-center gap-1 rounded border border-[var(--ad-border)] px-2 text-xs disabled:opacity-50" disabled={busy} onClick={() => void updatePreference({ snoozedUntil: new Date(Date.now() + 60 * 60 * 1_000).toISOString() }, "Snoozed for one hour")} type="button"><Bell className="h-3.5 w-3.5" />{t("Snooze 1h")}</button>
-            {item.ownerId === null ? <Link className="inline-flex min-h-9 items-center rounded border border-[var(--ad-border)] px-2 text-xs font-semibold" href={item.deepLink}>{t("Open to claim")}</Link> : null}
+            {item.claim ? <button className="inline-flex min-h-9 items-center gap-1 rounded bg-[var(--ad-accent)] px-2 text-xs font-semibold text-white disabled:opacity-50" disabled={busy} onClick={() => void claimItem()} type="button"><UserPlus className="h-3.5 w-3.5" />{t("Claim")}</button> : null}
           </div>
           {status ? <p className="mt-2 text-xs text-[var(--ad-text-muted)]" role="status">{t(status)}</p> : null}
         </div>

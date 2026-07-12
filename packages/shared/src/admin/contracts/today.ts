@@ -48,6 +48,12 @@ export const todayWorkItemSchema = z
     environment: adminEnvironmentSchema,
     dataClass: adminDataClassSchema,
     pinned: z.boolean(),
+    claim: z
+      .object({
+        entityVersion: z.number().int().nonnegative(),
+      })
+      .strict()
+      .nullable(),
   })
   .strict();
 
@@ -85,8 +91,27 @@ export const operationalWorkPreferenceUpdateSchema = z
     message: "At least one preference field is required",
   });
 
+export const todayClaimRequestSchema = z
+  .object({
+    sourceType: z.enum(["admin_case", "ops_incident", "character_release", "creative_run"]),
+    sourceId: adminIdSchema,
+    entityVersion: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export const todayClaimResponseSchema = z
+  .object({
+    sourceType: z.enum(["admin_case", "ops_incident", "character_release", "creative_run"]),
+    sourceId: adminIdSchema,
+    ownerId: adminIdSchema,
+    entityVersion: z.number().int().nonnegative(),
+  })
+  .strict();
+
 export type TodaySourceType = z.infer<typeof todaySourceTypeSchema>;
 export type TodayWorkMode = z.infer<typeof todayWorkModeSchema>;
 export type TodayWorkItem = z.infer<typeof todayWorkItemSchema>;
 export type TodayQueue = z.infer<typeof todayQueueSchema>;
 export type TodayProjection = z.infer<typeof todayProjectionSchema>;
+export type TodayClaimRequest = z.infer<typeof todayClaimRequestSchema>;
+export type TodayClaimResponse = z.infer<typeof todayClaimResponseSchema>;

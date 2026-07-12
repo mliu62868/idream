@@ -54,7 +54,7 @@ type ProjectableRow =
   | {
       sourceType: "character_release";
       row: CharacterRelease;
-      project: { ownerId: string | null; characterId: string; phase: string; plannedLaunchAt: Date | null };
+      project: { ownerId: string | null; characterId: string; phase: string; plannedLaunchAt: Date | null; version: number };
     }
   | { sourceType: "creative_run"; row: ContentProductionBatch };
 
@@ -105,7 +105,11 @@ function asImpact(value: Prisma.JsonValue | null): Record<string, unknown> {
     : {};
 }
 
-function projectRow(row: ProjectableRow, pinnedKeys: ReadonlySet<string>): TodayWorkItem {
+function projectRow(
+  row: ProjectableRow,
+  pinnedKeys: ReadonlySet<string>,
+  permissions: ReadonlySet<AdminPermissionKey> = new Set(),
+): TodayWorkItem {
   const environment = deploymentEnvironment();
   if (row.sourceType === "collaboration_mention") {
     return {
@@ -132,6 +136,7 @@ function projectRow(row: ProjectableRow, pinnedKeys: ReadonlySet<string>): Today
       environment,
       dataClass: row.target.dataClass,
       pinned: pinnedKeys.has(`${row.sourceType}:${row.row.id}`),
+      claim: null,
     };
   }
   if (row.sourceType === "admin_case") {
@@ -154,6 +159,7 @@ function projectRow(row: ProjectableRow, pinnedKeys: ReadonlySet<string>): Today
       environment,
       dataClass: "customer",
       pinned: pinnedKeys.has(`${row.sourceType}:${item.id}`),
+      claim: item.ownerId === null && permissions.has("case.assign") ? { entityVersion: item.version } : null,
     };
   }
   if (row.sourceType === "ops_incident") {
@@ -177,6 +183,7 @@ function projectRow(row: ProjectableRow, pinnedKeys: ReadonlySet<string>): Today
       environment,
       dataClass: "internal",
       pinned: pinnedKeys.has(`${row.sourceType}:${item.id}`),
+      claim: item.ownerId === null && permissions.has("ops.incident.manage") ? { entityVersion: item.version } : null,
     };
   }
   if (row.sourceType === "character_release") {
@@ -205,6 +212,9 @@ function projectRow(row: ProjectableRow, pinnedKeys: ReadonlySet<string>): Today
       environment,
       dataClass: "internal",
       pinned: pinnedKeys.has(`${row.sourceType}:${item.id}`),
+      claim: row.project.ownerId === null && permissions.has("character.project.write")
+        ? { entityVersion: row.project.version }
+        : null,
     };
   }
   if (row.sourceType === "creative_run") {
@@ -235,6 +245,7 @@ function projectRow(row: ProjectableRow, pinnedKeys: ReadonlySet<string>): Today
       environment,
       dataClass: "internal",
       pinned: pinnedKeys.has(`${row.sourceType}:${item.id}`),
+      claim: item.ownerId === null && permissions.has("creative.run.write") ? { entityVersion: item.version } : null,
     };
   }
   const item = row.row;
@@ -263,6 +274,7 @@ function projectRow(row: ProjectableRow, pinnedKeys: ReadonlySet<string>): Today
     environment,
     dataClass: "audit",
     pinned: pinnedKeys.has(`${row.sourceType}:${item.id}`),
+    claim: null,
   };
 }
 
@@ -305,10 +317,16 @@ function sortItems(items: TodayWorkItem[], now: Date, workMode: TodayWorkMode) {
   });
 }
 
-function queue(rows: QueueRows, pinnedKeys: ReadonlySet<string>, now: Date, workMode: TodayWorkMode) {
+function queue(
+  rows: QueueRows,
+  pinnedKeys: ReadonlySet<string>,
+  now: Date,
+  workMode: TodayWorkMode,
+  permissions: ReadonlySet<AdminPermissionKey>,
+) {
   return {
     totalCount: rows.totalCount,
-    items: sortItems(rows.rows.map((row) => projectRow(row, pinnedKeys)), now, workMode).slice(0, QUEUE_LIMIT),
+    items: sortItems(rows.rows.map((row) => projectRow(row, pinnedKeys, permissions)), now, workMode).slice(0, QUEUE_LIMIT),
   };
 }
 
@@ -346,7 +364,7 @@ function sourceRows(
   commands: ControlPlaneCommand[],
   releases: Array<{
     row: CharacterRelease;
-    project: { ownerId: string | null; characterId: string; phase: string; plannedLaunchAt: Date | null };
+    project: { ownerId: string | null; characterId: string; phase: string; plannedLaunchAt: Date | null; version: number };
   }> = [],
   creativeRuns: ContentProductionBatch[] = [],
   mentions: Extract<ProjectableRow, { sourceType: "collaboration_mention" }>[] = [],
@@ -387,7 +405,7 @@ async function findQueueRows(input: {
   const projects = releaseRows.length > 0
     ? await prisma.characterProject.findMany({
         where: { id: { in: releaseRows.map((item) => item.projectId) } },
-        select: { id: true, ownerId: true, characterId: true, phase: true, plannedLaunchAt: true },
+        select: { id: true, ownerId: true, characterId: true, phase: true, plannedLaunchAt: true, version: true },
       })
     : [];
   const projectsById = new Map(projects.map((item) => [item.id, item]));
@@ -574,11 +592,19 @@ export async function buildTodayProjection(input: {
       mentions,
     }),
     findQueueRows({
-      caseWhere: activeCaseWhere && { AND: [activeCaseWhere, { ownerId: null }] },
-      incidentWhere: activeIncidentWhere && { AND: [activeIncidentWhere, { ownerId: null }] },
+      caseWhere: input.permissions.has("case.assign") && activeCaseWhere
+        ? { AND: [activeCaseWhere, { ownerId: null }] }
+        : null,
+      incidentWhere: input.permissions.has("ops.incident.manage") && activeIncidentWhere
+        ? { AND: [activeIncidentWhere, { ownerId: null }] }
+        : null,
       commandWhere: null,
-      releaseWhere: activeReleaseWhere && { AND: [activeReleaseWhere, { projectId: { in: unassignedProjectIds } }] },
-      creativeWhere: activeCreativeWhere && { AND: [activeCreativeWhere, { ownerId: null }] },
+      releaseWhere: input.permissions.has("character.project.write") && activeReleaseWhere
+        ? { AND: [activeReleaseWhere, { projectId: { in: unassignedProjectIds } }] }
+        : null,
+      creativeWhere: input.permissions.has("creative.run.write") && activeCreativeWhere
+        ? { AND: [activeCreativeWhere, { ownerId: null }] }
+        : null,
       permissions: input.permissions,
     }),
     findQueueRows({
@@ -646,7 +672,7 @@ export async function buildTodayProjection(input: {
   const watchedProjects = watchedReleases.length > 0
     ? await prisma.characterProject.findMany({
         where: { id: { in: watchedReleases.map((item) => item.projectId) } },
-        select: { id: true, ownerId: true, characterId: true, phase: true, plannedLaunchAt: true },
+        select: { id: true, ownerId: true, characterId: true, phase: true, plannedLaunchAt: true, version: true },
       })
     : [];
   const watchedProjectsById = new Map(watchedProjects.map((item) => [item.id, item]));
@@ -668,11 +694,11 @@ export async function buildTodayProjection(input: {
   };
 
   return todayProjectionSchema.parse({
-    myShift: queue(myShift, pinnedKeys, now, workMode),
-    nextBestActions: queue(nextBest, pinnedKeys, now, workMode),
-    unassigned: queue(unassigned, pinnedKeys, now, workMode),
-    watching: queue(watching, pinnedKeys, now, workMode),
-    recentlyResolved: queue(recentlyResolved, pinnedKeys, now, workMode),
+    myShift: queue(myShift, pinnedKeys, now, workMode, input.permissions),
+    nextBestActions: queue(nextBest, pinnedKeys, now, workMode, input.permissions),
+    unassigned: queue(unassigned, pinnedKeys, now, workMode, input.permissions),
+    watching: queue(watching, pinnedKeys, now, workMode, input.permissions),
+    recentlyResolved: queue(recentlyResolved, pinnedKeys, now, workMode, input.permissions),
     asOf: now.toISOString(),
     freshness: "fresh",
     workMode,
