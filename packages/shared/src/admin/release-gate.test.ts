@@ -232,7 +232,7 @@ describe("Admin final release gate", () => {
       ...artifact,
       collector: {
         ...artifact.collector,
-        signature: `${artifact.collector.signature.slice(0, -1)}${artifact.collector.signature.endsWith("A") ? "B" : "A"}`,
+        signature: `${artifact.collector.signature.startsWith("A") ? "B" : "A"}${artifact.collector.signature.slice(1)}`,
       },
     };
     const invalidArtifact = releaseEnvelope(core, signoffsFor(core));
