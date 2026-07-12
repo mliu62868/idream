@@ -13,13 +13,6 @@ export const PLACEMENT_IMPRESSION_EVENT = "placement_impression";
 export const PLACEMENT_CLICK_EVENT = "placement_click";
 export const CHARACTER_EXPOSURE_EVENT = "character.exposure.recorded.v2";
 
-function clientEventId(prefix: string) {
-  const suffix = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-    ? crypto.randomUUID()
-    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-  return `${prefix}-${suffix}`;
-}
-
 function trackPlacementEvent(name: string, placementId: string, slot: string) {
   if (typeof window === "undefined") return;
   const payload = JSON.stringify({ name, props: { placementId, slot } });
@@ -36,6 +29,7 @@ function trackPlacementEvent(name: string, placementId: string, slot: string) {
 }
 
 function trackCharacterExposure(props: {
+  contextToken: string;
   characterId: string;
   eventType: "eligible_impression" | "detail_view";
   exposureId: string;
@@ -71,6 +65,13 @@ type CommunityCharacter = {
   chats: string;
   style?: string;
   gender?: string;
+  exposureContext?: {
+    contextToken: string;
+    journeyId: string;
+    placementId: string;
+    impressionExposureId: string;
+    detailExposureId: string;
+  } | null;
 };
 
 type Collection = {
@@ -165,7 +166,6 @@ export function CommunityWorkspace() {
   const [focusedCollectionId, setFocusedCollectionId] = useState("");
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(true);
-  const [characterJourneyId] = useState(() => clientEventId("community-journey"));
 
   const query = useMemo(() => {
     const params = new URLSearchParams({ release });
@@ -538,7 +538,6 @@ export function CommunityWorkspace() {
               characters.map((character) => (
                 <CommunityCharacterCard
                   character={character}
-                  journeyId={characterJourneyId}
                   key={character.id}
                   onFollow={follow}
                   onReport={report}
@@ -623,24 +622,21 @@ export function CommunityWorkspace() {
 
 function CommunityCharacterCard({
   character,
-  journeyId,
   onFollow,
   onReport,
 }: {
   character: CommunityCharacter;
-  journeyId: string;
   onFollow: (creatorId?: string | null) => Promise<void>;
   onReport: (characterId: string) => Promise<void>;
 }) {
   const cardRef = useRef<HTMLElement | null>(null);
-  const impressionIdRef = useRef(clientEventId("character-impression"));
-  const [detailExposureId] = useState(() => clientEventId("character-detail"));
   const impressionRecordedRef = useRef(false);
   const detailRecordedRef = useRef(false);
+  const exposureContext = character.exposureContext ?? null;
 
   useEffect(() => {
     const node = cardRef.current;
-    if (!node || typeof IntersectionObserver === "undefined") return;
+    if (!node || !exposureContext || typeof IntersectionObserver === "undefined") return;
     let timer: number | null = null;
     let visibleRatio = 0;
     const clearEligibilityTimer = () => {
@@ -660,12 +656,13 @@ function CommunityCharacterCard({
           if (visibleRatio < 0.5 || impressionRecordedRef.current) return;
           impressionRecordedRef.current = true;
           trackCharacterExposure({
+            contextToken: exposureContext.contextToken,
             characterId: character.id,
             eventType: "eligible_impression",
-            exposureId: impressionIdRef.current,
-            journeyId,
+            exposureId: exposureContext.impressionExposureId,
+            journeyId: exposureContext.journeyId,
             parentExposureId: null,
-            placementId: "community.leaderboard",
+            placementId: exposureContext.placementId,
             visibleDurationMs: 500,
             visibleRatio,
           });
@@ -678,18 +675,19 @@ function CommunityCharacterCard({
       clearEligibilityTimer();
       observer.disconnect();
     };
-  }, [character.id, journeyId]);
+  }, [character.id, exposureContext]);
 
   function recordDetailView() {
-    if (!impressionRecordedRef.current || detailRecordedRef.current) return;
+    if (!exposureContext || !impressionRecordedRef.current || detailRecordedRef.current) return;
     detailRecordedRef.current = true;
     trackCharacterExposure({
+      contextToken: exposureContext.contextToken,
       characterId: character.id,
       eventType: "detail_view",
-      exposureId: detailExposureId,
-      journeyId,
-      parentExposureId: impressionIdRef.current,
-      placementId: "community.leaderboard",
+      exposureId: exposureContext.detailExposureId,
+      journeyId: exposureContext.journeyId,
+      parentExposureId: exposureContext.impressionExposureId,
+      placementId: exposureContext.placementId,
       visibleDurationMs: 0,
       visibleRatio: 1,
     });
@@ -704,7 +702,9 @@ function CommunityCharacterCard({
       <Link
         aria-label={character.title}
         className="relative block aspect-[4/5]"
-        href={`/characters/${character.id}?entryExposureId=${encodeURIComponent(detailExposureId)}&journeyId=${encodeURIComponent(journeyId)}&placementId=${encodeURIComponent("community.leaderboard")}`}
+        href={exposureContext
+          ? `/characters/${character.id}?entryExposureId=${encodeURIComponent(exposureContext.detailExposureId)}&journeyId=${encodeURIComponent(exposureContext.journeyId)}&placementId=${encodeURIComponent(exposureContext.placementId)}`
+          : `/characters/${character.id}`}
         onClick={recordDetailView}
       >
         <Image

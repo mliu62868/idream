@@ -763,9 +763,8 @@ describe("feed, community, policies, analytics", () => {
     const contentVersionId = `${P}exposure-content-v1`;
     const projectId = `${P}exposure-project`;
     const releaseId = `${P}exposure-release-v1`;
-    const exposureId = `${P}exposure-impression`;
     await createUser({ id: userId });
-    await createCharacter({ id: characterId, creatorId: userId });
+    await createCharacter({ id: characterId, creatorId: userId, likes: 9_999_999 });
     await prisma.characterContentVersion.create({
       data: {
         id: contentVersionId,
@@ -810,20 +809,39 @@ describe("feed, community, policies, analytics", () => {
       },
     });
 
+    const leaderboard = await api("GET", "community/leaderboards", {
+      userId,
+      ageGate: true,
+    });
+    expectOk(leaderboard);
+    const character = (leaderboard.data.leaderboards.characters as Array<{
+      id: string;
+      exposureContext: {
+        contextToken: string;
+        journeyId: string;
+        placementId: string;
+        impressionExposureId: string;
+        detailExposureId: string;
+      } | null;
+    }>).find((item) => item.id === characterId);
+    expect(character).toBeDefined();
+    expect(character?.exposureContext).not.toBeNull();
+    const exposureContext = character?.exposureContext;
+    if (!exposureContext) throw new Error("Expected a server-signed exposure context");
+
     const forged = await api("POST", "events/track", {
       userId,
       ageGate: true,
       body: {
         name: METRIC_PRODUCT_EVENTS.characterExposureRecorded,
         props: {
-          exposureId,
+          contextToken: `${exposureContext.contextToken}tampered`,
+          exposureId: exposureContext.impressionExposureId,
           eventType: "eligible_impression",
           parentExposureId: null,
-          journeyId: `${P}exposure-journey`,
+          journeyId: exposureContext.journeyId,
           characterId,
-          characterContentVersionId: `${P}forged-content`,
-          characterReleaseId: `${P}forged-release`,
-          placementId: "community.leaderboard",
+          placementId: exposureContext.placementId,
           visibleRatio: 0.75,
           visibleDurationMs: 500,
         },
@@ -834,12 +852,13 @@ describe("feed, community, policies, analytics", () => {
     const body = {
       name: METRIC_PRODUCT_EVENTS.characterExposureRecorded,
       props: {
-        exposureId,
+        contextToken: exposureContext.contextToken,
+        exposureId: exposureContext.impressionExposureId,
         eventType: "eligible_impression",
         parentExposureId: null,
-        journeyId: `${P}exposure-journey`,
+        journeyId: exposureContext.journeyId,
         characterId,
-        placementId: "community.leaderboard",
+        placementId: exposureContext.placementId,
         visibleRatio: 0.75,
         visibleDurationMs: 500,
       },
@@ -854,7 +873,7 @@ describe("feed, community, policies, analytics", () => {
       where: {
         sourceService_sourceEventId: {
           sourceService: "main",
-          sourceEventId: `character_exposure:${exposureId}`,
+          sourceEventId: `character_exposure:${exposureContext.impressionExposureId}`,
         },
       },
     });
@@ -871,6 +890,7 @@ describe("feed, community, policies, analytics", () => {
         characterReleaseId: releaseId,
       }),
     });
+    expect(event.props).not.toHaveProperty("contextToken");
     await expect(prisma.mainOutboxEvent.count({ where: { aggregateId: event.id } })).resolves.toBe(1);
 
     await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: event.id } });

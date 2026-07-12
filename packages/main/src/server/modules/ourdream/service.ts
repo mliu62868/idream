@@ -76,6 +76,11 @@ import {
   imageOrientations,
   normalizeImageOrientation,
 } from "./generation-dimensions";
+import {
+  issueExposureContext,
+  verifyExposureContext,
+  type ExposureSubject,
+} from "./exposure-context";
 
 type ApiMethod = "GET" | "POST" | "PATCH" | "DELETE" | "PUT";
 type JsonRecord = Record<string, Prisma.JsonValue>;
@@ -314,6 +319,7 @@ const eventSchema = z.object({
 });
 
 const characterExposureClientSchema = z.object({
+  contextToken: z.string().min(1).max(4_096),
   exposureId: z.string().min(1),
   eventType: z.enum(["eligible_impression", "detail_view"]),
   parentExposureId: z.string().min(1).nullable().default(null),
@@ -4631,12 +4637,32 @@ async function track(request: Request) {
   if (body.name === METRIC_PRODUCT_EVENTS.characterExposureRecorded) {
     requireAgeGate(ctx);
     const exposure = characterExposureClientSchema.parse(body.props);
-    if (!ctx.userId && !ctx.anonymousId) {
-      throw Errors.badRequest("Character exposure needs an authenticated or anonymous subject");
+    const subject = metricExposureSubject(ctx.userId, ctx.anonymousId);
+    if (!subject) throw Errors.badRequest("Character exposure needs an authenticated or anonymous subject");
+    const signedContext = verifyExposureContext(
+      exposure.contextToken,
+      subject,
+      env.BETTER_AUTH_SECRET,
+    );
+    if (!signedContext) throw Errors.badRequest("Character exposure context is invalid or expired");
+    const expectedExposureId = exposure.eventType === "eligible_impression"
+      ? signedContext.impressionExposureId
+      : signedContext.detailExposureId;
+    const expectedParentId = exposure.eventType === "eligible_impression"
+      ? null
+      : signedContext.impressionExposureId;
+    if (
+      exposure.exposureId !== expectedExposureId ||
+      exposure.parentExposureId !== expectedParentId ||
+      exposure.journeyId !== signedContext.journeyId ||
+      exposure.characterId !== signedContext.characterId ||
+      exposure.placementId !== signedContext.placementId
+    ) {
+      throw Errors.badRequest("Character exposure does not match its signed context");
     }
     const authority = await prisma.character.findFirst({
       where: {
-        id: exposure.characterId,
+        id: signedContext.characterId,
         deletedAt: null,
         visibility: "public",
         status: "approved",
@@ -4644,25 +4670,30 @@ async function track(request: Request) {
       select: { id: true },
     });
     if (!authority) throw Errors.notFound("Live Character not found");
-    const serving = await prisma.characterServing.findUnique({
-      where: { characterId: authority.id },
-    });
-    if (!serving || serving.state !== "live" || !serving.currentReleaseId) {
-      throw Errors.conflict("Character has no live Release attribution");
-    }
     const release = await prisma.characterRelease.findFirst({
-      where: { id: serving.currentReleaseId, status: "published" },
+      where: {
+        id: signedContext.characterReleaseId,
+        characterContentVersionId: signedContext.characterContentVersionId,
+        status: "published",
+      },
     });
-    if (!release) throw Errors.conflict("Character Serving points to a non-published Release");
+    if (!release) throw Errors.conflict("Signed Character Release attribution is no longer valid");
     const contentVersion = await prisma.characterContentVersion.findUnique({
-      where: { id: release.characterContentVersionId },
+      where: { id: signedContext.characterContentVersionId },
       select: { id: true, characterId: true },
     });
     if (!contentVersion || contentVersion.characterId !== authority.id) {
       throw Errors.conflict("Character Release attribution is inconsistent");
     }
     const payload = characterExposureRecordedV2Schema.parse({
-      ...exposure,
+      exposureId: exposure.exposureId,
+      eventType: exposure.eventType,
+      parentExposureId: exposure.parentExposureId,
+      journeyId: exposure.journeyId,
+      characterId: exposure.characterId,
+      placementId: exposure.placementId,
+      visibleRatio: exposure.visibleRatio,
+      visibleDurationMs: exposure.visibleDurationMs,
       userId: ctx.userId ?? null,
       anonymousId: ctx.userId ? null : (ctx.anonymousId ?? null),
       characterContentVersionId: contentVersion.id,
@@ -4676,8 +4707,8 @@ async function track(request: Request) {
       anonymousId: payload.anonymousId,
       trustClass: "typed_client",
       context: {
-        servingVersion: serving.version,
-        servingState: serving.state,
+        servingVersion: signedContext.servingVersion,
+        exposureContextVersion: signedContext.version,
       },
       payload,
     }));
@@ -5242,13 +5273,38 @@ async function community(request: Request, segments: string[]) {
     chats: formatCount(numberFromDb(dreamer.chats)),
     isFollowing: followingIds.has(dreamer.id),
   }));
+  const exposureSubject = metricExposureSubject(ctx.userId, ctx.anonymousId);
+  const exposureJourneyId = `community-journey-${cryptoRandomId("journey")}`;
   return ok({
     leaderboards: {
-      characters: characters.map((character) => characterDTO(character, ctx.userId)),
+      characters: characters.map((character) => ({
+        ...characterDTO(character, ctx.userId),
+        exposureContext: exposureSubject && character.serving?.state === "live" &&
+          character.serving.currentRelease?.status === "published"
+          ? issueExposureContext({
+              ...exposureSubject,
+              characterId: character.id,
+              characterContentVersionId: character.serving.currentRelease.characterContentVersionId,
+              characterReleaseId: character.serving.currentRelease.id,
+              servingVersion: character.serving.version,
+              placementId: "community.leaderboard",
+              journeyId: exposureJourneyId,
+            }, env.BETTER_AUTH_SECRET)
+          : null,
+      })),
       dreamers,
       collections: [],
     },
   });
+}
+
+function metricExposureSubject(
+  userId: string | null | undefined,
+  anonymousId: string | null | undefined,
+): ExposureSubject | null {
+  if (userId) return { subjectType: "user", subjectId: userId };
+  if (anonymousId) return { subjectType: "anonymous", subjectId: anonymousId };
+  return null;
 }
 
 type CommunityCampaignPlacement = Prisma.MediaAssetPlacementGetPayload<{
@@ -5521,6 +5577,7 @@ function characterInclude(userId?: string) {
       take: 1,
     },
     creator: { select: { id: true, displayName: true, name: true } },
+    serving: { include: { currentRelease: true } },
     likes: userId ? { where: { userId }, select: { userId: true } } : false,
   } satisfies Prisma.CharacterInclude;
 }
