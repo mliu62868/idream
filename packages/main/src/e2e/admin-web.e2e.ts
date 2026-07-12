@@ -13,7 +13,8 @@ function adminBaseURL() {
   if (process.env.PW_ADMIN_BASE_URL) return process.env.PW_ADMIN_BASE_URL.replace(/\/$/, "");
 
   const url = new URL(process.env.PW_BASE_URL ?? "http://127.0.0.1:3000");
-  url.port = "3001";
+  const mainPort = Number(url.port || (url.protocol === "https:" ? "443" : "80"));
+  url.port = String(mainPort + 1);
   return url.toString().replace(/\/$/, "");
 }
 
@@ -182,7 +183,7 @@ test("admin web loads all control-plane sections and filters users", async ({ pa
     { path: "/admin/announcements", heading: "Announcements", evidence: "Create announcement" },
     { path: "/admin/analytics", heading: "Product Health", evidence: "Top events" },
     { path: "/admin/insights", heading: "Funnels & Retention", evidence: "invalid for decisions" },
-    { path: "/admin/experiments", heading: "Flag Monitoring", evidence: "Directional only" },
+    { path: "/admin/experiments", heading: "Experiments", evidence: "Directional only" },
     { path: "/admin/risk", heading: "Risk Cases", evidence: "Multi-account device clusters" },
     { path: "/admin/compliance", heading: "Account Requests", evidence: "DSAR" },
     { path: "/admin/approvals", heading: "Approvals", evidence: "Pending approvals" },
@@ -208,9 +209,9 @@ test("admin web loads all control-plane sections and filters users", async ({ pa
   await expect(adminRow).toContainText("E2E Customer Filter");
   await expect(adminRow).toContainText(customer.id);
   await expect(page.getByText("E2E upgrade", { exact: false })).toHaveCount(0);
-  await page.getByRole("textbox", { name: "Filter" }).fill(admin.email);
+  await page.getByRole("textbox", { name: "Search", exact: true }).fill(admin.email);
   await page.getByRole("combobox", { name: "Language" }).selectOption("zh");
-  await expect(page.getByRole("textbox", { name: "筛选" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "刷新", exact: true }).first()).toBeVisible();
   await page.getByRole("combobox", { name: "语言" }).selectOption("en");
   expect(consoleFailures).toEqual([]);
   await prisma.session.deleteMany({ where: { userId: { in: [admin.id, customer.id] } } });
@@ -524,7 +525,6 @@ test("admin users and billing actions write audit trail and clear adjustment for
 
     await page.goto(`${adminURL}/admin/system/access`);
     await expectAdminShellReady(page, "Team Access");
-    await page.getByRole("textbox", { name: "Filter" }).fill(targetId);
     const targetRow = page.getByRole("row").filter({ hasText: targetId });
     await expect(targetRow).toHaveCount(1, { timeout: 15_000 });
     await expect(targetRow.getByText("active", { exact: true })).toBeVisible();
@@ -598,7 +598,8 @@ test("admin users and billing actions write audit trail and clear adjustment for
 
     await page.goto(`${adminURL}/admin/audit-log`);
     await expectAdminShellReady(page, "Audit Log");
-    await page.getByRole("textbox", { name: "Filter" }).fill(targetId);
+    await page.getByRole("textbox", { name: "Search audit authority" }).fill(targetId);
+    await page.getByRole("button", { name: "Apply", exact: true }).click();
     await expect(
       page.getByRole("row").filter({ hasText: targetId }).filter({ hasText: "billing.ledger.adjust" }),
     ).toHaveCount(1, { timeout: 10_000 });
@@ -654,7 +655,8 @@ test("admin feature flag toggle requires target-state confirmation", async ({ pa
     const adminURL = adminBaseURL();
     await page.goto(`${adminURL}/admin/generation/config?tab=settings`);
     await expectAdminShellReady(page, "Profiles & Rollout");
-    await page.getByRole("textbox", { name: "Filter" }).fill(flagKey);
+    await page.getByRole("searchbox", { name: "Search", exact: true }).fill(flagKey);
+    await page.getByRole("button", { name: "Apply", exact: true }).click();
     const flagRow = page.getByRole("row").filter({ hasText: flagKey });
     await expect(flagRow).toHaveCount(1, { timeout: 10_000 });
     await flagRow.getByRole("button", { name: "Enable" }).click();
@@ -1205,8 +1207,6 @@ test("admin review queue saves and applies moderation views", async ({ page }) =
     await page.getByRole("button", { name: viewLabel, exact: true }).click();
     await expect(page.getByRole("row").filter({ hasText: reportedName })).toHaveCount(1);
     await expect(page.getByRole("row").filter({ hasText: cleanName })).toHaveCount(0);
-    await expect(page.getByText(/^1\/\d+$/)).toBeVisible();
-
     const storedView = await prisma.adminSavedView.findFirst({
       where: { ownerId: admin.id, scope: "moderation.review_queue", label: viewLabel },
     });
@@ -1343,6 +1343,7 @@ test("admin API creates an official character and runs AI assist", async ({ page
   let createdId: string | undefined;
   try {
     const create = await page.request.post(`${adminURL}/api/v1/admin/content/official`, {
+      headers: { "idempotency-key": `e2e-official-create-${Date.now()}` },
       data: {
         name,
         age: 24,

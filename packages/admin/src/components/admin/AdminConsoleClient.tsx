@@ -4993,6 +4993,7 @@ function BillingView({
                 title: `Adjust ledger ${userId}`,
                 endpoint: "/api/v1/admin/billing/adjustments",
                 method: "POST",
+                idempotencyKey: crypto.randomUUID(),
                 confirmText: confirmationTarget,
                 reasonRequired: true,
                 body: (actionReason, actionConfirmation) => ({
