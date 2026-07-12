@@ -141,4 +141,18 @@ describe("admin source boundary", () => {
     expect(catchAll).not.toContain("/api/v1/admin/content/featured");
     expect(content).toContain("export function ContentMerchandisingWorkspace");
   });
+
+  it("keeps operational overviews out of the catch-all client", async () => {
+    const catchAll = await readFile(path.join(packageRoot, "src/components/admin/AdminConsoleClient.tsx"), "utf8");
+    const overviews = await readFile(path.join(packageRoot, "src/features/overviews/OverviewWorkspaces.tsx"), "utf8").catch(() => "");
+    expect(catchAll).not.toContain("function AnalyticsView");
+    expect(catchAll).not.toContain("function RiskView");
+    expect(catchAll).not.toContain("function ProviderOpsView");
+    expect(catchAll).not.toContain("/api/v1/admin/analytics/overview");
+    expect(catchAll).not.toContain("/api/v1/admin/risk/abuse");
+    expect(catchAll).not.toContain("/api/v1/admin/ops/providers");
+    expect(overviews).toContain("export function AnalyticsWorkspace");
+    expect(overviews).toContain("export function RiskWorkspace");
+    expect(overviews).toContain("export function ProviderOverviewWorkspace");
+  });
 });

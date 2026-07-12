@@ -65,7 +65,7 @@ export async function api(
   if (options.anonymousId) headers["x-idream-anonymous-id"] = options.anonymousId;
   if (
     path.startsWith("admin/") &&
-    ["POST", "PATCH", "PUT"].includes(method) &&
+    ["POST", "PATCH", "PUT", "DELETE"].includes(method) &&
     !headers["idempotency-key"]
   ) {
     headers["idempotency-key"] = crypto.randomUUID();

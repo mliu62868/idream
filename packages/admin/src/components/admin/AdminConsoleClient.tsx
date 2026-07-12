@@ -30,18 +30,13 @@ import { InsightsView } from "@/components/admin/InsightsView";
 import { AnnouncementsView } from "@/components/admin/AnnouncementsView";
 import { ExperimentsView } from "@/components/admin/ExperimentsView";
 import { TodayView, type TodayData, type TodayLegacyData } from "@/components/admin/today/TodayView";
-import {
-  type MetricDashboardResponse,
-  type TodayProjection,
-} from "@idream/shared/admin";
+import { type TodayProjection } from "@idream/shared/admin";
 import { PlacementsSection } from "@/components/admin/placements/PlacementsSection";
 import {
   GENERATION_JOBS_REFRESH_EVENT,
 } from "@/features/jobs/query";
 import {
   AdminI18nProvider,
-  adminDateLocale,
-  adminValueLabel,
   getStoredAdminLocale,
   storeAdminLocale,
   translateAdmin,
@@ -78,6 +73,11 @@ import { PromoWorkspace } from "@/features/promo/PromoWorkspace";
 import { ApprovalsWorkspace } from "@/features/approvals/ApprovalsWorkspace";
 import { ChatOpsWorkspace } from "@/features/chat-ops/ChatOpsWorkspace";
 import { ContentMerchandisingWorkspace } from "@/features/content-merchandising/ContentMerchandisingWorkspace";
+import {
+  AnalyticsWorkspace,
+  ProviderOverviewWorkspace,
+  RiskWorkspace,
+} from "@/features/overviews/OverviewWorkspaces";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { buildCompatibilityListUrl } from "@/features/compatibility-lists/query";
 
@@ -101,43 +101,9 @@ type Row = Record<string, unknown>;
 
 type DashboardData = TodayData;
 
-type AnalyticsData = {
-  window: { from: string; to: string };
-  funnel: {
-    signups: number;
-    activatedUsers: number | null;
-    payingUsers: number;
-    conversionRate: number | null;
-    qualityState?: "certified" | "directional" | "invalid" | "stale";
-  };
-  generation: { total: number; completed: number; failed: number; blocked: number };
-  economy: { coinsGranted: number; coinsSpent: number; net: number; byReason: Row[] };
-  topEvents: Row[];
-};
-
-type AnalyticsWorkspaceData = {
-  legacy: AnalyticsData | null;
-  canonical: MetricDashboardResponse;
-};
-
-type AbuseData = {
-  window: { from: string; to: string };
-  deviceClusters: Row[];
-  referralAbuse: Row[];
-  adjustAnomalies: Row[];
-};
-
-type ProviderOpsData = {
-  window: { from: string; to: string };
-  providers: Row[];
-};
-
 type SectionData =
   | { kind: "dashboard"; data: DashboardData }
   | { kind: "users"; rows: Row[] }
-  | { kind: "analytics"; data: AnalyticsWorkspaceData }
-  | { kind: "risk"; data: AbuseData }
-  | { kind: "providers"; data: ProviderOpsData }
   // 自取数视图（组件内部 fetch），section 只需一个标记，不在此预取数据。
   | {
       kind: "selfFetch";
@@ -174,7 +140,10 @@ type SectionData =
         | "promo"
         | "approvals"
         | "chat"
-        | "content-merchandising";
+        | "content-merchandising"
+        | "analytics-overview"
+        | "risk-overview"
+        | "provider-overview";
     };
 
 type PendingAction = {
@@ -266,8 +235,6 @@ export function AdminConsoleClient({
     try {
       setData(await fetchSection(sectionId, {
         workMode: nextWorkMode,
-        includeLegacyAnalytics: permissions.has("analytics.export"),
-        searchParams: new URLSearchParams(window.location.search),
       }));
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Failed to load admin data");
@@ -805,8 +772,6 @@ async function fetchSection(
   sectionId: string,
   options: {
     workMode?: WorkMode;
-    includeLegacyAnalytics?: boolean;
-    searchParams?: URLSearchParams;
   } = {},
 ): Promise<SectionData> {
   if (sectionId === "generation/jobs") {
@@ -823,8 +788,7 @@ async function fetchSection(
     return fetchSection("generation/config", options);
   }
   if (sectionId === "ops/providers") {
-    const payload = await apiGet<ProviderOpsData>("/api/v1/admin/ops/providers");
-    return { kind: "providers", data: payload };
+    return { kind: "selfFetch", view: "provider-overview" };
   }
   if (sectionId === "generation/recipes") return { kind: "selfFetch", view: "recipes" };
   if (sectionId === "generation/presets") return { kind: "selfFetch", view: "presets" };
@@ -837,17 +801,10 @@ async function fetchSection(
   }
   if (sectionId === "pricing") return { kind: "selfFetch", view: "pricing" };
   if (sectionId === "analytics") {
-    const [legacy, canonical] = await Promise.all([
-      options.includeLegacyAnalytics
-        ? apiGet<AnalyticsData>("/api/v1/admin/analytics/overview")
-        : Promise.resolve(null),
-      apiGet<MetricDashboardResponse>("/api/v2/admin/metrics"),
-    ]);
-    return { kind: "analytics", data: { legacy, canonical } };
+    return { kind: "selfFetch", view: "analytics-overview" };
   }
   if (sectionId === "risk") {
-    const payload = await apiGet<AbuseData>("/api/v1/admin/risk/abuse");
-    return { kind: "risk", data: payload };
+    return { kind: "selfFetch", view: "risk-overview" };
   }
   if (sectionId === "support") return { kind: "selfFetch", view: "support" };
   if (sectionId === "content") {
@@ -899,9 +856,6 @@ function renderSection(
   if (section.kind === "users") {
     return <CustomerWorkspace initialCustomerId={subview.kind === "detail" ? subview.id : null} />;
   }
-  if (section.kind === "analytics") return <AnalyticsView data={section.data} />;
-  if (section.kind === "risk") return <RiskView data={section.data} />;
-  if (section.kind === "providers") return <ProviderOpsView data={section.data} />;
   if (section.kind === "selfFetch") {
     if (section.view === "jobs") {
       return <GenerationJobsWorkspace />;
@@ -1009,311 +963,21 @@ function renderSection(
     if (section.view === "content-merchandising") {
       return <ContentMerchandisingWorkspace canWrite={ctx.permissions.has("content.takedown.write")} />;
     }
+    if (section.view === "analytics-overview") {
+      return (
+        <AnalyticsWorkspace
+          canReadCanonical={ctx.canRead}
+          canReadLegacy={ctx.permissions.has("analytics.export")}
+        />
+      );
+    }
+    if (section.view === "risk-overview") {
+      return <RiskWorkspace canRead={ctx.permissions.has("billing.read")} />;
+    }
+    if (section.view === "provider-overview") {
+      return <ProviderOverviewWorkspace canRead={ctx.permissions.has("ops.queue.read")} />;
+    }
     return <ReviewQueueView />;
   }
   return null;
-}
-
-function AnalyticsView({ data }: { data: AnalyticsWorkspaceData }) {
-  const { locale, t } = useAdminI18n();
-  const { legacy, canonical } = data;
-
-  return (
-    <div className="space-y-5">
-      <div className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <p className="text-sm font-semibold text-[var(--ad-text)]">Canonical Metrics v2</p>
-            <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-              asOf {compactDate(canonical.asOf, locale)} · {canonical.freshness} · join {(canonical.quality.joinCoverage * 100).toFixed(1)}%
-            </p>
-          </div>
-          <span className={cn(
-            "rounded-full px-2.5 py-1 text-xs font-medium",
-            canonical.quality.qualityState === "certified"
-              ? "bg-[var(--ad-green-bg)] text-[var(--ad-green-text)]"
-              : "bg-[var(--ad-red-bg)] text-[var(--ad-red-text)]",
-          )}>
-            {canonical.quality.qualityState}
-          </span>
-        </div>
-        <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {canonical.cards.map((card) => (
-            <div className="rounded-md border border-[var(--ad-border)] p-3" key={card.key}>
-              <div className="flex items-start justify-between gap-2">
-                <p className="text-sm font-medium text-[var(--ad-text)]">{card.name}</p>
-                <span className="text-[10px] uppercase tracking-wide text-[var(--ad-text-muted)]">
-                  {card.publicationStatus}
-                </span>
-              </div>
-              <p className="mt-2 text-2xl font-semibold text-[var(--ad-text)]">
-                {card.value === null ? "—" : card.unit === "ratio" ? `${(Number(card.value) * 100).toFixed(1)}%` : card.value}
-              </p>
-              <p className="mt-2 text-xs text-[var(--ad-text-muted)]">
-                v{card.definitionVersion} · sample {card.sampleSize} · mature {card.matureSampleSize} · {card.qualityState}
-              </p>
-              <p className="mt-1 text-xs text-[var(--ad-text-muted)]">{card.window}</p>
-            </div>
-          ))}
-        </div>
-      </div>
-      {legacy ? (
-        <>
-          <p className="text-xs text-[var(--ad-text-muted)]">
-            {t("Window")} {compactDate(legacy.window.from, locale)} → {compactDate(legacy.window.to, locale)} ·{" "}
-            {t("legacy operational diagnostics")}
-          </p>
-          <div className="rounded-lg grid gap-px overflow-hidden border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
-            <Metric label="Signups" value={legacy.funnel.signups} meta="new users" />
-            <Metric label="Activated" value="Invalid" meta="invalid for decisions · definition v1" />
-            <Metric label="Paying" value={legacy.funnel.payingUsers} meta="subscribed" />
-            <Metric label="Conversion" value="Invalid" meta="invalid for decisions · mixed cohort/window" />
-          </div>
-          <div className="rounded-lg grid gap-px overflow-hidden border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
-            <Metric label="Generations" value={legacy.generation.total} meta={t("{count} completed", { count: legacy.generation.completed })} />
-            <Metric label="Failed" value={legacy.generation.failed} meta="generation jobs" />
-            <Metric label="Blocked" value={legacy.generation.blocked} meta="generation jobs" />
-            <Metric label="Coins net" value={legacy.economy.net} meta={t("{count} granted", { count: legacy.economy.coinsGranted })} />
-          </div>
-          <DataTable columns={["reason", "totalDelta", "count"]} rows={legacy.economy.byReason} title="Coin economy by reason" />
-          <DataTable columns={["name", "count"]} rows={legacy.topEvents} title="Top events" />
-        </>
-      ) : (
-        <p className="rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 text-xs text-[var(--ad-text-muted)]">
-          Technical metric scope: business and legacy diagnostics are not included.
-        </p>
-      )}
-    </div>
-  );
-}
-
-function RiskView({ data }: { data: AbuseData }) {
-  const { locale, t } = useAdminI18n();
-
-  return (
-    <div className="space-y-5">
-      <p className="text-xs text-[var(--ad-text-muted)]">
-        {t("Window")} {compactDate(data.window.from, locale)} → {compactDate(data.window.to, locale)} · 只读告警信号，处置走
-        Users 封禁 / Billing 调整。多账号聚类基于 anonymousId，清 cookie / 无痕可绕，非完备。
-      </p>
-      <DataTable
-        columns={["anonymousId", "accountCount", "userIds"]}
-        rows={data.deviceClusters}
-        title="Multi-account device clusters"
-      />
-      <DataTable
-        columns={["inviterId", "referralCount"]}
-        rows={data.referralAbuse}
-        title="Referral farming (≥3 invites)"
-      />
-      <DataTable
-        columns={["userId", "count", "totalDelta"]}
-        rows={data.adjustAnomalies}
-        title="Manual adjust anomalies"
-      />
-    </div>
-  );
-}
-
-function ProviderOpsView({ data }: { data: ProviderOpsData }) {
-  const { locale, t } = useAdminI18n();
-
-  return (
-    <div className="space-y-4">
-      <p className="text-xs text-[var(--ad-text-muted)]">
-        {t("Window")} {compactDate(data.window.from, locale)} → {compactDate(data.window.to, locale)} · latency = completed −
-        created（仅 completed 计入）
-      </p>
-      <DataTable
-        columns={[
-          "provider",
-          "total",
-          "completed",
-          "failed",
-          "blocked",
-          "successRate",
-          "coinsCost",
-          "avgCostPerJob",
-          "latencyP50Ms",
-          "latencyP95Ms",
-          "latencySamples",
-        ]}
-        rows={data.providers}
-        title="Provider health & cost"
-      />
-    </div>
-  );
-}
-
-
-
-function DataTable({
-  title,
-  rows,
-  columns,
-  actions,
-  empty,
-}: {
-  title: string;
-  rows: Row[];
-  columns: string[];
-  actions?: (row: Row) => React.ReactNode;
-  empty?: string;
-}) {
-  const { column: columnLabel, locale, t } = useAdminI18n();
-
-  return (
-    <section className="rounded-lg overflow-hidden border border-[var(--ad-border)] bg-[var(--ad-surface)]">
-      <div className="flex h-11 items-center justify-between border-b border-[var(--ad-border)] px-4">
-        <h2 className="text-sm font-semibold">{t(title)}</h2>
-        <span className="text-xs text-[var(--ad-text-muted)]">{rows.length}</span>
-      </div>
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[860px] border-collapse text-left text-sm">
-          <caption className="sr-only">{t("Operational records")}</caption>
-          <thead className="bg-black/[0.03] text-[11px] uppercase text-[var(--ad-text-muted)]">
-            <tr>
-              {columns.map((column) => (
-                <th scope="col" key={column} className="border-b border-[var(--ad-border)] px-3 py-2 font-semibold">
-                  {columnLabel(column)}
-                </th>
-              ))}
-              {actions ? (
-                <th scope="col" className="sticky right-0 z-10 border-b border-l border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 font-semibold">
-                  {t("Actions")}
-                </th>
-              ) : null}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, index) => (
-              <tr key={`${stringValue(row.id) || stringValue(row.key) || title}-${index}`} className="border-b border-[var(--ad-border)] last:border-0">
-                {columns.map((column) => (
-                  <td key={column} className="max-w-[260px] px-3 py-2 align-top text-[var(--ad-text)]">
-                    {renderCell(row[column], locale)}
-                  </td>
-                ))}
-                {actions ? (
-                  <td className="sticky right-0 border-l border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 align-top shadow-[-12px_0_18px_rgba(0,0,0,0.22)]">
-                    {actions(row)}
-                  </td>
-                ) : null}
-              </tr>
-            ))}
-            {rows.length === 0 ? (
-              <tr>
-                <td className="px-3 py-8 text-center text-sm text-[var(--ad-text-muted)]" colSpan={columns.length + (actions ? 1 : 0)}>
-                  {t(empty ?? "No records exist yet")}
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </div>
-    </section>
-  );
-}
-
-// SPEC: a single stat cell. Plain <div> by default (health grid); when `href` is given,
-//       renders as a clickable <Link> with a hover state — the Dashboard attention row reuses
-//       this exact component instead of forking a second stat-tile design.
-function Metric({
-  href,
-  label,
-  value,
-  meta,
-}: {
-  href?: string;
-  label: string;
-  value: string | number;
-  meta: string;
-}) {
-  const { t } = useAdminI18n();
-  const body = (
-    <>
-      <p className="text-xs font-medium text-[var(--ad-text-muted)]">{t(label)}</p>
-      <p className="mt-2 text-2xl font-semibold">{value}</p>
-      <p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t(meta)}</p>
-    </>
-  );
-
-  if (href) {
-    return (
-      <Link className="block bg-[var(--ad-surface)] p-4 transition-colors hover:bg-black/[0.04]" href={href}>
-        {body}
-      </Link>
-    );
-  }
-
-  return <div className="bg-[var(--ad-surface)] p-4">{body}</div>;
-}
-
-
-function renderCell(value: unknown, locale: AdminLocale = "en") {
-  if (typeof value === "boolean") {
-    return (
-      <span className={cn("inline-flex items-center gap-1 text-xs", value ? "text-[var(--ad-green-text)]" : "text-[var(--ad-text-muted)]")}>
-        {value ? <Check className="h-3 w-3" /> : <X className="h-3 w-3" />}
-        {locale === "zh" ? (value ? "是" : "否") : String(value)}
-      </span>
-    );
-  }
-  if (typeof value === "string") {
-    if (value.includes("T") && value.endsWith("Z")) return compactDate(value, locale);
-    if (["active", "completed", "approved", "actioned", "sent", "passed", "connected", "unlimited", "free_remaining", "resolved", "closed", "on_track"].includes(value)) {
-      return <Status locale={locale} value={value} tone="good" />;
-    }
-    if (["failed", "blocked", "suspended", "removed", "refunded", "rejected", "disconnected", "free_at_limit", "overdue"].includes(value)) {
-      return <Status locale={locale} value={value} tone="bad" />;
-    }
-    if (["draft", "queued", "pending", "open", "required", "generating", "flagged", "received", "waiting_on_user", "due_soon", "paused"].includes(value)) {
-      return <Status locale={locale} value={value} tone="warn" />;
-    }
-    return <span className="break-words">{adminValueLabel(locale, value)}</span>;
-  }
-  if (typeof value === "number") return <span className="font-mono">{value}</span>;
-  if (value === null || value === undefined) return <span className="text-[var(--ad-text-muted)]">-</span>;
-  return (
-    <code className="block max-w-[260px] truncate text-xs text-[var(--ad-text-muted)]">
-      {JSON.stringify(value)}
-    </code>
-  );
-}
-
-function Status({
-  locale,
-  value,
-  tone,
-}: {
-  locale: AdminLocale;
-  value: string;
-  tone: "good" | "bad" | "warn";
-}) {
-  return (
-    <span
-      className={cn(
-        "inline-flex rounded px-2 py-0.5 text-xs font-medium",
-        tone === "good" && "bg-[var(--ad-green-bg)] text-[var(--ad-green-text)]",
-        tone === "bad" && "bg-[var(--ad-red-bg)] text-[var(--ad-red-text)]",
-        tone === "warn" && "bg-[var(--ad-yellow-bg)] text-[var(--ad-yellow-text)]",
-      )}
-    >
-      {adminValueLabel(locale, value)}
-    </span>
-  );
-}
-
-function stringValue(value: unknown) {
-  return typeof value === "string" ? value : "";
-}
-
-function compactDate(value: string, locale: AdminLocale = "en") {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString(adminDateLocale(locale), {
-    month: "short",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
 }

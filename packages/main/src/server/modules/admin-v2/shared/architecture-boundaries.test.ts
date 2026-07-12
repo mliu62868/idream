@@ -142,4 +142,19 @@ describe("Admin v2 architecture boundaries", () => {
     expect(content).toContain("export async function listContentCharacters");
     expect(content).toContain("executeIdempotentDomainCommand");
   });
+
+  it("keeps overview and generic saved-view authorities out of the dispatcher", async () => {
+    const root = path.join(process.cwd(), "src/server/modules/admin");
+    const dispatcher = await readFile(path.join(root, "service.ts"), "utf8");
+    const overviews = await readFile(path.join(root, "overviews/service.ts"), "utf8").catch(() => "");
+    const savedViews = await readFile(path.join(root, "saved-views/service.ts"), "utf8").catch(() => "");
+    expect(dispatcher).not.toContain("async function analyticsOverview");
+    expect(dispatcher).not.toContain("async function abuseOverview");
+    expect(dispatcher).not.toContain("async function providerOps");
+    expect(dispatcher).not.toContain("async function listSavedViews");
+    expect(dispatcher).not.toContain("const savedViewCreateSchema");
+    expect(overviews).toContain("export async function analyticsOverview");
+    expect(savedViews).toContain("export async function createSavedView");
+    expect(savedViews).toContain("executeIdempotentDomainCommand");
+  });
 });

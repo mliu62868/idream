@@ -76,6 +76,8 @@ export function SupportWorkspace({
   const [notice, setNotice] = useState<string | null>(null);
   const gate = useRef(createLatestRequestGate());
   const initialQuery = useRef(query);
+  const savedViewCreateKey = useRef<string | null>(null);
+  const savedViewDeleteKeys = useRef(new Map<string, string>());
 
   const load = useCallback(async (next: SupportQuery) => {
     const request = gate.current.begin();
@@ -173,6 +175,7 @@ export function SupportWorkspace({
     if (!label) return;
     setSavedViewError(null);
     try {
+      savedViewCreateKey.current ??= crypto.randomUUID();
       await apiWrite(
         "/api/v1/admin/saved-views",
         "POST",
@@ -186,8 +189,9 @@ export function SupportWorkspace({
             category: draft.category.trim(),
           },
         },
-        { "idempotency-key": crypto.randomUUID() },
+        { "idempotency-key": savedViewCreateKey.current },
       );
+      savedViewCreateKey.current = null;
       setSavedViewLabel("");
       await loadSavedViews();
     } catch (cause) {
@@ -198,7 +202,12 @@ export function SupportWorkspace({
   async function deleteSavedView(view: SavedView) {
     setSavedViewError(null);
     try {
-      await apiDelete(`/api/v1/admin/saved-views/${view.id}`);
+      const key = savedViewDeleteKeys.current.get(view.id) ?? crypto.randomUUID();
+      savedViewDeleteKeys.current.set(view.id, key);
+      await apiDelete(`/api/v1/admin/saved-views/${view.id}`, {
+        "idempotency-key": key,
+      });
+      savedViewDeleteKeys.current.delete(view.id);
       setSavedViews((items) => items.filter((item) => item.id !== view.id));
     } catch (cause) {
       setSavedViewError(
@@ -327,7 +336,10 @@ export function SupportWorkspace({
               <input
                 aria-label="Support saved view label"
                 className="min-h-10 min-w-0 flex-1 rounded-md border px-3 text-sm"
-                onChange={(event) => setSavedViewLabel(event.target.value)}
+                onChange={(event) => {
+                  setSavedViewLabel(event.target.value);
+                  savedViewCreateKey.current = null;
+                }}
                 value={savedViewLabel}
               />
               <button

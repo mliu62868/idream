@@ -39,8 +39,11 @@ export async function apiWrite<T>(
   return payload.data;
 }
 
-export async function apiDelete<T>(path: string): Promise<T> {
-  const response = await fetch(path, { method: "DELETE" });
+export async function apiDelete<T>(
+  path: string,
+  headers?: Record<string, string>,
+): Promise<T> {
+  const response = await fetch(path, { method: "DELETE", headers });
   const payload = (await response.json()) as ApiEnvelope<T>;
   if (!payload.ok) {
     throw new Error(formatApiError(payload.error, "Request failed"));

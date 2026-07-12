@@ -74,6 +74,8 @@ export function ReviewQueueView() {
   const [cursor, setCursor] = useState<string | undefined>();
   const [pageInfo, setPageInfo] = useState({ endCursor: null as string | null, hasNextPage: false });
   const [ready, setReady] = useState(false);
+  const savedViewCreateKey = useRef<string | null>(null);
+  const savedViewDeleteKeys = useRef(new Map<string, string>());
 
   const load = useCallback(async (nextCursor?: string) => {
     setLoading(true);
@@ -136,11 +138,13 @@ export function ReviewQueueView() {
     setSavingView(true);
     setSavedViewError(null);
     try {
+      savedViewCreateKey.current ??= crypto.randomUUID();
       await apiWrite<{ view: SavedView }>("/api/v1/admin/saved-views", "POST", {
         scope: REVIEW_QUEUE_SAVED_VIEW_SCOPE,
         label,
         filters: normalizeFilters(filters),
-      });
+      }, { "idempotency-key": savedViewCreateKey.current });
+      savedViewCreateKey.current = null;
       setSavedViewLabel("");
       await loadSavedViews();
     } catch (err) {
@@ -153,7 +157,12 @@ export function ReviewQueueView() {
   async function deleteSavedView(view: SavedView) {
     setSavedViewError(null);
     try {
-      await apiDelete<{ deleted: true }>(`/api/v1/admin/saved-views/${view.id}`);
+      const key = savedViewDeleteKeys.current.get(view.id) ?? crypto.randomUUID();
+      savedViewDeleteKeys.current.set(view.id, key);
+      await apiDelete<{ deleted: true }>(`/api/v1/admin/saved-views/${view.id}`, {
+        "idempotency-key": key,
+      });
+      savedViewDeleteKeys.current.delete(view.id);
       setSavedViews((current) => current.filter((item) => item.id !== view.id));
     } catch (err) {
       setSavedViewError(err instanceof Error ? err.message : "Delete failed");
@@ -222,7 +231,10 @@ export function ReviewQueueView() {
                 aria-label={t("Saved view label")}
                 className="rounded-md h-10 min-w-0 flex-1 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
                 name="review-queue-saved-view-label"
-                onChange={(event) => setSavedViewLabel(event.target.value)}
+                onChange={(event) => {
+                  setSavedViewLabel(event.target.value);
+                  savedViewCreateKey.current = null;
+                }}
                 placeholder={t("Saved view label")}
                 value={savedViewLabel}
               />
