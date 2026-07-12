@@ -431,6 +431,46 @@ describe("Character Release command executor", () => {
     ).toBe(oldReleaseId);
   });
 
+  it("rejects an illegal Project phase before writing validation evidence", async () => {
+    await prisma.characterProject.update({
+      where: { id: projectId },
+      data: { phase: "retired", version: { increment: 1 } },
+    });
+    const validationsBefore = await prisma.releaseValidationRun.count({
+      where: { releaseId: candidateReleaseId },
+    });
+    const accepted = await accept({
+      commandType: "character.release.publish",
+      target: { type: "character_release", id: candidateReleaseId },
+      expectedVersion: 1,
+      payload: { reason: "Reject an illegal Project transition" },
+    });
+
+    await expect(
+      executeCharacterReleaseCommand(prisma, {
+        commandId: accepted.commandId,
+        workerId: `${prefix}-invalid-project-phase-worker`,
+        now: new Date("2026-07-11T01:00:00.000Z"),
+      }),
+    ).resolves.toMatchObject({
+      status: "failed",
+      errorCode: "project_phase_conflict",
+    });
+    await expect(
+      prisma.releaseValidationRun.count({
+        where: { releaseId: candidateReleaseId },
+      }),
+    ).resolves.toBe(validationsBefore);
+    await expect(
+      prisma.characterRelease.findUnique({ where: { id: candidateReleaseId } }),
+    ).resolves.toMatchObject({ status: "approved", version: 1 });
+
+    await prisma.characterProject.update({
+      where: { id: projectId },
+      data: { phase: "launch_ready", version: { increment: 1 } },
+    });
+  });
+
   it("validates and schedules without changing the current live pointer", async () => {
     const scheduledAt = new Date("2026-07-20T12:00:00.000Z");
     const accepted = await accept({

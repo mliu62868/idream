@@ -639,22 +639,9 @@ async function publishRelease(
       "Only the expected approved Release can be published",
     );
   }
-  const validation = await validateCharacterReleaseSnapshot(tx, release, policyVersion, now);
-  if (validation.failed.length > 0) {
-    await tx.characterRelease.update({
-      where: { id: release.id },
-      data: { readiness: "blocked" },
-    });
-    throw new ReleaseCommandError(
-      "release_validation_failed",
-      "Release validation failed",
-      {
-        blockers: validation.failed.map((item) => item.key),
-        validationRunId: validation.run.id,
-      },
-    );
-  }
-  const project = validation.project;
+  const project = await tx.characterProject.findUnique({
+    where: { id: release.projectId },
+  });
   const characterId = project?.characterId;
   if (!project || !characterId)
     throw new ReleaseCommandError(
@@ -672,6 +659,21 @@ async function publishRelease(
       "project_phase_conflict",
       "Character Project cannot enter live management from its present phase",
       { projectPhase: project.phase },
+    );
+  }
+  const validation = await validateCharacterReleaseSnapshot(tx, release, policyVersion, now);
+  if (validation.failed.length > 0) {
+    await tx.characterRelease.update({
+      where: { id: release.id },
+      data: { readiness: "blocked" },
+    });
+    throw new ReleaseCommandError(
+      "release_validation_failed",
+      "Release validation failed",
+      {
+        blockers: validation.failed.map((item) => item.key),
+        validationRunId: validation.run.id,
+      },
     );
   }
   const serving = await tx.characterServing.findUnique({

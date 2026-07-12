@@ -84,6 +84,17 @@ export async function proposeCharacterRelease(input: {
       generationProvenance,
       releasePlacementManifest,
     };
+    const projectUpdated = await tx.characterProject.updateMany({
+      where: {
+        id: project.id,
+        version: project.version,
+        phase: project.phase,
+      },
+      data: { phase: "qa", version: { increment: 1 } },
+    });
+    if (projectUpdated.count !== 1) {
+      throw Errors.conflict("Character Project changed before Release proposal");
+    }
     const release = await tx.characterRelease.create({ data: {
       ...snapshot,
       generationProvenance: toInputJson(generationProvenance),
@@ -92,7 +103,6 @@ export async function proposeCharacterRelease(input: {
       status: "in_review",
       readiness: "unknown",
     } });
-    await tx.characterProject.update({ where: { id: project.id }, data: { phase: "qa", version: { increment: 1 } } });
     await tx.adminAuditLog.create({ data: {
       actorId: actor.id,
       actorRole: actor.role,
@@ -185,8 +195,28 @@ export async function reviewCharacterRelease(input: {
         projectPhase: { from: project.phase, to: projectPhase },
       });
     }
-    const updated = await tx.characterRelease.update({ where: { id: release.id, version: release.version }, data: { status, version: { increment: 1 } } });
-    await tx.characterProject.update({ where: { id: project.id }, data: { phase: projectPhase, version: { increment: 1 } } });
+    const releaseUpdated = await tx.characterRelease.updateMany({
+      where: {
+        id: release.id,
+        version: release.version,
+        status: release.status,
+      },
+      data: { status, version: { increment: 1 } },
+    });
+    const projectUpdated = await tx.characterProject.updateMany({
+      where: {
+        id: project.id,
+        version: project.version,
+        phase: project.phase,
+      },
+      data: { phase: projectPhase, version: { increment: 1 } },
+    });
+    if (releaseUpdated.count !== 1 || projectUpdated.count !== 1) {
+      throw Errors.conflict("Release or Character Project changed during review");
+    }
+    const updated = await tx.characterRelease.findUniqueOrThrow({
+      where: { id: release.id },
+    });
     await tx.adminAuditLog.create({ data: {
       actorId: actor.id,
       actorRole: actor.role,

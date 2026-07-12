@@ -82,6 +82,9 @@ describe("Character Release proposal and review lifecycle", () => {
     );
     const approved = await reviewCharacterRelease({ request: reviewRequest, characterId, releaseId: proposed.id, expectedVersion: proposed.version, decision: "approved", reason: "Independent reviewer approved immutable snapshot" });
     expect(approved).toMatchObject({ status: "approved", version: 2, snapshotHash: proposed.snapshotHash });
+    await expect(
+      prisma.characterProject.findUnique({ where: { id: projectId } }),
+    ).resolves.toMatchObject({ phase: "launch_ready", version: 3 });
     await expect(prisma.adminAuditLog.count({ where: { actorId, targetId: proposed.id } })).resolves.toBe(2);
     const validationRequest = new Request(
       `http://localhost/api/v2/admin/characters/${characterId}/releases/${proposed.id}/validation`,
