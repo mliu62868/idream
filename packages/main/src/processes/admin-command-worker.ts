@@ -64,6 +64,8 @@ export async function drainAdminCommands(
     readonly routeQualificationPolicyVersion?: string;
     readonly routeQualificationEvaluatorVersion?: string;
     readonly routeQualificationReleaseIds?: readonly string[];
+    readonly commandIds?: readonly string[];
+    readonly commandLeaseMs?: number;
   },
 ) {
   const now = input.now ?? new Date();
@@ -100,7 +102,11 @@ export async function drainAdminCommands(
     );
   }
   const commands = await db.controlPlaneCommand.findMany({
-    where: { status: "accepted", commandType: { in: [...COMMAND_TYPES] } },
+    where: {
+      id: input.commandIds ? { in: [...input.commandIds] } : undefined,
+      status: "accepted",
+      commandType: { in: [...COMMAND_TYPES] },
+    },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     take: Math.min(100, Math.max(1, input.limit ?? 25)),
     select: { id: true, commandType: true },
@@ -118,6 +124,7 @@ export async function drainAdminCommands(
           commandId: command.id,
           workerId: input.workerId,
           now,
+          leaseMs: input.commandLeaseMs,
         })
       : await executeAcceptedAdminCommand(command.id);
     if (result.status === "succeeded") succeeded += 1;
@@ -147,11 +154,21 @@ export const drainCharacterReleaseCommands = drainAdminCommands;
 
 export async function runAdminCommandWorkerLoop() {
   const workerId = `admin-command-worker-${randomUUID()}`;
+  const chaosCommandId = process.env.ADMIN_CHAOS_COMMAND_ID?.trim() || undefined;
+  const chaosLeaseMsInput = Number(process.env.ADMIN_CHAOS_COMMAND_LEASE_MS);
+  const chaosLeaseMs = Number.isSafeInteger(chaosLeaseMsInput) && chaosLeaseMsInput > 0
+    ? chaosLeaseMsInput
+    : undefined;
   logger.info({ workerId }, "admin command worker started");
   while (running) {
     let processed = 0;
     try {
-      const result = await drainAdminCommands(prisma, { workerId });
+      const result = await drainAdminCommands(prisma, {
+        workerId,
+        commandIds: chaosCommandId ? [chaosCommandId] : undefined,
+        commandLeaseMs: chaosLeaseMs,
+        routeQualificationReleaseIds: chaosCommandId ? [] : undefined,
+      });
       processed = result.examined + result.releaseMonitors.claimed + result.routeQualifications.examined;
       const now = Date.now();
       if (now - lastReconcileAt >= RECONCILE_INTERVAL_MS) {
