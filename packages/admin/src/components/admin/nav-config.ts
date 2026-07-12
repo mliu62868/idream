@@ -26,6 +26,10 @@ import {
   Workflow,
   type LucideIcon,
 } from "lucide-react";
+import {
+  ADMIN_V2_WORKSPACE_ACCESS,
+  type AdminV2WorkspaceAccessKey,
+} from "@idream/shared/admin/workspace-access";
 import type { AdminPermissionKey } from "@idream/shared/admin/permissions";
 
 export const ADMIN_WORKSPACES = [
@@ -56,10 +60,13 @@ export type NavItem = {
   icon: LucideIcon;
   group: AdminWorkspace;
   read: { allOf: readonly AdminPermissionKey[] };
+  apiWorkspace: AdminV2WorkspaceAccessKey | null;
   tier: "daily" | "folded";
 };
 
-type ItemInput = Omit<NavItem, "legacyHref" | "tier">;
+type ItemInput = Omit<NavItem, "apiWorkspace" | "legacyHref" | "tier"> & {
+  apiWorkspace?: AdminV2WorkspaceAccessKey;
+};
 
 function read(...allOf: AdminPermissionKey[]): NavItem["read"] {
   return { allOf };
@@ -68,6 +75,7 @@ function read(...allOf: AdminPermissionKey[]): NavItem["read"] {
 function item(input: ItemInput): NavItem {
   return {
     ...input,
+    apiWorkspace: input.apiWorkspace ?? null,
     legacyHref: input.id === "dashboard" ? "/admin" : `/admin/${input.id}`,
     tier: input.group === "Today" ? "daily" : "folded",
   };
@@ -76,43 +84,56 @@ function item(input: ItemInput): NavItem {
 function targetItem(input: ItemInput): NavItem {
   return {
     ...input,
+    apiWorkspace: input.apiWorkspace ?? null,
     legacyHref: null,
     tier: input.group === "Today" ? "daily" : "folded",
   };
+}
+
+function apiItem(
+  input: Omit<ItemInput, "read"> & { apiWorkspace: AdminV2WorkspaceAccessKey },
+): NavItem {
+  return item({ ...input, read: ADMIN_V2_WORKSPACE_ACCESS[input.apiWorkspace] });
+}
+
+function apiTargetItem(
+  input: Omit<ItemInput, "read"> & { apiWorkspace: AdminV2WorkspaceAccessKey },
+): NavItem {
+  return targetItem({ ...input, read: ADMIN_V2_WORKSPACE_ACCESS[input.apiWorkspace] });
 }
 
 // SSoT for the migration shell. `id` remains the legacy implementation key so all
 // 34 shipped capabilities stay reachable; `href` is the canonical decision-workspace URL.
 // Permissions are existing effective keys, not client-side role guesses.
 export const navItems: NavItem[] = [
-  item({ id: "dashboard", label: "Today", href: "/admin/today", icon: Gauge, group: "Today", read: read("dashboard.read") }),
+  apiItem({ id: "dashboard", label: "Today", href: "/admin/today", icon: Gauge, group: "Today", apiWorkspace: "today" }),
 
-  item({ id: "content/official", label: "Portfolio & Projects", href: "/admin/characters", icon: ShieldCheck, group: "Character Studio", read: read("character.project.read", "character.release.read", "character.performance.read") }),
+  apiItem({ id: "content/official", label: "Portfolio & Projects", href: "/admin/characters", icon: ShieldCheck, group: "Character Studio", apiWorkspace: "character_workspace" }),
   item({ id: "content/review-queue", label: "Character Review", href: "/admin/characters/review", icon: ClipboardCheck, group: "Character Studio", read: read("safety.review.read") }),
   item({ id: "content/templates", label: "Character Starters", href: "/admin/characters/starters", icon: Sparkles, group: "Character Studio", read: read("content.read") }),
   item({ id: "content/tags", label: "Taxonomy", href: "/admin/characters/taxonomy", icon: Flag, group: "Character Studio", read: read("content.read") }),
 
-  item({ id: "content/production", label: "Creative Runs", href: "/admin/creative/runs", icon: Play, group: "Creative Studio", read: read("creative.run.read") }),
+  apiItem({ id: "content/production", label: "Creative Runs", href: "/admin/creative/runs", icon: Play, group: "Creative Studio", apiWorkspace: "creative_runs" }),
   item({ id: "content/assets", label: "Library", href: "/admin/creative/library", icon: ImageIcon, group: "Creative Studio", read: read("creative.asset.read") }),
   item({ id: "content/placements", label: "Placements", href: "/admin/creative/placements", icon: Bookmark, group: "Creative Studio", read: read("creative.placement.read") }),
 
-  item({ id: "cases", label: "Cases", href: "/admin/cases?view=mine", icon: Ticket, group: "Customer Operations", read: read("case.read") }),
-  item({ id: "users", label: "Customers", href: "/admin/customers", icon: Users, group: "Customer Operations", read: read("customer.read") }),
+  apiItem({ id: "cases", label: "Cases", href: "/admin/cases?view=mine", icon: Ticket, group: "Customer Operations", apiWorkspace: "cases" }),
+  apiItem({ id: "users", label: "Customers", href: "/admin/customers", icon: Users, group: "Customer Operations", apiWorkspace: "customers" }),
   item({ id: "billing", label: "Billing Operations", href: "/admin/customer-ops/billing", icon: BadgeDollarSign, group: "Customer Operations", read: read("billing.read") }),
   item({ id: "compliance", label: "Account Requests", href: "/admin/customer-ops/account-requests", icon: ShieldAlert, group: "Customer Operations", read: read("compliance.read") }),
 
-  item({ id: "analytics", label: "Product Health", href: "/admin/growth/health", icon: BarChart3, group: "Growth", read: read("analytics.metric.read") }),
-  item({ id: "insights", label: "Funnels & Retention", href: "/admin/growth/funnels", icon: BarChart3, group: "Growth", read: read("analytics.metric.read") }),
-  targetItem({ id: "growth/characters", label: "Character Performance", href: "/admin/growth/characters", icon: Activity, group: "Growth", read: read("character.performance.read") }),
-  item({ id: "experiments", label: "Experiments", href: "/admin/growth/experiments", icon: Flag, group: "Growth", read: read("experiment.manage") }),
+  apiItem({ id: "analytics", label: "Product Health", href: "/admin/growth/health", icon: BarChart3, group: "Growth", apiWorkspace: "metrics" }),
+  apiItem({ id: "insights", label: "Funnels & Retention", href: "/admin/growth/funnels", icon: BarChart3, group: "Growth", apiWorkspace: "metrics" }),
+  apiTargetItem({ id: "growth/characters", label: "Character Performance", href: "/admin/growth/characters", icon: Activity, group: "Growth", apiWorkspace: "character_performance" }),
+  apiItem({ id: "experiments", label: "Experiments", href: "/admin/growth/experiments", icon: Flag, group: "Growth", apiWorkspace: "experiments" }),
   item({ id: "content", label: "Featured Merchandising", href: "/admin/growth/merchandising?view=featured", icon: Library, group: "Growth", read: read("content.read") }),
   item({ id: "announcements", label: "Announcements", href: "/admin/growth/merchandising?view=announcements", icon: MessageSquare, group: "Growth", read: read("growth.promo.read") }),
   item({ id: "cms", label: "CMS & SEO", href: "/admin/growth/content", icon: FileText, group: "Growth", read: read("content.read") }),
   item({ id: "pricing", label: "Pricing", href: "/admin/growth/offers?view=pricing", icon: Coins, group: "Growth", read: read("billing.read") }),
   item({ id: "promo", label: "Promotions", href: "/admin/growth/offers?view=promo", icon: Ticket, group: "Growth", read: read("growth.promo.read") }),
 
-  item({ id: "ops/incidents", label: "Incidents", href: "/admin/ops/incidents", icon: ShieldAlert, group: "Platform Operations", read: read("ops.incident.read") }),
-  item({ id: "generation/jobs", label: "Generation Jobs", href: "/admin/ops/jobs", icon: Activity, group: "Platform Operations", read: read("generation.job.read") }),
+  apiItem({ id: "ops/incidents", label: "Incidents", href: "/admin/ops/incidents", icon: ShieldAlert, group: "Platform Operations", apiWorkspace: "incidents" }),
+  apiItem({ id: "generation/jobs", label: "Generation Jobs", href: "/admin/ops/jobs", icon: Activity, group: "Platform Operations", apiWorkspace: "generation_jobs" }),
   item({ id: "generation/dead-letter", label: "Dead-letter", href: "/admin/ops/jobs?view=dead-letter", icon: Inbox, group: "Platform Operations", read: read("ops.queue.read") }),
   item({ id: "ops/providers", label: "Providers", href: "/admin/ops/providers", icon: Gauge, group: "Platform Operations", read: read("ops.queue.read") }),
   item({ id: "generation/backends", label: "Backend Diagnostics", href: "/admin/ops/providers?view=backends", icon: Server, group: "Platform Operations", read: read("ops.queue.read") }),

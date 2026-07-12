@@ -12,6 +12,8 @@
     "./admin": "./src/admin/index.ts",
     "./admin/contracts": "./src/admin/contracts/index.ts",
     "./admin/permissions": "./src/admin/permissions.ts",
+    "./admin/api-manifest": "./src/admin/api-manifest.ts",
+    "./admin/workspace-access": "./src/admin/workspace-access.ts",
     "./admin/errors": "./src/admin/errors.ts",
     "./admin/release-gate": "./src/admin/release-gate.ts",
     "./bff": "./src/bff/signing.ts",

@@ -1,4 +1,8 @@
 import { describe, expect, it } from "vitest";
+import {
+  ADMIN_V2_WORKSPACE_ACCESS,
+  type AdminV2WorkspaceAccessKey,
+} from "@idream/shared/admin/workspace-access";
 import type { AdminPermissionKey } from "@idream/shared/admin/permissions";
 import {
   ADMIN_WORKSPACES,
@@ -80,6 +84,37 @@ describe("admin navigation information architecture", () => {
 });
 
 describe("permission and work-mode navigation", () => {
+  it("derives every v2 workspace and deep-link gate from the API authority manifest", () => {
+    const expected = {
+      dashboard: "today",
+      "content/official": "character_workspace",
+      "growth/characters": "character_performance",
+      "content/production": "creative_runs",
+      users: "customers",
+      cases: "cases",
+      experiments: "experiments",
+      "ops/incidents": "incidents",
+      "generation/jobs": "generation_jobs",
+      analytics: "metrics",
+      insights: "metrics",
+    } as const satisfies Record<string, AdminV2WorkspaceAccessKey>;
+
+    for (const [id, workspace] of Object.entries(expected)) {
+      const item = navItems.find((candidate) => candidate.id === id);
+      expect(item?.apiWorkspace, id).toBe(workspace);
+      expect(item?.read, id).toBe(ADMIN_V2_WORKSPACE_ACCESS[workspace]);
+
+      const complete = new Set<AdminPermissionKey>(ADMIN_V2_WORKSPACE_ACCESS[workspace].allOf);
+      expect(sectionIsPermitted(id, complete), `${id} complete`).toBe(true);
+      for (const missing of ADMIN_V2_WORKSPACE_ACCESS[workspace].allOf) {
+        const incomplete = new Set<AdminPermissionKey>(
+          ADMIN_V2_WORKSPACE_ACCESS[workspace].allOf.filter((key) => key !== missing),
+        );
+        expect(sectionIsPermitted(id, incomplete), `${id} deep link without ${missing}`).toBe(false);
+      }
+    }
+  });
+
   it("uses the exact workspace read predicate for navigation and direct access", () => {
     const supportPermissions = new Set<AdminPermissionKey>([
       "dashboard.read", "case.read", "support.request.read", "customer.read", "billing.read", "audit.read",

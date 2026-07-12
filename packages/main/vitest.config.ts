@@ -69,6 +69,10 @@ export default defineConfig({
         import.meta.url,
       ).pathname,
       "@idream/shared/admin": new URL("../shared/src/admin/index.ts", import.meta.url).pathname,
+      "@idream/shared/admin/api-manifest": new URL(
+        "../shared/src/admin/api-manifest.ts",
+        import.meta.url,
+      ).pathname,
       "@idream/shared/admin/contracts": new URL(
         "../shared/src/admin/contracts/index.ts",
         import.meta.url,
@@ -77,6 +81,7 @@ export default defineConfig({
         "../shared/src/admin/permissions.ts",
         import.meta.url,
       ).pathname,
+      "@idream/shared/admin": new URL("../shared/src/admin/index.ts", import.meta.url).pathname,
       "@idream/shared/bff": new URL("../shared/src/bff/signing.ts", import.meta.url).pathname,
       "@idream/shared/media/generated-image-sanity": new URL(
         "../shared/src/media/generated-image-sanity.ts",

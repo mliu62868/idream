@@ -67,16 +67,27 @@ describe("Character Release proposal and review lifecycle", () => {
   });
 
   it("pins exact immutable inputs, then records an explicit review decision", async () => {
-    const request = new Request(`http://localhost/api/v2/admin/characters/${characterId}/releases`, { method: "POST", headers });
-    await expect(proposeCharacterRelease({ request, characterId, expectedProjectVersion: 1, qaRunId: `missing-${qaRunId}`, reason: "An arbitrary QA reference must not pass" }))
+    const proposalRequest = () => new Request(
+      `http://localhost/api/v2/admin/characters/${characterId}/releases`,
+      { method: "POST", headers },
+    );
+    await expect(proposeCharacterRelease({ request: proposalRequest(), characterId, expectedProjectVersion: 1, qaRunId: `missing-${qaRunId}`, reason: "An arbitrary QA reference must not pass" }))
       .rejects.toMatchObject({ status: 409 });
-    const proposed = await proposeCharacterRelease({ request, characterId, expectedProjectVersion: 1, qaRunId, reason: "Five-turn QA and visual evidence passed" });
+    const proposed = await proposeCharacterRelease({ request: proposalRequest(), characterId, expectedProjectVersion: 1, qaRunId, reason: "Five-turn QA and visual evidence passed" });
     expect(proposed).toMatchObject({ projectId, revisionId, characterContentVersionId: contentId, visualProfileId: profileId, referenceSetRevisionId: referenceSetId, status: "in_review", version: 1 });
     expect(proposed.snapshotHash).toHaveLength(64);
-    const approved = await reviewCharacterRelease({ request, characterId, releaseId: proposed.id, expectedVersion: proposed.version, decision: "approved", reason: "Independent reviewer approved immutable snapshot" });
+    const reviewRequest = new Request(
+      `http://localhost/api/v2/admin/characters/${characterId}/releases/${proposed.id}/review`,
+      { method: "POST", headers },
+    );
+    const approved = await reviewCharacterRelease({ request: reviewRequest, characterId, releaseId: proposed.id, expectedVersion: proposed.version, decision: "approved", reason: "Independent reviewer approved immutable snapshot" });
     expect(approved).toMatchObject({ status: "approved", version: 2, snapshotHash: proposed.snapshotHash });
     await expect(prisma.adminAuditLog.count({ where: { actorId, targetId: proposed.id } })).resolves.toBe(2);
-    const validation = await validateCharacterRelease({ request, characterId, releaseId: proposed.id, expectedVersion: approved.version });
+    const validationRequest = new Request(
+      `http://localhost/api/v2/admin/characters/${characterId}/releases/${proposed.id}/validation`,
+      { method: "POST", headers },
+    );
+    const validation = await validateCharacterRelease({ request: validationRequest, characterId, releaseId: proposed.id, expectedVersion: approved.version });
     expect(validation).toMatchObject({ result: "passed", readiness: "ready", snapshotHash: proposed.snapshotHash, policyVersion: CHARACTER_RELEASE_POLICY_VERSION });
     const acceptPublish = async (tab: string) => publishCharacterRelease(new Request(`http://localhost/api/v2/admin/characters/${characterId}/releases/${proposed.id}/commands/publish`, {
       method: "POST",

@@ -22,6 +22,7 @@
       "@/*": ["./src/*"],
       "@idream/shared/admin": ["../shared/src/admin/index.ts"],
       "@idream/shared/admin/release-gate": ["../shared/src/admin/release-gate.ts"],
+      "@idream/shared/admin/api-manifest": ["../shared/src/admin/api-manifest.ts"],
       "@idream/shared/admin/contracts": ["../shared/src/admin/contracts/index.ts"],
       "@idream/shared/admin/permissions": ["../shared/src/admin/permissions.ts"]
     }

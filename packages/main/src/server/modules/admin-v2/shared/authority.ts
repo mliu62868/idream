@@ -1,3 +1,7 @@
+import {
+  findAdminV2ApiOperation,
+  resolveAdminV2ManifestAuthorization,
+} from "@idream/shared/admin/api-manifest";
 import type { PermissionKey } from "@/server/admin/permissions";
 import {
   effectiveCharacterIdsForPermission,
@@ -21,8 +25,26 @@ export async function actorWithPermission(
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
   const effective = await effectivePermissions(user.id, user.role);
-  if (!effective.has(permission)) {
-    throw Errors.forbidden("Missing admin permission", { permission });
+  const pathname = new URL(request.url).pathname;
+  const manifestOperation = findAdminV2ApiOperation(request.method, pathname);
+  if (pathname.startsWith("/api/v2/admin/") && !manifestOperation && process.env.APP_ENV === "production") {
+    throw Errors.internal("Admin v2 operation is missing from the authority manifest", {
+      method: request.method,
+      pathname,
+    });
+  }
+  const requiredPermissions = manifestOperation
+    ? resolveAdminV2ManifestAuthorization(manifestOperation, permission)
+    : [permission];
+  if (!requiredPermissions) {
+    throw Errors.internal("Admin v2 handler asserted an undeclared permission", {
+      operation: manifestOperation?.id,
+      permission,
+    });
+  }
+  const missingPermission = requiredPermissions.find((required) => !effective.has(required));
+  if (missingPermission) {
+    throw Errors.forbidden("Missing admin permission", { permission: missingPermission });
   }
   if (resource?.characterId && permission.startsWith("character.")) {
     const allowedCharacterIds = await effectiveCharacterIdsForPermission(user.id, user.role, permission);
