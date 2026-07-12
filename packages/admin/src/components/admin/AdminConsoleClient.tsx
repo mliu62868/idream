@@ -2343,6 +2343,7 @@ function renderSection(
         write: ctx.permissions.has("creative.run.write"),
         review: ctx.permissions.has("creative.run.review"),
         place: ctx.permissions.has("creative.placement.publish"),
+        manageIncident: ctx.permissions.has("ops.incident.manage"),
       }} view={subview} />;
     }
     if (section.view === "assets") return <AssetsSection view={subview} />;

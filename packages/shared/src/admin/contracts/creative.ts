@@ -11,6 +11,11 @@ import {
 } from "./common";
 
 export const creativeRunRetryFailedCommandRequestSchema = adminCommandRequestSchema;
+export const creativeRunAttachIncidentRequestSchema = z.object({
+  entityVersion: z.number().int().nonnegative(),
+  incidentId: adminIdSchema,
+  reason: z.string().trim().min(3).max(2_000),
+}).strict();
 
 export const creativeRunCreateRequestSchema = z
   .object({
@@ -282,7 +287,7 @@ export const creativeRunItemDetailSchema = z
   .strict();
 
 export const creativeRunDetailSchema = creativeRunBaseSchema
-  .omit({ errorClusters: true, relatedIncidentIds: true })
+  .omit({ errorClusters: true })
   .extend({
     title: z.string().trim().min(1),
     settlementView: creativeSettlementViewSchema,

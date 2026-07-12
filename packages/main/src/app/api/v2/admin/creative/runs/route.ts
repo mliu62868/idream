@@ -17,7 +17,7 @@ export function GET(request: Request) {
 
 export function POST(request: Request) {
   return adminV2Route(async () => {
-    const actor = await actorWithPermission(request, "content.production.write");
+    const actor = await actorWithPermission(request, "creative.run.write");
     if (!request.headers.get("idempotency-key")?.trim()) {
       throw Errors.badRequest("Idempotency-Key is required for Creative Run creation");
     }
