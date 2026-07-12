@@ -105,6 +105,23 @@ describe("permission and work-mode navigation", () => {
     expect(navGroupsForPermissions(permissions, "platform_ops")[1]?.group).toBe("Platform Operations");
   });
 
+  it("maps v2 grant bundles to their canonical workspaces", () => {
+    const creative = navGroupsForPermissions(new Set([
+      "creative.run.read",
+      "creative.run.write",
+      "creative.run.review",
+      "creative.asset.read",
+      "creative.placement.read",
+    ]), "creative_operator").flatMap((group) => group.items.map((item) => item.id));
+    expect(creative).toEqual(expect.arrayContaining(["content/production", "content/assets", "content/placements"]));
+
+    const growth = navGroupsForPermissions(new Set([
+      "analytics.metric.read",
+      "experiment.manage",
+    ]), "growth_analyst").flatMap((group) => group.items.map((item) => item.id));
+    expect(growth).toEqual(expect.arrayContaining(["analytics", "insights", "experiments"]));
+  });
+
   it("derives conservative default modes from existing auth roles", () => {
     expect(defaultWorkModeForRole("moderator")).toBe("moderator");
     expect(defaultWorkModeForRole("support")).toBe("support");

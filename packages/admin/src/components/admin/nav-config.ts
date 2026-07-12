@@ -80,17 +80,17 @@ export const navItems: NavItem[] = [
   item({ id: "content/tags", label: "Taxonomy", href: "/admin/characters/taxonomy", icon: Flag, group: "Character Studio", permissions: ["content.read"] }),
 
   item({ id: "content/production", label: "Creative Runs", href: "/admin/creative/runs", icon: Play, group: "Creative Studio", permissions: ["creative.run.read", "content.production.write"] }),
-  item({ id: "content/assets", label: "Library", href: "/admin/creative/library", icon: ImageIcon, group: "Creative Studio", permissions: ["content.asset.read"] }),
-  item({ id: "content/placements", label: "Placements", href: "/admin/creative/placements", icon: Bookmark, group: "Creative Studio", permissions: ["content.asset.read", "content.placement.write"] }),
+  item({ id: "content/assets", label: "Library", href: "/admin/creative/library", icon: ImageIcon, group: "Creative Studio", permissions: ["creative.asset.read", "content.asset.read"] }),
+  item({ id: "content/placements", label: "Placements", href: "/admin/creative/placements", icon: Bookmark, group: "Creative Studio", permissions: ["creative.placement.read", "creative.placement.publish", "content.asset.read", "content.placement.write"] }),
 
   item({ id: "cases", label: "Cases", href: "/admin/cases?view=mine", icon: Ticket, group: "Customer Operations", permissions: ["case.read"] }),
   item({ id: "users", label: "Customers", href: "/admin/customers", icon: Users, group: "Customer Operations", permissions: ["customer.read"] }),
   item({ id: "billing", label: "Billing Operations", href: "/admin/customer-ops/billing", icon: BadgeDollarSign, group: "Customer Operations", permissions: ["billing.read"] }),
   item({ id: "compliance", label: "Account Requests", href: "/admin/customer-ops/account-requests", icon: ShieldAlert, group: "Customer Operations", permissions: ["compliance.read"] }),
 
-  item({ id: "analytics", label: "Product Health", href: "/admin/growth/health", icon: BarChart3, group: "Growth", permissions: ["analytics.export"] }),
-  item({ id: "insights", label: "Funnels & Retention", href: "/admin/growth/funnels", icon: BarChart3, group: "Growth", permissions: ["analytics.export"] }),
-  item({ id: "experiments", label: "Flag Monitoring", href: "/admin/growth/experiments", icon: Flag, group: "Growth", permissions: ["analytics.export", "config.feature_flag.write"] }),
+  item({ id: "analytics", label: "Product Health", href: "/admin/growth/health", icon: BarChart3, group: "Growth", permissions: ["analytics.metric.read", "analytics.metric.export", "analytics.export"] }),
+  item({ id: "insights", label: "Funnels & Retention", href: "/admin/growth/funnels", icon: BarChart3, group: "Growth", permissions: ["analytics.metric.read", "analytics.metric.export", "analytics.export"] }),
+  item({ id: "experiments", label: "Experiments", href: "/admin/growth/experiments", icon: Flag, group: "Growth", permissions: ["analytics.metric.read", "experiment.manage", "analytics.export", "config.feature_flag.write"] }),
   item({ id: "content", label: "Featured Merchandising", href: "/admin/growth/merchandising?view=featured", icon: Library, group: "Growth", permissions: ["content.read"] }),
   item({ id: "announcements", label: "Announcements", href: "/admin/growth/merchandising?view=announcements", icon: MessageSquare, group: "Growth", permissions: ["content.cms.write"] }),
   item({ id: "cms", label: "CMS & SEO", href: "/admin/growth/content", icon: FileText, group: "Growth", permissions: ["content.cms.write"] }),
