@@ -217,6 +217,12 @@ export const ADMIN_RELEASE_DRI_ROLES = [
 ] as const;
 export type AdminReleaseDriRole = (typeof ADMIN_RELEASE_DRI_ROLES)[number];
 
+export const ADMIN_RELEASE_REQUIRED_SIGNOFF_ROLES = [
+  "product",
+  "engineering",
+  "release",
+] as const satisfies readonly AdminReleaseDriRole[];
+
 const signoffSchema = z.object({
   actor: z.string().min(1),
   decision: z.enum(["go", "no_go"]),
@@ -292,9 +298,9 @@ export const adminUnsignedReleaseGateEvidenceSchema = adminReleaseGateCoreEviden
   signoffs: z.object({
     product: signoffSchema,
     engineering: signoffSchema,
-    data: signoffSchema,
-    design: signoffSchema,
-    operations: signoffSchema,
+    data: signoffSchema.optional(),
+    design: signoffSchema.optional(),
+    operations: signoffSchema.optional(),
     release: signoffSchema,
   }).strict(),
 }).strict().superRefine((evidence, context) => {
@@ -303,6 +309,7 @@ export const adminUnsignedReleaseGateEvidenceSchema = adminReleaseGateCoreEviden
   const keyIds = new Set<string>();
   for (const role of ADMIN_RELEASE_DRI_ROLES) {
     const signoff = evidence.signoffs[role];
+    if (!signoff) continue;
     if (signoff.approvalDigest !== approvalDigest) {
       context.addIssue({ code: "custom", path: ["signoffs", role, "approvalDigest"], message: "DRI approval digest must bind the canonical release core" });
     }
@@ -342,7 +349,9 @@ export const adminReleaseTrustRegistrySchema = z.object({
   driKeys: z.array(trustedPublicKeySchema.extend({
     role: z.enum(ADMIN_RELEASE_DRI_ROLES),
     actor: z.string().min(1),
-  }).strict()).length(ADMIN_RELEASE_DRI_ROLES.length),
+  }).strict())
+    .min(ADMIN_RELEASE_REQUIRED_SIGNOFF_ROLES.length)
+    .max(ADMIN_RELEASE_DRI_ROLES.length),
 }).strict().superRefine((registry, context) => {
   const releaseIds = registry.releaseKeys.map((key) => key.keyId);
   if (new Set(releaseIds).size !== releaseIds.length) {
@@ -353,8 +362,11 @@ export const adminReleaseTrustRegistrySchema = z.object({
     context.addIssue({ code: "custom", path: ["collectorKeys"], message: "collector issuer/key IDs must be unique" });
   }
   const roles = registry.driKeys.map((key) => key.role);
-  if (new Set(roles).size !== ADMIN_RELEASE_DRI_ROLES.length || ADMIN_RELEASE_DRI_ROLES.some((role) => !roles.includes(role))) {
-    context.addIssue({ code: "custom", path: ["driKeys"], message: "trust registry must contain exactly one key for every DRI role" });
+  if (new Set(roles).size !== roles.length) {
+    context.addIssue({ code: "custom", path: ["driKeys"], message: "trust registry must contain at most one key for each DRI role" });
+  }
+  if (ADMIN_RELEASE_REQUIRED_SIGNOFF_ROLES.some((role) => !roles.includes(role))) {
+    context.addIssue({ code: "custom", path: ["driKeys"], message: "trust registry must contain Product, Engineering, and Release DRI keys" });
   }
   const driIds = registry.driKeys.map((key) => key.keyId);
   if (new Set(driIds).size !== driIds.length) {
@@ -763,6 +775,7 @@ function verifyDriApprovals(
   const fingerprints = new Set<string>();
   for (const role of ADMIN_RELEASE_DRI_ROLES) {
     const attestation = signoffs[role];
+    if (!attestation) continue;
     const trusted = registry.driKeys.find((key) =>
       key.role === role && key.actor === attestation.actor && key.keyId === attestation.keyId
     );

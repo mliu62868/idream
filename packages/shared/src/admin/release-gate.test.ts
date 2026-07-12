@@ -2,6 +2,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   ADMIN_RELEASE_DRI_ROLES,
+  ADMIN_RELEASE_REQUIRED_SIGNOFF_ROLES,
   evaluateAdminReleaseGate as evaluateSignedReleaseGate,
   signAdminDriApproval,
   signAdminEvidenceArtifact,
@@ -296,6 +297,34 @@ describe("Admin final release gate", () => {
     });
   });
 
+  it("requires Product, Engineering, and Release sign-off without turning gate contributors into approvers", () => {
+    const core = coreOf(productionEvidence());
+    const allSignoffs = signoffsFor(core);
+    const requiredSignoffs = {
+      product: allSignoffs.product,
+      engineering: allSignoffs.engineering,
+      release: allSignoffs.release,
+    };
+
+    const signed = releaseEnvelope(core, requiredSignoffs);
+    const requiredTrustRegistry = {
+      ...trustRegistry,
+      driKeys: trustRegistry.driKeys.filter((key) =>
+        ADMIN_RELEASE_REQUIRED_SIGNOFF_ROLES.includes(
+          key.role as (typeof ADMIN_RELEASE_REQUIRED_SIGNOFF_ROLES)[number],
+        ),
+      ),
+    };
+
+    expect(evaluateSignedReleaseGate(signed, {
+      trustRegistry: requiredTrustRegistry,
+      now: new Date("2026-07-11T00:00:00.000Z"),
+    })).toMatchObject({
+      status: "pass",
+      blockers: [],
+    });
+  });
+
   it("blocks local evidence even when every local check is green", () => {
     const input = { ...productionEvidence(), environment: "local" as const };
     expect(evaluateAdminReleaseGate(input, new Date("2026-07-11T00:00:00.000Z"))).toMatchObject({
@@ -337,7 +366,7 @@ describe("Admin final release gate", () => {
     input.generatedAt = "2026-07-01T00:00:00.000Z";
     input.workflows.case = evidence("fail");
     input.runtime.errorBudget.failures = 2_000;
-    input.signoffs.operations.decision = "no_go";
+    input.signoffs.operations!.decision = "no_go";
     const report = evaluateAdminReleaseGate(input, new Date("2026-07-11T00:00:00.000Z"));
     expect(report.blockers.map((blocker) => blocker.code)).toEqual(expect.arrayContaining([
       "evidence_manifest_stale",

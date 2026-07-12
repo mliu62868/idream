@@ -6,9 +6,9 @@ The repository-owned implementation and production cutover are intentionally sep
 
 ## Machine-verifiable Go / No-Go
 
-`bun run --cwd packages/main admin:readiness:release-gate -- <production-evidence.json>` evaluates the final §24.5 gate. The typed contract is `packages/shared/src/admin/release-gate.ts`; the authoritative manifest is schema version 5. Versions 2–4 are superseded: v4 fixed canary representativeness, while v5 makes evidence artifacts and six-role approval provenance independently verifiable.
+`bun run --cwd packages/main admin:readiness:release-gate -- <production-evidence.json>` evaluates the final §24.5 gate. The typed contract is `packages/shared/src/admin/release-gate.ts`; the authoritative manifest is schema version 5. Versions 2–4 are superseded: v4 fixed canary representativeness, while v5 makes evidence artifacts and role-bound approval provenance independently verifiable.
 
-Schema v5 uses three domain-separated Ed25519 layers. Every named result references an immutable `artifact://sha256`, `ipfs://`, or digest-pinned `oci://` URI with a SHA-256 content digest and collector issuer/key signature. Product, Engineering, Data, Design, Operations, and Release each sign the same canonical approval digest with a distinct role-bound key. Only after those attestations exist does the release key sign the complete envelope. The manifest never contains trusted public keys.
+Schema v5 uses three domain-separated Ed25519 layers. Every named result references an immutable `artifact://sha256`, `ipfs://`, or digest-pinned `oci://` URI with a SHA-256 content digest and collector issuer/key signature. Product, Engineering, and Release each sign the same canonical approval digest with a distinct role-bound key. Data, Design, and Operations provide their mandatory Gate results inside the signed core evidence and may attach optional role-bound attestations. Only after the required approvals exist does the release key sign the complete envelope. The manifest never contains trusted public keys.
 
 Operator flow:
 
@@ -25,14 +25,14 @@ ADMIN_RELEASE_TRUST_REGISTRY_PATH=/secure/admin-release-trust-registry.json \
 bun run --cwd packages/main admin:readiness:release-gate -- signed-v5-evidence.json
 ```
 
-The trust registry is an independent, access-controlled JSON file with `schemaVersion: 1` and three arrays: `releaseKeys[{keyId,publicKeyPem}]`, `collectorKeys[{issuer,keyId,publicKeyPem}]`, and exactly six `driKeys[{role,actor,keyId,publicKeyPem}]`. Each DRI role must have a distinct key ID and distinct Ed25519 public-key fingerprint. The gate rejects private keys, missing roles, duplicate role keys, an unknown collector issuer, or a release key absent from this registry. Changing the manifest cannot change trust.
+The trust registry is an independent, access-controlled JSON file with `schemaVersion: 1` and three arrays: `releaseKeys[{keyId,publicKeyPem}]`, `collectorKeys[{issuer,keyId,publicKeyPem}]`, and `driKeys[{role,actor,keyId,publicKeyPem}]`. Product, Engineering, and Release keys are required; Data, Design, and Operations keys are optional when those contributors also attest. Every supplied DRI role has at most one key, all key IDs are distinct, and every approval included in a manifest must resolve to a distinct Ed25519 public-key fingerprint. The gate rejects private keys, a missing required role, duplicate role keys, an unknown collector issuer, or a release key absent from this registry. Changing the manifest cannot change trust.
 
 The required assembly order avoids signature cycles:
 
 1. Store each raw report at an immutable URI and create its collector attestation with `signAdminEvidenceArtifact` (domain `idream.admin.evidence-artifact.v1`).
 2. Assemble the schema-v5 core and compute its canonical approval digest with `computeAdminReleaseApprovalDigest` (domain `idream.admin.release-approval.v5`).
-3. Each DRI independently signs that digest and its own role/actor/decision/time/key ID with `signAdminDriApproval` (domain `idream.admin.release-dri.v1`). The release-key holder does not possess these six keys and cannot manufacture approvals.
-4. Assemble the six attestations and run `admin:readiness:sign`; the release envelope uses domain `idream.admin.release-gate.v5`.
+3. Product, Engineering, and Release independently sign that digest and their own role/actor/decision/time/key ID with `signAdminDriApproval` (domain `idream.admin.release-dri.v1`). Optional Data/Design/Operations attestations use the same binding. The release-key holder does not possess these keys and cannot manufacture approvals.
+4. Assemble the three required attestations plus any optional contributor attestations and run `admin:readiness:sign`; the release envelope uses domain `idream.admin.release-gate.v5`.
 
 All private keys remain outside the repository and trust registry. The signer accepts only PKCS8 private PEM; the gate accepts only SPKI public PEM. Artifact replacement invalidates the collector signature and approval digest; role-signature reuse fails because the role is signed; a release-envelope re-sign cannot repair stale DRI approvals.
 
@@ -47,7 +47,7 @@ It fails closed unless all of the following are true:
 - Fresh/repeat/current-snapshot migration, old-app rollback + forward-fix, backfill dry-run, shadow comparison, and module rollback all pass.
 - Permission matrix, atomic Audit/Outbox, high-risk confirmation, responsive flows, URL/server query state, and WCAG gates all pass.
 - Every §22 latency, lag, freshness, invariant and unknown-failure observation is supplied as a number and re-evaluated against the shared SLO registry; a caller-provided `pass` label cannot hide a breach. Production-table load, dependency failure injection, dispatcher restart, projector lag recovery and kill-switch drill pass; direct canary-runner summaries contain real zero-failure samples inside the observation window; the 99% error budget is recomputed from positive request/failure counts; legacy v1 traffic is zero for two distinct, ordered business-cycle intervals inside the window.
-- Product, Engineering, Data, Design, Operations, and Release DRIs sign `go` after the observation window ends.
+- Product, Engineering, and Release DRIs sign `go` after the observation window ends; Data, Design, and Operations Gate evidence is present and passing.
 
 Malformed, local, staging, stale, incomplete, failed, unsigned, wrongly signed, untrusted-key, or sample-free evidence returns `status=blocked` and exits with code 2. This prevents a locally fabricated manifest, the local test suite, or the production-like load harness from being presented as production Go authority.
 
