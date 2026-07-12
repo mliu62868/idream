@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { characterWorkspaceDetailSchema } from "@idream/shared/admin";
+import { characterWorkspaceDetailSchema, collaborationActivityListResponseSchema } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { POST as refreshReleaseMonitor } from "@/app/api/v2/admin/characters/[id]/releases/[releaseId]/monitors/[window]/refresh/route";
+import { GET as listActivityRoute } from "@/app/api/v2/admin/collaboration/[targetType]/[targetId]/activity/route";
 import { PATCH as patchCharacterProjectRoute } from "@/app/api/v2/admin/characters/[id]/project/route";
 import { GET as getCharacterWorkspaceRoute } from "@/app/api/v2/admin/characters/[id]/route";
 import { getCharacterWorkspace, updateCharacterProjectDraft } from "./workspace";
@@ -199,6 +200,19 @@ describe("Character operator workspace", () => {
       name: "Mara",
       age: 28,
     });
+    const activityResponse = await listActivityRoute(
+      new Request(`http://localhost/api/v2/admin/collaboration/character_project/${projectId}/activity`, {
+        headers: {
+          "x-idream-user-id": readOnlyActorId,
+          "x-idream-role": "user",
+        },
+      }),
+      { params: Promise.resolve({ targetType: "character_project", targetId: projectId }) },
+    );
+    expect(activityResponse.status).toBe(200);
+    const activityPayload = await activityResponse.json();
+    const activity = collaborationActivityListResponseSchema.parse(activityPayload.data).items[0];
+    expect(activity).toMatchObject({ targetId: projectId, kind: "draft_saved" });
 
     await prisma.character.update({ where: { id: characterId }, data: { status: "approved", visibility: "public" } });
     await prisma.characterRelease.update({ where: { id: releaseId }, data: { status: "published" } });

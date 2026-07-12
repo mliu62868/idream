@@ -43,6 +43,8 @@ export const collaborationActivityKindSchema = z.enum([
   "assignment",
   "status_change",
   "checklist",
+  "draft_saved",
+  "evidence_attached",
 ]);
 
 export const collaborationAttachmentSchema = z.object({

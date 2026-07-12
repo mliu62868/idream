@@ -39,4 +39,30 @@ describe("admin collaboration and experiment contracts", () => {
     expect(collaborationWatchResponseSchema.parse({ watching: true, duplicate: false }).watching).toBe(true);
     expect(savedViewMutationResponseSchema.parse({ view: { id: "view-1", scope: "incident", label: "Mine", queryState: { search: "", filters: {}, sort: { field: "id", direction: "asc" }, pageSize: 30 }, version: 1, createdAt: now, updatedAt: now }, duplicate: false }).view.version).toBe(1);
   });
+
+  it.each(["draft_saved", "evidence_attached"] as const)(
+    "accepts server-authored %s workspace evidence",
+    (kind) => {
+      const now = new Date().toISOString();
+      const activity = {
+        id: `activity-${kind}`,
+        targetType: "character_project",
+        targetId: "project-1",
+        kind,
+        actorId: "admin-1",
+        body: "Server-authored workspace evidence",
+        mentionedIds: [],
+        metadata: {},
+        parentId: null,
+        createdAt: now,
+      };
+      expect(collaborationActivityListResponseSchema.safeParse({
+        items: [activity],
+        watching: false,
+        watcherIds: [],
+        pageInfo: { hasNextPage: false, endCursor: null },
+        asOf: now,
+      }).success).toBe(true);
+    },
+  );
 });
