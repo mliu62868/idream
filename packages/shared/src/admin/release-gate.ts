@@ -77,8 +77,8 @@ const signoffSchema = z.object({
   signedAt: z.string().datetime({ offset: true }),
 }).strict();
 
-export const adminReleaseGateEvidenceSchema = z.object({
-  schemaVersion: z.literal(2),
+export const adminUnsignedReleaseGateEvidenceSchema = z.object({
+  schemaVersion: z.literal(3),
   environment: z.enum(["local", "staging", "production"]),
   generatedAt: z.string().datetime({ offset: true }),
   observationWindow: z.object({
@@ -146,7 +146,26 @@ export const adminReleaseGateEvidenceSchema = z.object({
   }).strict(),
 }).strict();
 
+export const adminReleaseGateProvenanceSchema = z.object({
+  algorithm: z.literal("Ed25519"),
+  keyId: z.string().trim().min(1).max(120),
+  signedAt: z.string().datetime({ offset: true }),
+  signature: z.string().regex(/^[A-Za-z0-9_-]{86}$/, "signature must be a 64-byte base64url Ed25519 signature"),
+}).strict();
+
+export const adminReleaseGateEvidenceSchema = adminUnsignedReleaseGateEvidenceSchema.extend({
+  provenance: adminReleaseGateProvenanceSchema,
+}).strict();
+
 export type AdminReleaseGateEvidence = z.infer<typeof adminReleaseGateEvidenceSchema>;
+export type AdminUnsignedReleaseGateEvidence = z.infer<typeof adminUnsignedReleaseGateEvidenceSchema>;
+
+export interface AdminReleaseGateSignatureVerification {
+  readonly verified: true;
+  readonly algorithm: "Ed25519";
+  readonly keyId: string;
+  readonly manifestDigest: string;
+}
 
 export interface AdminReleaseGateBlocker {
   readonly code: string;
@@ -158,7 +177,11 @@ const DAY_MS = 24 * 60 * 60 * 1_000;
 const MINIMUM_OBSERVATION_MS = 7 * DAY_MS;
 const MAXIMUM_MANIFEST_AGE_MS = DAY_MS;
 
-export function evaluateAdminReleaseGate(input: unknown, now = new Date()) {
+export function evaluateAdminReleaseGate(
+  input: unknown,
+  now = new Date(),
+  signatureVerification?: AdminReleaseGateSignatureVerification,
+) {
   const parsed = adminReleaseGateEvidenceSchema.safeParse(input);
   if (!parsed.success) {
     return {
@@ -178,6 +201,17 @@ export function evaluateAdminReleaseGate(input: unknown, now = new Date()) {
   const generatedAt = new Date(evidence.generatedAt);
   const startedAt = new Date(evidence.observationWindow.startedAt);
   const endedAt = new Date(evidence.observationWindow.endedAt);
+  if (
+    !signatureVerification
+    || signatureVerification.algorithm !== evidence.provenance.algorithm
+    || signatureVerification.keyId !== evidence.provenance.keyId
+  ) {
+    block("evidence_signature_unverified", "Final release evidence must be verified against an independently trusted Ed25519 public key.", "provenance.signature");
+  }
+  const signedAt = new Date(evidence.provenance.signedAt).getTime();
+  if (signedAt < generatedAt.getTime() || signedAt > now.getTime()) {
+    block("evidence_signature_time_invalid", "Evidence must be signed after manifest generation and no later than evaluation time.", "provenance.signedAt");
+  }
 
   if (evidence.environment !== "production") {
     block("production_evidence_required", "Local or staging evidence cannot authorize production cutover.", "environment");
@@ -299,6 +333,12 @@ export function evaluateAdminReleaseGate(input: unknown, now = new Date()) {
       environment: evidence.environment,
       generatedAt: evidence.generatedAt,
       observationWindow: evidence.observationWindow,
+      provenance: {
+        algorithm: evidence.provenance.algorithm,
+        keyId: evidence.provenance.keyId,
+        signedAt: evidence.provenance.signedAt,
+        manifestDigest: signatureVerification?.manifestDigest ?? null,
+      },
     },
   };
 }

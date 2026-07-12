@@ -6,7 +6,27 @@ The repository-owned implementation and production cutover are intentionally sep
 
 ## Machine-verifiable Go / No-Go
 
-`bun run --cwd packages/main admin:readiness:release-gate -- <production-evidence.json>` evaluates the final §24.5 gate. The typed contract is `packages/shared/src/admin/release-gate.ts`; the authoritative manifest is schema version 2. Version 1 is superseded because it did not bind every evidence timestamp and legacy-traffic cycle to the declared observation window, and its strict canary shape could not accept the canary runner's own output.
+`bun run --cwd packages/main admin:readiness:release-gate -- <production-evidence.json>` evaluates the final §24.5 gate. The typed contract is `packages/shared/src/admin/release-gate.ts`; the authoritative manifest is schema version 3. Version 2 is superseded because a self-authored JSON document could claim `production`, arbitrary actors/evidence refs, and passing results without proving who issued the manifest.
+
+Schema v3 uses a domain-separated Ed25519 signature over the canonical complete evidence document plus `algorithm/keyId/signedAt`. The manifest contains only the key ID, signature and signing timestamp—never a private or public key. The production gate independently loads its trusted public key and expected key ID; unsigned evidence, a wrong key, an untrusted key ID, malformed provenance, or any post-signature change fails closed before semantic Go/No-Go evaluation.
+
+Operator flow:
+
+```bash
+# Generate/store these outside the repository, preferably through the deployment secret manager.
+openssl genpkey -algorithm Ed25519 -out /secure/admin-release-private.pem
+openssl pkey -in /secure/admin-release-private.pem -pubout -out /secure/admin-release-public.pem
+
+ADMIN_RELEASE_EVIDENCE_PRIVATE_KEY_PATH=/secure/admin-release-private.pem \
+ADMIN_RELEASE_EVIDENCE_KEY_ID=release-2026-q3 \
+bun run --cwd packages/main admin:readiness:sign -- unsigned-v3-evidence.json > signed-v3-evidence.json
+
+ADMIN_RELEASE_EVIDENCE_PUBLIC_KEY_PATH=/secure/admin-release-public.pem \
+ADMIN_RELEASE_EVIDENCE_KEY_ID=release-2026-q3 \
+bun run --cwd packages/main admin:readiness:release-gate -- signed-v3-evidence.json
+```
+
+The signer and verifier deliberately use different key files. The private key is only read by the signing command; the gate only receives the independently trusted public key. The signed payload covers all sign-off actors, evidence references, observations, canary samples and truth counts, so editing any of them invalidates the signature.
 
 It fails closed unless all of the following are true:
 
@@ -21,7 +41,7 @@ It fails closed unless all of the following are true:
 - Every §22 latency, lag, freshness, invariant and unknown-failure observation is supplied as a number and re-evaluated against the shared SLO registry; a caller-provided `pass` label cannot hide a breach. Production-table load, dependency failure injection, dispatcher restart, projector lag recovery and kill-switch drill pass; direct canary-runner summaries contain real zero-failure samples inside the observation window; the 99% error budget is recomputed from positive request/failure counts; legacy v1 traffic is zero for two distinct, ordered business-cycle intervals inside the window.
 - Product, Engineering, Data, Design, Operations, and Release DRIs sign `go` after the observation window ends.
 
-Malformed, local, staging, stale, incomplete, failed, unsigned, or sample-free evidence returns `status=blocked` and exits with code 2. This prevents the local 1118-test suite or production-like load harness from being presented as production Go authority.
+Malformed, local, staging, stale, incomplete, failed, unsigned, wrongly signed, untrusted-key, or sample-free evidence returns `status=blocked` and exits with code 2. This prevents a locally fabricated manifest, the local test suite, or the production-like load harness from being presented as production Go authority.
 
 ## Cutover controls
 
@@ -42,7 +62,7 @@ Both increment `admin_proxy_kill_switch_total{scope=read|write}`. A read kill sw
 - Authentication comes only from `ADMIN_CANARY_COOKIE` or `ADMIN_CANARY_AUTHORIZATION`; neither is emitted in the report.
 - Any timeout, transport failure, or unexpected status fails the run. The runner never changes authority endpoints or falls back to v1.
 
-The plan contract is `packages/main/src/server/admin/admin-canary-runner.ts`. The runner output is accepted directly by the schema-v2 release manifest and the gate independently checks mode, production environment, run interval, failures, availability, samples and measured p95. Production operators must choose a reviewed reversible rehearsal target for write canaries; the repository deliberately does not ship a fake production target ID or credentials.
+The plan contract is `packages/main/src/server/admin/admin-canary-runner.ts`. The runner output is accepted directly by the schema-v3 release manifest, covered by the manifest signature, and independently checked for mode, production environment, run interval, failures, availability, samples and measured p95. Production operators must choose a reviewed reversible rehearsal target for write canaries; the repository deliberately does not ship a fake production target ID or credentials.
 
 ## §21 verification matrix audit
 

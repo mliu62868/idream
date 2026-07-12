@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { evaluateAdminReleaseGate, type AdminReleaseGateEvidence } from "./release-gate";
+import {
+  evaluateAdminReleaseGate as evaluateReleaseGateSemantics,
+  type AdminReleaseGateEvidence,
+} from "./release-gate";
+
+function evaluateAdminReleaseGate(input: unknown, now: Date) {
+  return evaluateReleaseGateSemantics(input, now, {
+    verified: true,
+    algorithm: "Ed25519",
+    keyId: "release-2026-q3",
+    manifestDigest: "a".repeat(64),
+  });
+}
 
 const evidence = (status: "pass" | "fail" = "pass") => ({
   status,
@@ -30,7 +42,7 @@ const canaryEvidence = (mode: "read" | "write") => ({
 
 function productionEvidence(): AdminReleaseGateEvidence {
   return {
-    schemaVersion: 2 as const,
+    schemaVersion: 3 as const,
     environment: "production" as const,
     generatedAt: "2026-07-11T00:00:00.000Z",
     observationWindow: {
@@ -108,6 +120,12 @@ function productionEvidence(): AdminReleaseGateEvidence {
       design: { actor: "design-dri", decision: "go" as const, signedAt: "2026-07-10T12:00:00.000Z" },
       operations: { actor: "operations-dri", decision: "go" as const, signedAt: "2026-07-10T12:00:00.000Z" },
       release: { actor: "release-dri", decision: "go" as const, signedAt: "2026-07-10T12:00:00.000Z" },
+    },
+    provenance: {
+      algorithm: "Ed25519" as const,
+      keyId: "release-2026-q3",
+      signedAt: "2026-07-11T00:00:00.000Z",
+      signature: "A".repeat(86),
     },
   };
 }
@@ -205,7 +223,7 @@ describe("Admin final release gate", () => {
   });
 
   it("rejects the superseded release manifest schema", () => {
-    const input = { ...productionEvidence(), schemaVersion: 1 };
+    const input = { ...productionEvidence(), schemaVersion: 2 };
     expect(evaluateAdminReleaseGate(input, new Date("2026-07-11T00:00:00.000Z"))).toMatchObject({
       status: "blocked",
       blockers: [expect.objectContaining({ code: "evidence_schema_invalid" })],
@@ -218,6 +236,13 @@ describe("Admin final release gate", () => {
     expect(evaluateAdminReleaseGate(input, new Date("2026-07-11T00:00:00.000Z"))).toMatchObject({
       status: "blocked",
       blockers: [expect.objectContaining({ code: "evidence_schema_invalid" })],
+    });
+  });
+
+  it("does not let the semantic evaluator authorize an unverified signature", () => {
+    expect(evaluateReleaseGateSemantics(productionEvidence(), new Date("2026-07-11T00:00:00.000Z"))).toMatchObject({
+      status: "blocked",
+      blockers: [expect.objectContaining({ code: "evidence_signature_unverified" })],
     });
   });
 
