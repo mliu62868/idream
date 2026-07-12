@@ -438,7 +438,7 @@ export async function materializeMetricSnapshots(db: PrismaClient, asOf = new Da
 
 export async function getMetricDashboard(request: Request) {
   try {
-    await actorWithPermission(request, "analytics.export");
+    await actorWithPermission(request, "analytics.metric.read");
     const data = await buildMetricDashboardData(prisma, parseAsOf(request));
     return ok(data, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
@@ -449,7 +449,7 @@ export async function getMetricDashboard(request: Request) {
 
 export async function getMetricQualityReport(request: Request) {
   try {
-    await actorWithPermission(request, "analytics.export");
+    await actorWithPermission(request, "analytics.metric.read");
     const data = await qualityReport(prisma, parseAsOf(request));
     return ok(data, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
@@ -460,7 +460,7 @@ export async function getMetricQualityReport(request: Request) {
 
 export async function getMetricReconciliationReport(request: Request) {
   try {
-    await actorWithPermission(request, "analytics.export");
+    await actorWithPermission(request, "analytics.metric.read");
     const asOf = parseAsOf(request);
     const [quality, recentBackfills] = await Promise.all([
       qualityReport(prisma, asOf),
