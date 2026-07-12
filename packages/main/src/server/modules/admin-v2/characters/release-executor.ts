@@ -9,6 +9,10 @@ import {
 
 export const CHARACTER_RELEASE_POLICY_VERSION = "character-release-policy-v2";
 
+// paused is an operator hold: an existing schedule remains durable and becomes
+// eligible after resume. retired is terminal and cannot accept new schedules.
+const SCHEDULABLE_SERVING_STATES = new Set(["inactive", "live"]);
+
 type ReleaseCommandType =
   | "character.release.schedule"
   | "character.release.publish"
@@ -560,6 +564,13 @@ async function executeSchedule(
     throw new ReleaseCommandError(
       "serving_conflict",
       "Release is already current or CharacterServing is missing",
+    );
+  }
+  if (!SCHEDULABLE_SERVING_STATES.has(serving.state)) {
+    throw new ReleaseCommandError(
+      "serving_not_schedulable",
+      "Only inactive or live CharacterServing can accept a Release schedule",
+      { servingState: serving.state },
     );
   }
   const updated = await tx.characterServing.updateMany({

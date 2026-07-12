@@ -4,6 +4,10 @@ import { acceptControlPlaneCommand } from "../shared/control-plane-command";
 export const CHARACTER_RELEASE_SCHEDULER_ACTOR_ID =
   "system:character-release-scheduler";
 
+// inactive supports the first scheduled Release; paused is deliberately held
+// until an operator resumes Serving, and retired is terminal.
+const DISPATCHABLE_SERVING_STATES = ["inactive", "live"] as const;
+
 interface DispatchDueCharacterReleasePublishesInput {
   readonly dispatcherId: string;
   readonly environment?: string;
@@ -44,7 +48,7 @@ export async function dispatchDueCharacterReleasePublishes(
     "development";
   const due = await db.characterServing.findMany({
     where: {
-      state: "live",
+      state: { in: [...DISPATCHABLE_SERVING_STATES] },
       scheduledReleaseId: { not: null },
       scheduledAt: { lte: now },
     },
