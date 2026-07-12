@@ -62,7 +62,10 @@ describe("Generation Request cancellation", () => {
     const manifest = { version: 1 as const, attemptId, attemptNo: 1, transportAttemptNo: 1, providerIdempotencyKey: `generation:${attemptId}:provider`, requestId: `provider-${suffix}`, generationJobId: jobId, mode: "image" as const, provider: "pipeline-image", providerRequestId: null, completedAt: new Date().toISOString(), assets: [{ ordinal: 0, key: `gen/${jobId}/image.webp`, contentType: "image/webp", width: 1024, height: 1024, providerKey: "late-provider-asset" }], usage: { gpuSeconds: 1 } };
     await expect(ingestGenerationManifest({ manifestRef: `gen/completion-manifests/${attemptId}/completion.json`, manifestChecksum: generationManifestChecksum(manifest), manifest })).resolves.toMatchObject({ acknowledged: true, status: "persisted" });
     await expect(prisma.generationArtifact.findFirst({ where: { attemptId } })).resolves.toMatchObject({ archiveState: "archived", validationState: "late_after_cancel", assetId: null });
-    await expect(prisma.generationDelivery.count({ where: { requestId: jobId } })).resolves.toBe(0);
+    await expect(prisma.generationDelivery.findFirst({ where: { requestId: jobId } })).resolves.toMatchObject({
+      status: "suppressed",
+      deliveredAt: null,
+    });
     await expect(prisma.generationJob.findUnique({ where: { id: jobId } })).resolves.toMatchObject({ status: "cancelled", deliveredOutputCount: 0, completedAt: null, finishedAt: expect.any(Date) });
   });
 });

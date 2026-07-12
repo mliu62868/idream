@@ -31,7 +31,11 @@ async function spawnProjectorChild(
     env: {
       ...process.env,
       ...(options.pauseAfterApply
-        ? { ADMIN_CHAOS_PROJECTOR_PAUSE_AFTER_APPLY_EVENT_ID: eventId }
+        ? {
+            APP_ENV: "test",
+            ADMIN_CHAOS_PROJECTOR_MODE: "process_kill_recovery",
+            ADMIN_CHAOS_PROJECTOR_PAUSE_AFTER_APPLY_EVENT_ID: eventId,
+          }
         : {}),
     },
     stdio: ["ignore", "pipe", "pipe"],

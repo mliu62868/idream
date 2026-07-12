@@ -57,5 +57,10 @@ export const isGenerationArtifactArchiveTransitionAllowed = defineAuthority(
 
 export const isGenerationDeliveryTransitionAllowed = defineAuthority(
   GENERATION_DELIVERY_STATES,
-  { pending: ["pending", "delivered"], delivered: ["delivered"] },
+  {
+    pending: ["pending", "delivered", "failed", "suppressed"],
+    delivered: ["delivered"],
+    failed: ["failed"],
+    suppressed: ["suppressed"],
+  },
 );

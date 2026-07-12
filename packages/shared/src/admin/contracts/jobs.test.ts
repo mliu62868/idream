@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  generationDeliveryStatusSchema,
   generationJobListResponseSchema,
   generationJobQuerySchema,
 } from "./jobs";
@@ -26,6 +27,13 @@ describe("Generation Jobs v2 contracts", () => {
     expect(generationJobQuerySchema.safeParse({ status: "failed" }).success).toBe(false);
     expect(generationJobQuerySchema.safeParse({ sort: "random" }).success).toBe(false);
     expect(generationJobQuerySchema.safeParse({ limit: 201 }).success).toBe(false);
+  });
+
+  it("accepts every authoritative Delivery terminal state and rejects unknown values", () => {
+    for (const status of ["pending", "delivered", "failed", "suppressed"]) {
+      expect(generationDeliveryStatusSchema.parse(status)).toBe(status);
+    }
+    expect(generationDeliveryStatusSchema.safeParse("cancelled").success).toBe(false);
   });
 
   it("requires exact totals, facets, freshness, and redacted job rows", () => {

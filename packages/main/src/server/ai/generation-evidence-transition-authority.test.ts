@@ -47,7 +47,12 @@ const matrices = [
   {
     name: "Delivery",
     states: GENERATION_DELIVERY_STATES,
-    allowed: { pending: ["pending", "delivered"], delivered: ["delivered"] },
+    allowed: {
+      pending: ["pending", "delivered", "failed", "suppressed"],
+      delivered: ["delivered"],
+      failed: ["failed"],
+      suppressed: ["suppressed"],
+    },
     permits: isGenerationDeliveryTransitionAllowed,
   },
 ] as const;

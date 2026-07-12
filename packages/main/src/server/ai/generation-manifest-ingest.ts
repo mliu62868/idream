@@ -13,6 +13,7 @@ import { recordGenerationAttemptEvent } from "./generation-attempt-events";
 import {
   isGenerationArtifactArchiveTransitionAllowed,
   isGenerationArtifactValidationTransitionAllowed,
+  isGenerationDeliveryTransitionAllowed,
   isGenerationTransportExecutionTransitionAllowed,
 } from "./generation-evidence-transition-authority";
 import { isGenerationAttemptTransitionAllowed } from "@/server/modules/admin-v2/shared/state-transition-authority";
@@ -64,6 +65,10 @@ export async function ingestGenerationManifest(
       return { acknowledged: false, status: "quarantined" as const, receiptId: quarantined.id };
     }
     if (existingAttempt?.status === "cancelled") {
+      const request = await tx.generationJob.findUniqueOrThrow({
+        where: { id: existingAttempt.requestId },
+        select: { userId: true },
+      });
       const createdReceipt = await tx.inboundEventReceipt.create({ data: {
         sourceService: "gen",
         sourceEventId: input.manifest.attemptId,
@@ -101,7 +106,7 @@ export async function ingestGenerationManifest(
             archiveState: existingArtifact.archiveState,
           });
         }
-        await tx.generationArtifact.upsert({
+        const artifact = await tx.generationArtifact.upsert({
           where: artifactKey,
           create: {
             attemptId: existingAttempt.id,
@@ -112,6 +117,34 @@ export async function ingestGenerationManifest(
             archiveState: "archived",
           },
           update: { validationState: "late_after_cancel", archiveState: "archived" },
+        });
+        const deliveryKey = {
+          artifactId_targetType_targetId: {
+            artifactId: artifact.id,
+            targetType: "user_library",
+            targetId: request.userId,
+          },
+        } as const;
+        const existingDelivery = await tx.generationDelivery.findUnique({
+          where: deliveryKey,
+        });
+        const fromStatus = existingDelivery?.status ?? "pending";
+        if (!isGenerationDeliveryTransitionAllowed(fromStatus, "suppressed")) {
+          throw Errors.conflict("Late completion cannot rewrite terminal Delivery evidence", {
+            status: fromStatus,
+          });
+        }
+        await tx.generationDelivery.upsert({
+          where: deliveryKey,
+          create: {
+            id: `generation_delivery_${existingAttempt.requestId}_${asset.ordinal}`,
+            requestId: existingAttempt.requestId,
+            artifactId: artifact.id,
+            targetType: "user_library",
+            targetId: request.userId,
+            status: "suppressed",
+          },
+          update: { status: "suppressed", deliveredAt: null },
         });
       }
       await tx.generationJobEvent.create({ data: {

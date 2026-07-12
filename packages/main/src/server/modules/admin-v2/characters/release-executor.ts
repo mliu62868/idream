@@ -1041,10 +1041,22 @@ async function executeServingState(
         },
   });
   if (retiring) {
-    await tx.characterProject.update({
-      where: { id: project.id },
+    const projectUpdated = await tx.characterProject.updateMany({
+      where: {
+        id: project.id,
+        version: project.version,
+        phase: project.phase,
+      },
       data: { phase: "retired", activeKey: null, version: { increment: 1 } },
     });
+    if (projectUpdated.count !== 1) {
+      throw new ReleaseCommandError(
+        "project_version_conflict",
+        "Character Project changed during retirement",
+        {},
+        true,
+      );
+    }
   }
   await appendExecutionEvidence(tx, {
     command,

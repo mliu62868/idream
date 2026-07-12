@@ -530,6 +530,96 @@ async function processFinalize(payloadValue: Prisma.JsonValue) {
   if (payload.kind === "generation.blocked") return finalizeGenerationBlocked(payload);
 }
 
+async function recordTerminalArtifactDeliveryEvidence(
+  tx: Prisma.TransactionClient,
+  input: {
+    readonly requestId: string;
+    readonly attemptId: string;
+    readonly targetId: string;
+    readonly validationState: string;
+    readonly deliveryStatus: "failed" | "suppressed";
+  },
+) {
+  const artifacts = await tx.generationArtifact.findMany({
+    where: { attemptId: input.attemptId },
+    orderBy: { ordinal: "asc" },
+  });
+  for (const artifact of artifacts) {
+    if (
+      !isGenerationArtifactValidationTransitionAllowed(
+        artifact.validationState,
+        input.validationState,
+      ) ||
+      !isGenerationArtifactArchiveTransitionAllowed(
+        artifact.archiveState,
+        "archived",
+      )
+    ) {
+      throw Errors.conflict("Terminal Request outcome cannot rewrite Artifact evidence", {
+        artifactId: artifact.id,
+        validationState: artifact.validationState,
+        archiveState: artifact.archiveState,
+      });
+    }
+    const artifactUpdated = await tx.generationArtifact.updateMany({
+      where: {
+        id: artifact.id,
+        validationState: artifact.validationState,
+        archiveState: artifact.archiveState,
+      },
+      data: {
+        validationState: input.validationState,
+        archiveState: "archived",
+      },
+    });
+    if (artifactUpdated.count !== 1) {
+      throw Errors.conflict("Artifact evidence changed during terminal projection", {
+        artifactId: artifact.id,
+      });
+    }
+
+    const deliveryKey = {
+      artifactId_targetType_targetId: {
+        artifactId: artifact.id,
+        targetType: "user_library",
+        targetId: input.targetId,
+      },
+    } as const;
+    const existingDelivery = await tx.generationDelivery.findUnique({
+      where: deliveryKey,
+    });
+    const fromStatus = existingDelivery?.status ?? "pending";
+    if (!isGenerationDeliveryTransitionAllowed(fromStatus, input.deliveryStatus)) {
+      throw Errors.conflict("Generation Delivery is already terminal", {
+        deliveryId: existingDelivery?.id ?? null,
+        status: fromStatus,
+      });
+    }
+    if (existingDelivery) {
+      const deliveryUpdated = await tx.generationDelivery.updateMany({
+        where: { id: existingDelivery.id, status: existingDelivery.status },
+        data: { status: input.deliveryStatus, deliveredAt: null },
+      });
+      if (deliveryUpdated.count !== 1) {
+        throw Errors.conflict("Generation Delivery changed during terminal projection", {
+          deliveryId: existingDelivery.id,
+        });
+      }
+    } else {
+      await tx.generationDelivery.create({
+        data: {
+          id: `generation_delivery_${input.requestId}_${artifact.ordinal}`,
+          requestId: input.requestId,
+          artifactId: artifact.id,
+          targetType: "user_library",
+          targetId: input.targetId,
+          status: input.deliveryStatus,
+        },
+      });
+    }
+  }
+}
+
 async function finalizeGenerationCompleted(
   payload: Extract<AiFinalizePayload, { kind: "generation.completed" }>,
 ) {
@@ -547,23 +637,13 @@ async function finalizeGenerationCompleted(
   if (["failed", "blocked", "cancelled", "refunded"].includes(job.status)) {
     await prisma.$transaction(async (tx) => {
       if (attemptId) {
-        const artifacts = await tx.generationArtifact.findMany({ where: { attemptId } });
         const validationState = `late_after_${job.status}`;
-        for (const artifact of artifacts) {
-          if (
-            !isGenerationArtifactValidationTransitionAllowed(artifact.validationState, validationState) ||
-            !isGenerationArtifactArchiveTransitionAllowed(artifact.archiveState, "archived")
-          ) {
-            throw Errors.conflict("Late completion cannot rewrite terminal Artifact evidence", {
-              artifactId: artifact.id,
-              validationState: artifact.validationState,
-              archiveState: artifact.archiveState,
-            });
-          }
-        }
-        await tx.generationArtifact.updateMany({
-          where: { attemptId },
-          data: { validationState, archiveState: "archived" },
+        await recordTerminalArtifactDeliveryEvidence(tx, {
+          requestId: job.id,
+          attemptId,
+          targetId: job.userId,
+          validationState,
+          deliveryStatus: "suppressed",
         });
         await tx.mainOutboxEvent.updateMany({
           where: { id: `generation_manifest_${attemptId}` },
@@ -1169,6 +1249,13 @@ async function refundGeneration(
       data: { status, errorCode, completedAt: null, finishedAt: new Date(), deliveredOutputCount: 0, version: { increment: 1 } },
     });
     if (attemptId) {
+      await recordTerminalArtifactDeliveryEvidence(tx, {
+        requestId: jobId,
+        attemptId,
+        targetId: userId,
+        validationState: status === "blocked" ? "rejected" : "invalid",
+        deliveryStatus: "failed",
+      });
       const attempt = await tx.generationAttempt.findFirstOrThrow({
         where: { id: attemptId, requestId: jobId },
       });

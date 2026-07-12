@@ -60,7 +60,12 @@ export const generationArtifactValidationStateSchema = z.enum([
   "late_after_refunded",
 ]);
 export const generationArtifactArchiveStateSchema = z.enum(["active", "archived"]);
-export const generationDeliveryStatusSchema = z.enum(["pending", "delivered"]);
+export const generationDeliveryStatusSchema = z.enum([
+  "pending",
+  "delivered",
+  "failed",
+  "suppressed",
+]);
 export const generationSettlementViewSchema = z.enum([
   "not_required",
   "captured",
