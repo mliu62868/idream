@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { createWriteStream, existsSync } from "node:fs";
+import { createWriteStream } from "node:fs";
 import { mkdir, open, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -12,14 +12,11 @@ import {
   recordGenerationAttemptEvent,
   recordGenerationAttemptQueuedEvent,
 } from "@/server/ai/generation-attempt-events";
-import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
 import {
-  applyOverrides,
   isPermissionKey,
-  resolvePermissions,
 } from "@/server/admin/permissions";
 import { effectivePermissions } from "@/server/admin/effective-permissions";
-import { getAuthCtx, requireUser, type ActorRole } from "@/server/lib/auth";
+import { getAuthCtx, requireUser } from "@/server/lib/auth";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { AppError, Errors } from "@/server/lib/errors";
@@ -119,7 +116,7 @@ import {
 import { listExperiments } from "./experiments";
 import { auditLog } from "./audit/query";
 import { billingAdjustment } from "./billing/command";
-import { appendLedger, dreamcoinBalance } from "./billing/ledger";
+import { appendLedger } from "./billing/ledger";
 import { billingLedger, billingReconciliation, listSubscriptions } from "./billing/query";
 import { listFeatureFlags, patchFeatureFlag } from "./config/feature-flags";
 import {
@@ -141,6 +138,18 @@ import {
   type ExistingGenerationJob,
 } from "@/server/modules/generation/attempt-dispatch";
 export { enqueueGenerationAttempt } from "@/server/modules/generation/attempt-dispatch";
+import {
+  getUserDetail,
+  listUserPermissions,
+  listUsers,
+  setUserPermission,
+  updateUserRole,
+  updateUserStatus,
+} from "./users/service";
+import {
+  publicUser,
+  redactGenerationJob as redactJob,
+} from "./shared/presenters";
 
 const FEATURED_SETTING_KEY = "feed.featured";
 
@@ -158,25 +167,6 @@ const adminDecisionSchema = z.object({
 const appealDecisionSchema = z.object({
   outcome: z.enum(["upheld", "overturned", "modified", "open"]),
   notes: z.string().trim().max(2_000).optional(),
-  reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.string().trim().min(1).max(160),
-});
-
-const statusChangeSchema = z.object({
-  status: z.enum(["active", "suspended"]),
-  reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.string().trim().min(1).max(160),
-});
-
-const roleChangeSchema = z.object({
-  role: z.enum(["user", "moderator", "support", "ops", "analyst", "admin"]),
-  reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.string().trim().min(1).max(160),
-});
-
-const permissionOverrideSchema = z.object({
-  permissionKey: z.string().trim().min(1).max(80),
-  effect: z.enum(["grant", "revoke", "clear"]),
   reason: z.string().trim().min(3).max(2_000),
   confirmation: z.string().trim().min(1).max(160),
 });
@@ -823,235 +813,6 @@ async function adminDashboard(request: Request) {
     },
     featureFlags: flags,
   });
-}
-
-async function listUsers(request: Request) {
-  await actorWithPermission(request, "user.read");
-  const url = new URL(request.url);
-  const q = url.searchParams.get("q")?.trim();
-  const users = await prisma.user.findMany({
-    where: q
-      ? {
-          OR: [
-            { id: { contains: q } },
-            { email: { contains: q } },
-            { displayName: { contains: q } },
-          ],
-        }
-      : undefined,
-    include: {
-      subscriptions: {
-        include: { plan: true },
-        orderBy: { createdAt: "desc" },
-        take: 1,
-      },
-    },
-    orderBy: { createdAt: "desc" },
-    take: clampInt(url.searchParams.get("limit"), 1, 100, 40),
-  });
-  const items = await Promise.all(
-    users.map(async (user) => ({
-      id: user.id,
-      email: user.email,
-      displayName: user.displayName ?? user.name,
-      role: user.role,
-      status: user.status,
-      createdAt: user.createdAt,
-      plan: user.subscriptions[0]?.plan
-        ? {
-            slug: user.subscriptions[0].plan.slug,
-            billingPeriod: user.subscriptions[0].plan.billingPeriod,
-            status: user.subscriptions[0].status,
-          }
-        : null,
-      dreamcoins: await dreamcoinBalance(user.id),
-    })),
-  );
-
-  return ok({ items });
-}
-
-async function getUserDetail(request: Request, userId: string) {
-  await actorWithPermission(request, "user.read");
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    include: {
-      preferences: true,
-      subscriptions: {
-        include: { plan: true },
-        orderBy: { createdAt: "desc" },
-        take: 5,
-      },
-      entitlements: { orderBy: { createdAt: "desc" } },
-      ledgerEntries: { orderBy: { createdAt: "desc" }, take: 25 },
-      ageVerifications: { orderBy: { createdAt: "desc" }, take: 3 },
-      generationJobs: { orderBy: { createdAt: "desc" }, take: 8 },
-    },
-  });
-  if (!user) throw Errors.notFound("User not found");
-
-  return ok({
-    user: {
-      id: user.id,
-      email: user.email,
-      displayName: user.displayName ?? user.name,
-      role: user.role,
-      status: user.status,
-      createdAt: user.createdAt,
-      ageVerification: user.ageVerifications[0] ?? null,
-      preferences: user.preferences,
-    },
-    subscriptions: user.subscriptions,
-    entitlements: user.entitlements,
-    ledger: user.ledgerEntries,
-    dreamcoins: { balance: await dreamcoinBalance(user.id) },
-    generationJobs: user.generationJobs.map(redactJob),
-  });
-}
-
-async function updateUserStatus(request: Request, userId: string) {
-  const actor = await actorWithPermission(request, "user.status.write");
-  const body = statusChangeSchema.parse(await jsonBody(request));
-  if (body.confirmation !== userStatusConfirmation(userId, body.status)) {
-    throw Errors.badRequest("Confirmation did not match user status target");
-  }
-  const after = await prisma.$transaction(async (tx) => {
-    const before = await tx.user.findUnique({ where: { id: userId } });
-    if (!before) throw Errors.notFound("User not found");
-    const updated = await tx.user.update({
-      where: { id: userId },
-      data: { status: body.status, deletedAt: body.status === "active" ? null : undefined },
-    });
-    await tx.adminAuditLog.create({ data: {
-      actorId: actor.id,
-      actorRole: actor.role,
-      action: "user.status.write",
-      targetType: "user",
-      targetId: userId,
-      reason: body.reason,
-      before: { status: before.status },
-      after: { status: updated.status },
-      requestId: request.headers.get("x-request-id"),
-    } });
-    await tx.mainOutboxEvent.create({ data: {
-      eventType: "admin.user.status_changed.v2",
-      aggregateType: "user",
-      aggregateId: userId,
-      payload: { userId, from: before.status, to: updated.status, actorId: actor.id },
-    } });
-    return updated;
-  });
-  return ok({ user: publicUser(after) });
-}
-
-function userStatusConfirmation(userId: string, status: string) {
-  return `${userId}:${status}`;
-}
-
-async function updateUserRole(request: Request, userId: string) {
-  const actor = await actorWithPermission(request, "user.role.write");
-  const body = roleChangeSchema.parse(await jsonBody(request));
-  if (body.confirmation !== userRoleConfirmation(userId, body.role)) {
-    throw Errors.badRequest("Confirmation did not match role-change target");
-  }
-  const after = await prisma.$transaction(async (tx) => {
-    const before = await tx.user.findUnique({ where: { id: userId } });
-    if (!before) throw Errors.notFound("User not found");
-    const updated = await tx.user.update({ where: { id: userId }, data: { role: body.role } });
-    await tx.adminAuditLog.create({ data: {
-      actorId: actor.id,
-      actorRole: actor.role,
-      action: "user.role.write",
-      targetType: "user",
-      targetId: userId,
-      reason: body.reason,
-      before: { role: before.role },
-      after: { role: updated.role },
-      requestId: request.headers.get("x-request-id"),
-    } });
-    await tx.mainOutboxEvent.create({ data: {
-      eventType: "admin.user.role_changed.v2",
-      aggregateType: "user",
-      aggregateId: userId,
-      payload: { userId, from: before.role, to: updated.role, actorId: actor.id },
-    } });
-    return updated;
-  });
-  return ok({ user: publicUser(after) });
-}
-
-function userRoleConfirmation(userId: string, role: string) {
-  return `${userId}:${role}`;
-}
-
-// SPEC: 用户级权限覆盖管理 —— 给单个用户 grant/revoke/clear 某 permission key，admin only，全部审计。
-// INTENT: 不动 role 就能精确授予/收回能力（如给某 support 临时 billing.ledger.adjust）；解析见 effective-permissions。
-// INVARIANTS: 一个 key 至多一条 override（写前清同 key 旧 override）；grant 的 key 必须是合法 PermissionKey；硬政策无 key 可授。
-async function listUserPermissions(request: Request, userId: string) {
-  await actorWithPermission(request, "user.role.write");
-  const user = await prisma.user.findUnique({ where: { id: userId } });
-  if (!user) throw Errors.notFound("User not found");
-  const overrides = await prisma.adminUserPermission.findMany({
-    where: { userId },
-    orderBy: { createdAt: "desc" },
-  });
-  const effective = [...applyOverrides(resolvePermissions(user.role as ActorRole), overrides)].sort();
-  return ok({ role: user.role, overrides, effective });
-}
-
-async function setUserPermission(request: Request, userId: string) {
-  const actor = await actorWithPermission(request, "user.role.write");
-  const body = permissionOverrideSchema.parse(await jsonBody(request));
-  if (body.confirmation !== permissionOverrideConfirmation(userId, body.permissionKey, body.effect)) {
-    throw Errors.badRequest("Confirmation did not match permission-override target");
-  }
-  if (body.effect !== "clear" && !isPermissionKey(body.permissionKey)) {
-    throw Errors.badRequest("Unknown permission key");
-  }
-  const override = await prisma.$transaction(async (tx) => {
-    const user = await tx.user.findUnique({ where: { id: userId } });
-    if (!user) throw Errors.notFound("User not found");
-    const before = await tx.adminUserPermission.findFirst({ where: { userId, permissionKey: body.permissionKey } });
-    // 一个 key 至多一条 override：先清同 key 旧记录，再按 effect 写。
-    await tx.adminUserPermission.deleteMany({ where: { userId, permissionKey: body.permissionKey } });
-    const updated = body.effect === "clear"
-      ? null
-      : await tx.adminUserPermission.create({ data: {
-          userId,
-          permissionKey: body.permissionKey,
-          effect: body.effect,
-          reason: body.reason,
-          createdById: actor.id,
-        } });
-    const action = body.effect === "grant"
-      ? "admin.permission.grant"
-      : body.effect === "revoke"
-        ? "admin.permission.revoke"
-        : "admin.permission.clear";
-    await tx.adminAuditLog.create({ data: {
-      actorId: actor.id,
-      actorRole: actor.role,
-      action,
-      targetType: "user",
-      targetId: userId,
-      reason: body.reason,
-      before: before ? { permissionKey: before.permissionKey, effect: before.effect } : undefined,
-      after: { permissionKey: body.permissionKey, effect: body.effect },
-      requestId: request.headers.get("x-request-id"),
-    } });
-    await tx.mainOutboxEvent.create({ data: {
-      eventType: "admin.user.permission_changed.v2",
-      aggregateType: "user",
-      aggregateId: userId,
-      payload: { userId, permissionKey: body.permissionKey, effect: body.effect, actorId: actor.id },
-    } });
-    return updated;
-  });
-  return ok({ override, cleared: body.effect === "clear" });
-}
-
-function permissionOverrideConfirmation(userId: string, permissionKey: string, effect: string) {
-  return `${userId}:${permissionKey}:${effect}`;
 }
 
 async function listGenerationJobs(request: Request) {
@@ -4601,108 +4362,6 @@ async function appendAdminGenerationEvent(
       metadata: toInputJson(metadata),
     },
   });
-}
-
-function redactJob(job: {
-  id: string;
-  userId: string;
-  derivedFromJobId?: string | null;
-  mode: string;
-  prompt: string | null;
-  negativePrompt: string | null;
-  presetIds: Prisma.JsonValue;
-  model: string | null;
-  profileId: string | null;
-  profileVersion: number | null;
-  recipeId: string | null;
-  recipeVersion: number | null;
-  orientation: string | null;
-  outputCount: number;
-  status: string;
-  costDreamcoins: number;
-  provider: string | null;
-  errorCode: string | null;
-  createdAt: Date;
-  updatedAt?: Date;
-  completedAt: Date | null;
-  assets?: Array<{
-    id: string;
-    type: string;
-    url: string;
-    thumbnailUrl: string | null;
-    storageKey?: string | null;
-    safetyStatus: string;
-    createdAt: Date;
-  }>;
-}) {
-  return {
-    id: job.id,
-    userId: job.userId,
-    derivedFromJobId: job.derivedFromJobId ?? null,
-    mode: job.mode,
-    model: job.model,
-    profileId: job.profileId,
-    profileVersion: job.profileVersion,
-    recipeId: job.recipeId,
-    recipeVersion: job.recipeVersion,
-    presetIds: job.presetIds,
-    orientation: job.orientation,
-    outputCount: job.outputCount,
-    status: job.status,
-    costDreamcoins: job.costDreamcoins,
-    provider: job.provider,
-    errorCode: job.errorCode,
-    promptHidden: Boolean(job.prompt),
-    negativePromptHidden: Boolean(job.negativePrompt),
-    createdAt: job.createdAt,
-    updatedAt: job.updatedAt,
-    completedAt: job.completedAt,
-    assets: job.assets?.filter(isReadableMediaAsset).map(redactMediaAsset) ?? [],
-  };
-}
-
-function redactMediaAsset(asset: {
-  id: string;
-  type: string;
-  url: string;
-  thumbnailUrl: string | null;
-  storageKey?: string | null;
-  safetyStatus: string;
-  createdAt: Date;
-}) {
-  return {
-    id: asset.id,
-    type: asset.type,
-    url: asset.url,
-    thumbnailUrl: asset.thumbnailUrl ?? asset.url,
-    safetyStatus: asset.safetyStatus,
-    createdAt: asset.createdAt,
-  };
-}
-
-function isReadableMediaAsset(asset: { storageKey?: string | null }) {
-  if ((process.env.BLOB_PROVIDER ?? "mock") !== "mock") return true;
-  if (!asset.storageKey) return true;
-  return existsSync(resolveLocalBlobPath(asset.storageKey));
-}
-
-function publicUser(user: {
-  id: string;
-  email: string;
-  displayName: string | null;
-  name: string | null;
-  role: string;
-  status: string;
-  createdAt: Date;
-}) {
-  return {
-    id: user.id,
-    email: user.email,
-    displayName: user.displayName ?? user.name,
-    role: user.role,
-    status: user.status,
-    createdAt: user.createdAt,
-  };
 }
 
 function profileAuditSnapshot(profile: {

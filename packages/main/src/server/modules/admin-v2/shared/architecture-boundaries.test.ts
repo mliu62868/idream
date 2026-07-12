@@ -43,4 +43,21 @@ describe("Admin v2 architecture boundaries", () => {
     }
     expect(offenders).toEqual([]);
   });
+
+  it("keeps the legacy user domain implementation out of the dispatcher monolith", async () => {
+    const dispatcher = await readFile(
+      path.join(process.cwd(), "src/server/modules/admin/service.ts"),
+      "utf8",
+    );
+    const userDomain = await readFile(
+      path.join(process.cwd(), "src/server/modules/admin/users/service.ts"),
+      "utf8",
+    ).catch(() => "");
+
+    expect(dispatcher).not.toContain("const statusChangeSchema");
+    expect(dispatcher).not.toContain("async function listUsers");
+    expect(dispatcher).not.toContain("async function setUserPermission");
+    expect(userDomain).toContain("export async function listUsers");
+    expect(userDomain).toContain("export async function setUserPermission");
+  });
 });

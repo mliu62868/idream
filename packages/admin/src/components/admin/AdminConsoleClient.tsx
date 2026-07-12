@@ -7,7 +7,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
-  BadgeDollarSign,
   Ban,
   Bookmark,
   Check,
@@ -93,6 +92,7 @@ import { CreativeRunWorkspace } from "@/features/creative/CreativeRunWorkspace";
 import { JobsView as GenerationJobsWorkspace } from "@/features/jobs/JobsView";
 import { AuditWorkspace } from "@/features/audit/AuditWorkspace";
 import { PricingWorkspace } from "@/features/pricing/PricingWorkspace";
+import { BillingWorkspace } from "@/features/billing/BillingWorkspace";
 import {
   buildCompatibilityListUrl,
   readCompatibilityListQuery,
@@ -183,13 +183,6 @@ type ConfigData = {
 
 type ConfigTab = "profiles" | "settings";
 
-type ReconciliationData = {
-  window: { from: string; to: string };
-  activeSubscriptions: number;
-  byReason: Row[];
-  totals: { net: number; entries: number };
-};
-
 type AnalyticsData = {
   window: { from: string; to: string };
   funnel: {
@@ -244,7 +237,6 @@ type SectionData =
   | { kind: "moderation"; reports: Row[]; blockedMedia: Row[]; appeals: Row[]; pageInfo: { reports: PageInfo; blockedMedia: PageInfo; appeals: PageInfo }; query: ListQuery }
   | { kind: "users"; rows: Row[] }
   | { kind: "access"; rows: Row[] }
-  | { kind: "billing"; rows: Row[]; subscriptions: Row[]; reconciliation: ReconciliationData; pageInfo: { ledger: PageInfo; subscriptions: PageInfo }; query: ListQuery }
   | { kind: "deadletter"; rows: Row[]; pageInfo: PageInfo; query: ListQuery }
   | { kind: "analytics"; data: AnalyticsWorkspaceData }
   | { kind: "risk"; data: AbuseData }
@@ -279,7 +271,8 @@ type SectionData =
         | "cases"
         | "audit"
         | "character-performance"
-        | "pricing";
+        | "pricing"
+        | "billing";
     }
   | {
       kind: "chatops";
@@ -626,7 +619,6 @@ export function AdminConsoleClient({
     notes: "",
   });
   const [actionBusy, setActionBusy] = useState(false);
-  const [adjustment, setAdjustment] = useState({ userId: "", delta: "" });
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
   const [permissionForm, setPermissionForm] = useState<PermissionForm>(defaultPermissionForm);
   const [chatOpsFilters, setChatOpsFilters] = useState<ChatOpsFilters>(() => chatOpsFiltersFromParams(initialRouteParams));
@@ -787,9 +779,6 @@ export function AdminConsoleClient({
       const completedTitle = pendingAction.title;
       setPendingAction(null);
       setActionStatus(`${completedTitle} completed.`);
-      if (completedEndpoint === "/api/v1/admin/billing/adjustments") {
-        setAdjustment({ userId: "", delta: "" });
-      }
       await load();
       if (completedEndpoint.startsWith("/api/v1/admin/generation/jobs/")) {
         window.dispatchEvent(new Event(GENERATION_JOBS_REFRESH_EVENT));
@@ -1077,8 +1066,6 @@ export function AdminConsoleClient({
             ) : (
               renderSection(data, subview, {
                 openAction,
-                adjustment,
-                setAdjustment,
                 selectedProfileId,
                 setSelectedProfileId,
                 permissionForm,
@@ -1414,20 +1401,7 @@ async function fetchSection(
     return { kind: "access", rows: payload.items };
   }
   if (sectionId === "billing") {
-    const query = listQuery(params, ["billingSearch", "ledgerReason", "subscriptionStatus", "ledgerCursor", "subscriptionCursor"]);
-    const [ledger, subscriptions, reconciliation] = await Promise.all([
-      apiGet<{ items: Row[]; pageInfo: PageInfo }>(`/api/v1/admin/billing/ledger${queryString({ search: query.billingSearch, reason: query.ledgerReason, cursor: query.ledgerCursor, limit: "25" })}`),
-      apiGet<{ items: Row[]; pageInfo: PageInfo }>(`/api/v1/admin/billing/subscriptions${queryString({ search: query.billingSearch, status: query.subscriptionStatus, cursor: query.subscriptionCursor, limit: "25" })}`),
-      apiGet<ReconciliationData>("/api/v1/admin/billing/reconciliation"),
-    ]);
-    return {
-      kind: "billing",
-      rows: ledger.items,
-      subscriptions: subscriptions.items,
-      reconciliation,
-      pageInfo: { ledger: ledger.pageInfo ?? emptyPageInfo, subscriptions: subscriptions.pageInfo ?? emptyPageInfo },
-      query,
-    };
+    return { kind: "selfFetch", view: "billing" };
   }
   if (sectionId === "pricing") return { kind: "selfFetch", view: "pricing" };
   if (sectionId === "analytics") {
@@ -2327,8 +2301,6 @@ function renderSection(
   subview: AdminSubview,
   ctx: {
     openAction: (action: PendingAction) => void;
-    adjustment: { userId: string; delta: string };
-    setAdjustment: (value: { userId: string; delta: string }) => void;
     selectedProfileId: string | null;
     setSelectedProfileId: (value: string | null) => void;
     permissionForm: PermissionForm;
@@ -2382,21 +2354,6 @@ function renderSection(
         permissionForm={ctx.permissionForm}
         rows={section.rows}
         setPermissionForm={ctx.setPermissionForm}
-      />
-    );
-  }
-  if (section.kind === "billing") {
-    return (
-      <BillingView
-        adjustment={ctx.adjustment}
-        openAction={ctx.openAction}
-        reconciliation={section.reconciliation}
-        rows={section.rows}
-        setAdjustment={ctx.setAdjustment}
-        subscriptions={section.subscriptions}
-        pageInfo={section.pageInfo}
-        query={section.query}
-        updateQuery={ctx.updateQuery}
       />
     );
   }
@@ -2504,6 +2461,7 @@ function renderSection(
       />;
     }
     if (section.view === "pricing") return <PricingWorkspace canWrite={ctx.permissions.has("config.pricing.write")} />;
+    if (section.view === "billing") return <BillingWorkspace canAdjust={ctx.permissions.has("billing.ledger.adjust")} />;
     return <ReviewQueueView />;
   }
   if (section.kind === "chatops") {
@@ -4892,132 +4850,6 @@ export function UsersView({
         rows={rows}
         title="Users"
       />
-    </div>
-  );
-}
-
-function BillingView({
-  rows,
-  subscriptions,
-  reconciliation,
-  adjustment,
-  setAdjustment,
-  openAction,
-  pageInfo,
-  query,
-  updateQuery,
-}: {
-  rows: Row[];
-  subscriptions: Row[];
-  reconciliation: ReconciliationData;
-  adjustment: { userId: string; delta: string };
-  setAdjustment: (value: { userId: string; delta: string }) => void;
-  openAction: (action: PendingAction) => void;
-  pageInfo: { ledger: PageInfo; subscriptions: PageInfo };
-  query: ListQuery;
-  updateQuery: (updates: Record<string, string | null>, clearCursors?: readonly string[]) => void;
-}) {
-  const { locale, t } = useAdminI18n();
-
-  return (
-    <div className="space-y-5">
-      <ServerListToolbar cursorKeys={["ledgerCursor", "subscriptionCursor"]} fields={[
-        { key: "billingSearch", label: "Search user, email, subscription, or source" },
-        { key: "ledgerReason", label: "Ledger reason", options: ["signup_bonus", "subscription_grant", "generation_spend", "refund", "redeem", "referral", "admin_adjust"] },
-        { key: "subscriptionStatus", label: "Subscription status", options: ["checkout_created", "checkout_completed", "active", "past_due", "canceled", "expired"] },
-      ]} query={query} updateQuery={updateQuery} />
-      <div className="rounded-lg grid gap-px overflow-hidden border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-3">
-        <Metric
-          label="Net coins (window)"
-          value={reconciliation.totals.net}
-          meta={t("{count} ledger entries", { count: reconciliation.totals.entries })}
-        />
-        <Metric
-          label="Active subscriptions"
-          value={reconciliation.activeSubscriptions}
-          meta="status = active"
-        />
-        <Metric
-          label="Window"
-          value={`${compactDate(reconciliation.window.from, locale)} →`}
-          meta={compactDate(reconciliation.window.to, locale)}
-        />
-      </div>
-      <DataTable
-        columns={["reason", "totalDelta", "count"]}
-        rows={reconciliation.byReason}
-        title="Reconciliation by reason"
-      />
-      <DataTable
-        columns={[
-          "id",
-          "userId",
-          "userEmail",
-          "plan",
-          "billingPeriod",
-          "provider",
-          "status",
-          "currentPeriodEnd",
-          "cancelAtPeriodEnd",
-        ]}
-        rows={subscriptions}
-        title="Subscriptions"
-        empty={queryIsFiltered(query, ["billingSearch", "subscriptionStatus"]) ? "No subscriptions match these filters" : "No subscriptions exist yet"}
-      />
-      <CanonicalPager cursorKey="subscriptionCursor" pageInfo={pageInfo.subscriptions} updateQuery={updateQuery} />
-      <div className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-        <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_140px_auto]">
-          <input
-            aria-label={t("Adjustment user ID")}
-            className="rounded-md h-10 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
-            onChange={(event) => setAdjustment({ ...adjustment, userId: event.target.value })}
-            placeholder={t("User ID")}
-            value={adjustment.userId}
-          />
-          <input
-            aria-label={t("Adjustment delta")}
-            className="rounded-md h-10 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
-            inputMode="numeric"
-            onChange={(event) => setAdjustment({ ...adjustment, delta: event.target.value })}
-            placeholder={t("Delta")}
-            value={adjustment.delta}
-          />
-          <button
-            className="inline-flex h-10 items-center justify-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
-            disabled={!adjustment.userId || !Number.isFinite(Number(adjustment.delta))}
-            onClick={() => {
-              const userId = adjustment.userId.trim();
-              const delta = Number(adjustment.delta);
-              const confirmationTarget = `${userId}:${delta}`;
-              openAction({
-                title: `Adjust ledger ${userId}`,
-                endpoint: "/api/v1/admin/billing/adjustments",
-                method: "POST",
-                idempotencyKey: crypto.randomUUID(),
-                confirmText: confirmationTarget,
-                reasonRequired: true,
-                body: (actionReason, actionConfirmation) => ({
-                  userId,
-                  delta,
-                  reason: actionReason,
-                  confirmation: actionConfirmation,
-                }),
-              });
-            }}
-            type="button"
-          >
-            <BadgeDollarSign className="h-4 w-4" />
-            {t("Adjust")}
-          </button>
-        </div>
-      </div>
-      <DataTable
-        columns={["id", "userId", "userEmail", "delta", "balanceAfter", "reason", "sourceId", "createdAt"]}
-        rows={rows}
-        title="Ledger"
-        empty={queryIsFiltered(query, ["billingSearch", "ledgerReason"]) ? "No ledger entries match these filters" : "No ledger entries exist yet"}
-      />
-      <CanonicalPager cursorKey="ledgerCursor" pageInfo={pageInfo.ledger} updateQuery={updateQuery} />
     </div>
   );
 }

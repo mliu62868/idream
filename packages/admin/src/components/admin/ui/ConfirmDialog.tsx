@@ -10,10 +10,11 @@ export type ConfirmSpec = {
   title: string;
   summary?: ReactNode;
   /** 破坏性操作：要求输入实体名称（不再敲内部 ID —— spec §7）。 */
-  destructive?: { expectedName: string };
+  destructive?: { expectedName: string; inputLabel?: string };
   /** 后端写操作是否收 reason（默认 true）。false 时不显示 reason 输入、不拿它门槛提交，
    * onSubmit 收到 ""——后端契约无 reason 字段的操作不该让运营填一个会被丢弃的原因（T14 评审规则）。 */
   requireReason?: boolean;
+  reasonLabel?: string;
   submitLabel: string;
   onSubmit: (reason: string) => Promise<void>;
 };
@@ -31,6 +32,8 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
   const dialogRef = useRef<HTMLDivElement | null>(null);
 
   const requireReason = spec.requireReason ?? true;
+  const reasonLabel = spec.reasonLabel ?? t("Reason (≥3)");
+  const destructiveInputLabel = spec.destructive?.inputLabel ?? t("Type the name to confirm");
   const nameOk = !spec.destructive || nameInput.trim() === spec.destructive.expectedName;
   const reasonOk = !requireReason || reason.trim().length >= 3;
   const canSubmit = !busy && reasonOk && nameOk;
@@ -114,19 +117,19 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
         <div className="mt-4 space-y-3">
           {requireReason ? (
             <input
-              aria-label={t("Reason (≥3)")}
+              aria-label={reasonLabel}
               className={INPUT_CLASS}
               onChange={(event) => setReason(event.target.value)}
-              placeholder={t("Reason (≥3)")}
+              placeholder={reasonLabel}
               value={reason}
             />
           ) : null}
           {spec.destructive ? (
             <input
-              aria-label={t("Type the name to confirm")}
+              aria-label={destructiveInputLabel}
               className={INPUT_CLASS}
               onChange={(event) => setNameInput(event.target.value)}
-              placeholder={`${t("Type the name to confirm")}: ${spec.destructive.expectedName}`}
+              placeholder={`${destructiveInputLabel}: ${spec.destructive.expectedName}`}
               value={nameInput}
             />
           ) : null}
