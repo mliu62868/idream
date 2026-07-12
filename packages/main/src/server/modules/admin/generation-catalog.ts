@@ -66,6 +66,13 @@ export async function workflowKeyExists(workflowKey: string): Promise<boolean> {
   return items.some((item) => item.workflowKey === workflowKey);
 }
 
+export async function generationWorkflowDescriptor(
+  workflowKey: string,
+): Promise<WorkflowDescriptor | null> {
+  const items = await cachedDescriptors();
+  return items.find((item) => item.workflowKey === workflowKey) ?? null;
+}
+
 // ---------------------------------------------------------------------------
 // GET generation/backends
 // ---------------------------------------------------------------------------
