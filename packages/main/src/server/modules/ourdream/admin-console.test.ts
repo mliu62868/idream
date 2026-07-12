@@ -2835,6 +2835,9 @@ describe("dead-letter operations console", () => {
     expect(
       await prisma.adminAuditLog.count({ where: { actorId: admin, action: "ops.deadletter.discard" } }),
     ).toBe(1);
+    const afterDiscard = await api("GET", "admin/generation/dead-letter", { userId: admin, role: "admin" });
+    expectOk(afterDiscard);
+    expect((afterDiscard.data.items as Array<{ id: string }>).map((item) => item.id)).not.toContain(`${P}dl-dc-failed`);
   });
 });
 

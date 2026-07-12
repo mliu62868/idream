@@ -10,6 +10,10 @@ const source = [
   readFileSync(new URL("../../features/pricing/query.ts", import.meta.url), "utf8"),
   readFileSync(new URL("../../features/billing/BillingWorkspace.tsx", import.meta.url), "utf8"),
   readFileSync(new URL("../../features/billing/query.ts", import.meta.url), "utf8"),
+  readFileSync(new URL("../../features/config/GenerationConfigWorkspace.tsx", import.meta.url), "utf8"),
+  readFileSync(new URL("../../features/config/query.ts", import.meta.url), "utf8"),
+  readFileSync(new URL("../../features/dead-letter/DeadLetterWorkspace.tsx", import.meta.url), "utf8"),
+  readFileSync(new URL("../../features/dead-letter/query.ts", import.meta.url), "utf8"),
 ].join("\n");
 
 describe("remaining canonical admin list surfaces", () => {

@@ -71,4 +71,27 @@ describe("admin source boundary", () => {
     expect(catchAll).toContain("window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT))");
     expect(billingFeature).toContain("window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh)");
   });
+
+  it("keeps migrated generation config and dead-letter domains out of the catch-all client", async () => {
+    const catchAll = await readFile(
+      path.join(packageRoot, "src/components/admin/AdminConsoleClient.tsx"),
+      "utf8",
+    );
+    const configFeature = await readFile(
+      path.join(packageRoot, "src/features/config/GenerationConfigWorkspace.tsx"),
+      "utf8",
+    ).catch(() => "");
+    const deadLetterFeature = await readFile(
+      path.join(packageRoot, "src/features/dead-letter/DeadLetterWorkspace.tsx"),
+      "utf8",
+    ).catch(() => "");
+
+    expect(catchAll).not.toContain("/api/v1/admin/generation/model-profiles");
+    expect(catchAll).not.toContain("/api/v1/admin/feature-flags");
+    expect(catchAll).not.toContain("/api/v1/admin/generation/dead-letter");
+    expect(catchAll).not.toContain("function ConfigView");
+    expect(catchAll).not.toContain("function DeadLetterView");
+    expect(configFeature).toContain("export function GenerationConfigWorkspace");
+    expect(deadLetterFeature).toContain("export function DeadLetterWorkspace");
+  });
 });

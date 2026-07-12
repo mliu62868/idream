@@ -62,4 +62,28 @@ describe("Admin v2 architecture boundaries", () => {
     expect(userDomain).toContain("export async function setUserPermission");
     expect(userDomain).not.toContain(["@/server/modules/admin", "service"].join("/"));
   });
+
+  it("keeps generation config and dead-letter authorities out of the dispatcher monolith", async () => {
+    const dispatcher = await readFile(
+      path.join(process.cwd(), "src/server/modules/admin/service.ts"),
+      "utf8",
+    );
+    const configDomain = await readFile(
+      path.join(process.cwd(), "src/server/modules/admin/generation/config/service.ts"),
+      "utf8",
+    ).catch(() => "");
+    const deadLetterDomain = await readFile(
+      path.join(process.cwd(), "src/server/modules/admin/generation/dead-letter/service.ts"),
+      "utf8",
+    ).catch(() => "");
+
+    expect(dispatcher).not.toContain("const modelProfileSchema");
+    expect(dispatcher).not.toContain("async function listModelProfiles");
+    expect(dispatcher).not.toContain("async function deadLetterQueue");
+    expect(dispatcher).not.toContain("async function requeueDeadLetterBatch");
+    expect(configDomain).toContain("export async function listModelProfiles");
+    expect(deadLetterDomain).toContain("export async function deadLetterQueue");
+    expect(configDomain).not.toContain(["@/server/modules/admin", "service"].join("/"));
+    expect(deadLetterDomain).not.toContain(["@/server/modules/admin", "service"].join("/"));
+  });
 });
