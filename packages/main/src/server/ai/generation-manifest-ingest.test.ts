@@ -90,6 +90,34 @@ describe("generation completion manifest durable ingest", () => {
     expect(await prisma.generationAttempt.findUnique({ where: { id: attemptId } })).toBeNull();
   });
 
+  it("does not rewrite a terminal TransportExecution when a conflicting completion manifest arrives", async () => {
+    await prisma.generationAttempt.create({
+      data: { id: attemptId, requestId: manifest.generationJobId, attemptNo: 1, status: "running" },
+    });
+    await prisma.generationTransportExecution.create({
+      data: {
+        attemptId,
+        transportAttemptNo: manifest.transportAttemptNo,
+        idempotencyKey: manifest.providerIdempotencyKey,
+        status: "failed",
+        finishedAt: new Date("2026-07-11T11:59:00.000Z"),
+      },
+    });
+    const input = {
+      manifestRef: `gen/completion-manifests/${attemptId}/conflict.json`,
+      manifestChecksum: generationManifestChecksum(manifest),
+      manifest,
+    };
+
+    await expect(ingestGenerationManifest(input)).rejects.toThrow("cannot rewrite a terminal TransportExecution");
+    await expect(prisma.generationTransportExecution.findUniqueOrThrow({
+      where: { attemptId_transportAttemptNo: { attemptId, transportAttemptNo: manifest.transportAttemptNo } },
+    })).resolves.toMatchObject({ status: "failed", manifestRef: null });
+    await expect(prisma.inboundEventReceipt.count({ where: { sourceService: "gen", sourceEventId: attemptId } })).resolves.toBe(0);
+    await expect(prisma.generationArtifact.count({ where: { attemptId } })).resolves.toBe(0);
+    await expect(prisma.mainOutboxEvent.count({ where: { id: outboxId } })).resolves.toBe(0);
+  });
+
   it("archives late artifacts without delivery when the business Attempt is cancelled", async () => {
     const suffix = crypto.randomUUID();
     const userId = `late-user-${suffix}`;

@@ -42,6 +42,25 @@ export const generationAttemptStatusSchema = z.enum([
   "cancelled",
   "unknown",
 ]);
+export const generationTransportExecutionStatusSchema = z.enum([
+  "running",
+  "succeeded",
+  "failed",
+  "unknown",
+]);
+export const generationArtifactValidationStateSchema = z.enum([
+  "produced",
+  "valid",
+  "invalid",
+  "rejected",
+  "late_after_failed",
+  "late_after_blocked",
+  "late_after_cancel",
+  "late_after_cancelled",
+  "late_after_refunded",
+]);
+export const generationArtifactArchiveStateSchema = z.enum(["active", "archived"]);
+export const generationDeliveryStatusSchema = z.enum(["pending", "delivered"]);
 export const generationSettlementViewSchema = z.enum([
   "not_required",
   "captured",
@@ -188,7 +207,7 @@ export const generationJobDetailResponseSchema = z.object({
     provider: z.string().trim().min(1).nullable(),
     providerRequestId: z.string().trim().min(1).nullable(),
     idempotencyKey: z.string().trim().min(1).nullable(),
-    status: z.enum(["running", "succeeded", "failed", "unknown"]),
+    status: generationTransportExecutionStatusSchema,
     costMicros: z.number().int().nonnegative().safe().nullable(),
     manifestRef: z.string().trim().min(1).nullable(),
     startedAt: adminIsoDateTimeSchema,
@@ -206,8 +225,8 @@ export const generationJobDetailResponseSchema = z.object({
     id: adminIdSchema,
     attemptId: adminIdSchema,
     ordinal: z.number().int().nonnegative(),
-    validationState: z.string().min(1),
-    archiveState: z.string().min(1),
+    validationState: generationArtifactValidationStateSchema,
+    archiveState: generationArtifactArchiveStateSchema,
     assetId: adminIdSchema.nullable(),
     createdAt: adminIsoDateTimeSchema,
   }).strict()).readonly(),
@@ -216,7 +235,7 @@ export const generationJobDetailResponseSchema = z.object({
     artifactId: adminIdSchema,
     targetType: z.string().min(1),
     targetId: z.string().min(1),
-    status: z.string().min(1),
+    status: generationDeliveryStatusSchema,
     deliveredAt: adminIsoDateTimeSchema.nullable(),
     createdAt: adminIsoDateTimeSchema,
   }).strict()).readonly(),

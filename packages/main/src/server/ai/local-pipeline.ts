@@ -9,6 +9,7 @@ import {
 import { jobQueue } from "@/server/jobs/queue";
 import type { QueueJob } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
+import { Errors } from "@/server/lib/errors";
 import { appendCanonicalMetricEvent } from "@/server/modules/admin-v2/metrics/event-writer";
 import { providers } from "@/server/providers";
 import {
@@ -26,6 +27,11 @@ import {
 import { hydratedImageReferenceInputs } from "./reference-images";
 import { recordGenerationAttemptEvent } from "./generation-attempt-events";
 import { ensureGenerationSettlementLinks, linkGenerationLedgerEntry } from "./generation-settlement";
+import {
+  isGenerationArtifactArchiveTransitionAllowed,
+  isGenerationArtifactValidationTransitionAllowed,
+  isGenerationDeliveryTransitionAllowed,
+} from "./generation-evidence-transition-authority";
 
 export const localAiQueueNames = [
   "ai.image.generate",
@@ -541,9 +547,23 @@ async function finalizeGenerationCompleted(
   if (["failed", "blocked", "cancelled", "refunded"].includes(job.status)) {
     await prisma.$transaction(async (tx) => {
       if (attemptId) {
+        const artifacts = await tx.generationArtifact.findMany({ where: { attemptId } });
+        const validationState = `late_after_${job.status}`;
+        for (const artifact of artifacts) {
+          if (
+            !isGenerationArtifactValidationTransitionAllowed(artifact.validationState, validationState) ||
+            !isGenerationArtifactArchiveTransitionAllowed(artifact.archiveState, "archived")
+          ) {
+            throw Errors.conflict("Late completion cannot rewrite terminal Artifact evidence", {
+              artifactId: artifact.id,
+              validationState: artifact.validationState,
+              archiveState: artifact.archiveState,
+            });
+          }
+        }
         await tx.generationArtifact.updateMany({
           where: { attemptId },
-          data: { validationState: `late_after_${job.status}`, archiveState: "archived" },
+          data: { validationState, archiveState: "archived" },
         });
         await tx.mainOutboxEvent.updateMany({
           where: { id: `generation_manifest_${attemptId}` },
@@ -720,19 +740,33 @@ async function finalizeGenerationCompleted(
     for (const [index, asset] of deliveredAssets.entries()) {
       const artifact = attemptArtifacts[index];
       if (artifact) {
+        if (!isGenerationArtifactValidationTransitionAllowed(artifact.validationState, "valid")) {
+          throw Errors.conflict("Artifact validation is already terminal", {
+            artifactId: artifact.id,
+            validationState: artifact.validationState,
+          });
+        }
         await tx.generationArtifact.update({
           where: { id: artifact.id },
           data: { assetId: asset.id, validationState: "valid" },
         });
       }
-      await tx.generationDelivery.upsert({
-        where: {
-          artifactId_targetType_targetId: {
-            artifactId: artifact?.id ?? `legacy:${asset.id}`,
-            targetType: "user_library",
-            targetId: job.userId,
-          },
+      const deliveryKey = {
+        artifactId_targetType_targetId: {
+          artifactId: artifact?.id ?? `legacy:${asset.id}`,
+          targetType: "user_library",
+          targetId: job.userId,
         },
+      };
+      const existingDelivery = await tx.generationDelivery.findUnique({ where: deliveryKey });
+      if (existingDelivery && !isGenerationDeliveryTransitionAllowed(existingDelivery.status, "delivered")) {
+        throw Errors.conflict("Generation Delivery is already terminal", {
+          deliveryId: existingDelivery.id,
+          status: existingDelivery.status,
+        });
+      }
+      await tx.generationDelivery.upsert({
+        where: deliveryKey,
         create: {
           id: `generation_delivery_${job.id}_${index}`,
           requestId: job.id,

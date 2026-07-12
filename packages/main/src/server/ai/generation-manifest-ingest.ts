@@ -7,8 +7,14 @@ import {
 import { incrementCounter, setGauge } from "@idream/shared";
 import { prisma } from "@/server/lib/db";
 import { jobQueue } from "@/server/jobs/queue";
+import { Errors } from "@/server/lib/errors";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { recordGenerationAttemptEvent } from "./generation-attempt-events";
+import {
+  isGenerationArtifactArchiveTransitionAllowed,
+  isGenerationArtifactValidationTransitionAllowed,
+  isGenerationTransportExecutionTransitionAllowed,
+} from "./generation-evidence-transition-authority";
 
 export async function ingestGenerationManifest(
   rawInput: unknown,
@@ -64,8 +70,13 @@ export async function ingestGenerationManifest(
         processingState: "processed",
         processedAt: new Date(),
       } });
+      const transportKey = { attemptId_transportAttemptNo: { attemptId: existingAttempt.id, transportAttemptNo: input.manifest.transportAttemptNo } };
+      const existingTransport = await tx.generationTransportExecution.findUnique({ where: transportKey });
+      if (existingTransport && !isGenerationTransportExecutionTransitionAllowed(existingTransport.status, "succeeded")) {
+        throw Errors.conflict("Completion manifest cannot rewrite a terminal TransportExecution", { status: existingTransport.status });
+      }
       await tx.generationTransportExecution.upsert({
-        where: { attemptId_transportAttemptNo: { attemptId: existingAttempt.id, transportAttemptNo: input.manifest.transportAttemptNo } },
+        where: transportKey,
         create: {
           attemptId: existingAttempt.id,
           transportAttemptNo: input.manifest.transportAttemptNo,
@@ -78,8 +89,19 @@ export async function ingestGenerationManifest(
         update: { status: "succeeded", manifestRef: input.manifestRef, finishedAt: new Date(input.manifest.completedAt) },
       });
       for (const asset of input.manifest.assets) {
+        const artifactKey = { attemptId_ordinal: { attemptId: existingAttempt.id, ordinal: asset.ordinal } };
+        const existingArtifact = await tx.generationArtifact.findUnique({ where: artifactKey });
+        if (existingArtifact && (
+          !isGenerationArtifactValidationTransitionAllowed(existingArtifact.validationState, "late_after_cancel") ||
+          !isGenerationArtifactArchiveTransitionAllowed(existingArtifact.archiveState, "archived")
+        )) {
+          throw Errors.conflict("Late completion cannot rewrite terminal Artifact evidence", {
+            validationState: existingArtifact.validationState,
+            archiveState: existingArtifact.archiveState,
+          });
+        }
         await tx.generationArtifact.upsert({
-          where: { attemptId_ordinal: { attemptId: existingAttempt.id, ordinal: asset.ordinal } },
+          where: artifactKey,
           create: {
             attemptId: existingAttempt.id,
             ordinal: asset.ordinal,
@@ -142,8 +164,13 @@ export async function ingestGenerationManifest(
         processedAt: new Date(),
       },
     });
+    const transportKey = { attemptId_transportAttemptNo: { attemptId: attempt.id, transportAttemptNo: input.manifest.transportAttemptNo } };
+    const existingTransport = await tx.generationTransportExecution.findUnique({ where: transportKey });
+    if (existingTransport && !isGenerationTransportExecutionTransitionAllowed(existingTransport.status, "succeeded")) {
+      throw Errors.conflict("Completion manifest cannot rewrite a terminal TransportExecution", { status: existingTransport.status });
+    }
     await tx.generationTransportExecution.upsert({
-      where: { attemptId_transportAttemptNo: { attemptId: attempt.id, transportAttemptNo: input.manifest.transportAttemptNo } },
+      where: transportKey,
       create: {
         attemptId: attempt.id,
         transportAttemptNo: input.manifest.transportAttemptNo,

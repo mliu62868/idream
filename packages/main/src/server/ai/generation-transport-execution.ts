@@ -2,6 +2,7 @@ import { generationTransportExecutionEventSchema, type GenerationTransportExecut
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { recordGenerationAttemptEvent } from "./generation-attempt-events";
+import { isGenerationTransportExecutionTransitionAllowed } from "./generation-evidence-transition-authority";
 
 export async function recordGenerationTransportExecution(rawInput: unknown) {
   const input = generationTransportExecutionEventSchema.parse(rawInput);
@@ -25,7 +26,7 @@ export async function recordGenerationTransportExecution(rawInput: unknown) {
       } });
     } else if (existing.status === input.status) {
       disposition = "duplicate";
-    } else if (existing.status === "running" && input.status !== "running") {
+    } else if (isGenerationTransportExecutionTransitionAllowed(existing.status, input.status)) {
       await tx.generationTransportExecution.update({
         where: key,
         data: { status: input.status, providerRequestId: input.providerRequestId, finishedAt: new Date(input.occurredAt) },
