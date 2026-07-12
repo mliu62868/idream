@@ -1,4 +1,7 @@
-import { characterReleaseMonitorRefreshRequestSchema } from "@idream/shared/admin";
+import {
+  characterReleaseMonitorRefreshRequestSchema,
+  characterReleaseMonitorRefreshResultSchema,
+} from "@idream/shared/admin";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
@@ -30,7 +33,9 @@ export async function POST(
       target: { type: "character_release", id: releaseId },
       expectedVersion: body.entityVersion,
       payload: { ...body, window },
-      mutate: (tx) => refreshCharacterReleaseMonitor({ characterId: id, releaseId, expectedVersion: body.entityVersion, window, actor, requestId }, tx),
+      mutate: async (tx) => characterReleaseMonitorRefreshResultSchema.parse(
+        await refreshCharacterReleaseMonitor({ characterId: id, releaseId, expectedVersion: body.entityVersion, window, actor, requestId }, tx),
+      ),
     });
   });
 }

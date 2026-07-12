@@ -1,4 +1,7 @@
-import { characterReleaseValidationRequestSchema } from "@idream/shared/admin";
+import {
+  characterReleaseValidationRequestSchema,
+  characterReleaseValidationResultSchema,
+} from "@idream/shared/admin";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { validateCharacterRelease } from "@/server/modules/admin-v2/characters/release-lifecycle";
@@ -29,14 +32,16 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       target: { type: "character_release", id: releaseId },
       expectedVersion: body.entityVersion,
       payload: body,
-      mutate: (tx) => validateCharacterRelease({
-        request,
-        actor,
-        requestId,
-        characterId: id,
-        releaseId,
-        expectedVersion: body.entityVersion,
-      }, tx),
+      mutate: async (tx) => characterReleaseValidationResultSchema.parse(
+        await validateCharacterRelease({
+          request,
+          actor,
+          requestId,
+          characterId: id,
+          releaseId,
+          expectedVersion: body.entityVersion,
+        }, tx),
+      ),
     });
   });
 }

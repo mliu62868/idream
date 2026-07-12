@@ -635,6 +635,19 @@ export const characterReleaseValidationRequestSchema = z.object({
   confirmation: z.string().trim().min(1),
 }).strict();
 
+export const characterReleaseValidationResultSchema = z.object({
+  validationRunId: adminIdSchema,
+  result: z.enum(["passed", "failed"]),
+  readiness: z.enum(["ready", "blocked"]),
+  snapshotHash: z.string().trim().min(1),
+  policyVersion: z.string().trim().min(1),
+  checks: z.array(z.object({
+    key: z.string().trim().min(1),
+    passed: z.boolean(),
+    evidence: z.record(z.string(), z.unknown()),
+  }).strict()).readonly(),
+}).strict();
+
 export const characterReleaseMonitorSchema = z
   .object({
     id: adminIdSchema,
@@ -733,6 +746,15 @@ export const characterReleaseMonitorRefreshRequestSchema = z
     entityVersion: z.number().int().nonnegative(),
   })
   .strict();
+
+export const characterReleaseMonitorRefreshResultSchema = z.object({
+  releaseId: adminIdSchema,
+  window: z.enum(["24h", "72h"]),
+  status: z.string().trim().min(1),
+  mature: z.boolean(),
+  recommendation: z.string().trim().min(1),
+  observed: z.record(z.string(), z.unknown()),
+}).strict();
 
 export type CharacterProject = z.infer<typeof characterProjectSchema>;
 export type CharacterDraftPersona = z.infer<typeof characterDraftPersonaSchema>;

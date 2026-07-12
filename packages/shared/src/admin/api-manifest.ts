@@ -130,9 +130,9 @@ export const ADMIN_V2_API_OPERATIONS = [
   operation("POST", "/api/v2/admin/characters/:id/releases/:releaseId/commands/publish", allOf("character.release.publish"), "characterReleasePublishCommandRequestSchema+idempotency-key", "adminCommandAcceptedSchema"),
   operation("POST", "/api/v2/admin/characters/:id/releases/:releaseId/commands/rollback", allOf("character.release.publish"), "characterReleaseRollbackCommandRequestSchema+idempotency-key", "adminCommandAcceptedSchema"),
   operation("POST", "/api/v2/admin/characters/:id/releases/:releaseId/commands/schedule", allOf("character.release.publish"), "characterReleaseScheduleCommandRequestSchema+idempotency-key", "adminCommandAcceptedSchema"),
-  operation("POST", "/api/v2/admin/characters/:id/releases/:releaseId/monitors/:window/refresh", allOf("character.release.review"), "characterReleaseMonitorRefreshRequestSchema+idempotency-key", "characterReleaseMonitorSchema"),
+  operation("POST", "/api/v2/admin/characters/:id/releases/:releaseId/monitors/:window/refresh", allOf("character.release.review"), "characterReleaseMonitorRefreshRequestSchema+idempotency-key", "characterReleaseMonitorRefreshResultSchema"),
   operation("POST", "/api/v2/admin/characters/:id/releases/:releaseId/review", allOf("character.release.review"), "characterReleaseReviewRequestSchema+if-match", "characterReleaseSchema"),
-  operation("POST", "/api/v2/admin/characters/:id/releases/:releaseId/validation", allOf("character.release.publish"), "characterReleaseValidationRequestSchema+idempotency-key", "characterReleaseSchema"),
+  operation("POST", "/api/v2/admin/characters/:id/releases/:releaseId/validation", allOf("character.release.publish"), "characterReleaseValidationRequestSchema+idempotency-key", "characterReleaseValidationResultSchema"),
 
   operation("POST", "/api/v2/admin/chat/sessions/:sessionId/commands/migrate-release", allOf("character.release.publish"), "characterSessionReleaseMigrationCommandRequestSchema+idempotency-key", "adminCommandAcceptedSchema"),
 
