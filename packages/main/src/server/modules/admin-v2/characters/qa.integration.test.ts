@@ -102,7 +102,7 @@ describe("Character QA evidence authority", () => {
       characterContentVersionId: contentId,
       ownerId: actorId,
       status: "passed",
-      checks: expect.arrayContaining([expect.objectContaining({ key: "five_turn_conversation" })]),
+      checks: expect.arrayContaining([expect.objectContaining({ key: "five_turn_conversation", ownerId: actorId })]),
     });
     await expect(prisma.characterQaRun.findUnique({ where: { id: data.id } })).resolves.toMatchObject({
       status: "passed",

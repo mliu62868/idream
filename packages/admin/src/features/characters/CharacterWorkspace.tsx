@@ -5,7 +5,7 @@ import {
   characterPortfolioResponseSchema,
   characterWorkspaceDetailSchema,
   type CharacterPortfolioItem,
-  type CharacterQaCheck,
+  type CharacterQaCheckInput,
   type CharacterWorkspaceDetail,
 } from "@idream/shared/admin";
 import { ArrowLeft, Clock3, RefreshCcw, Rocket, RotateCcw, Save, ShieldAlert } from "lucide-react";
@@ -210,7 +210,7 @@ function ProjectEditor({ data, permissions, onReload }: { data: CharacterWorkspa
   );
 }
 
-const qaCheckKeys: readonly CharacterQaCheck["key"][] = [
+const qaCheckKeys: readonly CharacterQaCheckInput["key"][] = [
   "explore_feed_card_desktop",
   "explore_feed_card_mobile",
   "character_detail_desktop",
@@ -222,7 +222,7 @@ const qaCheckKeys: readonly CharacterQaCheck["key"][] = [
 
 function PreviewDiff({ data, permissions, reload }: { data: CharacterWorkspaceDetail; permissions: Permissions; reload: () => Promise<void> }) {
   const snapshots = [data.preview.live, data.preview.draft].filter((item): item is NonNullable<typeof item> => Boolean(item));
-  const [checks, setChecks] = useState<CharacterQaCheck[]>(() => qaCheckKeys.map((key) => ({
+  const [checks, setChecks] = useState<CharacterQaCheckInput[]>(() => qaCheckKeys.map((key) => ({
     key,
     result: "failed",
     evidenceRef: "",
@@ -232,7 +232,7 @@ function PreviewDiff({ data, permissions, reload }: { data: CharacterWorkspaceDe
   const [reason, setReason] = useState("Record renderer and conversation QA evidence");
   const [busy, setBusy] = useState(false);
   const [qaError, setQaError] = useState<string | null>(null);
-  const updateCheck = (key: CharacterQaCheck["key"], patch: Partial<CharacterQaCheck>) => {
+  const updateCheck = (key: CharacterQaCheckInput["key"], patch: Partial<CharacterQaCheckInput>) => {
     setChecks((current) => current.map((check) => check.key === key ? { ...check, ...patch } : check));
   };
   const recordQa = async () => {
@@ -287,7 +287,7 @@ function PreviewDiff({ data, permissions, reload }: { data: CharacterWorkspaceDe
           {checks.map((check) => <fieldset className="grid gap-2 rounded-lg border border-[var(--ad-border)] p-3 sm:grid-cols-[190px_120px_1fr]" disabled={!permissions.reviewRelease || busy} key={check.key}>
             <legend className="sr-only">{check.key}</legend>
             <div className="text-xs font-semibold">{check.key.replaceAll("_", " ")}</div>
-            <select aria-label={`${check.key} result`} className={fieldClass} onChange={(event) => updateCheck(check.key, { result: event.target.value as CharacterQaCheck["result"] })} value={check.result}><option value="failed">Failed</option><option value="passed">Passed</option></select>
+            <select aria-label={`${check.key} result`} className={fieldClass} onChange={(event) => updateCheck(check.key, { result: event.target.value as CharacterQaCheckInput["result"] })} value={check.result}><option value="failed">Failed</option><option value="passed">Passed</option></select>
             <input aria-label={`${check.key} evidence reference`} className={fieldClass} onChange={(event) => updateCheck(check.key, { evidenceRef: event.target.value })} placeholder="Evidence URL or durable reference" value={check.evidenceRef} />
             <textarea aria-label={`${check.key} comment`} className={`${textAreaClass} sm:col-span-3`} onChange={(event) => updateCheck(check.key, { comment: event.target.value })} value={check.comment} />
           </fieldset>)}

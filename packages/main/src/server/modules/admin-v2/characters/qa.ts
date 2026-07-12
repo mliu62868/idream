@@ -33,6 +33,7 @@ export async function createCharacterQaRun(
     if (!revision) throw Errors.conflict("Character QA requires an immutable Character Revision");
     const id = `character-qa:${randomUUID()}`;
     const status = input.checks.every((check) => check.result === "passed") ? "passed" : "failed";
+    const checks = input.checks.map((check) => ({ ...check, ownerId: actor.id }));
     const evidenceHash = canonicalSha256({
       id,
       characterId,
@@ -41,7 +42,7 @@ export async function createCharacterQaRun(
       projectVersion: project.version,
       ownerId: actor.id,
       status,
-      checks: input.checks,
+      checks,
     });
     const qaRun = await tx.characterQaRun.create({
       data: {
@@ -52,7 +53,7 @@ export async function createCharacterQaRun(
         projectVersion: project.version,
         ownerId: actor.id,
         status,
-        checks: toInputJson(input.checks),
+        checks: toInputJson(checks),
         evidenceHash,
       },
     });
@@ -102,7 +103,7 @@ export async function createCharacterQaRun(
     });
     return characterQaRunSchema.parse({
       ...qaRun,
-      checks: input.checks,
+      checks,
       createdAt: qaRun.createdAt.toISOString(),
     });
   });

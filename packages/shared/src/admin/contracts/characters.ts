@@ -579,7 +579,7 @@ export const characterQaCheckKeySchema = z.enum([
   "chat_image",
 ]);
 
-export const characterQaCheckSchema = z.object({
+export const characterQaCheckInputSchema = z.object({
   key: characterQaCheckKeySchema,
   result: z.enum(["passed", "failed"]),
   evidenceRef: z.string().trim().min(1).max(1_000),
@@ -587,9 +587,13 @@ export const characterQaCheckSchema = z.object({
   fixDeepLink: z.string().trim().startsWith("/admin/characters/").max(1_000),
 }).strict();
 
+export const characterQaCheckSchema = characterQaCheckInputSchema.extend({
+  ownerId: adminIdSchema,
+}).strict();
+
 export const characterQaRunCreateRequestSchema = z.object({
   entityVersion: z.number().int().positive(),
-  checks: z.array(characterQaCheckSchema).length(7),
+  checks: z.array(characterQaCheckInputSchema).length(7),
   reason: z.string().trim().min(3).max(2_000),
 }).strict().superRefine((value, ctx) => {
   const keys = new Set(value.checks.map((check) => check.key));
@@ -741,6 +745,7 @@ export type CharacterPerformanceReconciliation = z.infer<typeof characterPerform
 export type CharacterProjectDraftPatchRequest = z.infer<typeof characterProjectDraftPatchRequestSchema>;
 export type CharacterWorkspaceDetail = z.infer<typeof characterWorkspaceDetailSchema>;
 export type CharacterQaCheck = z.infer<typeof characterQaCheckSchema>;
+export type CharacterQaCheckInput = z.infer<typeof characterQaCheckInputSchema>;
 export type CharacterQaRun = z.infer<typeof characterQaRunSchema>;
 export type CharacterReleasePublishCommandRequest = z.infer<
   typeof characterReleasePublishCommandRequestSchema
