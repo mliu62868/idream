@@ -64,10 +64,6 @@ async function main() {
         now() - (i % 2592000) * interval '1 second'
       FROM generate_series(1, $1) i`, [EVENTS]);
     await client.query(`
-      CREATE INDEX readiness_cases_queue_idx ON admin_cases(status, priority, "updatedAt" DESC, id DESC);
-      CREATE INDEX readiness_cases_today_idx ON admin_cases("ownerId", "slaDueAt") WHERE status NOT IN ('resolved','closed');
-      CREATE INDEX readiness_jobs_incident_idx ON generation_jobs(provider, "errorCode", "createdAt" DESC) WHERE status IN ('failed','blocked');
-      CREATE INDEX readiness_events_projection_idx ON analytics_events(name, "occurredAt", id);
       ANALYZE admin_cases;
       ANALYZE generation_jobs;
       ANALYZE analytics_events;
@@ -110,7 +106,7 @@ async function main() {
     };
     const report = {
       status: Object.values(checks).every(Boolean) ? "pass" : "fail",
-      schema: "Prisma production tables cloned with LIKE INCLUDING ALL into transaction-scoped temp tables",
+      schema: "Prisma production tables and indexes cloned unchanged with LIKE INCLUDING ALL into transaction-scoped temp tables",
       scale: { cases: CASES, jobs: JOBS, events: EVENTS, replayedEvents: 100_000 },
       durationMs: performance.now() - startedAt,
       benchmarks: { caseList, today, failedJobs, eventProjection, replayMs },

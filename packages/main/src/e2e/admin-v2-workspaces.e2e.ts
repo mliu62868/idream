@@ -881,4 +881,23 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await expect(page.getByText(caseTargetId)).toBeVisible();
     expect(failures).toEqual([]);
   });
+
+  test("keeps the four core authority details usable at the tablet breakpoint", async ({ page }) => {
+    const failures = consoleFailures(page);
+    await login(page);
+    await page.setViewportSize({ width: 834, height: 1_112 });
+    const routes = [
+      `/admin/characters/${releaseCharacterId}?tab=release`,
+      `/admin/creative/runs/${creativeRunId}`,
+      `/admin/ops/incidents/${incidentId}`,
+      `/admin/cases/${caseId}`,
+    ];
+    for (const route of routes) {
+      await page.goto(`${adminBaseURL()}${route}`);
+      await expect(page.locator("#admin-main-content")).toBeVisible();
+      await expect(page.locator("h1")).toHaveCount(1);
+      await expectNoHorizontalOverflow(page);
+    }
+    expect(failures).toEqual([]);
+  });
 });

@@ -59,7 +59,7 @@ describe("Admin main HTTP proxy", () => {
     await expect(response.json()).resolves.toEqual({ ok: true });
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(renderPrometheusMetrics()).toContain(
-      'admin_http_requests_total{method="POST",outcome="completed",routeClass="list",surface="legacy_v1"} 1',
+      'admin_http_requests_total{method="POST",outcome="completed",routeClass="command",surface="legacy_v1"} 1',
     );
     expect(renderPrometheusMetrics()).toContain(
       'admin_legacy_v1_requests_total{method="POST",outcome="completed"} 1',
@@ -134,6 +134,23 @@ describe("Admin main HTTP proxy", () => {
     );
     expect(renderPrometheusMetrics()).toContain(
       'admin_proxy_kill_switch_total{scope="write"} 1',
+    );
+  });
+
+  it("classifies every v2 mutation as a command for the command-accept SLO", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response('{"ok":true}', { status: 200 })));
+
+    const response = await proxyToMain(
+      new Request("http://admin.local/api/v2/admin/cases/case-1/assignment", {
+        method: "POST",
+        body: "{}",
+      }),
+      "/api/v2/admin/cases/case-1/assignment",
+    );
+
+    expect(response.status).toBe(200);
+    expect(renderPrometheusMetrics()).toContain(
+      'admin_http_requests_total{method="POST",outcome="completed",routeClass="command",surface="admin_v2"} 1',
     );
   });
 });

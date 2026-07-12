@@ -4,12 +4,17 @@ import { z } from "zod";
 const canaryRequestSchema = z.object({
   name: z.string().min(1).max(120),
   method: z.enum(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]),
-  path: z.string()
-    .startsWith("/")
-    .refine(
-      (value) => !value.startsWith("//") && !value.includes("\\"),
-      "path must be origin-relative",
-    ),
+  path: z.string().startsWith("/").superRefine((value, context) => {
+    const sentinel = new URL("https://admin-canary.invalid");
+    const target = new URL(value, sentinel);
+    if (target.origin !== sentinel.origin) {
+      context.addIssue({ code: "custom", message: "path must stay on the configured origin" });
+      return;
+    }
+    if (target.pathname !== "/api/v2/admin" && !target.pathname.startsWith("/api/v2/admin/")) {
+      context.addIssue({ code: "custom", message: "canary requests must target the Admin v2 API" });
+    }
+  }),
   expectedStatuses: z.array(z.number().int().min(200).max(299)).min(1),
   idempotencyKeyPrefix: z.string().min(1).max(120).optional(),
   body: z.unknown().optional(),
@@ -58,19 +63,19 @@ function percentile(values: readonly number[], quantile: number) {
   return sorted[Math.max(0, Math.ceil(sorted.length * quantile) - 1)] ?? null;
 }
 
+function isLoopbackHostname(hostname: string) {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (normalized === "localhost" || normalized.endsWith(".localhost") || normalized === "0.0.0.0" || normalized === "::1") return true;
+  if (/^127(?:\.\d{1,3}){3}$/.test(normalized)) return true;
+  return normalized.startsWith("::ffff:127.");
+}
+
 export async function runAdminCanary(input: unknown, options: AdminCanaryOptions = {}) {
   const plan = adminCanaryPlanSchema.parse(input);
   const baseUrl = new URL(plan.baseUrl);
-  if (baseUrl.protocol !== "https:" || isLocalHostname(baseUrl.hostname)) {
+  if (baseUrl.protocol !== "https:" || isLoopbackHostname(baseUrl.hostname) || baseUrl.username || baseUrl.password) {
     throw new Error("Production Admin canary requires a non-local HTTPS base URL");
   }
-  const requestTargets = plan.requests.map((scenario) => {
-    const target = new URL(scenario.path, baseUrl);
-    if (target.origin !== baseUrl.origin) {
-      throw new Error("Production Admin canary requests must remain on the configured origin");
-    }
-    return target;
-  });
   if (plan.mode === "write" && options.writeConfirmation !== "I_UNDERSTAND_THIS_MUTATES_PRODUCTION") {
     throw new Error("Explicit production write confirmation is required");
   }
@@ -98,10 +103,10 @@ export async function runAdminCanary(input: unknown, options: AdminCanaryOptions
       if (options.cookie) headers.set("cookie", options.cookie);
       if (options.authorization) headers.set("authorization", options.authorization);
       if (scenario.body !== undefined) headers.set("content-type", "application/json");
-      if (plan.mode === "write") headers.set("idempotency-key", `${scenario.idempotencyKeyPrefix}:${runId}:${iteration}`);
+      if (plan.mode === "write") headers.set("idempotency-key", `${scenario.idempotencyKeyPrefix}:${runId}:${scenarioIndex}:${iteration}`);
       const sampleStartedAt = performance.now();
       try {
-        const response = await request(requestTargets[scenarioIndex]!, {
+        const response = await request(new URL(scenario.path, baseUrl), {
           method: scenario.method,
           headers,
           body: scenario.body === undefined ? undefined : JSON.stringify(scenario.body),
@@ -149,14 +154,4 @@ export async function runAdminCanary(input: unknown, options: AdminCanaryOptions
     p95Ms: percentile(durations, 0.95),
     samples,
   };
-}
-
-function isLocalHostname(value: string) {
-  const hostname = value.toLowerCase().replace(/\.$/, "");
-  return hostname === "localhost"
-    || hostname.endsWith(".localhost")
-    || hostname === "0.0.0.0"
-    || hostname.startsWith("127.")
-    || hostname === "[::]"
-    || hostname === "[::1]";
 }

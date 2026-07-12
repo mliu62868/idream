@@ -7,9 +7,23 @@ const evidence = (status: "pass" | "fail" = "pass") => ({
   evidenceRefs: ["run://admin-readiness/evidence"],
 });
 
+const canaryEvidence = (mode: "read" | "write", sampleSize: number) => ({
+  ...evidence(),
+  mode,
+  environment: "production" as const,
+  runId: mode === "read" ? "13d64d65-962a-4a24-8ac1-490404a25581" : "a9399d08-9112-4a57-8e88-3382e8bf89c8",
+  startedAt: "2026-07-10T00:00:00.000Z",
+  endedAt: "2026-07-10T00:00:00.000Z",
+  sampleSize,
+  failures: 0,
+  availability: 1,
+  p95Ms: mode === "read" ? 420 : 610,
+  samples: [],
+});
+
 function productionEvidence(): AdminReleaseGateEvidence {
   return {
-    schemaVersion: 1 as const,
+    schemaVersion: 2 as const,
     environment: "production" as const,
     generatedAt: "2026-07-11T00:00:00.000Z",
     observationWindow: {
@@ -51,17 +65,33 @@ function productionEvidence(): AdminReleaseGateEvidence {
       wcag22AA: evidence(),
     },
     runtime: {
+      operationalSlos: {
+        ...evidence(),
+        observations: {
+          list_api_p95: 0.4,
+          detail_api_p95: 0.6,
+          today_api_p95: 0.8,
+          command_accept_p95: 0.6,
+          global_search_p95: 0.7,
+          outbox_lag_p95: 30,
+          incident_detection_lag: 120,
+          operational_health_freshness: 60,
+          cohort_dashboard_freshness: 600,
+          state_invariant_violations: 0,
+          generation_unknown_failure_rate: 0.01,
+        },
+      },
       productionLoad: evidence(),
       dependencyFailureInjection: evidence(),
       dispatcherRestartRecovery: evidence(),
       projectorLagRecovery: evidence(),
       killSwitchDrill: evidence(),
-      readCanary: { ...evidence(), sampleSize: 1_000 },
-      writeCanary: { ...evidence(), sampleSize: 100 },
-      errorBudgetExceeded: false,
+      readCanary: canaryEvidence("read", 1_000),
+      writeCanary: canaryEvidence("write", 100),
+      errorBudget: { total: 100_000, failures: 100, targetAvailability: 0.99 as const },
       legacyTrafficCycles: [
-        { cycle: "2026-W27", requests: 0 },
-        { cycle: "2026-W28", requests: 0 },
+        { cycle: "2026-W27", startedAt: "2026-07-03T00:00:00.000Z", endedAt: "2026-07-06T00:00:00.000Z", requests: 0 },
+        { cycle: "2026-W28", startedAt: "2026-07-06T00:00:00.000Z", endedAt: "2026-07-10T00:00:00.000Z", requests: 0 },
       ],
     },
     signoffs: {
@@ -115,7 +145,7 @@ describe("Admin final release gate", () => {
     const input = productionEvidence();
     input.generatedAt = "2026-07-01T00:00:00.000Z";
     input.workflows.case = evidence("fail");
-    input.runtime.errorBudgetExceeded = true;
+    input.runtime.errorBudget.failures = 2_000;
     input.signoffs.operations.decision = "no_go";
     const report = evaluateAdminReleaseGate(input, new Date("2026-07-11T00:00:00.000Z"));
     expect(report.blockers.map((blocker) => blocker.code)).toEqual(expect.arrayContaining([
@@ -126,27 +156,57 @@ describe("Admin final release gate", () => {
     ]));
   });
 
-  it("blocks evidence and signoffs that claim to occur after the manifest was generated", () => {
+  it("blocks stale named evidence, future signoffs, and malformed legacy-cycle evidence", () => {
     const input = productionEvidence();
-    input.workflows.character.observedAt = "2026-07-12T00:00:00.000Z";
-    input.signoffs.product.signedAt = "2026-07-12T00:00:00.000Z";
+    input.workflows.character.observedAt = "2026-07-02T23:59:59.000Z";
+    input.signoffs.release.signedAt = "2026-07-12T00:00:00.000Z";
+    input.runtime.legacyTrafficCycles[1]!.startedAt = "2026-07-05T00:00:00.000Z";
     const report = evaluateAdminReleaseGate(input, new Date("2026-07-11T00:00:00.000Z"));
     expect(report.blockers.map((blocker) => blocker.code)).toEqual(expect.arrayContaining([
-      "workflow_character_evidence_from_future",
-      "product_signoff_missing",
+      "workflow_character_outside_observation_window",
+      "legacy_traffic_cycles_overlap",
+      "release_signoff_from_future",
     ]));
   });
 
-  it("requires the two zero-traffic business cycles to be distinct", () => {
+  it("accepts direct canary-runner summaries but rejects inconsistent canary evidence", () => {
     const input = productionEvidence();
-    input.runtime.legacyTrafficCycles = [
-      { cycle: "2026-W28", requests: 0 },
-      { cycle: "2026-W28", requests: 0 },
-    ];
-    const report = evaluateAdminReleaseGate(input, new Date("2026-07-11T00:00:00.000Z"));
-    expect(report.blockers).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "legacy_traffic_cycles_not_distinct" }),
+    expect(evaluateAdminReleaseGate(input, new Date("2026-07-11T00:00:00.000Z")).status).toBe("pass");
+
+    input.runtime.writeCanary.failures = 1;
+    input.runtime.writeCanary.availability = 0.99;
+    expect(evaluateAdminReleaseGate(input, new Date("2026-07-11T00:00:00.000Z")).blockers.map((blocker) => blocker.code)).toEqual(expect.arrayContaining([
+      "write_canary_has_failures",
+      "write_canary_availability_below_gate",
     ]));
+  });
+
+  it("computes the section 22 SLO and error-budget gates instead of trusting a pass label", () => {
+    const input = productionEvidence();
+    input.runtime.operationalSlos.observations.detail_api_p95 = 0.751;
+    input.runtime.errorBudget.failures = 1_001;
+    const report = evaluateAdminReleaseGate(input, new Date("2026-07-11T00:00:00.000Z"));
+    expect(report.blockers.map((blocker) => blocker.code)).toEqual(expect.arrayContaining([
+      "operational_slo_breach",
+      "error_budget_exceeded",
+    ]));
+  });
+
+  it("rejects the superseded release manifest schema", () => {
+    const input = { ...productionEvidence(), schemaVersion: 1 };
+    expect(evaluateAdminReleaseGate(input, new Date("2026-07-11T00:00:00.000Z"))).toMatchObject({
+      status: "blocked",
+      blockers: [expect.objectContaining({ code: "evidence_schema_invalid" })],
+    });
+  });
+
+  it("fails closed when error-budget counts are internally impossible", () => {
+    const input = productionEvidence();
+    input.runtime.errorBudget.failures = input.runtime.errorBudget.total + 1;
+    expect(evaluateAdminReleaseGate(input, new Date("2026-07-11T00:00:00.000Z"))).toMatchObject({
+      status: "blocked",
+      blockers: [expect.objectContaining({ code: "evidence_schema_invalid" })],
+    });
   });
 
   it("fails closed on malformed evidence instead of throwing", () => {

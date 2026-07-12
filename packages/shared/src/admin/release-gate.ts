@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { availabilityErrorBudget, evaluateAdminOperationalSlos } from "./operational-slo";
 
 const evidenceResultSchema = z.object({
   status: z.enum(["pass", "fail"]),
@@ -7,8 +8,41 @@ const evidenceResultSchema = z.object({
 }).strict();
 
 const canaryResultSchema = evidenceResultSchema.extend({
+  mode: z.enum(["read", "write"]),
+  environment: z.literal("production"),
+  runId: z.string().uuid(),
+  startedAt: z.string().datetime({ offset: true }),
+  endedAt: z.string().datetime({ offset: true }),
   sampleSize: z.number().int().nonnegative(),
+  failures: z.number().int().nonnegative(),
+  availability: z.number().min(0).max(1),
+  p95Ms: z.number().nonnegative().nullable(),
+}).passthrough();
+
+const operationalSloEvidenceSchema = evidenceResultSchema.extend({
+  observations: z.object({
+    list_api_p95: z.number().nonnegative(),
+    detail_api_p95: z.number().nonnegative(),
+    today_api_p95: z.number().nonnegative(),
+    command_accept_p95: z.number().nonnegative(),
+    global_search_p95: z.number().nonnegative(),
+    outbox_lag_p95: z.number().nonnegative(),
+    incident_detection_lag: z.number().nonnegative(),
+    operational_health_freshness: z.number().nonnegative(),
+    cohort_dashboard_freshness: z.number().nonnegative(),
+    state_invariant_violations: z.number().int().nonnegative(),
+    generation_unknown_failure_rate: z.number().min(0).max(1),
+  }).strict(),
 }).strict();
+
+const errorBudgetEvidenceSchema = z.object({
+  total: z.number().int().positive(),
+  failures: z.number().int().nonnegative(),
+  targetAvailability: z.literal(0.99),
+}).strict().refine((value) => value.failures <= value.total, {
+  message: "failures cannot exceed total requests",
+  path: ["failures"],
+});
 
 const signoffSchema = z.object({
   actor: z.string().min(1),
@@ -17,7 +51,7 @@ const signoffSchema = z.object({
 }).strict();
 
 export const adminReleaseGateEvidenceSchema = z.object({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.literal(2),
   environment: z.enum(["local", "staging", "production"]),
   generatedAt: z.string().datetime({ offset: true }),
   observationWindow: z.object({
@@ -59,6 +93,7 @@ export const adminReleaseGateEvidenceSchema = z.object({
     wcag22AA: evidenceResultSchema,
   }).strict(),
   runtime: z.object({
+    operationalSlos: operationalSloEvidenceSchema,
     productionLoad: evidenceResultSchema,
     dependencyFailureInjection: evidenceResultSchema,
     dispatcherRestartRecovery: evidenceResultSchema,
@@ -66,9 +101,11 @@ export const adminReleaseGateEvidenceSchema = z.object({
     killSwitchDrill: evidenceResultSchema,
     readCanary: canaryResultSchema,
     writeCanary: canaryResultSchema,
-    errorBudgetExceeded: z.boolean(),
+    errorBudget: errorBudgetEvidenceSchema,
     legacyTrafficCycles: z.array(z.object({
       cycle: z.string().min(1),
+      startedAt: z.string().datetime({ offset: true }),
+      endedAt: z.string().datetime({ offset: true }),
       requests: z.number().int().nonnegative(),
     }).strict()).min(2),
   }).strict(),
@@ -157,6 +194,7 @@ export function evaluateAdminReleaseGate(input: unknown, now = new Date()) {
     ["server_query_url_state_failed", "experience.serverQueryAndUrlState", evidence.experience.serverQueryAndUrlState],
     ["responsive_core_flows_failed", "experience.responsiveCoreFlows", evidence.experience.responsiveCoreFlows],
     ["wcag_22_aa_failed", "experience.wcag22AA", evidence.experience.wcag22AA],
+    ["operational_slo_evidence_failed", "runtime.operationalSlos", evidence.runtime.operationalSlos],
     ["production_load_failed", "runtime.productionLoad", evidence.runtime.productionLoad],
     ["dependency_failure_injection_failed", "runtime.dependencyFailureInjection", evidence.runtime.dependencyFailureInjection],
     ["dispatcher_restart_recovery_failed", "runtime.dispatcherRestartRecovery", evidence.runtime.dispatcherRestartRecovery],
@@ -168,41 +206,61 @@ export function evaluateAdminReleaseGate(input: unknown, now = new Date()) {
   for (const [code, path, result] of namedEvidence) {
     if (result.status !== "pass") block(code, `${path} did not pass.`, path);
     const observedAt = new Date(result.observedAt).getTime();
-    if (observedAt > generatedAt.getTime() || observedAt > now.getTime()) {
-      block(
-        `${code.replace(/_(failed|inconsistent)$/, "")}_evidence_from_future`,
-        `${path} was observed after the evidence manifest was generated.`,
-        `${path}.observedAt`,
-      );
+    if (observedAt < startedAt.getTime() || observedAt > endedAt.getTime()) {
+      const observationCode = code.replace(/_(failed|inconsistent)$/, "");
+      block(`${observationCode}_outside_observation_window`, `${path} evidence must be observed inside the declared production window.`, `${path}.observedAt`);
     }
   }
 
   if (evidence.runtime.readCanary.sampleSize === 0) block("read_canary_missing_samples", "Read canary must contain real production samples.", "runtime.readCanary.sampleSize");
   if (evidence.runtime.writeCanary.sampleSize === 0) block("write_canary_missing_samples", "Write canary must contain real production samples.", "runtime.writeCanary.sampleSize");
   for (const [kind, canary] of [["read", evidence.runtime.readCanary], ["write", evidence.runtime.writeCanary]] as const) {
+    if (canary.mode !== kind) block(`${kind}_canary_mode_mismatch`, `${kind} canary evidence must come from a ${kind} canary run.`, `runtime.${kind}Canary.mode`);
+    if (canary.failures > 0 || canary.failures > canary.sampleSize) block(`${kind}_canary_has_failures`, `${kind} canary evidence must have zero failed samples.`, `runtime.${kind}Canary.failures`);
+    if (canary.availability !== 1) block(`${kind}_canary_availability_below_gate`, `${kind} canary availability must be 100% for the bounded release drill.`, `runtime.${kind}Canary.availability`);
+    if (canary.p95Ms === null) block(`${kind}_canary_latency_missing`, `${kind} canary must contain a measured p95 latency.`, `runtime.${kind}Canary.p95Ms`);
+    const runStartedAt = new Date(canary.startedAt).getTime();
+    const runEndedAt = new Date(canary.endedAt).getTime();
+    if (runStartedAt > runEndedAt || canary.observedAt !== canary.endedAt) {
+      block(`${kind}_canary_run_window_invalid`, `${kind} canary start/end/observed timestamps are inconsistent.`, `runtime.${kind}Canary`);
+    }
     const observedAt = new Date(canary.observedAt).getTime();
     if (observedAt < startedAt.getTime() || observedAt > endedAt.getTime()) {
       block(`${kind}_canary_outside_observation_window`, `${kind} canary evidence must be observed inside the declared production window.`, `runtime.${kind}Canary.observedAt`);
     }
   }
-  if (evidence.runtime.errorBudgetExceeded) block("error_budget_exceeded", "The production observation window exceeded its error budget.", "runtime.errorBudgetExceeded");
-  if (evidence.runtime.legacyTrafficCycles.slice(-2).some((cycle) => cycle.requests !== 0)) {
+  const operationalSloReport = evaluateAdminOperationalSlos(evidence.runtime.operationalSlos.observations);
+  if (operationalSloReport.status !== "pass") {
+    const failedChecks = operationalSloReport.checks.filter((check) => check.status !== "pass").map((check) => check.key).join(", ");
+    block("operational_slo_breach", `Section 22 operational SLOs did not pass: ${failedChecks}.`, "runtime.operationalSlos.observations");
+  }
+  const errorBudget = availabilityErrorBudget(evidence.runtime.errorBudget);
+  if (errorBudget.exhausted) block("error_budget_exceeded", "The production observation window exceeded its error budget.", "runtime.errorBudget");
+  const legacyCycles = evidence.runtime.legacyTrafficCycles.slice(-2);
+  if (legacyCycles.some((cycle) => cycle.requests !== 0)) {
     block("legacy_traffic_not_zero", "Legacy v1 traffic must be zero for two consecutive business cycles.", "runtime.legacyTrafficCycles");
   }
-  const finalTrafficCycles = evidence.runtime.legacyTrafficCycles.slice(-2);
-  if (new Set(finalTrafficCycles.map((cycle) => cycle.cycle)).size !== finalTrafficCycles.length) {
-    block("legacy_traffic_cycles_not_distinct", "Legacy traffic evidence must name two distinct business cycles.", "runtime.legacyTrafficCycles");
+  for (const [index, cycle] of legacyCycles.entries()) {
+    const cycleStartedAt = new Date(cycle.startedAt).getTime();
+    const cycleEndedAt = new Date(cycle.endedAt).getTime();
+    if (cycleStartedAt >= cycleEndedAt || cycleStartedAt < startedAt.getTime() || cycleEndedAt > endedAt.getTime()) {
+      block("legacy_traffic_cycle_outside_observation_window", "Each zero-traffic business cycle must be a complete interval inside the production observation window.", `runtime.legacyTrafficCycles.${index}`);
+    }
+  }
+  if (legacyCycles[0] && legacyCycles[1] && new Date(legacyCycles[0].endedAt).getTime() > new Date(legacyCycles[1].startedAt).getTime()) {
+    block("legacy_traffic_cycles_overlap", "The two zero-traffic business cycles must be distinct and chronologically ordered.", "runtime.legacyTrafficCycles");
+  }
+  if (new Set(legacyCycles.map((cycle) => cycle.cycle)).size !== legacyCycles.length) {
+    block("legacy_traffic_cycles_duplicate", "The two zero-traffic business cycles must have distinct identities.", "runtime.legacyTrafficCycles");
   }
 
   for (const [role, signoff] of Object.entries(evidence.signoffs)) {
     const signedAt = new Date(signoff.signedAt).getTime();
-    if (
-      signoff.decision !== "go"
-      || signedAt < endedAt.getTime()
-      || signedAt > generatedAt.getTime()
-      || signedAt > now.getTime()
-    ) {
+    if (signoff.decision !== "go" || signedAt < endedAt.getTime()) {
       block(`${role}_signoff_missing`, `${role} must sign Go after the observation window completes.`, `signoffs.${role}`);
+    }
+    if (signedAt > generatedAt.getTime() || signedAt > now.getTime()) {
+      block(`${role}_signoff_from_future`, `${role} sign-off cannot postdate the evidence manifest or current evaluation time.`, `signoffs.${role}.signedAt`);
     }
   }
 

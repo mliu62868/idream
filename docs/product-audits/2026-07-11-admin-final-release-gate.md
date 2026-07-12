@@ -6,19 +6,19 @@ The repository-owned implementation and production cutover are intentionally sep
 
 ## Machine-verifiable Go / No-Go
 
-`bun run --cwd packages/main admin:readiness:release-gate -- <production-evidence.json>` evaluates the final §24.5 gate. The typed contract is `packages/shared/src/admin/release-gate.ts`.
+`bun run --cwd packages/main admin:readiness:release-gate -- <production-evidence.json>` evaluates the final §24.5 gate. The typed contract is `packages/shared/src/admin/release-gate.ts`; the authoritative manifest is schema version 2. Version 1 is superseded because it did not bind every evidence timestamp and legacy-traffic cycle to the declared observation window, and its strict canary shape could not accept the canary runner's own output.
 
 It fails closed unless all of the following are true:
 
 - The manifest is production evidence generated within 24 hours.
 - The observation window covers at least seven complete days.
-- Every named evidence timestamp and DRI sign-off is present by manifest generation time; future-dated claims fail closed.
+- Every named result was observed inside that window; canary run timestamps and post-window sign-offs cannot postdate the manifest or evaluation time.
 - State invariant violations, unavailable invariant checks, and unknown shadow mismatches are zero.
 - Golden metrics and the NS-01/PRD decision are consistent.
 - Character, Creative, Incident, Case, and Today E2E evidence includes automatic verification.
 - Fresh/repeat/current-snapshot migration, old-app rollback + forward-fix, backfill dry-run, shadow comparison, and module rollback all pass.
 - Permission matrix, atomic Audit/Outbox, high-risk confirmation, responsive flows, URL/server query state, and WCAG gates all pass.
-- Production-table load, dependency failure injection, dispatcher restart, projector lag recovery and kill-switch drill pass; read and write canaries contain real samples inside the observation window; the error budget is not exceeded; legacy v1 traffic is zero for two distinct consecutive business cycles.
+- Every §22 latency, lag, freshness, invariant and unknown-failure observation is supplied as a number and re-evaluated against the shared SLO registry; a caller-provided `pass` label cannot hide a breach. Production-table load, dependency failure injection, dispatcher restart, projector lag recovery and kill-switch drill pass; direct canary-runner summaries contain real zero-failure samples inside the observation window; the 99% error budget is recomputed from positive request/failure counts; legacy v1 traffic is zero for two distinct, ordered business-cycle intervals inside the window.
 - Product, Engineering, Data, Design, Operations, and Release DRIs sign `go` after the observation window ends.
 
 Malformed, local, staging, stale, incomplete, failed, unsigned, or sample-free evidence returns `status=blocked` and exits with code 2. This prevents the local 1118-test suite or production-like load harness from being presented as production Go authority.
@@ -37,13 +37,12 @@ Both increment `admin_proxy_kill_switch_total{scope=read|write}`. A read kill sw
 `bun run --cwd packages/main admin:readiness:canary -- <canary-plan.json>` sends bounded requests to a non-local HTTPS production target and returns release-gate-compatible `status`, `observedAt`, `evidenceRefs`, `sampleSize`, availability, p95 and redacted per-scenario samples.
 
 - A read plan accepts only GET/HEAD.
-- A write plan accepts only mutation methods, requires an idempotency-key prefix, is capped at ten iterations per invocation, and requires `ADMIN_CANARY_WRITE_CONFIRMATION=I_UNDERSTAND_THIS_MUTATES_PRODUCTION`.
-- Expected statuses are restricted to 2xx. A plan cannot relabel an HTTP failure as canary success.
-- Request paths must remain origin-relative and resolve to the configured HTTPS origin; local/loopback targets and cross-origin backslash URL ambiguities are rejected before credentials are attached or any request is sent.
+- Every scenario is same-origin and restricted to `/api/v2/admin`; only 2xx statuses can be declared successful, so an arbitrary endpoint or expected 5xx cannot manufacture a green canary.
+- A write plan accepts only mutation methods, requires an idempotency-key prefix, produces a unique key per scenario and iteration, is capped at ten iterations per invocation, and requires `ADMIN_CANARY_WRITE_CONFIRMATION=I_UNDERSTAND_THIS_MUTATES_PRODUCTION`.
 - Authentication comes only from `ADMIN_CANARY_COOKIE` or `ADMIN_CANARY_AUTHORIZATION`; neither is emitted in the report.
 - Any timeout, transport failure, or unexpected status fails the run. The runner never changes authority endpoints or falls back to v1.
 
-The plan contract is `packages/main/src/server/admin/admin-canary-runner.ts`. Production operators must choose a reviewed reversible rehearsal target for write canaries; the repository deliberately does not ship a fake production target ID or credentials.
+The plan contract is `packages/main/src/server/admin/admin-canary-runner.ts`. The runner output is accepted directly by the schema-v2 release manifest and the gate independently checks mode, production environment, run interval, failures, availability, samples and measured p95. Production operators must choose a reviewed reversible rehearsal target for write canaries; the repository deliberately does not ship a fake production target ID or credentials.
 
 ## §21 verification matrix audit
 
@@ -60,7 +59,7 @@ The plan contract is `packages/main/src/server/admin/admin-canary-runner.ts`. Pr
 | Creative/Incident/Case/Today E2E | Creative review/placement/verify; Incident mitigate/verify/postmortem; multi-source Case decide/verify/close; Today resolved/re-entry/deep links | Local automatic verification exists for all four domain loops |
 | Component/A11y/responsive | explicit loading/true-empty/filtered-empty/partial/stale/no-permission; focus-trapped write error; Axe WCAG 2.2 AA; 375px core workspaces | Supported production-browser baseline and operator sign-off external |
 | Migration rehearsal | fresh/repeat deploy, baseline-resolved current-shape upgrade, previous-app write, current forward-fix, constraint validation | Production backup/restore, reviewed backfill and module rollback record external |
-| Load/Chaos | real-table-shaped 100k Cases + 100k Jobs + 1m Events, duplicate replay, atomic rollback; command lease recovery, durable ingest retry, dispatcher/projector recovery tests | Production dependency failure injection and sustained SLO window external |
+| Load/Chaos | production tables and their real indexes cloned unchanged for 100k Cases + 100k Jobs + 1m Events, duplicate replay, atomic rollback; command lease recovery, durable ingest retry, dispatcher/projector recovery tests | Production dependency failure injection and sustained SLO window external |
 
 ## §21.2 counterexample audit
 

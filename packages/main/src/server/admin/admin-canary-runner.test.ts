@@ -45,6 +45,13 @@ describe("Admin production canary runner", () => {
         expectedStatuses: [202],
         idempotencyKeyPrefix: "release-canary",
         body: { entityVersion: 1 },
+      }, {
+        name: "assign rehearsal case",
+        method: "POST" as const,
+        path: "/api/v2/admin/cases/rehearsal/assignment",
+        expectedStatuses: [200],
+        idempotencyKeyPrefix: "release-canary",
+        body: { ownerId: "ops-rehearsal" },
       }],
     };
 
@@ -55,7 +62,7 @@ describe("Admin production canary runner", () => {
       now: () => new Date("2026-07-11T00:00:00.000Z"),
     });
     const keys = request.mock.calls.map((call) => new Headers(call[1]?.headers).get("idempotency-key"));
-    expect(new Set(keys).size).toBe(2);
+    expect(new Set(keys).size).toBe(4);
     expect(keys.every((key) => key?.startsWith("release-canary:"))).toBe(true);
   });
 
@@ -115,6 +122,31 @@ describe("Admin production canary runner", () => {
       cookie: "production-session",
       authorization: "Bearer production-secret",
     })).rejects.toThrow(/origin-relative|same origin/i);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects paths that can escape the production Admin v2 origin", async () => {
+    const fetch = vi.fn<AdminCanaryFetch>(async () => new Response("{}", { status: 200 }));
+    const base = {
+      schemaVersion: 1,
+      environment: "production",
+      mode: "read",
+      baseUrl: "https://admin.example.test",
+      iterations: 1,
+    } as const;
+
+    await expect(runAdminCanary({
+      ...base,
+      requests: [{ name: "origin escape", method: "GET", path: "/\\evil.example.test/steal", expectedStatuses: [200] }],
+    }, { fetch })).rejects.toThrow();
+    await expect(runAdminCanary({
+      ...base,
+      requests: [{ name: "non-admin endpoint", method: "GET", path: "/api/internal/metrics", expectedStatuses: [200] }],
+    }, { fetch })).rejects.toThrow();
+    await expect(runAdminCanary({
+      ...base,
+      requests: [{ name: "fake success", method: "GET", path: "/api/v2/admin/today", expectedStatuses: [500] }],
+    }, { fetch })).rejects.toThrow();
     expect(fetch).not.toHaveBeenCalled();
   });
 

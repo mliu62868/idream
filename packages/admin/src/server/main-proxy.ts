@@ -143,7 +143,7 @@ function proxySurface(pathname: string) {
 function proxyRouteClass(pathname: string, method: string) {
   if (pathname.includes("/today")) return "today";
   if (pathname.includes("/search")) return "search";
-  if (pathname.includes("/commands/") || pathname.includes("/action-plans/")) return "command";
+  if (!["GET", "HEAD", "OPTIONS"].includes(method) || pathname.includes("/commands/") || pathname.includes("/action-plans/")) return "command";
   const segments = pathname.split("/").filter(Boolean);
   if (method === "GET" && segments[0] === "api" && segments[1] === "v2" && segments[2] === "admin" && segments.length >= 5) return "detail";
   return "list";
