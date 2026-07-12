@@ -128,7 +128,7 @@ describe("local AI service pipeline", () => {
     await expect(prisma.generationJob.findUnique({ where: { id: jobId } })).resolves.toMatchObject({
       status: "completed",
       deliveredOutputCount: 2,
-      version: 2,
+      version: 5,
       finishedAt: expect.any(Date),
       completedAt: expect.any(Date),
     });
