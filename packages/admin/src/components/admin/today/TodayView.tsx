@@ -2,9 +2,11 @@
 
 import type { TodayProjection, TodayWorkItem } from "@idream/shared/admin";
 import Link from "next/link";
-import { ArrowRight, CheckCircle2, Clock3, Eye, Inbox, UserRound } from "lucide-react";
+import { ArrowRight, Bell, CheckCircle2, Clock3, Eye, Inbox, Pin, UserRound } from "lucide-react";
+import { useState } from "react";
 import { useAdminI18n } from "@/components/admin/i18n";
 import type { WorkMode } from "@/components/admin/nav-config";
+import { adminV2Request } from "@/lib/admin-v2-api";
 
 type Row = Record<string, unknown>;
 
@@ -33,9 +35,10 @@ const modeContext: Record<WorkMode, string> = {
   admin: "All authorized operational domains participate in ranking.",
 };
 
-export function TodayView({ data, workMode }: { data: TodayData; workMode: WorkMode }) {
+export function TodayView({ data, onPreferenceChanged, workMode }: { data: TodayData; onPreferenceChanged?: () => void | Promise<void>; workMode: WorkMode }) {
   const { t } = useAdminI18n();
   const { projection } = data;
+  const refresh = onPreferenceChanged ?? (() => undefined);
 
   return (
     <div className="space-y-6" data-testid="today-view">
@@ -60,6 +63,7 @@ export function TodayView({ data, workMode }: { data: TodayData; workMode: WorkM
         description="Overdue or due-today work owned by you, plus commands awaiting completion or verification."
         icon={UserRound}
         queue={projection.myShift}
+        onPreferenceChanged={refresh}
         title="My shift"
       />
 
@@ -67,6 +71,7 @@ export function TodayView({ data, workMode }: { data: TodayData; workMode: WorkM
         description="The ten highest-ranked authorized items. The total is computed from complete server-side counts."
         icon={Clock3}
         queue={projection.nextBestActions}
+        onPreferenceChanged={refresh}
         title="Next best actions"
       />
 
@@ -76,6 +81,7 @@ export function TodayView({ data, workMode }: { data: TodayData; workMode: WorkM
           description="Unowned work you are permitted to claim in its source domain."
           icon={Inbox}
           queue={projection.unassigned}
+          onPreferenceChanged={refresh}
           title="Unassigned work"
         />
         <WorkQueue
@@ -83,6 +89,7 @@ export function TodayView({ data, workMode }: { data: TodayData; workMode: WorkM
           description="Authoritative source objects you explicitly watch."
           icon={Eye}
           queue={projection.watching}
+          onPreferenceChanged={refresh}
           title="Watching"
         />
         <WorkQueue
@@ -90,6 +97,7 @@ export function TodayView({ data, workMode }: { data: TodayData; workMode: WorkM
           description="Work completed and verified during the last 24 hours."
           icon={CheckCircle2}
           queue={projection.recentlyResolved}
+          onPreferenceChanged={refresh}
           title="Recently resolved"
         />
       </div>
@@ -112,12 +120,14 @@ function WorkQueue({
   description,
   icon: Icon,
   queue,
+  onPreferenceChanged,
   title,
 }: {
   compact?: boolean;
   description: string;
   icon: typeof Clock3;
   queue: TodayProjection["myShift"];
+  onPreferenceChanged: () => void | Promise<void>;
   title: string;
 }) {
   const { t } = useAdminI18n();
@@ -137,7 +147,7 @@ function WorkQueue({
         <p className="p-4 text-xs text-[var(--ad-text-muted)]">{t("No matching work right now.")}</p>
       ) : (
         <div className="divide-y divide-[var(--ad-border)]">
-          {queue.items.map((item) => <WorkItem compact={compact} item={item} key={`${item.sourceType}:${item.sourceId}`} />)}
+          {queue.items.map((item) => <WorkItem compact={compact} item={item} key={`${item.sourceType}:${item.sourceId}`} onPreferenceChanged={onPreferenceChanged} watched={title === "Watching"} />)}
         </div>
       )}
       {queue.totalCount > queue.items.length ? (
@@ -149,10 +159,28 @@ function WorkQueue({
   );
 }
 
-function WorkItem({ compact, item }: { compact: boolean; item: TodayWorkItem }) {
+function WorkItem({ compact, item, onPreferenceChanged, watched }: { compact: boolean; item: TodayWorkItem; onPreferenceChanged: () => void | Promise<void>; watched: boolean }) {
   const { t } = useAdminI18n();
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState("");
+  async function updatePreference(patch: { watching?: boolean; pinned?: boolean; snoozedUntil?: string | null }, label: string) {
+    setBusy(true);
+    setStatus("");
+    try {
+      await adminV2Request("/api/v2/admin/today/preferences", {
+        method: "PUT",
+        body: { sourceType: item.sourceType, sourceId: item.sourceId, ...patch },
+      });
+      setStatus(label);
+      await onPreferenceChanged();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Preference update failed");
+    } finally {
+      setBusy(false);
+    }
+  }
   return (
-    <Link className="group block p-4 transition-colors hover:bg-black/[0.025]" href={item.deepLink}>
+    <div className="p-4 transition-colors hover:bg-black/[0.025]">
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
@@ -160,7 +188,7 @@ function WorkItem({ compact, item }: { compact: boolean; item: TodayWorkItem }) 
             <span className="text-[10px] uppercase text-[var(--ad-text-muted)]">{t(item.sourceType.replaceAll("_", " "))}</span>
             {item.pinned ? <span className="text-[10px] font-semibold uppercase">{t("Pinned")}</span> : null}
           </div>
-          <h3 className="mt-2 truncate text-sm font-semibold">{t(item.title)}</h3>
+          <Link className="group mt-2 flex items-center gap-2 text-sm font-semibold" href={item.deepLink}><span className="truncate">{t(item.title)}</span><ArrowRight className="h-4 w-4 shrink-0 text-[var(--ad-text-muted)] transition-transform group-hover:translate-x-0.5" /></Link>
           <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">{t(item.summary)}</p>
           {!compact ? <p className="mt-2 text-xs">{t(item.recommendedAction)}</p> : null}
           <p className="mt-2 text-[10px] leading-4 text-[var(--ad-text-muted)]">{t(item.rankingReason)}</p>
@@ -170,10 +198,16 @@ function WorkItem({ compact, item }: { compact: boolean; item: TodayWorkItem }) 
             <span>{t("Verification")}: {t(item.verificationState)}</span>
             <span>{item.environment} · {item.dataClass}</span>
           </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button className="inline-flex min-h-9 items-center gap-1 rounded border border-[var(--ad-border)] px-2 text-xs disabled:opacity-50" disabled={busy} onClick={() => void updatePreference({ watching: !watched }, watched ? "Removed from Watching" : "Added to Watching")} type="button"><Eye className="h-3.5 w-3.5" />{watched ? t("Unwatch") : t("Watch")}</button>
+            <button className="inline-flex min-h-9 items-center gap-1 rounded border border-[var(--ad-border)] px-2 text-xs disabled:opacity-50" disabled={busy} onClick={() => void updatePreference({ pinned: !item.pinned }, item.pinned ? "Unpinned" : "Pinned")} type="button"><Pin className="h-3.5 w-3.5" />{item.pinned ? t("Unpin") : t("Pin")}</button>
+            <button className="inline-flex min-h-9 items-center gap-1 rounded border border-[var(--ad-border)] px-2 text-xs disabled:opacity-50" disabled={busy} onClick={() => void updatePreference({ snoozedUntil: new Date(Date.now() + 60 * 60 * 1_000).toISOString() }, "Snoozed for one hour")} type="button"><Bell className="h-3.5 w-3.5" />{t("Snooze 1h")}</button>
+            {item.ownerId === null ? <Link className="inline-flex min-h-9 items-center rounded border border-[var(--ad-border)] px-2 text-xs font-semibold" href={item.deepLink}>{t("Open to claim")}</Link> : null}
+          </div>
+          {status ? <p className="mt-2 text-xs text-[var(--ad-text-muted)]" role="status">{t(status)}</p> : null}
         </div>
-        <ArrowRight className="mt-1 h-4 w-4 shrink-0 text-[var(--ad-text-muted)] transition-transform group-hover:translate-x-0.5" />
       </div>
-    </Link>
+    </div>
   );
 }
 

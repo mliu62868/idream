@@ -76,11 +76,14 @@ export const operationalWorkPreferenceUpdateSchema = z
   .object({
     sourceType: todaySourceTypeSchema,
     sourceId: adminIdSchema,
-    watching: z.boolean(),
-    pinned: z.boolean(),
-    snoozedUntil: adminIsoDateTimeSchema.nullable(),
+    watching: z.boolean().optional(),
+    pinned: z.boolean().optional(),
+    snoozedUntil: adminIsoDateTimeSchema.nullable().optional(),
   })
-  .strict();
+  .strict()
+  .refine((value) => value.watching !== undefined || value.pinned !== undefined || value.snoozedUntil !== undefined, {
+    message: "At least one preference field is required",
+  });
 
 export type TodaySourceType = z.infer<typeof todaySourceTypeSchema>;
 export type TodayWorkMode = z.infer<typeof todayWorkModeSchema>;

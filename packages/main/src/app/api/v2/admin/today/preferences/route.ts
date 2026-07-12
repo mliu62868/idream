@@ -19,7 +19,11 @@ export function PUT(request: Request) {
       sourceId: body.sourceId,
       watching: body.watching,
       pinned: body.pinned,
-      snoozedUntil: body.snoozedUntil ? new Date(body.snoozedUntil) : null,
+      snoozedUntil: body.snoozedUntil === undefined
+        ? undefined
+        : body.snoozedUntil
+          ? new Date(body.snoozedUntil)
+          : null,
       requestId: request.headers.get("x-request-id") ?? crypto.randomUUID(),
     });
   });

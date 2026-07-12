@@ -2254,7 +2254,7 @@ function renderSection(
 ) {
   if (!section) return null;
   if (section.kind === "dashboard") {
-    return <TodayView data={section.data} workMode={ctx.workMode} />;
+    return <TodayView data={section.data} onPreferenceChanged={ctx.reload} workMode={ctx.workMode} />;
   }
   if (section.kind === "jobs") return <JobsView rows={section.rows} openAction={ctx.openAction} />;
   if (section.kind === "config") {

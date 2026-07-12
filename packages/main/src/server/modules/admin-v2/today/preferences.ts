@@ -92,9 +92,9 @@ export async function updateOperationalWorkPreference(input: {
   permissions: ReadonlySet<AdminPermissionKey>;
   sourceType: TodaySourceType;
   sourceId: string;
-  watching: boolean;
-  pinned: boolean;
-  snoozedUntil: Date | null;
+  watching?: boolean;
+  pinned?: boolean;
+  snoozedUntil?: Date | null;
   requestId: string;
 }) {
   await assertReadableSource(input.actor, input.permissions, input.sourceType, input.sourceId);
@@ -120,9 +120,9 @@ export async function updateOperationalWorkPreference(input: {
         actorId: input.actor.id,
         sourceType: input.sourceType,
         sourceId: input.sourceId,
-        watching: input.watching,
-        pinned: input.pinned,
-        snoozedUntil: input.snoozedUntil,
+        watching: input.watching ?? false,
+        pinned: input.pinned ?? false,
+        snoozedUntil: input.snoozedUntil ?? null,
       },
       update: {
         watching: input.watching,
