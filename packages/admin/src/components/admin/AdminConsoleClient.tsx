@@ -5,28 +5,21 @@ import { type AdminPermissionKey } from "@idream/shared/admin/permissions";
 import { type FormEvent, type KeyboardEvent, type ReactNode, type WheelEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  AlertTriangle,
   Ban,
-  Bookmark,
   Check,
   ChevronRight,
-  ClipboardCheck,
   Flag,
-  Inbox,
   Languages,
   Loader2,
-  MessageSquare,
-  Plus,
   RefreshCcw,
   RotateCcw,
   Search,
   ShieldCheck,
-  SlidersHorizontal,
   Trash2,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { apiDelete, apiGet, apiWrite, formatApiError, type ApiEnvelope } from "@/components/admin/api";
+import { apiGet, apiWrite, formatApiError, type ApiEnvelope } from "@/components/admin/api";
 import { BackendsView } from "@/components/admin/BackendsView";
 import { GenerationMetricsView } from "@/components/admin/GenerationMetricsView";
 import { WorkflowsView } from "@/components/admin/WorkflowsView";
@@ -85,6 +78,9 @@ import { GenerationConfigWorkspace } from "@/features/config/GenerationConfigWor
 import { DeadLetterWorkspace } from "@/features/dead-letter/DeadLetterWorkspace";
 import { AccessWorkspace } from "@/features/access/AccessWorkspace";
 import { ModerationWorkspace } from "@/features/moderation/ModerationWorkspace";
+import { SupportWorkspace } from "@/features/support/SupportWorkspace";
+import { PromoWorkspace } from "@/features/promo/PromoWorkspace";
+import { ApprovalsWorkspace } from "@/features/approvals/ApprovalsWorkspace";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import {
   buildCompatibilityListUrl,
@@ -112,56 +108,6 @@ type Row = Record<string, unknown>;
 type PageInfo = { endCursor: string | null; hasNextPage: boolean };
 const emptyPageInfo: PageInfo = { endCursor: null, hasNextPage: false };
 type ListQuery = CompatibilityListQuery;
-
-type SavedView = {
-  id: string;
-  scope: string;
-  label: string;
-  filters: unknown;
-  createdAt: string;
-  updatedAt: string;
-};
-
-type SupportStatusFilter =
-  | "all"
-  | "active"
-  | "received"
-  | "open"
-  | "waiting_on_user"
-  | "resolved"
-  | "closed";
-type SupportSlaFilter = "all" | "overdue" | "due_soon" | "on_track" | "paused" | "closed";
-
-type SupportRequestFilters = {
-  query: string;
-  status: SupportStatusFilter;
-  sla: SupportSlaFilter;
-  category: string;
-};
-
-type PlaintextTargetType = "generation_job" | "media";
-
-type PlaintextAccessDraft = {
-  targetType: PlaintextTargetType;
-  targetId: string;
-  ticketId: string;
-  legalHoldId: string;
-  reason: string;
-  confirmation: string;
-};
-
-type PlaintextAccessResult = {
-  target: {
-    type: PlaintextTargetType;
-    id: string;
-    ownerId: string;
-  };
-  plaintext: Record<string, string | null>;
-  authorization: {
-    ticketId: string | null;
-    legalHoldId: string | null;
-  };
-};
 
 type DashboardData = TodayData;
 
@@ -220,9 +166,6 @@ type SectionData =
   | { kind: "risk"; data: AbuseData }
   | { kind: "providers"; data: ProviderOpsData }
   | { kind: "content"; characters: Row[]; featured: Row[]; featuredIds: string[]; pageInfo: PageInfo; query: ListQuery }
-  | { kind: "promo"; codes: Row[]; referrals: Row[]; pageInfo: { codes: PageInfo; referrals: PageInfo }; query: ListQuery }
-  | { kind: "support"; rows: Row[] }
-  | { kind: "approvals"; rows: Row[]; pageInfo: PageInfo; query: ListQuery }
   // 自取数视图（组件内部 fetch），section 只需一个标记，不在此预取数据。
   | {
       kind: "selfFetch";
@@ -254,7 +197,10 @@ type SectionData =
         | "config"
         | "dead-letter"
         | "access"
-        | "moderation";
+        | "moderation"
+        | "support"
+        | "promo"
+        | "approvals";
     }
   | {
       kind: "chatops";
@@ -289,48 +235,6 @@ const defaultChatOpsFilters: ChatOpsFilters = {
   targetId: "",
   limit: "50",
 };
-
-const SUPPORT_REQUEST_SAVED_VIEW_SCOPE = "support.requests";
-const SUPPORT_REQUEST_REFRESH_EVENT = "idream:support-requests-refresh";
-const defaultSupportRequestFilters: SupportRequestFilters = {
-  query: "",
-  status: "all",
-  sla: "all",
-  category: "",
-};
-const defaultPlaintextAccessDraft: PlaintextAccessDraft = {
-  targetType: "generation_job",
-  targetId: "",
-  ticketId: "",
-  legalHoldId: "",
-  reason: "",
-  confirmation: "",
-};
-const plaintextTargetTypeOptions: Array<{
-  value: PlaintextTargetType;
-  label: string;
-  fields: string;
-}> = [
-  { value: "generation_job", label: "Generation job", fields: "prompt, negativePrompt" },
-  { value: "media", label: "Media asset", fields: "prompt" },
-];
-const supportStatusOptions: Array<{ value: SupportStatusFilter; label: string }> = [
-  { value: "all", label: "All" },
-  { value: "active", label: "Active support" },
-  { value: "received", label: "received" },
-  { value: "open", label: "open" },
-  { value: "waiting_on_user", label: "waiting_on_user" },
-  { value: "resolved", label: "resolved" },
-  { value: "closed", label: "closed" },
-];
-const supportSlaOptions: Array<{ value: SupportSlaFilter; label: string }> = [
-  { value: "all", label: "All SLA" },
-  { value: "overdue", label: "overdue" },
-  { value: "due_soon", label: "due_soon" },
-  { value: "on_track", label: "on_track" },
-  { value: "paused", label: "paused" },
-  { value: "closed", label: "closed" },
-];
 
 // SPEC: localStorage key for which folded sidebar nav groups the operator last expanded.
 const NAV_GROUPS_STORAGE_KEY = "idream.admin.openNavGroups";
@@ -533,9 +437,6 @@ export function AdminConsoleClient({
       await load();
       if (completedEndpoint.startsWith("/api/v1/admin/generation/jobs/")) {
         window.dispatchEvent(new Event(GENERATION_JOBS_REFRESH_EVENT));
-      }
-      if (completedEndpoint.startsWith("/api/v1/admin/support/requests/")) {
-        window.dispatchEvent(new Event(SUPPORT_REQUEST_REFRESH_EVENT));
       }
     } catch (actionError) {
       setActionStatus(null);
@@ -1016,10 +917,7 @@ async function fetchSection(
     const payload = await apiGet<AbuseData>("/api/v1/admin/risk/abuse");
     return { kind: "risk", data: payload };
   }
-  if (sectionId === "support") {
-    const payload = await apiGet<{ items: Row[] }>("/api/v1/admin/support/requests");
-    return { kind: "support", rows: payload.items };
-  }
+  if (sectionId === "support") return { kind: "selfFetch", view: "support" };
   if (sectionId === "content") {
     const query = listQuery(params, ["contentSearch", "contentStatus", "contentVisibility", "contentCursor"]);
     const [characters, featured] = await Promise.all([
@@ -1050,19 +948,8 @@ async function fetchSection(
   if (sectionId === "generation/backends") return { kind: "selfFetch", view: "backends" };
   if (sectionId === "generation/workflows") return { kind: "selfFetch", view: "workflows" };
   if (sectionId === "generation/metrics") return { kind: "selfFetch", view: "generation-metrics" };
-  if (sectionId === "promo") {
-    const query = listQuery(params, ["promoSearch", "promoStatus", "referralStatus", "promoCursor", "referralCursor"]);
-    const [codes, referrals] = await Promise.all([
-      apiGet<{ items: Row[]; pageInfo: PageInfo }>(`/api/v1/admin/promo/redeem-codes${queryString({ search: query.promoSearch, status: query.promoStatus, cursor: query.promoCursor, limit: "25" })}`),
-      apiGet<{ items: Row[]; pageInfo: PageInfo }>(`/api/v1/admin/promo/referrals${queryString({ search: query.promoSearch, status: query.referralStatus, cursor: query.referralCursor, limit: "25" })}`),
-    ]);
-    return { kind: "promo", codes: codes.items, referrals: referrals.items, pageInfo: { codes: codes.pageInfo ?? emptyPageInfo, referrals: referrals.pageInfo ?? emptyPageInfo }, query };
-  }
-  if (sectionId === "approvals") {
-    const query = listQuery(params, ["approvalSearch", "approvalStatus", "approvalCursor"]);
-    const payload = await apiGet<{ items: Row[]; pageInfo: PageInfo }>(`/api/v1/admin/approvals${queryString({ search: query.approvalSearch, status: query.approvalStatus || "pending", cursor: query.approvalCursor, limit: "25" })}`);
-    return { kind: "approvals", rows: payload.items, pageInfo: payload.pageInfo ?? emptyPageInfo, query };
-  }
+  if (sectionId === "promo") return { kind: "selfFetch", view: "promo" };
+  if (sectionId === "approvals") return { kind: "selfFetch", view: "approvals" };
   if (sectionId === "chat") {
     const filters = options.chatOps ?? defaultChatOpsFilters;
     const routeQuery = listQuery(params, ["chatUserId", "chatCharacterId", "chatSessionStatus", "chatEventStatus", "chatEventLayer", "chatPolicyCode", "chatTargetId", "chatLimit", "chatSessionCursor", "chatUsageCursor", "chatEventCursor"]);
@@ -1154,11 +1041,6 @@ function parseCsv(value: string) {
   return value.split(",").map((item) => item.trim()).filter(Boolean);
 }
 
-function intFromText(value: string, fallback: number) {
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
 function listQuery(params: URLSearchParams, keys: readonly string[]): ListQuery {
   return readCompatibilityListQuery(params, keys);
 }
@@ -1228,25 +1110,6 @@ function renderSection(
         updateQuery={ctx.updateQuery}
       />
     );
-  }
-  if (section.kind === "promo") {
-    return (
-      <PromoView
-        codes={section.codes}
-        openAction={ctx.openAction}
-        referrals={section.referrals}
-        reload={ctx.reload}
-        pageInfo={section.pageInfo}
-        query={section.query}
-        updateQuery={ctx.updateQuery}
-      />
-    );
-  }
-  if (section.kind === "support") {
-    return <SupportRequestsView rows={section.rows} openAction={ctx.openAction} />;
-  }
-  if (section.kind === "approvals") {
-    return <ApprovalsView rows={section.rows} openAction={ctx.openAction} pageInfo={section.pageInfo} query={section.query} updateQuery={ctx.updateQuery} />;
   }
   if (section.kind === "selfFetch") {
     if (section.view === "jobs") {
@@ -1334,6 +1197,20 @@ function renderSection(
     }
     if (section.view === "moderation") {
       return <ModerationWorkspace canDecide={ctx.permissions.has("safety.review.write")} />;
+    }
+    if (section.view === "support") {
+      return (
+        <SupportWorkspace
+          canViewPlaintext={ctx.permissions.has("support.plaintext.view")}
+          canWrite={ctx.permissions.has("support.request.write")}
+        />
+      );
+    }
+    if (section.view === "promo") {
+      return <PromoWorkspace canWrite={ctx.permissions.has("growth.promo.write")} />;
+    }
+    if (section.view === "approvals") {
+      return <ApprovalsWorkspace canReview={ctx.permissions.has("admin.approval.review")} />;
     }
     return <ReviewQueueView />;
   }
@@ -1641,872 +1518,7 @@ function ContentView({
   );
 }
 
-function PromoView({
-  codes,
-  referrals,
-  openAction,
-  reload,
-  pageInfo,
-  query,
-  updateQuery,
-}: {
-  codes: Row[];
-  referrals: Row[];
-  openAction: (action: PendingAction) => void;
-  reload: () => void;
-  pageInfo: { codes: PageInfo; referrals: PageInfo };
-  query: ListQuery;
-  updateQuery: (updates: Record<string, string | null>, clearCursors?: readonly string[]) => void;
-}) {
-  const { t } = useAdminI18n();
-  const [code, setCode] = useState("");
-  const [dreamcoins, setDreamcoins] = useState("");
-  const [maxRedemptions, setMaxRedemptions] = useState("");
-  const [reason, setReason] = useState("");
-  const [confirmation, setConfirmation] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  const trimmedCode = code.trim();
-  const canCreateCode =
-    !busy &&
-    trimmedCode.length >= 4 &&
-    reason.trim().length >= 3 &&
-    confirmation.trim() === trimmedCode;
-
-  async function createCode() {
-    setBusy(true);
-    setErr(null);
-    try {
-      await apiWrite("/api/v1/admin/promo/redeem-codes", "POST", {
-        code: code.trim(),
-        reward: { dreamcoins: intFromText(dreamcoins, 0) },
-        maxRedemptions: maxRedemptions.trim() ? intFromText(maxRedemptions, 1) : null,
-        reason: reason.trim(),
-        confirmation: confirmation.trim(),
-      });
-      setCode("");
-      setDreamcoins("");
-      setMaxRedemptions("");
-      setReason("");
-      setConfirmation("");
-      reload();
-    } catch (error) {
-      setErr(error instanceof Error ? error.message : "Create failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="space-y-5">
-      <ServerListToolbar cursorKeys={["promoCursor", "referralCursor"]} fields={[
-        { key: "promoSearch", label: "Search" },
-        { key: "promoStatus", label: "Code status", options: ["active", "disabled", "expired"] },
-        { key: "referralStatus", label: "Referral status", options: ["pending", "qualified", "rewarded", "rejected"] },
-      ]} query={query} updateQuery={updateQuery} />
-      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-        <h2 className="text-sm font-semibold">{t("Create redeem code")}</h2>
-        <p className="mt-1 text-xs text-[var(--ad-text-muted)]">明文 code 仅用于生成 hash，不入库、不回显、不入审计。</p>
-        <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-6">
-          <input
-            className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 font-mono text-sm outline-none focus:border-[var(--ad-ink)]"
-            onChange={(event) => setCode(event.target.value)}
-            placeholder={t("Code (≥4)")}
-            value={code}
-          />
-          <input
-            className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
-            onChange={(event) => setDreamcoins(event.target.value)}
-            placeholder={t("Dreamcoins")}
-            value={dreamcoins}
-          />
-          <input
-            className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
-            onChange={(event) => setMaxRedemptions(event.target.value)}
-            placeholder={t("Max uses (blank=∞)")}
-            value={maxRedemptions}
-          />
-          <input
-            className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]"
-            onChange={(event) => setReason(event.target.value)}
-            placeholder={t("Reason (≥3)")}
-            value={reason}
-          />
-          <input
-            aria-label={t("Redeem code confirmation")}
-            className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 font-mono text-sm outline-none focus:border-[var(--ad-ink)]"
-            onChange={(event) => setConfirmation(event.target.value)}
-            placeholder={t("Type code to confirm")}
-            value={confirmation}
-          />
-          <button
-            className="inline-flex h-10 items-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
-            disabled={!canCreateCode}
-            onClick={() => void createCode()}
-            type="button"
-          >
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-            {t("Create")}
-          </button>
-        </div>
-        {err ? <p role="alert" className="mt-2 text-xs text-[var(--ad-red-text)]">{err}</p> : null}
-      </section>
-      <DataTable
-        actions={(row) => {
-          if (stringValue(row.status) !== "active") return null;
-          const id = stringValue(row.id);
-          return (
-            <IconAction
-              icon={<Ban className="h-4 w-4" />}
-              label="Disable"
-              onClick={() =>
-                openAction({
-                  title: `Disable ${id}`,
-                  endpoint: `/api/v1/admin/promo/redeem-codes/${id}/disable`,
-                  method: "POST",
-                  confirmText: id,
-                  reasonRequired: true,
-                  body: (actionReason, confirmation) => ({ reason: actionReason, confirmation }),
-                })
-              }
-            />
-          );
-        }}
-        columns={["id", "status", "reward", "maxRedemptions", "redemptions", "expiresAt", "createdAt"]}
-        rows={codes}
-        title="Redeem codes"
-        empty={queryIsFiltered(query, ["promoSearch", "promoStatus"]) ? "No redeem codes match these filters" : "No redeem codes exist yet"}
-      />
-      <CanonicalPager cursorKey="promoCursor" pageInfo={pageInfo.codes} updateQuery={updateQuery} />
-      <DataTable
-        columns={["id", "inviterId", "inviteeId", "status", "rewardStatus", "createdAt"]}
-        rows={referrals}
-        title="Referrals"
-        empty={queryIsFiltered(query, ["promoSearch", "referralStatus"]) ? "No referrals match these filters" : "No referrals exist yet"}
-      />
-      <CanonicalPager cursorKey="referralCursor" pageInfo={pageInfo.referrals} updateQuery={updateQuery} />
-    </div>
-  );
-}
-
-function PlaintextAccessPanel() {
-  const { t } = useAdminI18n();
-  const formRef = useRef<HTMLFormElement>(null);
-  const [draft, setDraft] = useState<PlaintextAccessDraft>(defaultPlaintextAccessDraft);
-  const [result, setResult] = useState<PlaintextAccessResult | null>(null);
-  const [status, setStatus] = useState<{ tone: "good" | "bad"; message: string } | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  const canSubmit = canSubmitPlaintextDraft(draft, loading);
-
-  async function performPlaintextView(form: HTMLFormElement | null = formRef.current) {
-    const payloadDraft = form ? plaintextDraftFromForm(form) : draft;
-    if (!canSubmitPlaintextDraft(payloadDraft, loading)) return;
-    setLoading(true);
-    setStatus(null);
-    setResult(null);
-    try {
-      const data = await apiWrite<PlaintextAccessResult>("/api/v1/admin/support/plaintext/view", "POST", {
-        targetType: payloadDraft.targetType,
-        targetId: payloadDraft.targetId.trim(),
-        ticketId: payloadDraft.ticketId.trim() || undefined,
-        legalHoldId: payloadDraft.legalHoldId.trim() || undefined,
-        reason: payloadDraft.reason.trim(),
-        confirmation: payloadDraft.confirmation.trim(),
-      });
-      setResult(data);
-      setStatus({ tone: "good", message: t("Plaintext access logged.") });
-    } catch (err) {
-      setStatus({ tone: "bad", message: err instanceof Error ? err.message : t("Plaintext access failed.") });
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function submitPlaintextView(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    void performPlaintextView(event.currentTarget);
-  }
-
-  const fieldSummary =
-    plaintextTargetTypeOptions.find((option) => option.value === draft.targetType)?.fields ?? "prompt";
-
-  return (
-    <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-      <form className="space-y-4" onSubmit={submitPlaintextView} ref={formRef}>
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h2 className="text-base font-semibold text-[var(--ad-text)]">{t("Plaintext access")}</h2>
-            <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-              {t("Requires active support consent or legal hold.")}
-            </p>
-          </div>
-          <span className="rounded-lg inline-flex items-center gap-2 border border-[var(--ad-border)] px-3 py-1 text-xs text-[var(--ad-text-muted)]">
-            <ShieldCheck className="h-3.5 w-3.5" />
-            {t("Audit logged")}
-          </span>
-        </div>
-
-        <div className="grid gap-3 lg:grid-cols-[180px_1fr_1fr]">
-          <label className="flex min-w-0 flex-col gap-1">
-            <span className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Target type")}</span>
-            <select
-              aria-label={t("Target type")}
-              className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
-              name="targetType"
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  targetType: event.target.value as PlaintextTargetType,
-                }))
-              }
-              value={draft.targetType}
-            >
-              {plaintextTargetTypeOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {t(option.label)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="flex min-w-0 flex-col gap-1">
-            <span className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Plaintext target ID")}</span>
-            <input
-              aria-label={t("Plaintext target ID")}
-              className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
-              name="targetId"
-              onChange={(event) => setDraft((current) => ({ ...current, targetId: event.target.value }))}
-              placeholder="job_or_media_id"
-              value={draft.targetId}
-            />
-          </label>
-          <label className="flex min-w-0 flex-col gap-1">
-            <span className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Consent ticket ID")}</span>
-            <input
-              aria-label={t("Consent ticket ID")}
-              className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
-              name="ticketId"
-              onChange={(event) => setDraft((current) => ({ ...current, ticketId: event.target.value }))}
-              placeholder="SUP-..."
-              value={draft.ticketId}
-            />
-          </label>
-        </div>
-
-        <div className="grid gap-3 lg:grid-cols-[1fr_1fr_1.5fr]">
-          <label className="flex min-w-0 flex-col gap-1">
-            <span className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Legal hold ID")}</span>
-            <input
-              aria-label={t("Legal hold ID")}
-              className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
-              name="legalHoldId"
-              onChange={(event) => setDraft((current) => ({ ...current, legalHoldId: event.target.value }))}
-              placeholder="hold_id"
-              value={draft.legalHoldId}
-            />
-          </label>
-          <label className="flex min-w-0 flex-col gap-1">
-            <span className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Plaintext confirmation")}</span>
-            <input
-              aria-label={t("Plaintext confirmation")}
-              className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
-              name="confirmation"
-              onChange={(event) => setDraft((current) => ({ ...current, confirmation: event.target.value }))}
-              placeholder={t("Type target ID")}
-              value={draft.confirmation}
-            />
-          </label>
-          <label className="flex min-w-0 flex-col gap-1">
-            <span className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Plaintext reason")}</span>
-            <input
-              aria-label={t("Plaintext reason")}
-              className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
-              name="reason"
-              onChange={(event) => setDraft((current) => ({ ...current, reason: event.target.value }))}
-              placeholder={t("Reason for audit")}
-              value={draft.reason}
-            />
-          </label>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            className="inline-flex h-10 items-center gap-2 bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={!canSubmit}
-            onClick={(event) => {
-              event.preventDefault();
-              void performPlaintextView(event.currentTarget.form);
-            }}
-            type="submit"
-          >
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-            {loading ? t("Viewing…") : t("View plaintext")}
-          </button>
-          <span className="text-xs text-[var(--ad-text-muted)]">
-            {t("Fields available: {fields}", { fields: fieldSummary })}
-          </span>
-          {status ? (
-            <span
-              aria-live="polite"
-              className={cn(
-                "text-xs font-semibold",
-                status.tone === "good" ? "text-[var(--ad-green-text)]" : "text-[var(--ad-red-text)]",
-              )}
-              data-testid="admin-plaintext-status"
-              role="status"
-            >
-              {status.message}
-            </span>
-          ) : null}
-        </div>
-      </form>
-
-      {result ? (
-        <div
-          className="rounded-lg mt-4 space-y-3 border border-[var(--ad-border)] bg-black/[0.03] p-3"
-          data-testid="admin-plaintext-result"
-        >
-          <div className="grid gap-2 text-xs text-[var(--ad-text-muted)] md:grid-cols-3">
-            <span>
-              {t("Target")}: <code className="text-[var(--ad-text)]">{result.target.id}</code>
-            </span>
-            <span>
-              {t("Owner")}: <code className="text-[var(--ad-text)]">{result.target.ownerId}</code>
-            </span>
-            <span>
-              {t("Authorization")}:{" "}
-              <code className="text-[var(--ad-text)]">
-                {result.authorization.legalHoldId ?? result.authorization.ticketId ?? "-"}
-              </code>
-            </span>
-          </div>
-          <div className="grid gap-3 md:grid-cols-2">
-            {Object.entries(result.plaintext).map(([field, value]) => (
-              <div className="rounded-lg border border-[var(--ad-border)] bg-black/[0.03] p-3" key={field}>
-                <div className="text-xs font-semibold uppercase text-[var(--ad-text-muted)]">{field}</div>
-                <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap break-words text-sm leading-6 text-[var(--ad-text)]">{plaintextValueText(value)}</pre>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
-    </section>
-  );
-}
-
-function canSubmitPlaintextDraft(draft: PlaintextAccessDraft, loading: boolean) {
-  return (
-    !loading &&
-    draft.targetId.trim().length > 0 &&
-    draft.reason.trim().length >= 3 &&
-    draft.confirmation.trim() === draft.targetId.trim() &&
-    (draft.ticketId.trim().length > 0 || draft.legalHoldId.trim().length > 0)
-  );
-}
-
-function plaintextDraftFromForm(form: HTMLFormElement): PlaintextAccessDraft {
-  const formData = new FormData(form);
-  const targetType = formStringValue(formData, "targetType");
-  return {
-    targetType: targetType === "media" ? "media" : "generation_job",
-    targetId: formStringValue(formData, "targetId"),
-    ticketId: formStringValue(formData, "ticketId"),
-    legalHoldId: formStringValue(formData, "legalHoldId"),
-    confirmation: formStringValue(formData, "confirmation"),
-    reason: formStringValue(formData, "reason"),
-  };
-}
-
-function formStringValue(formData: FormData, key: string) {
-  const value = formData.get(key);
-  return typeof value === "string" ? value : "";
-}
-
-function plaintextValueText(value: string | null) {
-  if (value === null || value === "") return "(empty)";
-  return value;
-}
-
-function SupportRequestsView({
-  rows,
-  openAction,
-}: {
-  rows: Row[];
-  openAction: (action: PendingAction) => void;
-}) {
-  const { t, value: valueLabel } = useAdminI18n();
-  const [filters, setFilters] = useState<SupportRequestFilters>(defaultSupportRequestFilters);
-  const [savedViews, setSavedViews] = useState<SavedView[]>([]);
-  const [savedViewsLoading, setSavedViewsLoading] = useState(true);
-  const [savedViewLabel, setSavedViewLabel] = useState("");
-  const [savingView, setSavingView] = useState(false);
-  const [savedViewError, setSavedViewError] = useState<string | null>(null);
-  const [visibleRows, setVisibleRows] = useState<Row[]>(rows);
-  const [listLoading, setListLoading] = useState(false);
-  const [listError, setListError] = useState<string | null>(null);
-  const [cursor, setCursor] = useState<string | undefined>();
-  const [pageInfo, setPageInfo] = useState({ endCursor: null as string | null, hasNextPage: false });
-  const [ready, setReady] = useState(false);
-  const activeFilterCount =
-    (filters.query.trim() ? 1 : 0) +
-    (filters.category.trim() ? 1 : 0) +
-    (filters.status === "all" ? 0 : 1) +
-    (filters.sla === "all" ? 0 : 1);
-
-  const loadSavedViews = useCallback(async () => {
-    setSavedViewsLoading(true);
-    setSavedViewError(null);
-    try {
-      const data = await apiGet<{ items: SavedView[] }>(
-        `/api/v1/admin/saved-views?scope=${encodeURIComponent(SUPPORT_REQUEST_SAVED_VIEW_SCOPE)}`,
-      );
-      setSavedViews(data.items);
-    } catch (err) {
-      setSavedViewError(err instanceof Error ? err.message : "Saved views failed");
-    } finally {
-      setSavedViewsLoading(false);
-    }
-  }, []);
-
-  const loadRows = useCallback(async (nextCursor?: string) => {
-    setListLoading(true);
-    setListError(null);
-    try {
-      const params = new URLSearchParams({ limit: "25" });
-      if (filters.query.trim()) params.set("search", filters.query.trim());
-      if (filters.status !== "all") params.set("status", filters.status);
-      if (filters.sla !== "all") params.set("sla", filters.sla);
-      if (filters.category.trim()) params.set("category", filters.category.trim());
-      if (nextCursor) params.set("cursor", nextCursor);
-      const data = await apiGet<{ items: Row[]; pageInfo: { endCursor: string | null; hasNextPage: boolean } }>(`/api/v1/admin/support/requests?${params}`);
-      setVisibleRows(data.items);
-      setCursor(nextCursor);
-      setPageInfo(data.pageInfo);
-      window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
-    } catch (cause) {
-      setVisibleRows([]);
-      setPageInfo({ endCursor: null, hasNextPage: false });
-      setListError(cause instanceof Error ? cause.message : "Support requests could not be loaded");
-    } finally {
-      setListLoading(false);
-    }
-  }, [filters.category, filters.query, filters.sla, filters.status]);
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const timer = window.setTimeout(() => {
-      setFilters({
-        query: params.get("search") ?? "",
-        status: supportStatusFromUnknown(params.get("status")),
-        sla: supportSlaFromUnknown(params.get("sla")),
-        category: params.get("category") ?? "",
-      });
-      setCursor(params.get("cursor") ?? undefined);
-      setReady(true);
-      void loadSavedViews();
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [loadSavedViews]);
-
-  useEffect(() => {
-    if (!ready) return;
-    const timer = window.setTimeout(() => void loadRows(cursor), filters.query.trim() ? 250 : 0);
-    const refresh = () => void loadRows(cursor);
-    window.addEventListener(SUPPORT_REQUEST_REFRESH_EVENT, refresh);
-    return () => {
-      window.clearTimeout(timer);
-      window.removeEventListener(SUPPORT_REQUEST_REFRESH_EVENT, refresh);
-    };
-  }, [cursor, filters.query, loadRows, ready]);
-
-  async function saveCurrentView() {
-    const label = savedViewLabel.trim();
-    if (!label || savingView) return;
-    setSavingView(true);
-    setSavedViewError(null);
-    try {
-      await apiWrite<{ view: SavedView }>("/api/v1/admin/saved-views", "POST", {
-        scope: SUPPORT_REQUEST_SAVED_VIEW_SCOPE,
-        label,
-        filters: normalizeSupportRequestFilters(filters),
-      });
-      setSavedViewLabel("");
-      await loadSavedViews();
-    } catch (err) {
-      setSavedViewError(err instanceof Error ? err.message : "Save failed");
-    } finally {
-      setSavingView(false);
-    }
-  }
-
-  async function deleteSavedView(view: SavedView) {
-    setSavedViewError(null);
-    try {
-      await apiDelete<{ deleted: true }>(`/api/v1/admin/saved-views/${view.id}`);
-      setSavedViews((current) => current.filter((item) => item.id !== view.id));
-    } catch (err) {
-      setSavedViewError(err instanceof Error ? err.message : "Delete failed");
-    }
-  }
-
-  function applySavedView(view: SavedView) {
-    setSavedViewError(null);
-    setFilters(supportRequestFiltersFromUnknown(view.filters));
-    setCursor(undefined);
-  }
-
-  return (
-    <div className="space-y-4">
-      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-        <div className="grid gap-3 xl:grid-cols-[1fr_160px_160px_160px_300px] xl:items-end">
-          <label className="flex min-w-0 flex-col gap-1">
-            <span className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Support search")}</span>
-            <input
-              aria-label={t("Support search")}
-              className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
-              onChange={(event) => { setFilters((current) => ({ ...current, query: event.target.value })); setCursor(undefined); }}
-              placeholder={t("Ticket, user, subject, or notes")}
-              value={filters.query}
-            />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Status")}</span>
-            <select
-              aria-label={t("Support status")}
-              className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
-              onChange={(event) => {
-                setFilters((current) => ({
-                  ...current,
-                  status: supportStatusFromUnknown(event.target.value),
-                }));
-                setCursor(undefined);
-              }}
-              value={filters.status}
-            >
-              {supportStatusOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.value === "all" || option.value === "active" ? t(option.label) : valueLabel(option.label)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("SLA")}</span>
-            <select
-              aria-label={t("Support SLA")}
-              className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
-              onChange={(event) => {
-                setFilters((current) => ({
-                  ...current,
-                  sla: supportSlaFromUnknown(event.target.value),
-                }));
-                setCursor(undefined);
-              }}
-              value={filters.sla}
-            >
-              {supportSlaOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.value === "all" ? t(option.label) : valueLabel(option.label)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Category")}</span>
-            <input
-              aria-label={t("Support category")}
-              className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
-              onChange={(event) => { setFilters((current) => ({ ...current, category: event.target.value })); setCursor(undefined); }}
-              placeholder="generation"
-              value={filters.category}
-            />
-          </label>
-          <form
-            className="flex min-w-0 flex-col gap-1"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void saveCurrentView();
-            }}
-          >
-            <span className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Saved view")}</span>
-            <div className="flex gap-2">
-              <input
-                aria-label={t("Support saved view label")}
-                className="rounded-md h-10 min-w-0 flex-1 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
-                onChange={(event) => setSavedViewLabel(event.target.value)}
-                placeholder={t("Saved view label")}
-                value={savedViewLabel}
-              />
-              <button
-                className="inline-flex h-10 shrink-0 items-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
-                disabled={!savedViewLabel.trim() || savingView}
-                type="submit"
-              >
-                {savingView ? <Loader2 className="h-4 w-4 animate-spin" /> : <Bookmark className="h-4 w-4" />}
-                {t("Save view")}
-              </button>
-            </div>
-          </form>
-        </div>
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <span className="inline-flex items-center gap-2 text-xs font-semibold text-[var(--ad-text-muted)]">
-            <SlidersHorizontal className="h-4 w-4" />
-            {t("Saved views")}
-          </span>
-          {savedViews.map((view) => (
-            <span className="rounded-md inline-flex h-8 items-center border border-[var(--ad-border)]" key={view.id}>
-              <button
-                className="h-full px-3 text-xs text-[var(--ad-text)] hover:bg-black/[0.04]"
-                onClick={() => applySavedView(view)}
-                type="button"
-              >
-                {view.label}
-              </button>
-              <button
-                aria-label={t("Delete saved view {label}", { label: view.label })}
-                className="flex h-full w-8 items-center justify-center border-l border-[var(--ad-border)] text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]"
-                onClick={() => void deleteSavedView(view)}
-                title={t("Delete saved view {label}", { label: view.label })}
-                type="button"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
-            </span>
-          ))}
-          {savedViewsLoading ? <span className="text-xs text-[var(--ad-text-muted)]">{t("Loading…")}</span> : null}
-          {!savedViewsLoading && savedViews.length === 0 ? (
-            <span className="text-xs text-[var(--ad-text-muted)]">{t("No saved views.")}</span>
-          ) : null}
-          {activeFilterCount > 0 ? (
-            <button
-              className="rounded-lg h-8 border border-[var(--ad-border)] px-3 text-xs text-[var(--ad-text)] hover:border-[var(--ad-ink)]"
-              onClick={() => { setFilters(defaultSupportRequestFilters); setCursor(undefined); }}
-              type="button"
-            >
-              {t("Reset filters")}
-            </button>
-          ) : null}
-          <span className="text-xs text-[var(--ad-text-muted)]">
-            {t("{visible}/{total} requests", { visible: visibleRows.length, total: rows.length })}
-          </span>
-        </div>
-        {savedViewError ? <p className="mt-2 text-xs text-[var(--ad-red-text)]">{savedViewError}</p> : null}
-      </section>
-
-      <PlaintextAccessPanel />
-
-      {listError ? <p className="text-sm text-[var(--ad-red-text)]" role="alert">{listError}</p> : null}
-
-      <DataTable
-        actions={(row) => {
-          const ticketId = stringValue(row.ticketId);
-          const status = stringValue(row.status);
-          const slaState = stringValue(row.slaState);
-          const slaEscalatedAt = stringValue(row.slaEscalatedAt);
-          const canEscalate =
-            (slaState === "overdue" || slaState === "due_soon") &&
-            !slaEscalatedAt &&
-            status !== "resolved" &&
-            status !== "closed";
-          const actions: Array<{
-            label: string;
-            nextStatus?: string;
-            icon: ReactNode;
-            endpoint?: string;
-            method?: "POST" | "PATCH";
-            notes?: boolean;
-          }> = [];
-          if (canEscalate) {
-            actions.push({
-              endpoint: `/api/v1/admin/support/requests/${ticketId}/escalate`,
-              icon: <AlertTriangle className="h-4 w-4" />,
-              label: "Escalate",
-              method: "POST",
-            });
-          }
-          if (status === "received") {
-            actions.push({ icon: <Inbox className="h-4 w-4" />, label: "Open", nextStatus: "open" });
-          }
-          if (status !== "waiting_on_user" && status !== "resolved" && status !== "closed") {
-            actions.push({
-              icon: <MessageSquare className="h-4 w-4" />,
-              label: "Waiting",
-              nextStatus: "waiting_on_user",
-            });
-          }
-          if (status !== "resolved" && status !== "closed") {
-            actions.push({
-              icon: <ClipboardCheck className="h-4 w-4" />,
-              label: "Resolve",
-              nextStatus: "resolved",
-              notes: true,
-            });
-          }
-          if (status !== "closed") {
-            actions.push({
-              icon: <Check className="h-4 w-4" />,
-              label: "Close",
-              nextStatus: "closed",
-              notes: true,
-            });
-          }
-
-          return (
-            <div className="flex flex-wrap gap-1">
-              {actions.map((item) => (
-                <IconAction
-                  icon={item.icon}
-                  key={`${ticketId}-${item.nextStatus}`}
-                  label={item.label}
-                  onClick={() =>
-                    openAction({
-                      title: `${item.label} ${ticketId}`,
-                      endpoint: item.endpoint ?? `/api/v1/admin/support/requests/${ticketId}`,
-                      method: item.method ?? "PATCH",
-                      confirmText: ticketId,
-                      reasonRequired: true,
-                      body: (actionReason, actionConfirmation) => ({
-                        confirmation: actionConfirmation,
-                        reason: actionReason,
-                        resolutionNotes: item.notes ? actionReason : undefined,
-                        status: item.nextStatus,
-                      }),
-                    })
-                  }
-                />
-              ))}
-            </div>
-          );
-        }}
-        columns={[
-          "ticketId",
-          "userEmail",
-          "category",
-          "subject",
-          "description",
-          "status",
-          "priority",
-          "slaState",
-          "slaDueAt",
-          "slaHoursRemaining",
-          "slaEscalatedAt",
-          "slaEscalationReason",
-          "diagnosticConsent",
-          "sourcePath",
-          "assignedToEmail",
-          "resolutionNotes",
-          "createdAt",
-        ]}
-        rows={visibleRows}
-        title="Support Requests"
-      />
-      <div className="flex justify-end"><button className="min-h-10 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold disabled:opacity-50" disabled={listLoading || !pageInfo.hasNextPage || !pageInfo.endCursor} onClick={() => setCursor(pageInfo.endCursor ?? undefined)} type="button">Next page</button></div>
-    </div>
-  );
-}
-
-function normalizeSupportRequestFilters(filters: SupportRequestFilters): SupportRequestFilters {
-  return {
-    query: filters.query.trim(),
-    status: filters.status,
-    sla: filters.sla,
-    category: filters.category.trim(),
-  };
-}
-
-function supportRequestFiltersFromUnknown(value: unknown): SupportRequestFilters {
-  if (typeof value !== "object" || value === null) return defaultSupportRequestFilters;
-  const record = value as Record<string, unknown>;
-  return {
-    query: typeof record.query === "string" ? record.query : "",
-    status: supportStatusFromUnknown(record.status),
-    sla: supportSlaFromUnknown(record.sla),
-    category: typeof record.category === "string" ? record.category : "",
-  };
-}
-
-function supportStatusFromUnknown(value: unknown): SupportStatusFilter {
-  return supportStatusOptions.some((option) => option.value === value)
-    ? (value as SupportStatusFilter)
-    : "all";
-}
-
-function supportSlaFromUnknown(value: unknown): SupportSlaFilter {
-  return supportSlaOptions.some((option) => option.value === value)
-    ? (value as SupportSlaFilter)
-    : "all";
-}
-
-function ApprovalsView({
-  rows,
-  openAction,
-  pageInfo,
-  query,
-  updateQuery,
-}: {
-  rows: Row[];
-  openAction: (action: PendingAction) => void;
-  pageInfo: PageInfo;
-  query: ListQuery;
-  updateQuery: (updates: Record<string, string | null>, clearCursors?: readonly string[]) => void;
-}) {
-  return (
-    <div className="space-y-4">
-      <ServerListToolbar cursorKeys={["approvalCursor"]} fields={[
-        { key: "approvalSearch", label: "Search" },
-        { key: "approvalStatus", label: "Status", options: ["pending", "approved", "rejected", "canceled"] },
-      ]} query={query} updateQuery={updateQuery} />
-      <p className="text-xs text-[var(--ad-text-muted)]">
-        高危操作复核队列。审批人须 ≠ 发起人，且持该请求声明的 permission key（不变量在服务端强制）。
-      </p>
-      <DataTable
-        actions={(row) => {
-          const id = stringValue(row.id);
-          return (
-            <div className="flex gap-1">
-              <IconAction
-                icon={<Check className="h-4 w-4" />}
-                label="Approve"
-                onClick={() =>
-                  openAction({
-                    title: `Approve ${id}`,
-                    endpoint: `/api/v1/admin/approvals/${id}/approve`,
-                    method: "POST",
-                    confirmText: id,
-                    reasonRequired: true,
-                    body: (actionReason, confirmation) => ({ reason: actionReason, confirmation }),
-                  })
-                }
-              />
-              <IconAction
-                icon={<X className="h-4 w-4" />}
-                label="Reject"
-                onClick={() =>
-                  openAction({
-                    title: `Reject ${id}`,
-                    endpoint: `/api/v1/admin/approvals/${id}/reject`,
-                    method: "POST",
-                    confirmText: id,
-                    reasonRequired: true,
-                    body: (actionReason, confirmation) => ({ reason: actionReason, confirmation }),
-                  })
-                }
-              />
-            </div>
-          );
-        }}
-        columns={["id", "action", "permissionKey", "targetType", "targetId", "requestedById", "reason", "createdAt"]}
-        rows={rows}
-        title="Pending approvals"
-        empty={queryIsFiltered(query, ["approvalSearch", "approvalStatus"]) ? "No approval requests match these filters" : "No approval requests are pending"}
-      />
-      <CanonicalPager cursorKey="approvalCursor" pageInfo={pageInfo} updateQuery={updateQuery} />
-    </div>
-  );
-}
-
-function ChatOpsView({
+ function ChatOpsView({
   configured,
   diagnostics,
   overview,

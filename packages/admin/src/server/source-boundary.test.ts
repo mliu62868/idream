@@ -106,4 +106,21 @@ describe("admin source boundary", () => {
     expect(access).toContain("export function AccessWorkspace");
     expect(moderation).toContain("export function ModerationWorkspace");
   });
+
+  it("keeps support, promo, and approvals authorities out of the catch-all client", async () => {
+    const catchAll = await readFile(path.join(packageRoot, "src/components/admin/AdminConsoleClient.tsx"), "utf8");
+    const support = await readFile(path.join(packageRoot, "src/features/support/SupportWorkspace.tsx"), "utf8").catch(() => "");
+    const promo = await readFile(path.join(packageRoot, "src/features/promo/PromoWorkspace.tsx"), "utf8").catch(() => "");
+    const approvals = await readFile(path.join(packageRoot, "src/features/approvals/ApprovalsWorkspace.tsx"), "utf8").catch(() => "");
+
+    expect(catchAll).not.toContain("function SupportRequestsView");
+    expect(catchAll).not.toContain("function PromoView");
+    expect(catchAll).not.toContain("function ApprovalsView");
+    expect(catchAll).not.toContain("/api/v1/admin/support/requests");
+    expect(catchAll).not.toContain("/api/v1/admin/promo/");
+    expect(catchAll).not.toContain("/api/v1/admin/approvals");
+    expect(support).toContain("export function SupportWorkspace");
+    expect(promo).toContain("export function PromoWorkspace");
+    expect(approvals).toContain("export function ApprovalsWorkspace");
+  });
 });

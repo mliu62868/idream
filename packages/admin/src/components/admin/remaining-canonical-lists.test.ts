@@ -18,6 +18,12 @@ const source = [
   readFileSync(new URL("../../features/access/query.ts", import.meta.url), "utf8"),
   readFileSync(new URL("../../features/moderation/ModerationWorkspace.tsx", import.meta.url), "utf8"),
   readFileSync(new URL("../../features/moderation/query.ts", import.meta.url), "utf8"),
+  readFileSync(new URL("../../features/support/SupportWorkspace.tsx", import.meta.url), "utf8"),
+  readFileSync(new URL("../../features/support/query.ts", import.meta.url), "utf8"),
+  readFileSync(new URL("../../features/promo/PromoWorkspace.tsx", import.meta.url), "utf8"),
+  readFileSync(new URL("../../features/promo/query.ts", import.meta.url), "utf8"),
+  readFileSync(new URL("../../features/approvals/ApprovalsWorkspace.tsx", import.meta.url), "utf8"),
+  readFileSync(new URL("../../features/approvals/query.ts", import.meta.url), "utf8"),
 ].join("\n");
 
 describe("remaining canonical admin list surfaces", () => {
