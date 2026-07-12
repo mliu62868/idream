@@ -37,6 +37,8 @@ export const experimentLifecycleRequestSchema = z.object({
   reason: z.string().trim().min(1).max(1_000),
 }).strict();
 
+export const experimentStatusSchema = z.enum(["draft", "running", "stopped"]);
+
 export const experimentDefinitionSchema = z.object({
   id: adminIdSchema,
   key: z.string().min(1),
@@ -45,7 +47,7 @@ export const experimentDefinitionSchema = z.object({
   eligibility: z.record(z.string(), z.unknown()),
   variants: z.array(experimentVariantSchema),
   metrics: experimentMetricsSchema,
-  status: z.enum(["draft", "running", "stopped"]),
+  status: experimentStatusSchema,
   stateVersion: z.number().int().positive(),
   startedAt: adminIsoDateTimeSchema.nullable(),
   stoppedAt: adminIsoDateTimeSchema.nullable(),
@@ -59,7 +61,7 @@ export const experimentAnalysisQuerySchema = z.object({
 
 export const experimentDefinitionListQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
-  status: z.enum(["draft", "running", "stopped"]).optional(),
+  status: experimentStatusSchema.optional(),
   search: z.string().trim().min(1).max(200).optional(),
   cursor: adminIdSchema.optional(),
 }).strict();

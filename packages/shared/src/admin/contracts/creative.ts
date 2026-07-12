@@ -121,6 +121,15 @@ export const creativePlacementVerificationResultSchema = z.object({
 }).strict();
 
 export const creativeLifecycleStateSchema = z.enum(["draft", "active", "closed", "archived"]);
+export const creativeRunItemStatusSchema = z.enum([
+  "queued",
+  "generated",
+  "approved",
+  "rejected",
+  "regenerate_requested",
+  "published",
+  "failed",
+]);
 export const creativeWorkflowStageSchema = z.enum([
   "brief",
   "directions",
@@ -279,7 +288,7 @@ export const creativeRunItemDetailSchema = z
   .object({
     id: adminIdSchema,
     ordinal: z.number().int().nonnegative(),
-    status: z.string(),
+    status: creativeRunItemStatusSchema,
     version: z.number().int().nonnegative(),
     retryability: z.string(),
     lineage: z
