@@ -1385,7 +1385,10 @@ function renderSection(
       }} />;
     }
     if (section.view === "dead-letter") {
-      return <DeadLetterWorkspace canWrite={ctx.permissions.has("ops.deadletter.write")} />;
+      return <DeadLetterWorkspace permissions={{
+        requeue: ctx.permissions.has("generation.job.requeue"),
+        discard: ctx.permissions.has("ops.deadletter.write"),
+      }} />;
     }
     return <ReviewQueueView />;
   }

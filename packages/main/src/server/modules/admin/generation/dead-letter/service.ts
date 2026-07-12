@@ -164,9 +164,9 @@ export async function deadLetterQueue(request: Request) {
       status: { in: statuses },
       errorCode: errorCode ? { contains: errorCode } : undefined,
       mode: mode && mode !== "all" ? mode : undefined,
+      events: { none: { type: "discarded" } },
       AND: [
         ...(cursorWhere ? [cursorWhere] : []),
-        ...(!errorCode ? [{ OR: [{ errorCode: null }, { errorCode: { not: "discarded" } }] }] : []),
         ...(search ? [{ OR: [
           { id: { contains: search } },
           { userId: { contains: search } },
@@ -288,8 +288,22 @@ async function refundDiscardableJob(job: { id: string; userId: string; costDream
     if (willRefund) await appendLedger(tx, job.userId, amount, "refund", job.id, `generation:${job.id}:refund`);
     await tx.generationJob.update({
       where: { id: job.id },
-      data: { errorCode: "discarded", version: { increment: 1 } },
+      data: { errorCode: job.errorCode ?? "discarded", version: { increment: 1 } },
     });
+    const existingDiscard = await tx.generationJobEvent.findFirst({
+      where: { jobId: job.id, type: "discarded" },
+      select: { id: true },
+    });
+    if (!existingDiscard) {
+      await tx.generationJobEvent.create({
+        data: {
+          jobId: job.id,
+          type: "discarded",
+          message: "Operator discarded dead-letter request",
+          metadata: toInputJson({ previousErrorCode: job.errorCode }),
+        },
+      });
+    }
     return willRefund;
   });
 }
