@@ -24,6 +24,14 @@ import {
 import { AdminV2RequestError, adminV2Request, setWorkspaceUrl } from "@/lib/admin-v2-api";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { cn } from "@/lib/utils";
+import {
+  CHARACTER_PORTFOLIO_PHASES,
+  CHARACTER_PORTFOLIO_READINESS_STATES,
+  CHARACTER_PORTFOLIO_SERVING_STATES,
+  characterPortfolioQuery,
+  parseCharacterPortfolioUrl,
+  type CharacterPortfolioUrlState,
+} from "./portfolio-query";
 
 type Permissions = {
   read: boolean;
@@ -89,6 +97,9 @@ function PortfolioCard({ canOpenProject, item }: { canOpenProject: boolean; item
 function CharacterPortfolio({ canOpenProjects, canRead, mode }: { canOpenProjects: boolean; canRead: boolean; mode: "studio" | "performance" }) {
   const [items, setItems] = useState<CharacterPortfolioItem[]>([]);
   const [search, setSearch] = useState("");
+  const [phase, setPhase] = useState("");
+  const [servingState, setServingState] = useState("");
+  const [readiness, setReadiness] = useState("");
   const [cursor, setCursor] = useState<string | undefined>();
   const [pageInfo, setPageInfo] = useState<{ endCursor: string | null; hasNextPage: boolean }>({ endCursor: null, hasNextPage: false });
   const [asOf, setAsOf] = useState<string | null>(null);
@@ -96,17 +107,20 @@ function CharacterPortfolio({ canOpenProjects, canRead, mode }: { canOpenProject
   const [error, setError] = useState<string | null>(null);
   const requestGate = useRef(createLatestRequestGate());
 
-  const load = useCallback(async (next: { search: string; cursor?: string }, historyMode: "none" | "push" | "replace") => {
+  const load = useCallback(async (next: CharacterPortfolioUrlState, historyMode: "none" | "push" | "replace") => {
     if (!canRead) return;
     const request = requestGate.current.begin();
     setLoading(true);
     setError(null);
     try {
-      const query = new URLSearchParams({ limit: "25", sort: "project_id_asc" });
-      if (next.search.trim()) query.set("search", next.search.trim());
-      if (next.cursor) query.set("cursor", next.cursor);
+      const query = characterPortfolioQuery(next, true);
       if (historyMode !== "none") {
-        window.history[historyMode === "push" ? "pushState" : "replaceState"](null, "", `${window.location.pathname}?${query}`);
+        const locationQuery = characterPortfolioQuery(next);
+        window.history[historyMode === "push" ? "pushState" : "replaceState"](
+          null,
+          "",
+          `${window.location.pathname}${locationQuery ? `?${locationQuery}` : ""}`,
+        );
       }
       const data = await adminV2Request(`/api/v2/admin/characters/portfolio?${query}`, { schema: characterPortfolioResponseSchema });
       if (!request.isCurrent()) return;
@@ -127,9 +141,11 @@ function CharacterPortfolio({ canOpenProjects, canRead, mode }: { canOpenProject
   useEffect(() => {
     const gate = requestGate.current;
     const restore = (historyMode: "none" | "replace") => {
-      const params = new URLSearchParams(window.location.search);
-      const next = { search: params.get("search") ?? "", cursor: params.get("cursor") ?? undefined };
+      const next = parseCharacterPortfolioUrl(window.location.search);
       setSearch(next.search);
+      setPhase(next.phase ?? "");
+      setServingState(next.servingState ?? "");
+      setReadiness(next.readiness ?? "");
       setCursor(next.cursor);
       void load(next, historyMode);
     };
@@ -145,7 +161,13 @@ function CharacterPortfolio({ canOpenProjects, canRead, mode }: { canOpenProject
 
   function apply(nextCursor?: string) {
     setCursor(nextCursor);
-    void load({ search, cursor: nextCursor }, "push");
+    void load({
+      search,
+      phase: phase || undefined,
+      servingState: servingState || undefined,
+      readiness: readiness || undefined,
+      cursor: nextCursor,
+    }, "push");
   }
 
   if (!canRead) return permissionDenied(mode === "performance" ? "character.performance.read" : "character.project.read");
@@ -154,10 +176,16 @@ function CharacterPortfolio({ canOpenProjects, canRead, mode }: { canOpenProject
     <section aria-labelledby="character-portfolio-title">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">{performanceMode ? "Growth" : "Character Studio"}</p><h2 className="mt-1 text-2xl font-semibold" id="character-portfolio-title">{performanceMode ? "Character Performance" : "Portfolio & Projects"}</h2><p className="mt-2 max-w-2xl text-sm text-[var(--ad-text-muted)]">{performanceMode ? "Compare release-attributed value, maturity, and portfolio decisions without expanding Project authority." : "Decide what to promote, improve, pause, or retire from release-attributed evidence."}</p></div>
-        <form className="flex items-end gap-2" onSubmit={(event) => { event.preventDefault(); apply(); }}><label className="text-xs font-semibold text-[var(--ad-text-muted)]">Search authority<input aria-label="Search characters" className={`${fieldClass} mt-1 sm:w-72`} onChange={(event) => setSearch(event.target.value)} placeholder="Name, character or project ID" value={search} /></label><WorkspaceButton tone="primary" type="submit">Apply</WorkspaceButton></form>
+        <form className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5 lg:items-end" onSubmit={(event) => { event.preventDefault(); apply(); }}>
+          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Search authority<input aria-label="Search characters" className={`${fieldClass} mt-1`} onChange={(event) => setSearch(event.target.value)} placeholder="Name, character or project ID" value={search} /></label>
+          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Project phase<select aria-label="Filter by project phase" className={`${fieldClass} mt-1`} onChange={(event) => setPhase(event.target.value)} value={phase}><option value="">All phases</option>{CHARACTER_PORTFOLIO_PHASES.map((value) => <option key={value} value={value}>{value.replaceAll("_", " ")}</option>)}</select></label>
+          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Serving state<select aria-label="Filter by serving state" className={`${fieldClass} mt-1`} onChange={(event) => setServingState(event.target.value)} value={servingState}><option value="">All serving states</option>{CHARACTER_PORTFOLIO_SERVING_STATES.map((value) => <option key={value} value={value}>{value.replaceAll("_", " ")}</option>)}</select></label>
+          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Readiness<select aria-label="Filter by readiness" className={`${fieldClass} mt-1`} onChange={(event) => setReadiness(event.target.value)} value={readiness}><option value="">All readiness</option>{CHARACTER_PORTFOLIO_READINESS_STATES.map((value) => <option key={value} value={value}>{value.replaceAll("_", " ")}</option>)}</select></label>
+          <WorkspaceButton tone="primary" type="submit">Apply</WorkspaceButton>
+        </form>
       </div>
-      {error ? <div className="mt-5 rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">{error} <button className="ml-2 underline" onClick={() => void load({ search, cursor }, "none")} type="button">Retry</button></div> : null}
-      <div className="mt-6">{loading ? <LoadingWorkspace label="Loading release-attributed portfolio" /> : items.length === 0 ? <EmptyWorkspace filtered={Boolean(search)} onClear={() => { setSearch(""); setCursor(undefined); void load({ search: "" }, "push"); }} /> : <div className="grid gap-3">{items.map((item) => <PortfolioCard canOpenProject={canOpenProjects} item={item} key={item.characterId} />)}</div>}</div>
+      {error ? <div className="mt-5 rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">{error} <button className="ml-2 underline" onClick={() => void load({ search, phase: phase || undefined, servingState: servingState || undefined, readiness: readiness || undefined, cursor }, "none")} type="button">Retry</button></div> : null}
+      <div className="mt-6">{loading ? <LoadingWorkspace label="Loading release-attributed portfolio" /> : items.length === 0 ? <EmptyWorkspace filtered={Boolean(search || phase || servingState || readiness)} onClear={() => { setSearch(""); setPhase(""); setServingState(""); setReadiness(""); setCursor(undefined); void load({ search: "" }, "push"); }} /> : <div className="grid gap-3">{items.map((item) => <PortfolioCard canOpenProject={canOpenProjects} item={item} key={item.characterId} />)}</div>}</div>
       <div className="mt-4 flex items-center justify-between gap-3"><p className="text-xs text-[var(--ad-text-muted)]">{asOf ? `Fresh as of ${new Date(asOf).toLocaleString()}` : "No successful query yet"}</p><WorkspaceButton disabled={loading || !pageInfo.hasNextPage || !pageInfo.endCursor} onClick={() => apply(pageInfo.endCursor ?? undefined)}>Next page</WorkspaceButton></div>
     </section>
   );

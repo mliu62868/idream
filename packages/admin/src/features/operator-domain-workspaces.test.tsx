@@ -32,6 +32,9 @@ describe("Character and Creative operator workspaces", () => {
   it("renders server-authority search controls while portfolio data is loading", () => {
     const html = renderToStaticMarkup(<CharacterWorkspace permissions={{ read: true, writeProject: true, proposeRelease: true, publishRelease: true, reviewRelease: true }} view={{ kind: "list" }} />);
     expect(html).toContain("Search authority");
+    expect(html).toContain("Project phase");
+    expect(html).toContain("Serving state");
+    expect(html).toContain("Readiness");
     expect(html).toContain("Loading release-attributed portfolio");
   });
 
