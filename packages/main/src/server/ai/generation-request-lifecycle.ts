@@ -5,7 +5,10 @@ import { Errors } from "@/server/lib/errors";
 import { jobQueue } from "@/server/jobs/queue";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
-import { recordGenerationAttemptEvent } from "./generation-attempt-events";
+import {
+  recordGenerationAttemptEvent,
+  recordGenerationAttemptQueuedEvent,
+} from "./generation-attempt-events";
 import { ensureGenerationSettlementLinks, linkGenerationLedgerEntry } from "./generation-settlement";
 
 export async function cancelGenerationRequest(input: {
@@ -53,6 +56,156 @@ export async function cancelGenerationRequest(input: {
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   await removeGenerationTransportJob(input.requestId);
   return result;
+}
+
+export async function retryGenerationRequest(input: {
+  readonly requestId: string;
+  readonly expectedVersion: number;
+  readonly actor: { readonly id: string; readonly role: string };
+  readonly reason: string;
+  readonly idempotencyKey: string;
+  readonly traceId: string;
+}) {
+  const scope = `${env.APP_ENV}:${input.actor.id}`;
+  const requestHash = canonicalSha256({
+    commandType: "generation.request.retry",
+    requestId: input.requestId,
+    expectedVersion: input.expectedVersion,
+    reason: input.reason,
+  });
+  const existing = await prisma.controlPlaneCommand.findUnique({
+    where: { scope_idempotencyKey: { scope, idempotencyKey: input.idempotencyKey } },
+  });
+  if (existing) {
+    if (existing.requestHash !== requestHash) {
+      throw Errors.conflict("Idempotency key is bound to another Generation Request retry");
+    }
+    return existing.result;
+  }
+
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "generation_jobs" WHERE id = ${input.requestId} FOR UPDATE`;
+    const job = await tx.generationJob.findUnique({ where: { id: input.requestId } });
+    if (!job) throw Errors.notFound("Generation Request not found");
+    if (job.version !== input.expectedVersion) {
+      throw Errors.conflict("Generation Request changed before retry", {
+        expectedVersion: input.expectedVersion,
+        currentVersion: job.version,
+      });
+    }
+    if (job.status !== "failed") {
+      throw Errors.conflict("Only a failed Generation Request can be retried", { status: job.status });
+    }
+    const delivered = await tx.generationDelivery.count({
+      where: { requestId: job.id, status: "delivered" },
+    });
+    if (delivered > 0) {
+      throw Errors.conflict("Partially delivered requests require failed-output reconciliation", {
+        deliveredCount: delivered,
+      });
+    }
+    const latest = await tx.generationAttempt.findFirst({
+      where: { requestId: job.id },
+      orderBy: { attemptNo: "desc" },
+    });
+    if (latest && !["failed", "unknown"].includes(latest.status)) {
+      throw Errors.conflict("Latest Generation Attempt is not safe for retry", {
+        attemptId: latest.id,
+        status: latest.status,
+      });
+    }
+    if (latest?.retryability === "not_retryable") {
+      throw Errors.conflict("Latest Generation Attempt is explicitly non-replayable", {
+        attemptId: latest.id,
+      });
+    }
+    const command = await tx.controlPlaneCommand.create({
+      data: {
+        scope,
+        idempotencyKey: input.idempotencyKey,
+        commandType: "generation.request.retry",
+        targetType: "generation_request",
+        targetId: job.id,
+        actorId: input.actor.id,
+        requestId: input.traceId,
+        requestHash,
+        requestPayload: toInputJson({ expectedVersion: input.expectedVersion, reason: input.reason }),
+        expectedVersion: input.expectedVersion,
+        retryMode: "idempotent",
+        status: "accepted",
+      },
+    });
+    const attempt = await tx.generationAttempt.create({
+      data: {
+        requestId: job.id,
+        attemptNo: (latest?.attemptNo ?? 0) + 1,
+        provider: latest?.provider ?? job.provider,
+        profileKey: latest?.profileKey ?? job.profileId,
+        profileVersion: latest?.profileVersion ?? job.profileVersion,
+        workflowKey: latest?.workflowKey ?? job.model,
+        workflowVersion: latest?.workflowVersion,
+        sourceCommandId: command.id,
+        status: "queued",
+      },
+    });
+    await recordGenerationAttemptQueuedEvent(tx, attempt);
+    const updated = await tx.generationJob.update({
+      where: { id: job.id },
+      data: {
+        status: "queued",
+        errorCode: null,
+        completedAt: null,
+        finishedAt: null,
+        deliveredOutputCount: 0,
+        version: { increment: 1 },
+      },
+    });
+    const result = {
+      commandId: command.id,
+      requestId: job.id,
+      attemptId: attempt.id,
+      attemptNo: attempt.attemptNo,
+      status: "queued" as const,
+      version: updated.version,
+    };
+    await tx.controlPlaneCommand.update({
+      where: { id: command.id },
+      data: { status: "succeeded", result: toInputJson(result), finishedAt: new Date() },
+    });
+    await tx.adminAuditLog.create({
+      data: {
+        actorId: input.actor.id,
+        actorRole: input.actor.role,
+        action: "generation.request.retry",
+        targetType: "generation_request",
+        targetId: job.id,
+        reason: input.reason,
+        before: toInputJson({
+          status: job.status,
+          version: job.version,
+          latestAttemptId: latest?.id ?? null,
+          latestAttemptNo: latest?.attemptNo ?? null,
+        }),
+        after: toInputJson(result),
+        requestId: input.traceId,
+      },
+    });
+    await tx.mainOutboxEvent.create({
+      data: {
+        id: `generation_retry_${job.id}_${attempt.attemptNo}`,
+        eventType: "generation.retry.dispatch.v2",
+        aggregateType: "generation_request",
+        aggregateId: job.id,
+        payload: toInputJson({
+          generationJobId: job.id,
+          attemptId: attempt.id,
+          attemptNo: attempt.attemptNo,
+          commandId: command.id,
+        }),
+      },
+    });
+    return result;
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 }
 
 async function removeGenerationTransportJob(requestId: string) {

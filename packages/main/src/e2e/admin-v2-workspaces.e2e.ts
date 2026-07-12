@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import axe, { type AxeResults } from "axe-core";
 import { prisma } from "@/server/lib/db";
 import {
   CHARACTER_RELEASE_POLICY_VERSION,
@@ -77,6 +78,29 @@ async function expectNoHorizontalOverflow(page: Page) {
       .slice(0, 8),
   }));
   expect(metrics.documentWidth, JSON.stringify(metrics, null, 2)).toBeLessThanOrEqual(metrics.viewportWidth + 1);
+}
+
+async function expectWcag22AA(page: Page) {
+  await page.addScriptTag({ content: axe.source });
+  const results = await page.evaluate(async () => {
+    const runner = (window as typeof window & { axe: typeof axe }).axe;
+    return runner.run(document, {
+      runOnly: {
+        type: "tag",
+        values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"],
+      },
+    });
+  }) as AxeResults;
+  const violations = results.violations.map((violation) => ({
+    id: violation.id,
+    impact: violation.impact,
+    help: violation.help,
+    nodes: violation.nodes.map((node) => ({
+      target: node.target,
+      failureSummary: node.failureSummary,
+    })),
+  }));
+  expect(violations, JSON.stringify(violations, null, 2)).toEqual([]);
 }
 
 test.describe.serial("Admin v2 operator workspaces", () => {
@@ -738,6 +762,39 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await page.getByTestId("today-queue-recently-resolved").locator(`a[href="/admin/ops/incidents/${incidentId}"]`).click();
     await expect(page).toHaveURL(new RegExp(`/admin/ops/incidents/${incidentId}$`));
     await expect(page.getByRole("heading", { level: 3, name: `E2E provider regression ${suffix}` })).toBeVisible();
+    expect(failures).toEqual([]);
+  });
+
+  test("opens a Job authority deep link without losing query or selection state", async ({ page }) => {
+    const failures = consoleFailures(page);
+    await login(page);
+    await page.goto(`${adminBaseURL()}/admin/ops/jobs?job=${encodeURIComponent(incidentRequestId)}`);
+    await expect(page).toHaveURL(new RegExp(`job=${incidentRequestId}`));
+    await expect(page.getByText("Generation Request authority")).toBeVisible();
+    await expect(page.getByText("Immutable Attempt events")).toBeVisible();
+    await page.getByRole("button", { name: "Close" }).click();
+    await expect(page).not.toHaveURL(/(?:\?|&)job=/);
+    await expect(page.getByText("Generation Request authority")).toHaveCount(0);
+    expect(failures).toEqual([]);
+  });
+
+  test("meets automated WCAG 2.2 AA gates across the core operator surfaces", async ({ page }) => {
+    const failures = consoleFailures(page);
+    await login(page);
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const routes = [
+      `/admin/characters/${releaseCharacterId}?tab=release`,
+      `/admin/creative/runs/${creativeRunId}`,
+      `/admin/ops/incidents/${incidentId}`,
+      `/admin/cases/${caseId}`,
+      `/admin/ops/jobs?job=${encodeURIComponent(incidentRequestId)}`,
+      "/admin/today",
+    ];
+    for (const route of routes) {
+      await page.goto(`${adminBaseURL()}${route}`);
+      await expect(page.locator("#admin-main-content")).toBeVisible();
+      await expectWcag22AA(page);
+    }
     expect(failures).toEqual([]);
   });
 

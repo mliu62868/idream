@@ -1,0 +1,33 @@
+import {
+  retryGenerationRequestCommandSchema,
+  retryGenerationRequestResultSchema,
+} from "@idream/shared/admin";
+import { retryGenerationRequest } from "@/server/ai/generation-request-lifecycle";
+import { Errors } from "@/server/lib/errors";
+import { ok } from "@/server/lib/http";
+import { actorWithPermission } from "@/server/modules/admin/service";
+import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
+import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
+
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
+export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
+  const { id } = await context.params;
+  return adminV2Route(async () => {
+    const actor = await actorWithPermission(request, "generation.job.requeue");
+    const body = retryGenerationRequestCommandSchema.parse(await request.json());
+    if (body.confirmation !== `${id}:retry`) {
+      throw Errors.badRequest("Confirmation did not match Generation Request retry target");
+    }
+    const result = await retryGenerationRequest({
+      requestId: id,
+      expectedVersion: body.entityVersion,
+      actor,
+      reason: body.reason,
+      idempotencyKey: requireIdempotencyKey(request),
+      traceId: request.headers.get("x-request-id") ?? crypto.randomUUID(),
+    });
+    return ok(retryGenerationRequestResultSchema.parse(result));
+  });
+}

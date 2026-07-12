@@ -1,4 +1,5 @@
 import {
+  generationJobDetailResponseSchema,
   generationJobListResponseSchema,
   generationJobQuerySchema,
   type GenerationJobSort,
@@ -148,6 +149,78 @@ function requestOutcome(
   return "needs_reconciliation";
 }
 
+type JobProjectionRow = Prisma.GenerationJobGetPayload<{
+  include: { _count: { select: { assets: true } } };
+}>;
+type AttemptRow = Prisma.GenerationAttemptGetPayload<Record<string, never>>;
+
+function settlementView(settlement: { captured: number; refunded: number }) {
+  if (settlement.captured === 0) return "not_required" as const;
+  if (settlement.refunded >= settlement.captured) return "refunded" as const;
+  if (settlement.refunded > 0) return "partially_refunded" as const;
+  return "captured" as const;
+}
+
+function generationJobProjection(
+  row: JobProjectionRow,
+  latestAttempt: AttemptRow | null,
+  deliveries: Readonly<Record<string, number>>,
+  settlement: { captured: number; refunded: number },
+) {
+  const deliveredCount = deliveries.delivered ?? 0;
+  return {
+    id: row.id,
+    userId: row.userId,
+    characterId: row.characterId,
+    derivedFromJobId: row.derivedFromJobId,
+    mode: row.mode,
+    requestOutcome: requestOutcome(row.status, row.outputCount, deliveredCount, latestAttempt?.status ?? null),
+    legacyStatus: row.status,
+    latestAttempt: latestAttempt ? {
+      id: latestAttempt.id,
+      attemptNo: latestAttempt.attemptNo,
+      status: attemptStatus(latestAttempt.status),
+      provider: latestAttempt.provider?.trim() || null,
+      errorCode: latestAttempt.errorCode?.trim() || null,
+      retryability: latestAttempt.retryability?.trim() || null,
+      operatorGuidance: latestAttempt.operatorGuidance?.trim() || null,
+      startedAt: latestAttempt.startedAt?.toISOString() ?? null,
+      finishedAt: latestAttempt.finishedAt?.toISOString() ?? null,
+    } : null,
+    delivery: {
+      expectedOutputCount: row.outputCount,
+      deliveredCount,
+      pendingCount: deliveries.pending ?? 0,
+      failedCount: deliveries.failed ?? 0,
+      suppressedCount: deliveries.suppressed ?? 0,
+    },
+    settlement: {
+      view: settlementView(settlement),
+      capturedDreamcoins: settlement.captured,
+      refundedDreamcoins: settlement.refunded,
+    },
+    provider: row.provider?.trim() || null,
+    model: row.model?.trim() || null,
+    profileId: row.profileId?.trim() || null,
+    profileVersion: row.profileVersion,
+    recipeId: row.recipeId?.trim() || null,
+    recipeVersion: row.recipeVersion,
+    sourceType: row.sourceType.trim() || "unknown",
+    sourceId: row.sourceId?.trim() || null,
+    errorCode: row.errorCode?.trim() || null,
+    outputCount: row.outputCount,
+    deliveredOutputCount: row.deliveredOutputCount,
+    assetCount: row._count.assets,
+    costDreamcoins: row.costDreamcoins,
+    promptHidden: Boolean(row.prompt),
+    negativePromptHidden: Boolean(row.negativePrompt),
+    version: row.version,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+    finishedAt: row.finishedAt?.toISOString() ?? null,
+  };
+}
+
 export async function listGenerationJobsV2(request: Request) {
   await actorWithPermission(request, "generation.job.read");
   const url = new URL(request.url);
@@ -218,70 +291,12 @@ export async function listGenerationJobsV2(request: Request) {
     settlementByRequest.set(link.requestId, amounts);
   }
   const response = generationJobListResponseSchema.parse({
-    items: page.map((row) => {
-      const latestAttempt = latestAttemptByRequest.get(row.id) ?? null;
-      const deliveries = deliveriesByRequest.get(row.id) ?? {};
-      const deliveredCount = deliveries.delivered ?? 0;
-      const settlement = settlementByRequest.get(row.id) ?? { captured: 0, refunded: 0 };
-      const settlementView = settlement.captured === 0
-        ? "not_required"
-        : settlement.refunded >= settlement.captured
-          ? "refunded"
-          : settlement.refunded > 0
-            ? "partially_refunded"
-            : "captured";
-      return {
-      id: row.id,
-      userId: row.userId,
-      characterId: row.characterId,
-      derivedFromJobId: row.derivedFromJobId,
-      mode: row.mode,
-      requestOutcome: requestOutcome(row.status, row.outputCount, deliveredCount, latestAttempt?.status ?? null),
-      legacyStatus: row.status,
-      latestAttempt: latestAttempt ? {
-        id: latestAttempt.id,
-        attemptNo: latestAttempt.attemptNo,
-        status: attemptStatus(latestAttempt.status),
-        provider: latestAttempt.provider?.trim() || null,
-        errorCode: latestAttempt.errorCode?.trim() || null,
-        retryability: latestAttempt.retryability?.trim() || null,
-        operatorGuidance: latestAttempt.operatorGuidance?.trim() || null,
-        startedAt: latestAttempt.startedAt?.toISOString() ?? null,
-        finishedAt: latestAttempt.finishedAt?.toISOString() ?? null,
-      } : null,
-      delivery: {
-        expectedOutputCount: row.outputCount,
-        deliveredCount,
-        pendingCount: deliveries.pending ?? 0,
-        failedCount: deliveries.failed ?? 0,
-        suppressedCount: deliveries.suppressed ?? 0,
-      },
-      settlement: {
-        view: settlementView,
-        capturedDreamcoins: settlement.captured,
-        refundedDreamcoins: settlement.refunded,
-      },
-      provider: row.provider?.trim() || null,
-      model: row.model?.trim() || null,
-      profileId: row.profileId?.trim() || null,
-      profileVersion: row.profileVersion,
-      recipeId: row.recipeId?.trim() || null,
-      recipeVersion: row.recipeVersion,
-      sourceType: row.sourceType.trim() || "unknown",
-      sourceId: row.sourceId?.trim() || null,
-      errorCode: row.errorCode?.trim() || null,
-      outputCount: row.outputCount,
-      deliveredOutputCount: row.deliveredOutputCount,
-      assetCount: row._count.assets,
-      costDreamcoins: row.costDreamcoins,
-      promptHidden: Boolean(row.prompt),
-      negativePromptHidden: Boolean(row.negativePrompt),
-      version: row.version,
-      createdAt: row.createdAt.toISOString(),
-      updatedAt: row.updatedAt.toISOString(),
-      finishedAt: row.finishedAt?.toISOString() ?? null,
-      };
-    }),
+    items: page.map((row) => generationJobProjection(
+      row,
+      latestAttemptByRequest.get(row.id) ?? null,
+      deliveriesByRequest.get(row.id) ?? {},
+      settlementByRequest.get(row.id) ?? { captured: 0, refunded: 0 },
+    )),
     pageInfo: {
       endCursor: hasNextPage && last ? cursorForRow(last, query.sort, queryHash) : null,
       hasNextPage,
@@ -298,6 +313,113 @@ export async function listGenerationJobsV2(request: Request) {
       totalOutputCount: totals._sum.outputCount ?? 0,
       totalDeliveredOutputCount: totals._sum.deliveredOutputCount ?? 0,
     },
+    asOf: new Date().toISOString(),
+    freshness: "fresh",
+  });
+  return ok(response, { headers: { "Cache-Control": "no-store" } });
+}
+
+export async function getGenerationJobV2(request: Request, requestId: string) {
+  await actorWithPermission(request, "generation.job.read");
+  const row = await prisma.generationJob.findUnique({
+    where: { id: requestId },
+    include: { _count: { select: { assets: true } } },
+  });
+  if (!row) throw Errors.notFound("Generation Request not found");
+  const attempts = await prisma.generationAttempt.findMany({
+    where: { requestId },
+    orderBy: { attemptNo: "asc" },
+  });
+  const attemptIds = attempts.map((attempt) => attempt.id);
+  const [events, artifacts, deliveries, settlementLinks] = await Promise.all([
+    attemptIds.length > 0 ? prisma.generationAttemptEvent.findMany({
+      where: { attemptId: { in: attemptIds } },
+      orderBy: [{ occurredAt: "asc" }, { sequence: "asc" }],
+    }) : [],
+    attemptIds.length > 0 ? prisma.generationArtifact.findMany({
+      where: { attemptId: { in: attemptIds } },
+      orderBy: [{ attemptId: "asc" }, { ordinal: "asc" }],
+    }) : [],
+    prisma.generationDelivery.findMany({
+      where: { requestId },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    }),
+    prisma.generationSettlementLink.findMany({
+      where: { requestId },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    }),
+  ]);
+  const ledgerEntries = settlementLinks.length > 0 ? await prisma.dreamcoinLedger.findMany({
+    where: { id: { in: settlementLinks.map((link) => link.ledgerEntryId) } },
+    select: { id: true, delta: true, reason: true, createdAt: true },
+  }) : [];
+  const ledgerById = new Map(ledgerEntries.map((entry) => [entry.id, entry]));
+  const deliveryCounts: Record<string, number> = {};
+  for (const delivery of deliveries) deliveryCounts[delivery.status] = (deliveryCounts[delivery.status] ?? 0) + 1;
+  const settlement = { captured: 0, refunded: 0 };
+  for (const link of settlementLinks) {
+    const entry = ledgerById.get(link.ledgerEntryId);
+    if (!entry) continue;
+    if (entry.reason === "generation_spend" && entry.delta < 0) settlement.captured += -entry.delta;
+    if (entry.reason === "refund" && entry.delta > 0) settlement.refunded += entry.delta;
+  }
+  const latestAttempt = attempts.at(-1) ?? null;
+  const response = generationJobDetailResponseSchema.parse({
+    request: generationJobProjection(row, latestAttempt, deliveryCounts, settlement),
+    attempts: attempts.map((attempt) => ({
+      id: attempt.id,
+      attemptNo: attempt.attemptNo,
+      status: attemptStatus(attempt.status),
+      provider: attempt.provider,
+      profileKey: attempt.profileKey,
+      profileVersion: attempt.profileVersion,
+      workflowKey: attempt.workflowKey,
+      workflowVersion: attempt.workflowVersion,
+      errorClass: attempt.errorClass,
+      errorCode: attempt.errorCode,
+      errorSignature: attempt.errorSignature,
+      retryability: attempt.retryability,
+      operatorGuidance: attempt.operatorGuidance,
+      startedAt: attempt.startedAt?.toISOString() ?? null,
+      finishedAt: attempt.finishedAt?.toISOString() ?? null,
+      createdAt: attempt.createdAt.toISOString(),
+    })),
+    events: events.map((event) => ({
+      id: event.id,
+      attemptId: event.attemptId,
+      sequence: event.sequence,
+      eventType: event.eventType,
+      outcome: event.outcome,
+      occurredAt: event.occurredAt.toISOString(),
+    })),
+    artifacts: artifacts.map((artifact) => ({
+      id: artifact.id,
+      attemptId: artifact.attemptId,
+      ordinal: artifact.ordinal,
+      validationState: artifact.validationState,
+      archiveState: artifact.archiveState,
+      assetId: artifact.assetId,
+      createdAt: artifact.createdAt.toISOString(),
+    })),
+    deliveries: deliveries.map((delivery) => ({
+      id: delivery.id,
+      artifactId: delivery.artifactId,
+      targetType: delivery.targetType,
+      targetId: delivery.targetId,
+      status: delivery.status,
+      deliveredAt: delivery.deliveredAt?.toISOString() ?? null,
+      createdAt: delivery.createdAt.toISOString(),
+    })),
+    settlementEntries: settlementLinks.flatMap((link) => {
+      const entry = ledgerById.get(link.ledgerEntryId);
+      return entry ? [{
+        ledgerEntryId: entry.id,
+        kind: link.kind,
+        deltaDreamcoins: entry.delta,
+        reason: entry.reason,
+        createdAt: entry.createdAt.toISOString(),
+      }] : [];
+    }),
     asOf: new Date().toISOString(),
     freshness: "fresh",
   });

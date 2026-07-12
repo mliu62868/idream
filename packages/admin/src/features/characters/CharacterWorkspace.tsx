@@ -86,49 +86,69 @@ function PortfolioCard({ item }: { item: CharacterPortfolioItem }) {
 
 function CharacterPortfolio({ permissions }: { permissions: Permissions }) {
   const [items, setItems] = useState<CharacterPortfolioItem[]>([]);
-  const [search, setSearch] = useState(() => typeof window === "undefined" ? "" : new URLSearchParams(window.location.search).get("search") ?? "");
+  const [search, setSearch] = useState("");
+  const [cursor, setCursor] = useState<string | undefined>();
+  const [pageInfo, setPageInfo] = useState<{ endCursor: string | null; hasNextPage: boolean }>({ endCursor: null, hasNextPage: false });
+  const [asOf, setAsOf] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (next: { search: string; cursor?: string }, historyMode: "none" | "push" | "replace") => {
     if (!permissions.read) return;
     setLoading(true);
     setError(null);
     try {
-      const query = new URLSearchParams({ limit: "50", sort: "project_id_asc" });
-      if (search.trim()) query.set("search", search.trim());
-      setWorkspaceUrl(query);
+      const query = new URLSearchParams({ limit: "25", sort: "project_id_asc" });
+      if (next.search.trim()) query.set("search", next.search.trim());
+      if (next.cursor) query.set("cursor", next.cursor);
+      if (historyMode !== "none") {
+        window.history[historyMode === "push" ? "pushState" : "replaceState"](null, "", `${window.location.pathname}?${query}`);
+      }
       const data = await adminV2Request(`/api/v2/admin/characters/portfolio?${query}`, { schema: characterPortfolioResponseSchema });
       setItems([...data.items]);
+      setPageInfo(data.pageInfo);
+      setAsOf(data.asOf);
     } catch (reason) {
+      setItems([]);
+      setPageInfo({ endCursor: null, hasNextPage: false });
       setError(reason instanceof Error ? reason.message : "Character portfolio could not be loaded");
     } finally {
       setLoading(false);
     }
-  }, [permissions.read, search]);
+  }, [permissions.read]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void load(), search.trim() ? 250 : 0);
-    return () => window.clearTimeout(timer);
-  }, [load, search]);
+    const restore = (historyMode: "none" | "replace") => {
+      const params = new URLSearchParams(window.location.search);
+      const next = { search: params.get("search") ?? "", cursor: params.get("cursor") ?? undefined };
+      setSearch(next.search);
+      setCursor(next.cursor);
+      void load(next, historyMode);
+    };
+    const timer = window.setTimeout(() => restore("replace"), 0);
+    const onPopState = () => restore("none");
+    window.addEventListener("popstate", onPopState);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("popstate", onPopState);
+    };
+  }, [load]);
+
+  function apply(nextCursor?: string) {
+    setCursor(nextCursor);
+    void load({ search, cursor: nextCursor }, "push");
+  }
 
   if (!permissions.read) return permissionDenied("character.project.read");
   return (
     <section aria-labelledby="character-portfolio-title">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">Character Studio</p>
-          <h1 className="mt-1 text-2xl font-semibold" id="character-portfolio-title">Portfolio & Projects</h1>
-          <p className="mt-2 max-w-2xl text-sm text-[var(--ad-text-muted)]">Decide what to promote, improve, pause, or retire from release-attributed evidence.</p>
-        </div>
-        <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Search authority
-          <input aria-label="Search characters" className={`${fieldClass} mt-1 sm:w-72`} onChange={(event) => setSearch(event.target.value)} placeholder="Name, character or project ID" value={search} />
-        </label>
+        <div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">Character Studio</p><h2 className="mt-1 text-2xl font-semibold" id="character-portfolio-title">Portfolio & Projects</h2><p className="mt-2 max-w-2xl text-sm text-[var(--ad-text-muted)]">Decide what to promote, improve, pause, or retire from release-attributed evidence.</p></div>
+        <form className="flex items-end gap-2" onSubmit={(event) => { event.preventDefault(); apply(); }}><label className="text-xs font-semibold text-[var(--ad-text-muted)]">Search authority<input aria-label="Search characters" className={`${fieldClass} mt-1 sm:w-72`} onChange={(event) => setSearch(event.target.value)} placeholder="Name, character or project ID" value={search} /></label><WorkspaceButton tone="primary" type="submit">Apply</WorkspaceButton></form>
       </div>
-      {error ? <div className="mt-5 rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">{error} <button className="ml-2 underline" onClick={() => void load()} type="button">Retry</button></div> : null}
-      <div className="mt-6">
-        {loading ? <LoadingWorkspace label="Loading release-attributed portfolio" /> : items.length === 0 ? <EmptyWorkspace filtered={Boolean(search)} onClear={() => setSearch("")} /> : <div className="grid gap-3">{items.map((item) => <PortfolioCard item={item} key={item.characterId} />)}</div>}
-      </div>
+      {error ? <div className="mt-5 rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">{error} <button className="ml-2 underline" onClick={() => void load({ search, cursor }, "none")} type="button">Retry</button></div> : null}
+      <div className="mt-6">{loading ? <LoadingWorkspace label="Loading release-attributed portfolio" /> : items.length === 0 ? <EmptyWorkspace filtered={Boolean(search)} onClear={() => { setSearch(""); setCursor(undefined); void load({ search: "" }, "push"); }} /> : <div className="grid gap-3">{items.map((item) => <PortfolioCard item={item} key={item.characterId} />)}</div>}</div>
+      <div className="mt-4 flex items-center justify-between gap-3"><p className="text-xs text-[var(--ad-text-muted)]">{asOf ? `Fresh as of ${new Date(asOf).toLocaleString()}` : "No successful query yet"}</p><WorkspaceButton disabled={loading || !pageInfo.hasNextPage || !pageInfo.endCursor} onClick={() => apply(pageInfo.endCursor ?? undefined)}>Next page</WorkspaceButton></div>
     </section>
   );
 }

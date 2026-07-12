@@ -147,7 +147,82 @@ export const generationJobListResponseSchema = adminListResponseSchema(
   summary: generationJobSummarySchema,
 });
 
+export const generationJobDetailResponseSchema = z.object({
+  request: generationJobListItemSchema,
+  attempts: z.array(z.object({
+    id: adminIdSchema,
+    attemptNo: z.number().int().positive(),
+    status: generationAttemptStatusSchema,
+    provider: z.string().nullable(),
+    profileKey: z.string().nullable(),
+    profileVersion: z.number().int().positive().nullable(),
+    workflowKey: z.string().nullable(),
+    workflowVersion: z.number().int().positive().nullable(),
+    errorClass: z.string().nullable(),
+    errorCode: z.string().nullable(),
+    errorSignature: z.string().nullable(),
+    retryability: z.string().nullable(),
+    operatorGuidance: z.string().nullable(),
+    startedAt: adminIsoDateTimeSchema.nullable(),
+    finishedAt: adminIsoDateTimeSchema.nullable(),
+    createdAt: adminIsoDateTimeSchema,
+  }).strict()).readonly(),
+  events: z.array(z.object({
+    id: z.string().min(1),
+    attemptId: adminIdSchema,
+    sequence: z.number().int().positive(),
+    eventType: z.string().min(1),
+    outcome: z.string().nullable(),
+    occurredAt: adminIsoDateTimeSchema,
+  }).strict()).readonly(),
+  artifacts: z.array(z.object({
+    id: adminIdSchema,
+    attemptId: adminIdSchema,
+    ordinal: z.number().int().nonnegative(),
+    validationState: z.string().min(1),
+    archiveState: z.string().min(1),
+    assetId: adminIdSchema.nullable(),
+    createdAt: adminIsoDateTimeSchema,
+  }).strict()).readonly(),
+  deliveries: z.array(z.object({
+    id: adminIdSchema,
+    artifactId: adminIdSchema,
+    targetType: z.string().min(1),
+    targetId: z.string().min(1),
+    status: z.string().min(1),
+    deliveredAt: adminIsoDateTimeSchema.nullable(),
+    createdAt: adminIsoDateTimeSchema,
+  }).strict()).readonly(),
+  settlementEntries: z.array(z.object({
+    ledgerEntryId: adminIdSchema,
+    kind: z.string().min(1),
+    deltaDreamcoins: z.number().int(),
+    reason: z.string().min(1),
+    createdAt: adminIsoDateTimeSchema,
+  }).strict()).readonly(),
+  asOf: adminIsoDateTimeSchema,
+  freshness: z.literal("fresh"),
+}).strict();
+
+export const retryGenerationRequestCommandSchema = z.object({
+  entityVersion: z.number().int().positive(),
+  reason: z.string().trim().min(3).max(1000),
+  confirmation: z.string().min(1),
+}).strict();
+
+export const retryGenerationRequestResultSchema = z.object({
+  commandId: adminIdSchema,
+  requestId: adminIdSchema,
+  attemptId: adminIdSchema,
+  attemptNo: z.number().int().positive(),
+  status: z.literal("queued"),
+  version: z.number().int().positive(),
+}).strict();
+
 export type GenerationJobQuery = z.infer<typeof generationJobQuerySchema>;
 export type GenerationJobSort = z.infer<typeof generationJobSortSchema>;
 export type GenerationJobListItem = z.infer<typeof generationJobListItemSchema>;
 export type GenerationJobListResponse = z.infer<typeof generationJobListResponseSchema>;
+export type GenerationJobDetailResponse = z.infer<typeof generationJobDetailResponseSchema>;
+export type RetryGenerationRequestCommand = z.infer<typeof retryGenerationRequestCommandSchema>;
+export type RetryGenerationRequestResult = z.infer<typeof retryGenerationRequestResultSchema>;

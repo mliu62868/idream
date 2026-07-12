@@ -12,7 +12,7 @@ import { useCallback, useEffect, useState, type KeyboardEvent } from "react";
 import type { AdminSubview } from "@/components/admin/nav-config";
 import { CollaborationPanel } from "@/features/collaboration/CollaborationPanel";
 import { EmptyWorkspace, LoadingWorkspace, StatusBadge, WorkspaceButton, fieldClass, textAreaClass } from "@/features/operations/WorkspaceUi";
-import { adminV2Request, setWorkspaceUrl } from "@/lib/admin-v2-api";
+import { adminV2Request } from "@/lib/admin-v2-api";
 import { cn } from "@/lib/utils";
 
 type Permissions = { read: boolean; write: boolean; review: boolean; place: boolean; manageIncident?: boolean };
@@ -67,26 +67,84 @@ function CreateRunForm({ enabled }: { enabled: boolean }) {
 
 function RunList({ permissions }: { permissions: Permissions }) {
   const [items, setItems] = useState<CreativeRun[]>([]);
-  const [search, setSearch] = useState(() => typeof window === "undefined" ? "" : new URLSearchParams(window.location.search).get("search") ?? "");
-  const [outcome, setOutcome] = useState(() => typeof window === "undefined" ? "all" : new URLSearchParams(window.location.search).get("executionOutcome") ?? "all");
+  const [search, setSearch] = useState("");
+  const [outcome, setOutcome] = useState("all");
+  const [cursor, setCursor] = useState<string | undefined>();
+  const [pageInfo, setPageInfo] = useState<{ endCursor: string | null; hasNextPage: boolean }>({ endCursor: null, hasNextPage: false });
+  const [asOf, setAsOf] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const load = useCallback(async () => {
+
+  const load = useCallback(async (next: { search: string; outcome: string; cursor?: string }, historyMode: "none" | "push" | "replace") => {
     if (!permissions.read) return;
-    setLoading(true); setError(null);
+    setLoading(true);
+    setError(null);
     try {
-      const query = new URLSearchParams({ limit: "50" });
-      if (search.trim()) query.set("search", search.trim());
-      if (outcome !== "all") query.set("executionOutcome", outcome);
-      setWorkspaceUrl(query);
+      const query = new URLSearchParams({ limit: "25" });
+      if (next.search.trim()) query.set("search", next.search.trim());
+      if (next.outcome !== "all") query.set("executionOutcome", next.outcome);
+      if (next.cursor) query.set("cursor", next.cursor);
+      if (historyMode !== "none") {
+        window.history[historyMode === "push" ? "pushState" : "replaceState"](null, "", `${window.location.pathname}?${query}`);
+      }
       const data = await adminV2Request(`/api/v2/admin/creative/runs?${query}`, { schema: creativeRunListResponseSchema });
       setItems([...data.items]);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Creative Runs could not be loaded"); }
-    finally { setLoading(false); }
-  }, [outcome, permissions.read, search]);
-  useEffect(() => { const timer = window.setTimeout(() => void load(), search.trim() ? 250 : 0); return () => window.clearTimeout(timer); }, [load, search]);
+      setPageInfo(data.pageInfo);
+      setAsOf(data.asOf);
+    } catch (cause) {
+      setItems([]);
+      setPageInfo({ endCursor: null, hasNextPage: false });
+      setError(cause instanceof Error ? cause.message : "Creative Runs could not be loaded");
+    } finally {
+      setLoading(false);
+    }
+  }, [permissions.read]);
+
+  useEffect(() => {
+    const restore = (historyMode: "none" | "replace") => {
+      const params = new URLSearchParams(window.location.search);
+      const next = {
+        search: params.get("search") ?? "",
+        outcome: params.get("executionOutcome") ?? "all",
+        cursor: params.get("cursor") ?? undefined,
+      };
+      setSearch(next.search);
+      setOutcome(next.outcome);
+      setCursor(next.cursor);
+      void load(next, historyMode);
+    };
+    const timer = window.setTimeout(() => restore("replace"), 0);
+    const onPopState = () => restore("none");
+    window.addEventListener("popstate", onPopState);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("popstate", onPopState);
+    };
+  }, [load]);
+
+  function apply(nextCursor?: string) {
+    setCursor(nextCursor);
+    void load({ search, outcome, cursor: nextCursor }, "push");
+  }
+
   if (!permissions.read) return denied();
-  return <section aria-labelledby="creative-runs-title"><div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between"><div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">Creative Studio</p><h1 className="mt-1 text-2xl font-semibold" id="creative-runs-title">Creative Runs</h1><p className="mt-2 max-w-2xl text-sm text-[var(--ad-text-muted)]">Execution, review, placement, and verification remain separate facts.</p></div><div className="grid gap-2 sm:grid-cols-2"><label className="text-xs font-semibold text-[var(--ad-text-muted)]">Search<input className={`${fieldClass} mt-1`} onChange={(event) => setSearch(event.target.value)} placeholder="Run, title or purpose" value={search} /></label><label className="text-xs font-semibold text-[var(--ad-text-muted)]">Outcome<select className={`${fieldClass} mt-1`} onChange={(event) => setOutcome(event.target.value)} value={outcome}>{["all", "pending", "running", "succeeded", "partially_succeeded", "failed", "cancelled"].map((value) => <option key={value}>{value}</option>)}</select></label></div></div><CreateRunForm enabled={permissions.write} />{error ? <div className="mt-5 rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">{error} <button className="ml-2 underline" onClick={() => void load()} type="button">Retry</button></div> : null}<div className="mt-6">{loading ? <LoadingWorkspace label="Loading Creative Run facts" /> : items.length === 0 ? <EmptyWorkspace filtered={Boolean(search || outcome !== "all")} onClear={() => { setSearch(""); setOutcome("all"); }} /> : <div className="grid gap-3">{items.map((run) => <Link className="grid gap-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 transition-colors hover:border-[var(--ad-ink)] focus-visible:outline focus-visible:outline-2 sm:grid-cols-[1fr_auto]" href={`/admin/creative/runs/${run.id}`} key={run.id}><div><div className="flex flex-wrap items-center gap-2"><strong>{run.purpose}</strong><StatusBadge value={run.executionOutcome} /><StatusBadge value={run.reviewState} /><StatusBadge value={run.deploymentState} /><StatusBadge value={run.verificationState} /></div><p className="mt-2 text-xs text-[var(--ad-text-muted)]">{run.target.type}:{run.target.id} · {run.workflowStage} · owner {run.ownerId ?? "unassigned"}</p><div className="mt-3 flex flex-wrap gap-3 text-xs tabular-nums"><span>{run.counts.generated}/{run.counts.total} generated</span><span>{run.counts.failed} failed</span><span>{run.counts.approved} approved</span><span>{run.counts.placed} placed</span></div></div><span className="self-center text-xs text-[var(--ad-text-muted)]">Open operator flow →</span></Link>)}</div>}</div></section>;
+  const filtered = Boolean(search || outcome !== "all");
+  return (
+    <section aria-labelledby="creative-runs-title">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">Creative Studio</p><h2 className="mt-1 text-2xl font-semibold" id="creative-runs-title">Creative Runs</h2><p className="mt-2 max-w-2xl text-sm text-[var(--ad-text-muted)]">Execution, review, placement, and verification remain separate facts.</p></div>
+        <form className="grid gap-2 sm:grid-cols-[minmax(220px,1fr)_180px_auto]" onSubmit={(event) => { event.preventDefault(); apply(); }}>
+          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Search<input className={`${fieldClass} mt-1`} onChange={(event) => setSearch(event.target.value)} placeholder="Run, title or purpose" value={search} /></label>
+          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Outcome<select className={`${fieldClass} mt-1`} onChange={(event) => setOutcome(event.target.value)} value={outcome}>{["all", "pending", "running", "succeeded", "partially_succeeded", "failed", "cancelled"].map((value) => <option key={value}>{value}</option>)}</select></label>
+          <WorkspaceButton tone="primary" type="submit">Apply</WorkspaceButton>
+        </form>
+      </div>
+      <CreateRunForm enabled={permissions.write} />
+      {error ? <div className="mt-5 rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">{error} <button className="ml-2 underline" onClick={() => void load({ search, outcome, cursor }, "none")} type="button">Retry</button></div> : null}
+      <div className="mt-6">{loading ? <LoadingWorkspace label="Loading Creative Run facts" /> : items.length === 0 ? <EmptyWorkspace filtered={filtered} onClear={() => { setSearch(""); setOutcome("all"); setCursor(undefined); void load({ search: "", outcome: "all" }, "push"); }} /> : <div className="grid gap-3">{items.map((run) => <Link className="grid gap-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 transition-colors hover:border-[var(--ad-ink)] focus-visible:outline focus-visible:outline-2 sm:grid-cols-[1fr_auto]" href={`/admin/creative/runs/${run.id}`} key={run.id}><div><div className="flex flex-wrap items-center gap-2"><strong>{run.purpose}</strong><StatusBadge value={run.executionOutcome} /><StatusBadge value={run.reviewState} /><StatusBadge value={run.deploymentState} /><StatusBadge value={run.verificationState} /></div><p className="mt-2 text-xs text-[var(--ad-text-muted)]">{run.target.type}:{run.target.id} · {run.workflowStage} · owner {run.ownerId ?? "unassigned"}</p><div className="mt-3 flex flex-wrap gap-3 text-xs tabular-nums"><span>{run.counts.generated}/{run.counts.total} generated</span><span>{run.counts.failed} failed</span><span>{run.counts.approved} approved</span><span>{run.counts.placed} placed</span></div></div><span className="self-center text-xs text-[var(--ad-text-muted)]">Open operator flow →</span></Link>)}</div>}</div>
+      <div className="mt-4 flex items-center justify-between gap-3"><p className="text-xs text-[var(--ad-text-muted)]">{asOf ? `Fresh as of ${new Date(asOf).toLocaleString()}` : "No successful query yet"}</p><WorkspaceButton disabled={loading || !pageInfo.hasNextPage || !pageInfo.endCursor} onClick={() => apply(pageInfo.endCursor ?? undefined)}>Next page</WorkspaceButton></div>
+    </section>
+  );
 }
 
 function AssetViewer({ run, selected, onSelect }: { run: CreativeRunDetail; selected: number; onSelect: (index: number) => void }) {

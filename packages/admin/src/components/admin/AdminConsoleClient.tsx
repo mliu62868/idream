@@ -14,7 +14,6 @@ import {
   ChevronRight,
   ClipboardCheck,
   ExternalLink,
-  FileText,
   Flag,
   Inbox,
   Languages,
@@ -51,9 +50,7 @@ import { AnnouncementsView } from "@/components/admin/AnnouncementsView";
 import { ExperimentsView } from "@/components/admin/ExperimentsView";
 import { TodayView, type TodayData, type TodayLegacyData } from "@/components/admin/today/TodayView";
 import {
-  generationJobListResponseSchema,
   type AdminCommandStatus,
-  type GenerationJobListResponse,
   type MetricDashboardResponse,
   type TodayProjection,
 } from "@idream/shared/admin";
@@ -63,12 +60,7 @@ import { FailureReason } from "@/components/admin/generation/FailureReason";
 import { ReadonlyOpsView, type OpsColumn } from "@/components/admin/generation/ReadonlyOpsView";
 import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
 import {
-  buildGenerationJobQuery,
-  defaultGenerationJobQuery,
   GENERATION_JOBS_REFRESH_EVENT,
-  generationJobStatusOptions,
-  parseGenerationJobQuery,
-  type GenerationJobQueryDraft,
 } from "@/features/jobs/query";
 import {
   AdminI18nProvider,
@@ -99,6 +91,7 @@ import { CustomerWorkspace } from "@/features/customers/CustomerWorkspace";
 import { GlobalAdminSearch } from "@/features/search/GlobalAdminSearch";
 import { CharacterWorkspace } from "@/features/characters/CharacterWorkspace";
 import { CreativeRunWorkspace } from "@/features/creative/CreativeRunWorkspace";
+import { JobsView as GenerationJobsWorkspace } from "@/features/jobs/JobsView";
 
 type Actor = {
   id: string;
@@ -380,21 +373,6 @@ type ModelImportResult = {
   roots: Record<string, string>;
 };
 
-type GenerationJobDetail = {
-  job: Row;
-  user: Row | null;
-  character: Row | null;
-  assets: Row[];
-  providerError: Row | null;
-  ledger: Row[];
-  timeline: Array<{
-    at: string;
-    type: string;
-    message: string;
-    metadata?: unknown;
-  }>;
-};
-
 type LoraDraft = {
   key: string;
   path: string;
@@ -638,7 +616,6 @@ export function AdminConsoleClient({
   const [data, setData] = useState<SectionData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [query, setQuery] = useState("");
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [reason, setReason] = useState("");
   const [confirmation, setConfirmation] = useState("");
@@ -660,8 +637,6 @@ export function AdminConsoleClient({
   const [localeReady, setLocaleReady] = useState(false);
   const t = (key: string, values?: Record<string, string | number>) =>
     translateAdmin(locale, key, values);
-
-  const filteredData = useMemo(() => filterSectionData(data, query), [data, query]);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -918,19 +893,6 @@ export function AdminConsoleClient({
               </div>
               <div className="grid gap-2 sm:grid-cols-[1fr_auto] lg:ml-auto lg:flex lg:items-center">
                 <GlobalAdminSearch />
-                {sectionId !== "generation/jobs" ? (
-                  <div className="flex h-9 min-w-0 items-center gap-2 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 lg:w-[260px]">
-                    <Search className="h-4 w-4 shrink-0 text-[var(--ad-text-muted)]" />
-                    <input
-                      aria-label={t("Filter")}
-                      className="h-full min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-[var(--ad-text-muted)]"
-                      name="admin-filter"
-                      onChange={(event) => setQuery(event.target.value)}
-                      placeholder={t("Filter")}
-                      value={query}
-                    />
-                  </div>
-                ) : null}
                 <div className="flex flex-wrap items-center gap-2">
                   {actor.role === "admin" ? (
                     <label className="inline-flex h-9 items-center gap-2 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)]">
@@ -1049,13 +1011,13 @@ export function AdminConsoleClient({
                   {t("Your effective permission keys do not include this capability. Navigation updates after a permission change and refresh.")}
                 </p>
               </section>
-            ) : loading && !filteredData ? (
+            ) : loading && !data ? (
               <div className="flex h-48 items-center justify-center text-[var(--ad-text-muted)]">
                 <Loader2 className="mr-2 h-5 w-5 animate-spin" />
                 {t("Loading")}
               </div>
             ) : (
-              renderSection(filteredData, subview, {
+              renderSection(data, subview, {
                 openAction,
                 adjustment,
                 setAdjustment,
@@ -2366,7 +2328,9 @@ function renderSection(
     return <ApprovalsView rows={section.rows} openAction={ctx.openAction} />;
   }
   if (section.kind === "selfFetch") {
-    if (section.view === "jobs") return <JobsView openAction={ctx.openAction} />;
+    if (section.view === "jobs") {
+      return <GenerationJobsWorkspace />;
+    }
     if (section.view === "production") {
       return <CreativeRunWorkspace permissions={{
         read: ctx.permissions.has("creative.run.read"),
@@ -2435,362 +2399,6 @@ function renderSection(
     );
   }
   return <AuditView command={section.command} rows={section.rows} />;
-}
-
-function JobsView({
-  openAction,
-}: {
-  openAction: (action: PendingAction) => void;
-}) {
-  const { locale, t, value } = useAdminI18n();
-  const [jobQuery, setJobQuery] = useState<GenerationJobQueryDraft>(() => (
-    typeof window === "undefined"
-      ? defaultGenerationJobQuery
-      : parseGenerationJobQuery(new URLSearchParams(window.location.search))
-  ));
-  const initialJobQueryRef = useRef(jobQuery);
-  const [jobData, setJobData] = useState<GenerationJobListResponse | null>(null);
-  const [jobsBusy, setJobsBusy] = useState(true);
-  const [jobsError, setJobsError] = useState<string | null>(null);
-  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
-  const [detail, setDetail] = useState<GenerationJobDetail | null>(null);
-  const [detailBusy, setDetailBusy] = useState(false);
-  const [detailError, setDetailError] = useState<string | null>(null);
-
-  const loadJobs = useCallback(async (next: GenerationJobQueryDraft) => {
-    const encoded = buildGenerationJobQuery(next);
-    setJobsBusy(true);
-    setJobsError(null);
-    // A changed URL must never keep rendering rows or freshness from the previous query.
-    setJobData(null);
-    if (typeof window !== "undefined") {
-      window.history.replaceState(null, "", `${window.location.pathname}?${encoded}`);
-    }
-    try {
-      setJobData(generationJobListResponseSchema.parse(
-        await apiGet<unknown>(`/api/v2/admin/jobs?${encoded}`),
-      ));
-    } catch (cause) {
-      setJobsError(cause instanceof Error ? cause.message : "Generation Jobs could not be loaded");
-    } finally {
-      setJobsBusy(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => void loadJobs(initialJobQueryRef.current), 0);
-    return () => window.clearTimeout(timer);
-  }, [loadJobs]);
-
-  useEffect(() => {
-    const refresh = () => {
-      const current = parseGenerationJobQuery(new URLSearchParams(window.location.search));
-      setJobQuery(current);
-      void loadJobs(current);
-    };
-    window.addEventListener(GENERATION_JOBS_REFRESH_EVENT, refresh);
-    return () => window.removeEventListener(GENERATION_JOBS_REFRESH_EVENT, refresh);
-  }, [loadJobs]);
-
-  const updateJobQuery = (patch: Partial<GenerationJobQueryDraft>) => {
-    setJobQuery((current) => ({ ...current, ...patch, cursor: undefined }));
-  };
-
-  const applyJobQuery = () => {
-    const next = { ...jobQuery, cursor: undefined };
-    setJobQuery(next);
-    void loadJobs(next);
-  };
-
-  async function openJobDetail(id: string) {
-    if (!id) return;
-    setSelectedJobId(id);
-    setDetail(null);
-    setDetailError(null);
-    setDetailBusy(true);
-    try {
-      setDetail(await apiGet<GenerationJobDetail>(`/api/v1/admin/generation/jobs/${id}`));
-    } catch (error) {
-      setDetailError(error instanceof Error ? error.message : t("Job detail load failed"));
-    } finally {
-      setDetailBusy(false);
-    }
-  }
-
-  // SPEC: read-mostly triage table — plain-language failure for failed jobs; the raw jobId/errorCode
-  //        never sit as bare columns (errorCode folds inside FailureReason; jobId only inside controls).
-  // INTENT: keep BOTH existing per-row controls (Requeue = mutating, via openAction verbatim; Details = view).
-  const columns: OpsColumn[] = [
-    {
-      key: "userId",
-      label: "User",
-      render: (row) => <span className="font-mono text-xs">{shortId(stringValue(row.userId))}</span>,
-    },
-    {
-      key: "createdAt",
-      label: "Created",
-      render: (row) => compactDate(stringValue(row.createdAt), locale),
-    },
-    { key: "requestOutcome", label: "Request outcome", render: (row) => value(stringValue(row.requestOutcome)) },
-    { key: "settlement", label: "Settlement", render: (row) => value(stringValue((row.settlement as Row | undefined)?.view)) },
-    {
-      key: "failure",
-      label: "Failure reason",
-      render: (row) =>
-        stringValue(row.requestOutcome) === "failed" ? (
-          <FailureReason code={stringValue(row.errorCode)} />
-        ) : (
-          <span className="text-[var(--ad-text-muted)]">—</span>
-        ),
-    },
-    {
-      key: "actions",
-      label: "Actions",
-      render: (row) => {
-        const id = stringValue(row.id);
-        const status = stringValue(row.legacyStatus);
-        return (
-          <div className="flex flex-wrap gap-1">
-            <IconAction
-              icon={<FileText className="h-4 w-4" />}
-              label="Details"
-              onClick={() => void openJobDetail(id)}
-            />
-            {status === "failed" ? (
-              <IconAction
-                icon={<RefreshCcw className="h-4 w-4" />}
-                label="Requeue"
-                onClick={() =>
-                  openAction({
-                    title: `Requeue ${id}`,
-                    endpoint: `/api/v1/admin/generation/jobs/${id}/requeue`,
-                    method: "POST",
-                    confirmText: id,
-                    reasonRequired: false,
-                    body: (actionReason, actionConfirmation) => ({
-                      reason: actionReason || undefined,
-                      confirmation: actionConfirmation,
-                    }),
-                  })
-                }
-              />
-            ) : null}
-          </div>
-        );
-      },
-    },
-  ];
-  const rows: Row[] = jobData?.items.map((item) => ({ ...item })) ?? [];
-  const jobFilterClass = "h-10 w-full rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]";
-
-  return (
-    <div className="space-y-4">
-      <form
-        className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"
-        onSubmit={(event) => {
-          event.preventDefault();
-          applyJobQuery();
-        }}
-      >
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)] sm:col-span-2">
-            Search authoritative fields
-            <input className={`${jobFilterClass} mt-1`} onChange={(event) => updateJobQuery({ search: event.target.value })} placeholder="Job, user, character, model, error…" value={jobQuery.search} />
-          </label>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Mode<select className={`${jobFilterClass} mt-1`} onChange={(event) => updateJobQuery({ mode: event.target.value as GenerationJobQueryDraft["mode"] })} value={jobQuery.mode}><option value="all">All historical records</option><option value="image">Image</option><option value="video">Video (legacy records)</option></select></label>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Legacy status filter<select className={`${jobFilterClass} mt-1`} onChange={(event) => updateJobQuery({ legacyStatus: event.target.value })} value={jobQuery.legacyStatus}><option value="">All</option>{generationJobStatusOptions.map((status) => <option key={status} value={status}>{value(status)}</option>)}</select></label>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Provider<input className={`${jobFilterClass} mt-1`} list="job-provider-facets" onChange={(event) => updateJobQuery({ provider: event.target.value })} value={jobQuery.provider} /></label>
-          <datalist id="job-provider-facets">{jobData?.facets.providers.map((facet) => <option key={facet.value} value={facet.value}>{facet.count}</option>)}</datalist>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Source type<input className={`${jobFilterClass} mt-1`} list="job-source-facets" onChange={(event) => updateJobQuery({ sourceType: event.target.value })} value={jobQuery.sourceType} /></label>
-          <datalist id="job-source-facets">{jobData?.facets.sourceTypes.map((facet) => <option key={facet.value} value={facet.value}>{facet.count}</option>)}</datalist>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">User ID<input className={`${jobFilterClass} mt-1`} onChange={(event) => updateJobQuery({ userId: event.target.value })} value={jobQuery.userId} /></label>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Character ID<input className={`${jobFilterClass} mt-1`} onChange={(event) => updateJobQuery({ characterId: event.target.value })} value={jobQuery.characterId} /></label>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Sort<select className={`${jobFilterClass} mt-1`} onChange={(event) => updateJobQuery({ sort: event.target.value as GenerationJobQueryDraft["sort"] })} value={jobQuery.sort}><option value="created_desc">Newest created</option><option value="created_asc">Oldest created</option><option value="updated_desc">Recently changed</option><option value="cost_desc">Highest cost</option></select></label>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Page size<select className={`${jobFilterClass} mt-1`} onChange={(event) => updateJobQuery({ limit: Number(event.target.value) })} value={jobQuery.limit}>{[10, 25, 50, 100].map((limit) => <option key={limit} value={limit}>{limit}</option>)}</select></label>
-        </div>
-        <div className="mt-4 flex flex-wrap gap-2">
-          <button className="min-h-10 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white disabled:opacity-50" disabled={jobsBusy} type="submit">Apply server query</button>
-          <button className="min-h-10 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" disabled={jobsBusy} onClick={() => { setJobQuery(defaultGenerationJobQuery); void loadJobs(defaultGenerationJobQuery); }} type="button">Reset</button>
-          {jobsBusy ? <span className="inline-flex items-center gap-2 text-xs text-[var(--ad-text-muted)]" role="status"><Loader2 className="h-4 w-4 animate-spin" /> Loading complete query</span> : null}
-        </div>
-      </form>
-
-      {jobsError ? <p className="rounded-lg bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">{jobsError}</p> : null}
-      {jobData ? (
-        <section aria-label="Generation Job query summary" className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-          {[
-            ["Matching jobs", jobData.summary.totalCount],
-            ["Dreamcoins cost", jobData.summary.totalCostDreamcoins],
-            ["Requested outputs", jobData.summary.totalOutputCount],
-            ["Delivered outputs", jobData.summary.totalDeliveredOutputCount],
-          ].map(([label, amount]) => <div className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3" key={label}><p className="text-xs text-[var(--ad-text-muted)]">{label}</p><p className="mt-1 text-lg font-semibold tabular-nums">{amount}</p></div>)}
-        </section>
-      ) : null}
-
-      <ReadonlyOpsView columns={columns} empty={jobsBusy ? "Loading authoritative jobs…" : "No jobs match the server query."} rows={rows} title="Generation Jobs" />
-      {jobData ? (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] px-4 py-3">
-          <p className="text-xs text-[var(--ad-text-muted)]">Showing {rows.length} of {jobData.summary.totalCount} matching jobs · fresh as of {compactDate(jobData.asOf, locale)}</p>
-          <button
-            className="min-h-10 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold disabled:opacity-50"
-            disabled={jobsBusy || !jobData.pageInfo.hasNextPage || !jobData.pageInfo.endCursor}
-            onClick={() => {
-              const next = { ...jobQuery, cursor: jobData.pageInfo.endCursor ?? undefined };
-              setJobQuery(next);
-              void loadJobs(next);
-            }}
-            type="button"
-          >
-            Next page
-          </button>
-        </div>
-      ) : null}
-      {selectedJobId ? (
-        <GenerationJobInspector
-          detail={detail}
-          error={detailError}
-          jobId={selectedJobId}
-          loading={detailBusy}
-          locale={locale}
-          onClose={() => {
-            setSelectedJobId(null);
-            setDetail(null);
-            setDetailError(null);
-          }}
-        />
-      ) : null}
-    </div>
-  );
-}
-
-function GenerationJobInspector({
-  detail,
-  error,
-  jobId,
-  loading,
-  locale,
-  onClose,
-}: {
-  detail: GenerationJobDetail | null;
-  error: string | null;
-  jobId: string;
-  loading: boolean;
-  locale: AdminLocale;
-  onClose: () => void;
-}) {
-  const { t, value } = useAdminI18n();
-  const job = detail?.job ?? null;
-  const assets = detail?.assets ?? [];
-  const providerError = detail?.providerError ?? null;
-  const timeline = detail?.timeline ?? [];
-
-  return (
-    <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
-      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[var(--ad-border)] p-4">
-        <div className="min-w-0">
-          <p className="text-xs font-semibold uppercase text-[var(--ad-text-muted)]">{t("Generation job detail")}</p>
-          <h2 className="mt-1 truncate font-mono text-base font-semibold">{shortId(jobId)}</h2>
-        </div>
-        <button
-          aria-label={t("Close")}
-          className="rounded-lg grid h-8 w-8 place-items-center border border-[var(--ad-border)] text-[var(--ad-text-muted)] hover:bg-black/[0.04]"
-          onClick={onClose}
-          type="button"
-        >
-          <X className="h-4 w-4" />
-        </button>
-      </div>
-
-      {loading ? (
-        <div className="flex h-28 items-center justify-center text-sm text-[var(--ad-text-muted)]">
-          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-          {t("Loading job detail")}
-        </div>
-      ) : null}
-
-      {error ? (
-        <div className="rounded-lg m-4 border border-[var(--ad-red-text)]/20 bg-[var(--ad-red-bg)] px-3 py-2 text-sm text-[var(--ad-red-text)]">
-          {error}
-        </div>
-      ) : null}
-
-      {job ? (
-        <div className="grid gap-px bg-black/[0.05] lg:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
-          <div className="space-y-4 bg-[var(--ad-surface)] p-4">
-            <div className="grid gap-3 sm:grid-cols-4">
-              <Metric label="Status" value={value(stringValue(job.status) || "-")} meta={compactDate(stringValue(job.createdAt), locale)} />
-              <Metric label="Mode" value={value(stringValue(job.mode) || "-")} meta={stringValue(job.provider) || "-"} />
-              <Metric label="Profile" value={shortId(stringValue(job.profileId) || "-")} meta={`v${numberValue(job.profileVersion) || "-"}`} />
-              <Metric label="Cost" value={numberValue(job.costDreamcoins)} meta="dreamcoins" />
-            </div>
-            <div className="grid gap-3 md:grid-cols-2">
-              <TextPanel label="Prompt" value={stringValue(job.prompt)} />
-              <TextPanel label="Negative prompt" value={stringValue(job.negativePrompt)} />
-            </div>
-            {providerError ? (
-              <div className="rounded-lg border border-[var(--ad-red-text)]/20 bg-[var(--ad-red-bg)] p-3 text-xs text-[var(--ad-red-text)]">
-                <p className="font-semibold">{t("Provider error")}</p>
-                <code className="mt-2 block break-words text-[var(--ad-red-text)]/80">
-                  {JSON.stringify(providerError)}
-                </code>
-              </div>
-            ) : null}
-          </div>
-
-          <div className="space-y-4 bg-[var(--ad-surface)] p-4">
-            <div>
-              <div className="flex items-center justify-between gap-3">
-                <h3 className="text-sm font-semibold">{t("Generated assets")}</h3>
-                <span className="text-xs text-[var(--ad-text-muted)]">{assets.length}</span>
-              </div>
-              <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                {assets.map((asset) => {
-                  const url = stringValue(asset.thumbnailUrl) || stringValue(asset.url);
-                  return (
-                    <div className="rounded-lg border border-[var(--ad-border)] bg-black/[0.03] p-2" key={stringValue(asset.id) || url}>
-                      <SafeImagePreview alt={t("Generated asset")} src={url} />
-                      <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--ad-text-muted)]">
-                        <span>{value(stringValue(asset.type))}</span>
-                        <span>{value(stringValue(asset.safetyStatus))}</span>
-                      </div>
-                    </div>
-                  );
-                })}
-                {assets.length === 0 ? (
-                  <div className="rounded-lg border border-[var(--ad-border)] bg-black/[0.03] px-3 py-8 text-center text-sm text-[var(--ad-text-muted)] sm:col-span-2">
-                    {t("No generated assets")}
-                  </div>
-                ) : null}
-              </div>
-            </div>
-
-            <div>
-              <div className="flex items-center justify-between gap-3">
-                <h3 className="text-sm font-semibold">{t("Timeline")}</h3>
-                <span className="text-xs text-[var(--ad-text-muted)]">{timeline.length}</span>
-              </div>
-              <div className="rounded-lg mt-3 max-h-72 overflow-y-auto border border-[var(--ad-border)]">
-                {timeline.map((event, index) => (
-                  <div className="border-b border-[var(--ad-border)] p-3 text-xs last:border-0" key={`${event.at}-${event.type}-${index}`}>
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="font-semibold text-[var(--ad-text)]">{value(event.type)}</span>
-                      <span className="text-[var(--ad-text-muted)]">{compactDate(event.at, locale)}</span>
-                    </div>
-                    <p className="mt-1 text-[var(--ad-text-muted)]">{event.message}</p>
-                  </div>
-                ))}
-                {timeline.length === 0 ? (
-                  <div className="px-3 py-8 text-center text-sm text-[var(--ad-text-muted)]">
-                    {t("No timeline events")}
-                  </div>
-                ) : null}
-              </div>
-            </div>
-          </div>
-        </div>
-      ) : null}
-    </section>
-  );
 }
 
 function ConfigOverviewHeader() {
@@ -4601,18 +4209,6 @@ function SectionHeader({
       <p className="text-[11px] font-semibold uppercase text-[var(--ad-text-muted)]">{t(eyebrow)}</p>
       <h3 className="mt-1 text-sm font-semibold">{t(title)}</h3>
       <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">{t(description)}</p>
-    </div>
-  );
-}
-
-function TextPanel({ label, value }: { label: string; value: string }) {
-  const { t } = useAdminI18n();
-  return (
-    <div className="rounded-lg border border-[var(--ad-border)] bg-black/[0.03] p-3">
-      <p className="text-xs font-semibold uppercase text-[var(--ad-text-muted)]">{t(label)}</p>
-      <p className="mt-2 max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-sm leading-6 text-[var(--ad-text)]">
-        {value || "-"}
-      </p>
     </div>
   );
 }
@@ -7079,52 +6675,6 @@ function IconAction({
       <span>{displayLabel}</span>
     </button>
   );
-}
-
-function filterSectionData(section: SectionData | null, query: string): SectionData | null {
-  if (!section || !query.trim()) return section;
-  const q = query.trim().toLowerCase();
-  const filterRows = (rows: Row[]) =>
-    rows.filter((row) => JSON.stringify(row).toLowerCase().includes(q));
-  if (section.kind === "users") return { ...section, rows: filterRows(section.rows) };
-  if (section.kind === "billing") {
-    return {
-      ...section,
-      rows: filterRows(section.rows),
-      subscriptions: filterRows(section.subscriptions),
-    };
-  }
-  if (section.kind === "pricing") return { ...section, rows: filterRows(section.rows) };
-  if (section.kind === "deadletter") return { ...section, rows: filterRows(section.rows) };
-  if (section.kind === "audit") return { ...section, rows: filterRows(section.rows) };
-  if (section.kind === "moderation") {
-    return {
-      ...section,
-      reports: filterRows(section.reports),
-      blockedMedia: filterRows(section.blockedMedia),
-      appeals: filterRows(section.appeals),
-    };
-  }
-  if (section.kind === "config") {
-    return {
-      ...section,
-      data: {
-        profiles: filterRows(section.data.profiles),
-        flags: filterRows(section.data.flags),
-        recentJobs: filterRows(section.data.recentJobs),
-      },
-    };
-  }
-  if (section.kind === "content") return { ...section, characters: filterRows(section.characters) };
-  if (section.kind === "promo") {
-    return { ...section, codes: filterRows(section.codes), referrals: filterRows(section.referrals) };
-  }
-  if (section.kind === "support") return { ...section, rows: filterRows(section.rows) };
-  if (section.kind === "approvals") return { ...section, rows: filterRows(section.rows) };
-  if (section.kind === "chatops") {
-    return { ...section, sessions: filterRows(section.sessions), events: filterRows(section.events) };
-  }
-  return section;
 }
 
 function modelAssetConfigureHref(item: ModelImportAsset) {

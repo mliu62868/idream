@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { generationJobListResponseSchema } from "@idream/shared/admin";
+import {
+  generationJobDetailResponseSchema,
+  generationJobListResponseSchema,
+  retryGenerationRequestResultSchema,
+} from "@idream/shared/admin";
+import { GET as getJobRoute } from "@/app/api/v2/admin/jobs/[id]/route";
+import { POST as retryJobRoute } from "@/app/api/v2/admin/jobs/[id]/commands/retry/route";
 import { GET as listJobsRoute } from "@/app/api/v2/admin/jobs/route";
 import { prisma } from "@/server/lib/db";
 
@@ -12,6 +18,8 @@ describe("Generation Jobs v2 server query", () => {
   const characterId = `jobs-character-${suffix}`;
   const jobIds = ["a", "b", "c", "d", "e"].map((key) => `jobs-${key}-${suffix}`);
   const attemptId = `jobs-attempt-${suffix}`;
+  const artifactId = `jobs-artifact-authority-${suffix}`;
+  const attemptEventId = `jobs-attempt-event-${suffix}`;
   const deliveryId = `jobs-delivery-${suffix}`;
   const ledgerId = `jobs-ledger-${suffix}`;
   const settlementLinkId = `jobs-settlement-${suffix}`;
@@ -82,6 +90,24 @@ describe("Generation Jobs v2 server query", () => {
       startedAt: sameCreatedAt,
       finishedAt: sameCreatedAt,
     } });
+    await prisma.generationAttemptEvent.create({ data: {
+      id: attemptEventId,
+      attemptId,
+      sequence: 1,
+      eventType: "generation.attempt.failed.v1",
+      outcome: "failed",
+      terminalScope: "terminal",
+      occurredAt: sameCreatedAt,
+      payload: { source: "jobs-v2-integration" },
+      payloadHash: `jobs-v2-hash-${suffix}`,
+    } });
+    await prisma.generationArtifact.create({ data: {
+      id: artifactId,
+      attemptId,
+      ordinal: 0,
+      manifestChecksum: `jobs-v2-manifest-${suffix}`,
+      validationState: "rejected",
+    } });
     await prisma.generationDelivery.create({ data: {
       id: deliveryId,
       requestId: jobIds[2],
@@ -108,10 +134,18 @@ describe("Generation Jobs v2 server query", () => {
   });
 
   afterAll(async () => {
+    const commands = await prisma.controlPlaneCommand.findMany({ where: { targetId: { in: jobIds } }, select: { id: true } });
+    await prisma.controlPlaneCommandAttempt.deleteMany({ where: { commandId: { in: commands.map((command) => command.id) } } });
+    await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: { in: jobIds } } });
+    await prisma.adminAuditLog.deleteMany({ where: { targetId: { in: jobIds } } });
+    await prisma.controlPlaneCommand.deleteMany({ where: { id: { in: commands.map((command) => command.id) } } });
     await prisma.generationSettlementLink.deleteMany({ where: { id: settlementLinkId } });
     await prisma.dreamcoinLedger.deleteMany({ where: { id: ledgerId } });
     await prisma.generationDelivery.deleteMany({ where: { id: deliveryId } });
-    await prisma.generationAttempt.deleteMany({ where: { id: attemptId } });
+    const attempts = await prisma.generationAttempt.findMany({ where: { requestId: { in: jobIds } }, select: { id: true } });
+    await prisma.generationArtifact.deleteMany({ where: { attemptId: { in: attempts.map((attempt) => attempt.id) } } });
+    await prisma.generationAttemptEvent.deleteMany({ where: { attemptId: { in: attempts.map((attempt) => attempt.id) } } });
+    await prisma.generationAttempt.deleteMany({ where: { id: { in: attempts.map((attempt) => attempt.id) } } });
     await prisma.generationJob.deleteMany({ where: { id: { in: jobIds } } });
     await prisma.character.deleteMany({ where: { id: characterId } });
     await prisma.user.deleteMany({ where: { id: { in: [actorId, deniedId, customerId] } } });
@@ -186,5 +220,49 @@ describe("Generation Jobs v2 server query", () => {
       `mode=image&userId=${customerId}&provider=provider-alpha&sort=created_desc&limit=1&cursor=${encodeURIComponent(first.pageInfo.endCursor ?? "")}`,
     ));
     expect(filterMismatch.status).toBe(400);
+  });
+
+  it("exposes all authority axes in detail and retries through an idempotent v2 command", async () => {
+    const detailResponse = await getJobRoute(
+      request(""),
+      { params: Promise.resolve({ id: jobIds[0] }) },
+    );
+    expect(detailResponse.status).toBe(200);
+    const detail = generationJobDetailResponseSchema.parse((await detailResponse.json()).data);
+    expect(detail.request).toMatchObject({
+      id: jobIds[0],
+      requestOutcome: "failed",
+      latestAttempt: { id: attemptId, status: "failed", retryability: "retryable" },
+      settlement: { view: "captured", capturedDreamcoins: 9 },
+    });
+    expect(detail.attempts).toHaveLength(1);
+    expect(detail.events).toEqual([expect.objectContaining({ id: attemptEventId, outcome: "failed" })]);
+    expect(detail.artifacts).toEqual([expect.objectContaining({ id: artifactId, validationState: "rejected" })]);
+    expect(detail.settlementEntries).toEqual([expect.objectContaining({ ledgerEntryId: ledgerId, deltaDreamcoins: -9 })]);
+
+    const idempotencyKey = `jobs-v2-retry-${suffix}`;
+    const retryRequest = () => new Request(`http://localhost/api/v2/admin/jobs/${jobIds[0]}/commands/retry`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": idempotencyKey,
+        "x-idream-user-id": actorId,
+        "x-idream-role": "admin",
+      },
+      body: JSON.stringify({
+        entityVersion: detail.request.version,
+        reason: "Provider recovered; retry approved from authority detail",
+        confirmation: `${jobIds[0]}:retry`,
+      }),
+    });
+    const firstResponse = await retryJobRoute(retryRequest(), { params: Promise.resolve({ id: jobIds[0] }) });
+    expect(firstResponse.status).toBe(200);
+    const first = retryGenerationRequestResultSchema.parse((await firstResponse.json()).data);
+    const replayResponse = await retryJobRoute(retryRequest(), { params: Promise.resolve({ id: jobIds[0] }) });
+    const replay = retryGenerationRequestResultSchema.parse((await replayResponse.json()).data);
+    expect(replay).toEqual(first);
+    expect(await prisma.generationAttempt.count({ where: { requestId: jobIds[0], attemptNo: 2 } })).toBe(1);
+    expect(await prisma.mainOutboxEvent.count({ where: { aggregateId: jobIds[0], eventType: "generation.retry.dispatch.v2" } })).toBe(1);
+    expect(await prisma.adminAuditLog.count({ where: { targetId: jobIds[0], action: "generation.request.retry" } })).toBe(1);
   });
 });

@@ -27,6 +27,16 @@ describe("Creative retry through verified placement", () => {
   let commandId = "";
   let placementId = "";
   let unsupportedPlacementId = "";
+  const request = (path: string, body?: unknown) => new Request(`http://localhost${path}`, {
+    method: body ? "POST" : "GET",
+    headers: {
+      "content-type": "application/json",
+      "x-idream-user-id": adminId,
+      "x-idream-role": "admin",
+      "x-request-id": randomUUID(),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
 
   beforeAll(async () => {
     await prisma.user.create({
@@ -239,16 +249,6 @@ describe("Creative retry through verified placement", () => {
   });
 
   it("records immutable review, publishes a distribution placement, and verifies the served slot", async () => {
-    const request = (path: string, body?: unknown) => new Request(`http://localhost${path}`, {
-      method: body ? "POST" : "GET",
-      headers: {
-        "content-type": "application/json",
-        "x-idream-user-id": adminId,
-        "x-idream-role": "admin",
-        "x-request-id": randomUUID(),
-      },
-      body: body ? JSON.stringify(body) : undefined,
-    });
     const reviewResponse = await decideItem(
       request(`/api/v2/admin/creative/runs/${runId}/items/${itemId}/decisions`, {
         entityVersion: 4,
@@ -362,5 +362,57 @@ describe("Creative retry through verified placement", () => {
       status: "reviewing",
       verificationState: "failed",
     });
+  });
+
+  it("scans past non-matching derived outcomes without returning an unpageable false empty", async () => {
+    const prefix = `creative-filter-scan-${suffix}`;
+    const failedRunIds = Array.from({ length: 51 }, (_, index) => `${prefix}-a-${String(index).padStart(3, "0")}`);
+    const succeededRunId = `${prefix}-z-succeeded`;
+    const scanAssetId = `${prefix}-asset`;
+    const scanItemId = `${prefix}-item`;
+    await prisma.mediaAsset.create({ data: {
+      id: scanAssetId,
+      ownerId: adminId,
+      type: "image",
+      url: `memory://${scanAssetId}`,
+      safetyStatus: "passed",
+      metadata: {},
+    } });
+    await prisma.contentProductionBatch.createMany({ data: failedRunIds.map((id) => ({
+      id,
+      title: id,
+      purpose: "model_eval",
+      targetType: "none",
+      presetIds: [],
+      count: 1,
+      totalItems: 1,
+      failedItems: 1,
+      status: "completed",
+      createdById: adminId,
+    })) });
+    await prisma.contentProductionBatch.create({ data: {
+      id: succeededRunId,
+      title: succeededRunId,
+      purpose: "model_eval",
+      targetType: "none",
+      presetIds: [],
+      count: 1,
+      totalItems: 1,
+      completedItems: 1,
+      status: "completed",
+      createdById: adminId,
+      items: { create: { id: scanItemId, itemIndex: 0, status: "generated", mediaAssetId: scanAssetId, tags: [] } },
+    } });
+    try {
+      const response = await listRuns(request(`/api/v2/admin/creative/runs?search=${prefix}&executionOutcome=succeeded&limit=10`));
+      const body = await response.json();
+      expect(response.status, JSON.stringify(body)).toBe(200);
+      expect(body.data.items.map((item: { id: string }) => item.id)).toEqual([succeededRunId]);
+      expect(body.data.pageInfo).toEqual({ endCursor: null, hasNextPage: false });
+    } finally {
+      await prisma.contentProductionItem.deleteMany({ where: { id: scanItemId } });
+      await prisma.contentProductionBatch.deleteMany({ where: { id: { in: [...failedRunIds, succeededRunId] } } });
+      await prisma.mediaAsset.deleteMany({ where: { id: scanAssetId } });
+    }
   });
 });
