@@ -6,6 +6,7 @@ const previewTokenPayloadSchema = z.object({
   characterId: z.string().min(1),
   contentVersionId: z.string().min(1),
   releaseId: z.string().min(1).nullable(),
+  imageAssetId: z.string().min(1).nullable(),
   label: z.enum(["Live", "Draft Preview"]),
   issuedAt: z.number().int().nonnegative(),
   expiresAt: z.number().int().positive(),

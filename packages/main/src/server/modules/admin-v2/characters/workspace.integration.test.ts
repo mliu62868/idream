@@ -17,9 +17,20 @@ describe("Character operator workspace", () => {
   const releaseId = `workspace-release-${suffix}`;
   const requestId = `workspace-request-${suffix}`;
   const readOnlyActorId = `workspace-readonly-${suffix}`;
+  const previewAssetId = `workspace-preview-asset-${suffix}`;
+  const previewAssetUrl = `/user-content/${previewAssetId}/content.webp`;
 
   beforeAll(async () => {
     await prisma.user.create({ data: { id: readOnlyActorId, email: `${readOnlyActorId}@example.test`, role: "user" } });
+    await prisma.mediaAsset.create({ data: {
+      id: previewAssetId,
+      ownerId: readOnlyActorId,
+      type: "image",
+      url: previewAssetUrl,
+      visibility: "unlisted",
+      safetyStatus: "passed",
+      metadata: {},
+    } });
     await prisma.adminUserPermission.create({
       data: {
         userId: readOnlyActorId,
@@ -93,7 +104,9 @@ describe("Character operator workspace", () => {
         revisionId,
         characterContentVersionId: contentId,
         generationProvenance: {},
-        releasePlacementManifest: {},
+        releasePlacementManifest: {
+          placements: [{ slotKey: "character_avatar", assetId: previewAssetId, slotVersion: 1 }],
+        },
         snapshotHash: `workspace-snapshot-${suffix}`,
         readiness: "blocked",
         status: "draft",
@@ -115,6 +128,7 @@ describe("Character operator workspace", () => {
     await prisma.characterContentVersion.deleteMany({ where: { characterId } });
     await prisma.characterProject.deleteMany({ where: { id: projectId } });
     await prisma.character.deleteMany({ where: { id: characterId } });
+    await prisma.mediaAsset.deleteMany({ where: { id: previewAssetId } });
     await prisma.user.deleteMany({ where: { id: readOnlyActorId } });
     await prisma.$disconnect();
   });
@@ -123,7 +137,7 @@ describe("Character operator workspace", () => {
     const detail = characterWorkspaceDetailSchema.parse(await getCharacterWorkspace(characterId));
     expect(detail.preview).toMatchObject({
       live: null,
-      draft: { label: "Draft Preview", contentVersionId: contentId, releaseId, renderUrl: expect.any(String) },
+      draft: { label: "Draft Preview", contentVersionId: contentId, releaseId, imageUrl: previewAssetUrl, renderUrl: expect.any(String) },
       changedFields: ["new_release"],
     });
     const renderUrl = new URL(detail.preview.draft.renderUrl ?? "");
@@ -131,7 +145,7 @@ describe("Character operator workspace", () => {
     if (!token) throw new Error("Expected a signed renderer token");
     await expect(loadCharacterRendererPreview(token)).resolves.toMatchObject({
       authority: { characterId, contentVersionId: contentId, releaseId, label: "Draft Preview" },
-      character: { title: "Mara" },
+      character: { title: "Mara", image: previewAssetUrl },
       openingMessage: "You made it.",
     });
     expect(detail.project).toMatchObject({ productionPackage: "", qaPlan: "" });

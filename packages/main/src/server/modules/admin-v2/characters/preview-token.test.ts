@@ -10,12 +10,14 @@ describe("Character renderer preview token", () => {
       characterId: "character-1",
       contentVersionId: "content-2",
       releaseId: "release-2",
+      imageAssetId: "asset-2",
       label: "Draft Preview",
     }, secret, now);
     expect(verifyCharacterPreviewToken(token, secret, now)).toMatchObject({
       characterId: "character-1",
       contentVersionId: "content-2",
       releaseId: "release-2",
+      imageAssetId: "asset-2",
       label: "Draft Preview",
     });
   });
@@ -25,6 +27,7 @@ describe("Character renderer preview token", () => {
       characterId: "character-1",
       contentVersionId: "content-2",
       releaseId: null,
+      imageAssetId: null,
       label: "Live",
     }, secret, now);
     expect(verifyCharacterPreviewToken(`${token}x`, secret, now)).toBeNull();

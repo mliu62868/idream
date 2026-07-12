@@ -121,6 +121,7 @@ function previewSnapshot(input: {
     appearanceSnapshot: Prisma.JsonValue;
   } | null;
   releaseId: string | null;
+  imageAssetId: string | null;
   imageUrl: string | null;
   label: "Live" | "Draft Preview";
 }) {
@@ -135,6 +136,7 @@ function previewSnapshot(input: {
           characterId: input.character.id,
           contentVersionId: input.content.id,
           releaseId: input.releaseId,
+          imageAssetId: input.imageAssetId,
           label: input.label,
         }, env.BETTER_AUTH_SECRET))}`,
         env.BETTER_AUTH_URL,
@@ -152,6 +154,18 @@ function previewSnapshot(input: {
     imageUrl: input.imageUrl,
     renderUrl,
   };
+}
+
+function releasePreviewImageAssetId(release: { releasePlacementManifest: Prisma.JsonValue } | null) {
+  const manifest = release ? record(release.releasePlacementManifest) : {};
+  const placements = Array.isArray(manifest.placements) ? manifest.placements : [];
+  for (const value of placements) {
+    const placement = value !== null && typeof value === "object" && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {};
+    if (placement.slotKey === "character_avatar" && typeof placement.assetId === "string") return placement.assetId;
+  }
+  return null;
 }
 
 function changedFields(
@@ -183,7 +197,11 @@ export async function getCharacterWorkspace(characterId: string) {
     const latest = validationRuns.find((run) => run.releaseId === releaseId);
     return latest ? [latest.id] : [];
   })));
-  const [checks, monitors, contents, qaRuns] = await Promise.all([
+  const releaseImageAssetIds = [...new Set(releases.flatMap((release) => {
+    const assetId = releasePreviewImageAssetId(release);
+    return assetId ? [assetId] : [];
+  }))];
+  const [checks, monitors, contents, qaRuns, releaseImageAssets] = await Promise.all([
     prisma.releaseCheckResult.findMany({ where: { validationRunId: { in: latestValidationIds } } }),
     prisma.releaseMonitor.findMany({ where: { releaseId: { in: releaseIds } }, orderBy: { startedAt: "desc" } }),
     prisma.characterContentVersion.findMany({
@@ -195,14 +213,34 @@ export async function getCharacterWorkspace(characterId: string) {
       orderBy: { createdAt: "desc" },
       take: 20,
     }),
+    prisma.mediaAsset.findMany({ where: { id: { in: releaseImageAssetIds }, deletedAt: null } }),
   ]);
   const imageUrl = character.imageAsset?.thumbnailUrl ?? character.imageAsset?.url ?? null;
+  const releaseImageUrl = (release: (typeof releases)[number] | null) => {
+    const assetId = releasePreviewImageAssetId(release);
+    const asset = releaseImageAssets.find((candidate) => candidate.id === assetId);
+    return asset?.thumbnailUrl ?? asset?.url ?? null;
+  };
   const currentRelease = releases.find((release) => release.id === serving?.currentReleaseId) ?? null;
   const candidateRelease = releases.find((release) => !["published", "superseded", "withdrawn"].includes(release.status)) ?? null;
   const liveContent = contents.find((content) => content.id === currentRelease?.characterContentVersionId) ?? null;
   const draftContent = contents.find((content) => content.id === candidateRelease?.characterContentVersionId) ?? contents[0] ?? null;
-  const live = currentRelease ? previewSnapshot({ character, content: liveContent, releaseId: currentRelease.id, imageUrl, label: "Live" }) : null;
-  const draft = previewSnapshot({ character, content: draftContent, releaseId: candidateRelease?.id ?? null, imageUrl, label: "Draft Preview" });
+  const live = currentRelease ? previewSnapshot({
+    character,
+    content: liveContent,
+    releaseId: currentRelease.id,
+    imageAssetId: releasePreviewImageAssetId(currentRelease),
+    imageUrl: releaseImageUrl(currentRelease),
+    label: "Live",
+  }) : null;
+  const draft = previewSnapshot({
+    character,
+    content: draftContent,
+    releaseId: candidateRelease?.id ?? null,
+    imageAssetId: releasePreviewImageAssetId(candidateRelease),
+    imageUrl: releaseImageUrl(candidateRelease),
+    label: "Draft Preview",
+  });
   const portfolio = await listCharacterPortfolioData(prisma, {
     limit: 1,
     search: characterId,

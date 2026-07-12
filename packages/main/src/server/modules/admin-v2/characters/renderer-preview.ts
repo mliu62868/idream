@@ -20,11 +20,10 @@ function stringList(value: unknown) {
 export async function loadCharacterRendererPreview(token: string) {
   const authority = verifyCharacterPreviewToken(token, env.BETTER_AUTH_SECRET);
   if (!authority) return null;
-  const [character, content, release] = await Promise.all([
+  const [character, content, release, imageAsset] = await Promise.all([
     prisma.character.findUnique({
       where: { id: authority.characterId },
       include: {
-        imageAsset: true,
         creator: { select: { displayName: true, name: true } },
         stats: true,
         tags: { include: { tag: true } },
@@ -34,14 +33,35 @@ export async function loadCharacterRendererPreview(token: string) {
     authority.releaseId
       ? prisma.characterRelease.findUnique({ where: { id: authority.releaseId } })
       : Promise.resolve(null),
+    authority.imageAssetId
+      ? prisma.mediaAsset.findUnique({ where: { id: authority.imageAssetId } })
+      : Promise.resolve(null),
   ]);
   if (!character || !content || content.characterId !== character.id) return null;
   if (authority.releaseId && (!release || release.characterContentVersionId !== content.id)) return null;
+  if (authority.imageAssetId && (!imageAsset || imageAsset.deletedAt || imageAsset.safetyStatus !== "passed")) return null;
+  if (release) {
+    const manifest = record(release.releasePlacementManifest);
+    const placements = Array.isArray(manifest.placements) ? manifest.placements : [];
+    const avatar = placements.find((value) => {
+      const placement = value !== null && typeof value === "object" && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : {};
+      return placement.slotKey === "character_avatar";
+    });
+    const avatarRecord = avatar !== null && typeof avatar === "object" && !Array.isArray(avatar)
+      ? avatar as Record<string, unknown>
+      : {};
+    const manifestAssetId = typeof avatarRecord.assetId === "string" ? avatarRecord.assetId : null;
+    if (manifestAssetId !== authority.imageAssetId) return null;
+  } else if (authority.imageAssetId) {
+    return null;
+  }
 
   const persona = record(content.personaSnapshot);
   const opening = record(content.openingSnapshot);
   const appearance = record(content.appearanceSnapshot);
-  const image = character.imageAsset?.url ?? "/images/ourdream/promo-card-female.webp";
+  const image = imageAsset?.url ?? "/images/ourdream/promo-card-female.webp";
   const creator = character.creator?.displayName ?? character.creator?.name ??
     (character.source === "official" ? "@ourdream" : "Creator");
   return {
