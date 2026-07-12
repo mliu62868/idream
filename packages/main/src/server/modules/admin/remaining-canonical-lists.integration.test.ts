@@ -268,6 +268,16 @@ describe("remaining canonical admin lists", () => {
     await expect(call(["feature-flags"], "enabled=banana")).resolves.toMatchObject({ response: { status: 400 } });
   });
 
+  it("rejects malformed Billing list and reconciliation queries at the boundary", async () => {
+    await expect(call(["billing", "ledger"], "limit=1junk")).resolves.toMatchObject({ response: { status: 400 } });
+    await expect(call(["billing", "subscriptions"], "status=mystery")).resolves.toMatchObject({ response: { status: 400 } });
+    await expect(call(["billing", "reconciliation"], "from=not-a-date")).resolves.toMatchObject({ response: { status: 400 } });
+    await expect(call(
+      ["billing", "reconciliation"],
+      "from=2026-07-12T00%3A00%3A00.000Z&to=2026-07-11T00%3A00%3A00.000Z",
+    )).resolves.toMatchObject({ response: { status: 400 } });
+  });
+
   it("continues from encoded sort keys when the cursor row is deleted", async () => {
     const first = await call(["audit-log"], `search=${token}&limit=1`);
     const firstData = first.body.data as { items: Array<{ id: string }>; pageInfo: PageInfo };
