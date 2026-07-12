@@ -87,21 +87,9 @@ export const ADMIN_V2_PENDING_CONTRACTS = {
     owner: "packages/main/src/server/modules/admin-v2/search/global-search.ts",
     reason: "Permission-cropped global search results have no exported shared response DTO schema.",
   },
-  incidentCloseRequestSchema: {
-    owner: "packages/main/src/app/api/v2/admin/incidents/[id]/commands/close/route.ts",
-    reason: "Incident close request validation remains Route Handler local and is not a shared contract.",
-  },
   incidentDetailSchema: {
     owner: "packages/main/src/server/modules/admin-v2/incidents/query.ts",
     reason: "Incident detail is a composite read model without an exported shared response schema.",
-  },
-  incidentMergeRequestSchema: {
-    owner: "packages/main/src/app/api/v2/admin/incidents/[id]/commands/merge/route.ts",
-    reason: "Incident merge request validation remains Route Handler local and is not a shared contract.",
-  },
-  incidentSplitRequestSchema: {
-    owner: "packages/main/src/app/api/v2/admin/incidents/[id]/commands/split/route.ts",
-    reason: "Incident split request validation remains Route Handler local and is not a shared contract.",
   },
   metricDashboardQuerySchema: {
     owner: "packages/main/src/server/modules/admin-v2/metrics/query.ts",

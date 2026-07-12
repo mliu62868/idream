@@ -358,8 +358,8 @@ function eligibleOccurrenceIds(
     .sort();
 }
 
-async function occurrenceSnapshot(incidentId: string) {
-  const occurrences = await prisma.opsIncidentOccurrence.findMany({
+async function occurrenceSnapshot(db: Db, incidentId: string) {
+  const occurrences = await db.opsIncidentOccurrence.findMany({
     where: { incidentId },
     orderBy: [{ observedAt: "asc" }, { id: "asc" }],
   });
@@ -367,10 +367,10 @@ async function occurrenceSnapshot(incidentId: string) {
   const requestIds = occurrences.flatMap((row) => (row.requestId ? [row.requestId] : []));
   const [attempts, ledger] = await Promise.all([
     attemptIds.length
-      ? prisma.generationAttempt.findMany({ where: { id: { in: attemptIds } } })
+      ? db.generationAttempt.findMany({ where: { id: { in: attemptIds } } })
       : [],
     requestIds.length
-      ? prisma.dreamcoinLedger.findMany({
+      ? db.dreamcoinLedger.findMany({
           where: { sourceId: { in: requestIds }, reason: { in: ["generation_spend", "refund"] } },
           select: { sourceId: true, reason: true, delta: true },
         })
@@ -389,26 +389,27 @@ export async function previewIncidentActionPlan(input: {
   readonly incidentId: string;
   readonly action: "retry_eligible" | "refund" | "pause_route" | "rollback";
   readonly actorId: string;
+  readonly requestId?: string;
   readonly targetVersion?: string;
   readonly ttlMs?: number;
-}) {
-  const incident = await prisma.opsIncident.findUnique({ where: { id: input.incidentId } });
-  if (!incident) throw Errors.notFound("Incident not found", { incidentId: input.incidentId });
-  if (![...OPEN_INCIDENT_STATUSES].includes(incident.status as (typeof OPEN_INCIDENT_STATUSES)[number])) {
-    throw Errors.conflict("Terminal incidents cannot create action plans");
-  }
-  if (input.action === "rollback" && !input.targetVersion) {
-    throw Errors.badRequest("Rollback preview requires an immutable targetVersion");
-  }
-  const snapshot = await occurrenceSnapshot(input.incidentId);
-  const eligibleIds = eligibleOccurrenceIds(input.action, snapshot);
-  const allIds = snapshot.map((row) => row.id).sort();
-  const skippedIds = allIds.filter((id) => !eligibleIds.includes(id));
-  if (eligibleIds.length === 0) {
-    throw Errors.badRequest("Incident action has no eligible occurrences", { action: input.action });
-  }
-  const occurrenceSetHash = canonicalSha256({ action: input.action, eligibleIds, skippedIds });
-  return prisma.$transaction(async (tx) => {
+}, db?: Prisma.TransactionClient) {
+  const execute = async (tx: Prisma.TransactionClient) => {
+    const incident = await tx.opsIncident.findUnique({ where: { id: input.incidentId } });
+    if (!incident) throw Errors.notFound("Incident not found", { incidentId: input.incidentId });
+    if (![...OPEN_INCIDENT_STATUSES].includes(incident.status as (typeof OPEN_INCIDENT_STATUSES)[number])) {
+      throw Errors.conflict("Terminal incidents cannot create action plans");
+    }
+    if (input.action === "rollback" && !input.targetVersion) {
+      throw Errors.badRequest("Rollback preview requires an immutable targetVersion");
+    }
+    const snapshot = await occurrenceSnapshot(tx, input.incidentId);
+    const eligibleIds = eligibleOccurrenceIds(input.action, snapshot);
+    const allIds = snapshot.map((row) => row.id).sort();
+    const skippedIds = allIds.filter((id) => !eligibleIds.includes(id));
+    if (eligibleIds.length === 0) {
+      throw Errors.badRequest("Incident action has no eligible occurrences", { action: input.action });
+    }
+    const occurrenceSetHash = canonicalSha256({ action: input.action, eligibleIds, skippedIds });
     const plan = await tx.incidentActionPlan.create({
       data: {
         incidentId: incident.id,
@@ -439,11 +440,26 @@ export async function previewIncidentActionPlan(input: {
           occurrenceSetHash,
           expiresAt: plan.expiresAt,
         }),
-        requestId: `incident-action-preview:${plan.id}`,
+        requestId: input.requestId ?? `incident-action-preview:${plan.id}`,
+      },
+    });
+    await tx.mainOutboxEvent.create({
+      data: {
+        eventType: "ops.incident.action_plan.previewed.v2",
+        aggregateType: "ops_incident",
+        aggregateId: incident.id,
+        payload: toInputJson({
+          incidentId: incident.id,
+          actionPlanId: plan.id,
+          action: plan.action,
+          incidentVersion: plan.incidentVersion,
+          occurrenceSetHash,
+        }),
       },
     });
     return plan;
-  });
+  };
+  return db ? execute(db) : prisma.$transaction(execute);
 }
 
 export async function executeIncidentActionPlan(input: {
@@ -471,7 +487,7 @@ export async function executeIncidentActionPlan(input: {
       currentVersion: incident.version,
     });
   }
-  const snapshot = await occurrenceSnapshot(input.incidentId);
+  const snapshot = await occurrenceSnapshot(prisma, input.incidentId);
   const eligibleIds = eligibleOccurrenceIds(plan.action, snapshot);
   const skippedIds = snapshot.map((row) => row.id).filter((id) => !eligibleIds.includes(id)).sort();
   const currentHash = canonicalSha256({ action: plan.action, eligibleIds, skippedIds });
@@ -566,10 +582,10 @@ export async function splitIncidentOccurrences(input: {
   readonly actor: { readonly id: string; readonly role: string };
   readonly reason: string;
   readonly requestId: string;
-}) {
+}, db?: Prisma.TransactionClient) {
   const selectedIds = [...new Set(input.occurrenceIds)].sort();
   if (selectedIds.length === 0) throw Errors.badRequest("Select at least one Incident occurrence to split");
-  return prisma.$transaction(async (tx) => {
+  const execute = async (tx: Prisma.TransactionClient) => {
     const source = await tx.opsIncident.findUnique({ where: { id: input.incidentId } });
     if (!source) throw Errors.notFound("Incident not found");
     if (source.version !== input.expectedVersion) throw Errors.conflict("Incident changed before split");
@@ -606,7 +622,8 @@ export async function splitIncidentOccurrences(input: {
     await tx.adminAuditLog.create({ data: { actorId: input.actor.id, actorRole: input.actor.role, action: "incident.split", targetType: "ops_incident", targetId: source.id, reason: input.reason, before: toInputJson({ version: source.version, occurrenceCount: allOccurrences.length }), after: toInputJson({ version: source.version + 1, createdIncidentId: created.id, movedOccurrenceIds: selectedIds }), requestId: input.requestId } });
     await tx.mainOutboxEvent.create({ data: { eventType: "ops.incident.split.v2", aggregateType: "ops_incident", aggregateId: source.id, payload: toInputJson({ sourceIncidentId: source.id, createdIncidentId: created.id, movedOccurrenceIds: selectedIds }) } });
     return { sourceIncidentId: source.id, createdIncidentId: created.id, movedOccurrenceIds: selectedIds };
-  });
+  };
+  return db ? execute(db) : prisma.$transaction(execute);
 }
 
 export async function mergeIncidents(input: {
@@ -616,11 +633,11 @@ export async function mergeIncidents(input: {
   readonly actor: { readonly id: string; readonly role: string };
   readonly reason: string;
   readonly requestId: string;
-}) {
+}, db?: Prisma.TransactionClient) {
   const sourceVersions = new Map(input.sources.map((source) => [source.incidentId, source.version]));
   const sourceIds = [...sourceVersions.keys()].filter((id) => id !== input.targetIncidentId).sort();
   if (sourceIds.length === 0) throw Errors.badRequest("Select at least one different Incident to merge");
-  return prisma.$transaction(async (tx) => {
+  const execute = async (tx: Prisma.TransactionClient) => {
     const rows = await tx.opsIncident.findMany({ where: { id: { in: [input.targetIncidentId, ...sourceIds] } } });
     const target = rows.find((row) => row.id === input.targetIncidentId);
     if (!target) throw Errors.notFound("Merge target Incident not found");
@@ -646,7 +663,8 @@ export async function mergeIncidents(input: {
     await tx.adminAuditLog.create({ data: { actorId: input.actor.id, actorRole: input.actor.role, action: "incident.merged", targetType: "ops_incident", targetId: target.id, reason: input.reason, before: toInputJson({ version: target.version }), after: toInputJson({ version: target.version + 1, sourceIncidentIds: sourceIds, movedOccurrenceCount: occurrences.length }), requestId: input.requestId } });
     await tx.mainOutboxEvent.create({ data: { eventType: "ops.incident.merged.v2", aggregateType: "ops_incident", aggregateId: target.id, payload: toInputJson({ targetIncidentId: target.id, sourceIncidentIds: sourceIds, movedOccurrenceIds: occurrences.map((row) => row.id) }) } });
     return { targetIncidentId: target.id, mergedIncidentIds: sourceIds, movedOccurrenceCount: occurrences.length };
-  });
+  };
+  return db ? execute(db) : prisma.$transaction(execute);
 }
 
 export async function closeIncidentWithPostmortem(input: {
@@ -660,8 +678,8 @@ export async function closeIncidentWithPostmortem(input: {
   readonly evidenceRefs: readonly string[];
   readonly reason: string;
   readonly requestId: string;
-}) {
-  return prisma.$transaction(async (tx) => {
+}, db?: Prisma.TransactionClient) {
+  const execute = async (tx: Prisma.TransactionClient) => {
     const incident = await tx.opsIncident.findUnique({ where: { id: input.incidentId } });
     if (!incident) throw Errors.notFound("Incident not found");
     if (incident.version !== input.expectedVersion) throw Errors.conflict("Incident changed before close");
@@ -672,5 +690,6 @@ export async function closeIncidentWithPostmortem(input: {
     await tx.adminAuditLog.create({ data: { actorId: input.actor.id, actorRole: input.actor.role, action: "incident.closed_with_postmortem", targetType: "ops_incident", targetId: incident.id, reason: input.reason, before: toInputJson({ status: incident.status, version: incident.version }), after: toInputJson({ status: closed.status, version: closed.version, postmortemId: postmortem.id, evidenceRefs: input.evidenceRefs }), requestId: input.requestId } });
     await tx.mainOutboxEvent.create({ data: { eventType: "ops.incident.closed.v2", aggregateType: "ops_incident", aggregateId: incident.id, payload: toInputJson({ incidentId: incident.id, postmortemId: postmortem.id, version: closed.version }) } });
     return { incident: closed, postmortem };
-  });
+  };
+  return db ? execute(db) : prisma.$transaction(execute);
 }

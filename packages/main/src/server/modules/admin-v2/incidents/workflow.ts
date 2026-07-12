@@ -342,14 +342,14 @@ export async function verifyIncidentRecovery(input: {
   readonly overrideReason?: string;
   readonly requestId: string;
   readonly now?: Date;
-}) {
+}, db?: Prisma.TransactionClient) {
   if (input.mode === "override" && !input.overrideReason?.trim()) {
     throw Errors.badRequest("Recovery verification override requires a reason");
   }
   if (input.mode === "override" && input.evidenceRefs.length === 0) {
     throw Errors.badRequest("Recovery verification override requires evidence");
   }
-  return prisma.$transaction(async (tx) => {
+  const execute = async (tx: Prisma.TransactionClient) => {
     await tx.$queryRaw`SELECT id FROM "ops_incidents" WHERE id = ${input.incidentId} FOR UPDATE`;
     const current = await tx.opsIncident.findUnique({ where: { id: input.incidentId } });
     if (!current) throw Errors.notFound("Incident not found");
@@ -420,5 +420,8 @@ export async function verifyIncidentRecovery(input: {
       },
     });
     return updated;
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  };
+  return db
+    ? execute(db)
+    : prisma.$transaction(execute, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 }

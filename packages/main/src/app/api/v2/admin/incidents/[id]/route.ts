@@ -1,4 +1,5 @@
 import { incidentTriageRequestSchema } from "@idream/shared/admin";
+import { Errors } from "@/server/lib/errors";
 import { getIncidentDetail } from "@/server/modules/admin-v2/incidents/query";
 import { triageIncident } from "@/server/modules/admin-v2/incidents/workflow";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
@@ -8,6 +9,13 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 type Context = { params: Promise<{ id: string }> };
+
+function requireMatchingIfMatch(request: Request, entityVersion: number) {
+  const value = request.headers.get("if-match")?.trim().replace(/^W\//, "").replace(/^"|"$/g, "");
+  if (!value || !/^\d+$/.test(value) || Number(value) !== entityVersion) {
+    throw Errors.badRequest("If-Match must equal body entityVersion");
+  }
+}
 
 export async function GET(request: Request, context: Context) {
   const { id } = await context.params;
@@ -19,6 +27,7 @@ export async function PATCH(request: Request, context: Context) {
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "ops.incident.manage");
     const body = incidentTriageRequestSchema.parse(await request.json());
+    requireMatchingIfMatch(request, body.entityVersion);
     return triageIncident({
       incidentId: id,
       actor,

@@ -25,6 +25,37 @@ export const incidentTriageRequestSchema = z
   })
   .strict();
 
+export const incidentCloseRequestSchema = z
+  .object({
+    entityVersion: z.number().int().positive(),
+    summary: z.string().trim().min(10),
+    rootCause: z.string().trim().min(3),
+    contributingFactors: z.array(z.string().trim().min(1)),
+    correctiveActions: z.array(z.string().trim().min(1)).min(1),
+    evidenceRefs: z.array(z.string().trim().min(1)).min(1),
+    reason: z.string().trim().min(3),
+    confirmation: z.string().min(1),
+  })
+  .strict();
+
+export const incidentMergeRequestSchema = z
+  .object({
+    entityVersion: z.number().int().positive(),
+    sources: z.array(z.object({ incidentId: adminIdSchema, version: z.number().int().positive() }).strict()).min(1),
+    reason: z.string().trim().min(3),
+    confirmation: z.string().min(1),
+  })
+  .strict();
+
+export const incidentSplitRequestSchema = z
+  .object({
+    entityVersion: z.number().int().positive(),
+    occurrenceIds: z.array(adminIdSchema).min(1),
+    reason: z.string().trim().min(3),
+    confirmation: z.string().min(1),
+  })
+  .strict();
+
 export const incidentRecoveryVerificationRequestSchema = z.discriminatedUnion("mode", [
   z.object({
     entityVersion: z.number().int().nonnegative(),

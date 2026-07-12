@@ -1,7 +1,10 @@
 import { incidentRecoveryVerificationRequestSchema } from "@idream/shared/admin";
+import { env } from "@/server/lib/env";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 import { verifyIncidentRecovery } from "@/server/modules/admin-v2/incidents/workflow";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
+import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -12,14 +15,26 @@ export async function POST(request: Request, context: Context) {
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "ops.incident.manage");
     const body = incidentRecoveryVerificationRequestSchema.parse(await request.json());
-    return verifyIncidentRecovery({
-      incidentId: id,
+    const idempotencyKey = requireIdempotencyKey(request);
+    const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
+    return executeAtomicIdempotentMutation({
+      environment: env.APP_ENV,
       actor,
+      idempotencyKey,
+      requestId,
+      commandType: "incident.verification",
+      target: { type: "ops_incident", id },
       expectedVersion: body.entityVersion,
-      mode: body.mode,
-      evidenceRefs: body.evidenceRefs,
-      overrideReason: body.mode === "override" ? body.overrideReason : undefined,
-      requestId: request.headers.get("x-request-id") ?? crypto.randomUUID(),
+      payload: body,
+      mutate: (tx) => verifyIncidentRecovery({
+        incidentId: id,
+        actor,
+        expectedVersion: body.entityVersion,
+        mode: body.mode,
+        evidenceRefs: body.evidenceRefs,
+        overrideReason: body.mode === "override" ? body.overrideReason : undefined,
+        requestId,
+      }, tx),
     });
   });
 }

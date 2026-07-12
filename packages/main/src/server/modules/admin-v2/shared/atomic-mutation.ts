@@ -1,4 +1,4 @@
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { canonicalRequestHash } from "./control-plane-command";
@@ -58,5 +58,5 @@ export async function executeAtomicIdempotentMutation(input: {
       },
     });
     return result;
-  });
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 }
