@@ -15,6 +15,11 @@ import {
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
+import {
+  decodeAdminListCursor,
+  encodeAdminListCursor,
+  parseIsoCursorKey,
+} from "@/server/modules/admin-v2/shared/list-cursor";
 
 const characterSelect = {
   id: true,
@@ -37,15 +42,53 @@ const reviewDecisionSchema = z.object({
 export async function listReviewQueue(request: Request): Promise<Response> {
   await actorWithPermission(request, "safety.review.read");
   const url = new URL(request.url);
+  const search = url.searchParams.get("search")?.trim() || undefined;
+  const reportFilter = z.enum(["all", "reported", "clean"]).catch("all").parse(url.searchParams.get("reportFilter") ?? "all");
+  const limit = clampInt(url.searchParams.get("limit"), 1, 100, 25);
+  const reportedCharacterIds = reportFilter === "all" ? [] : (await prisma.contentReport.findMany({
+    where: { targetType: "character" },
+    distinct: ["targetId"],
+    select: { targetId: true },
+  })).map((report) => report.targetId);
+  const queryIdentity = { search, reportFilter, sort: "submitted_asc" };
+  const cursorKeys = url.searchParams.get("cursor")
+    ? decodeAdminListCursor(url.searchParams.get("cursor")!, "character_review_queue", queryIdentity)
+    : null;
+  const [cursorAt, cursorId] = cursorKeys
+    ? [parseIsoCursorKey(cursorKeys[0], "character_review_queue"), z.string().min(1).parse(cursorKeys[1])]
+    : [null, null];
   const submissions = await prisma.characterSubmission.findMany({
-    where: { status: "pending" },
-    orderBy: { submittedAt: "asc" },
-    take: clampInt(url.searchParams.get("limit"), 1, 100, 50),
+    where: {
+      status: "pending",
+      characterId: reportFilter === "reported"
+        ? { in: reportedCharacterIds }
+        : reportFilter === "clean"
+          ? { notIn: reportedCharacterIds }
+          : undefined,
+      ...(search ? { OR: [
+        { id: { contains: search, mode: "insensitive" } },
+        { characterId: { contains: search, mode: "insensitive" } },
+        { character: { is: { OR: [
+          { name: { contains: search, mode: "insensitive" } },
+          { description: { contains: search, mode: "insensitive" } },
+          { gender: { contains: search, mode: "insensitive" } },
+          { style: { contains: search, mode: "insensitive" } },
+        ] } } },
+      ] } : {}),
+      ...(cursorAt && cursorId ? { AND: [{ OR: [
+        { submittedAt: { gt: cursorAt } },
+        { submittedAt: cursorAt, id: { gt: cursorId } },
+      ] }] } : {}),
+    },
+    orderBy: [{ submittedAt: "asc" }, { id: "asc" }],
+    take: limit + 1,
     include: { character: { select: characterSelect } },
   });
+  const hasNextPage = submissions.length > limit;
+  const page = submissions.slice(0, limit);
 
   const items = await Promise.all(
-    submissions.map(async (submission) => ({
+    page.map(async (submission) => ({
       submissionId: submission.id,
       submittedAt: submission.submittedAt,
       character: submission.character,
@@ -55,7 +98,18 @@ export async function listReviewQueue(request: Request): Promise<Response> {
     })),
   );
 
-  return ok({ items });
+  const last = page.at(-1);
+  return ok({
+    items,
+    pageInfo: {
+      endCursor: hasNextPage && last
+        ? encodeAdminListCursor("character_review_queue", queryIdentity, [last.submittedAt.toISOString(), last.id])
+        : null,
+      hasNextPage,
+    },
+    asOf: new Date().toISOString(),
+    freshness: "fresh",
+  });
 }
 
 export async function reviewSubmission(request: Request, id: string): Promise<Response> {

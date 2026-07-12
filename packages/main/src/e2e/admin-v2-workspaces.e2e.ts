@@ -20,6 +20,8 @@ const incidentId = `e2e-v2-incident-${suffix}`;
 const incidentRequestId = `e2e-v2-incident-request-${suffix}`;
 const incidentAttemptId = `e2e-v2-incident-attempt-${suffix}`;
 const incidentOccurrenceId = `e2e-v2-incident-occurrence-${suffix}`;
+const retryRequestId = `e2e-v2-retry-request-${suffix}`;
+const retryAttemptId = `e2e-v2-retry-attempt-${suffix}`;
 const caseId = `e2e-v2-case-${suffix}`;
 const caseTargetId = `e2e-v2-customer-${suffix}`;
 const caseEvidenceId = `e2e-v2-evidence-${suffix}`;
@@ -52,12 +54,16 @@ async function login(page: Page) {
   expect(response.ok(), await response.text()).toBeTruthy();
 }
 
-function consoleFailures(page: Page) {
+function consoleFailures(page: Page, expected: RegExp[] = []) {
   const failures: string[] = [];
   page.on("console", (message) => {
-    if (message.type() === "error") failures.push(message.text());
+    if (message.type() === "error" && !expected.some((pattern) => pattern.test(message.text()))) {
+      failures.push(message.text());
+    }
   });
-  page.on("pageerror", (error) => failures.push(error.message));
+  page.on("pageerror", (error) => {
+    if (!expected.some((pattern) => pattern.test(error.message))) failures.push(error.message);
+  });
   return failures;
 }
 
@@ -100,7 +106,7 @@ async function expectWcag22AA(page: Page) {
       failureSummary: node.failureSummary,
     })),
   }));
-  expect(violations, JSON.stringify(violations, null, 2)).toEqual([]);
+  expect(violations, `${page.url()}\n${JSON.stringify(violations, null, 2)}`).toEqual([]);
 }
 
 test.describe.serial("Admin v2 operator workspaces", () => {
@@ -171,6 +177,26 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         finishedAt: new Date(incidentLastSeen.getTime() + 5 * 60_000),
       },
     });
+    await prisma.generationJob.create({ data: {
+      id: retryRequestId,
+      userId: actorId,
+      mode: "image",
+      controls: {},
+      presetIds: [],
+      status: "failed",
+      outputCount: 1,
+      errorCode: "e2e_retryable_failure",
+      version: 1,
+    } });
+    await prisma.generationAttempt.create({ data: {
+      id: retryAttemptId,
+      requestId: retryRequestId,
+      attemptNo: 1,
+      status: "failed",
+      errorCode: "e2e_retryable_failure",
+      retryability: "retryable",
+      finishedAt: new Date(),
+    } });
     await prisma.opsIncident.create({
       data: {
         id: incidentId,
@@ -508,6 +534,9 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await prisma.opsIncident.deleteMany({ where: { id: incidentId } });
     await prisma.generationAttempt.deleteMany({ where: { id: incidentAttemptId } });
     await prisma.generationJob.deleteMany({ where: { id: incidentRequestId } });
+    await prisma.generationAttemptEvent.deleteMany({ where: { attemptId: retryAttemptId } });
+    await prisma.generationAttempt.deleteMany({ where: { requestId: retryRequestId } });
+    await prisma.generationJob.deleteMany({ where: { id: retryRequestId } });
     await prisma.creativeReviewDecision.deleteMany({ where: { runItemId: creativeItemId } });
     await prisma.mediaAssetPlacement.deleteMany({ where: { mediaAssetId: creativeAssetId } });
     await prisma.contentProductionItem.deleteMany({ where: { id: creativeItemId } });
@@ -549,7 +578,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await login(page);
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.goto(`${adminBaseURL()}/admin/characters/new`);
-    await expect(page.getByRole("heading", { level: 1, name: "Create Character Project" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 2, name: "Create Character Project" })).toBeVisible();
     await page.getByRole("button", { name: "Save positioning & continue" }).click();
     await page.getByLabel("Name").fill(characterName);
     await page.getByRole("button", { name: "Save & continue" }).click();
@@ -558,10 +587,11 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await page.getByRole("button", { name: "Save and open project" }).click();
     await expect(page).toHaveURL(/\/admin\/characters\/[^/?]+/);
     wizardCharacterId = new URL(page.url()).pathname.split("/").at(-1) ?? null;
-    await expect(page.getByRole("heading", { level: 1, name: characterName })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 2, name: characterName })).toBeVisible();
     await expect(page.getByRole("tablist", { name: "Character workspace" })).toBeVisible();
     await page.getByRole("tab", { name: "project" }).press("ArrowRight");
     await expect(page.getByRole("tab", { name: "preview" })).toHaveAttribute("aria-selected", "true");
+    await expect(page).toHaveURL(/tab=preview/);
     await expectNoHorizontalOverflow(page);
     expect(failures).toEqual([]);
   });
@@ -571,7 +601,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await login(page);
     await page.setViewportSize({ width: 1366, height: 900 });
     await page.goto(`${adminBaseURL()}/admin/characters/${releaseCharacterId}?tab=preview`);
-    await expect(page.getByRole("heading", { level: 1, name: releaseCharacterName })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 2, name: releaseCharacterName })).toBeVisible();
     await expect(page.getByRole("heading", { level: 2, name: "Real user-surface renderer" })).toBeVisible();
     await expect(page.getByTitle("Live real frontend renderer")).toBeVisible();
     await expect(page.getByText(releaseQaRunId)).toBeVisible();
@@ -661,7 +691,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await expect(page.locator("#creative-runs-title")).toBeVisible();
     await page.locator(`a[href="/admin/creative/runs/${creativeRunId}"]`).click();
     await expect(page).toHaveURL(new RegExp(`/admin/creative/runs/${creativeRunId}$`));
-    await expect(page.getByRole("heading", { level: 1, name: `E2E Creative Run ${suffix}` })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 2, name: `E2E Creative Run ${suffix}` })).toBeVisible();
     await page.getByRole("button", { name: "Approve" }).click();
     await expect(page.getByText("approved · passed")).toBeVisible();
     await page.getByLabel("Target type").fill("campaign");
@@ -778,6 +808,30 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     expect(failures).toEqual([]);
   });
 
+  test("keeps retry errors in an accessible focus-trapped dialog and restores focus", async ({ page }) => {
+    const failures = consoleFailures(page, [/server responded with a status of 409 \(Conflict\)/]);
+    await login(page);
+    await page.goto(`${adminBaseURL()}/admin/ops/jobs?search=${encodeURIComponent(retryRequestId)}&mode=image&sort=created_desc&limit=25`);
+    const trigger = page.getByRole("button", { name: "Retry" });
+    await expect(trigger).toBeVisible();
+    await trigger.click();
+    const dialog = page.getByRole("dialog", { name: new RegExp("Retry Generation Request") });
+    await expect(dialog).toBeVisible();
+    await expect(page.getByLabel("Reason (≥3)")).toBeFocused();
+    await page.keyboard.press("Shift+Tab");
+    await expect(page.getByRole("button", { name: "Cancel" })).toBeFocused();
+    await page.getByLabel("Reason (≥3)").fill("Retry after authority recovery verification");
+    await page.getByLabel("Type the name to confirm").fill(`${retryRequestId}:retry`);
+    await prisma.generationJob.update({ where: { id: retryRequestId }, data: { version: { increment: 1 } } });
+    await page.getByRole("button", { name: "Create retry attempt" }).click();
+    await expect(dialog.getByRole("alert")).toContainText("changed before retry");
+    await expect(page.getByLabel("Reason (≥3)")).toHaveValue("Retry after authority recovery verification");
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+    expect(failures).toEqual([]);
+  });
+
   test("meets automated WCAG 2.2 AA gates across the core operator surfaces", async ({ page }) => {
     const failures = consoleFailures(page);
     await login(page);
@@ -793,6 +847,8 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     for (const route of routes) {
       await page.goto(`${adminBaseURL()}${route}`);
       await expect(page.locator("#admin-main-content")).toBeVisible();
+      await expect(page.locator("h1")).toHaveCount(1);
+      await expect(page.locator("a.admin-skip-link")).toHaveAttribute("href", "#admin-main-content");
       await expectWcag22AA(page);
     }
     expect(failures).toEqual([]);
@@ -803,8 +859,8 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await login(page);
     await page.setViewportSize({ width: 375, height: 812 });
     const routes = [
-      ["/admin/characters", "Portfolio & Projects", 1],
-      ["/admin/creative/runs", "Creative Runs", 1],
+      ["/admin/characters", "Portfolio & Projects", 2],
+      ["/admin/creative/runs", "Creative Runs", 2],
       ["/admin/ops/incidents", "Incidents", 2],
       ["/admin/cases?view=mine", "Cases", 2],
     ] as const;

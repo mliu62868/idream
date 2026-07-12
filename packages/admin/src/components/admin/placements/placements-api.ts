@@ -32,7 +32,7 @@ export type ApprovedAsset = {
 };
 
 export const PLACEMENTS_BASE = "/api/v1/admin/content/placements";
-export const PLACEMENTS_LIST = `${PLACEMENTS_BASE}?limit=100`;
+export const PLACEMENTS_LIST = `${PLACEMENTS_BASE}?limit=25`;
 export const APPROVED_ASSETS_LIST = "/api/v1/admin/content/assets?status=approved&limit=100";
 
 // 与 placementSlotSchema（content-ops.ts:42-50）一致。
@@ -58,6 +58,14 @@ export const PATCH_ACTIONS = ["published", "paused", "archived"] as const;
 
 // 列表页筛选覆盖 placementStatusSchema 全部取值（含流转动作到不了的 draft/scheduled）。
 export const ALL_STATUSES = ["draft", "scheduled", "published", "paused", "archived"] as const;
+
+export function placementsListPath(filters: { search?: string; status?: string; cursor?: string }) {
+  const params = new URLSearchParams({ limit: "25" });
+  if (filters.search?.trim()) params.set("search", filters.search.trim());
+  if (filters.status && filters.status !== "all") params.set("status", filters.status);
+  if (filters.cursor) params.set("cursor", filters.cursor);
+  return `${PLACEMENTS_BASE}?${params}`;
+}
 
 export type PlacementDraft = {
   mediaAssetId: string;

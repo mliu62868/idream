@@ -3,7 +3,8 @@
 // SPEC: 角色审核队列面板 —— 自取数列出待审（pending）角色提交，逐行 Approve/Reject。
 // INTENT: 决策弹窗收集 reviewReason(可选) + reason(必填) + confirmation(submissionId)，复用 safety.review.* 权限。
 // INVARIANTS: 仅展示后端返回的 pending 项；决策成功后刷新队列；confirmation 必须等于 submissionId 才允许提交。
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { type KeyboardEvent, useCallback, useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Bookmark, Check, Filter, Loader2, Trash2, X } from "lucide-react";
 import { apiDelete, apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
@@ -70,19 +71,29 @@ export function ReviewQueueView() {
   const [savedViewLabel, setSavedViewLabel] = useState("");
   const [savingView, setSavingView] = useState(false);
   const [savedViewError, setSavedViewError] = useState<string | null>(null);
+  const [cursor, setCursor] = useState<string | undefined>();
+  const [pageInfo, setPageInfo] = useState({ endCursor: null as string | null, hasNextPage: false });
+  const [ready, setReady] = useState(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (nextCursor?: string) => {
     setLoading(true);
     setError(null);
     try {
-      const data = await apiGet<{ items: ReviewItem[] }>("/api/v1/admin/content/review-queue");
+      const params = new URLSearchParams({ limit: "25" });
+      if (filters.query.trim()) params.set("search", filters.query.trim());
+      if (filters.reportFilter !== "all") params.set("reportFilter", filters.reportFilter);
+      if (nextCursor) params.set("cursor", nextCursor);
+      const data = await apiGet<{ items: ReviewItem[]; pageInfo: { endCursor: string | null; hasNextPage: boolean } }>(`/api/v1/admin/content/review-queue?${params}`);
       setItems(data.items);
+      setCursor(nextCursor);
+      setPageInfo(data.pageInfo);
+      window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Load failed");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [filters.query, filters.reportFilter]);
 
   const loadSavedViews = useCallback(async () => {
     setSavedViewsLoading(true);
@@ -100,20 +111,24 @@ export function ReviewQueueView() {
   }, []);
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
     const timer = window.setTimeout(() => {
-      void load();
+      setFilters({ query: params.get("search") ?? "", reportFilter: isReportFilter(params.get("reportFilter")) ? params.get("reportFilter") as ReportFilter : "all" });
+      setCursor(params.get("cursor") ?? undefined);
+      setReady(true);
       void loadSavedViews();
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [load, loadSavedViews]);
+  }, [loadSavedViews]);
 
-  const visibleItems = useMemo(
-    () => items.filter((item) => matchesReviewFilters(item, filters)),
-    [filters, items],
-  );
+  useEffect(() => {
+    if (!ready) return;
+    const timer = window.setTimeout(() => void load(cursor), filters.query.trim() ? 250 : 0);
+    return () => window.clearTimeout(timer);
+  }, [cursor, filters.query, load, ready]);
   const activeFilterCount =
     (filters.query.trim() ? 1 : 0) + (filters.reportFilter === "all" ? 0 : 1);
-  const queueCount = activeFilterCount > 0 ? `${visibleItems.length}/${items.length}` : String(items.length);
+  const queueCount = String(items.length);
 
   async function saveCurrentView() {
     const label = savedViewLabel.trim();
@@ -148,6 +163,7 @@ export function ReviewQueueView() {
   function applySavedView(view: SavedView) {
     setSavedViewError(null);
     setFilters(savedFiltersFromUnknown(view.filters));
+    setCursor(undefined);
   }
 
   return (
@@ -166,7 +182,7 @@ export function ReviewQueueView() {
               aria-label={t("Search review queue")}
               className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
               name="review-queue-search"
-              onChange={(event) => setFilters((current) => ({ ...current, query: event.target.value }))}
+              onChange={(event) => { setFilters((current) => ({ ...current, query: event.target.value })); setCursor(undefined); }}
               placeholder={t("Name, description, or ID")}
               value={filters.query}
             />
@@ -185,7 +201,7 @@ export function ReviewQueueView() {
                     filters.reportFilter === option.value && "bg-[var(--ad-ink)] text-white hover:text-white",
                   )}
                   key={option.value}
-                  onClick={() => setFilters((current) => ({ ...current, reportFilter: option.value }))}
+                  onClick={() => { setFilters((current) => ({ ...current, reportFilter: option.value })); setCursor(undefined); }}
                   type="button"
                 >
                   {t(option.label)}
@@ -256,7 +272,7 @@ export function ReviewQueueView() {
           {activeFilterCount > 0 ? (
             <button
               className="rounded-lg h-8 border border-[var(--ad-border)] px-3 text-xs text-[var(--ad-text)] hover:border-[var(--ad-ink)]"
-              onClick={() => setFilters(DEFAULT_FILTERS)}
+              onClick={() => { setFilters(DEFAULT_FILTERS); setCursor(undefined); }}
               type="button"
             >
               {t("Reset filters")}
@@ -273,18 +289,19 @@ export function ReviewQueueView() {
         </div>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[860px] border-collapse text-left text-sm">
+            <caption className="sr-only">Pending character submissions</caption>
             <thead className="bg-black/[0.03] text-[11px] uppercase text-[var(--ad-text-muted)]">
               <tr>
                 {["name", "gender", "style", "description", "reports", "submittedAt"].map((column) => (
-                  <th key={column} className="border-b border-[var(--ad-border)] px-3 py-2 font-semibold">
+                  <th key={column} className="border-b border-[var(--ad-border)] px-3 py-2 font-semibold" scope="col">
                     {t(column)}
                   </th>
                 ))}
-                <th className="border-b border-[var(--ad-border)] px-3 py-2 font-semibold">{t("Actions")}</th>
+                <th className="border-b border-[var(--ad-border)] px-3 py-2 font-semibold" scope="col">{t("Actions")}</th>
               </tr>
             </thead>
             <tbody>
-              {visibleItems.map((item) => (
+              {items.map((item) => (
                 <tr key={item.submissionId} className="border-b border-[var(--ad-border)] last:border-0">
                   <td className="px-3 py-2 align-top text-[var(--ad-text)]">{item.character.name}</td>
                   <td className="px-3 py-2 align-top text-[var(--ad-text)]">{valueLabel(item.character.gender)}</td>
@@ -320,7 +337,7 @@ export function ReviewQueueView() {
                   </td>
                 </tr>
               ))}
-              {visibleItems.length === 0 ? (
+              {items.length === 0 ? (
                 <tr>
                   <td className="px-3 py-10 text-center" colSpan={7}>
                     {loading ? (
@@ -328,7 +345,7 @@ export function ReviewQueueView() {
                     ) : activeFilterCount > 0 ? (
                       <div>
                         <p className="text-sm font-semibold text-[var(--ad-ink)]">{t("No submissions match filters")}</p>
-                        <button className="mt-2 text-xs text-[var(--ad-text-muted)] underline underline-offset-4" onClick={() => setFilters(DEFAULT_FILTERS)} type="button">{t("Reset filters")}</button>
+                        <button className="mt-2 text-xs text-[var(--ad-text-muted)] underline underline-offset-4" onClick={() => { setFilters(DEFAULT_FILTERS); setCursor(undefined); }} type="button">{t("Reset filters")}</button>
                       </div>
                     ) : (
                       <div>
@@ -343,6 +360,7 @@ export function ReviewQueueView() {
           </table>
         </div>
       </section>
+      <div className="flex justify-end"><button className="min-h-10 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold disabled:opacity-50" disabled={loading || !pageInfo.hasNextPage || !pageInfo.endCursor} onClick={() => setCursor(pageInfo.endCursor ?? undefined)} type="button">Next page</button></div>
 
       {pending ? (
         <DecisionDialog
@@ -350,7 +368,7 @@ export function ReviewQueueView() {
           onClose={() => setPending(null)}
           onDone={async () => {
             setPending(null);
-            await load();
+            await load(cursor);
           }}
         />
       ) : null}
@@ -374,8 +392,51 @@ function DecisionDialog({
   const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const titleId = useId();
 
   const canSubmit = reason.trim().length >= 3 && confirmation === item.submissionId && !busy;
+
+  useEffect(() => {
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const background = document.getElementById("admin-shell-background");
+    const skipLink = document.getElementById("admin-skip-link");
+    background?.setAttribute("aria-hidden", "true");
+    skipLink?.setAttribute("aria-hidden", "true");
+    if (background instanceof HTMLElement) background.inert = true;
+    if (skipLink instanceof HTMLElement) skipLink.inert = true;
+    const timer = window.setTimeout(() => dialogRef.current?.querySelector<HTMLElement>("textarea, input, button")?.focus(), 0);
+    return () => {
+      window.clearTimeout(timer);
+      background?.removeAttribute("aria-hidden");
+      skipLink?.removeAttribute("aria-hidden");
+      if (background instanceof HTMLElement) background.inert = false;
+      if (skipLink instanceof HTMLElement) skipLink.inert = false;
+      previousFocus?.focus();
+    };
+  }, []);
+
+  function onDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape" && !busy) {
+      event.preventDefault();
+      onClose();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = [...(dialogRef.current?.querySelectorAll<HTMLElement>(
+      "button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex='-1'])",
+    ) ?? [])];
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable.at(-1)!;
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
 
   async function submit() {
     if (!canSubmit) return;
@@ -399,13 +460,18 @@ function DecisionDialog({
     }
   }
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
       <div
+        aria-labelledby={titleId}
+        aria-modal="true"
         className="rounded-lg w-full max-w-md border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5"
         onClick={(event) => event.stopPropagation()}
+        onKeyDown={onDialogKeyDown}
+        ref={dialogRef}
+        role="dialog"
       >
-        <h3 className="text-sm font-semibold">
+        <h3 className="text-sm font-semibold" id={titleId}>
           {decision === "approve" ? t("Approve") : t("Reject")} {item.character.name}
         </h3>
         <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
@@ -454,7 +520,8 @@ function DecisionDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -485,25 +552,4 @@ function savedFiltersFromUnknown(value: unknown): SavedReviewQueueFilters {
 
 function isReportFilter(value: unknown): value is ReportFilter {
   return value === "all" || value === "reported" || value === "clean";
-}
-
-function matchesReviewFilters(item: ReviewItem, filters: SavedReviewQueueFilters) {
-  if (filters.reportFilter === "reported" && item.reportCount === 0) return false;
-  if (filters.reportFilter === "clean" && item.reportCount > 0) return false;
-
-  const query = filters.query.trim().toLowerCase();
-  if (!query) return true;
-  const haystack = [
-    item.submissionId,
-    item.character.id,
-    item.character.name,
-    item.character.description,
-    item.character.gender,
-    item.character.style,
-    item.character.visibility,
-    item.character.status,
-  ]
-    .join(" ")
-    .toLowerCase();
-  return haystack.includes(query);
 }

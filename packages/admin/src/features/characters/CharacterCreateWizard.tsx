@@ -176,7 +176,7 @@ export function CharacterCreateWizard({ canCreate }: { canCreate: boolean }) {
     return (
       <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6 sm:p-8">
         <ShieldAlert className="h-6 w-6 text-[var(--ad-text-muted)]" />
-        <h1 className="mt-4 text-lg font-semibold">No permission</h1>
+        <h2 className="mt-4 text-lg font-semibold">No permission</h2>
         <p className="mt-2 text-sm text-[var(--ad-text-muted)]">Your effective grants do not include character.project.write.</p>
       </section>
     );
@@ -213,7 +213,7 @@ export function CharacterCreateWizard({ canCreate }: { canCreate: boolean }) {
         <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">Character Studio · Server draft</p>
         <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <h1 className="text-2xl font-semibold">Create Character Project</h1>
+            <h2 className="text-2xl font-semibold">Create Character Project</h2>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">Each completed step is persisted to the authority. Content autosaves create immutable versions and revisions.</p>
           </div>
           <SaveIndicator state={saveState} />

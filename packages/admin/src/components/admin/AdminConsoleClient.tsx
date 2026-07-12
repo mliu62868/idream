@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { ADMIN_PERMISSION_KEYS } from "@idream/shared/admin/permissions";
-import { type FormEvent, type ReactNode, type WheelEvent } from "react";
+import { type FormEvent, type KeyboardEvent, type ReactNode, type WheelEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
@@ -482,6 +482,7 @@ const defaultChatOpsFilters: ChatOpsFilters = {
 };
 
 const SUPPORT_REQUEST_SAVED_VIEW_SCOPE = "support.requests";
+const SUPPORT_REQUEST_REFRESH_EVENT = "idream:support-requests-refresh";
 const defaultSupportRequestFilters: SupportRequestFilters = {
   query: "",
   status: "all",
@@ -617,6 +618,7 @@ export function AdminConsoleClient({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  const pendingActionDialogRef = useRef<HTMLDivElement | null>(null);
   const [reason, setReason] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [actionStatus, setActionStatus] = useState<string | null>(null);
@@ -700,6 +702,50 @@ export function AdminConsoleClient({
     setPendingAction(action);
   }
 
+  useEffect(() => {
+    if (!pendingAction) return;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const background = document.getElementById("admin-shell-background");
+    const skipLink = document.getElementById("admin-skip-link");
+    background?.setAttribute("aria-hidden", "true");
+    skipLink?.setAttribute("aria-hidden", "true");
+    if (background instanceof HTMLElement) background.inert = true;
+    if (skipLink instanceof HTMLElement) skipLink.inert = true;
+    const timer = window.setTimeout(() => {
+      pendingActionDialogRef.current?.querySelector<HTMLElement>("textarea, input, button:not([disabled])")?.focus();
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      background?.removeAttribute("aria-hidden");
+      skipLink?.removeAttribute("aria-hidden");
+      if (background instanceof HTMLElement) background.inert = false;
+      if (skipLink instanceof HTMLElement) skipLink.inert = false;
+      previousFocus?.focus();
+    };
+  }, [pendingAction]);
+
+  function handlePendingActionDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape" && !actionBusy) {
+      event.preventDefault();
+      setPendingAction(null);
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = [...(pendingActionDialogRef.current?.querySelectorAll<HTMLElement>(
+      "button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex='-1'])",
+    ) ?? [])];
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable.at(-1)!;
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
   async function submitAction() {
     if (!pendingAction) return;
     setActionBusy(true);
@@ -724,6 +770,9 @@ export function AdminConsoleClient({
       await load();
       if (completedEndpoint.startsWith("/api/v1/admin/generation/jobs/")) {
         window.dispatchEvent(new Event(GENERATION_JOBS_REFRESH_EVENT));
+      }
+      if (completedEndpoint.startsWith("/api/v1/admin/support/requests/")) {
+        window.dispatchEvent(new Event(SUPPORT_REQUEST_REFRESH_EVENT));
       }
     } catch (actionError) {
       setActionStatus(null);
@@ -828,9 +877,9 @@ export function AdminConsoleClient({
   return (
     <AdminI18nProvider locale={locale}>
     <>
-    <a className="admin-skip-link" href="#admin-main-content">Skip to admin content</a>
+    <a className="admin-skip-link" href="#admin-main-content" id="admin-skip-link">Skip to admin content</a>
     <main className="min-h-screen overflow-x-hidden bg-[var(--ad-canvas)] text-[var(--ad-ink)]">
-      <div className="flex min-h-screen">
+      <div className="flex min-h-screen" id="admin-shell-background">
         <aside
           className="sticky top-0 hidden h-screen w-[248px] shrink-0 overflow-hidden border-r border-[var(--ad-border)] bg-[var(--ad-surface)] lg:flex lg:flex-col"
           onWheel={handleSidebarWheel}
@@ -1046,9 +1095,16 @@ export function AdminConsoleClient({
 
       {pendingAction ? (
         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-4">
-          <div className="w-full max-w-md rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5 shadow-2xl">
+          <div
+            aria-labelledby="pending-action-dialog-title"
+            aria-modal="true"
+            className="w-full max-w-md rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5 shadow-2xl"
+            onKeyDown={handlePendingActionDialogKeyDown}
+            ref={pendingActionDialogRef}
+            role="dialog"
+          >
             <div className="flex items-center justify-between gap-3">
-              <h2 className="text-base font-semibold">{pendingAction.title}</h2>
+              <h2 className="text-base font-semibold" id="pending-action-dialog-title">{pendingAction.title}</h2>
               <button
                 aria-label="Close"
                 className="grid h-8 w-8 place-items-center rounded-md hover:bg-black/[0.04]"
@@ -5872,11 +5928,12 @@ function SupportRequestsView({
   const [savedViewLabel, setSavedViewLabel] = useState("");
   const [savingView, setSavingView] = useState(false);
   const [savedViewError, setSavedViewError] = useState<string | null>(null);
-
-  const visibleRows = useMemo(
-    () => rows.filter((row) => matchesSupportRequestFilters(row, filters)),
-    [filters, rows],
-  );
+  const [visibleRows, setVisibleRows] = useState<Row[]>(rows);
+  const [listLoading, setListLoading] = useState(false);
+  const [listError, setListError] = useState<string | null>(null);
+  const [cursor, setCursor] = useState<string | undefined>();
+  const [pageInfo, setPageInfo] = useState({ endCursor: null as string | null, hasNextPage: false });
+  const [ready, setReady] = useState(false);
   const activeFilterCount =
     (filters.query.trim() ? 1 : 0) +
     (filters.category.trim() ? 1 : 0) +
@@ -5898,12 +5955,56 @@ function SupportRequestsView({
     }
   }, []);
 
+  const loadRows = useCallback(async (nextCursor?: string) => {
+    setListLoading(true);
+    setListError(null);
+    try {
+      const params = new URLSearchParams({ limit: "25" });
+      if (filters.query.trim()) params.set("search", filters.query.trim());
+      if (filters.status !== "all") params.set("status", filters.status);
+      if (filters.sla !== "all") params.set("sla", filters.sla);
+      if (filters.category.trim()) params.set("category", filters.category.trim());
+      if (nextCursor) params.set("cursor", nextCursor);
+      const data = await apiGet<{ items: Row[]; pageInfo: { endCursor: string | null; hasNextPage: boolean } }>(`/api/v1/admin/support/requests?${params}`);
+      setVisibleRows(data.items);
+      setCursor(nextCursor);
+      setPageInfo(data.pageInfo);
+      window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
+    } catch (cause) {
+      setVisibleRows([]);
+      setPageInfo({ endCursor: null, hasNextPage: false });
+      setListError(cause instanceof Error ? cause.message : "Support requests could not be loaded");
+    } finally {
+      setListLoading(false);
+    }
+  }, [filters.category, filters.query, filters.sla, filters.status]);
+
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
     const timer = window.setTimeout(() => {
+      setFilters({
+        query: params.get("search") ?? "",
+        status: supportStatusFromUnknown(params.get("status")),
+        sla: supportSlaFromUnknown(params.get("sla")),
+        category: params.get("category") ?? "",
+      });
+      setCursor(params.get("cursor") ?? undefined);
+      setReady(true);
       void loadSavedViews();
     }, 0);
     return () => window.clearTimeout(timer);
   }, [loadSavedViews]);
+
+  useEffect(() => {
+    if (!ready) return;
+    const timer = window.setTimeout(() => void loadRows(cursor), filters.query.trim() ? 250 : 0);
+    const refresh = () => void loadRows(cursor);
+    window.addEventListener(SUPPORT_REQUEST_REFRESH_EVENT, refresh);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener(SUPPORT_REQUEST_REFRESH_EVENT, refresh);
+    };
+  }, [cursor, filters.query, loadRows, ready]);
 
   async function saveCurrentView() {
     const label = savedViewLabel.trim();
@@ -5938,6 +6039,7 @@ function SupportRequestsView({
   function applySavedView(view: SavedView) {
     setSavedViewError(null);
     setFilters(supportRequestFiltersFromUnknown(view.filters));
+    setCursor(undefined);
   }
 
   return (
@@ -5949,7 +6051,7 @@ function SupportRequestsView({
             <input
               aria-label={t("Support search")}
               className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
-              onChange={(event) => setFilters((current) => ({ ...current, query: event.target.value }))}
+              onChange={(event) => { setFilters((current) => ({ ...current, query: event.target.value })); setCursor(undefined); }}
               placeholder={t("Ticket, user, subject, or notes")}
               value={filters.query}
             />
@@ -5959,12 +6061,13 @@ function SupportRequestsView({
             <select
               aria-label={t("Support status")}
               className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
-              onChange={(event) =>
+              onChange={(event) => {
                 setFilters((current) => ({
                   ...current,
                   status: supportStatusFromUnknown(event.target.value),
-                }))
-              }
+                }));
+                setCursor(undefined);
+              }}
               value={filters.status}
             >
               {supportStatusOptions.map((option) => (
@@ -5979,12 +6082,13 @@ function SupportRequestsView({
             <select
               aria-label={t("Support SLA")}
               className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
-              onChange={(event) =>
+              onChange={(event) => {
                 setFilters((current) => ({
                   ...current,
                   sla: supportSlaFromUnknown(event.target.value),
-                }))
-              }
+                }));
+                setCursor(undefined);
+              }}
               value={filters.sla}
             >
               {supportSlaOptions.map((option) => (
@@ -5999,7 +6103,7 @@ function SupportRequestsView({
             <input
               aria-label={t("Support category")}
               className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
-              onChange={(event) => setFilters((current) => ({ ...current, category: event.target.value }))}
+              onChange={(event) => { setFilters((current) => ({ ...current, category: event.target.value })); setCursor(undefined); }}
               placeholder="generation"
               value={filters.category}
             />
@@ -6063,7 +6167,7 @@ function SupportRequestsView({
           {activeFilterCount > 0 ? (
             <button
               className="rounded-lg h-8 border border-[var(--ad-border)] px-3 text-xs text-[var(--ad-text)] hover:border-[var(--ad-ink)]"
-              onClick={() => setFilters(defaultSupportRequestFilters)}
+              onClick={() => { setFilters(defaultSupportRequestFilters); setCursor(undefined); }}
               type="button"
             >
               {t("Reset filters")}
@@ -6077,6 +6181,8 @@ function SupportRequestsView({
       </section>
 
       <PlaintextAccessPanel />
+
+      {listError ? <p className="text-sm text-[var(--ad-red-text)]" role="alert">{listError}</p> : null}
 
       <DataTable
         actions={(row) => {
@@ -6181,6 +6287,7 @@ function SupportRequestsView({
         rows={visibleRows}
         title="Support Requests"
       />
+      <div className="flex justify-end"><button className="min-h-10 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold disabled:opacity-50" disabled={listLoading || !pageInfo.hasNextPage || !pageInfo.endCursor} onClick={() => setCursor(pageInfo.endCursor ?? undefined)} type="button">Next page</button></div>
     </div>
   );
 }
@@ -6215,35 +6322,6 @@ function supportSlaFromUnknown(value: unknown): SupportSlaFilter {
   return supportSlaOptions.some((option) => option.value === value)
     ? (value as SupportSlaFilter)
     : "all";
-}
-
-function matchesSupportRequestFilters(row: Row, filters: SupportRequestFilters) {
-  const status = stringValue(row.status);
-  if (filters.status === "active" && (status === "resolved" || status === "closed")) return false;
-  if (filters.status !== "all" && filters.status !== "active" && status !== filters.status) return false;
-  if (filters.sla !== "all" && stringValue(row.slaState) !== filters.sla) return false;
-
-  const category = filters.category.trim().toLowerCase();
-  if (category && stringValue(row.category).toLowerCase() !== category) return false;
-
-  const query = filters.query.trim().toLowerCase();
-  if (!query) return true;
-  const haystack = [
-    row.ticketId,
-    row.userEmail,
-    row.userId,
-    row.category,
-    row.subject,
-    row.description,
-    row.status,
-    row.assignedToEmail,
-    row.resolutionNotes,
-    row.sourcePath,
-  ]
-    .map((value) => (value === null || value === undefined ? "" : String(value)))
-    .join(" ")
-    .toLowerCase();
-  return haystack.includes(query);
 }
 
 function ApprovalsView({

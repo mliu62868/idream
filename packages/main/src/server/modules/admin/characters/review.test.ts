@@ -92,6 +92,34 @@ describe("character review queue (D)", () => {
     expect(items.find((item) => item.submissionId === pending.submission.id)?.reportCount).toBe(2);
   });
 
+  it("executes search/report filters server-side with a query-bound stable cursor", async () => {
+    const moderator = `${P}mod-cursor`;
+    await createUser({ id: moderator, role: "moderator" });
+    const first = await seedSubmission("cursor-alpha");
+    const second = await seedSubmission("cursor-beta");
+    await prisma.character.update({ where: { id: first.characterId }, data: { name: `${P}cursor-target alpha` } });
+    await prisma.character.update({ where: { id: second.characterId }, data: { name: `${P}cursor-target beta` } });
+    await prisma.contentReport.create({ data: { id: `${P}cursor-report`, targetType: "character", targetId: second.characterId, category: "spam" } });
+
+    const firstPage = await callList({ userId: moderator, role: "moderator" }, `?search=${P}cursor-target&limit=1`);
+    expect(firstPage.data.items).toHaveLength(1);
+    expect(firstPage.data.pageInfo).toMatchObject({ hasNextPage: true, endCursor: expect.any(String) });
+    const secondPage = await callList(
+      { userId: moderator, role: "moderator" },
+      `?search=${P}cursor-target&limit=1&cursor=${encodeURIComponent(firstPage.data.pageInfo.endCursor)}`,
+    );
+    expect(secondPage.data.items).toHaveLength(1);
+    expect(secondPage.data.items[0].submissionId).not.toBe(firstPage.data.items[0].submissionId);
+
+    const reported = await callList({ userId: moderator, role: "moderator" }, `?search=${P}cursor-target&reportFilter=reported&limit=25`);
+    expect(reported.data.items.map((item: { submissionId: string }) => item.submissionId)).toEqual([second.submission.id]);
+    const mismatch = await callList(
+      { userId: moderator, role: "moderator" },
+      `?search=${P}cursor-target&reportFilter=clean&limit=1&cursor=${encodeURIComponent(firstPage.data.pageInfo.endCursor)}`,
+    );
+    expect(mismatch.status).toBe(400);
+  });
+
   it("approve sets character + submission status to approved and audits", async () => {
     const moderator = `${P}mod-approve`;
     await createUser({ id: moderator, role: "moderator" });

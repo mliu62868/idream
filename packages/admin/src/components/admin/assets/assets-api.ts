@@ -65,10 +65,13 @@ export const ASSET_PURPOSES = [
 // 资产量可观，服务端筛更省）；详情页复用同一构造但不传筛选，等价于裸端点（spec §7 详情页
 // "无单条 GET，复用列表接口" 惯例的图片库版本——后端其实有单条 GET，但为与其余三件套架构一致
 // 仍走 list+find）。
-export function assetsListPath(filters?: { status?: string; purpose?: string }): string {
+export function assetsListPath(filters?: { status?: string; purpose?: string; search?: string; cursor?: string; limit?: number }): string {
   const params = new URLSearchParams();
   if (filters?.status && filters.status !== "all") params.set("status", filters.status);
   if (filters?.purpose && filters.purpose !== "all") params.set("purpose", filters.purpose);
+  if (filters?.search?.trim()) params.set("search", filters.search.trim());
+  if (filters?.cursor) params.set("cursor", filters.cursor);
+  if (filters?.limit) params.set("limit", String(filters.limit));
   return params.size > 0 ? `${ASSETS_LIST}?${params.toString()}` : ASSETS_LIST;
 }
 

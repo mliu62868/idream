@@ -281,7 +281,7 @@ function PreviewDiff({ data, permissions, reload }: { data: CharacterWorkspaceDe
         <div className="mt-4 grid gap-4 xl:grid-cols-2">
           {snapshots.map((snapshot) => <article className="overflow-hidden rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)]" key={`renderer-${snapshot.label}`}>
             <div className="flex items-center justify-between border-b border-[var(--ad-border)] px-4 py-3"><strong className="text-xs uppercase tracking-wide">{snapshot.label}</strong><span className="text-xs text-[var(--ad-text-muted)]">Desktop + responsive mobile layout</span></div>
-            {snapshot.renderUrl ? <iframe className="h-[760px] w-full bg-[rgb(13,13,13)]" loading="lazy" sandbox="allow-scripts" src={snapshot.renderUrl} title={`${snapshot.label} real frontend renderer`} /> : <div className="p-6 text-sm text-[var(--ad-text-muted)]">Renderer unavailable until an immutable ContentVersion exists.</div>}
+            {snapshot.renderUrl ? <iframe className="h-[760px] w-full bg-[rgb(13,13,13)]" loading="lazy" sandbox="allow-scripts allow-same-origin" src={snapshot.renderUrl} title={`${snapshot.label} real frontend renderer`} /> : <div className="p-6 text-sm text-[var(--ad-text-muted)]">Renderer unavailable until an immutable ContentVersion exists.</div>}
           </article>)}
         </div>
       </section>
@@ -608,7 +608,11 @@ function CharacterDetail({ id, permissions }: { id: string; permissions: Permiss
   const [data, setData] = useState<CharacterWorkspaceDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>(() => typeof window === "undefined" ? "project" : (new URLSearchParams(window.location.search).get("tab") as Tab) || "project");
+  const [tab, setTab] = useState<Tab>(() => {
+    if (typeof window === "undefined") return "project";
+    const requested = new URLSearchParams(window.location.search).get("tab");
+    return tabs.includes(requested as Tab) ? requested as Tab : "project";
+  });
   const load = useCallback(async () => { setLoading(true); setError(null); try { setData(await adminV2Request(`/api/v2/admin/characters/${id}`, { schema: characterWorkspaceDetailSchema })); } catch (cause) { setError(cause instanceof Error ? cause.message : "Character workspace could not be loaded"); } finally { setLoading(false); } }, [id]);
   useEffect(() => {
     if (!permissions.read) return;
@@ -618,9 +622,24 @@ function CharacterDetail({ id, permissions }: { id: string; permissions: Permiss
   if (!permissions.read) return permissionDenied("character.project.read");
   if (loading) return <LoadingWorkspace label="Loading Character Project, Release and Monitor evidence" />;
   if (!data) return <section className="rounded-xl bg-[var(--ad-red-bg)] p-5" role="alert">{error ?? "Character not found"} <button className="ml-2 underline" onClick={() => void load()} type="button">Retry</button></section>;
-  const onTabKey = (event: KeyboardEvent<HTMLButtonElement>, current: number) => { if (!event.key.startsWith("Arrow")) return; event.preventDefault(); const next = (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length; setTab(tabs[next]); document.getElementById(`character-tab-${tabs[next]}`)?.focus(); };
+  const selectTab = (next: Tab) => {
+    setTab(next);
+    setWorkspaceUrl(new URLSearchParams({ tab: next }));
+  };
+  const onTabKey = (event: KeyboardEvent<HTMLButtonElement>, current: number) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const nextIndex = event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? tabs.length - 1
+        : (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    const next = tabs[nextIndex];
+    selectTab(next);
+    document.getElementById(`character-tab-${next}`)?.focus();
+  };
   const workspaceName = data.preview.draft?.name ?? data.preview.live?.name ?? data.character.name;
-  return <section aria-labelledby="character-workspace-title"><Link className="inline-flex min-h-11 items-center gap-2 text-sm text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]" href="/admin/characters"><ArrowLeft className="h-4 w-4" /> Portfolio</Link><div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-xs uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">Character Project · {data.project.id}</p><h1 className="mt-1 text-2xl font-semibold" id="character-workspace-title">{workspaceName}</h1><div className="mt-2 flex flex-wrap gap-2"><StatusBadge value={data.project.phase} /><StatusBadge value={data.serving?.state ?? "inactive"} /><StatusBadge value={data.character.visibility} /></div></div><p className="text-xs text-[var(--ad-text-muted)]">Project v{data.project.version} · Serving v{data.serving?.version ?? 0}</p></div>{error ? <p className="mt-4" role="alert">{error}</p> : null}<div className="mt-6 flex gap-1 overflow-x-auto border-b border-[var(--ad-border)]" role="tablist" aria-label="Character workspace">{tabs.map((item, index) => <button aria-controls={`character-panel-${item}`} aria-selected={tab === item} className={cn("min-h-11 shrink-0 border-b-2 px-3 text-sm capitalize focus-visible:outline focus-visible:outline-2", tab === item ? "border-[var(--ad-ink)] font-semibold text-[var(--ad-ink)]" : "border-transparent text-[var(--ad-text-muted)]")} id={`character-tab-${item}`} key={item} onClick={() => { setTab(item); const query = new URLSearchParams({ tab: item }); setWorkspaceUrl(query); }} onKeyDown={(event) => onTabKey(event, index)} role="tab" tabIndex={tab === item ? 0 : -1} type="button">{item}</button>)}</div><div className="mt-5" id={`character-panel-${tab}`} role="tabpanel" aria-labelledby={`character-tab-${tab}`}>{tab === "project" ? <ProjectEditor data={data} key={data.project.version} onReload={load} permissions={permissions} /> : tab === "preview" ? <PreviewDiff data={data} permissions={permissions} reload={load} /> : tab === "release" ? <ReleasePanel data={data} permissions={permissions} reload={load} /> : tab === "monitor" ? <MonitorPanel data={data} permissions={permissions} reload={load} /> : <PerformancePanel data={data} permissions={permissions} reload={load} />}</div></section>;
+  return <section aria-labelledby="character-workspace-title"><Link className="inline-flex min-h-11 items-center gap-2 text-sm text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]" href="/admin/characters"><ArrowLeft className="h-4 w-4" /> Portfolio</Link><div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-xs uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">Character Project · {data.project.id}</p><h2 className="mt-1 text-2xl font-semibold" id="character-workspace-title">{workspaceName}</h2><div className="mt-2 flex flex-wrap gap-2"><StatusBadge value={data.project.phase} /><StatusBadge value={data.serving?.state ?? "inactive"} /><StatusBadge value={data.character.visibility} /></div></div><p className="text-xs text-[var(--ad-text-muted)]">Project v{data.project.version} · Serving v{data.serving?.version ?? 0}</p></div>{error ? <p className="mt-4" role="alert">{error}</p> : null}<div className="mt-6 flex gap-1 overflow-x-auto border-b border-[var(--ad-border)]" role="tablist" aria-label="Character workspace">{tabs.map((item, index) => <button aria-controls={`character-panel-${item}`} aria-selected={tab === item} className={cn("min-h-11 shrink-0 border-b-2 px-3 text-sm capitalize focus-visible:outline focus-visible:outline-2", tab === item ? "border-[var(--ad-ink)] font-semibold text-[var(--ad-ink)]" : "border-transparent text-[var(--ad-text-muted)]")} id={`character-tab-${item}`} key={item} onClick={() => { setTab(item); const query = new URLSearchParams({ tab: item }); setWorkspaceUrl(query); }} onKeyDown={(event) => onTabKey(event, index)} role="tab" tabIndex={tab === item ? 0 : -1} type="button">{item}</button>)}</div><div className="mt-5" id={`character-panel-${tab}`} role="tabpanel" aria-labelledby={`character-tab-${tab}`}>{tab === "project" ? <ProjectEditor data={data} key={data.project.version} onReload={load} permissions={permissions} /> : tab === "preview" ? <PreviewDiff data={data} permissions={permissions} reload={load} /> : tab === "release" ? <ReleasePanel data={data} permissions={permissions} reload={load} /> : tab === "monitor" ? <MonitorPanel data={data} permissions={permissions} reload={load} /> : <PerformancePanel data={data} permissions={permissions} reload={load} />}</div></section>;
 }
 
 export function CharacterWorkspace({ view, permissions }: { view: AdminSubview; permissions: Permissions }) {

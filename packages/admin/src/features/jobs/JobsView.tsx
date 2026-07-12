@@ -351,7 +351,7 @@ function GenerationJobInspector({ detail, error, jobId, loading, locale, onClose
 
 function AuthorityTable({ caption, headers, rows }: { caption: string; headers: string[]; rows: string[][] }) {
   return (
-    <div className="overflow-x-auto rounded-lg border border-[var(--ad-border)]">
+    <div aria-label={`${caption} scrollable table`} className="overflow-x-auto rounded-lg border border-[var(--ad-border)]" role="region" tabIndex={0}>
       <table className="w-full min-w-[560px] text-left text-xs">
         <caption className="px-3 py-2 text-left text-sm font-semibold">{caption}</caption>
         <thead className="bg-black/[0.03] text-[var(--ad-text-muted)]"><tr>{headers.map((header) => <th className="px-3 py-2 font-semibold" key={header} scope="col">{header}</th>)}</tr></thead>

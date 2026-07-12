@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { apiGet } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
@@ -26,48 +26,61 @@ export function AssetsListPage() {
   const [status, setStatus] = useState("all");
   const [purpose, setPurpose] = useState("all");
   const [search, setSearch] = useState("");
+  const [cursor, setCursor] = useState<string | undefined>();
+  const [pageInfo, setPageInfo] = useState({ endCursor: null as string | null, hasNextPage: false });
+  const [ready, setReady] = useState(false);
 
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (nextCursor?: string) => {
     setLoading(true);
     setError(null);
     try {
-      const data = await apiGet<{ items: ContentAsset[] }>(assetsListPath({ status, purpose }));
+      const data = await apiGet<{ items: ContentAsset[]; pageInfo: { endCursor: string | null; hasNextPage: boolean } }>(assetsListPath({ status, purpose, search, cursor: nextCursor, limit: 25 }));
       setRows(data.items);
+      setCursor(nextCursor);
+      setPageInfo(data.pageInfo);
+      const params = new URLSearchParams();
+      if (status !== "all") params.set("status", status);
+      if (purpose !== "all") params.set("purpose", purpose);
+      if (search.trim()) params.set("search", search.trim());
+      if (nextCursor) params.set("cursor", nextCursor);
+      window.history.replaceState(null, "", `${window.location.pathname}${params.size ? `?${params}` : ""}`);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : t("Request failed"));
     } finally {
       setLoading(false);
     }
-  }, [purpose, status, t]);
+  }, [purpose, search, status, t]);
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
     const timer = window.setTimeout(() => {
-      void reload();
+      setStatus(params.get("status") ?? "all");
+      setPurpose(params.get("purpose") ?? "all");
+      setSearch(params.get("search") ?? "");
+      setCursor(params.get("cursor") ?? undefined);
+      setReady(true);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [reload]);
+  }, []);
 
-  const filtered = useMemo(() => {
-    const term = search.trim().toLowerCase();
-    if (!term) return rows;
-    return rows.filter((asset) => {
-      const haystack = [asset.id, asset.description ?? "", ...asset.tags].join(" ").toLowerCase();
-      return haystack.includes(term);
-    });
-  }, [rows, search]);
+  useEffect(() => {
+    if (!ready) return;
+    const timer = window.setTimeout(() => void reload(cursor), search.trim() ? 250 : 0);
+    return () => window.clearTimeout(timer);
+  }, [cursor, ready, reload, search]);
 
   return (
     <div>
       <PageHeader purpose={t("Browse and curate generated image assets.")} title={t("Image Library")} />
       <FilterBar
-        onSearch={setSearch}
+        onSearch={(value) => { setSearch(value); setCursor(undefined); }}
         search={search}
         searchPlaceholder={t("Search by tag, description, or asset ID")}
         selects={[
           {
             name: t("Status"),
             value: status,
-            onChange: setStatus,
+            onChange: (value) => { setStatus(value); setCursor(undefined); },
             options: [
               { value: "all", label: t("All") },
               ...ASSET_STATUSES.map((item) => ({ value: item, label: value(item) })),
@@ -76,7 +89,7 @@ export function AssetsListPage() {
           {
             name: t("Purpose"),
             value: purpose,
-            onChange: setPurpose,
+            onChange: (value) => { setPurpose(value); setCursor(undefined); },
             options: [
               { value: "all", label: t("All") },
               ...ASSET_PURPOSES.map((item) => ({ value: item, label: value(item) })),
@@ -87,15 +100,16 @@ export function AssetsListPage() {
       {error ? <p className="mb-4 text-sm text-[var(--ad-red-text)]">{error}</p> : null}
       {loading ? (
         <p className="text-sm text-[var(--ad-text-muted)]">{t("Loading…")}</p>
-      ) : filtered.length === 0 ? (
+      ) : rows.length === 0 ? (
         <EmptyState title={t("No platform assets match these filters.")} />
       ) : (
         <CardGrid>
-          {filtered.map((asset) => (
+          {rows.map((asset) => (
             <AssetCard asset={asset} key={asset.id} />
           ))}
         </CardGrid>
       )}
+      <div className="mt-4 flex justify-end"><button className="min-h-10 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold disabled:opacity-50" disabled={loading || !pageInfo.hasNextPage || !pageInfo.endCursor} onClick={() => { const next = pageInfo.endCursor ?? undefined; setCursor(next); }} type="button">Next page</button></div>
     </div>
   );
 }

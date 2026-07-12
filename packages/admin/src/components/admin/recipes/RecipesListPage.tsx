@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Plus } from "lucide-react";
 import { apiGet } from "@/components/admin/api";
 import { adminDateLocale, useAdminI18n } from "@/components/admin/i18n";
@@ -23,37 +23,46 @@ export function RecipesListPage() {
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
+  const [cursor, setCursor] = useState<string | undefined>();
+  const [pageInfo, setPageInfo] = useState({ endCursor: null as string | null, hasNextPage: false });
+  const [ready, setReady] = useState(false);
 
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (nextCursor?: string) => {
     setLoading(true);
     setError(null);
     try {
-      const data = await apiGet<{ items: Recipe[] }>(RECIPES_LIST);
+      const params = new URLSearchParams({ limit: "25" });
+      if (search.trim()) params.set("search", search.trim());
+      if (status !== "all") params.set("status", status);
+      if (nextCursor) params.set("cursor", nextCursor);
+      const data = await apiGet<{ items: Recipe[]; pageInfo: { endCursor: string | null; hasNextPage: boolean } }>(`${RECIPES_LIST}?${params}`);
       setRows(data.items);
+      setCursor(nextCursor);
+      setPageInfo(data.pageInfo);
+      window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : t("Request failed"));
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [search, status, t]);
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
     const timer = window.setTimeout(() => {
-      void reload();
+      setSearch(params.get("search") ?? "");
+      setStatus(params.get("status") ?? "all");
+      setCursor(params.get("cursor") ?? undefined);
+      setReady(true);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [reload]);
+  }, []);
 
-  const filtered = useMemo(
-    () =>
-      rows.filter((row) => {
-        return (
-          (search.trim() === "" || row.label.toLowerCase().includes(search.trim().toLowerCase())) &&
-          (status === "all" || row.status === status)
-        );
-      }),
-    [rows, search, status],
-  );
+  useEffect(() => {
+    if (!ready) return;
+    const timer = window.setTimeout(() => void reload(cursor), search.trim() ? 250 : 0);
+    return () => window.clearTimeout(timer);
+  }, [cursor, ready, reload, search]);
 
   const newAction = (
     <Link href="/admin/generation/recipes/new">
@@ -63,7 +72,7 @@ export function RecipesListPage() {
     </Link>
   );
 
-  const tableRows: DataTableRow[] = filtered.map((row) => ({
+  const tableRows: DataTableRow[] = rows.map((row) => ({
     id: row.id,
     href: `/admin/generation/recipes/${row.id}`,
     cells: [
@@ -82,14 +91,14 @@ export function RecipesListPage() {
         title={t("Prompt Recipes")}
       />
       <FilterBar
-        onSearch={setSearch}
+        onSearch={(value) => { setSearch(value); setCursor(undefined); }}
         search={search}
         searchPlaceholder={t("Search by name")}
         selects={[
           {
             name: t("Status"),
             value: status,
-            onChange: setStatus,
+            onChange: (value) => { setStatus(value); setCursor(undefined); },
             options: [
               { value: "all", label: t("All") },
               ...STATUSES.map((s) => ({ value: s, label: t(recipeStateLabelKey({ status: s })) })),
@@ -113,6 +122,7 @@ export function RecipesListPage() {
           rows={tableRows}
         />
       )}
+      <div className="mt-4 flex justify-end"><button className="min-h-10 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold disabled:opacity-50" disabled={loading || !pageInfo.hasNextPage || !pageInfo.endCursor} onClick={() => setCursor(pageInfo.endCursor ?? undefined)} type="button">Next page</button></div>
     </div>
   );
 }

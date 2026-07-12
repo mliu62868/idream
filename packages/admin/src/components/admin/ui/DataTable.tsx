@@ -23,7 +23,7 @@ export function DataTable({
 }) {
   if (rows.length === 0 && empty) return <>{empty}</>;
   return (
-    <div className="overflow-x-auto rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
+    <div aria-label={`${caption} scrollable table`} className="overflow-x-auto rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]" role="region" tabIndex={0}>
       <table className="w-full min-w-[640px] text-left text-sm">
         <caption className="sr-only">{caption}</caption>
         <thead>

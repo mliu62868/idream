@@ -10,6 +10,10 @@ import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import { moderateText } from "@/server/modules/ourdream/service";
+import {
+  decodeAdminListCursor,
+  encodeAdminListCursor,
+} from "@/server/modules/admin-v2/shared/list-cursor";
 
 // SPEC: 角色创建模板库（特性 B）。模板是"创建脚手架"——前台选完即与已建角色脱钩，
 //       不做继承/版本逻辑。admin 读写按 content.* 权限授权；前台只读公开 active 列表。
@@ -76,11 +80,50 @@ async function moderateTemplate(
 // GET /api/v1/admin/content/templates — admin 全量（含 inactive）。perm: content.read
 export async function listTemplates(request: Request): Promise<Response> {
   await actorWithPermission(request, "content.read");
+  const url = new URL(request.url);
+  const search = url.searchParams.get("search")?.trim() || undefined;
+  const scope = url.searchParams.get("scope")?.trim() || undefined;
+  const status = url.searchParams.get("status")?.trim() || undefined;
+  const isActive = status === "active" ? true : status === "disabled" ? false : undefined;
+  const limit = clampInt(url.searchParams.get("limit"), 1, 100, 25);
+  const queryIdentity = { search, scope, status, sort: "name_asc" };
+  const cursorKeys = url.searchParams.get("cursor")
+    ? decodeAdminListCursor(url.searchParams.get("cursor")!, "character_starters", queryIdentity)
+    : null;
+  const [cursorName, cursorId] = cursorKeys
+    ? z.tuple([z.string(), z.string().min(1)]).parse(cursorKeys)
+    : [null, null];
   const items = await prisma.characterTemplate.findMany({
-    orderBy: [{ isActive: "desc" }, { sortOrder: "asc" }],
-    take: clampInt(new URL(request.url).searchParams.get("limit"), 1, 500, 200),
+    where: {
+      scope,
+      isActive,
+      ...(search ? { OR: [
+        { id: { contains: search, mode: "insensitive" } },
+        { name: { contains: search, mode: "insensitive" } },
+        { summary: { contains: search, mode: "insensitive" } },
+      ] } : {}),
+      ...(cursorName && cursorId ? { AND: [{ OR: [
+        { name: { gt: cursorName } },
+        { name: cursorName, id: { gt: cursorId } },
+      ] }] } : {}),
+    },
+    orderBy: [{ name: "asc" }, { id: "asc" }],
+    take: limit + 1,
   });
-  return ok({ items });
+  const hasNextPage = items.length > limit;
+  const page = items.slice(0, limit);
+  const last = page.at(-1);
+  return ok({
+    items: page,
+    pageInfo: {
+      endCursor: hasNextPage && last
+        ? encodeAdminListCursor("character_starters", queryIdentity, [last.name, last.id])
+        : null,
+      hasNextPage,
+    },
+    asOf: new Date().toISOString(),
+    freshness: "fresh",
+  });
 }
 
 // POST /api/v1/admin/content/templates — 新建模板。perm: content.template.write

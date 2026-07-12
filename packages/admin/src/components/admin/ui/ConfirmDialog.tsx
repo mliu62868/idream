@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { Loader2 } from "lucide-react";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { GhostButton, PrimaryButton } from "./buttons";
@@ -36,21 +37,36 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
 
   useEffect(() => {
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const background = document.getElementById("admin-shell-background");
+    const skipLink = document.getElementById("admin-skip-link");
+    background?.setAttribute("aria-hidden", "true");
+    skipLink?.setAttribute("aria-hidden", "true");
+    if (background instanceof HTMLElement) background.inert = true;
+    if (skipLink instanceof HTMLElement) skipLink.inert = true;
     const timer = window.setTimeout(() => {
       dialogRef.current?.querySelector<HTMLElement>("input, button:not([disabled])")?.focus();
     }, 0);
     return () => {
       window.clearTimeout(timer);
+      background?.removeAttribute("aria-hidden");
+      skipLink?.removeAttribute("aria-hidden");
+      if (background instanceof HTMLElement) background.inert = false;
+      if (skipLink instanceof HTMLElement) skipLink.inert = false;
       previousFocus?.focus();
     };
   }, []);
 
-  function handleDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key === "Escape" && !busy) {
+  useEffect(() => {
+    function handleDocumentKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key !== "Escape" || busy) return;
       event.preventDefault();
       onClose();
-      return;
     }
+    document.addEventListener("keydown", handleDocumentKeyDown);
+    return () => document.removeEventListener("keydown", handleDocumentKeyDown);
+  }, [busy, onClose]);
+
+  function handleDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (event.key !== "Tab") return;
     const focusable = [...(dialogRef.current?.querySelectorAll<HTMLElement>(
       "button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex='-1'])",
@@ -80,7 +96,7 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
     }
   }
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/20 p-4">
       <div
         aria-describedby={spec.summary ? descriptionId : undefined}
@@ -126,6 +142,7 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
           </PrimaryButton>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

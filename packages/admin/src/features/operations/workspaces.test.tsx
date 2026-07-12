@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { CaseWorkspace } from "../cases/CaseWorkspace";
 import { IncidentWorkspace } from "../incidents/IncidentWorkspace";
+import { EmptyWorkspace, LoadingWorkspace, StatusBadge } from "./WorkspaceUi";
 
 describe("operational workspaces", () => {
   it("renders an incident landmark and structure-matched loading status", () => {
@@ -13,8 +14,22 @@ describe("operational workspaces", () => {
 
   it("renders keyboard-addressable case saved views before data arrives", () => {
     const html = renderToStaticMarkup(<CaseWorkspace canAssign={false} canDecide={false} />);
-    expect(html).toContain('role="tablist"');
-    expect(html).toContain('role="tab"');
-    expect(html).toContain('aria-selected="true"');
+    expect(html).toContain('role="group"');
+    expect(html).toContain('aria-pressed="true"');
+  });
+
+  it("distinguishes loading, true empty, filtered empty, partial, and stale states", () => {
+    const html = renderToStaticMarkup(<>
+      <LoadingWorkspace label="Loading authority" />
+      <EmptyWorkspace filtered={false} onClear={() => undefined} />
+      <EmptyWorkspace filtered onClear={() => undefined} />
+      <StatusBadge value="partially_succeeded" />
+      <StatusBadge value="stale" />
+    </>);
+    expect(html).toContain("Loading authority");
+    expect(html).toContain("The queue is clear");
+    expect(html).toContain("No work matches these filters");
+    expect(html).toContain("partially succeeded");
+    expect(html).toContain("stale");
   });
 });

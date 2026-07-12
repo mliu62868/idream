@@ -11,7 +11,7 @@ export function EngineeringDetails({ summary, children }: { summary: ReactNode; 
     <details className="rounded-lg group border border-[var(--ad-border)] bg-black/[0.03] text-xs">
       <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-[var(--ad-text-muted)] [&::-webkit-details-marker]:hidden">
         <span className="min-w-0 truncate">{summary}</span>
-        <span className="shrink-0 text-[11px] opacity-60">{t("Engineering details")}</span>
+        <span className="shrink-0 text-xs text-[var(--ad-text-muted)]">{t("Engineering details")}</span>
       </summary>
       <div className="border-t border-[var(--ad-border)] px-3 py-2 font-mono break-all text-[var(--ad-text-muted)]">
         {children}

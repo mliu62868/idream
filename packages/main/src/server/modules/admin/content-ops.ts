@@ -23,6 +23,11 @@ import {
 } from "./content-production-state";
 import { dispatchCreativeRetryOutbox } from "@/server/modules/admin-v2/creative/retry-executor";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
+import {
+  decodeAdminListCursor,
+  encodeAdminListCursor,
+  parseIsoCursorKey,
+} from "@/server/modules/admin-v2/shared/list-cursor";
 
 const productionPurposeSchema = z.enum([
   "character_cover",
@@ -625,36 +630,70 @@ export async function listContentAssets(request: Request) {
   const purpose = productionPurposeSchema.safeParse(url.searchParams.get("purpose")).data;
   const profileId = url.searchParams.get("profileId")?.trim() || undefined;
   const targetId = url.searchParams.get("targetId")?.trim() || undefined;
-  const assets = await prisma.mediaAsset.findMany({
-    where: {
-      type: "image",
-      deletedAt: null,
-      sourceJob: profileId ? { profileId } : undefined,
-      productionItems: {
-        some: {
-          status: productionItemStatus,
-          batch: {
-            purpose,
-            targetId,
-          },
-        },
-      },
-    },
-    include: contentAssetInclude,
-    orderBy: { createdAt: "desc" },
-    take: clampInt(url.searchParams.get("limit"), 1, 200, 80),
-  });
   const tag = url.searchParams.get("tag")?.trim();
-  const statusFiltered =
-    status === "archived"
-      ? assets.filter((asset) => platformAssetMetadata(asset).status === "archived")
-      : status
-        ? assets.filter((asset) => platformAssetMetadata(asset).status !== "archived")
-        : assets;
-  const filtered = tag
-    ? statusFiltered.filter((asset) => assetTags(asset).includes(tag))
-    : statusFiltered;
-  return ok({ items: filtered.map(contentAssetDTO) });
+  const search = url.searchParams.get("search")?.trim().toLowerCase() || undefined;
+  const limit = clampInt(url.searchParams.get("limit"), 1, 100, 25);
+  const queryIdentity = { status, purpose, profileId, targetId, tag, search, sort: "created_desc" };
+  const cursorKeys = url.searchParams.get("cursor")
+    ? decodeAdminListCursor(url.searchParams.get("cursor")!, "content_assets", queryIdentity)
+    : null;
+  const [cursorAt, cursorId] = cursorKeys
+    ? [parseIsoCursorKey(cursorKeys[0], "content_assets"), z.string().min(1).parse(cursorKeys[1])]
+    : [null, null];
+  const matches: ContentAssetWithRelations[] = [];
+  const batchSize = 100;
+  let scanAt = cursorAt;
+  let scanId = cursorId;
+  let exhausted = false;
+  while (matches.length <= limit && !exhausted) {
+    const assets = await prisma.mediaAsset.findMany({
+      where: {
+        type: "image",
+        deletedAt: null,
+        sourceJob: profileId ? { profileId } : undefined,
+        productionItems: { some: { status: productionItemStatus, batch: { purpose, targetId } } },
+        ...(scanAt && scanId ? { OR: [{ createdAt: { lt: scanAt } }, { createdAt: scanAt, id: { lt: scanId } }] } : {}),
+      },
+      include: contentAssetInclude,
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: batchSize,
+    });
+    if (assets.length === 0) {
+      exhausted = true;
+      break;
+    }
+    for (const asset of assets) {
+      const metadata = platformAssetMetadata(asset);
+      const tags = assetTags(asset);
+      if (status === "archived" && metadata.status !== "archived") continue;
+      if (status && status !== "archived" && metadata.status === "archived") continue;
+      if (tag && !tags.includes(tag)) continue;
+      if (search) {
+        const dto = contentAssetDTO(asset);
+        const haystack = [dto.id, dto.description ?? "", dto.purpose ?? "", dto.targetId ?? "", ...dto.tags].join(" ").toLowerCase();
+        if (!haystack.includes(search)) continue;
+      }
+      matches.push(asset);
+    }
+    const last = assets.at(-1)!;
+    scanAt = last.createdAt;
+    scanId = last.id;
+    exhausted = assets.length < batchSize;
+  }
+  const page = matches.slice(0, limit);
+  const hasNextPage = matches.length > limit || !exhausted;
+  const last = page.at(-1);
+  return ok({
+    items: page.map(contentAssetDTO),
+    pageInfo: {
+      endCursor: hasNextPage && last
+        ? encodeAdminListCursor("content_assets", queryIdentity, [last.createdAt.toISOString(), last.id])
+        : null,
+      hasNextPage,
+    },
+    asOf: new Date().toISOString(),
+    freshness: "fresh",
+  });
 }
 
 export async function getContentAsset(request: Request, id: string) {
@@ -791,13 +830,50 @@ export async function listPlacements(request: Request) {
   const status = url.searchParams.get("status")?.trim() || undefined;
   const slot = placementSlotSchema.safeParse(url.searchParams.get("slot")).data;
   const targetId = url.searchParams.get("targetId")?.trim() || undefined;
+  const search = url.searchParams.get("search")?.trim() || undefined;
+  const limit = clampInt(url.searchParams.get("limit"), 1, 100, 25);
+  const queryIdentity = { status, slot, targetId, search, sort: "created_desc" };
+  const cursorKeys = url.searchParams.get("cursor")
+    ? decodeAdminListCursor(url.searchParams.get("cursor")!, "placements", queryIdentity)
+    : null;
+  const [cursorAt, cursorId] = cursorKeys
+    ? [parseIsoCursorKey(cursorKeys[0], "placements"), z.string().min(1).parse(cursorKeys[1])]
+    : [null, null];
   const placements = await prisma.mediaAssetPlacement.findMany({
-    where: { status, slot, targetId },
+    where: {
+      status,
+      slot,
+      targetId,
+      ...(search ? { OR: [
+        { id: { contains: search, mode: "insensitive" } },
+        { mediaAssetId: { contains: search, mode: "insensitive" } },
+        { targetId: { contains: search, mode: "insensitive" } },
+        { targetType: { contains: search, mode: "insensitive" } },
+        { slot: { contains: search, mode: "insensitive" } },
+      ] } : {}),
+      ...(cursorAt && cursorId ? { AND: [{ OR: [
+        { createdAt: { lt: cursorAt } },
+        { createdAt: cursorAt, id: { lt: cursorId } },
+      ] }] } : {}),
+    },
     include: placementInclude,
-    orderBy: { createdAt: "desc" },
-    take: clampInt(url.searchParams.get("limit"), 1, 200, 80),
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: limit + 1,
   });
-  return ok({ items: placements.map(placementDTO) });
+  const hasNextPage = placements.length > limit;
+  const page = placements.slice(0, limit);
+  const last = page.at(-1);
+  return ok({
+    items: page.map(placementDTO),
+    pageInfo: {
+      endCursor: hasNextPage && last
+        ? encodeAdminListCursor("placements", queryIdentity, [last.createdAt.toISOString(), last.id])
+        : null,
+      hasNextPage,
+    },
+    asOf: new Date().toISOString(),
+    freshness: "fresh",
+  });
 }
 
 export async function createPlacement(request: Request) {

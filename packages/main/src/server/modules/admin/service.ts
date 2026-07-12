@@ -29,6 +29,10 @@ import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import { verifyAdminBffRequest } from "@/server/modules/admin-v2/shared/admin-bff";
+import {
+  decodeAdminListCursor,
+  encodeAdminListCursor,
+} from "@/server/modules/admin-v2/shared/list-cursor";
 import { redeemCodeHash, redeemCodeHashCandidates } from "@/server/lib/redeem-codes";
 import { dimensionsForImageOrientation } from "@/server/modules/ourdream/generation-dimensions";
 import {
@@ -2621,11 +2625,47 @@ async function listRecipes(request: Request) {
   await actorWithPermission(request, "generation.config.read");
   const url = new URL(request.url);
   const mode = url.searchParams.get("mode") ?? undefined;
+  const status = url.searchParams.get("status")?.trim() || undefined;
+  const search = url.searchParams.get("search")?.trim() || undefined;
+  const limit = clampInt(url.searchParams.get("limit"), 1, 100, 25);
+  const queryIdentity = { mode, status, search, sort: "label_asc" };
+  const cursorKeys = url.searchParams.get("cursor")
+    ? decodeAdminListCursor(url.searchParams.get("cursor")!, "generation_recipes", queryIdentity)
+    : null;
+  const [cursorLabel, cursorId] = cursorKeys
+    ? z.tuple([z.string(), z.string().min(1)]).parse(cursorKeys)
+    : [null, null];
   const templates = await prisma.generationRecipe.findMany({
-    where: { mode },
-    orderBy: [{ recipeKey: "asc" }, { version: "desc" }],
+    where: {
+      mode,
+      status,
+      ...(search ? { OR: [
+        { id: { contains: search, mode: "insensitive" } },
+        { label: { contains: search, mode: "insensitive" } },
+        { recipeKey: { contains: search, mode: "insensitive" } },
+      ] } : {}),
+      ...(cursorLabel && cursorId ? { AND: [{ OR: [
+        { label: { gt: cursorLabel } },
+        { label: cursorLabel, id: { gt: cursorId } },
+      ] }] } : {}),
+    },
+    orderBy: [{ label: "asc" }, { id: "asc" }],
+    take: limit + 1,
   });
-  return ok({ items: templates });
+  const hasNextPage = templates.length > limit;
+  const page = templates.slice(0, limit);
+  const last = page.at(-1);
+  return ok({
+    items: page,
+    pageInfo: {
+      endCursor: hasNextPage && last
+        ? encodeAdminListCursor("generation_recipes", queryIdentity, [last.label, last.id])
+        : null,
+      hasNextPage,
+    },
+    asOf: new Date().toISOString(),
+    freshness: "fresh",
+  });
 }
 
 async function createRecipe(request: Request) {
@@ -2760,11 +2800,50 @@ async function rollbackRecipe(request: Request, id: string) {
 
 async function listAdminPresets(request: Request) {
   await actorWithPermission(request, "generation.config.read");
+  const url = new URL(request.url);
+  const type = url.searchParams.get("type")?.trim() || undefined;
+  const status = url.searchParams.get("status")?.trim() || undefined;
+  const search = url.searchParams.get("search")?.trim() || undefined;
+  const limit = clampInt(url.searchParams.get("limit"), 1, 100, 25);
+  const queryIdentity = { type, status, search, sort: "label_asc" };
+  const cursorKeys = url.searchParams.get("cursor")
+    ? decodeAdminListCursor(url.searchParams.get("cursor")!, "generation_presets", queryIdentity)
+    : null;
+  const [cursorLabel, cursorId] = cursorKeys
+    ? z.tuple([z.string(), z.string().min(1)]).parse(cursorKeys)
+    : [null, null];
   const presets = await prisma.generationPreset.findMany({
-    where: { scope: "built_in" },
-    orderBy: [{ type: "asc" }, { label: "asc" }],
+    where: {
+      scope: "built_in",
+      type,
+      status,
+      ...(search ? { OR: [
+        { id: { contains: search, mode: "insensitive" } },
+        { label: { contains: search, mode: "insensitive" } },
+        { category: { contains: search, mode: "insensitive" } },
+      ] } : {}),
+      ...(cursorLabel && cursorId ? { AND: [{ OR: [
+        { label: { gt: cursorLabel } },
+        { label: cursorLabel, id: { gt: cursorId } },
+      ] }] } : {}),
+    },
+    orderBy: [{ label: "asc" }, { id: "asc" }],
+    take: limit + 1,
   });
-  return ok({ items: presets });
+  const hasNextPage = presets.length > limit;
+  const page = presets.slice(0, limit);
+  const last = page.at(-1);
+  return ok({
+    items: page,
+    pageInfo: {
+      endCursor: hasNextPage && last
+        ? encodeAdminListCursor("generation_presets", queryIdentity, [last.label, last.id])
+        : null,
+      hasNextPage,
+    },
+    asOf: new Date().toISOString(),
+    freshness: "fresh",
+  });
 }
 
 async function createAdminPreset(request: Request) {
@@ -3623,6 +3702,7 @@ async function listSupportRequests(request: Request) {
   const userId = url.searchParams.get("userId")?.trim() || undefined;
   const assignedToId = url.searchParams.get("assignedToId")?.trim() || undefined;
   const category = url.searchParams.get("category")?.trim() || undefined;
+  const search = url.searchParams.get("search")?.trim() || undefined;
   const sla = supportSlaStateFromUnknown(url.searchParams.get("sla"));
   const requestedStatuses = url.searchParams
     .get("status")
@@ -3640,18 +3720,79 @@ async function listSupportRequests(request: Request) {
     assignedToId,
     category,
     status: statusFilter,
+    ...(search ? { OR: [
+      { ticketId: { contains: search, mode: "insensitive" } },
+      { userId: { contains: search, mode: "insensitive" } },
+      { subject: { contains: search, mode: "insensitive" } },
+      { description: { contains: search, mode: "insensitive" } },
+      { resolutionNotes: { contains: search, mode: "insensitive" } },
+      { sourcePath: { contains: search, mode: "insensitive" } },
+      { user: { is: { email: { contains: search, mode: "insensitive" } } } },
+      { assignedTo: { is: { email: { contains: search, mode: "insensitive" } } } },
+    ] } : {}),
   };
-  const items = await prisma.supportRequest.findMany({
-    where,
-    include: {
-      assignedTo: { select: { id: true, email: true, displayName: true, role: true } },
-      user: { select: { id: true, email: true, displayName: true, role: true } },
+  const limit = clampInt(url.searchParams.get("limit"), 1, 100, 25);
+  const queryIdentity = { ticketId, userId, assignedToId, category, sla, statuses: requestedStatuses ?? [], search, sort: "priority_created_asc" };
+  const cursorKeys = url.searchParams.get("cursor")
+    ? decodeAdminListCursor(url.searchParams.get("cursor")!, "support_requests", queryIdentity)
+    : null;
+  let [scanPriority, scanAt, scanTicketId] = cursorKeys
+    ? [z.number().int().parse(cursorKeys[0]), new Date(z.string().parse(cursorKeys[1])), z.string().min(1).parse(cursorKeys[2])]
+    : [null, null, null];
+  if (scanAt && Number.isNaN(scanAt.getTime())) throw Errors.badRequest("support_requests cursor timestamp is invalid");
+  const matches: Array<ReturnType<typeof supportRequestDTO>> = [];
+  const rawByTicket = new Map<string, { priority: number; createdAt: Date; ticketId: string }>();
+  const batchSize = 100;
+  let exhausted = false;
+  while (matches.length <= limit && !exhausted) {
+    const items = await prisma.supportRequest.findMany({
+      where: {
+        AND: [
+          where,
+          ...(scanPriority !== null && scanAt && scanTicketId ? [{ OR: [
+            { priority: { gt: scanPriority } },
+            { priority: scanPriority, createdAt: { gt: scanAt } },
+            { priority: scanPriority, createdAt: scanAt, ticketId: { gt: scanTicketId } },
+          ] }] : []),
+        ],
+      },
+      include: {
+        assignedTo: { select: { id: true, email: true, displayName: true, role: true } },
+        user: { select: { id: true, email: true, displayName: true, role: true } },
+      },
+      orderBy: [{ priority: "asc" }, { createdAt: "asc" }, { ticketId: "asc" }],
+      take: batchSize,
+    });
+    if (items.length === 0) {
+      exhausted = true;
+      break;
+    }
+    for (const item of items) {
+      const dto = supportRequestDTO(item);
+      if (sla !== "all" && dto.slaState !== sla) continue;
+      matches.push(dto);
+      rawByTicket.set(item.ticketId, { priority: item.priority, createdAt: item.createdAt, ticketId: item.ticketId });
+    }
+    const last = items.at(-1)!;
+    scanPriority = last.priority;
+    scanAt = last.createdAt;
+    scanTicketId = last.ticketId;
+    exhausted = items.length < batchSize;
+  }
+  const page = matches.slice(0, limit);
+  const hasNextPage = matches.length > limit || !exhausted;
+  const last = page.at(-1) ? rawByTicket.get(page.at(-1)!.ticketId) : null;
+  return ok({
+    items: page,
+    pageInfo: {
+      endCursor: hasNextPage && last
+        ? encodeAdminListCursor("support_requests", queryIdentity, [last.priority, last.createdAt.toISOString(), last.ticketId])
+        : null,
+      hasNextPage,
     },
-    orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
-    take: clampInt(url.searchParams.get("limit"), 1, 200, 100),
+    asOf: new Date().toISOString(),
+    freshness: "fresh",
   });
-  const dtos = items.map((item) => supportRequestDTO(item));
-  return ok({ items: sla === "all" ? dtos : dtos.filter((item) => item.slaState === sla) });
 }
 
 async function patchSupportRequest(request: Request, ticketId: string) {
