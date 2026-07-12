@@ -34,16 +34,16 @@ export interface DependencyChaosReport {
   };
 }
 
-interface ReadinessCandidate {
+interface TransportRehearsalCheck {
   readonly status: "pass" | "fail";
   readonly observedAt: string;
   readonly scenarioIds: readonly DependencyChaosScenarioId[];
 }
 
-export interface DependencyChaosReadinessSummary {
-  readonly dependencyFailureInjection: ReadinessCandidate;
-  readonly dispatcherRestartRecovery: ReadinessCandidate;
-  readonly projectorLagRecovery: ReadinessCandidate;
+export interface DependencyChaosTransportSummary {
+  readonly dependencyFailureInjection: TransportRehearsalCheck;
+  readonly dispatcherRestartRecovery: TransportRehearsalCheck;
+  readonly projectorLagRecovery: TransportRehearsalCheck;
 }
 
 export interface DependencyChaosHarnessOptions {
@@ -67,7 +67,7 @@ function all(condition: boolean, scenarioStatus: "pass" | "fail"): "pass" | "fai
 
 export function summarizeDependencyChaosReadiness(
   report: DependencyChaosReport,
-): DependencyChaosReadinessSummary {
+): DependencyChaosTransportSummary {
   const dependencyScenarioIds = ["databaseReconnect", "redisConsumerRecovery"] as const;
   const dispatcherScenarioIds = ["dispatcherLeaseRecovery"] as const;
   const projectorScenarioIds = ["projectorWatermarkRecovery"] as const;

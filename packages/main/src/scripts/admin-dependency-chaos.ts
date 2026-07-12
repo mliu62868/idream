@@ -24,8 +24,8 @@ async function main() {
   const report = await runDependencyChaosHarness();
   const output = JSON.stringify({
     ...report,
-    releaseGateCandidates: summarizeDependencyChaosReadiness(report),
-    trustBoundary: "Store this complete report immutably and attach a trusted collector attestation before using it as schema-v5 release evidence.",
+    transportRehearsalChecks: summarizeDependencyChaosReadiness(report),
+    trustBoundary: "This isolated chaos_* transport rehearsal is not release-gate evidence. Run the real Prisma, BullMQ, dispatcher, and projector processes under dependency failure before collecting schema-v5 evidence.",
   }, null, 2);
   if (path) await writeReport(path, output);
   process.stdout.write(`${output}\n`);
