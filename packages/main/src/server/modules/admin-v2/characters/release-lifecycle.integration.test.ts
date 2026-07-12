@@ -95,8 +95,22 @@ describe("Character Release proposal and review lifecycle", () => {
     });
     const accepted = await changeCharacterServingState(retireRequest, characterId, "retire");
     const commandId = (await accepted.json()).data.commandId as string;
+    await expect(prisma.controlPlaneCommand.findUnique({ where: { id: commandId } })).resolves.toMatchObject({
+      commandType: "character.serving.retire",
+    });
     await expect(executeCharacterReleaseCommand(prisma, { commandId, workerId: `release-lifecycle-worker-${suffix}` })).resolves.toMatchObject({ status: "succeeded" });
     await expect(prisma.characterProject.findUnique({ where: { id: projectId } })).resolves.toMatchObject({ phase: "retired", activeKey: null });
-    await expect(prisma.characterServing.findUnique({ where: { characterId } })).resolves.toMatchObject({ state: "paused", version: 3 });
+    await expect(prisma.characterServing.findUnique({ where: { characterId } })).resolves.toMatchObject({ state: "retired", version: 3 });
+    await expect(prisma.characterReleaseEvent.findFirst({
+      where: { characterId, commandId },
+    })).resolves.toMatchObject({ type: "character.serving.retired" });
+
+    const resumeRequest = new Request(`http://localhost/api/v2/admin/characters/${characterId}/commands/resume`, {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json", "idempotency-key": `resume-retired-${suffix}` },
+      body: JSON.stringify({ entityVersion: 3, reason: { code: "invalid_resume", summary: "Retired is terminal, not paused" }, confirmation: `${characterId}:resume` }),
+    });
+    const resumeResponse = await changeCharacterServingState(resumeRequest, characterId, "resume");
+    expect(resumeResponse.status).toBe(422);
   });
 });

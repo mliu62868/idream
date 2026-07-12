@@ -273,6 +273,32 @@ describe("canonical metric fact projector", () => {
     });
   });
 
+  it("rejects gen-originated delivery outcomes because main owns delivery authority", async () => {
+    await expect(projectCanonicalMetricEvent(prisma, {
+      id: `${prefix}-canonical-gen-delivery`,
+      sourceService: "gen",
+      sourceEventId: `${prefix}-gen-delivery`,
+      name: "generation.delivery.completed.v2",
+      schemaVersion: 2,
+      occurredAt: new Date("2026-07-02T03:30:00Z"),
+      ingestedAt: new Date("2026-07-02T03:30:01Z"),
+      environment: "production",
+      dataClass: "customer",
+      trustClass: "canonical",
+      actor: { userId, isInternal: false },
+      context: { generationRequestId: `${prefix}-gen-owned-request` },
+      props: {
+        requestId: `${prefix}-gen-owned-request`,
+        artifactId: `${prefix}-gen-owned-artifact`,
+        userId,
+        expectedOutputCount: 1,
+        deliveredOutputCount: 1,
+        valid: true,
+        displayable: true,
+      },
+    })).resolves.toEqual({ status: "quarantined", reason: "invalid_source_identity" });
+  });
+
   it("quarantines an authoritative outcome without a valid source identity", async () => {
     const sourceEventId = `${prefix}-invalid-source`;
     await expect(projectCanonicalMetricEvent(prisma, {

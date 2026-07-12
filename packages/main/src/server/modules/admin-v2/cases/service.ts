@@ -872,6 +872,7 @@ export async function recordReviewCaseDecision(
     where: { id: current.id, version: current.version },
     data: {
       status: input.downstreamVerified ? "resolved" : "in_progress",
+      activeKey: input.downstreamVerified ? null : current.activeKey,
       resolution: toInputJson(resolution),
       verificationState: input.downstreamVerified ? "passed" : "pending",
       version: { increment: 1 },
@@ -1016,6 +1017,7 @@ export async function verifyReviewCase(input: {
       where: { id: current.id, version: current.version },
       data: {
         status: input.state === "failed" ? "in_progress" : "resolved",
+        activeKey: input.state === "failed" ? current.activeKey : null,
         verificationState: input.state,
         resolution: toInputJson(resolution),
         version: { increment: 1 },
@@ -1275,6 +1277,31 @@ export async function reopenOrRecurCase(input: {
       await tx.mainOutboxEvent.create({ data: { eventType: "admin.case.reopened.v2", aggregateType: "admin_case", aggregateId: current.id, payload: toInputJson({ caseId: current.id, version: updated.version }) } });
       return { mode: "reopened" as const, adminCase: updated };
     }
+    const terminal = current.activeKey === null
+      ? current
+      : await tx.adminCase.update({
+          where: { id: current.id, version: current.version },
+          data: { activeKey: null, version: { increment: 1 } },
+        });
+    if (current.activeKey !== null) {
+      await tx.adminAuditLog.create({ data: {
+        actorId: input.actor.id,
+        actorRole: input.actor.role,
+        action: "case.terminal_identity.released",
+        targetType: "admin_case",
+        targetId: current.id,
+        reason: "Release stale terminal active identity before creating recurrence",
+        before: toInputJson({ status: current.status, activeKey: current.activeKey, version: current.version }),
+        after: toInputJson({ status: terminal.status, activeKey: terminal.activeKey, version: terminal.version }),
+        requestId: `${input.requestId}:release-terminal-identity`,
+      } });
+      await tx.mainOutboxEvent.create({ data: {
+        eventType: "admin.case.terminal_identity_released.v2",
+        aggregateType: "admin_case",
+        aggregateId: current.id,
+        payload: toInputJson({ caseId: current.id, version: terminal.version }),
+      } });
+    }
     const recurrence = await tx.adminCase.create({ data: {
       type: current.type,
       targetType: current.targetType,
@@ -1285,14 +1312,14 @@ export async function reopenOrRecurCase(input: {
       priority: current.priority,
       ownerId: current.ownerId,
       slaDueAt: current.slaDueAt ? new Date(Date.now() + Math.max(60_000, current.slaDueAt.getTime() - current.createdAt.getTime())) : null,
-      resolution: toInputJson({ recurrenceOfCaseId: current.id, recurrenceReason: input.reason }),
+      resolution: toInputJson({ recurrenceOfCaseId: terminal.id, recurrenceReason: input.reason }),
       verificationState: "pending",
     } });
     await tx.caseEvidence.create({ data: {
       caseId: recurrence.id,
       sourceType: "case_recurrence",
-      sourceId: current.id,
-      snapshot: toInputJson({ priorCaseId: current.id, priorStatus: current.status, priorVersion: current.version, closedAt: current.updatedAt }),
+      sourceId: terminal.id,
+      snapshot: toInputJson({ priorCaseId: terminal.id, priorStatus: terminal.status, priorVersion: terminal.version, closedAt: terminal.updatedAt }),
       occurredAt: new Date(),
     } });
     await tx.adminAuditLog.create({ data: {
@@ -1302,11 +1329,11 @@ export async function reopenOrRecurCase(input: {
       targetType: "admin_case",
       targetId: recurrence.id,
       reason: input.reason,
-      before: toInputJson({ priorCaseId: current.id, status: current.status, version: current.version }),
+      before: toInputJson({ priorCaseId: terminal.id, status: terminal.status, version: terminal.version }),
       after: toInputJson({ recurrenceCaseId: recurrence.id, status: recurrence.status, version: recurrence.version }),
       requestId: input.requestId,
     } });
-    await tx.mainOutboxEvent.create({ data: { eventType: "admin.case.recurrence.created.v2", aggregateType: "admin_case", aggregateId: recurrence.id, payload: toInputJson({ caseId: recurrence.id, priorCaseId: current.id, version: recurrence.version }) } });
+    await tx.mainOutboxEvent.create({ data: { eventType: "admin.case.recurrence.created.v2", aggregateType: "admin_case", aggregateId: recurrence.id, payload: toInputJson({ caseId: recurrence.id, priorCaseId: terminal.id, priorCaseVersion: terminal.version, version: recurrence.version }) } });
     return { mode: "recurrence" as const, adminCase: recurrence };
   });
 }

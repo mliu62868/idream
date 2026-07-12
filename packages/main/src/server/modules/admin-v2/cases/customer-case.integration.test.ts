@@ -219,7 +219,7 @@ describe("Support and billing Case depth", () => {
       evidenceRefs: [evidence.id],
       requestId: `case-authority-verification-${suffix}`,
     });
-    expect(verified).toMatchObject({ status: "resolved", verificationState: "passed" });
+    expect(verified).toMatchObject({ status: "resolved", verificationState: "passed", activeKey: null });
     const verificationDecision = await prisma.decisionRecord.findFirstOrThrow({
       where: { sourceType: "admin_case", sourceId: supportCase.id, decision: "verification_passed" },
       orderBy: { createdAt: "desc" },
@@ -335,8 +335,8 @@ describe("Support and billing Case depth", () => {
       targetType: "user",
       targetId: customerId,
       caseKey: `old-terminal-${suffix}`,
-      activeKey: null,
-      status: "closed",
+      activeKey: `support_request:user:${customerId}:old-terminal-${suffix}`,
+      status: "resolved",
       priority: "normal",
       updatedAt: new Date(Date.now() - 60_000),
     } });
@@ -350,6 +350,10 @@ describe("Support and billing Case depth", () => {
     });
     expect(result.mode).toBe("recurrence");
     expect(result.adminCase).toMatchObject({ status: "new", caseKey: prior.caseKey });
+    await expect(prisma.adminCase.findUnique({ where: { id: prior.id } })).resolves.toMatchObject({
+      activeKey: null,
+      version: 2,
+    });
     await expect(prisma.caseEvidence.findFirst({
       where: { caseId: result.adminCase.id, sourceType: "case_recurrence", sourceId: prior.id },
     })).resolves.toBeTruthy();

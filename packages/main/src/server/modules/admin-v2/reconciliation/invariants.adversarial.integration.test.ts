@@ -3,6 +3,7 @@ import type { Prisma } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { createMedia, createUser } from "@/server/test/helpers";
+import { recordGenerationAttemptEvent } from "@/server/ai/generation-attempt-events";
 import {
   characterReleaseSnapshotHash,
   characterVisualProfileSnapshotHash,
@@ -40,6 +41,18 @@ describe("Admin cutover invariant adversarial release authority", () => {
   const partialRequestId = `${prefix}-partial-request`;
   const missingPartialFactRequestId = `${prefix}-partial-without-fact`;
   const creativeMismatchId = `${prefix}-creative-mismatch`;
+  const overRefundRequestId = `${prefix}-over-refund-request`;
+  const capturedLedgerId = `${prefix}-captured-ledger`;
+  const refundLedgerId = `${prefix}-refund-ledger`;
+  const terminalCaseId = `${prefix}-terminal-case-with-active-key`;
+  const activeCaseWithoutKeyId = `${prefix}-active-case-without-key`;
+  const terminalIncidentId = `${prefix}-terminal-incident-with-active-key`;
+  const cancelledRequestId = `${prefix}-cancelled-request-with-succeeded-attempt`;
+  const mismatchedSucceededRequestId = `${prefix}-mismatched-succeeded-request`;
+  const cancelledAttemptId = `${prefix}-cancelled-request-attempt`;
+  const mismatchedSucceededAttemptId = `${prefix}-mismatched-succeeded-attempt`;
+  const unlinkedSettlementRequestId = `${prefix}-unlinked-settlement-request`;
+  const unlinkedSettlementLedgerId = `${prefix}-unlinked-settlement-ledger`;
 
   const validPlacement = {
     placements: [
@@ -285,6 +298,15 @@ describe("Admin cutover invariant adversarial release authority", () => {
         scheduledAt: new Date("2030-01-03T00:00:00.000Z"),
       },
     });
+    const officialNotLive = await createReleaseGraph("official-not-live");
+    await prisma.character.update({
+      where: { id: officialNotLive.characterId },
+      data: { source: "official", visibility: "public", status: "approved" },
+    });
+    await prisma.characterServing.update({
+      where: { characterId: officialNotLive.characterId },
+      data: { state: "paused" },
+    });
     const crossCharacter = await createReleaseGraph("cross-character");
     const servingCharacterId = `${prefix}-cross-serving-character`;
     characterIds.push(servingCharacterId);
@@ -390,15 +412,198 @@ describe("Admin cutover invariant adversarial release authority", () => {
         },
       },
     });
+    await prisma.generationJob.create({
+      data: {
+        id: overRefundRequestId,
+        userId,
+        mode: "image",
+        controls: {},
+        presetIds: [],
+        status: "failed",
+      },
+    });
+    await prisma.dreamcoinLedger.createMany({
+      data: [
+        {
+          id: capturedLedgerId,
+          userId,
+          delta: -5,
+          balanceAfter: 95,
+          reason: "generation_spend",
+          sourceId: overRefundRequestId,
+          idempotencyKey: `${prefix}-captured`,
+        },
+        {
+          id: refundLedgerId,
+          userId,
+          delta: 7,
+          balanceAfter: 102,
+          reason: "refund",
+          sourceId: overRefundRequestId,
+          idempotencyKey: `${prefix}-refund`,
+        },
+      ],
+    });
+    await prisma.generationSettlementLink.createMany({
+      data: [
+        { requestId: overRefundRequestId, ledgerEntryId: capturedLedgerId, kind: "generation_spend" },
+        { requestId: overRefundRequestId, ledgerEntryId: refundLedgerId, kind: "refund" },
+      ],
+    });
+    await prisma.adminCase.createMany({
+      data: [
+        {
+          id: terminalCaseId,
+          type: "support_request",
+          targetType: "user",
+          targetId: userId,
+          caseKey: `${prefix}:terminal`,
+          activeKey: `${prefix}:terminal-active-key`,
+          status: "resolved",
+        },
+        {
+          id: activeCaseWithoutKeyId,
+          type: "support_request",
+          targetType: "user",
+          targetId: userId,
+          caseKey: `${prefix}:active-without-key`,
+          activeKey: null,
+          status: "in_progress",
+        },
+      ],
+    });
+    await prisma.opsIncident.create({
+      data: {
+        id: terminalIncidentId,
+        signature: `${prefix}:terminal-signature`,
+        signatureVersion: "generation-error-v1",
+        activeCorrelationKey: `${prefix}:terminal-correlation`,
+        status: "resolved",
+        severity: "medium",
+        firstSeen: new Date("2026-07-11T00:00:00.000Z"),
+        lastSeen: new Date("2026-07-11T00:01:00.000Z"),
+        impact: {},
+        mitigation: {},
+        verificationState: "passed",
+      },
+    });
+    await prisma.generationJob.createMany({
+      data: [
+        {
+          id: cancelledRequestId,
+          userId,
+          mode: "image",
+          controls: {},
+          presetIds: [],
+          outputCount: 1,
+          status: "cancelled",
+        },
+        {
+          id: mismatchedSucceededRequestId,
+          userId,
+          mode: "image",
+          controls: {},
+          presetIds: [],
+          outputCount: 2,
+          deliveredOutputCount: 1,
+          status: "completed",
+        },
+      ],
+    });
+    await prisma.generationAttempt.createMany({
+      data: [
+        { id: cancelledAttemptId, requestId: cancelledRequestId, attemptNo: 1, status: "running" },
+        { id: mismatchedSucceededAttemptId, requestId: mismatchedSucceededRequestId, attemptNo: 1, status: "running" },
+      ],
+    });
+    await prisma.$transaction(async (tx) => {
+      await recordGenerationAttemptEvent(tx, {
+        eventId: `${cancelledAttemptId}:succeeded`,
+        attemptId: cancelledAttemptId,
+        eventType: "generation.attempt.succeeded.v1",
+        outcome: "succeeded",
+        occurredAt: new Date("2026-07-11T00:02:00.000Z"),
+        payload: { lateAfterCancellation: true },
+      });
+      await recordGenerationAttemptEvent(tx, {
+        eventId: `${mismatchedSucceededAttemptId}:succeeded`,
+        attemptId: mismatchedSucceededAttemptId,
+        eventType: "generation.attempt.succeeded.v1",
+        outcome: "succeeded",
+        occurredAt: new Date("2026-07-11T00:03:00.000Z"),
+        payload: { requestOutcome: "succeeded" },
+      });
+    });
+    await prisma.generationDelivery.create({
+      data: {
+        id: `${prefix}-mismatched-succeeded-delivery`,
+        requestId: mismatchedSucceededRequestId,
+        artifactId: `${prefix}-mismatched-succeeded-artifact`,
+        targetType: "gallery",
+        targetId: userId,
+        status: "delivered",
+        deliveredAt: new Date("2026-07-11T00:03:00.000Z"),
+      },
+    });
+    await prisma.generationFulfillmentFact.create({
+      data: {
+        id: `${prefix}-mismatched-succeeded-fact`,
+        requestId: mismatchedSucceededRequestId,
+        sourceService: "main",
+        sourceEventId: `${prefix}-mismatched-succeeded-event`,
+        artifactId: `${prefix}-mismatched-succeeded-asset`,
+        userId,
+        expectedOutputCount: 2,
+        deliveredOutputCount: 2,
+        outcome: "succeeded",
+        environment: "test",
+        dataClass: "fixture",
+        trustClass: "synthetic",
+        eligible: false,
+        occurredAt: new Date("2026-07-11T00:03:00.000Z"),
+        validFrom: new Date("2026-07-11T00:03:00.000Z"),
+      },
+    });
+    await prisma.generationJob.create({
+      data: {
+        id: unlinkedSettlementRequestId,
+        userId,
+        mode: "image",
+        controls: {},
+        presetIds: [],
+        status: "failed",
+      },
+    });
+    await prisma.dreamcoinLedger.create({
+      data: {
+        id: unlinkedSettlementLedgerId,
+        userId,
+        delta: -3,
+        balanceAfter: 92,
+        reason: "generation_spend",
+        sourceId: unlinkedSettlementRequestId,
+        idempotencyKey: `${prefix}-unlinked-settlement`,
+      },
+    });
   });
 
   afterAll(async () => {
+    await prisma.adminCase.deleteMany({ where: { id: { in: [terminalCaseId, activeCaseWithoutKeyId] } } });
+    await prisma.opsIncident.deleteMany({ where: { id: terminalIncidentId } });
+    await prisma.generationFulfillmentFact.deleteMany({ where: { requestId: mismatchedSucceededRequestId } });
+    await prisma.generationSettlementLink.deleteMany({ where: { requestId: unlinkedSettlementRequestId } });
+    await prisma.dreamcoinLedger.deleteMany({ where: { id: unlinkedSettlementLedgerId } });
+    await prisma.generationDelivery.deleteMany({ where: { requestId: mismatchedSucceededRequestId } });
+    await prisma.generationAttemptEvent.deleteMany({ where: { attemptId: { in: [cancelledAttemptId, mismatchedSucceededAttemptId] } } });
+    await prisma.generationAttempt.deleteMany({ where: { id: { in: [cancelledAttemptId, mismatchedSucceededAttemptId] } } });
+    await prisma.generationSettlementLink.deleteMany({ where: { requestId: overRefundRequestId } });
+    await prisma.dreamcoinLedger.deleteMany({ where: { id: { in: [capturedLedgerId, refundLedgerId] } } });
     await prisma.generationFulfillmentFact.deleteMany({ where: { id: partialFactId } });
     await prisma.generationDelivery.deleteMany({
       where: { requestId: { in: [partialRequestId, missingPartialFactRequestId] } },
     });
     await prisma.generationJob.deleteMany({
-      where: { id: { in: [partialRequestId, missingPartialFactRequestId] } },
+      where: { id: { in: [partialRequestId, missingPartialFactRequestId, overRefundRequestId, cancelledRequestId, mismatchedSucceededRequestId, unlinkedSettlementRequestId] } },
     });
     await prisma.contentProductionBatch.deleteMany({ where: { id: creativeMismatchId } });
     await prisma.characterServing.deleteMany({ where: { id: { startsWith: prefix } } });
@@ -466,7 +671,16 @@ describe("Admin cutover invariant adversarial release authority", () => {
       expect.objectContaining({
         key: "serving_default_route_unqualified",
         status: "failed",
-        sampleIds: expect.arrayContaining([`${prefix}-legacy-missing-identity-reference-release`]),
+        sampleIds: expect.arrayContaining([
+          `${prefix}-legacy-missing-identity-reference-release`,
+          `${prefix}-scheduled-invalid-release`,
+          `${prefix}-scheduled-wrong-status-release`,
+        ]),
+      }),
+      expect.objectContaining({
+        key: "official_public_character_not_live",
+        status: "failed",
+        sampleIds: expect.arrayContaining([`${prefix}-official-not-live-character`]),
       }),
       expect.objectContaining({
         key: "partial_request_delivery_count_mismatch",
@@ -478,7 +692,39 @@ describe("Admin cutover invariant adversarial release authority", () => {
         status: "failed",
         sampleIds: expect.arrayContaining([creativeMismatchId]),
       }),
+      expect.objectContaining({
+        key: "generation_refund_exceeds_captured_spend",
+        status: "failed",
+        sampleIds: expect.arrayContaining([overRefundRequestId]),
+      }),
+      expect.objectContaining({
+        key: "succeeded_request_delivery_count_mismatch",
+        status: "failed",
+        sampleIds: expect.arrayContaining([mismatchedSucceededRequestId]),
+      }),
+      expect.objectContaining({
+        key: "generation_settlement_link_mismatch",
+        status: "failed",
+        sampleIds: expect.arrayContaining([`${unlinkedSettlementRequestId}:${unlinkedSettlementLedgerId}`]),
+      }),
+      expect.objectContaining({
+        key: "terminal_case_retains_active_key",
+        status: "failed",
+        sampleIds: expect.arrayContaining([terminalCaseId]),
+      }),
+      expect.objectContaining({
+        key: "active_case_missing_active_key",
+        status: "failed",
+        sampleIds: expect.arrayContaining([activeCaseWithoutKeyId]),
+      }),
+      expect.objectContaining({
+        key: "terminal_incident_retains_active_correlation_key",
+        status: "failed",
+        sampleIds: expect.arrayContaining([terminalIncidentId]),
+      }),
     ]));
+    const succeededMismatch = report.checks.find((check) => check.key === "succeeded_request_delivery_count_mismatch");
+    expect(succeededMismatch?.sampleIds).not.toContain(cancelledRequestId);
   });
 
   it("detects a real orphan pointer even after the forward FK migration is installed", async () => {

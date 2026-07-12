@@ -14,7 +14,8 @@ type ReleaseCommandType =
   | "character.release.publish"
   | "character.release.rollback"
   | "character.serving.pause"
-  | "character.serving.resume";
+  | "character.serving.resume"
+  | "character.serving.retire";
 
 interface ExecuteReleaseCommandInput {
   readonly commandId: string;
@@ -877,18 +878,19 @@ async function executeServingState(
     );
   }
   const pausing = command.commandType === "character.serving.pause";
-  const expectedState = pausing ? "live" : "paused";
-  const nextState = pausing ? "paused" : "live";
+  const retiring = command.commandType === "character.serving.retire";
+  const expectedState = pausing || retiring ? "live" : "paused";
+  const nextState = retiring ? "retired" : pausing ? "paused" : "live";
   if (serving.state !== expectedState) {
     throw new ReleaseCommandError(
       "serving_state_conflict",
       `Serving must be ${expectedState} before ${nextState}`,
     );
   }
-  const resumeAssetId = pausing
+  const resumeAssetId = pausing || retiring
     ? null
     : placementAssetId(release.releasePlacementManifest);
-  if (!pausing && !resumeAssetId) {
+  if (!pausing && !retiring && !resumeAssetId) {
     throw new ReleaseCommandError(
       "serving_projection_manifest_missing",
       "Published Release has no character avatar manifest",
@@ -905,7 +907,7 @@ async function executeServingState(
     );
   await tx.character.update({
     where: { id: command.targetId },
-    data: pausing
+    data: pausing || retiring
       ? { status: "archived", visibility: "private" }
       : {
           status: "approved",
@@ -913,8 +915,7 @@ async function executeServingState(
           imageAssetId: resumeAssetId,
         },
   });
-  const payload = record(command.requestPayload);
-  if (pausing && payload.retireProject === true) {
+  if (retiring) {
     await tx.characterProject.update({
       where: { id: project.id },
       data: { phase: "retired", activeKey: null, version: { increment: 1 } },
@@ -926,12 +927,14 @@ async function executeServingState(
     releaseId: release.id,
     characterId: command.targetId,
     before: { servingState: serving.state, servingVersion: serving.version },
-    after: { servingState: nextState, servingVersion: serving.version + 1, retired: pausing && payload.retireProject === true },
-    eventType: pausing
-      ? "character.serving.paused"
-      : "character.serving.resumed",
+    after: { servingState: nextState, servingVersion: serving.version + 1, retired: retiring },
+    eventType: retiring
+      ? "character.serving.retired"
+      : pausing
+        ? "character.serving.paused"
+        : "character.serving.resumed",
     now,
-    result: { servingState: nextState, retired: pausing && payload.retireProject === true },
+    result: { servingState: nextState, retired: retiring },
   });
   return release.id;
 }
@@ -966,6 +969,7 @@ export async function executeCharacterReleaseCommand(
     "character.release.rollback",
     "character.serving.pause",
     "character.serving.resume",
+    "character.serving.retire",
   ];
   if (!supported.includes(existing.commandType as ReleaseCommandType)) {
     return {
@@ -1005,7 +1009,8 @@ export async function executeCharacterReleaseCommand(
                 now,
               )
             : command.commandType === "character.serving.pause" ||
-                command.commandType === "character.serving.resume"
+                command.commandType === "character.serving.resume" ||
+                command.commandType === "character.serving.retire"
               ? await executeServingState(tx, command, now)
               : command.commandType === "character.release.rollback"
                 ? await executeRollback(

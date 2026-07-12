@@ -22,6 +22,7 @@ const COMMAND_TYPES = [
   "character.release.rollback",
   "character.serving.pause",
   "character.serving.resume",
+  "character.serving.retire",
   "incident.resolve",
   "incident.action_plan.execute",
   "case.close",
@@ -34,6 +35,7 @@ const CHARACTER_COMMAND_TYPES = new Set<string>([
   "character.release.rollback",
   "character.serving.pause",
   "character.serving.resume",
+  "character.serving.retire",
 ]);
 const IDLE_DELAY_MS = 1_000;
 const BUSY_DELAY_MS = 50;

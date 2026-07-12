@@ -74,6 +74,20 @@ const sqlChecks: readonly SqlInvariant[] = [
     `,
   },
   {
+    key: "official_public_character_not_live",
+    description: "Official public Characters with a current Release must be live in CharacterServing",
+    evidence: "public visibility is derived from CharacterServing.state=live plus the current published Release pointer",
+    query: Prisma.sql`
+      SELECT c.id, count(*) OVER()::int AS total
+      FROM characters c
+      JOIN character_serving s ON s."characterId" = c.id
+      WHERE c.source = 'official' AND c.visibility = 'public' AND c.status = 'approved'
+        AND c."deletedAt" IS NULL AND s."currentReleaseId" IS NOT NULL
+        AND s.state <> 'live'
+      ORDER BY c.id LIMIT 20
+    `,
+  },
+  {
     key: "serving_validation_stale",
     description: "Current and scheduled Releases require a passing validation for the exact snapshot and policy",
     evidence: `ReleaseValidationRun snapshotHash + ${CHARACTER_RELEASE_POLICY_VERSION}`,
@@ -92,12 +106,12 @@ const sqlChecks: readonly SqlInvariant[] = [
   },
   {
     key: "serving_default_route_unqualified",
-    description: "A live default generation route must satisfy its current qualification",
-    evidence: "Release generationProvenance routeFingerprint/matrixKey joined to non-expired qualification",
+    description: "Current and scheduled default generation routes must satisfy their current qualification",
+    evidence: "Current/scheduled Release generationProvenance routeFingerprint/matrixKey joined to non-expired qualification",
     query: Prisma.sql`
       SELECT r.id, count(*) OVER()::int AS total
       FROM character_serving s
-      JOIN character_releases r ON r.id = s."currentReleaseId"
+      JOIN character_releases r ON r.id IN (s."currentReleaseId", s."scheduledReleaseId")
       WHERE NOT EXISTS (
         SELECT 1 FROM generation_route_qualifications q
         WHERE q."routeFingerprint" = r."generationProvenance"->>'routeFingerprint'
@@ -129,16 +143,19 @@ const sqlChecks: readonly SqlInvariant[] = [
   {
     key: "succeeded_request_delivery_count_mismatch",
     description: "Succeeded generation Requests must deliver exactly their expected output count",
-    evidence: "latest succeeded GenerationAttempt requestId joined to GenerationJob.outputCount and delivered rows",
+    evidence: "GenerationFulfillmentFact business outcome joined to GenerationJob expected count and delivered rows",
     query: Prisma.sql`
-      SELECT a."requestId" AS id, count(*) OVER()::int AS total
-      FROM generation_attempts a
-      JOIN generation_jobs j ON j.id = a."requestId"
-      LEFT JOIN generation_deliveries d ON d."requestId" = a."requestId" AND d.status = 'delivered'
-      WHERE a.status = 'succeeded'
-      GROUP BY a."requestId", j."outputCount"
+      SELECT f."requestId" AS id, count(*) OVER()::int AS total
+      FROM generation_fulfillment_facts f
+      JOIN generation_jobs j ON j.id = f."requestId"
+      LEFT JOIN generation_deliveries d ON d."requestId" = f."requestId" AND d.status = 'delivered'
+      WHERE f.outcome = 'succeeded'
+      GROUP BY f."requestId", f."expectedOutputCount", f."deliveredOutputCount", j."outputCount", j."deliveredOutputCount"
       HAVING count(d.id) <> j."outputCount"
-      ORDER BY a."requestId" LIMIT 20
+        OR f."expectedOutputCount" <> j."outputCount"
+        OR f."deliveredOutputCount" <> count(d.id)
+        OR j."deliveredOutputCount" <> count(d.id)
+      ORDER BY f."requestId" LIMIT 20
     `,
   },
   {
@@ -189,6 +206,61 @@ const sqlChecks: readonly SqlInvariant[] = [
       SELECT j.id, count(*) OVER()::int AS total
       FROM generation_jobs j WHERE j.status = 'refunded'
       ORDER BY j.id LIMIT 20
+    `,
+  },
+  {
+    key: "generation_refund_exceeds_captured_spend",
+    description: "Generation refunds must not exceed the captured generation spend authority",
+    evidence: "GenerationSettlementLink joined to append-only DreamcoinLedger captured/refund totals",
+    query: Prisma.sql`
+      WITH settlement AS (
+        SELECT
+          l."requestId" AS id,
+          coalesce(sum(CASE
+            WHEN l.kind = 'generation_spend' AND d.reason = 'generation_spend' AND d.delta < 0
+              THEN -d.delta ELSE 0 END), 0)::bigint AS captured,
+          coalesce(sum(CASE
+            WHEN l.kind = 'refund' AND d.reason = 'refund' AND d.delta > 0
+              THEN d.delta ELSE 0 END), 0)::bigint AS refunded
+        FROM generation_settlement_links l
+        JOIN dreamcoin_ledger d ON d.id = l."ledgerEntryId"
+        GROUP BY l."requestId"
+      ), violations AS (
+        SELECT id FROM settlement WHERE refunded > captured
+      )
+      SELECT id, count(*) OVER()::int AS total
+      FROM violations ORDER BY id LIMIT 20
+    `,
+  },
+  {
+    key: "generation_settlement_link_mismatch",
+    description: "Every generation settlement link must match one append-only ledger authority and every captured/refund entry must be linked",
+    evidence: "GenerationSettlementLink request/kind reconciled bidirectionally with DreamcoinLedger sourceId/reason/delta",
+    query: Prisma.sql`
+      WITH violations AS (
+        SELECT concat(l."requestId", ':', l."ledgerEntryId") AS id
+        FROM generation_settlement_links l
+        LEFT JOIN dreamcoin_ledger d ON d.id = l."ledgerEntryId"
+        WHERE d.id IS NULL
+          OR d."sourceId" IS DISTINCT FROM l."requestId"
+          OR d.reason IS DISTINCT FROM l.kind
+          OR (l.kind = 'generation_spend' AND d.delta >= 0)
+          OR (l.kind = 'refund' AND d.delta <= 0)
+          OR l.kind NOT IN ('generation_spend', 'refund')
+        UNION
+        SELECT concat(d."sourceId", ':', d.id) AS id
+        FROM dreamcoin_ledger d
+        JOIN generation_jobs j ON j.id = d."sourceId"
+        WHERE d.reason IN ('generation_spend', 'refund')
+          AND NOT EXISTS (
+            SELECT 1 FROM generation_settlement_links l
+            WHERE l."ledgerEntryId" = d.id
+              AND l."requestId" = d."sourceId"
+              AND l.kind = d.reason
+          )
+      )
+      SELECT id, count(*) OVER()::int AS total
+      FROM violations ORDER BY id LIMIT 20
     `,
   },
   {
@@ -290,6 +362,28 @@ const sqlChecks: readonly SqlInvariant[] = [
     `,
   },
   {
+    key: "active_case_missing_active_key",
+    description: "Every active Case must hold its deterministic active identity key",
+    evidence: "AdminCase active lifecycle states require activeKey for database-enforced uniqueness",
+    query: Prisma.sql`
+      SELECT c.id, count(*) OVER()::int AS total
+      FROM admin_cases c
+      WHERE c.status NOT IN ('closed', 'resolved') AND c."activeKey" IS NULL
+      ORDER BY c.id LIMIT 20
+    `,
+  },
+  {
+    key: "terminal_case_retains_active_key",
+    description: "Terminal Cases must release the active identity key before recurrence",
+    evidence: "resolved/closed AdminCase rows must have activeKey=NULL",
+    query: Prisma.sql`
+      SELECT c.id, count(*) OVER()::int AS total
+      FROM admin_cases c
+      WHERE c.status IN ('closed', 'resolved') AND c."activeKey" IS NOT NULL
+      ORDER BY c.id LIMIT 20
+    `,
+  },
+  {
     key: "occurrence_in_multiple_active_incidents",
     description: "One occurrence identity must not belong to multiple active Incidents",
     evidence: "active incident occurrences grouped by request/attempt/transport identity",
@@ -303,6 +397,18 @@ const sqlChecks: readonly SqlInvariant[] = [
         HAVING count(DISTINCT o."incidentId") > 1
       )
       SELECT id, count(*) OVER()::int AS total FROM violations ORDER BY id LIMIT 20
+    `,
+  },
+  {
+    key: "terminal_incident_retains_active_correlation_key",
+    description: "Terminal Incidents must release their active correlation identity before recurrence",
+    evidence: "resolved/closed/duplicate/merged OpsIncident rows must have activeCorrelationKey=NULL",
+    query: Prisma.sql`
+      SELECT i.id, count(*) OVER()::int AS total
+      FROM ops_incidents i
+      WHERE i.status IN ('resolved', 'closed', 'duplicate', 'merged')
+        AND i."activeCorrelationKey" IS NOT NULL
+      ORDER BY i.id LIMIT 20
     `,
   },
   {

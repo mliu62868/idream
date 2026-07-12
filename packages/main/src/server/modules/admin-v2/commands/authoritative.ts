@@ -354,6 +354,10 @@ const servingResumeDefinition = {
   ...servingPauseDefinition,
   commandType: "character.serving.resume",
 } as const satisfies CommandDefinition;
+const servingRetireDefinition = {
+  ...servingPauseDefinition,
+  commandType: "character.serving.retire",
+} as const satisfies CommandDefinition;
 
 export function changeCharacterServingState(
   request: Request,
@@ -361,7 +365,11 @@ export function changeCharacterServingState(
   action: "pause" | "resume" | "retire",
 ) {
   return commandResponse(request, async () => {
-    const definition = action === "resume" ? servingResumeDefinition : servingPauseDefinition;
+    const definition = action === "resume"
+      ? servingResumeDefinition
+      : action === "retire"
+        ? servingRetireDefinition
+        : servingPauseDefinition;
     const actor = await actorWithPermission(request, definition.permission, { characterId });
     const parsed = await parseCommand(request, adminCommandRequestSchema);
     requireConfirmation(parsed.body.confirmation, `${characterId}:${action}`);

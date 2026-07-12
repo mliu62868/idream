@@ -81,7 +81,10 @@ const METRIC_EVENT_DESCRIPTORS = new Map<string, MetricEventDescriptor>([
   [METRIC_PRODUCT_EVENTS.customerSignupCompleted, { schema: customerSignupCompletedV2Schema, serverOutcome: true, allowedSources: new Set(["main"]) }],
   [METRIC_PRODUCT_EVENTS.subscriptionActivated, { schema: subscriptionActivatedV2Schema, serverOutcome: true, allowedSources: new Set(["main"]) }],
   [METRIC_PRODUCT_EVENTS.subscriptionEnded, { schema: subscriptionEndedV2Schema, serverOutcome: true, allowedSources: new Set(["main"]) }],
-  [METRIC_PRODUCT_EVENTS.generationDeliveryCompleted, { schema: generationDeliveryCompletedV2Schema, serverOutcome: true, allowedSources: new Set(["main", "gen"]) }],
+  // gen owns provider execution evidence, while main is the sole authority for
+  // product delivery and settlement. A gen-originated delivery event would
+  // collapse that boundary even when the referenced rows happen to exist.
+  [METRIC_PRODUCT_EVENTS.generationDeliveryCompleted, { schema: generationDeliveryCompletedV2Schema, serverOutcome: true, allowedSources: new Set(["main"]) }],
   [METRIC_PRODUCT_EVENTS.aiUsageRecorded, { schema: aiUsageRecordedV2Schema, serverOutcome: true, allowedSources: new Set(["main", "gen"]) }],
   [METRIC_PRODUCT_EVENTS.experimentExposed, { schema: experimentExposedV2Schema, serverOutcome: false }],
   [METRIC_PRODUCT_EVENTS.characterExposureRecorded, { schema: characterExposureRecordedV2Schema, serverOutcome: false }],
