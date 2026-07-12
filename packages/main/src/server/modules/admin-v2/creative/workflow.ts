@@ -5,8 +5,11 @@ import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { deriveCreativeRunState, type CreativeRunLedgerFact } from "@/server/modules/admin/content-production-state";
 import { toInputJson } from "../shared/prisma-json";
 import {
+  isCreativePlacementVerificationTransitionAllowed,
   isCreativeRunItemTransitionAllowed,
   isCreativeRunLifecycleTransitionAllowed,
+  isCreativeRunVerificationTransitionAllowed,
+  isCreativeRunWorkflowTransitionAllowed,
 } from "../shared/state-transition-authority";
 import { resolveCommunityCampaignPlacements } from "@/server/modules/ourdream/community-campaigns";
 import {
@@ -172,6 +175,16 @@ export async function recordCreativeReviewDecision(input: {
     ) {
       throw Errors.conflict("Creative Run is not active for review", { lifecycleState: run.lifecycleState });
     }
+    const nextWorkflowStage = input.decision === "approved" ? "placement" : "review";
+    if (
+      !isCreativeRunWorkflowTransitionAllowed(run.workflowStage, nextWorkflowStage) ||
+      !isCreativeRunVerificationTransitionAllowed(run.verificationState, "pending")
+    ) {
+      throw Errors.conflict("Creative Run cannot accept the requested review transition", {
+        workflow: { from: run.workflowStage, to: nextWorkflowStage },
+        verification: { from: run.verificationState, to: "pending" },
+      });
+    }
     const item = await tx.contentProductionItem.findFirst({
       where: { id: input.itemId, batchId: run.id },
       include: { mediaAsset: true, job: { include: { assets: { orderBy: { createdAt: "asc" } } } } },
@@ -216,7 +229,7 @@ export async function recordCreativeReviewDecision(input: {
     const updatedRun = await tx.contentProductionBatch.update({
       where: { id: run.id },
       data: {
-        workflowStage: input.decision === "approved" ? "placement" : "review",
+        workflowStage: nextWorkflowStage,
         verificationState: "pending",
         status: "reviewing",
         approvedItems,
@@ -295,6 +308,15 @@ export async function publishDistributionPlacement(input: {
     }
     if (!isCreativeRunLifecycleTransitionAllowed(run.lifecycleState, run.lifecycleState)) {
       throw Errors.conflict("Creative Run cannot accept placement in its present lifecycle", { lifecycleState: run.lifecycleState });
+    }
+    if (
+      !isCreativeRunWorkflowTransitionAllowed(run.workflowStage, "verification") ||
+      !isCreativeRunVerificationTransitionAllowed(run.verificationState, "verifying")
+    ) {
+      throw Errors.conflict("Creative Run cannot enter placement verification from its present state", {
+        workflow: { from: run.workflowStage, to: "verification" },
+        verification: { from: run.verificationState, to: "verifying" },
+      });
     }
     const item = await tx.contentProductionItem.findFirst({
       where: { id: input.itemId, batchId: run.id, mediaAssetId: input.assetId },
@@ -443,10 +465,18 @@ export async function verifyCreativePlacement(input: {
     const passed = Object.values(checks).every(Boolean);
     const verificationState = passed ? "passed" : "failed";
     const nextLifecycleState = passed ? "closed" : "active";
-    if (!isCreativeRunLifecycleTransitionAllowed(run.lifecycleState, nextLifecycleState)) {
-      throw Errors.conflict("Creative Run cannot accept placement verification in its present lifecycle", {
+    if (
+      !isCreativeRunLifecycleTransitionAllowed(run.lifecycleState, nextLifecycleState) ||
+      !isCreativeRunWorkflowTransitionAllowed(run.workflowStage, "verification") ||
+      !isCreativeRunVerificationTransitionAllowed(run.verificationState, verificationState) ||
+      !isCreativePlacementVerificationTransitionAllowed(placement.verificationState, verificationState)
+    ) {
+      throw Errors.conflict("Creative Run cannot accept the requested verification transition", {
         from: run.lifecycleState,
         to: nextLifecycleState,
+        workflow: { from: run.workflowStage, to: "verification" },
+        runVerification: { from: run.verificationState, to: verificationState },
+        placementVerification: { from: placement.verificationState, to: verificationState },
       });
     }
     const verifiedAt = new Date();

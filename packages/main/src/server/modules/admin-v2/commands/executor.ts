@@ -1,6 +1,7 @@
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { claimControlPlaneCommand } from "../shared/control-plane-command";
+import { transitionControlPlaneCommandAttempt } from "../shared/control-plane-command-attempt";
 import { toInputJson } from "../shared/prisma-json";
 import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { executeCreativeRetryCommand } from "../creative/retry-executor";
@@ -30,9 +31,11 @@ async function failCommand(commandId: string, attemptNo: number, error: unknown)
         finishedAt: new Date(),
       },
     });
-    await tx.controlPlaneCommandAttempt.updateMany({
-      where: { commandId, attemptNo, status: "running" },
-      data: { status: "failed", error: toInputJson(payload), finishedAt: new Date() },
+    await transitionControlPlaneCommandAttempt(tx, {
+      commandId,
+      attemptNo,
+      to: "failed",
+      data: { error: toInputJson(payload), finishedAt: new Date() },
     });
   });
 }
@@ -96,9 +99,11 @@ async function executeResolveIncident(commandId: string) {
           finishedAt: new Date(),
         },
       });
-      await tx.controlPlaneCommandAttempt.update({
-        where: { commandId_attemptNo: { commandId: claimed.id, attemptNo: claimed.attemptCount } },
-        data: { status: "succeeded", finishedAt: new Date() },
+      await transitionControlPlaneCommandAttempt(tx, {
+        commandId: claimed.id,
+        attemptNo: claimed.attemptCount,
+        to: "succeeded",
+        data: { finishedAt: new Date() },
       });
       return command;
     });
@@ -167,9 +172,11 @@ async function executeCloseCase(commandId: string) {
           finishedAt: new Date(),
         },
       });
-      await tx.controlPlaneCommandAttempt.update({
-        where: { commandId_attemptNo: { commandId: claimed.id, attemptNo: claimed.attemptCount } },
-        data: { status: "succeeded", finishedAt: new Date() },
+      await transitionControlPlaneCommandAttempt(tx, {
+        commandId: claimed.id,
+        attemptNo: claimed.attemptCount,
+        to: "succeeded",
+        data: { finishedAt: new Date() },
       });
       return command;
     });

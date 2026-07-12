@@ -3,6 +3,7 @@ import { Errors } from "@/server/lib/errors";
 import { recordGenerationAttemptQueuedEvent } from "@/server/ai/generation-attempt-events";
 import { ensureGenerationSettlementLinks, linkGenerationLedgerEntry } from "@/server/ai/generation-settlement";
 import { claimControlPlaneCommand } from "../shared/control-plane-command";
+import { transitionControlPlaneCommandAttempt } from "../shared/control-plane-command-attempt";
 import { toInputJson } from "../shared/prisma-json";
 
 function record(value: Prisma.JsonValue | null): Record<string, unknown> {
@@ -35,10 +36,11 @@ async function finishAttempt(
       finishedAt: now,
     },
   });
-  await tx.controlPlaneCommandAttempt.updateMany({
-    where: { commandId, attemptNo, status: "running" },
+  await transitionControlPlaneCommandAttempt(tx, {
+    commandId,
+    attemptNo,
+    to: status,
     data: {
-      status,
       error: status === "failed" ? toInputJson(result) : Prisma.DbNull,
       finishedAt: now,
     },
@@ -65,9 +67,11 @@ async function failClaimedCommand(
         finishedAt: new Date(),
       },
     });
-    await tx.controlPlaneCommandAttempt.updateMany({
-      where: { commandId: input.commandId, attemptNo: input.attemptNo, status: "running" },
-      data: { status: "failed", error: toInputJson(result), finishedAt: new Date() },
+    await transitionControlPlaneCommandAttempt(tx, {
+      commandId: input.commandId,
+      attemptNo: input.attemptNo,
+      to: "failed",
+      data: { error: toInputJson(result), finishedAt: new Date() },
     });
   });
 }

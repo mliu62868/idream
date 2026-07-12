@@ -27,6 +27,7 @@ import {
   recordMainToChatEvent,
 } from "./chat-outbox";
 import { projectCanonicalMetricEvent } from "@/server/modules/admin-v2/metrics/projector";
+import { transitionControlPlaneCommandAttempt } from "@/server/modules/admin-v2/shared/control-plane-command-attempt";
 
 function redisOptions(): RedisOptions {
   const url = new URL(env.REDIS_URL);
@@ -206,9 +207,11 @@ export async function applyChatEvent(event: InboundEvent): Promise<void> {
             finishedAt: appliedAt,
           },
         });
-        await tx.controlPlaneCommandAttempt.updateMany({
-          where: { commandId: command.id, status: "running" },
-          data: { status: "succeeded", finishedAt: appliedAt },
+        await transitionControlPlaneCommandAttempt(tx, {
+          commandId: command.id,
+          attemptNo: command.attemptCount,
+          to: "succeeded",
+          data: { finishedAt: appliedAt },
         });
         await tx.adminAuditLog.create({
           data: {

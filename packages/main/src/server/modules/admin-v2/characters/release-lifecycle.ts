@@ -4,7 +4,10 @@ import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority"
 import { CHARACTER_RELEASE_POLICY_VERSION, validateCharacterReleaseSnapshot } from "./release-executor";
 import { characterReleaseSnapshotHash } from "./release-snapshot";
 import { toInputJson } from "../shared/prisma-json";
-import { isCharacterReleaseTransitionAllowed } from "../shared/state-transition-authority";
+import {
+  isCharacterProjectPhaseTransitionAllowed,
+  isCharacterReleaseTransitionAllowed,
+} from "../shared/state-transition-authority";
 
 export async function proposeCharacterRelease(input: {
   request: Request;
@@ -20,6 +23,15 @@ export async function proposeCharacterRelease(input: {
     const project = await tx.characterProject.findFirst({ where: { characterId: input.characterId } });
     if (!project) throw Errors.notFound("Character Project not found");
     if (project.version !== input.expectedProjectVersion) throw Errors.conflict("Character Project changed before Release proposal");
+    if (
+      project.phase !== "qa" &&
+      !isCharacterProjectPhaseTransitionAllowed(project.phase, "qa")
+    ) {
+      throw Errors.conflict("Character Project cannot enter QA from its present phase", {
+        from: project.phase,
+        to: "qa",
+      });
+    }
     const existing = await tx.characterRelease.findFirst({
       where: { projectId: project.id, status: { in: ["draft", "validating", "in_review", "approved"] } },
     });
@@ -161,17 +173,20 @@ export async function reviewCharacterRelease(input: {
     const project = await tx.characterProject.findUnique({ where: { id: release.projectId } });
     if (!project || project.characterId !== input.characterId) throw Errors.notFound("Character Release not found for Character");
     const status = input.decision === "approved" ? "approved" : "draft";
+    const projectPhase = input.decision === "approved" ? "launch_ready" : "producing";
     if (
       release.version !== input.expectedVersion ||
-      !isCharacterReleaseTransitionAllowed(release.status, status)
+      !isCharacterReleaseTransitionAllowed(release.status, status) ||
+      !isCharacterProjectPhaseTransitionAllowed(project.phase, projectPhase)
     ) {
       throw Errors.conflict("Release changed or transition is not allowed", {
         from: release.status,
         to: status,
+        projectPhase: { from: project.phase, to: projectPhase },
       });
     }
     const updated = await tx.characterRelease.update({ where: { id: release.id, version: release.version }, data: { status, version: { increment: 1 } } });
-    await tx.characterProject.update({ where: { id: project.id }, data: { phase: input.decision === "approved" ? "launch_ready" : "producing", version: { increment: 1 } } });
+    await tx.characterProject.update({ where: { id: project.id }, data: { phase: projectPhase, version: { increment: 1 } } });
     await tx.adminAuditLog.create({ data: {
       actorId: actor.id,
       actorRole: actor.role,

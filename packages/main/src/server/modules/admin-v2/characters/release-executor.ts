@@ -1,5 +1,6 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { claimControlPlaneCommand } from "../shared/control-plane-command";
+import { transitionControlPlaneCommandAttempt } from "../shared/control-plane-command-attempt";
 import { toInputJson } from "../shared/prisma-json";
 import {
   characterReleaseSnapshotHash,
@@ -8,6 +9,7 @@ import {
 } from "./release-snapshot";
 import { releaseMonitorDueAt } from "./release-monitor";
 import {
+  isCharacterProjectPhaseTransitionAllowed,
   isCharacterReleaseTransitionAllowed,
   isCharacterServingTransitionAllowed,
 } from "../shared/state-transition-authority";
@@ -378,15 +380,11 @@ async function finishAttempt(
   now: Date,
   error?: Record<string, unknown>,
 ) {
-  await tx.controlPlaneCommandAttempt.update({
-    where: {
-      commandId_attemptNo: {
-        commandId: command.id,
-        attemptNo: command.attemptCount,
-      },
-    },
+  await transitionControlPlaneCommandAttempt(tx, {
+    commandId: command.id,
+    attemptNo: command.attemptCount,
+    to: status,
     data: {
-      status,
       finishedAt: now,
       error: error ? toInputJson(error) : undefined,
     },
@@ -656,12 +654,26 @@ async function publishRelease(
       },
     );
   }
-  const characterId = validation.project?.characterId;
-  if (!characterId)
+  const project = validation.project;
+  const characterId = project?.characterId;
+  if (!project || !characterId)
     throw new ReleaseCommandError(
       "project_missing",
       "Release Project is missing",
     );
+  if (
+    project.phase !== "live_management" &&
+    !isCharacterProjectPhaseTransitionAllowed(
+      project.phase,
+      "live_management",
+    )
+  ) {
+    throw new ReleaseCommandError(
+      "project_phase_conflict",
+      "Character Project cannot enter live management from its present phase",
+      { projectPhase: project.phase },
+    );
+  }
   const serving = await tx.characterServing.findUnique({
     where: { characterId },
   });
@@ -786,6 +798,24 @@ async function publishRelease(
       {},
       true,
     );
+  }
+  if (project.phase !== "live_management") {
+    const projectUpdated = await tx.characterProject.updateMany({
+      where: {
+        id: project.id,
+        version: project.version,
+        phase: project.phase,
+      },
+      data: { phase: "live_management", version: { increment: 1 } },
+    });
+    if (projectUpdated.count !== 1) {
+      throw new ReleaseCommandError(
+        "project_version_conflict",
+        "Character Project changed while publishing",
+        {},
+        true,
+      );
+    }
   }
   await tx.character.update({
     where: { id: characterId },
@@ -968,6 +998,16 @@ async function executeServingState(
     throw new ReleaseCommandError(
       "serving_state_conflict",
       `Serving must be ${expectedState} before ${nextState}`,
+    );
+  }
+  if (
+    retiring &&
+    !isCharacterProjectPhaseTransitionAllowed(project.phase, "retired")
+  ) {
+    throw new ReleaseCommandError(
+      "project_phase_conflict",
+      "Character Project must be in live management before retirement",
+      { projectPhase: project.phase },
     );
   }
   const resumeAssetId = pausing || retiring

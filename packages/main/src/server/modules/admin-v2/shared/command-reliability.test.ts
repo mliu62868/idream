@@ -11,6 +11,7 @@ import {
 } from "./control-plane-command";
 import { ingestProductEvent } from "./product-event-store";
 import { canonicalSha256 } from "./canonical-json";
+import { transitionControlPlaneCommandAttempt } from "./control-plane-command-attempt";
 
 describe("Admin v2 command reliability", () => {
   beforeEach(async () => {
@@ -233,6 +234,43 @@ describe("Admin v2 command reliability", () => {
     const metrics = renderPrometheusMetrics();
     expect(metrics).toContain('admin_command_lease_expired_total{outcome="requeued"} 1');
     expect(metrics).toContain('admin_command_lease_expired_total{outcome="failed"} 2');
+  });
+
+  it("keeps a terminal command attempt immutable when a later executor reports another outcome", async () => {
+    const accepted = await acceptControlPlaneCommand(prisma, {
+      environment: "test",
+      actor: { id: "admin-v2-test", role: "admin" },
+      idempotencyKey: randomUUID(),
+      commandType: "case.close",
+      target: { type: "admin_case", id: "case-terminal-attempt" },
+      expectedVersion: 1,
+      payload: {},
+      reason: "exercise terminal attempt authority",
+      requestId: randomUUID(),
+    });
+    const claimed = await claimControlPlaneCommand(prisma, {
+      commandId: accepted.commandId,
+      workerId: "terminal-attempt-worker",
+      leaseMs: 30_000,
+    });
+    expect(claimed).toMatchObject({ attemptCount: 1 });
+
+    const succeededAt = new Date("2026-07-11T12:00:00.000Z");
+    await prisma.$transaction((tx) => transitionControlPlaneCommandAttempt(tx, {
+      commandId: accepted.commandId,
+      attemptNo: 1,
+      to: "succeeded",
+      data: { finishedAt: succeededAt },
+    }));
+    await expect(prisma.$transaction((tx) => transitionControlPlaneCommandAttempt(tx, {
+      commandId: accepted.commandId,
+      attemptNo: 1,
+      to: "failed",
+      data: { finishedAt: new Date("2026-07-11T12:00:01.000Z"), error: { code: "late_failure" } },
+    }))).rejects.toThrow("succeeded -> failed");
+    await expect(prisma.controlPlaneCommandAttempt.findUniqueOrThrow({
+      where: { commandId_attemptNo: { commandId: accepted.commandId, attemptNo: 1 } },
+    })).resolves.toMatchObject({ status: "succeeded", finishedAt: succeededAt, error: null });
   });
 });
 

@@ -1,21 +1,31 @@
 import { describe, expect, it } from "vitest";
 import {
   ADMIN_CASE_STATES,
+  CHARACTER_PROJECT_PHASE_STATES,
   CHARACTER_RELEASE_STATES,
   CHARACTER_SERVING_STATES,
   CONTROL_PLANE_COMMAND_STATES,
+  CONTROL_PLANE_COMMAND_ATTEMPT_STATES,
+  CREATIVE_PLACEMENT_VERIFICATION_STATES,
   CREATIVE_RUN_ITEM_STATES,
   CREATIVE_RUN_LIFECYCLE_STATES,
+  CREATIVE_RUN_VERIFICATION_STATES,
+  CREATIVE_RUN_WORKFLOW_STAGES,
   EXPERIMENT_STATES,
   GENERATION_ATTEMPT_STATES,
   GENERATION_REQUEST_ADMIN_STATES,
   INCIDENT_STATES,
   isAdminCaseTransitionAllowed,
+  isCharacterProjectPhaseTransitionAllowed,
   isCharacterReleaseTransitionAllowed,
   isCharacterServingTransitionAllowed,
   isControlPlaneCommandTransitionAllowed,
+  isControlPlaneCommandAttemptTransitionAllowed,
+  isCreativePlacementVerificationTransitionAllowed,
   isCreativeRunItemTransitionAllowed,
   isCreativeRunLifecycleTransitionAllowed,
+  isCreativeRunVerificationTransitionAllowed,
+  isCreativeRunWorkflowTransitionAllowed,
   isExperimentTransitionAllowed,
   isGenerationAttemptTransitionAllowed,
   isGenerationRequestAdminTransitionAllowed,
@@ -30,6 +40,20 @@ interface MatrixCase {
 }
 
 const matrices: readonly MatrixCase[] = [
+  {
+    name: "Character Project phase",
+    states: CHARACTER_PROJECT_PHASE_STATES,
+    allowed: {
+      idea: ["planned", "producing", "qa", "live_management"],
+      planned: ["producing", "qa"],
+      producing: ["qa"],
+      qa: ["producing", "launch_ready"],
+      launch_ready: ["producing", "live_management"],
+      live_management: ["producing", "retired"],
+      retired: [],
+    },
+    permits: isCharacterProjectPhaseTransitionAllowed,
+  },
   {
     name: "Character Release",
     states: CHARACTER_RELEASE_STATES,
@@ -96,6 +120,43 @@ const matrices: readonly MatrixCase[] = [
     permits: isCreativeRunLifecycleTransitionAllowed,
   },
   {
+    name: "Creative Run workflow",
+    states: CREATIVE_RUN_WORKFLOW_STAGES,
+    allowed: {
+      brief: ["directions"],
+      directions: ["generation"],
+      generation: ["generation", "review"],
+      review: ["generation", "review", "placement"],
+      placement: ["generation", "review", "verification"],
+      verification: ["generation", "review", "placement", "verification"],
+    },
+    permits: isCreativeRunWorkflowTransitionAllowed,
+  },
+  {
+    name: "Creative Run verification",
+    states: CREATIVE_RUN_VERIFICATION_STATES,
+    allowed: {
+      pending: ["pending", "verifying"],
+      verifying: ["pending", "passed", "failed"],
+      passed: ["verifying"],
+      failed: ["verifying"],
+      overridden: ["verifying"],
+    },
+    permits: isCreativeRunVerificationTransitionAllowed,
+  },
+  {
+    name: "Creative placement verification",
+    states: CREATIVE_PLACEMENT_VERIFICATION_STATES,
+    allowed: {
+      pending: ["verifying"],
+      verifying: ["passed", "failed"],
+      passed: [],
+      failed: ["verifying"],
+      overridden: [],
+    },
+    permits: isCreativePlacementVerificationTransitionAllowed,
+  },
+  {
     name: "Creative Run Item",
     states: CREATIVE_RUN_ITEM_STATES,
     allowed: {
@@ -160,6 +221,16 @@ const matrices: readonly MatrixCase[] = [
       cancelled: [],
     },
     permits: isControlPlaneCommandTransitionAllowed,
+  },
+  {
+    name: "ControlPlaneCommandAttempt",
+    states: CONTROL_PLANE_COMMAND_ATTEMPT_STATES,
+    allowed: {
+      running: ["succeeded", "failed"],
+      succeeded: [],
+      failed: [],
+    },
+    permits: isControlPlaneCommandAttemptTransitionAllowed,
   },
 ];
 

@@ -5,6 +5,7 @@ import { toInputJson } from "./prisma-json";
 import { Errors } from "@/server/lib/errors";
 import { logger } from "@/server/lib/logger";
 import { isControlPlaneCommandTransitionAllowed } from "./state-transition-authority";
+import { transitionControlPlaneCommandAttempt } from "./control-plane-command-attempt";
 
 export interface CanonicalCommandRequest {
   readonly commandType: string;
@@ -329,14 +330,11 @@ export async function reconcileExpiredCommandLeases(
         },
       });
       if (updated.count !== 1) return;
-      await tx.controlPlaneCommandAttempt.updateMany({
-        where: {
-          commandId: command.id,
-          attemptNo: command.attemptCount,
-          status: "running",
-        },
+      await transitionControlPlaneCommandAttempt(tx, {
+        commandId: command.id,
+        attemptNo: command.attemptCount,
+        to: "failed",
         data: {
-          status: "failed",
           finishedAt: now,
           error: toInputJson({ code: "lease_expired", leaseOwner: command.leaseOwner }),
         },

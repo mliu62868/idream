@@ -3,11 +3,14 @@ import { Errors } from "@/server/lib/errors";
 import { enqueueGenerationAttempt } from "@/server/modules/generation/attempt-dispatch";
 import { recordGenerationAttemptQueuedEvent } from "@/server/ai/generation-attempt-events";
 import { claimControlPlaneCommand } from "../shared/control-plane-command";
+import { transitionControlPlaneCommandAttempt } from "../shared/control-plane-command-attempt";
 import { toInputJson } from "../shared/prisma-json";
 import {
   isControlPlaneCommandTransitionAllowed,
   isCreativeRunItemTransitionAllowed,
   isCreativeRunLifecycleTransitionAllowed,
+  isCreativeRunVerificationTransitionAllowed,
+  isCreativeRunWorkflowTransitionAllowed,
 } from "../shared/state-transition-authority";
 
 const TERMINAL_ATTEMPT_STATES = new Set(["succeeded", "failed", "cancelled", "unknown"]);
@@ -68,9 +71,11 @@ async function failCommand(
         finishedAt: new Date(),
       },
     });
-    await tx.controlPlaneCommandAttempt.updateMany({
-      where: { commandId: input.commandId, attemptNo: input.attemptNo, status: "running" },
-      data: { status: "failed", error: toInputJson(error), finishedAt: new Date() },
+    await transitionControlPlaneCommandAttempt(tx, {
+      commandId: input.commandId,
+      attemptNo: input.attemptNo,
+      to: "failed",
+      data: { error: toInputJson(error), finishedAt: new Date() },
     });
   });
 }
@@ -115,6 +120,15 @@ export async function executeCreativeRetryCommand(
         !isCreativeRunLifecycleTransitionAllowed(run.lifecycleState, run.lifecycleState)
       ) {
         throw Errors.conflict("Creative Run is not active for retry", { lifecycleState: run.lifecycleState });
+      }
+      if (
+        !isCreativeRunWorkflowTransitionAllowed(run.workflowStage, "generation") ||
+        !isCreativeRunVerificationTransitionAllowed(run.verificationState, "verifying")
+      ) {
+        throw Errors.conflict("Creative Run cannot enter retry from its present state", {
+          workflow: { from: run.workflowStage, to: "generation" },
+          verification: { from: run.verificationState, to: "verifying" },
+        });
       }
       const failedItemIds = stringArray(record(claimed.requestPayload).failedItemIds as Prisma.JsonValue);
       if (failedItemIds.length === 0) throw Errors.conflict("Retry command has no frozen failed-item set");
@@ -359,11 +373,25 @@ export async function verifyCreativeRetryCommands(
     });
     const verificationPassed = recoveredItemIds.length === attempts.length;
     await db.$transaction(async (tx) => {
+      const currentRun = await tx.contentProductionBatch.findUniqueOrThrow({
+        where: { id: command.targetId },
+      });
+      const nextWorkflowStage = verificationPassed ? "review" : "generation";
+      const nextVerificationState = verificationPassed ? "pending" : "failed";
+      if (
+        !isCreativeRunWorkflowTransitionAllowed(currentRun.workflowStage, nextWorkflowStage) ||
+        !isCreativeRunVerificationTransitionAllowed(currentRun.verificationState, nextVerificationState)
+      ) {
+        throw Errors.conflict("Creative Run cannot accept retry verification from its present state", {
+          workflow: { from: currentRun.workflowStage, to: nextWorkflowStage },
+          verification: { from: currentRun.verificationState, to: nextVerificationState },
+        });
+      }
       const run = await tx.contentProductionBatch.update({
         where: { id: command.targetId },
         data: {
-          workflowStage: verificationPassed ? "review" : "generation",
-          verificationState: verificationPassed ? "pending" : "failed",
+          workflowStage: nextWorkflowStage,
+          verificationState: nextVerificationState,
           status: verificationPassed ? "reviewing" : "completed",
           version: { increment: 1 },
         },
@@ -389,10 +417,11 @@ export async function verifyCreativeRetryCommands(
           finishedAt: new Date(),
         },
       });
-      await tx.controlPlaneCommandAttempt.updateMany({
-        where: { commandId: command.id, attemptNo: command.attemptCount, status: "running" },
+      await transitionControlPlaneCommandAttempt(tx, {
+        commandId: command.id,
+        attemptNo: command.attemptCount,
+        to: verificationPassed ? "succeeded" : "failed",
         data: {
-          status: verificationPassed ? "succeeded" : "failed",
           error: verificationPassed ? Prisma.DbNull : toInputJson({ code: "creative_retry_verification_failed" }),
           finishedAt: new Date(),
         },

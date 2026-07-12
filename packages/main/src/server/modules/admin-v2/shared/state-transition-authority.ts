@@ -1,6 +1,11 @@
 import {
+  adminControlPlaneCommandAttemptStatusSchema,
+  adminControlPlaneCommandStatusSchema,
+  adminVerificationStateSchema,
+  characterProjectPhaseSchema,
   characterReleaseStatusSchema,
   characterServingStateSchema,
+  creativeWorkflowStageSchema,
 } from "@idream/shared/admin";
 
 type StateOf<States extends readonly string[]> = States[number];
@@ -22,6 +27,22 @@ function defineTransitionAuthority<const States extends readonly string[]>(
 }
 
 export const CHARACTER_RELEASE_STATES = characterReleaseStatusSchema.options;
+
+export const CHARACTER_PROJECT_PHASE_STATES = characterProjectPhaseSchema.options;
+
+const CHARACTER_PROJECT_PHASE_AUTHORITY = defineTransitionAuthority(CHARACTER_PROJECT_PHASE_STATES, {
+  idea: ["planned", "producing", "qa", "live_management"],
+  planned: ["producing", "qa"],
+  producing: ["qa"],
+  qa: ["producing", "launch_ready"],
+  launch_ready: ["producing", "live_management"],
+  live_management: ["producing", "retired"],
+  retired: [],
+});
+
+export function isCharacterProjectPhaseTransitionAllowed(from: string, to: string) {
+  return CHARACTER_PROJECT_PHASE_AUTHORITY.permits(from, to);
+}
 
 const CHARACTER_RELEASE_AUTHORITY = defineTransitionAuthority(CHARACTER_RELEASE_STATES, {
   draft: ["validating"],
@@ -113,6 +134,49 @@ export function isCreativeRunLifecycleTransitionAllowed(from: string, to: string
   return CREATIVE_RUN_LIFECYCLE_AUTHORITY.permits(from, to);
 }
 
+export const CREATIVE_RUN_WORKFLOW_STAGES = creativeWorkflowStageSchema.options;
+
+const CREATIVE_RUN_WORKFLOW_AUTHORITY = defineTransitionAuthority(CREATIVE_RUN_WORKFLOW_STAGES, {
+  brief: ["directions"],
+  directions: ["generation"],
+  generation: ["generation", "review"],
+  review: ["generation", "review", "placement"],
+  placement: ["generation", "review", "verification"],
+  verification: ["generation", "review", "placement", "verification"],
+});
+
+export function isCreativeRunWorkflowTransitionAllowed(from: string, to: string) {
+  return CREATIVE_RUN_WORKFLOW_AUTHORITY.permits(from, to);
+}
+
+export const CREATIVE_RUN_VERIFICATION_STATES = adminVerificationStateSchema.options;
+
+const CREATIVE_RUN_VERIFICATION_AUTHORITY = defineTransitionAuthority(CREATIVE_RUN_VERIFICATION_STATES, {
+  pending: ["pending", "verifying"],
+  verifying: ["pending", "passed", "failed"],
+  passed: ["verifying"],
+  failed: ["verifying"],
+  overridden: ["verifying"],
+});
+
+export function isCreativeRunVerificationTransitionAllowed(from: string, to: string) {
+  return CREATIVE_RUN_VERIFICATION_AUTHORITY.permits(from, to);
+}
+
+export const CREATIVE_PLACEMENT_VERIFICATION_STATES = adminVerificationStateSchema.options;
+
+const CREATIVE_PLACEMENT_VERIFICATION_AUTHORITY = defineTransitionAuthority(CREATIVE_PLACEMENT_VERIFICATION_STATES, {
+  pending: ["verifying"],
+  verifying: ["passed", "failed"],
+  passed: [],
+  failed: ["verifying"],
+  overridden: [],
+});
+
+export function isCreativePlacementVerificationTransitionAllowed(from: string, to: string) {
+  return CREATIVE_PLACEMENT_VERIFICATION_AUTHORITY.permits(from, to);
+}
+
 export const CREATIVE_RUN_ITEM_STATES = [
   "queued",
   "generated",
@@ -199,14 +263,7 @@ export function isExperimentTransitionAllowed(from: string, to: string) {
   return EXPERIMENT_AUTHORITY.permits(from, to);
 }
 
-export const CONTROL_PLANE_COMMAND_STATES = [
-  "accepted",
-  "running",
-  "verifying",
-  "succeeded",
-  "failed",
-  "cancelled",
-] as const;
+export const CONTROL_PLANE_COMMAND_STATES = adminControlPlaneCommandStatusSchema.options;
 
 const CONTROL_PLANE_COMMAND_AUTHORITY = defineTransitionAuthority(CONTROL_PLANE_COMMAND_STATES, {
   accepted: ["running"],
@@ -219,4 +276,16 @@ const CONTROL_PLANE_COMMAND_AUTHORITY = defineTransitionAuthority(CONTROL_PLANE_
 
 export function isControlPlaneCommandTransitionAllowed(from: string, to: string) {
   return CONTROL_PLANE_COMMAND_AUTHORITY.permits(from, to);
+}
+
+export const CONTROL_PLANE_COMMAND_ATTEMPT_STATES = adminControlPlaneCommandAttemptStatusSchema.options;
+
+const CONTROL_PLANE_COMMAND_ATTEMPT_AUTHORITY = defineTransitionAuthority(CONTROL_PLANE_COMMAND_ATTEMPT_STATES, {
+  running: ["succeeded", "failed"],
+  succeeded: [],
+  failed: [],
+});
+
+export function isControlPlaneCommandAttemptTransitionAllowed(from: string, to: string) {
+  return CONTROL_PLANE_COMMAND_ATTEMPT_AUTHORITY.permits(from, to);
 }

@@ -7,6 +7,7 @@ import { POST as decideItem } from "@/app/api/v2/admin/creative/runs/[id]/items/
 import { POST as publishPlacement } from "@/app/api/v2/admin/creative/runs/[id]/placements/route";
 import { POST as verifyPlacement } from "@/app/api/v2/admin/creative/runs/[id]/placements/[placementId]/verification/route";
 import { prisma } from "@/server/lib/db";
+import { verifyCreativePlacement } from "./workflow";
 import {
   dispatchCreativeRetryOutbox,
   executeCreativeRetryCommand,
@@ -306,6 +307,31 @@ describe("Creative retry through verified placement", () => {
         renderedAssetMatches: true,
       },
     });
+    const terminalVerificationEffects = await Promise.all([
+      prisma.adminAuditLog.count({ where: { targetId: placementId, action: "creative.placement.verified" } }),
+      prisma.mainOutboxEvent.count({ where: { aggregateId: runId, eventType: { in: ["creative.placement.verified.v2", "creative.placement.verification_failed.v2"] } } }),
+    ]);
+    await expect(verifyCreativePlacement({
+      runId,
+      placementId,
+      actor: { id: adminId, role: "admin" },
+      expectedVersion: 7,
+      reason: "A passed verification is terminal and cannot be rewritten",
+      requestId: `creative-terminal-verification-${suffix}`,
+    })).rejects.toThrow("verification transition");
+    await expect(prisma.contentProductionBatch.findUniqueOrThrow({ where: { id: runId } })).resolves.toMatchObject({
+      workflowStage: "verification",
+      verificationState: "passed",
+      version: 7,
+    });
+    await expect(prisma.mediaAssetPlacement.findUniqueOrThrow({ where: { id: placementId } })).resolves.toMatchObject({
+      verificationState: "passed",
+      version: 2,
+    });
+    await expect(Promise.all([
+      prisma.adminAuditLog.count({ where: { targetId: placementId, action: "creative.placement.verified" } }),
+      prisma.mainOutboxEvent.count({ where: { aggregateId: runId, eventType: { in: ["creative.placement.verified.v2", "creative.placement.verification_failed.v2"] } } }),
+    ])).resolves.toEqual(terminalVerificationEffects);
     expect(await prisma.mediaAsset.findUniqueOrThrow({ where: { id: assetId } })).toMatchObject({ visibility: "unlisted" });
 
     const detailResponse = await getRun(request(`/api/v2/admin/creative/runs/${runId}`), {

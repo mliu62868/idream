@@ -17,6 +17,19 @@ export const adminVerificationStateSchema = z.enum([
   "failed",
   "overridden",
 ]);
+export const adminControlPlaneCommandStatusSchema = z.enum([
+  "accepted",
+  "running",
+  "verifying",
+  "succeeded",
+  "failed",
+  "cancelled",
+]);
+export const adminControlPlaneCommandAttemptStatusSchema = z.enum([
+  "running",
+  "succeeded",
+  "failed",
+]);
 
 export const adminEntityRefSchema = z
   .object({
@@ -183,7 +196,7 @@ export const adminCommandStatusSchema = z
     requestId: adminIdSchema,
     commandType: z.string().trim().min(1),
     target: adminEntityRefSchema,
-    status: z.enum(["accepted", "running", "verifying", "succeeded", "failed", "cancelled"]),
+    status: adminControlPlaneCommandStatusSchema,
     verificationState: adminVerificationStateSchema.optional(),
     needsReconciliation: z.boolean(),
     createdAt: adminIsoDateTimeSchema,

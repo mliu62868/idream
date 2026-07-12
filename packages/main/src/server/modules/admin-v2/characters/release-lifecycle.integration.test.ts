@@ -104,6 +104,34 @@ describe("Character Release proposal and review lifecycle", () => {
     expect(publishOutcomes.filter((outcome) => outcome.status === "succeeded")).toHaveLength(1);
     expect(publishOutcomes.filter((outcome) => outcome.status === "failed")).toHaveLength(1);
     await expect(prisma.characterServing.findUnique({ where: { characterId } })).resolves.toMatchObject({ state: "live", currentReleaseId: proposed.id, version: 2 });
+    await expect(prisma.characterProject.findUnique({ where: { id: projectId } })).resolves.toMatchObject({ phase: "live_management" });
+
+    await prisma.characterProject.update({ where: { id: projectId }, data: { phase: "qa" } });
+    const evidenceBeforeRejectedRetire = await Promise.all([
+      prisma.characterReleaseEvent.count({ where: { characterId } }),
+      prisma.adminAuditLog.count({ where: { actorId, action: "character.serving.retire.executed" } }),
+      prisma.mainOutboxEvent.count({ where: { aggregateId: proposed.id, eventType: "character.serving.retired.v2" } }),
+    ]);
+    const rejectedRetireRequest = new Request(`http://localhost/api/v2/admin/characters/${characterId}/commands/retire`, {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json", "idempotency-key": `retire-invalid-phase-${suffix}` },
+      body: JSON.stringify({ entityVersion: 2, reason: { code: "portfolio_retirement", summary: "Retire after explicit portfolio decision" }, confirmation: `${characterId}:retire` }),
+    });
+    const rejectedRetire = await changeCharacterServingState(rejectedRetireRequest, characterId, "retire");
+    const rejectedCommandId = (await rejectedRetire.json()).data.commandId as string;
+    await expect(executeCharacterReleaseCommand(prisma, { commandId: rejectedCommandId, workerId: `release-lifecycle-invalid-retire-${suffix}` })).resolves.toMatchObject({
+      status: "failed",
+      errorCode: "project_phase_conflict",
+    });
+    await expect(prisma.characterProject.findUnique({ where: { id: projectId } })).resolves.toMatchObject({ phase: "qa", activeKey: `official:${characterId}` });
+    await expect(prisma.characterServing.findUnique({ where: { characterId } })).resolves.toMatchObject({ state: "live", version: 2 });
+    await expect(Promise.all([
+      prisma.characterReleaseEvent.count({ where: { characterId } }),
+      prisma.adminAuditLog.count({ where: { actorId, action: "character.serving.retire.executed" } }),
+      prisma.mainOutboxEvent.count({ where: { aggregateId: proposed.id, eventType: "character.serving.retired.v2" } }),
+    ])).resolves.toEqual(evidenceBeforeRejectedRetire);
+
+    await prisma.characterProject.update({ where: { id: projectId }, data: { phase: "live_management" } });
     const retireRequest = new Request(`http://localhost/api/v2/admin/characters/${characterId}/commands/retire`, {
       method: "POST",
       headers: { ...headers, "content-type": "application/json", "idempotency-key": `retire-${suffix}` },
