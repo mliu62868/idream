@@ -54,6 +54,70 @@ let running = true;
 let lastReconcileAt = 0;
 let routeQualificationCursor: string | null = null;
 
+interface AdminCommandChaosConfig {
+  readonly commandId: string;
+  readonly leaseMs: number;
+  readonly pauseAfterClaim: boolean;
+}
+
+function adminCommandChaosConfig(): AdminCommandChaosConfig | null {
+  const mode = process.env.ADMIN_CHAOS_COMMAND_MODE?.trim();
+  const commandId = process.env.ADMIN_CHAOS_COMMAND_ID?.trim();
+  const pauseCommandId = process.env.ADMIN_CHAOS_COMMAND_PAUSE_AFTER_CLAIM_ID?.trim();
+  const leaseMs = Number(process.env.ADMIN_CHAOS_COMMAND_LEASE_MS);
+  const hasChaosInput = Boolean(mode || commandId || pauseCommandId || process.env.ADMIN_CHAOS_COMMAND_LEASE_MS);
+  if (!hasChaosInput) return null;
+  if (env.APP_ENV !== "test") {
+    throw new Error("ADMIN_CHAOS_COMMAND_* is restricted to APP_ENV=test");
+  }
+  if (mode !== "process_kill_recovery") {
+    throw new Error("ADMIN_CHAOS_COMMAND_MODE must be process_kill_recovery");
+  }
+  if (!commandId) throw new Error("ADMIN_CHAOS_COMMAND_ID is required in command chaos mode");
+  if (!Number.isSafeInteger(leaseMs) || leaseMs <= 0) {
+    throw new Error("ADMIN_CHAOS_COMMAND_LEASE_MS must be a positive integer");
+  }
+  if (pauseCommandId && pauseCommandId !== commandId) {
+    throw new Error("ADMIN_CHAOS_COMMAND_PAUSE_AFTER_CLAIM_ID must match ADMIN_CHAOS_COMMAND_ID");
+  }
+  return { commandId, leaseMs, pauseAfterClaim: pauseCommandId === commandId };
+}
+
+async function pauseAfterClaimForAdminChaos(commandId: string) {
+  // The claim transaction is durable, while the domain transaction below has
+  // not started. A process kill here exercises lease recovery without a
+  // partially committed CharacterServing transition.
+  process.stdout.write(`ADMIN_CHAOS_COMMAND_AFTER_CLAIM_READY ${commandId}\n`);
+  await new Promise<void>(() => {
+    setInterval(() => undefined, 60_000);
+  });
+}
+
+async function executeAdminCommand(
+  db: PrismaClient,
+  command: { readonly id: string; readonly commandType: string },
+  input: {
+    readonly workerId: string;
+    readonly now: Date;
+    readonly leaseMs?: number;
+    readonly afterClaim?: (commandId: string) => Promise<void>;
+  },
+) {
+  return command.commandType === "creative.run.retry_failed"
+    ? executeCreativeRetryCommand(db, { commandId: command.id, workerId: input.workerId })
+    : command.commandType === "incident.action_plan.execute"
+    ? executeIncidentActionPlanCommand(db, { commandId: command.id, workerId: input.workerId })
+    : CHARACTER_COMMAND_TYPES.has(command.commandType)
+    ? executeCharacterReleaseCommand(db, {
+        commandId: command.id,
+        workerId: input.workerId,
+        now: input.now,
+        leaseMs: input.leaseMs,
+        afterClaim: input.afterClaim,
+      })
+    : executeAcceptedAdminCommand(command.id);
+}
+
 export async function drainAdminCommands(
   db: PrismaClient,
   input: {
@@ -64,8 +128,6 @@ export async function drainAdminCommands(
     readonly routeQualificationPolicyVersion?: string;
     readonly routeQualificationEvaluatorVersion?: string;
     readonly routeQualificationReleaseIds?: readonly string[];
-    readonly commandIds?: readonly string[];
-    readonly commandLeaseMs?: number;
   },
 ) {
   const now = input.now ?? new Date();
@@ -103,7 +165,6 @@ export async function drainAdminCommands(
   }
   const commands = await db.controlPlaneCommand.findMany({
     where: {
-      id: input.commandIds ? { in: [...input.commandIds] } : undefined,
       status: "accepted",
       commandType: { in: [...COMMAND_TYPES] },
     },
@@ -115,18 +176,7 @@ export async function drainAdminCommands(
   let failed = 0;
   let verifying = 0;
   for (const command of commands) {
-    const result = command.commandType === "creative.run.retry_failed"
-      ? await executeCreativeRetryCommand(db, { commandId: command.id, workerId: input.workerId })
-      : command.commandType === "incident.action_plan.execute"
-      ? await executeIncidentActionPlanCommand(db, { commandId: command.id, workerId: input.workerId })
-      : CHARACTER_COMMAND_TYPES.has(command.commandType)
-      ? await executeCharacterReleaseCommand(db, {
-          commandId: command.id,
-          workerId: input.workerId,
-          now,
-          leaseMs: input.commandLeaseMs,
-        })
-      : await executeAcceptedAdminCommand(command.id);
+    const result = await executeAdminCommand(db, command, { workerId: input.workerId, now });
     if (result.status === "succeeded") succeeded += 1;
     else if (["accepted", "running", "verifying"].includes(result.status)) verifying += 1;
     else failed += 1;
@@ -150,28 +200,68 @@ export async function drainAdminCommands(
   };
 }
 
+export async function drainTargetAdminCommand(
+  db: PrismaClient,
+  input: {
+    readonly commandId: string;
+    readonly workerId: string;
+    readonly leaseMs: number;
+    readonly afterClaim?: (commandId: string) => Promise<void>;
+    readonly now?: Date;
+  },
+) {
+  const now = input.now ?? new Date();
+  const command = await db.controlPlaneCommand.findFirst({
+    where: {
+      id: input.commandId,
+      status: "accepted",
+      commandType: { in: [...COMMAND_TYPES] },
+    },
+    select: { id: true, commandType: true },
+  });
+  if (!command) return { examined: 0, succeeded: 0, failed: 0, verifying: 0 };
+  const result = await executeAdminCommand(db, command, {
+    workerId: input.workerId,
+    now,
+    leaseMs: input.leaseMs,
+    afterClaim: input.afterClaim,
+  });
+  return {
+    examined: 1,
+    succeeded: result.status === "succeeded" ? 1 : 0,
+    failed: ["accepted", "running", "verifying", "succeeded"].includes(result.status) ? 0 : 1,
+    verifying: ["accepted", "running", "verifying"].includes(result.status) ? 1 : 0,
+  };
+}
+
 export const drainCharacterReleaseCommands = drainAdminCommands;
 
 export async function runAdminCommandWorkerLoop() {
   const workerId = `admin-command-worker-${randomUUID()}`;
-  const chaosCommandId = process.env.ADMIN_CHAOS_COMMAND_ID?.trim() || undefined;
-  const chaosLeaseMsInput = Number(process.env.ADMIN_CHAOS_COMMAND_LEASE_MS);
-  const chaosLeaseMs = Number.isSafeInteger(chaosLeaseMsInput) && chaosLeaseMsInput > 0
-    ? chaosLeaseMsInput
-    : undefined;
+  const chaos = adminCommandChaosConfig();
   logger.info({ workerId }, "admin command worker started");
   while (running) {
     let processed = 0;
     try {
-      const result = await drainAdminCommands(prisma, {
-        workerId,
-        commandIds: chaosCommandId ? [chaosCommandId] : undefined,
-        commandLeaseMs: chaosLeaseMs,
-        routeQualificationReleaseIds: chaosCommandId ? [] : undefined,
-      });
-      processed = result.examined + result.releaseMonitors.claimed + result.routeQualifications.examined;
       const now = Date.now();
-      if (now - lastReconcileAt >= RECONCILE_INTERVAL_MS) {
+      if (chaos) {
+        const result = await drainTargetAdminCommand(prisma, {
+          commandId: chaos.commandId,
+          workerId,
+          leaseMs: chaos.leaseMs,
+          afterClaim: chaos.pauseAfterClaim ? pauseAfterClaimForAdminChaos : undefined,
+          now: new Date(now),
+        });
+        processed = result.examined;
+        const reconciled = await reconcileExpiredCommandLeases(prisma, new Date(now), {
+          commandIds: [chaos.commandId],
+        });
+        if (reconciled.examined > 0) logger.info(reconciled, "admin command lease reconciled");
+      } else {
+        const result = await drainAdminCommands(prisma, { workerId });
+        processed = result.examined + result.releaseMonitors.claimed + result.routeQualifications.examined;
+      }
+      if (!chaos && now - lastReconcileAt >= RECONCILE_INTERVAL_MS) {
         lastReconcileAt = now;
         const reconciled = await reconcileExpiredCommandLeases(prisma, new Date(now));
         if (reconciled.examined > 0) logger.info(reconciled, "admin command leases reconciled");

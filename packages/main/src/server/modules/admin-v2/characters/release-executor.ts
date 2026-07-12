@@ -32,6 +32,7 @@ interface ExecuteReleaseCommandInput {
   readonly now?: Date;
   readonly leaseMs?: number;
   readonly policyVersion?: string;
+  readonly afterClaim?: (commandId: string) => Promise<void>;
 }
 
 interface ReleaseCommandResult {
@@ -39,17 +40,6 @@ interface ReleaseCommandResult {
   readonly commandId: string;
   readonly releaseId: string;
   readonly errorCode?: string;
-}
-
-async function pauseAfterClaimForAdminChaos(commandId: string) {
-  if (process.env.ADMIN_CHAOS_COMMAND_PAUSE_AFTER_CLAIM_ID !== commandId) return;
-  // The claim transaction is durable, while the domain transaction below has
-  // not started. A process kill here exercises lease recovery without a
-  // partially committed CharacterServing transition.
-  process.stdout.write(`ADMIN_CHAOS_COMMAND_AFTER_CLAIM_READY ${commandId}\n`);
-  await new Promise<void>(() => {
-    setInterval(() => undefined, 60_000);
-  });
 }
 
 interface ValidationCheck {
@@ -1087,7 +1077,7 @@ export async function executeCharacterReleaseCommand(
     };
   }
 
-  await pauseAfterClaimForAdminChaos(claimed.id);
+  await input.afterClaim?.(claimed.id);
 
   try {
     return await db.$transaction(async (tx) => {

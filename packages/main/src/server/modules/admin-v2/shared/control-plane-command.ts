@@ -281,9 +281,14 @@ export async function claimControlPlaneCommand(
   });
 }
 
-export async function reconcileExpiredCommandLeases(db: PrismaClient, now = new Date()) {
+export async function reconcileExpiredCommandLeases(
+  db: PrismaClient,
+  now = new Date(),
+  input: { readonly commandIds?: readonly string[] } = {},
+) {
   const expired = await db.controlPlaneCommand.findMany({
     where: {
+      id: input.commandIds ? { in: [...input.commandIds] } : undefined,
       status: { in: ["running", "verifying"] },
       leaseExpiresAt: { lt: now },
     },

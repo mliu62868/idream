@@ -15,13 +15,30 @@ interface SpawnedWorker {
   readonly stderr: () => string;
 }
 
-function waitForExit(child: ChildProcess) {
+function waitForExit(child: ChildProcess, timeoutMs = 5_000) {
   if (child.exitCode !== null || child.signalCode !== null) {
     return Promise.resolve({ code: child.exitCode, signal: child.signalCode });
   }
   return new Promise<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("exit", (code, signal) => resolve({ code, signal }));
+    const cleanup = () => {
+      clearTimeout(timeout);
+      child.off("error", onError);
+      child.off("exit", onExit);
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      cleanup();
+      resolve({ code, signal });
+    };
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error(`admin command worker ${child.pid ?? "unknown"} did not exit within ${timeoutMs}ms`));
+    }, timeoutMs);
+    child.once("error", onError);
+    child.once("exit", onExit);
   });
 }
 
@@ -29,11 +46,24 @@ async function killAndWait(child: ChildProcess, signal: NodeJS.Signals) {
   if (child.exitCode !== null || child.signalCode !== null) {
     return { code: child.exitCode, signal: child.signalCode };
   }
-  const exited = waitForExit(child);
+  const exited = waitForExit(child, signal === "SIGTERM" ? 1_000 : 5_000);
   if (!child.kill(signal)) {
+    void exited.catch(() => undefined);
     throw new Error(`failed to ${signal} admin command worker ${child.pid ?? "unknown"}`);
   }
-  return exited;
+  try {
+    return await exited;
+  } catch (error) {
+    if (signal !== "SIGTERM" || child.exitCode !== null || child.signalCode !== null) throw error;
+    const killed = waitForExit(child, 5_000);
+    if (!child.kill("SIGKILL")) {
+      void killed.catch(() => undefined);
+      throw new Error(`failed to SIGKILL admin command worker ${child.pid ?? "unknown"} after SIGTERM timeout`, {
+        cause: error,
+      });
+    }
+    return killed;
+  }
 }
 
 function spawnWorker(commandId: string, options: { readonly pauseAfterClaim: boolean }): SpawnedWorker {
@@ -42,6 +72,7 @@ function spawnWorker(commandId: string, options: { readonly pauseAfterClaim: boo
     env: {
       ...process.env,
       LOG_LEVEL: "silent",
+      ADMIN_CHAOS_COMMAND_MODE: "process_kill_recovery",
       ADMIN_CHAOS_COMMAND_ID: commandId,
       ADMIN_CHAOS_COMMAND_LEASE_MS: "250",
       ...(options.pauseAfterClaim
@@ -93,18 +124,28 @@ describe.runIf(process.env.RUN_ADMIN_REAL_COMMAND_WORKER_CHAOS === "1")(
     const revisionId = `${prefix}-revision`;
     const releaseId = `${prefix}-release`;
     const requestId = `${prefix}-request`;
+    const unrelatedCommandId = `${prefix}-unrelated-command`;
     const workers = new Set<ChildProcess>();
     let commandId: string | null = null;
 
     afterAll(async () => {
+      const cleanupErrors: unknown[] = [];
       for (const child of workers) {
         if (child.exitCode === null && child.signalCode === null) {
-          await killAndWait(child, "SIGKILL");
+          try {
+            await killAndWait(child, "SIGKILL");
+          } catch (error) {
+            cleanupErrors.push(error);
+          }
         }
       }
       if (commandId) {
-        await prisma.controlPlaneCommandAttempt.deleteMany({ where: { commandId } });
-        await prisma.controlPlaneCommand.deleteMany({ where: { id: commandId } });
+        await prisma.controlPlaneCommandAttempt.deleteMany({
+          where: { commandId: { in: [commandId, unrelatedCommandId] } },
+        });
+        await prisma.controlPlaneCommand.deleteMany({
+          where: { id: { in: [commandId, unrelatedCommandId] } },
+        });
       }
       await prisma.characterReleaseEvent.deleteMany({ where: { characterId } });
       await prisma.adminAuditLog.deleteMany({ where: { actorId } });
@@ -118,6 +159,9 @@ describe.runIf(process.env.RUN_ADMIN_REAL_COMMAND_WORKER_CHAOS === "1")(
       await prisma.character.deleteMany({ where: { id: characterId } });
       await prisma.user.deleteMany({ where: { id: actorId } });
       await prisma.$disconnect();
+      if (cleanupErrors.length > 0) {
+        throw new AggregateError(cleanupErrors, "failed to stop all admin command worker children");
+      }
     });
 
     it("reclaims a killed post-claim pause and commits pause state plus evidence exactly once", async () => {
@@ -197,6 +241,36 @@ describe.runIf(process.env.RUN_ADMIN_REAL_COMMAND_WORKER_CHAOS === "1")(
         requestId,
       });
       commandId = accepted.commandId;
+      await prisma.controlPlaneCommand.create({
+        data: {
+          id: unrelatedCommandId,
+          scope: `${prefix}:unrelated`,
+          idempotencyKey: `${prefix}-unrelated`,
+          commandType: "character.serving.pause",
+          targetType: "character_serving",
+          targetId: `${prefix}-unrelated-target`,
+          actorId,
+          requestId: `${prefix}-unrelated-request`,
+          requestHash: `${prefix}-unrelated-hash`,
+          requestPayload: {},
+          expectedVersion: 1,
+          retryMode: "idempotent",
+          status: "running",
+          leaseOwner: `${prefix}-dead-worker`,
+          leaseExpiresAt: new Date("2026-07-11T00:00:00.000Z"),
+          heartbeatAt: new Date("2026-07-11T00:00:00.000Z"),
+          attemptCount: 1,
+          maxAttempts: 3,
+        },
+      });
+      await prisma.controlPlaneCommandAttempt.create({
+        data: {
+          commandId: unrelatedCommandId,
+          attemptNo: 1,
+          status: "running",
+          startedAt: new Date("2026-07-11T00:00:00.000Z"),
+        },
+      });
 
       const fault = spawnWorker(commandId, { pauseAfterClaim: true });
       workers.add(fault.child);
@@ -251,6 +325,19 @@ describe.runIf(process.env.RUN_ADMIN_REAL_COMMAND_WORKER_CHAOS === "1")(
         status: "archived",
         visibility: "private",
       });
+      await expect(prisma.characterRelease.findUnique({ where: { id: releaseId } })).resolves.toMatchObject({
+        readiness: "ready",
+        version: 1,
+      });
+      await expect(prisma.releaseMonitor.count({ where: { releaseId } })).resolves.toBe(0);
+      await expect(prisma.controlPlaneCommand.findUnique({ where: { id: unrelatedCommandId } })).resolves.toMatchObject({
+        status: "running",
+        leaseOwner: `${prefix}-dead-worker`,
+        attemptCount: 1,
+      });
+      await expect(prisma.controlPlaneCommandAttempt.findUnique({
+        where: { commandId_attemptNo: { commandId: unrelatedCommandId, attemptNo: 1 } },
+      })).resolves.toMatchObject({ status: "running", finishedAt: null });
       await expect(prisma.adminAuditLog.count({
         where: { actorId, action: "character.serving.pause.executed", targetId: releaseId },
       })).resolves.toBe(1);
