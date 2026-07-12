@@ -469,6 +469,21 @@ describe("official character CMS", () => {
       },
     });
     const routeFingerprint = `${P}publish-route`;
+    const qaRunId = `${P}publish-qa-run`;
+    const qaEvidenceHash = `${P}publish-qa-evidence`;
+    await prisma.characterQaRun.create({
+      data: {
+        id: qaRunId,
+        characterId: id,
+        projectId: project.id,
+        characterContentVersionId: contentVersion.id,
+        projectVersion: project.version,
+        ownerId: admin,
+        status: "passed",
+        checks: [],
+        evidenceHash: qaEvidenceHash,
+      },
+    });
     await prisma.generationRouteQualification.create({
       data: {
         routeFingerprint,
@@ -492,7 +507,7 @@ describe("official character CMS", () => {
       generationProfileVersion: 1,
       workflowKey: "identity",
       workflowVersion: 1,
-      characterQa: { status: "passed", evidenceRef: `${P}publish-qa` },
+      characterQa: { status: "passed", qaRunId, evidenceHash: qaEvidenceHash },
     };
     const releasePlacementManifest = {
       placements: [

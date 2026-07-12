@@ -94,7 +94,7 @@ describe("Generation failure to Incident production seam", () => {
     });
     expect(await prisma.opsIncidentOccurrence.count({ where: { attemptId: completeAttemptId } })).toBe(0);
 
-    await expect(dispatchGenerationIncidentCorrelation(prisma)).resolves.toMatchObject({
+    await expect(dispatchGenerationIncidentCorrelation(prisma, { outboxIds: [outboxId] })).resolves.toMatchObject({
       correlated: 1,
       unavailable: 0,
       failed: 0,
@@ -110,7 +110,7 @@ describe("Generation failure to Incident production seam", () => {
       status: "delivered",
       attempts: 1,
     });
-    await expect(dispatchGenerationIncidentCorrelation(prisma)).resolves.toMatchObject({ examined: 0 });
+    await expect(dispatchGenerationIncidentCorrelation(prisma, { outboxIds: [outboxId] })).resolves.toMatchObject({ examined: 0 });
   });
 
   it("records unavailable evidence once instead of inventing or endlessly retrying an Incident", async () => {
@@ -127,7 +127,9 @@ describe("Generation failure to Incident production seam", () => {
       retryability: "operator_retry",
     }));
 
-    await expect(dispatchGenerationIncidentCorrelation(prisma)).resolves.toMatchObject({
+    await expect(dispatchGenerationIncidentCorrelation(prisma, {
+      outboxIds: [`generation_incident_correlation_${incompleteAttemptId}`],
+    })).resolves.toMatchObject({
       correlated: 0,
       unavailable: 1,
       failed: 0,

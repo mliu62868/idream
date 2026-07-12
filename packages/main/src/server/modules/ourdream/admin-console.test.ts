@@ -2550,14 +2550,36 @@ describe("admin writes are audited", () => {
     expectError(wrongAdjustConfirmation, 400, "bad_request");
     expect(await dreamcoinBalance(target)).toBe(0);
 
+    const adjustmentKey = `${P}billing-adjustment-idempotency`;
     const adjust = await api("POST", "admin/billing/adjustments", {
       userId: admin,
       role: "admin",
+      headers: { "idempotency-key": adjustmentKey },
       body: { userId: target, delta: 42, reason: "support credit", confirmation: `${target}:42` },
     });
     expectOk(adjust);
     expect(await dreamcoinBalance(target)).toBe(42);
     expect(adjust.data.ledgerEntry.reason).toBe("admin_adjust");
+    const replay = await api("POST", "admin/billing/adjustments", {
+      userId: admin,
+      role: "admin",
+      headers: { "idempotency-key": adjustmentKey },
+      body: { userId: target, delta: 42, reason: "support credit replay", confirmation: `${target}:42` },
+    });
+    expectOk(replay);
+    expect(replay.data.replayed).toBe(true);
+    expect(await dreamcoinBalance(target)).toBe(42);
+    await expect(prisma.dreamcoinLedger.count({ where: { idempotencyKey: adjustmentKey } })).resolves.toBe(1);
+    await expect(prisma.adminAuditLog.count({
+      where: { action: "billing.ledger.adjust", targetId: target },
+    })).resolves.toBe(1);
+    const conflict = await api("POST", "admin/billing/adjustments", {
+      userId: admin,
+      role: "admin",
+      headers: { "idempotency-key": adjustmentKey },
+      body: { userId: target, delta: 43, reason: "conflicting replay", confirmation: `${target}:43` },
+    });
+    expectError(conflict, 409, "conflict");
 
     const hardPolicy = await api("PATCH", "admin/feature-flags/age_gate_required", {
       userId: admin,

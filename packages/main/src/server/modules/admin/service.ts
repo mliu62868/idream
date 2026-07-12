@@ -3342,32 +3342,56 @@ async function billingReconciliation(request: Request) {
 async function billingAdjustment(request: Request) {
   const actor = await actorWithPermission(request, "billing.ledger.adjust");
   const body = ledgerAdjustmentSchema.parse(await jsonBody(request));
+  const idempotencyKey = request.headers.get("idempotency-key")?.trim();
+  if (!idempotencyKey) throw Errors.badRequest("Idempotency-Key is required for ledger adjustments");
   const expectedConfirmation = ledgerAdjustmentConfirmation(body.userId, body.delta);
   if (body.confirmation !== expectedConfirmation) {
     throw Errors.badRequest("Confirmation did not match ledger adjustment target");
   }
-  const entry = await prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
+    const replay = await tx.dreamcoinLedger.findUnique({ where: { idempotencyKey } });
+    if (replay) {
+      if (replay.userId !== body.userId || replay.delta !== body.delta || replay.reason !== "admin_adjust") {
+        throw Errors.conflict("Idempotency-Key was already used for a different ledger adjustment");
+      }
+      return { entry: replay, replayed: true };
+    }
     const user = await tx.user.findUnique({ where: { id: body.userId } });
     if (!user) throw Errors.notFound("User not found");
     // 高危：大额 ledger 调整在硬门控开启时需双人审批凭据。
     if (Math.abs(body.delta) >= LEDGER_APPROVAL_THRESHOLD) {
       await enforceApproval("billing.ledger.adjust", body.userId, tx);
     }
-    return appendLedger(tx, body.userId, body.delta, "admin_adjust", body.sourceId ?? randomUUID());
+    const entry = await appendLedger(
+      tx,
+      body.userId,
+      body.delta,
+      "admin_adjust",
+      body.sourceId ?? `admin-adjust:${actor.id}:${idempotencyKey}`,
+      idempotencyKey,
+    );
+    await tx.adminAuditLog.create({
+      data: {
+        actorId: actor.id,
+        actorRole: actor.role,
+        action: "billing.ledger.adjust",
+        targetType: "user",
+        targetId: body.userId,
+        reason: body.reason,
+        after: toInputJson({
+          ledgerEntryId: entry.id,
+          delta: entry.delta,
+          balanceAfter: entry.balanceAfter,
+          sourceId: entry.sourceId,
+          idempotencyKey,
+        }),
+        requestId: request.headers.get("x-request-id") ?? randomUUID(),
+        ipHash: hashHeader(request.headers.get("x-forwarded-for") ?? request.headers.get("x-real-ip")),
+      },
+    });
+    return { entry, replayed: false };
   });
-  await writeAudit(request, actor, {
-    action: "billing.ledger.adjust",
-    targetType: "user",
-    targetId: body.userId,
-    reason: body.reason,
-    after: {
-      ledgerEntryId: entry.id,
-      delta: entry.delta,
-      balanceAfter: entry.balanceAfter,
-      sourceId: entry.sourceId,
-    },
-  });
-  return ok({ ledgerEntry: entry });
+  return ok({ ledgerEntry: result.entry, replayed: result.replayed });
 }
 
 function ledgerAdjustmentConfirmation(userId: string, delta: number) {
@@ -4168,17 +4192,24 @@ async function setCharacterVisibility(request: Request, id: string) {
   }
   const before = await prisma.character.findUnique({ where: { id } });
   if (!before) throw Errors.notFound("Character not found");
-  const after = await prisma.character.update({
-    where: { id },
-    data: { visibility: body.visibility },
-  });
-  await writeAudit(request, actor, {
-    action: "content.visibility.write",
-    targetType: "character",
-    targetId: id,
-    reason: body.reason,
-    before: { visibility: before.visibility },
-    after: { visibility: after.visibility },
+  if (before.source === "official") {
+    throw Errors.conflict("Official Character visibility is controlled by Character Release and Serving commands", {
+      repairDeepLink: `/admin/characters/${id}?tab=release`,
+    });
+  }
+  const after = await prisma.$transaction(async (tx) => {
+    const updated = await tx.character.update({ where: { id }, data: { visibility: body.visibility } });
+    await tx.adminAuditLog.create({
+      data: adminAuditData(request, actor, {
+        action: "content.visibility.write",
+        targetType: "character",
+        targetId: id,
+        reason: body.reason,
+        before: { visibility: before.visibility },
+        after: { visibility: updated.visibility },
+      }),
+    });
+    return updated;
   });
   return ok({ character: { id: after.id, visibility: after.visibility, status: after.status } });
 }
@@ -4195,17 +4226,24 @@ async function setCharacterStatus(request: Request, id: string) {
   }
   const before = await prisma.character.findUnique({ where: { id } });
   if (!before) throw Errors.notFound("Character not found");
-  const after = await prisma.character.update({
-    where: { id },
-    data: { status: body.status },
-  });
-  await writeAudit(request, actor, {
-    action: "content.status.write",
-    targetType: "character",
-    targetId: id,
-    reason: body.reason,
-    before: { status: before.status },
-    after: { status: after.status },
+  if (before.source === "official") {
+    throw Errors.conflict("Official Character status is controlled by Character Release and Serving commands", {
+      repairDeepLink: `/admin/characters/${id}?tab=release`,
+    });
+  }
+  const after = await prisma.$transaction(async (tx) => {
+    const updated = await tx.character.update({ where: { id }, data: { status: body.status } });
+    await tx.adminAuditLog.create({
+      data: adminAuditData(request, actor, {
+        action: "content.status.write",
+        targetType: "character",
+        targetId: id,
+        reason: body.reason,
+        before: { status: before.status },
+        after: { status: updated.status },
+      }),
+    });
+    return updated;
   });
   return ok({ character: { id: after.id, visibility: after.visibility, status: after.status } });
 }
@@ -4615,20 +4653,35 @@ export async function writeAudit(
   },
 ) {
   return prisma.adminAuditLog.create({
-    data: {
-      actorId: actor.id,
-      actorRole: actor.role,
-      action: input.action,
-      targetType: input.targetType,
-      targetId: input.targetId,
-      reason: input.reason,
-      before: input.before === undefined ? undefined : toInputJson(stripSensitive(input.before)),
-      after: input.after === undefined ? undefined : toInputJson(stripSensitive(input.after)),
-      requestId: request.headers.get("x-request-id") ?? randomUUID(),
-      ipHash: hashHeader(request.headers.get("x-forwarded-for") ?? request.headers.get("x-real-ip")),
-      userAgent: request.headers.get("user-agent") ?? undefined,
-    },
+    data: adminAuditData(request, actor, input),
   });
+}
+
+function adminAuditData(
+  request: Request,
+  actor: AdminActor,
+  input: {
+    action: string;
+    targetType: string;
+    targetId: string;
+    reason?: string;
+    before?: unknown;
+    after?: unknown;
+  },
+) {
+  return {
+    actorId: actor.id,
+    actorRole: actor.role,
+    action: input.action,
+    targetType: input.targetType,
+    targetId: input.targetId,
+    reason: input.reason,
+    before: input.before === undefined ? undefined : toInputJson(stripSensitive(input.before)),
+    after: input.after === undefined ? undefined : toInputJson(stripSensitive(input.after)),
+    requestId: request.headers.get("x-request-id") ?? randomUUID(),
+    ipHash: hashHeader(request.headers.get("x-forwarded-for") ?? request.headers.get("x-real-ip")),
+    userAgent: request.headers.get("user-agent") ?? undefined,
+  };
 }
 
 async function appendAdminGenerationEvent(

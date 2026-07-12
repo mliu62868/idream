@@ -245,7 +245,7 @@ export async function executeCreativeRetryCommand(
 
 export async function dispatchCreativeRetryOutbox(
   db: PrismaClient,
-  input: { readonly limit?: number } = {},
+  input: { readonly limit?: number; readonly outboxIds?: readonly string[] } = {},
 ) {
   const rows = await db.mainOutboxEvent.findMany({
     where: {
@@ -257,6 +257,7 @@ export async function dispatchCreativeRetryOutbox(
       ] },
       status: { in: ["pending", "dispatched"] },
       nextRunAt: { lte: new Date() },
+      ...(input.outboxIds ? { id: { in: [...input.outboxIds] } } : {}),
     },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     take: Math.min(100, Math.max(1, input.limit ?? 25)),

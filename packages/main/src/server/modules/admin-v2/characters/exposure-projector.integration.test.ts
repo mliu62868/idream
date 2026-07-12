@@ -25,7 +25,7 @@ describe("Character exposure v2 attribution projector", () => {
       environment: "production",
       dataClass: "customer",
       trustClass: "typed_client",
-      actor: { isInternal: false },
+      actor: { userId: `exposure-user-${suffix}`, isInternal: false },
       context: {},
       props,
     };
@@ -48,7 +48,7 @@ describe("Character exposure v2 attribution projector", () => {
       environment: "production",
       dataClass: "customer",
       trustClass: "canonical",
-      actor: { isInternal: false },
+      actor: { userId: `exposure-user-${suffix}`, isInternal: false },
       context: {},
       props: {
         exchangeId: `exposure-exchange-${suffix}-${index}`,

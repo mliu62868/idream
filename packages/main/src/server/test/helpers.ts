@@ -63,6 +63,13 @@ export async function api(
   if (options.userId) headers["x-idream-user-id"] = options.userId;
   if (options.role) headers["x-idream-role"] = options.role;
   if (options.anonymousId) headers["x-idream-anonymous-id"] = options.anonymousId;
+  if (
+    path.startsWith("admin/") &&
+    ["POST", "PATCH", "PUT"].includes(method) &&
+    !headers["idempotency-key"]
+  ) {
+    headers["idempotency-key"] = crypto.randomUUID();
+  }
 
   const cookies: string[] = [];
   if (options.cookie) cookies.push(options.cookie);

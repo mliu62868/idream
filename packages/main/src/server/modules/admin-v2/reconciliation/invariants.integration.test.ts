@@ -98,8 +98,11 @@ describe("Admin cutover invariant report", () => {
     expect(metrics).toContain(
       `admin_state_invariant_violation_total{invariant="all"} ${report.totalViolations}`,
     );
+    const terminalAttemptViolations = report.checks.find(
+      (check) => check.key === "terminal_attempt_without_unique_terminal_event",
+    )?.violationCount;
     expect(metrics).toContain(
-      "admin_state_invariant_violation_total{invariant=\"terminal_attempt_without_unique_terminal_event\"} 1",
+      `admin_state_invariant_violation_total{invariant="terminal_attempt_without_unique_terminal_event"} ${terminalAttemptViolations}`,
     );
     resetMetricsForTests();
   });

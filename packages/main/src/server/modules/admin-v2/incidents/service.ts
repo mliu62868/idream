@@ -208,13 +208,14 @@ export async function correlateFailedGenerationAttempt(
 
 export async function dispatchGenerationIncidentCorrelation(
   db: PrismaClient,
-  input: { readonly limit?: number } = {},
+  input: { readonly limit?: number; readonly outboxIds?: readonly string[] } = {},
 ) {
   const rows = await db.mainOutboxEvent.findMany({
     where: {
       eventType: "generation.incident.correlate.v2",
       status: { in: ["pending", "dispatched"] },
       nextRunAt: { lte: new Date() },
+      ...(input.outboxIds ? { id: { in: [...input.outboxIds] } } : {}),
     },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     take: Math.min(100, Math.max(1, input.limit ?? 25)),

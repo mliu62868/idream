@@ -284,6 +284,7 @@ type PendingAction = {
   method: "POST" | "PATCH";
   confirmText: string;
   reasonRequired: boolean;
+  idempotencyKey?: string;
   review?: "image_consistency";
   verification?: ProfileVerificationSummary;
   body: (
@@ -753,7 +754,10 @@ export function AdminConsoleClient({
     try {
       const response = await fetch(pendingAction.endpoint, {
         method: pendingAction.method,
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          ...(pendingAction.idempotencyKey ? { "idempotency-key": pendingAction.idempotencyKey } : {}),
+        },
         body: JSON.stringify(pendingAction.body(reason, confirmation, actionReview)),
       });
       const payload = (await response.json()) as ApiEnvelope<unknown>;
@@ -4737,6 +4741,7 @@ export function UsersView({
                 title: `${permissionForm.effect} ${permissionForm.permissionKey}`,
                 endpoint: `/api/v1/admin/users/${targetUserId}/permissions`,
                 method: "POST",
+                idempotencyKey: crypto.randomUUID(),
                 confirmText: confirmationTarget,
                 reasonRequired: true,
                 body: (actionReason, actionConfirmation) => ({

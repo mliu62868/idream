@@ -189,7 +189,10 @@ describe("Creative retry through verified placement", () => {
       verificationState: "verifying",
       version: 3,
     });
-    expect(await dispatchCreativeRetryOutbox(prisma, { limit: 10 })).toMatchObject({ delivered: 1, failed: 0 });
+    expect(await dispatchCreativeRetryOutbox(prisma, {
+      limit: 10,
+      outboxIds: [`creative_retry_${commandId}_${itemId}`],
+    })).toMatchObject({ delivered: 1, failed: 0 });
     expect(await jobQueue.getByDedupeKey("ai.image.generate", `generation:${jobId}:attempt:2`)).toMatchObject({
       payload: expect.objectContaining({
         generationJobId: jobId,
