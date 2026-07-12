@@ -125,6 +125,7 @@ describe("content merchandising commands", () => {
               "admin.content.featured_updated.v2",
             ],
           },
+          payload: { path: ["actorId"], equals: actorId },
         },
       }),
     ).resolves.toBe(2);
