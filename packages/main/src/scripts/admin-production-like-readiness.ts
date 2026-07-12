@@ -10,6 +10,7 @@ import {
 const CASES = 100_000;
 const JOBS = 100_000;
 const EVENTS = 1_000_000;
+const INCIDENTS = 100_000;
 const ITERATIONS = 7;
 const ACTOR_ID = "readiness-today-admin";
 const NEEDLE_CASE_ID = `case-${CASES}`;
@@ -28,6 +29,7 @@ async function createProductionShape(tx: Prisma.TransactionClient) {
   const tables = [
     "admin_cases",
     "ops_incidents",
+    "ops_incident_occurrences",
     "control_plane_commands",
     "character_projects",
     "character_releases",
@@ -52,9 +54,9 @@ async function createProductionShape(tx: Prisma.TransactionClient) {
        "ownerId", "slaDueAt", "verificationState", "createdAt", "updatedAt")
     SELECT
       'case-' || i::text,
-      'content_report',
-      'character',
-      'target-' || i::text,
+      CASE WHEN i = 1 THEN 'support_request' ELSE 'content_report' END,
+      CASE WHEN i = 1 THEN 'user' ELSE 'character' END,
+      CASE WHEN i = 1 THEN 'load-user' ELSE 'target-' || i::text END,
       'load-' || i::text,
       (ARRAY['new','triaged','in_progress','waiting','resolved'])[1 + (i % 5)],
       CASE WHEN i = ${CASES} THEN 'urgent'
@@ -91,6 +93,37 @@ async function createProductionShape(tx: Prisma.TransactionClient) {
     FROM generate_series(1, ${JOBS}) i
   `);
   await tx.$executeRaw(Prisma.sql`
+    INSERT INTO "ops_incidents"
+      (id, signature, "signatureVersion", status, severity, "ownerId", "firstSeen", "lastSeen",
+       "slaDueAt", impact, mitigation, "verificationState", "createdAt", "updatedAt")
+    SELECT
+      'incident-' || i::text,
+      'readiness-signature-' || i::text,
+      'v1',
+      (ARRAY['detected','triaged','mitigating','monitoring'])[1 + (i % 4)],
+      (ARRAY['high','medium','low'])[1 + (i % 3)],
+      NULL,
+      TIMESTAMP '2026-07-10 12:00:00' - (i % 86400) * interval '1 second',
+      TIMESTAMP '2026-07-11 12:00:00' - (i % 86400) * interval '1 second',
+      TIMESTAMP '2026-07-11 12:00:00' + ((i % 240) - 120) * interval '1 minute',
+      '{}'::jsonb, '{}'::jsonb, 'pending',
+      TIMESTAMP '2026-07-10 12:00:00' - (i % 86400) * interval '1 second',
+      TIMESTAMP '2026-07-11 12:00:00' - (i % 86400) * interval '1 second'
+    FROM generate_series(1, ${INCIDENTS}) i
+  `);
+  await tx.$executeRaw(Prisma.sql`
+    INSERT INTO "ops_incident_occurrences"
+      (id, "incidentId", "requestId", "occurrenceKey", "observedAt", "createdAt")
+    SELECT
+      'occurrence-' || i::text,
+      'incident-' || i::text,
+      'job-' || i::text,
+      'readiness-occurrence-' || i::text,
+      TIMESTAMP '2026-07-11 12:00:00' - (i % 86400) * interval '1 second',
+      TIMESTAMP '2026-07-11 12:00:00' - (i % 86400) * interval '1 second'
+    FROM generate_series(1, ${INCIDENTS}) i
+  `);
+  await tx.$executeRaw(Prisma.sql`
     INSERT INTO "analytics_events"
       (id, name, props, "sourceService", "sourceEventId", "occurredAt", "createdAt")
     SELECT
@@ -104,13 +137,15 @@ async function createProductionShape(tx: Prisma.TransactionClient) {
   await tx.$executeRawUnsafe("ANALYZE admin_cases");
   await tx.$executeRawUnsafe("ANALYZE admin_collaboration_activities");
   await tx.$executeRawUnsafe("ANALYZE generation_jobs");
+  await tx.$executeRawUnsafe("ANALYZE ops_incidents");
+  await tx.$executeRawUnsafe("ANALYZE ops_incident_occurrences");
   await tx.$executeRawUnsafe("ANALYZE analytics_events");
 }
 
 function verifyProjection(projection: TodayProjection) {
   todayProjectionSchema.parse(projection);
   assertReadiness(
-    projection.nextBestActions.totalCount === 80_001,
+    projection.nextBestActions.totalCount === 180_001,
     `active Case + Mention count must be exact (received ${projection.nextBestActions.totalCount})`,
   );
   assertReadiness(projection.nextBestActions.items.length === 10, "Today must return exactly the bounded first page");
@@ -121,6 +156,19 @@ function verifyProjection(projection: TodayProjection) {
   assertReadiness(
     projection.nextBestActions.items.some((item) => item.sourceType === "collaboration_mention" && item.sourceId === "readiness-needle-mention"),
     "the real mention-to-Case SQL join must feed the Today DTO",
+  );
+}
+
+function verifySupportProjection(projection: TodayProjection) {
+  todayProjectionSchema.parse(projection);
+  assertReadiness(
+    projection.nextBestActions.totalCount === 100_001,
+    `support-linked Incident + scoped Case count must be exact (received ${projection.nextBestActions.totalCount})`,
+  );
+  assertReadiness(projection.nextBestActions.items.length === 10, "support Today must keep the first page bounded");
+  assertReadiness(
+    projection.nextBestActions.items.some((item) => item.sourceType === "ops_incident"),
+    "support-linked Incidents must be projected through the correlated EXISTS scope",
   );
 }
 
@@ -136,7 +184,10 @@ async function main() {
 
       const samplesMs: number[] = [];
       const diagnostics: TodaySourceQueryDiagnostic[] = [];
+      const supportSamplesMs: number[] = [];
+      const supportDiagnostics: TodaySourceQueryDiagnostic[] = [];
       let projection: TodayProjection | null = null;
+      let supportProjection: TodayProjection | null = null;
       for (let index = 0; index < ITERATIONS; index += 1) {
         const sampleStartedAt = performance.now();
         projection = await buildTodayProjection({
@@ -150,20 +201,41 @@ async function main() {
         samplesMs.push(performance.now() - sampleStartedAt);
         verifyProjection(projection);
       }
+      for (let index = 0; index < ITERATIONS; index += 1) {
+        const sampleStartedAt = performance.now();
+        supportProjection = await buildTodayProjection({
+          db: tx,
+          actor: { id: ACTOR_ID, role: "support" },
+          permissions: resolvePermissions("support"),
+          workMode: "support",
+          now: NOW,
+          diagnostics: index === 0 ? { onSourceQuery: (event) => supportDiagnostics.push(event) } : undefined,
+        });
+        supportSamplesMs.push(performance.now() - sampleStartedAt);
+        verifySupportProjection(supportProjection);
+      }
 
       const todayP95Ms = percentile(samplesMs, 0.95);
+      const supportTodayP95Ms = percentile(supportSamplesMs, 0.95);
       const boundedSqlPath = diagnostics.length > 0 && diagnostics.every(
         (event) => event.returnedRows <= event.limit && event.limit === 10,
+      );
+      const supportIncidentDiagnostics = supportDiagnostics.filter(
+        (event) => event.sourceType === "ops_incident",
       );
       const observedSources = [...new Set(diagnostics.map((event) => event.sourceType))].sort();
       const checks = {
         realTodayProjectionDto: projection !== null,
         todayP95Under1000ms: todayP95Ms < 1_000,
-        exactCompleteCounts: projection?.nextBestActions.totalCount === 80_001,
+        supportTodayP95Under1000ms: supportTodayP95Ms < 1_000,
+        exactCompleteCounts: projection?.nextBestActions.totalCount === 180_001,
+        exactSupportScopeCount: supportProjection?.nextBestActions.totalCount === 100_001,
         rankPreservingOldCriticalNeedle: projection?.nextBestActions.items.some(
           (item) => item.sourceType === "admin_case" && item.sourceId === NEEDLE_CASE_ID,
         ) ?? false,
         boundedSourceSql: boundedSqlPath,
+        boundedSupportIncidentSql: supportIncidentDiagnostics.length > 0 && supportIncidentDiagnostics
+          .every((event) => event.returnedRows <= event.limit && event.limit === 10),
         realMentionTargetJoin: projection?.nextBestActions.items.some(
           (item) => item.sourceType === "collaboration_mention" && item.sourceId === "readiness-needle-mention",
         ) ?? false,
@@ -172,9 +244,15 @@ async function main() {
         status: Object.values(checks).every(Boolean) ? "pass" : "fail",
         schema: "Production PostgreSQL tables and indexes exercised in a rollback-only transaction",
         sqlPath: "buildTodayProjection -> exact count + bounded source lanes + Release/Mention join-aware rank queries",
-        scale: { cases: CASES, jobs: JOBS, events: EVENTS },
+        scale: { cases: CASES, jobs: JOBS, incidents: INCIDENTS, incidentOccurrences: INCIDENTS, events: EVENTS },
         durationMs: performance.now() - startedAt,
-        today: { samplesMs, p95Ms: todayP95Ms, diagnostics, observedSources },
+        today: {
+          samplesMs,
+          p95Ms: todayP95Ms,
+          diagnostics,
+          observedSources,
+          support: { samplesMs: supportSamplesMs, p95Ms: supportTodayP95Ms, diagnostics: supportDiagnostics },
+        },
         checks,
       };
       reportOutput = JSON.stringify(report, null, 2);
