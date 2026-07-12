@@ -8,6 +8,7 @@ import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDi
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { createLatestRequestGate } from "@/lib/latest-request";
 import {
   canCreatePricingRule,
   defaultPricingDraft,
@@ -37,27 +38,28 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
   const [error, setError] = useState<string | null>(null);
   const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
-  const requestId = useRef(0);
+  const requestGate = useRef(createLatestRequestGate());
   const initialQuery = useRef(query);
 
   const load = useCallback(async (next: PricingQuery) => {
-    const activeRequest = ++requestId.current;
+    const request = requestGate.current.begin();
     setLoading(true);
     setError(null);
     try {
       const data = await apiGet<PricingListResponse>(pricingListPath(next));
-      if (activeRequest !== requestId.current) return;
+      if (!request.isCurrent()) return;
       setRows(data.items);
       setPageInfo(data.pageInfo ?? emptyPageInfo);
       setRefreshedAt(new Date().toISOString());
     } catch (cause) {
-      if (activeRequest === requestId.current) setError(cause instanceof Error ? cause.message : "Pricing authority request failed");
+      if (request.isCurrent()) setError(cause instanceof Error ? cause.message : "Pricing authority request failed");
     } finally {
-      if (activeRequest === requestId.current) setLoading(false);
+      if (request.isCurrent()) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
+    const gate = requestGate.current;
     void load(initialQuery.current);
     const restore = () => {
       const restored = currentQuery();
@@ -67,7 +69,7 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
     };
     window.addEventListener("popstate", restore);
     return () => {
-      requestId.current += 1;
+      gate.invalidate();
       window.removeEventListener("popstate", restore);
     };
   }, [load]);

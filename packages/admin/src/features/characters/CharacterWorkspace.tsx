@@ -22,6 +22,7 @@ import {
   textAreaClass,
 } from "@/features/operations/WorkspaceUi";
 import { AdminV2RequestError, adminV2Request, setWorkspaceUrl } from "@/lib/admin-v2-api";
+import { createLatestRequestGate } from "@/lib/latest-request";
 import { cn } from "@/lib/utils";
 
 type Permissions = {
@@ -93,9 +94,11 @@ function CharacterPortfolio({ canOpenProjects, canRead, mode }: { canOpenProject
   const [asOf, setAsOf] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const requestGate = useRef(createLatestRequestGate());
 
   const load = useCallback(async (next: { search: string; cursor?: string }, historyMode: "none" | "push" | "replace") => {
     if (!canRead) return;
+    const request = requestGate.current.begin();
     setLoading(true);
     setError(null);
     try {
@@ -106,19 +109,23 @@ function CharacterPortfolio({ canOpenProjects, canRead, mode }: { canOpenProject
         window.history[historyMode === "push" ? "pushState" : "replaceState"](null, "", `${window.location.pathname}?${query}`);
       }
       const data = await adminV2Request(`/api/v2/admin/characters/portfolio?${query}`, { schema: characterPortfolioResponseSchema });
+      if (!request.isCurrent()) return;
       setItems([...data.items]);
       setPageInfo(data.pageInfo);
       setAsOf(data.asOf);
     } catch (reason) {
-      setItems([]);
-      setPageInfo({ endCursor: null, hasNextPage: false });
-      setError(reason instanceof Error ? reason.message : "Character portfolio could not be loaded");
+      if (request.isCurrent()) {
+        setItems([]);
+        setPageInfo({ endCursor: null, hasNextPage: false });
+        setError(reason instanceof Error ? reason.message : "Character portfolio could not be loaded");
+      }
     } finally {
-      setLoading(false);
+      if (request.isCurrent()) setLoading(false);
     }
   }, [canRead]);
 
   useEffect(() => {
+    const gate = requestGate.current;
     const restore = (historyMode: "none" | "replace") => {
       const params = new URLSearchParams(window.location.search);
       const next = { search: params.get("search") ?? "", cursor: params.get("cursor") ?? undefined };
@@ -130,6 +137,7 @@ function CharacterPortfolio({ canOpenProjects, canRead, mode }: { canOpenProject
     const onPopState = () => restore("none");
     window.addEventListener("popstate", onPopState);
     return () => {
+      gate.invalidate();
       window.clearTimeout(timer);
       window.removeEventListener("popstate", onPopState);
     };

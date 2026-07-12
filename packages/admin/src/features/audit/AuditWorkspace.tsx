@@ -8,6 +8,7 @@ import { apiGet } from "@/components/admin/api";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { createLatestRequestGate } from "@/lib/latest-request";
 import {
   auditCommandPath,
   auditListPath,
@@ -36,11 +37,11 @@ export function AuditWorkspace() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
-  const requestId = useRef(0);
+  const requestGate = useRef(createLatestRequestGate());
   const initialQuery = useRef(query);
 
   const load = useCallback(async (next: AuditQuery) => {
-    const activeRequest = ++requestId.current;
+    const request = requestGate.current.begin();
     setLoading(true);
     setError(null);
     try {
@@ -50,21 +51,22 @@ export function AuditWorkspace() {
           ? apiGet<AdminCommandStatus>(auditCommandPath(next.commandId))
           : Promise.resolve(null),
       ]);
-      if (activeRequest !== requestId.current) return;
+      if (!request.isCurrent()) return;
       setRows(audit.items);
       setPageInfo(audit.pageInfo ?? emptyPageInfo);
       setCommand(commandContext);
       setRefreshedAt(new Date().toISOString());
     } catch (loadError) {
-      if (activeRequest === requestId.current) {
+      if (request.isCurrent()) {
         setError(loadError instanceof Error ? loadError.message : "Audit authority request failed");
       }
     } finally {
-      if (activeRequest === requestId.current) setLoading(false);
+      if (request.isCurrent()) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
+    const gate = requestGate.current;
     void load(initialQuery.current);
     const restore = () => {
       const restored = currentQuery();
@@ -74,7 +76,7 @@ export function AuditWorkspace() {
     };
     window.addEventListener("popstate", restore);
     return () => {
-      requestId.current += 1;
+      gate.invalidate();
       window.removeEventListener("popstate", restore);
     };
   }, [load]);
