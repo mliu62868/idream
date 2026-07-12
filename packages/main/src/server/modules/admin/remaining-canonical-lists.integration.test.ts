@@ -278,6 +278,11 @@ describe("remaining canonical admin lists", () => {
     )).resolves.toMatchObject({ response: { status: 400 } });
   });
 
+  it("rejects malformed Audit queries at the boundary", async () => {
+    await expect(call(["audit-log"], "limit=1junk")).resolves.toMatchObject({ response: { status: 400 } });
+    await expect(call(["audit-log"], "unknown=value")).resolves.toMatchObject({ response: { status: 400 } });
+  });
+
   it("continues from encoded sort keys when the cursor row is deleted", async () => {
     const first = await call(["audit-log"], `search=${token}&limit=1`);
     const firstData = first.body.data as { items: Array<{ id: string }>; pageInfo: PageInfo };

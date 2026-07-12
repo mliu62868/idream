@@ -117,6 +117,7 @@ import {
   deleteAnnouncement,
 } from "./announcements";
 import { listExperiments } from "./experiments";
+import { auditLog } from "./audit/query";
 import { billingAdjustment } from "./billing/command";
 import { appendLedger, dreamcoinBalance } from "./billing/ledger";
 import { billingLedger, billingReconciliation, listSubscriptions } from "./billing/query";
@@ -3522,50 +3523,6 @@ function percentile(sorted: number[], p: number) {
   if (sorted.length === 0) return 0;
   const index = Math.max(0, Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1));
   return sorted[index];
-}
-
-async function auditLog(request: Request) {
-  await actorWithPermission(request, "audit.read");
-  const url = new URL(request.url);
-  const search = url.searchParams.get("search")?.trim() || undefined;
-  const action = url.searchParams.get("action") ?? undefined;
-  const actorId = url.searchParams.get("actorId") ?? undefined;
-  const targetType = url.searchParams.get("targetType") ?? undefined;
-  const limit = clampInt(url.searchParams.get("limit"), 1, 100, 80);
-  const queryIdentity = { search, action, actorId, targetType };
-  const cursorKeys = adminListCursorKeys(url, "audit_log", queryIdentity);
-  const cursorWhere: Prisma.AdminAuditLogWhereInput | undefined = cursorKeys ? (() => {
-    const createdAt = adminCursorDate(cursorKeys, 0, "audit_log");
-    const id = adminCursorString(cursorKeys, 1, "audit_log");
-    return { OR: [{ createdAt: { lt: createdAt } }, { createdAt, id: { lt: id } }] };
-  })() : undefined;
-  const logs = await prisma.adminAuditLog.findMany({
-    where: {
-      action,
-      actorId,
-      targetType,
-      OR: search
-        ? [
-            { id: { contains: search } },
-            { action: { contains: search } },
-            { actorId: { contains: search } },
-            { targetId: { contains: search } },
-            { reason: { contains: search } },
-          ]
-        : undefined,
-      AND: cursorWhere,
-    },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    take: limit + 1,
-  });
-  const page = logs.slice(0, limit);
-  return ok({
-    items: page,
-    pageInfo: adminListPageInfo("audit_log", queryIdentity, page, logs.length > limit, (row) => [
-      row.createdAt.toISOString(),
-      row.id,
-    ]),
-  });
 }
 
 async function listSupportRequests(request: Request) {
