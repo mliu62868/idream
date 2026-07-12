@@ -401,6 +401,7 @@ async function completeResponsiveCoreFlows(page: Page, fixture: ResponsiveCoreFi
   await verifyIncident.press("Enter");
   await expect(page.getByRole("status").filter({ hasText: "Authority recovery verification evaluated" })).toBeVisible();
   const resolveIncident = page.getByRole("button", { name: "Resolve incident" });
+  await expect(resolveIncident).toBeEnabled();
   await resolveIncident.focus();
   await expect(resolveIncident).toBeFocused();
   await resolveIncident.press("Enter");
