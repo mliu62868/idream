@@ -49,6 +49,16 @@ describe("Admin v2 command reliability", () => {
     expect(canonicalRequestHash({ ...base, expectedVersion: 8 })).not.toBe(
       canonicalRequestHash(base),
     );
+    for (const changed of [
+      { ...base, commandType: "character.release.schedule" },
+      { ...base, target: { ...base.target, id: "release-2" } },
+      { ...base, target: { ...base.target, type: "character_serving" } },
+      { ...base, expectedVersion: 8 },
+      { ...base, approvalId: "approval-2" },
+      { ...base, payload: { ...base.payload, reason: "changed" } },
+    ]) {
+      expect(canonicalRequestHash(changed)).not.toBe(canonicalRequestHash(base));
+    }
     expect(canonicalRequestHash({ ...base, retryMode: "idempotent" })).not.toBe(
       canonicalRequestHash(base),
     );

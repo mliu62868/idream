@@ -9,6 +9,7 @@ import { GET as getJobRoute } from "@/app/api/v2/admin/jobs/[id]/route";
 import { POST as retryJobRoute } from "@/app/api/v2/admin/jobs/[id]/commands/retry/route";
 import { GET as listJobsRoute } from "@/app/api/v2/admin/jobs/route";
 import { prisma } from "@/server/lib/db";
+import { ADMIN_SESSION_COOKIE } from "@/server/lib/auth";
 
 describe("Generation Jobs v2 server query", () => {
   const suffix = randomUUID();
@@ -18,6 +19,7 @@ describe("Generation Jobs v2 server query", () => {
   const characterId = `jobs-character-${suffix}`;
   const jobIds = ["a", "b", "c", "d", "e"].map((key) => `jobs-${key}-${suffix}`);
   const attemptId = `jobs-attempt-${suffix}`;
+  const transportIds = [1, 2].map((attemptNo) => `jobs-transport-${attemptNo}-${suffix}`);
   const artifactId = `jobs-artifact-authority-${suffix}`;
   const attemptEventId = `jobs-attempt-event-${suffix}`;
   const deliveryId = `jobs-delivery-${suffix}`;
@@ -101,6 +103,31 @@ describe("Generation Jobs v2 server query", () => {
       payload: { source: "jobs-v2-integration" },
       payloadHash: `jobs-v2-hash-${suffix}`,
     } });
+    await prisma.generationTransportExecution.createMany({ data: [
+      {
+        id: transportIds[0],
+        attemptId,
+        transportAttemptNo: 1,
+        providerRequestId: `provider-request-failed-${suffix}`,
+        idempotencyKey: `provider-invocation-1-${suffix}`,
+        status: "failed",
+        costMicros: BigInt(125_000),
+        startedAt: new Date("2026-07-11T12:00:00.000Z"),
+        finishedAt: new Date("2026-07-11T12:00:02.000Z"),
+      },
+      {
+        id: transportIds[1],
+        attemptId,
+        transportAttemptNo: 2,
+        providerRequestId: `provider-request-success-${suffix}`,
+        idempotencyKey: `provider-invocation-2-${suffix}`,
+        status: "succeeded",
+        costMicros: BigInt(375_000),
+        manifestRef: `completion-manifests/${attemptId}/2.json`,
+        startedAt: new Date("2026-07-11T12:00:03.000Z"),
+        finishedAt: new Date("2026-07-11T12:00:07.000Z"),
+      },
+    ] });
     await prisma.generationArtifact.create({ data: {
       id: artifactId,
       attemptId,
@@ -143,11 +170,14 @@ describe("Generation Jobs v2 server query", () => {
     await prisma.dreamcoinLedger.deleteMany({ where: { id: ledgerId } });
     await prisma.generationDelivery.deleteMany({ where: { id: deliveryId } });
     const attempts = await prisma.generationAttempt.findMany({ where: { requestId: { in: jobIds } }, select: { id: true } });
+    await prisma.generationTransportExecution.deleteMany({ where: { attemptId: { in: attempts.map((attempt) => attempt.id) } } });
     await prisma.generationArtifact.deleteMany({ where: { attemptId: { in: attempts.map((attempt) => attempt.id) } } });
     await prisma.generationAttemptEvent.deleteMany({ where: { attemptId: { in: attempts.map((attempt) => attempt.id) } } });
     await prisma.generationAttempt.deleteMany({ where: { id: { in: attempts.map((attempt) => attempt.id) } } });
     await prisma.generationJob.deleteMany({ where: { id: { in: jobIds } } });
     await prisma.character.deleteMany({ where: { id: characterId } });
+    await prisma.adminUserPermission.deleteMany({ where: { userId: deniedId } });
+    await prisma.session.deleteMany({ where: { token: `jobs-expired-session-${suffix}` } });
     await prisma.user.deleteMany({ where: { id: { in: [actorId, deniedId, customerId] } } });
     await prisma.$disconnect();
   });
@@ -222,6 +252,42 @@ describe("Generation Jobs v2 server query", () => {
     expect(filterMismatch.status).toBe(400);
   });
 
+  it("rejects an expired BFF-forwarded session and applies a permission revocation immediately", async () => {
+    const expiredToken = `jobs-expired-session-${suffix}`;
+    await prisma.session.create({
+      data: {
+        userId: actorId,
+        token: expiredToken,
+        expiresAt: new Date("2020-01-01T00:00:00.000Z"),
+      },
+    });
+    const expired = await listJobsRoute(new Request("http://localhost/api/v2/admin/jobs?mode=all", {
+      headers: { cookie: `${ADMIN_SESSION_COOKIE}=${expiredToken}` },
+    }));
+    expect(expired.status).toBe(401);
+
+    await prisma.adminUserPermission.create({
+      data: {
+        userId: deniedId,
+        permissionKey: "generation.job.read",
+        effect: "grant",
+        reason: "Exercise immediate permission revocation",
+        createdById: actorId,
+      },
+    });
+    expect((await listJobsRoute(request("mode=all", deniedId, "user"))).status).toBe(200);
+    await prisma.adminUserPermission.create({
+      data: {
+        userId: deniedId,
+        permissionKey: "generation.job.read",
+        effect: "revoke",
+        reason: "Permission was revoked while the operator still had the page open",
+        createdById: actorId,
+      },
+    });
+    expect((await listJobsRoute(request("mode=all", deniedId, "user"))).status).toBe(403);
+  });
+
   it("exposes all authority axes in detail and retries through an idempotent v2 command", async () => {
     const detailResponse = await getJobRoute(
       request(""),
@@ -236,6 +302,28 @@ describe("Generation Jobs v2 server query", () => {
       settlement: { view: "captured", capturedDreamcoins: 9 },
     });
     expect(detail.attempts).toHaveLength(1);
+    expect(detail.transportExecutions).toEqual([
+      expect.objectContaining({
+        id: transportIds[0],
+        attemptId,
+        transportAttemptNo: 1,
+        provider: "provider-alpha",
+        providerRequestId: `provider-request-failed-${suffix}`,
+        status: "failed",
+        costMicros: 125_000,
+        manifestRef: null,
+      }),
+      expect.objectContaining({
+        id: transportIds[1],
+        attemptId,
+        transportAttemptNo: 2,
+        provider: "provider-alpha",
+        providerRequestId: `provider-request-success-${suffix}`,
+        status: "succeeded",
+        costMicros: 375_000,
+        manifestRef: `completion-manifests/${attemptId}/2.json`,
+      }),
+    ]);
     expect(detail.events).toEqual([expect.objectContaining({ id: attemptEventId, outcome: "failed" })]);
     expect(detail.artifacts).toEqual([expect.objectContaining({ id: artifactId, validationState: "rejected" })]);
     expect(detail.settlementEntries).toEqual([expect.objectContaining({ ledgerEntryId: ledgerId, deltaDreamcoins: -9 })]);

@@ -85,6 +85,34 @@ describe("canonical metric engine", () => {
     expect(result.metrics["conversion.paid_d30"]).toMatchObject({ numerator: 0, denominator: 0, value: null, immatureSampleSize: 3 });
   });
 
+  it("deduplicates D0, requires the same character on exact D1, ignores D2 for D1, and leaves D7 immature", () => {
+    const result = evaluateCanonicalMetrics(dataset({
+      chatExchanges: [
+        ...exchanges({ userId: "exact", characterId: "c1", sessionId: "d0-a", at: "2026-07-01T08:00:00Z", count: 5 }),
+        ...exchanges({ userId: "exact", characterId: "c1", sessionId: "d0-duplicate", at: "2026-07-01T18:00:00Z", count: 5 }),
+        ...exchanges({ userId: "exact", characterId: "c1", sessionId: "d1", at: "2026-07-02T00:01:00Z", count: 5 }),
+        ...exchanges({ userId: "wrong-character", characterId: "c1", sessionId: "d0", at: "2026-07-01T08:00:00Z", count: 5 }),
+        ...exchanges({ userId: "wrong-character", characterId: "c2", sessionId: "d1-other", at: "2026-07-02T08:00:00Z", count: 5 }),
+        ...exchanges({ userId: "d2-only", characterId: "c1", sessionId: "d0", at: "2026-07-01T08:00:00Z", count: 5 }),
+        ...exchanges({ userId: "d2-only", characterId: "c1", sessionId: "d2", at: "2026-07-03T08:00:00Z", count: 5 }),
+        ...exchanges({ userId: "immature", characterId: "c1", sessionId: "d0", at: "2026-07-04T08:00:00Z", count: 5 }),
+      ],
+    }), new Date("2026-07-05T12:00:00Z"));
+
+    expect(result.metrics["retention.same_character_d1"]).toMatchObject({
+      numerator: 1,
+      denominator: 4,
+      value: 0.25,
+      immatureSampleSize: 1,
+    });
+    expect(result.metrics["retention.same_character_d7"]).toMatchObject({
+      denominator: 0,
+      value: null,
+      immatureSampleSize: 5,
+      maturity: "immature",
+    });
+  });
+
   it("keeps WPCU official while evaluating sustained companion and creation candidates as shadow", () => {
     const windowStart = new Date("2026-07-13T00:00:00Z");
     const result = evaluateCanonicalMetrics(dataset({

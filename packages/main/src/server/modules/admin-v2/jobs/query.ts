@@ -331,10 +331,14 @@ export async function getGenerationJobV2(request: Request, requestId: string) {
     orderBy: { attemptNo: "asc" },
   });
   const attemptIds = attempts.map((attempt) => attempt.id);
-  const [events, artifacts, deliveries, settlementLinks] = await Promise.all([
+  const [events, transportExecutions, artifacts, deliveries, settlementLinks] = await Promise.all([
     attemptIds.length > 0 ? prisma.generationAttemptEvent.findMany({
       where: { attemptId: { in: attemptIds } },
       orderBy: [{ occurredAt: "asc" }, { sequence: "asc" }],
+    }) : [],
+    attemptIds.length > 0 ? prisma.generationTransportExecution.findMany({
+      where: { attemptId: { in: attemptIds } },
+      orderBy: [{ attemptId: "asc" }, { transportAttemptNo: "asc" }],
     }) : [],
     attemptIds.length > 0 ? prisma.generationArtifact.findMany({
       where: { attemptId: { in: attemptIds } },
@@ -364,6 +368,7 @@ export async function getGenerationJobV2(request: Request, requestId: string) {
     if (entry.reason === "refund" && entry.delta > 0) settlement.refunded += entry.delta;
   }
   const latestAttempt = attempts.at(-1) ?? null;
+  const providerByAttemptId = new Map(attempts.map((attempt) => [attempt.id, attempt.provider]));
   const response = generationJobDetailResponseSchema.parse({
     request: generationJobProjection(row, latestAttempt, deliveryCounts, settlement),
     attempts: attempts.map((attempt) => ({
@@ -383,6 +388,19 @@ export async function getGenerationJobV2(request: Request, requestId: string) {
       startedAt: attempt.startedAt?.toISOString() ?? null,
       finishedAt: attempt.finishedAt?.toISOString() ?? null,
       createdAt: attempt.createdAt.toISOString(),
+    })),
+    transportExecutions: transportExecutions.map((execution) => ({
+      id: execution.id,
+      attemptId: execution.attemptId,
+      transportAttemptNo: execution.transportAttemptNo,
+      provider: providerByAttemptId.get(execution.attemptId)?.trim() || null,
+      providerRequestId: execution.providerRequestId?.trim() || null,
+      idempotencyKey: execution.idempotencyKey?.trim() || null,
+      status: execution.status,
+      costMicros: execution.costMicros === null ? null : Number(execution.costMicros),
+      manifestRef: execution.manifestRef?.trim() || null,
+      startedAt: execution.startedAt.toISOString(),
+      finishedAt: execution.finishedAt?.toISOString() ?? null,
     })),
     events: events.map((event) => ({
       id: event.id,

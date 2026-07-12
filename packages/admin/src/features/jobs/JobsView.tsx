@@ -321,6 +321,18 @@ function GenerationJobInspector({ detail, error, jobId, loading, locale, onClose
               attempt.finishedAt ? compactDate(attempt.finishedAt, locale) : "—",
             ])}
           />
+          <AuthorityTable
+            caption="Provider Transport Executions"
+            headers={["Transport", "Attempt / provider", "Technical outcome", "Provider cost", "Manifest", "Finished"]}
+            rows={detail.transportExecutions.map((execution) => [
+              `#${execution.transportAttemptNo} · ${shortId(execution.id)}`,
+              `${shortId(execution.attemptId)} · ${execution.provider ?? "—"}`,
+              execution.status,
+              execution.costMicros === null ? "Unavailable" : `${execution.costMicros.toLocaleString(locale)} μ`,
+              execution.manifestRef ?? "—",
+              execution.finishedAt ? compactDate(execution.finishedAt, locale) : "—",
+            ])}
+          />
           <div className="grid gap-5 xl:grid-cols-2">
             <AuthorityTable
               caption="Artifacts and validation"

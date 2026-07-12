@@ -35,7 +35,13 @@ export function applyOverrides(
   for (const override of overrides) {
     if (!isPermissionKey(override.permissionKey)) continue;
     if (override.effect === "grant") out.add(override.permissionKey);
-    else if (override.effect === "revoke") out.delete(override.permissionKey);
+  }
+  // A persisted revoke is an explicit deny. Apply it after every grant so the
+  // result is the documented `role ∪ grants − revokes` set and never depends
+  // on PostgreSQL row order when historical grant and revoke rows coexist.
+  for (const override of overrides) {
+    if (!isPermissionKey(override.permissionKey)) continue;
+    if (override.effect === "revoke") out.delete(override.permissionKey);
   }
   return out;
 }

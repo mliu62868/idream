@@ -454,19 +454,36 @@ describe("Character Release command executor", () => {
     });
   });
 
-  it("revalidates then atomically publishes pointer, legacy projection, Audit and Outbox", async () => {
-    const accepted = await accept({
+  it("serializes two concurrent publishers and commits pointer, projection, Audit and Outbox once", async () => {
+    const firstAccepted = await accept({
       commandType: "character.release.publish",
       target: { type: "character_release", id: candidateReleaseId },
       expectedVersion: 1,
       payload: { reason: "Publish tested release" },
     });
-    const result = await executeCharacterReleaseCommand(prisma, {
-      commandId: accepted.commandId,
-      workerId: `${prefix}-worker`,
-      now: new Date("2026-07-20T12:00:00.000Z"),
+    const secondAccepted = await accept({
+      commandType: "character.release.publish",
+      target: { type: "character_release", id: candidateReleaseId },
+      expectedVersion: 1,
+      payload: { reason: "Publish tested release from another tab" },
     });
-    expect(result.status).toBe("succeeded");
+    const results = await Promise.all([
+      executeCharacterReleaseCommand(prisma, {
+        commandId: firstAccepted.commandId,
+        workerId: `${prefix}-publisher-a`,
+        now: new Date("2026-07-20T12:00:00.000Z"),
+      }),
+      executeCharacterReleaseCommand(prisma, {
+        commandId: secondAccepted.commandId,
+        workerId: `${prefix}-publisher-b`,
+        now: new Date("2026-07-20T12:00:00.000Z"),
+      }),
+    ]);
+    expect(results.filter((result) => result.status === "succeeded")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "failed")).toEqual([
+      expect.objectContaining({ errorCode: expect.stringMatching(/release_version_conflict|serving_version_conflict/) }),
+    ]);
+    const accepted = results[0].status === "succeeded" ? firstAccepted : secondAccepted;
     expect(
       await prisma.characterServing.findUnique({ where: { characterId } }),
     ).toMatchObject({
@@ -495,7 +512,7 @@ describe("Character Release command executor", () => {
     });
     expect(
       await prisma.characterReleaseEvent.count({
-        where: { commandId: accepted.commandId },
+        where: { releaseId: candidateReleaseId, type: "character.release.published" },
       }),
     ).toBe(1);
     expect(

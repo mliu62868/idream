@@ -186,6 +186,36 @@ describe("Visual Passport (character visual profiles)", () => {
     expect(items[0]).toMatchObject({ identitySource: "manual", identityStale: false });
   });
 
+  it("keeps an active identity with no anchors, evidence, or scores explicitly incomplete", async () => {
+    const admin = await seedActor("admin", "active-empty-evidence");
+    const characterId = `${P}char-active-empty-evidence`;
+    await createCharacter({ id: characterId, name: "Incomplete Active Identity" });
+    await seedVisualProfile({
+      characterId,
+      version: 1,
+      status: "active",
+      anchorAssetIds: [],
+      referenceAssetIds: [],
+    });
+
+    const result = await call(
+      listCharacterVisualProfiles(
+        makeRequest("GET", `/${characterId}/visual-profiles`, { userId: admin, role: "admin" }),
+        characterId,
+      ),
+    );
+    const items = result.data?.items as Array<Record<string, unknown>>;
+    expect(items).toEqual([
+      expect.objectContaining({
+        status: "active",
+        anchorAssetIds: [],
+        referenceAssetIds: [],
+        qualityScore: null,
+        consistencyScore: null,
+      }),
+    ]);
+  });
+
   it("404s listing versions for an unknown character", async () => {
     const admin = await seedActor("admin", "list404");
     const missingId = `${P}char-missing-list`;

@@ -29,6 +29,14 @@ describe("main admin permission adapter", () => {
     expect(isPermissionKey("not.real")).toBe(false);
   });
 
+  it("gives revoke deterministic precedence over a historical grant regardless of row order", () => {
+    const effective = applyOverrides(new Set(), [
+      { permissionKey: "generation.job.read", effect: "revoke" },
+      { permissionKey: "generation.job.read", effect: "grant" },
+    ]);
+    expect(effective).not.toContain("generation.job.read");
+  });
+
   it("expands bundles but keeps high-risk publish/export permissions separate", () => {
     expect(expandGrantBundles(["character_producer"])).toEqual(
       new Set(ADMIN_GRANT_BUNDLES.character_producer.permissions),
