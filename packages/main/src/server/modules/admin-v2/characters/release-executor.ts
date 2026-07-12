@@ -653,6 +653,46 @@ async function publishRelease(
       "serving_missing",
       "CharacterServing is missing",
     );
+  const payload = record(command.requestPayload);
+  if (payload.trigger === "scheduled_release_due") {
+    const scheduledRelease = record(payload.scheduledRelease);
+    const servingId = stringValue(scheduledRelease.servingId);
+    const releaseId = stringValue(scheduledRelease.releaseId);
+    const scheduledAtText = stringValue(scheduledRelease.scheduledAt);
+    const scheduledAt = scheduledAtText ? new Date(scheduledAtText) : null;
+    const servingVersion = scheduledRelease.servingVersion;
+    const occurrenceIsCurrent =
+      servingId === serving.id &&
+      releaseId === release.id &&
+      typeof servingVersion === "number" &&
+      Number.isInteger(servingVersion) &&
+      servingVersion === serving.version &&
+      scheduledAt !== null &&
+      Number.isFinite(scheduledAt.getTime()) &&
+      scheduledAt.getTime() <= now.getTime() &&
+      serving.scheduledReleaseId === release.id &&
+      serving.scheduledAt?.getTime() === scheduledAt.getTime();
+    if (!occurrenceIsCurrent) {
+      throw new ReleaseCommandError(
+        "scheduled_release_occurrence_changed",
+        "The scheduled Release occurrence changed before publish execution",
+        {
+          expected: {
+            servingId,
+            servingVersion,
+            releaseId,
+            scheduledAt: scheduledAtText,
+          },
+          actual: {
+            servingId: serving.id,
+            servingVersion: serving.version,
+            releaseId: serving.scheduledReleaseId,
+            scheduledAt: serving.scheduledAt?.toISOString() ?? null,
+          },
+        },
+      );
+    }
+  }
   if (serving.currentReleaseId === release.id) {
     throw new ReleaseCommandError(
       "release_already_current",

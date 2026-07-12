@@ -3,6 +3,7 @@ import type { PrismaClient } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { logger } from "@/server/lib/logger";
 import { executeCharacterReleaseCommand } from "@/server/modules/admin-v2/characters/release-executor";
+import { dispatchDueCharacterReleasePublishes } from "@/server/modules/admin-v2/characters/scheduled-release-dispatcher";
 import { executeAcceptedAdminCommand } from "@/server/modules/admin-v2/commands/executor";
 import { reconcileExpiredCommandLeases } from "@/server/modules/admin-v2/shared/control-plane-command";
 import {
@@ -46,8 +47,26 @@ let lastReconcileAt = 0;
 
 export async function drainAdminCommands(
   db: PrismaClient,
-  input: { readonly workerId: string; readonly limit?: number },
+  input: {
+    readonly workerId: string;
+    readonly limit?: number;
+    readonly environment?: string;
+    readonly now?: Date;
+  },
 ) {
+  const now = input.now ?? new Date();
+  const scheduledReleases = await dispatchDueCharacterReleasePublishes(db, {
+    dispatcherId: input.workerId,
+    environment: input.environment,
+    now,
+    limit: input.limit,
+  });
+  if (scheduledReleases.failed > 0) {
+    logger.error(
+      { workerId: input.workerId, failures: scheduledReleases.failures },
+      "due Character Release dispatch partially failed",
+    );
+  }
   const commands = await db.controlPlaneCommand.findMany({
     where: { status: "accepted", commandType: { in: [...COMMAND_TYPES] } },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
@@ -66,6 +85,7 @@ export async function drainAdminCommands(
       ? await executeCharacterReleaseCommand(db, {
           commandId: command.id,
           workerId: input.workerId,
+          now,
         })
       : await executeAcceptedAdminCommand(command.id);
     if (result.status === "succeeded") succeeded += 1;
@@ -76,7 +96,17 @@ export async function drainAdminCommands(
   const incidentCorrelation = await dispatchGenerationIncidentCorrelation(db, { limit: input.limit });
   const verified = await verifyCreativeRetryCommands(db, { limit: input.limit });
   const incidentActions = await verifyIncidentActionPlanCommands(db, { limit: input.limit });
-  return { examined: commands.length, succeeded, failed, verifying, dispatched, incidentCorrelation, verified, incidentActions };
+  return {
+    examined: commands.length,
+    succeeded,
+    failed,
+    verifying,
+    scheduledReleases,
+    dispatched,
+    incidentCorrelation,
+    verified,
+    incidentActions,
+  };
 }
 
 export const drainCharacterReleaseCommands = drainAdminCommands;

@@ -4,6 +4,7 @@ import { prisma } from "@/server/lib/db";
 import { createMedia, createUser } from "@/server/test/helpers";
 import { POST as scheduleRoute } from "@/app/api/v2/admin/characters/[id]/releases/[releaseId]/commands/schedule/route";
 import { POST as rollbackRoute } from "@/app/api/v2/admin/characters/[id]/releases/[releaseId]/commands/rollback/route";
+import { drainAdminCommands } from "@/processes/admin-command-worker";
 import { acceptControlPlaneCommand } from "../shared/control-plane-command";
 import {
   characterReleaseSnapshotHash,
@@ -14,6 +15,7 @@ import {
   CHARACTER_RELEASE_POLICY_VERSION,
   executeCharacterReleaseCommand,
 } from "./release-executor";
+import { dispatchDueCharacterReleasePublishes } from "./scheduled-release-dispatcher";
 
 describe("Character Release command executor", () => {
   const suffix = randomUUID();
@@ -29,6 +31,7 @@ describe("Character Release command executor", () => {
   const oldReleaseId = `${prefix}-old`;
   const candidateReleaseId = `${prefix}-candidate`;
   const invalidReleaseId = `${prefix}-invalid`;
+  const policyDriftReleaseId = `${prefix}-policy-drift`;
   const routeFingerprint = `${prefix}:route`;
   const qaRunId = `${prefix}-qa-run`;
   const qaEvidenceHash = `${prefix}-qa-evidence-hash`;
@@ -281,6 +284,9 @@ describe("Character Release command executor", () => {
         snapshotHash: "tampered-snapshot",
       }),
     });
+    await prisma.characterRelease.create({
+      data: releaseData(policyDriftReleaseId),
+    });
     await prisma.characterServing.create({
       data: {
         characterId,
@@ -353,12 +359,12 @@ describe("Character Release command executor", () => {
     const schedule = await scheduleRoute(
       routeRequest(
         { entityVersion: 1, scheduledAt: "2030-01-02T00:00:00.000Z" },
-        `${characterId}:${candidateReleaseId}:schedule`,
+        `${characterId}:${invalidReleaseId}:schedule`,
       ),
       {
         params: Promise.resolve({
           id: characterId,
-          releaseId: candidateReleaseId,
+          releaseId: invalidReleaseId,
         }),
       },
     );
@@ -380,7 +386,11 @@ describe("Character Release command executor", () => {
     });
     expect(
       await prisma.controlPlaneCommand.findUnique({ where: { id: (await schedule.json()).data.commandId } }),
-    ).toMatchObject({ commandType: "character.release.schedule", targetType: "character_release" });
+    ).toMatchObject({
+      commandType: "character.release.schedule",
+      targetType: "character_release",
+      targetId: invalidReleaseId,
+    });
   });
 
   it("fails closed when the current validation policy has no matching route qualification", async () => {
@@ -454,36 +464,60 @@ describe("Character Release command executor", () => {
     });
   });
 
-  it("serializes two concurrent publishers and commits pointer, projection, Audit and Outbox once", async () => {
-    const firstAccepted = await accept({
-      commandType: "character.release.publish",
-      target: { type: "character_release", id: candidateReleaseId },
-      expectedVersion: 1,
-      payload: { reason: "Publish tested release" },
+  it("survives dispatcher restart and lets concurrent schedulers and workers publish one canonical effect", async () => {
+    const dueAt = new Date("2026-07-20T12:00:00.000Z");
+    const validationsBefore = await prisma.releaseValidationRun.count({
+      where: { releaseId: candidateReleaseId },
     });
-    const secondAccepted = await accept({
-      commandType: "character.release.publish",
-      target: { type: "character_release", id: candidateReleaseId },
-      expectedVersion: 1,
-      payload: { reason: "Publish tested release from another tab" },
+    const dispatches = await Promise.all([
+      dispatchDueCharacterReleasePublishes(prisma, {
+        dispatcherId: `${prefix}-scheduler-a`,
+        environment: "test",
+        now: dueAt,
+      }),
+      dispatchDueCharacterReleasePublishes(prisma, {
+        dispatcherId: `${prefix}-scheduler-b`,
+        environment: "test",
+        now: dueAt,
+      }),
+    ]);
+    const commandIds = dispatches.flatMap((dispatch) =>
+      dispatch.commands.map((command) => command.commandId),
+    );
+    expect(new Set(commandIds).size).toBe(1);
+    expect(dispatches.reduce((sum, dispatch) => sum + dispatch.accepted, 0)).toBe(1);
+    expect(dispatches.reduce((sum, dispatch) => sum + dispatch.replayed, 0)).toBe(1);
+
+    const restarted = await dispatchDueCharacterReleasePublishes(prisma, {
+      dispatcherId: `${prefix}-scheduler-after-restart`,
+      environment: "test",
+      now: new Date(dueAt.getTime() + 1_000),
     });
-    const results = await Promise.all([
-      executeCharacterReleaseCommand(prisma, {
-        commandId: firstAccepted.commandId,
+    expect(restarted).toMatchObject({ accepted: 0, replayed: 1 });
+    expect(restarted.commands[0]?.commandId).toBe(commandIds[0]);
+
+    await Promise.all([
+      drainAdminCommands(prisma, {
         workerId: `${prefix}-publisher-a`,
-        now: new Date("2026-07-20T12:00:00.000Z"),
+        environment: "test",
+        now: dueAt,
       }),
-      executeCharacterReleaseCommand(prisma, {
-        commandId: secondAccepted.commandId,
+      drainAdminCommands(prisma, {
         workerId: `${prefix}-publisher-b`,
-        now: new Date("2026-07-20T12:00:00.000Z"),
+        environment: "test",
+        now: dueAt,
       }),
     ]);
-    expect(results.filter((result) => result.status === "succeeded")).toHaveLength(1);
-    expect(results.filter((result) => result.status === "failed")).toEqual([
-      expect.objectContaining({ errorCode: expect.stringMatching(/release_version_conflict|serving_version_conflict/) }),
-    ]);
-    const accepted = results[0].status === "succeeded" ? firstAccepted : secondAccepted;
+    const acceptedCommandId = commandIds[0]!;
+    expect(
+      await prisma.controlPlaneCommand.count({
+        where: {
+          actorId: "system:character-release-scheduler",
+          commandType: "character.release.publish",
+          targetId: candidateReleaseId,
+        },
+      }),
+    ).toBe(1);
     expect(
       await prisma.characterServing.findUnique({ where: { characterId } }),
     ).toMatchObject({
@@ -518,7 +552,7 @@ describe("Character Release command executor", () => {
     expect(
       await prisma.adminAuditLog.count({
         where: {
-          requestId: accepted.commandId,
+          requestId: acceptedCommandId,
           action: "character.release.publish.executed",
         },
       }),
@@ -531,6 +565,20 @@ describe("Character Release command executor", () => {
         },
       }),
     ).toBe(1);
+    expect(
+      await prisma.releaseValidationRun.count({
+        where: { releaseId: candidateReleaseId },
+      }),
+    ).toBe(validationsBefore + 1);
+    expect(
+      await prisma.releaseValidationRun.findFirst({
+        where: { releaseId: candidateReleaseId },
+        orderBy: [{ startedAt: "desc" }, { id: "desc" }],
+      }),
+    ).toMatchObject({
+      policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+      result: "passed",
+    });
   });
 
   it("fails closed on a tampered snapshot and leaves the serving pointer unchanged", async () => {
@@ -615,5 +663,69 @@ describe("Character Release command executor", () => {
         })
       ).currentReleaseId,
     ).toBe(rollback.id);
+  });
+
+  it("fails a due publish closed when current policy evidence drifted after scheduling", async () => {
+    const scheduledAt = new Date("2026-07-24T00:00:00.000Z");
+    const servingBefore = await prisma.characterServing.findUniqueOrThrow({
+      where: { characterId },
+    });
+    const schedule = await accept({
+      commandType: "character.release.schedule",
+      target: { type: "character_release", id: policyDriftReleaseId },
+      expectedVersion: 1,
+      payload: {
+        scheduledAt: scheduledAt.toISOString(),
+        reason: "Schedule before policy evidence drifts",
+      },
+    });
+    await expect(
+      executeCharacterReleaseCommand(prisma, {
+        commandId: schedule.commandId,
+        workerId: `${prefix}-policy-schedule-worker`,
+        now: new Date("2026-07-23T00:00:00.000Z"),
+      }),
+    ).resolves.toMatchObject({ status: "succeeded" });
+    await prisma.generationRouteQualification.updateMany({
+      where: { routeFingerprint, policyVersion: CHARACTER_RELEASE_POLICY_VERSION },
+      data: { expiresAt: new Date("2026-07-23T12:00:00.000Z") },
+    });
+
+    const dueAt = new Date("2026-07-24T00:00:00.000Z");
+    const dispatched = await dispatchDueCharacterReleasePublishes(prisma, {
+      dispatcherId: `${prefix}-policy-drift-scheduler`,
+      environment: "test",
+      now: dueAt,
+    });
+    await drainAdminCommands(prisma, {
+      workerId: `${prefix}-policy-drift-worker`,
+      environment: "test",
+      now: dueAt,
+    });
+    expect(dispatched).toMatchObject({ accepted: 1, replayed: 0 });
+    expect(
+      await prisma.controlPlaneCommand.findUnique({
+        where: { id: dispatched.commands[0]!.commandId },
+      }),
+    ).toMatchObject({
+      status: "failed",
+      error: expect.objectContaining({ code: "release_validation_failed" }),
+    });
+    expect(
+      await prisma.characterServing.findUniqueOrThrow({ where: { characterId } }),
+    ).toMatchObject({
+      currentReleaseId: servingBefore.currentReleaseId,
+      scheduledReleaseId: policyDriftReleaseId,
+      scheduledAt,
+    });
+    expect(
+      await prisma.releaseValidationRun.findFirst({
+        where: { releaseId: policyDriftReleaseId },
+        orderBy: [{ startedAt: "desc" }, { id: "desc" }],
+      }),
+    ).toMatchObject({
+      policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+      result: "failed",
+    });
   });
 });
