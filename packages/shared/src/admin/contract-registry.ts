@@ -67,10 +67,6 @@ export const ADMIN_V2_PENDING_CONTRACTS = {
     owner: "packages/main/src/app/api/v2/admin/characters/[id]/releases/[releaseId]/validation/route.ts",
     reason: "The Release validation parser is Route Handler local and is not yet a shared request contract.",
   },
-  collaborationActivityMutationSchema: {
-    owner: "packages/main/src/server/modules/admin-v2/collaboration/service.ts",
-    reason: "Activity creation returns an envelope that has no corresponding exported shared response schema.",
-  },
   customerListQuerySchema: {
     owner: "packages/main/src/server/modules/admin-v2/cases/customer-query.ts",
     reason: "Customer list query validation remains main-local and therefore cannot be executed by the shared registry.",

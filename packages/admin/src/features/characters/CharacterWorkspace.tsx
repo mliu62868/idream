@@ -234,7 +234,7 @@ function ProjectEditor({ data, permissions, onReload }: { data: CharacterWorkspa
         {state === "Conflict" ? <div className="mt-3"><WorkspaceButton onClick={() => void onReload()}><RefreshCcw className="h-4 w-4" /> Load server revision</WorkspaceButton></div> : null}
       </aside>
       <div className="xl:col-span-2">
-        <CollaborationPanel canWrite={permissions.writeProject} targetId={data.project.id} targetType="character_project" />
+        <CollaborationPanel canWrite={permissions.writeProject} targetId={data.project.id} targetType="character_project" targetVersion={data.project.version} />
       </div>
     </div>
   );

@@ -8,7 +8,7 @@ import {
   type AdminPermissionKey,
   type CollaborationTargetType,
 } from "@idream/shared/admin";
-import type { Prisma } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
@@ -27,6 +27,78 @@ function asRecord(value: Prisma.JsonValue | null): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+}
+
+type AuthorityDb = Pick<
+  Prisma.TransactionClient,
+  "adminCase" | "characterProject" | "contentProductionBatch" | "opsIncident"
+>;
+
+type CollaborationAuthority = {
+  readonly ownerId: string | null;
+  readonly version: number;
+};
+
+async function collaborationAuthority(
+  db: AuthorityDb,
+  targetType: CollaborationTargetType,
+  targetId: string,
+): Promise<CollaborationAuthority | null> {
+  if (targetType === "character_project") {
+    return db.characterProject.findUnique({ where: { id: targetId }, select: { ownerId: true, version: true } });
+  }
+  if (targetType === "creative_run") {
+    return db.contentProductionBatch.findUnique({ where: { id: targetId }, select: { ownerId: true, version: true } });
+  }
+  if (targetType === "case") {
+    return db.adminCase.findUnique({ where: { id: targetId }, select: { ownerId: true, version: true } });
+  }
+  return db.opsIncident.findUnique({ where: { id: targetId }, select: { ownerId: true, version: true } });
+}
+
+async function transferCollaborationAuthority(
+  tx: Prisma.TransactionClient,
+  input: {
+    readonly targetType: CollaborationTargetType;
+    readonly targetId: string;
+    readonly expectedVersion: number;
+    readonly ownerId: string;
+  },
+) {
+  const where = { id: input.targetId, version: input.expectedVersion };
+  const data = { ownerId: input.ownerId, version: { increment: 1 } };
+  const updated = input.targetType === "character_project"
+    ? await tx.characterProject.updateMany({ where, data })
+    : input.targetType === "creative_run"
+      ? await tx.contentProductionBatch.updateMany({ where, data })
+      : input.targetType === "case"
+        ? await tx.adminCase.updateMany({ where, data })
+        : await tx.opsIncident.updateMany({ where, data });
+  if (updated.count !== 1) throw Errors.conflict("Collaboration target changed; reload before handing it off");
+  return { ownerId: input.ownerId, version: input.expectedVersion + 1 } satisfies CollaborationAuthority;
+}
+
+function activityRequestHash(activity: { requestHash: string | null; metadata: Prisma.JsonValue }) {
+  return activity.requestHash ?? asRecord(activity.metadata)._requestHash;
+}
+
+function activityAuthorityReceipt(activity: { metadata: Prisma.JsonValue }): CollaborationAuthority | null {
+  const value = asRecord(activity.metadata)._authority;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const authority = value as Record<string, unknown>;
+  if ((typeof authority.ownerId !== "string" && authority.ownerId !== null) || typeof authority.version !== "number") return null;
+  return { ownerId: authority.ownerId, version: authority.version };
+}
+
+function replayActivity(
+  activity: Awaited<ReturnType<PrismaClient["adminCollaborationActivity"]["findFirstOrThrow"]>>,
+  hash: string,
+) {
+  if (activityRequestHash(activity) !== hash) {
+    throw Errors.conflict("Idempotency key was reused with a different activity");
+  }
+  const authority = activityAuthorityReceipt(activity);
+  return ok({ activity: activityDto(activity), authority, duplicate: true });
 }
 
 async function targetAccess(
@@ -114,17 +186,14 @@ export async function listActivity(request: Request, rawTargetType: string, targ
 export async function createActivity(request: Request, rawTargetType: string, targetId: string) {
   const targetType = collaborationTargetTypeSchema.parse(rawTargetType);
   const actor = await actorWithPermission(request, targetDescriptors[targetType].write);
-  await assertTarget(actor, targetType, targetId);
   const input = collaborationActivityCreateSchema.parse(await request.json());
   const key = requireIdempotencyKey(request);
   const hash = canonicalJsonHash({ targetType, targetId, input });
   const existing = await prisma.adminCollaborationActivity.findUnique({
     where: { actorId_idempotencyKey: { actorId: actor.id, idempotencyKey: key } },
   });
-  if (existing) {
-    if (asRecord(existing.metadata)._requestHash !== hash) throw Errors.conflict("Idempotency key was reused with a different activity");
-    return ok({ activity: activityDto(existing), duplicate: true });
-  }
+  if (existing) return replayActivity(existing, hash);
+  await assertTarget(actor, targetType, targetId);
   const referencedActorIds = [...new Set([
     ...input.mentionedIds,
     ...(input.metadata.handoffToActorId ? [input.metadata.handoffToActorId] : []),
@@ -142,20 +211,101 @@ export async function createActivity(request: Request, rawTargetType: string, ta
     const parent = await prisma.adminCollaborationActivity.findFirst({ where: { id: input.parentId, targetType, targetId }, select: { id: true } });
     if (!parent) throw Errors.badRequest("Parent activity must belong to the same collaboration target");
   }
-  const activity = await prisma.adminCollaborationActivity.create({
-      data: {
-        targetType,
-        targetId,
-        kind: input.kind,
-        actorId: actor.id,
-        body: input.body,
-        mentionedIds,
-        metadata: { ...input.metadata, _requestHash: hash } as Prisma.InputJsonValue,
-        parentId: input.parentId,
-        idempotencyKey: key,
-      },
-  });
-  return ok({ activity: activityDto(activity), duplicate: false }, { status: 201 });
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const before = input.kind === "handoff"
+        ? await collaborationAuthority(tx, targetType, targetId)
+        : null;
+      if (input.kind === "handoff" && !before) throw Errors.notFound("Collaboration target was not found");
+      const activity = await tx.adminCollaborationActivity.create({
+        data: {
+          targetType,
+          targetId,
+          kind: input.kind,
+          actorId: actor.id,
+          body: input.body,
+          mentionedIds,
+          metadata: {
+            ...input.metadata,
+            _requestHash: hash,
+          } as Prisma.InputJsonValue,
+          parentId: input.parentId,
+          idempotencyKey: key,
+          requestHash: hash,
+        },
+      });
+      if (input.kind === "handoff" && before?.version !== input.expectedVersion) {
+        throw Errors.conflict("Collaboration target changed; reload before handing it off");
+      }
+      if (input.kind === "handoff" && before?.ownerId === input.metadata.handoffToActorId) {
+        throw Errors.badRequest("The target actor already owns this collaboration target");
+      }
+      const authority = input.kind === "handoff"
+        ? await transferCollaborationAuthority(tx, {
+            targetType,
+            targetId,
+            expectedVersion: input.expectedVersion!,
+            ownerId: input.metadata.handoffToActorId!,
+          })
+        : before;
+      if (authority) {
+        await tx.adminCollaborationActivity.update({
+          where: { id: activity.id },
+          data: {
+            metadata: {
+              ...input.metadata,
+              _requestHash: hash,
+              _authority: authority,
+            } as Prisma.InputJsonValue,
+          },
+        });
+      }
+      if (input.kind === "handoff" && before && authority) {
+        const evidence = {
+          activityId: activity.id,
+          targetType,
+          targetId,
+          fromOwnerId: before.ownerId,
+          toOwnerId: authority.ownerId,
+          fromVersion: before.version,
+          toVersion: authority.version,
+          requestHash: hash,
+          reason: input.body,
+        };
+        await tx.adminAuditLog.create({
+          data: {
+            actorId: actor.id,
+            actorRole: actor.role,
+            action: "collaboration.handoff",
+            targetType,
+            targetId,
+            reason: input.body,
+            before: { ownerId: before.ownerId, version: before.version },
+            after: { ownerId: authority.ownerId, version: authority.version, activityId: activity.id },
+            requestId: key,
+          },
+        });
+        await tx.mainOutboxEvent.create({
+          data: {
+            eventType: "admin.collaboration.handoff.v2",
+            aggregateType: targetType,
+            aggregateId: targetId,
+            payload: evidence,
+          },
+        });
+      }
+      return { activity, authority };
+    });
+    return ok({ activity: activityDto(result.activity), authority: result.authority, duplicate: false }, { status: 201 });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      const raced = await prisma.adminCollaborationActivity.findUnique({
+        where: { actorId_idempotencyKey: { actorId: actor.id, idempotencyKey: key } },
+      });
+      if (raced) return replayActivity(raced, hash);
+    }
+    throw error;
+  }
 }
 
 export async function setWatching(request: Request, rawTargetType: string, targetId: string) {
@@ -170,7 +320,7 @@ export async function setWatching(request: Request, rawTargetType: string, targe
       where: { actorId_idempotencyKey: { actorId: actor.id, idempotencyKey: key } },
     });
     if (previous) {
-      if (asRecord(previous.metadata)._requestHash !== hash) throw Errors.conflict("Idempotency key was reused with a different watch request");
+      if (activityRequestHash(previous) !== hash) throw Errors.conflict("Idempotency key was reused with a different watch request");
       const preference = await tx.operationalWorkPreference.findUniqueOrThrow({
         where: { actorId_sourceType_sourceId: { actorId: actor.id, sourceType: targetType, sourceId: targetId } },
       });
@@ -190,6 +340,7 @@ export async function setWatching(request: Request, rawTargetType: string, targe
         body: input.watching ? "Started watching" : "Stopped watching",
         metadata: { watching: input.watching, _requestHash: hash },
         idempotencyKey: key,
+        requestHash: hash,
       },
     });
     return { preference, duplicate: false };

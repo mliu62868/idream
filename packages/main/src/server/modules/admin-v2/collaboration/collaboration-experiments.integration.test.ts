@@ -59,6 +59,7 @@ describe("admin collaboration, saved views, and managed experiments", () => {
     await prisma.operationalWorkPreference.deleteMany({ where: { sourceId: incidentId } });
     await prisma.adminSavedView.deleteMany({ where: { ownerId: adminId } });
     await prisma.adminAuditLog.deleteMany({ where: { OR: [{ targetId: incidentId }, { targetId: { in: createdExperimentIds } }] } });
+    await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: incidentId } });
     await prisma.mainOutboxEvent.deleteMany({ where: { aggregateType: "experiment_definition", aggregateId: { in: createdExperimentIds } } });
     await prisma.experimentDefinition.deleteMany({ where: { id: { in: createdExperimentIds } } });
     await prisma.opsIncident.deleteMany({ where: { id: incidentId } });
@@ -86,9 +87,10 @@ describe("admin collaboration, saved views, and managed experiments", () => {
   it("records comments, mentions, handoff/watch activity separately from immutable audit evidence", async () => {
     const context = { params: Promise.resolve({ targetType: "incident", targetId: incidentId }) };
     const request = (body: object) => new Request(`http://localhost/api/v2/admin/collaboration/incident/${incidentId}/activity`, { method: "POST", headers: headers(adminId, "admin", `activity-${suffix}`), body: JSON.stringify(body) });
-    const activityBody = { kind: "handoff", body: "Take over provider recovery", mentionedIds: [supportId], metadata: { handoffToActorId: analystId, attachments: [{ id: `evidence-${suffix}`, label: "Provider recovery log", mimeType: "text/plain" }], checklistItems: [] } };
+    const activityBody = { kind: "handoff", expectedVersion: 1, body: "Take over provider recovery", mentionedIds: [supportId], metadata: { handoffToActorId: analystId, attachments: [{ id: `evidence-${suffix}`, label: "Provider recovery log", mimeType: "text/plain" }], checklistItems: [] } };
     const first = await activityRoute(request(activityBody), context);
     expect(first.status).toBe(201);
+    expect(await first.clone().json()).toMatchObject({ data: { authority: { ownerId: analystId, version: 2 }, duplicate: false } });
     const replay = await activityRoute(request(activityBody), context);
     expect((await replay.json()).data.duplicate).toBe(true);
     const collision = await activityRoute(request({ kind: "comment", body: "changed", mentionedIds: [], metadata: {} }), context);
@@ -120,7 +122,9 @@ describe("admin collaboration, saved views, and managed experiments", () => {
     await prisma.adminUserPermission.create({ data: { userId: analystId, permissionKey: "ops.incident.read", effect: "grant", reason: "integration permission scope", createdById: adminId } });
     const visibleMentions = await mentionsRoute(new Request("http://localhost/api/v2/admin/collaboration/mentions", { headers: headers(analystId, "analyst") }));
     expect(await visibleMentions.json()).toMatchObject({ ok: true, data: { items: [{ targetId: incidentId, mentionedIds: [analystId, supportId] }] } });
-    expect(await prisma.adminAuditLog.count({ where: { targetId: incidentId, action: "collaboration.handoff" } })).toBe(0);
+    expect(await prisma.opsIncident.findUniqueOrThrow({ where: { id: incidentId } })).toMatchObject({ ownerId: analystId, version: 2 });
+    expect(await prisma.adminAuditLog.count({ where: { targetId: incidentId, action: "collaboration.handoff" } })).toBe(1);
+    expect(await prisma.mainOutboxEvent.count({ where: { aggregateId: incidentId, eventType: "admin.collaboration.handoff.v2" } })).toBe(1);
     expect(await prisma.adminCollaborationActivity.count({ where: { targetId: incidentId } })).toBe(2);
   });
 

@@ -60,6 +60,7 @@ export const collaborationActivityMetadataSchema = z.object({
 
 export const collaborationActivityCreateSchema = z.object({
   kind: z.enum(["comment", "handoff", "checklist"]),
+  expectedVersion: z.number().int().positive().optional(),
   body: z.string().trim().min(1).max(4_000),
   mentionedIds: z.array(adminIdSchema).max(50).default([]),
   parentId: adminIdSchema.optional(),
@@ -67,6 +68,9 @@ export const collaborationActivityCreateSchema = z.object({
 }).strict().superRefine((input, context) => {
   if (input.kind === "handoff" && !input.metadata.handoffToActorId) {
     context.addIssue({ code: "custom", path: ["metadata", "handoffToActorId"], message: "Handoffs require a target actor" });
+  }
+  if (input.kind === "handoff" && input.expectedVersion === undefined) {
+    context.addIssue({ code: "custom", path: ["expectedVersion"], message: "Handoffs require the current entity version" });
   }
   if (input.kind === "checklist" && input.metadata.checklistItems.length === 0) {
     context.addIssue({ code: "custom", path: ["metadata", "checklistItems"], message: "Checklist updates require at least one item" });
@@ -113,8 +117,18 @@ export const collaborationActivityListResponseSchema = z.object({
 }).strict();
 
 export const collaborationWatchResponseSchema = z.object({ watching: z.boolean(), duplicate: z.boolean() }).strict();
+export const collaborationAuthoritySchema = z.object({
+  ownerId: adminIdSchema.nullable(),
+  version: z.number().int().positive(),
+}).strict();
+export const collaborationActivityMutationSchema = z.object({
+  activity: collaborationActivitySchema,
+  authority: collaborationAuthoritySchema.nullable(),
+  duplicate: z.boolean(),
+}).strict();
 
 export type SavedViewQueryState = z.infer<typeof savedViewQueryStateSchema>;
 export type CollaborationTargetType = z.infer<typeof collaborationTargetTypeSchema>;
 export type SavedView = z.infer<typeof savedViewSchema>;
 export type CollaborationActivityListResponse = z.infer<typeof collaborationActivityListResponseSchema>;
+export type CollaborationActivityMutation = z.infer<typeof collaborationActivityMutationSchema>;

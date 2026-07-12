@@ -2,9 +2,11 @@
 
 import {
   collaborationActivityListResponseSchema,
+  collaborationActivityMutationSchema,
   collaborationActivitySchema,
   collaborationWatchResponseSchema,
   type CollaborationActivityListResponse,
+  type CollaborationActivityMutation,
   type CollaborationTargetType,
 } from "@idream/shared/admin";
 import { Bell, BellOff, MessageCircle, RefreshCcw, Send } from "lucide-react";
@@ -27,10 +29,12 @@ const kindLabels: Record<ActivityKind, string> = {
 export function CollaborationPanel({
   targetType,
   targetId,
+  targetVersion,
   canWrite,
 }: {
   targetType: CollaborationTargetType;
   targetId: string;
+  targetVersion: number;
   canWrite: boolean;
 }) {
   const [items, setItems] = useState<Activity[]>([]);
@@ -49,6 +53,7 @@ export function CollaborationPanel({
   const [attachmentIds, setAttachmentIds] = useState("");
   const [handoffActorId, setHandoffActorId] = useState("");
   const [checklist, setChecklist] = useState("");
+  const [authorityReceipt, setAuthorityReceipt] = useState({ targetId, sourceVersion: targetVersion, version: targetVersion });
   const bodyRef = useRef<HTMLTextAreaElement | null>(null);
   const requestId = useRef(0);
 
@@ -91,6 +96,10 @@ export function CollaborationPanel({
     return () => window.clearTimeout(timer);
   }, [load]);
 
+  const authorityVersion = authorityReceipt.targetId === targetId && authorityReceipt.sourceVersion === targetVersion
+    ? authorityReceipt.version
+    : targetVersion;
+
   const toggleWatch = async () => {
     const next = !watching;
     setSubmitting(true);
@@ -124,13 +133,14 @@ export function CollaborationPanel({
     setNotice(null);
     try {
       const checklistItems = parseChecklist(checklist);
-      await adminV2Request(
+      const response = await adminV2Request<CollaborationActivityMutation>(
         `/api/v2/admin/collaboration/${targetType}/${encodeURIComponent(targetId)}/activity`,
         {
           method: "POST",
           idempotencyKey: crypto.randomUUID(),
           body: {
             kind,
+            ...(kind === "handoff" ? { expectedVersion: authorityVersion } : {}),
             body: normalizedBody,
             mentionedIds: parseMentionIds(mentions),
             metadata: {
@@ -139,14 +149,18 @@ export function CollaborationPanel({
               checklistItems: kind === "checklist" ? checklistItems : [],
             },
           },
+          schema: collaborationActivityMutationSchema,
         },
       );
+      if (response.authority) {
+        setAuthorityReceipt({ targetId, sourceVersion: targetVersion, version: response.authority.version });
+      }
       setBody("");
       setMentions("");
       setAttachmentIds("");
       setHandoffActorId("");
       setChecklist("");
-      setNotice(`${kindLabels[kind]} added to the activity timeline.`);
+      setNotice(kind === "handoff" ? "Ownership transferred and recorded in the activity timeline." : `${kindLabels[kind]} added to the activity timeline.`);
       await load();
       bodyRef.current?.focus();
     } catch (cause) {

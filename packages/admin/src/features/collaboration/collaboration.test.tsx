@@ -12,7 +12,7 @@ import {
 
 describe("Admin collaboration UI", () => {
   it("renders a structure-matched loading timeline and hides writes without permission", () => {
-    const html = renderToStaticMarkup(<CollaborationPanel canWrite={false} targetId="incident-1" targetType="incident" />);
+    const html = renderToStaticMarkup(<CollaborationPanel canWrite={false} targetId="incident-1" targetType="incident" targetVersion={1} />);
     expect(html).toContain("Collaboration");
     expect(html).toContain("Loading collaboration activity");
     expect(html).toContain("Read access only");

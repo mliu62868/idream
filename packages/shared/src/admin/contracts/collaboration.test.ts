@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   collaborationActivityListResponseSchema,
+  collaborationActivityMutationSchema,
+  collaborationActivityCreateSchema,
   collaborationWatchResponseSchema,
   experimentDefinitionCreateSchema,
   savedViewMutationResponseSchema,
@@ -31,6 +33,9 @@ describe("admin collaboration and experiment contracts", () => {
     const now = new Date().toISOString();
     const activity = { id: "activity-1", targetType: "incident", targetId: "incident-1", kind: "comment", actorId: "admin-1", body: "Investigating", mentionedIds: [], metadata: {}, parentId: null, createdAt: now };
     expect(collaborationActivityListResponseSchema.parse({ items: [activity], watching: true, watcherIds: ["actor-1"], pageInfo: { hasNextPage: false, endCursor: null }, asOf: now }).items).toHaveLength(1);
+    expect(collaborationActivityMutationSchema.parse({ activity, authority: { ownerId: "actor-2", version: 2 }, duplicate: false }).authority).toEqual({ ownerId: "actor-2", version: 2 });
+    expect(collaborationActivityCreateSchema.safeParse({ kind: "handoff", body: "Transfer", mentionedIds: [], metadata: { handoffToActorId: "actor-2" } }).success).toBe(false);
+    expect(collaborationActivityCreateSchema.safeParse({ kind: "handoff", expectedVersion: 1, body: "Transfer", mentionedIds: [], metadata: { handoffToActorId: "actor-2" } }).success).toBe(true);
     expect(collaborationWatchResponseSchema.parse({ watching: true, duplicate: false }).watching).toBe(true);
     expect(savedViewMutationResponseSchema.parse({ view: { id: "view-1", scope: "incident", label: "Mine", queryState: { search: "", filters: {}, sort: { field: "id", direction: "asc" }, pageSize: 30 }, version: 1, createdAt: now, updatedAt: now }, duplicate: false }).view.version).toBe(1);
   });
