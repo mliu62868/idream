@@ -2,22 +2,42 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { backfillCanonicalMetricFacts } from "./backfill";
+import { loadCanonicalMetricDataset } from "./projector";
 
 describe("canonical metric fact backfill", () => {
   const prefix = `metric-backfill-${randomUUID()}`;
-  const userId = `${prefix}-user`;
+  const customerId = `${prefix}-customer`;
+  const fixtureId = `${prefix}-fixture`;
+  const internalId = `${prefix}-internal`;
+  const userIds = [customerId, fixtureId, internalId];
   const planId = `${prefix}-plan`;
-  const subscriptionId = `${prefix}-subscription`;
+  const subscriptionIds = userIds.map((userId) => `${userId}-subscription`);
 
   beforeAll(async () => {
-    await prisma.user.create({
-      data: {
-        id: userId,
-        email: `${userId}@example.test`,
-        role: "user",
-        status: "active",
-        createdAt: new Date("2026-05-01T10:00:00Z"),
-      },
+    await prisma.user.createMany({
+      data: [
+        {
+          id: customerId,
+          email: `${customerId}@customer.invalid`,
+          role: "user",
+          status: "active",
+          createdAt: new Date("2026-05-01T10:00:00Z"),
+        },
+        {
+          id: fixtureId,
+          email: `${fixtureId}@example.test`,
+          role: "user",
+          status: "active",
+          createdAt: new Date("2026-05-01T11:00:00Z"),
+        },
+        {
+          id: internalId,
+          email: `${internalId}@idream.internal`,
+          role: "admin",
+          status: "active",
+          createdAt: new Date("2026-05-01T12:00:00Z"),
+        },
+      ],
     });
     await prisma.plan.create({
       data: {
@@ -29,30 +49,30 @@ describe("canonical metric fact backfill", () => {
         features: {},
       },
     });
-    await prisma.subscription.create({
-      data: {
-        id: subscriptionId,
+    await prisma.subscription.createMany({
+      data: userIds.map((userId, index) => ({
+        id: subscriptionIds[index],
         userId,
         planId,
         provider: "mock",
         status: "active",
-        createdAt: new Date("2026-05-03T10:00:00Z"),
-      },
+        createdAt: new Date(`2026-05-03T1${index}:00:00Z`),
+      })),
     });
   });
 
   afterAll(async () => {
     await prisma.metricBackfillRun.deleteMany({ where: { source: { startsWith: prefix } } });
     await prisma.metricProjectionReceipt.deleteMany({ where: { sourceEventId: { contains: prefix } } });
-    await prisma.subscriptionLifecycleFact.deleteMany({ where: { userId } });
-    await prisma.customerSignupFact.deleteMany({ where: { userId } });
-    await prisma.subscription.deleteMany({ where: { id: subscriptionId } });
+    await prisma.subscriptionLifecycleFact.deleteMany({ where: { userId: { in: userIds } } });
+    await prisma.customerSignupFact.deleteMany({ where: { userId: { in: userIds } } });
+    await prisma.subscription.deleteMany({ where: { id: { in: subscriptionIds } } });
     await prisma.plan.deleteMany({ where: { id: planId } });
-    await prisma.user.deleteMany({ where: { id: userId } });
+    await prisma.user.deleteMany({ where: { id: { in: userIds } } });
     await prisma.$disconnect();
   });
 
-  it("supports dry-run, bounded keyset batches, and idempotent resume reports", async () => {
+  it("reports only authoritative customers as eligible during a dry run", async () => {
     const dryRun = await backfillCanonicalMetricFacts(prisma, {
       source: `${prefix}:main_authority`,
       dryRun: true,
@@ -62,21 +82,34 @@ describe("canonical metric fact backfill", () => {
     expect(dryRun).toMatchObject({
       status: "completed",
       dryRun: true,
-      scannedCount: 2,
+      scannedCount: 6,
       wouldApplyCount: 2,
       appliedCount: 0,
       mismatchCount: 0,
       validFrom: "2026-05-01T10:00:00.000Z",
     });
-    expect(await prisma.customerSignupFact.count({ where: { userId } })).toBe(0);
+    expect(await loadCanonicalMetricDataset(prisma, { userIds })).toEqual({
+      signups: [],
+      chatExchanges: [],
+      generationDeliveries: [],
+      subscriptions: [],
+    });
+  });
 
+  it("applies customer facts while skipping fixture and internal actors idempotently", async () => {
     const applied = await backfillCanonicalMetricFacts(prisma, {
       source: `${prefix}:main_authority`,
       dryRun: false,
       batchSize: 1,
       userIdPrefix: prefix,
     });
-    expect(applied).toMatchObject({ status: "paused", scannedCount: 1, appliedCount: 1 });
+    expect(applied).toMatchObject({
+      status: "paused",
+      scannedCount: 1,
+      wouldApplyCount: 1,
+      appliedCount: 1,
+      mismatchCount: 0,
+    });
     expect(applied.nextCursor).toEqual(expect.any(String));
 
     const resumed = await backfillCanonicalMetricFacts(prisma, {
@@ -86,9 +119,18 @@ describe("canonical metric fact backfill", () => {
       cursor: applied.nextCursor,
       userIdPrefix: prefix,
     });
-    expect(resumed).toMatchObject({ status: "completed", scannedCount: 1, appliedCount: 1 });
-    expect(await prisma.customerSignupFact.count({ where: { userId } })).toBe(1);
-    expect(await prisma.subscriptionLifecycleFact.count({ where: { userId } })).toBe(1);
+    expect(resumed).toMatchObject({
+      status: "completed",
+      scannedCount: 5,
+      wouldApplyCount: 1,
+      appliedCount: 1,
+      skippedCount: 4,
+      mismatchCount: 0,
+    });
+    expect(await loadCanonicalMetricDataset(prisma, { userIds })).toMatchObject({
+      signups: [{ userId: customerId, eligible: true }],
+      subscriptions: [{ userId: customerId, eligible: true }],
+    });
 
     const rerun = await backfillCanonicalMetricFacts(prisma, {
       source: `${prefix}:main_authority:rerun`,
@@ -96,7 +138,13 @@ describe("canonical metric fact backfill", () => {
       batchSize: 50,
       userIdPrefix: prefix,
     });
-    expect(rerun).toMatchObject({ status: "completed", appliedCount: 0, duplicateCount: 2, mismatchCount: 0 });
+    expect(rerun).toMatchObject({
+      status: "completed",
+      appliedCount: 0,
+      duplicateCount: 2,
+      skippedCount: 4,
+      mismatchCount: 0,
+    });
     expect(rerun.before).toEqual(rerun.after);
   });
 });

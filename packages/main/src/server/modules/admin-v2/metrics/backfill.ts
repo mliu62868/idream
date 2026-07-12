@@ -2,6 +2,7 @@ import { METRIC_PRODUCT_EVENTS } from "@idream/shared/contracts";
 import type { PrismaClient } from "@prisma/client";
 import { toInputJson } from "../shared/prisma-json";
 import { projectCanonicalMetricEvent, type MetricProductEvent } from "./projector";
+import { classifyExistingCustomerMetricActor } from "./event-classification";
 
 const SUPPORTED_EVENT_TYPES = Object.values(METRIC_PRODUCT_EVENTS);
 
@@ -41,8 +42,7 @@ function syntheticEvent(input: {
   sourceEventId: string;
   eventType: string;
   occurredAt: Date;
-  userId: string;
-  actorIsInternal: boolean;
+  classification: ReturnType<typeof classifyExistingCustomerMetricActor>;
   payload: Record<string, unknown>;
   context?: Record<string, unknown>;
 }): MetricProductEvent {
@@ -55,9 +55,9 @@ function syntheticEvent(input: {
     occurredAt: input.occurredAt,
     ingestedAt: new Date(),
     environment: "production",
-    dataClass: "customer",
+    dataClass: input.classification.dataClass,
     trustClass: "canonical",
-    actor: { userId: input.userId, isInternal: input.actorIsInternal },
+    actor: input.classification.actor,
     context: input.context ?? {},
     props: input.payload,
   };
@@ -89,8 +89,7 @@ async function mainAuthorityItems(
           sourceEventId,
           eventType: METRIC_PRODUCT_EVENTS.customerSignupCompleted,
           occurredAt: user.createdAt,
-          userId: user.id,
-          actorIsInternal: user.role !== "user",
+          classification: classifyExistingCustomerMetricActor(user),
           payload: { userId: user.id },
         }),
       });
@@ -116,7 +115,11 @@ async function mainAuthorityItems(
       status: "active",
       ...(options.userIdPrefix ? { userId: { startsWith: options.userIdPrefix } } : {}),
     },
-    include: { user: { select: { role: true } } },
+    include: {
+      user: {
+        select: { id: true, email: true, role: true, status: true, deletedAt: true },
+      },
+    },
     orderBy: { id: "asc" },
     take: remaining + 1,
   });
@@ -128,8 +131,7 @@ async function mainAuthorityItems(
         sourceEventId,
         eventType: METRIC_PRODUCT_EVENTS.subscriptionActivated,
         occurredAt: subscription.createdAt,
-        userId: subscription.userId,
-        actorIsInternal: subscription.user.role !== "user",
+        classification: classifyExistingCustomerMetricActor(subscription.user),
         payload: {
           subscriptionId: subscription.id,
           userId: subscription.userId,
