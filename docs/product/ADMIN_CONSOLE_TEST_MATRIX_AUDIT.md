@@ -8,19 +8,19 @@
 | 层级 | 判定 | 当前权威证据 | 尚缺或弱证据 |
 | --- | --- | --- | --- |
 | Pure state/invariant | 已验证 | `characters/readiness.test.ts`、`generation-attempt-events.integration.test.ts`、`content-production-state.test.ts`、`metrics/engine.test.ts`、`reconciliation/invariants.adversarial.integration.test.ts` | Incident/Case 的部分推导仍主要由 integration 覆盖，不是独立 property model。 |
-| Property/table-driven | 部分 | `characters/readiness.test.ts`、`creative/retry-executor.test.ts`、`admin/permissions.test.ts`、`shared/command-reliability.test.ts`；`content-production-state.test.ts` 现穷举 success/failed/active item 组合至 5 项并证明恰有一个 outcome | 尚无对全部领域合法/非法 transition 的统一穷举。 |
+| Property/table-driven | 部分 | `characters/readiness.test.ts`、`creative/retry-executor.test.ts`、`admin/permissions.test.ts`、`shared/command-reliability.test.ts`；`content-production-state.test.ts` 现穷举 success/failed/active item 组合至 5 项并证明恰有一个 outcome；`mutation-transport.test.ts` 对 55/55 mutation 做 transport 分类 | 31 个 mutation 仍在机器可读 pending inventory；尚无对全部领域合法/非法 transition 的统一穷举。 |
 | Postgres integration | 已验证 | `characters/creation.integration.test.ts`、`shared/command-reliability.test.ts`、`incidents/incident-case.integration.test.ts`、`remaining-canonical-lists.integration.test.ts`、`immutable-evidence-migration.integration.test.ts` | 跨进程故障点由进程测试和 rehearsal 分担，不应仅用 integration 数量声称覆盖。 |
-| Contract | 部分 | `packages/shared/src/admin/**/*test.ts`、`commands/authoritative.integration.test.ts`、各 Route Handler integration；`api-manifest.test.ts` 已从 76 个真实 route files 精确枚举 84 个 HTTP operation，并逐项绑定 request/response contract ref | contract ref 尚需全部绑定为可执行 Zod 正反 fixture；HTTP/in-process parity 不是所有 endpoint 都有。 |
+| Contract | 部分 | `packages/shared/src/admin/**/*test.ts`、`commands/authoritative.integration.test.ts`、各 Route Handler integration；`api-manifest.test.ts` 已从 76 个真实 route files 精确枚举 84 个 HTTP operation；117 个唯一 contract ref 全部可解析，其中 88 个真实 Zod/transport binding 自动跑正反 fixture | 29 个尚未共享化的 ref 以 owner/reason 精确列入 pending，并由 `requireExecutable…` fail closed；HTTP/in-process parity 不是所有 endpoint 都有。 |
 | Cross-service | 已验证（本地） | `processes/chat-outbox.test.ts`、`chat/test/durable-outbox.test.ts`、`chat/test/reliability.test.ts`、`processes/event-consumer.metrics.integration.test.ts`、`generation-manifest-ingest.test.ts` | 真 Redis 进程被杀、网络分区和每个 projector 的独立重建仍属于 chaos/rehearsal 证据。 |
 | Metric golden dataset | 已验证 | `metrics/engine.test.ts`、`metrics/projector.test.ts`、`event-consumer.metrics.integration.test.ts`、`metrics/backfill.test.ts`；projector golden chain 从 typed signup/D0/D1 依次重放 regenerate/edit/delete/selection/replacement 并断言 canonical Activation/D1 | D7 成熟窗口继续由 engine 边界 fixture 单独锁定，避免用短测试时钟伪造成熟。 |
-| API/AuthZ | 已验证（admission） | `api-manifest.test.ts`、`authority-manifest.test.ts`、`permissions/grant-bundles.integration.test.ts`、`commands/authoritative.integration.test.ts`、`bootstrap/route.test.ts`、`nav-config.test.ts`：84/84 operation 精确覆盖，exact method allOf、动态 resolver allowlist、未知 production operation 与未声明 handler permission fail closed，11 个 v2 workspace nav/deep-link 由 shared SSoT 派生 | 全 endpoint response DTO 正反 fixture 归 Contract 行继续跟踪；生产实时撤权/session canary 仍是外部 Gate。 |
+| API/AuthZ | 已验证（admission） | `api-manifest.test.ts`、`authority-manifest.test.ts`、`authority-execution-matrix.test.ts`、`permissions/grant-bundles.integration.test.ts`、`commands/authoritative.integration.test.ts`、`bootstrap/route.test.ts`、`nav-config.test.ts`：84/84 operation 精确覆盖；83 个 protected Route Handler 逐个以匿名真实调用证明在 body/DB 前 401；exact method allOf、动态 resolver allowlist、未知 production operation 与未声明 handler permission fail closed；11 个 v2 workspace nav/deep-link 由 shared SSoT 派生 | 全 endpoint response DTO 正反 fixture 归 Contract 行继续跟踪；生产实时撤权/session canary 仍是外部 Gate。 |
 | E2E Character | 已验证（浏览器） | `admin-v2-workspaces.e2e.ts` 串起 create/resume、blocker、pinned validation、preview、publish、24h monitor 与 immutable snapshot rollback，并断言数据库 authority | 生产 canary 不由本地 Playwright 代替。 |
 | E2E Creative/Incident | 已验证（浏览器） | `admin-v2-workspaces.e2e.ts` 从 Creative review/placement/verification 进入 Incident authority verification、resolve、postmortem close，并断言 facts/Audit | 生产 canary不由本地 Playwright 代替。 |
 | E2E Case | 已验证（浏览器） | `admin-v2-workspaces.e2e.ts` 覆盖 Evidence、decision、downstream authority verify、close 与 Decision/Audit facts；并由 integration 锁定多 source/recurrence | 生产 canary不由本地 Playwright 代替。 |
 | E2E Today | 已验证（浏览器） | `today/query.test.ts` 覆盖 verification failed re-entry；`admin-v2-workspaces.e2e.ts` 从已验证 Case/Incident 投影到 Recently resolved，并验证 canonical deep links | 生产 canary不由本地 Playwright 代替。 |
 | Component/A11y | 已验证（核心 Gate） | `operations/workspaces.test.tsx`、`collaboration.test.tsx`、`a11y-error-boundary.test.ts`；`admin-v2-workspaces.e2e.ts` 对六个核心 surface 执行 axe WCAG 2.2 AA，验证 dialog focus trap/restore、键盘 tab、375px 与 834px 四条核心流程无横向溢出 | 全部 compatibility 页面仍按各自 sunset 节奏治理，不冒充生产辅助技术人工验收。 |
 | Migration rehearsal | 已验证（本地） | `admin-migration-rehearsal.mjs` + readiness 命令覆盖 fresh/repeat/baseline/upgrade/rollback/forward-fix | 生产快照 backfill/shadow 仍必须在专用环境取证。 |
-| Load/Chaos | 部分 | `admin-production-like-readiness.ts` 覆盖 100k Jobs/Cases、1m Events；outbox/lease/projector recovery 单测；`release-executor.integration.test.ts` 覆盖 dispatcher restart、双 scheduler、双 worker、Serving CAS 单副作用与 stale occurrence/policy | 真 DB/Redis process kill、网络分区与 production-like projector lag 尚未形成同一可重跑套件。 |
+| Load/Chaos | 部分 | `admin-production-like-readiness.ts` 覆盖 100k Jobs/Cases、1m Events；outbox/lease/projector recovery 单测；`release-executor.integration.test.ts` 覆盖 scheduled publish restart/并发；`release-monitor.integration.test.ts` 覆盖 due scan、CAS lease、过期重领、双 worker、确定性 Audit/Outbox、stale→Today 与 superseded 终结 | 真 DB/Redis process kill、网络分区、真实 Today handler 100k 路径与 production-like projector lag 尚未形成同一可重跑套件。 |
 
 ## §21.2 反例 fixture
 
@@ -55,6 +55,6 @@
 
 ## 仍应作为发布阻断项跟踪
 
-- 84 个 manifest operation 的 contract ref 必须继续绑定到真实可执行 Zod schema，并逐项跑正反 fixture；字符串存在不等于 contract 已执行。
+- 29 个 pending contract ref 必须继续共享化并进入真实 Zod 正反 fixture；31 个 pending mutation 必须补齐幂等键或乐观锁的 replay/collision/failure semantics。机器可读 inventory 只是诚实 Gate，不是完成。
 - production-like 真 DB/Redis process kill、网络分区与 projector lag chaos 套件。
 - 生产 read/write canary、实时撤权/session、辅助技术人工验收和持续观察窗口；本地自动化不能签发这些外部证据。
