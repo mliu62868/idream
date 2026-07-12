@@ -1021,12 +1021,14 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await expect(page.locator("article").filter({ hasText: candidateReleaseId })).toContainText("serving now");
 
     await page.getByRole("tab", { name: "monitor" }).click();
-    await page.getByRole("button", { name: "Refresh 24h" }).click();
+    const refresh24h = page.getByRole("button", { name: "Refresh 24h" });
+    await refresh24h.click();
     await expect.poll(async () => prisma.releaseMonitor.findUnique({
       where: { releaseId_window: { releaseId: candidateReleaseId, window: "24h" } },
       select: { status: true },
     })).not.toBeNull();
     await expect(page.getByRole("heading", { level: 3, name: "24h guardrail" })).toBeVisible();
+    await expect(refresh24h).toBeEnabled();
 
     await page.getByRole("tab", { name: "release" }).click();
     await page.getByLabel("Exact confirmation").fill(`${releaseCharacterId}:${oldReleaseId}:rollback`);
