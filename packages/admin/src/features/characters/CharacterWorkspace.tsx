@@ -5,6 +5,7 @@ import {
   characterPortfolioResponseSchema,
   characterWorkspaceDetailSchema,
   type CharacterPortfolioItem,
+  type CharacterQaCheck,
   type CharacterWorkspaceDetail,
 } from "@idream/shared/admin";
 import { ArrowLeft, Clock3, RefreshCcw, Rocket, RotateCcw, Save, ShieldAlert } from "lucide-react";
@@ -209,8 +210,46 @@ function ProjectEditor({ data, permissions, onReload }: { data: CharacterWorkspa
   );
 }
 
-function PreviewDiff({ data }: { data: CharacterWorkspaceDetail }) {
+const qaCheckKeys: readonly CharacterQaCheck["key"][] = [
+  "explore_feed_card_desktop",
+  "explore_feed_card_mobile",
+  "character_detail_desktop",
+  "character_detail_mobile",
+  "opening_message",
+  "five_turn_conversation",
+  "chat_image",
+];
+
+function PreviewDiff({ data, permissions, reload }: { data: CharacterWorkspaceDetail; permissions: Permissions; reload: () => Promise<void> }) {
   const snapshots = [data.preview.live, data.preview.draft].filter((item): item is NonNullable<typeof item> => Boolean(item));
+  const [checks, setChecks] = useState<CharacterQaCheck[]>(() => qaCheckKeys.map((key) => ({
+    key,
+    result: "failed",
+    evidenceRef: "",
+    comment: "Not yet verified",
+    fixDeepLink: `/admin/characters/${data.character.id}?tab=preview`,
+  })));
+  const [reason, setReason] = useState("Record renderer and conversation QA evidence");
+  const [busy, setBusy] = useState(false);
+  const [qaError, setQaError] = useState<string | null>(null);
+  const updateCheck = (key: CharacterQaCheck["key"], patch: Partial<CharacterQaCheck>) => {
+    setChecks((current) => current.map((check) => check.key === key ? { ...check, ...patch } : check));
+  };
+  const recordQa = async () => {
+    setBusy(true);
+    setQaError(null);
+    try {
+      await adminV2Request(`/api/v2/admin/characters/${data.character.id}/qa-runs`, {
+        method: "POST",
+        body: { entityVersion: data.project.version, checks, reason },
+      });
+      await reload();
+    } catch (cause) {
+      setQaError(cause instanceof Error ? cause.message : "Could not record QA evidence");
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <div>
       <div className="mb-4 flex flex-wrap gap-2" aria-label="Changed fields">{data.preview.changedFields.map((field) => <StatusBadge key={field} tone="warn" value={`${field} changed`} />)}</div>
@@ -239,6 +278,27 @@ function PreviewDiff({ data }: { data: CharacterWorkspaceDetail }) {
           </div>
         </article>)}
       </div>
+      <section aria-labelledby="character-qa-title" className="mt-8 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div><h2 className="font-semibold" id="character-qa-title">Immutable QA evidence</h2><p className="mt-1 text-xs text-[var(--ad-text-muted)]">Every required surface carries a result, evidence, comment, owner and fix path.</p></div>
+          <StatusBadge value={`${data.qaRuns.length} runs`} />
+        </div>
+        <div className="mt-4 grid gap-3">
+          {checks.map((check) => <fieldset className="grid gap-2 rounded-lg border border-[var(--ad-border)] p-3 sm:grid-cols-[190px_120px_1fr]" disabled={!permissions.reviewRelease || busy} key={check.key}>
+            <legend className="sr-only">{check.key}</legend>
+            <div className="text-xs font-semibold">{check.key.replaceAll("_", " ")}</div>
+            <select aria-label={`${check.key} result`} className={fieldClass} onChange={(event) => updateCheck(check.key, { result: event.target.value as CharacterQaCheck["result"] })} value={check.result}><option value="failed">Failed</option><option value="passed">Passed</option></select>
+            <input aria-label={`${check.key} evidence reference`} className={fieldClass} onChange={(event) => updateCheck(check.key, { evidenceRef: event.target.value })} placeholder="Evidence URL or durable reference" value={check.evidenceRef} />
+            <textarea aria-label={`${check.key} comment`} className={`${textAreaClass} sm:col-span-3`} onChange={(event) => updateCheck(check.key, { comment: event.target.value })} value={check.comment} />
+          </fieldset>)}
+        </div>
+        <label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">QA reason<input className={`${fieldClass} mt-1`} onChange={(event) => setReason(event.target.value)} value={reason} /></label>
+        {qaError ? <p className="mt-3 text-sm text-[var(--ad-red-text)]" role="alert">{qaError}</p> : null}
+        <div className="mt-4"><WorkspaceButton disabled={!permissions.reviewRelease || busy || checks.some((check) => !check.evidenceRef.trim() || check.comment.trim().length < 3)} onClick={() => void recordQa()} tone="primary">Record immutable QA Run</WorkspaceButton></div>
+        <div className="mt-5 grid gap-2">
+          {data.qaRuns.map((run) => <article className="rounded-lg bg-black/[0.04] p-3 text-xs" key={run.id}><div className="flex flex-wrap items-center gap-2"><StatusBadge value={run.status} /><strong>{run.id}</strong><span className="text-[var(--ad-text-muted)]">owner {run.ownerId} · ContentVersion {run.characterContentVersionId}</span></div><p className="mt-2 break-all text-[var(--ad-text-muted)]">Evidence hash {run.evidenceHash}</p></article>)}
+        </div>
+      </section>
     </div>
   );
 }
@@ -250,7 +310,7 @@ function ReleasePanel({ data, permissions, reload }: { data: CharacterWorkspaceD
     release.id !== current?.release.id && release.status === "superseded",
   );
   const [reason, setReason] = useState("Operator verified release evidence");
-  const [qaEvidenceRef, setQaEvidenceRef] = useState("");
+  const [selectedQaRunId, setSelectedQaRunId] = useState("");
   const [scheduledAt, setScheduledAt] = useState("");
   const [selectedRollbackSourceId, setSelectedRollbackSourceId] = useState("");
   const [confirmation, setConfirmation] = useState("");
@@ -288,6 +348,10 @@ function ReleasePanel({ data, permissions, reload }: { data: CharacterWorkspaceD
     ? selectedRollbackSourceId
     : rollbackSources[0]?.release.id ?? "";
   const rollbackSource = rollbackSources.find(({ release }) => release.id === rollbackSourceId);
+  const eligibleQaRuns = data.qaRuns.filter((run) => run.status === "passed");
+  const qaRunId = eligibleQaRuns.some((run) => run.id === selectedQaRunId)
+    ? selectedQaRunId
+    : eligibleQaRuns[0]?.id ?? "";
   const propose = async () => {
     setBusy("propose");
     setError(null);
@@ -296,7 +360,7 @@ function ReleasePanel({ data, permissions, reload }: { data: CharacterWorkspaceD
         method: "POST",
         body: {
           entityVersion: data.project.version,
-          qaEvidenceRef: qaEvidenceRef.trim(),
+          qaRunId,
           reason,
           confirmation: confirmation.trim(),
         },
@@ -403,8 +467,11 @@ function ReleasePanel({ data, permissions, reload }: { data: CharacterWorkspaceD
         </label>
         {!candidate ? (
           <label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">
-            Five-turn QA evidence reference
-            <input className={`${fieldClass} mt-1`} onChange={(event) => setQaEvidenceRef(event.target.value)} value={qaEvidenceRef} />
+            Passed QA Run
+            <select className={`${fieldClass} mt-1`} onChange={(event) => setSelectedQaRunId(event.target.value)} value={qaRunId}>
+              <option value="">No passed QA Run</option>
+              {eligibleQaRuns.map((run) => <option key={run.id} value={run.id}>{run.id} · {run.characterContentVersionId}</option>)}
+            </select>
           </label>
         ) : null}
         <label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">
@@ -423,7 +490,7 @@ function ReleasePanel({ data, permissions, reload }: { data: CharacterWorkspaceD
         </p>
         {error ? <p className="mt-3 text-xs text-[var(--ad-red-text)]" role="alert">{error}</p> : null}
         <div className="mt-4 grid gap-2">
-          {!candidate ? <WorkspaceButton disabled={!permissions.proposeRelease || !qaEvidenceRef.trim() || confirmation !== `${data.character.id}:propose-release` || Boolean(busy)} onClick={() => void propose()}><Rocket className="h-4 w-4" /> Propose immutable Release</WorkspaceButton> : null}
+          {!candidate ? <WorkspaceButton disabled={!permissions.proposeRelease || !qaRunId || confirmation !== `${data.character.id}:propose-release` || Boolean(busy)} onClick={() => void propose()}><Rocket className="h-4 w-4" /> Propose immutable Release</WorkspaceButton> : null}
           {candidate?.release.status === "in_review" ? <><WorkspaceButton disabled={!permissions.reviewRelease || confirmation !== `${data.character.id}:${candidate.release.id}:approved` || Boolean(busy)} onClick={() => void review("approved")} tone="primary">Approve candidate</WorkspaceButton><WorkspaceButton disabled={!permissions.reviewRelease || confirmation !== `${data.character.id}:${candidate.release.id}:changes_requested` || Boolean(busy)} onClick={() => void review("changes_requested")}>Request changes</WorkspaceButton></> : null}
           <WorkspaceButton disabled={!permissions.publishRelease || !candidate || candidate.release.status !== "approved" || confirmation !== `${data.character.id}:${candidate.release.id}:validate` || Boolean(busy)} onClick={() => void validate()}>
             Validate pinned snapshot
@@ -479,7 +546,7 @@ function CharacterDetail({ id, permissions }: { id: string; permissions: Permiss
   if (loading) return <LoadingWorkspace label="Loading Character Project, Release and Monitor evidence" />;
   if (!data) return <section className="rounded-xl bg-[var(--ad-red-bg)] p-5" role="alert">{error ?? "Character not found"} <button className="ml-2 underline" onClick={() => void load()} type="button">Retry</button></section>;
   const onTabKey = (event: KeyboardEvent<HTMLButtonElement>, current: number) => { if (!event.key.startsWith("Arrow")) return; event.preventDefault(); const next = (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length; setTab(tabs[next]); document.getElementById(`character-tab-${tabs[next]}`)?.focus(); };
-  return <section aria-labelledby="character-workspace-title"><Link className="inline-flex min-h-11 items-center gap-2 text-sm text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]" href="/admin/characters"><ArrowLeft className="h-4 w-4" /> Portfolio</Link><div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-xs uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">Character Project · {data.project.id}</p><h1 className="mt-1 text-2xl font-semibold" id="character-workspace-title">{data.character.name}</h1><div className="mt-2 flex flex-wrap gap-2"><StatusBadge value={data.project.phase} /><StatusBadge value={data.serving?.state ?? "inactive"} /><StatusBadge value={data.character.visibility} /></div></div><p className="text-xs text-[var(--ad-text-muted)]">Project v{data.project.version} · Serving v{data.serving?.version ?? 0}</p></div>{error ? <p className="mt-4" role="alert">{error}</p> : null}<div className="mt-6 flex gap-1 overflow-x-auto border-b border-[var(--ad-border)]" role="tablist" aria-label="Character workspace">{tabs.map((item, index) => <button aria-controls={`character-panel-${item}`} aria-selected={tab === item} className={cn("min-h-11 shrink-0 border-b-2 px-3 text-sm capitalize focus-visible:outline focus-visible:outline-2", tab === item ? "border-[var(--ad-ink)] font-semibold text-[var(--ad-ink)]" : "border-transparent text-[var(--ad-text-muted)]")} id={`character-tab-${item}`} key={item} onClick={() => { setTab(item); const query = new URLSearchParams({ tab: item }); setWorkspaceUrl(query); }} onKeyDown={(event) => onTabKey(event, index)} role="tab" tabIndex={tab === item ? 0 : -1} type="button">{item}</button>)}</div><div className="mt-5" id={`character-panel-${tab}`} role="tabpanel" aria-labelledby={`character-tab-${tab}`}>{tab === "project" ? <ProjectEditor data={data} key={data.project.version} onReload={load} permissions={permissions} /> : tab === "preview" ? <PreviewDiff data={data} /> : tab === "release" ? <ReleasePanel data={data} permissions={permissions} reload={load} /> : tab === "monitor" ? <MonitorPanel data={data} permissions={permissions} reload={load} /> : <PerformancePanel data={data} />}</div></section>;
+  return <section aria-labelledby="character-workspace-title"><Link className="inline-flex min-h-11 items-center gap-2 text-sm text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]" href="/admin/characters"><ArrowLeft className="h-4 w-4" /> Portfolio</Link><div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-xs uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">Character Project · {data.project.id}</p><h1 className="mt-1 text-2xl font-semibold" id="character-workspace-title">{data.character.name}</h1><div className="mt-2 flex flex-wrap gap-2"><StatusBadge value={data.project.phase} /><StatusBadge value={data.serving?.state ?? "inactive"} /><StatusBadge value={data.character.visibility} /></div></div><p className="text-xs text-[var(--ad-text-muted)]">Project v{data.project.version} · Serving v{data.serving?.version ?? 0}</p></div>{error ? <p className="mt-4" role="alert">{error}</p> : null}<div className="mt-6 flex gap-1 overflow-x-auto border-b border-[var(--ad-border)]" role="tablist" aria-label="Character workspace">{tabs.map((item, index) => <button aria-controls={`character-panel-${item}`} aria-selected={tab === item} className={cn("min-h-11 shrink-0 border-b-2 px-3 text-sm capitalize focus-visible:outline focus-visible:outline-2", tab === item ? "border-[var(--ad-ink)] font-semibold text-[var(--ad-ink)]" : "border-transparent text-[var(--ad-text-muted)]")} id={`character-tab-${item}`} key={item} onClick={() => { setTab(item); const query = new URLSearchParams({ tab: item }); setWorkspaceUrl(query); }} onKeyDown={(event) => onTabKey(event, index)} role="tab" tabIndex={tab === item ? 0 : -1} type="button">{item}</button>)}</div><div className="mt-5" id={`character-panel-${tab}`} role="tabpanel" aria-labelledby={`character-tab-${tab}`}>{tab === "project" ? <ProjectEditor data={data} key={data.project.version} onReload={load} permissions={permissions} /> : tab === "preview" ? <PreviewDiff data={data} permissions={permissions} reload={load} /> : tab === "release" ? <ReleasePanel data={data} permissions={permissions} reload={load} /> : tab === "monitor" ? <MonitorPanel data={data} permissions={permissions} reload={load} /> : <PerformancePanel data={data} />}</div></section>;
 }
 
 export function CharacterWorkspace({ view, permissions }: { view: AdminSubview; permissions: Permissions }) {

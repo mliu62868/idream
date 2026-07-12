@@ -1498,6 +1498,23 @@ model ReleaseValidationRun {
   @@map("release_validation_runs")
 }
 
+model CharacterQaRun {
+  id                        String   @id @default(cuid())
+  characterId               String
+  projectId                 String
+  characterContentVersionId String
+  projectVersion            Int
+  ownerId                   String
+  status                    String
+  checks                    Json
+  evidenceHash              String   @unique
+  createdAt                 DateTime @default(now())
+
+  @@index([characterId, createdAt])
+  @@index([projectId, characterContentVersionId, status])
+  @@map("character_qa_runs")
+}
+
 model ReleaseCheckResult {
   id              String   @id @default(cuid())
   validationRunId String

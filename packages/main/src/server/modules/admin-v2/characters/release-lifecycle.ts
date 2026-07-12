@@ -9,7 +9,7 @@ export async function proposeCharacterRelease(input: {
   request: Request;
   characterId: string;
   expectedProjectVersion: number;
-  qaEvidenceRef: string;
+  qaRunId: string;
   reason: string;
 }) {
   const actor = await actorWithPermission(input.request, "character.release.propose", { characterId: input.characterId });
@@ -23,12 +23,20 @@ export async function proposeCharacterRelease(input: {
     if (existing) throw Errors.conflict("Character Project already has an active candidate Release", { releaseId: existing.id });
     const character = await tx.character.findUnique({ where: { id: input.characterId }, include: { imageAsset: true } });
     const revision = await tx.characterRevision.findFirst({ where: { projectId: project.id }, orderBy: { revision: "desc" } });
+    const qaRun = await tx.characterQaRun.findUnique({ where: { id: input.qaRunId } });
     const profile = await tx.characterVisualProfile.findFirst({ where: { characterId: input.characterId, status: "active" }, orderBy: { version: "desc" } });
     const referenceSet = profile ? await tx.referenceSetRevision.findFirst({ where: { visualProfileId: profile.id, status: "active" }, include: { references: true }, orderBy: { revision: "desc" } }) : null;
     const route = profile ? await tx.generationRouteQualification.findFirst({ where: { style: profile.style, policyVersion: CHARACTER_RELEASE_POLICY_VERSION, result: "qualified", sampleCount: { gte: 40 }, identityMatch: { gte: 0.9 }, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] }, orderBy: { evaluatedAt: "desc" } }) : null;
     const blockers = [
       ...(!character ? ["character_missing"] : []),
       ...(!revision ? ["revision_missing"] : []),
+      ...(!qaRun || qaRun.status !== "passed" ? ["character_qa_not_passed"] : []),
+      ...(qaRun && (
+        qaRun.characterId !== input.characterId ||
+        qaRun.projectId !== project.id ||
+        qaRun.characterContentVersionId !== revision?.characterContentVersionId ||
+        qaRun.projectVersion !== project.version
+      ) ? ["character_qa_authority_mismatch"] : []),
       ...(!profile?.immutableHash ? ["active_visual_profile_missing_or_unsealed"] : []),
       ...(!referenceSet?.snapshotHash || !referenceSet.references.length ? ["active_reference_set_missing_or_empty"] : []),
       ...(!route ? ["qualified_generation_route_missing"] : []),
@@ -37,14 +45,18 @@ export async function proposeCharacterRelease(input: {
     if (blockers.length > 0) throw Errors.conflict("Character is not ready to propose a Release", { blockers });
     const generationProvenance = {
       routeFingerprint: route!.routeFingerprint,
+      matrixKey: route!.matrixKey,
       generationProfileKey: route!.generationProfileKey,
       generationProfileVersion: route!.generationProfileVersion,
       workflowKey: route!.workflowKey,
       workflowVersion: route!.workflowVersion,
-      matrixKey: route!.matrixKey,
       visualProfileHash: profile!.immutableHash,
       referenceSetHash: referenceSet!.snapshotHash,
-      characterQa: { status: "passed", evidenceRef: input.qaEvidenceRef },
+      characterQa: {
+        status: "passed",
+        qaRunId: qaRun!.id,
+        evidenceHash: qaRun!.evidenceHash,
+      },
     };
     const releasePlacementManifest = { placements: [{ slotKey: "character_avatar", assetId: character!.imageAsset!.id, slotVersion: 1 }] };
     const snapshot = {

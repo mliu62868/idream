@@ -35,6 +35,7 @@ type InvariantDb = Pick<
   | "characterProject"
   | "characterRevision"
   | "characterContentVersion"
+  | "characterQaRun"
   | "characterVisualProfile"
   | "referenceSetRevision"
 >;
@@ -364,7 +365,8 @@ function hasCompleteGenerationProvenance(value: unknown) {
     && isNonEmptyString(value.workflowKey)
     && isPositiveInteger(value.workflowVersion)
     && value.characterQa.status === "passed"
-    && isNonEmptyString(value.characterQa.evidenceRef);
+    && isNonEmptyString(value.characterQa.qaRunId)
+    && isNonEmptyString(value.characterQa.evidenceHash);
 }
 
 function hasCompletePlacementManifest(value: unknown) {
@@ -483,7 +485,12 @@ async function inspectServingReleaseBatch(
   const referenceSetIds = [...new Set(releases.flatMap((release) =>
     release.referenceSetRevisionId ? [release.referenceSetRevisionId] : [],
   ))];
-  const [projects, revisions, contents, profiles, referenceSets] = await Promise.all([
+  const qaRunIds = [...new Set(releases.flatMap((release) => {
+    const provenance = isRecord(release.generationProvenance) ? release.generationProvenance : {};
+    const qa = isRecord(provenance.characterQa) ? provenance.characterQa : {};
+    return isNonEmptyString(qa.qaRunId) ? [qa.qaRunId] : [];
+  }))];
+  const [projects, revisions, contents, profiles, referenceSets, qaRuns] = await Promise.all([
     db.characterProject.findMany({ where: { id: { in: projectIds } } }),
     db.characterRevision.findMany({ where: { id: { in: revisionIds } } }),
     db.characterContentVersion.findMany({ where: { id: { in: contentIds } } }),
@@ -497,12 +504,14 @@ async function inspectServingReleaseBatch(
         },
       },
     }),
+    db.characterQaRun.findMany({ where: { id: { in: qaRunIds } } }),
   ]);
   const projectById = new Map(projects.map((row) => [row.id, row]));
   const revisionById = new Map(revisions.map((row) => [row.id, row]));
   const contentById = new Map(contents.map((row) => [row.id, row]));
   const profileById = new Map(profiles.map((row) => [row.id, row]));
   const referenceSetById = new Map(referenceSets.map((row) => [row.id, row]));
+  const qaRunById = new Map(qaRuns.map((row) => [row.id, row]));
 
   for (const pointer of pointers) {
     const release = releaseById.get(pointer.releaseId);
@@ -579,7 +588,18 @@ async function inspectServingReleaseBatch(
       generationProvenance: release.generationProvenance,
       releasePlacementManifest: release.releasePlacementManifest,
     });
+    const provenance = isRecord(release.generationProvenance) ? release.generationProvenance : {};
+    const qa = isRecord(provenance.characterQa) ? provenance.characterQa : {};
+    const qaRun = isNonEmptyString(qa.qaRunId) ? qaRunById.get(qa.qaRunId) : undefined;
+    const qaIsExact = Boolean(
+      project && qaRun && qaRun.status === "passed"
+      && qaRun.characterId === project.characterId
+      && qaRun.projectId === release.projectId
+      && qaRun.characterContentVersionId === release.characterContentVersionId
+      && qaRun.evidenceHash === qa.evidenceHash,
+    );
     const manifestIsComplete = hasCompleteGenerationProvenance(release.generationProvenance)
+      && qaIsExact
       && hasCompletePlacementManifest(release.releasePlacementManifest)
       && isNonEmptyString(release.snapshotHash)
       && release.snapshotHash === snapshotHash

@@ -17,6 +17,8 @@ describe("Character Release proposal and review lifecycle", () => {
   const contentId = `release-lifecycle-content-${suffix}`;
   const revisionId = `release-lifecycle-revision-${suffix}`;
   const routeFingerprint = `release-lifecycle-route-${suffix}`;
+  const qaRunId = `release-lifecycle-qa-${suffix}`;
+  const qaEvidenceHash = `release-lifecycle-qa-hash-${suffix}`;
   const headers = { "x-idream-user-id": actorId, "x-idream-role": "admin", "x-request-id": `release-lifecycle-${suffix}` };
 
   beforeAll(async () => {
@@ -33,6 +35,7 @@ describe("Character Release proposal and review lifecycle", () => {
     await prisma.characterContentVersion.create({ data: { id: contentId, characterId, version: 1, contentHash: `release-lifecycle-content-hash-${suffix}`, personaSnapshot: { name: "Released Candidate", age: 25, gender: "female", relationshipArchetype: "companion", characterPromise: "Complete persona", description: "Complete persona", systemPrompt: "Stay consistent" }, openingSnapshot: { firstMessage: "Hello" }, appearanceSnapshot: { style: "realistic" }, sourceType: "test", createdById: actorId } });
     await prisma.characterProject.create({ data: { id: projectId, characterId, ownerId: actorId, phase: "qa", audience: {}, successCriteria: ["five_turn_qa"], activeKey: `official:${characterId}` } });
     await prisma.characterRevision.create({ data: { id: revisionId, projectId, revision: 1, characterContentVersionId: contentId, projectSnapshot: {}, createdById: actorId } });
+    await prisma.characterQaRun.create({ data: { id: qaRunId, characterId, projectId, characterContentVersionId: contentId, projectVersion: 1, ownerId: actorId, status: "passed", checks: [], evidenceHash: qaEvidenceHash } });
   });
 
   afterAll(async () => {
@@ -49,6 +52,7 @@ describe("Character Release proposal and review lifecycle", () => {
     await prisma.adminCollaborationActivity.deleteMany({ where: { targetId: { in: releases.map((row) => row.id) } } });
     await prisma.adminAuditLog.deleteMany({ where: { actorId } });
     await prisma.characterRelease.deleteMany({ where: { projectId } });
+    await prisma.characterQaRun.deleteMany({ where: { id: qaRunId } });
     await prisma.characterRevision.deleteMany({ where: { id: revisionId } });
     await prisma.characterProject.deleteMany({ where: { id: projectId } });
     await prisma.characterContentVersion.deleteMany({ where: { id: contentId } });
@@ -64,7 +68,9 @@ describe("Character Release proposal and review lifecycle", () => {
 
   it("pins exact immutable inputs, then records an explicit review decision", async () => {
     const request = new Request(`http://localhost/api/v2/admin/characters/${characterId}/releases`, { method: "POST", headers });
-    const proposed = await proposeCharacterRelease({ request, characterId, expectedProjectVersion: 1, qaEvidenceRef: `qa://five-turn/${suffix}`, reason: "Five-turn QA and visual evidence passed" });
+    await expect(proposeCharacterRelease({ request, characterId, expectedProjectVersion: 1, qaRunId: `missing-${qaRunId}`, reason: "An arbitrary QA reference must not pass" }))
+      .rejects.toMatchObject({ status: 409 });
+    const proposed = await proposeCharacterRelease({ request, characterId, expectedProjectVersion: 1, qaRunId, reason: "Five-turn QA and visual evidence passed" });
     expect(proposed).toMatchObject({ projectId, revisionId, characterContentVersionId: contentId, visualProfileId: profileId, referenceSetRevisionId: referenceSetId, status: "in_review", version: 1 });
     expect(proposed.snapshotHash).toHaveLength(64);
     const approved = await reviewCharacterRelease({ request, characterId, releaseId: proposed.id, expectedVersion: proposed.version, decision: "approved", reason: "Independent reviewer approved immutable snapshot" });

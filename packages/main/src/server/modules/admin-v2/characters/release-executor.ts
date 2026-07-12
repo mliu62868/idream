@@ -202,6 +202,10 @@ export async function validateCharacterReleaseSnapshot(
     ? referenceSetSnapshotHash(referenceSet)
     : null;
   const characterQa = record(provenance.characterQa);
+  const characterQaRunId = stringValue(characterQa.qaRunId);
+  const characterQaRun = characterQaRunId
+    ? await tx.characterQaRun.findUnique({ where: { id: characterQaRunId } })
+    : null;
   const avatarAssetId = placementAssetId(release.releasePlacementManifest);
   const avatarAsset = avatarAssetId
     ? await tx.mediaAsset.findFirst({
@@ -306,10 +310,17 @@ export async function validateCharacterReleaseSnapshot(
       key: "character_qa_passed",
       passed:
         characterQa.status === "passed" &&
-        stringValue(characterQa.evidenceRef) !== null,
+        characterQaRun !== null &&
+        characterQaRun.status === "passed" &&
+        characterQaRun.characterId === project?.characterId &&
+        characterQaRun.projectId === release.projectId &&
+        characterQaRun.characterContentVersionId === release.characterContentVersionId &&
+        characterQaRun.evidenceHash === stringValue(characterQa.evidenceHash),
       evidence: {
         status: characterQa.status ?? null,
-        evidenceRef: characterQa.evidenceRef ?? null,
+        qaRunId: characterQaRunId,
+        evidenceHash: characterQa.evidenceHash ?? null,
+        authorityStatus: characterQaRun?.status ?? null,
       },
     },
     {

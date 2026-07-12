@@ -35,20 +35,11 @@ describe("Admin cutover invariant adversarial release authority", () => {
   const projectIds: string[] = [];
   const profileIds: string[] = [];
   const referenceSetIds: string[] = [];
+  const qaRunIds: string[] = [];
   const partialFactId = `${prefix}-partial-fact`;
   const partialRequestId = `${prefix}-partial-request`;
   const missingPartialFactRequestId = `${prefix}-partial-without-fact`;
   const creativeMismatchId = `${prefix}-creative-mismatch`;
-
-  const validProvenance = {
-    routeFingerprint: `${prefix}:route`,
-    matrixKey: "default-character",
-    generationProfileKey: "portrait",
-    generationProfileVersion: 1,
-    workflowKey: "identity",
-    workflowVersion: 1,
-    characterQa: { status: "passed", evidenceRef: `${prefix}-qa` },
-  } satisfies Prisma.InputJsonObject;
 
   const validPlacement = {
     placements: [
@@ -64,7 +55,17 @@ describe("Admin cutover invariant adversarial release authority", () => {
     const profileId = `${prefix}-${label}-profile`;
     const referenceSetId = `${prefix}-${label}-references`;
     const releaseId = `${prefix}-${label}-release`;
-    const generationProvenance = options.generationProvenance ?? validProvenance;
+    const qaRunId = `${prefix}-${label}-qa`;
+    const qaEvidenceHash = `${prefix}-${label}-qa-hash`;
+    const generationProvenance = options.generationProvenance ?? {
+      routeFingerprint: `${prefix}:route`,
+      matrixKey: "default-character",
+      generationProfileKey: "portrait",
+      generationProfileVersion: 1,
+      workflowKey: "identity",
+      workflowVersion: 1,
+      characterQa: { status: "passed", qaRunId, evidenceHash: qaEvidenceHash },
+    } satisfies Prisma.InputJsonObject;
     const releasePlacementManifest = options.releasePlacementManifest ?? validPlacement;
 
     characterIds.push(characterId);
@@ -72,6 +73,7 @@ describe("Admin cutover invariant adversarial release authority", () => {
     profileIds.push(profileId);
     referenceSetIds.push(referenceSetId);
     releaseIds.push(releaseId);
+    qaRunIds.push(qaRunId);
 
     await prisma.character.create({
       data: {
@@ -114,6 +116,19 @@ describe("Admin cutover invariant adversarial release authority", () => {
         revision: 1,
         characterContentVersionId: contentId,
         projectSnapshot: { label },
+      },
+    });
+    await prisma.characterQaRun.create({
+      data: {
+        id: qaRunId,
+        characterId,
+        projectId,
+        characterContentVersionId: contentId,
+        projectVersion: 1,
+        ownerId: userId,
+        status: "passed",
+        checks: [],
+        evidenceHash: qaEvidenceHash,
       },
     });
     const visualProfile = {
@@ -388,6 +403,7 @@ describe("Admin cutover invariant adversarial release authority", () => {
     await prisma.contentProductionBatch.deleteMany({ where: { id: creativeMismatchId } });
     await prisma.characterServing.deleteMany({ where: { id: { startsWith: prefix } } });
     await prisma.characterRelease.deleteMany({ where: { id: { in: releaseIds } } });
+    await prisma.characterQaRun.deleteMany({ where: { id: { in: qaRunIds } } });
     await prisma.characterRevision.deleteMany({ where: { projectId: { in: projectIds } } });
     await prisma.characterContentVersion.deleteMany({ where: { characterId: { in: characterIds } } });
     await prisma.characterProject.deleteMany({ where: { id: { in: projectIds } } });

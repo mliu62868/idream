@@ -65,6 +65,7 @@ async function inspectExpandedSchema(databaseName) {
        ORDER BY tablename`,
       [[
         "character_serving",
+        "character_qa_runs",
         "control_plane_commands",
         "generation_transport_executions",
         "incident_postmortems",
@@ -79,6 +80,7 @@ async function inspectExpandedSchema(databaseName) {
       [[
         "analytics_events_immutable",
         "character_release_snapshot_immutable",
+        "character_qa_runs_immutable_update",
         "generation_attempt_terminal_event_required",
         "generation_transport_execution_lifecycle",
         "incident_postmortems_immutable",
@@ -118,6 +120,20 @@ async function inspectExpandedSchema(databaseName) {
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name)
       .sort();
+    const qaRunId = `migration-rehearsal-qa-${runId}`;
+    await db.query(
+      `INSERT INTO character_qa_runs
+        (id, "characterId", "projectId", "characterContentVersionId", "projectVersion", "ownerId", status, checks, "evidenceHash")
+       VALUES ($1, 'character', 'project', 'content', 1, 'owner', 'passed', '[]'::jsonb, $2)`,
+      [qaRunId, `migration-rehearsal-qa-hash-${runId}-${databaseName}`],
+    );
+    let qaImmutableUpdateRejected = false;
+    try {
+      await db.query(`UPDATE character_qa_runs SET status = 'failed' WHERE id = $1`, [qaRunId]);
+    } catch (error) {
+      qaImmutableUpdateRejected = String(error).includes("character_qa_runs are immutable");
+    }
+    await db.query(`DELETE FROM character_qa_runs WHERE id = $1`, [qaRunId]);
     return {
       tables: tables.rows,
       triggers: triggers.rows,
@@ -133,8 +149,9 @@ async function inspectExpandedSchema(databaseName) {
               && row.finished_at !== null
               && row.rolled_back_at === null,
           ),
-        expandedTablesPresent: tables.rowCount === 5,
-        databaseGuardsPresent: triggers.rowCount === 5,
+        expandedTablesPresent: tables.rowCount === 6,
+        databaseGuardsPresent: triggers.rowCount === 6,
+        qaImmutableUpdateRejected,
         servingConstraintsPresent:
           servingConstraints.rowCount === 3
           && servingConstraints.rows.every((row) => row.condeferrable === true),

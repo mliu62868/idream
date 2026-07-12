@@ -30,15 +30,18 @@ describe("Character Release command executor", () => {
   const candidateReleaseId = `${prefix}-candidate`;
   const invalidReleaseId = `${prefix}-invalid`;
   const routeFingerprint = `${prefix}:route`;
+  const qaRunId = `${prefix}-qa-run`;
+  const qaEvidenceHash = `${prefix}-qa-evidence-hash`;
 
   function releaseData(id: string, overrides: Record<string, unknown> = {}) {
     const generationProvenance = {
       routeFingerprint,
+      matrixKey: "default-character",
       generationProfileKey: "portrait",
       generationProfileVersion: 2,
       workflowKey: "identity",
       workflowVersion: 3,
-      characterQa: { status: "passed", evidenceRef: `${prefix}-qa` },
+      characterQa: { status: "passed", qaRunId, evidenceHash: qaEvidenceHash },
     };
     const releasePlacementManifest = {
       placements: [
@@ -251,6 +254,19 @@ describe("Character Release command executor", () => {
         projectSnapshot: { hypothesis: "test" },
       },
     });
+    await prisma.characterQaRun.create({
+      data: {
+        id: qaRunId,
+        characterId,
+        projectId,
+        characterContentVersionId: contentId,
+        projectVersion: 1,
+        ownerId: actorId,
+        status: "passed",
+        checks: [],
+        evidenceHash: qaEvidenceHash,
+      },
+    });
     await prisma.characterRelease.create({
       data: releaseData(oldReleaseId, {
         status: "published",
@@ -311,6 +327,7 @@ describe("Character Release command executor", () => {
     await prisma.characterRelease.deleteMany({
       where: { id: { startsWith: prefix } },
     });
+    await prisma.characterQaRun.deleteMany({ where: { id: qaRunId } });
     await prisma.characterRevision.deleteMany({ where: { projectId } });
     await prisma.characterProject.deleteMany({ where: { id: projectId } });
     await prisma.characterContentVersion.deleteMany({ where: { characterId } });

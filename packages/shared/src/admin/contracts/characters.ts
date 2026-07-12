@@ -569,6 +569,56 @@ export const characterReleaseCheckSchema = z
   })
   .strict();
 
+export const characterQaCheckKeySchema = z.enum([
+  "explore_feed_card_desktop",
+  "explore_feed_card_mobile",
+  "character_detail_desktop",
+  "character_detail_mobile",
+  "opening_message",
+  "five_turn_conversation",
+  "chat_image",
+]);
+
+export const characterQaCheckSchema = z.object({
+  key: characterQaCheckKeySchema,
+  result: z.enum(["passed", "failed"]),
+  evidenceRef: z.string().trim().min(1).max(1_000),
+  comment: z.string().trim().min(3).max(2_000),
+  fixDeepLink: z.string().trim().startsWith("/admin/characters/").max(1_000),
+}).strict();
+
+export const characterQaRunCreateRequestSchema = z.object({
+  entityVersion: z.number().int().positive(),
+  checks: z.array(characterQaCheckSchema).length(7),
+  reason: z.string().trim().min(3).max(2_000),
+}).strict().superRefine((value, ctx) => {
+  const keys = new Set(value.checks.map((check) => check.key));
+  if (keys.size !== characterQaCheckKeySchema.options.length ||
+    characterQaCheckKeySchema.options.some((key) => !keys.has(key))) {
+    ctx.addIssue({ code: "custom", path: ["checks"], message: "QA Run requires every check exactly once" });
+  }
+});
+
+export const characterQaRunSchema = z.object({
+  id: adminIdSchema,
+  characterId: adminIdSchema,
+  projectId: adminIdSchema,
+  characterContentVersionId: adminIdSchema,
+  projectVersion: z.number().int().positive(),
+  ownerId: adminIdSchema,
+  status: z.enum(["passed", "failed"]),
+  checks: z.array(characterQaCheckSchema).length(7).readonly(),
+  evidenceHash: z.string().trim().min(1),
+  createdAt: adminIsoDateTimeSchema,
+}).strict();
+
+export const characterReleaseProposalRequestSchema = z.object({
+  entityVersion: z.number().int().positive(),
+  qaRunId: adminIdSchema,
+  reason: z.string().trim().min(3).max(2_000),
+  confirmation: z.string().trim().min(1),
+}).strict();
+
 export const characterReleaseMonitorSchema = z
   .object({
     id: adminIdSchema,
@@ -646,6 +696,7 @@ export const characterWorkspaceDetailSchema = z
     project: characterWorkspaceProjectSchema,
     serving: characterServingSchema.nullable(),
     releases: z.array(characterWorkspaceReleaseSchema).readonly(),
+    qaRuns: z.array(characterQaRunSchema).readonly(),
     preview: z
       .object({
         live: characterPreviewSnapshotSchema.nullable(),
@@ -685,6 +736,8 @@ export type CharacterPerformanceBackfillRequest = z.infer<typeof characterPerfor
 export type CharacterPerformanceReconciliation = z.infer<typeof characterPerformanceReconciliationSchema>;
 export type CharacterProjectDraftPatchRequest = z.infer<typeof characterProjectDraftPatchRequestSchema>;
 export type CharacterWorkspaceDetail = z.infer<typeof characterWorkspaceDetailSchema>;
+export type CharacterQaCheck = z.infer<typeof characterQaCheckSchema>;
+export type CharacterQaRun = z.infer<typeof characterQaRunSchema>;
 export type CharacterReleasePublishCommandRequest = z.infer<
   typeof characterReleasePublishCommandRequestSchema
 >;

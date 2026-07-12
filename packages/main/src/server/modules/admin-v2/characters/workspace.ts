@@ -2,7 +2,7 @@ import type {
   CharacterDraftPersona,
   CharacterDraftVisualDirection,
 } from "@idream/shared/admin";
-import { characterProjectDraftResumeSchema } from "@idream/shared/admin";
+import { characterProjectDraftResumeSchema, characterQaRunSchema } from "@idream/shared/admin";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
@@ -183,12 +183,17 @@ export async function getCharacterWorkspace(characterId: string) {
     const latest = validationRuns.find((run) => run.releaseId === releaseId);
     return latest ? [latest.id] : [];
   })));
-  const [checks, monitors, contents] = await Promise.all([
+  const [checks, monitors, contents, qaRuns] = await Promise.all([
     prisma.releaseCheckResult.findMany({ where: { validationRunId: { in: latestValidationIds } } }),
     prisma.releaseMonitor.findMany({ where: { releaseId: { in: releaseIds } }, orderBy: { startedAt: "desc" } }),
     prisma.characterContentVersion.findMany({
       where: { characterId },
       orderBy: { version: "desc" },
+    }),
+    prisma.characterQaRun.findMany({
+      where: { characterId },
+      orderBy: { createdAt: "desc" },
+      take: 20,
     }),
   ]);
   const imageUrl = character.imageAsset?.thumbnailUrl ?? character.imageAsset?.url ?? null;
@@ -241,6 +246,11 @@ export async function getCharacterWorkspace(characterId: string) {
         })),
       };
     }),
+    qaRuns: qaRuns.map((run) => characterQaRunSchema.parse({
+      ...run,
+      checks: run.checks,
+      createdAt: run.createdAt.toISOString(),
+    })),
     preview: { live, draft, changedFields: changedFields(live, draft) },
     performance,
   };
