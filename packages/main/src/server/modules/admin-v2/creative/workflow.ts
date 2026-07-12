@@ -3,6 +3,7 @@ import { Errors } from "@/server/lib/errors";
 import type { AdminActor } from "@/server/modules/admin/service";
 import { deriveCreativeRunState, type CreativeRunLedgerFact } from "@/server/modules/admin/content-production-state";
 import { toInputJson } from "../shared/prisma-json";
+import { resolveCommunityCampaignPlacements } from "@/server/modules/ourdream/community-campaigns";
 import {
   creativeRunListResponseSchema,
   creativeRunQuerySchema,
@@ -317,6 +318,12 @@ export async function publishDistributionPlacement(input: {
         rollbackPlacementId: rollbackTarget?.id,
       },
     });
+    if (placement.slot === "campaign" && item.mediaAsset.visibility === "private") {
+      await tx.mediaAsset.update({
+        where: { id: item.mediaAsset.id },
+        data: { visibility: "unlisted" },
+      });
+    }
     await tx.contentProductionItem.update({
       where: { id: item.id },
       data: { status: "published", version: { increment: 1 } },
@@ -397,19 +404,15 @@ export async function verifyCreativePlacement(input: {
     if (!placement) throw Errors.notFound("Creative placement not found");
     const metadata = placement.metadata as Record<string, unknown>;
     if (metadata.creativeRunId !== run.id) throw Errors.notFound("Placement does not belong to Creative Run");
-    const current = await tx.mediaAssetPlacement.findFirst({
-      where: {
-        slot: placement.slot,
-        targetType: placement.targetType,
-        targetId: placement.targetId,
-        status: "published",
-      },
-      orderBy: [{ publishedAt: "desc" }, { createdAt: "desc" }],
-    });
+    const renderedCampaigns = placement.slot === "campaign"
+      ? await resolveCommunityCampaignPlacements(tx)
+      : [];
+    const observed = renderedCampaigns.find((candidate) => candidate.id === placement.id) ?? null;
     const checks = {
-      placementIsCurrent: current?.id === placement.id,
-      assetMatches: current?.mediaAssetId === placement.mediaAssetId,
-      assetValid: !placement.mediaAsset.deletedAt && placement.mediaAsset.safetyStatus === "passed",
+      runtimeSurfaceSupported: placement.slot === "campaign",
+      placementVisibleInRuntime: observed?.id === placement.id,
+      renderedAssetMatches: observed?.mediaAssetId === placement.mediaAssetId,
+      assetValid: !observed?.mediaAsset.deletedAt && observed?.mediaAsset.safetyStatus === "passed",
     };
     const passed = Object.values(checks).every(Boolean);
     const verificationState = passed ? "passed" : "failed";
@@ -418,7 +421,13 @@ export async function verifyCreativePlacement(input: {
       where: { id: placement.id },
       data: {
         verificationState,
-        verificationEvidence: toInputJson({ checks, observedPlacementId: current?.id ?? null, observedAt: verifiedAt.toISOString() }),
+        verificationEvidence: toInputJson({
+          checks,
+          resolver: placement.slot === "campaign" ? "community.campaigns.v1" : null,
+          observedPlacementId: observed?.id ?? null,
+          observedAssetId: observed?.mediaAssetId ?? null,
+          observedAt: verifiedAt.toISOString(),
+        }),
         verifiedAt,
         version: { increment: 1 },
       },

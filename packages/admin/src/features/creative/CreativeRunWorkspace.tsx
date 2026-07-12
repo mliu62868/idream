@@ -123,7 +123,7 @@ function ReviewForm({ run, itemIndex, permissions, reload }: { run: CreativeRunD
 
 function PlacementForm({ run, itemIndex, permissions, reload }: { run: CreativeRunDetail; itemIndex: number; permissions: Permissions; reload: () => Promise<void> }) {
   const item = run.items[itemIndex];
-  const [slot, setSlot] = useState("feed_card");
+  const [slot, setSlot] = useState("campaign");
   const [targetType, setTargetType] = useState("character");
   const [targetId, setTargetId] = useState(run.target.id);
   const [reason, setReason] = useState("Approved candidate selected for distribution slot");

@@ -26,6 +26,7 @@ describe("Creative retry through verified placement", () => {
   const assetId = `creative-asset-${suffix}`;
   let commandId = "";
   let placementId = "";
+  let unsupportedPlacementId = "";
 
   beforeAll(async () => {
     await prisma.user.create({
@@ -110,7 +111,7 @@ describe("Creative retry through verified placement", () => {
   afterAll(async () => {
     await jobQueue.removeByDedupePrefix(`generation:${jobId}:attempt:`, ["ai.image.generate"]);
     await prisma.creativeReviewDecision.deleteMany({ where: { runItemId: itemId } });
-    await prisma.mediaAssetPlacement.deleteMany({ where: { id: placementId || "missing" } });
+    await prisma.mediaAssetPlacement.deleteMany({ where: { id: { in: [placementId, unsupportedPlacementId].filter(Boolean) } } });
     await prisma.generationDelivery.deleteMany({ where: { requestId: jobId } });
     await prisma.generationArtifact.deleteMany({
       where: { attemptId: { in: (await prisma.generationAttempt.findMany({ where: { requestId: jobId }, select: { id: true } })).map((row) => row.id) } },
@@ -268,7 +269,7 @@ describe("Creative retry through verified placement", () => {
         entityVersion: 5,
         itemId,
         assetId,
-        slot: "feed_card",
+        slot: "campaign",
         targetType: "campaign",
         targetId: `campaign-${suffix}`,
         reason: "Publish approved campaign card",
@@ -289,7 +290,16 @@ describe("Creative retry through verified placement", () => {
     );
     expect(verificationResponse.status).toBe(200);
     const verified = (await verificationResponse.json()).data;
-    expect(verified).toMatchObject({ verificationState: "passed", runVersion: 7 });
+    expect(verified).toMatchObject({
+      verificationState: "passed",
+      runVersion: 7,
+      checks: {
+        runtimeSurfaceSupported: true,
+        placementVisibleInRuntime: true,
+        renderedAssetMatches: true,
+      },
+    });
+    expect(await prisma.mediaAsset.findUniqueOrThrow({ where: { id: assetId } })).toMatchObject({ visibility: "unlisted" });
 
     const detailResponse = await getRun(request(`/api/v2/admin/creative/runs/${runId}`), {
       params: Promise.resolve({ id: runId }),
@@ -320,6 +330,37 @@ describe("Creative retry through verified placement", () => {
       data: {
         items: [{ id: runId, executionOutcome: "succeeded", verificationState: "passed" }],
       },
+    });
+
+    const unsupportedPlacementResponse = await publishPlacement(
+      request(`/api/v2/admin/creative/runs/${runId}/placements`, {
+        entityVersion: 7,
+        itemId,
+        assetId,
+        slot: "feed_card",
+        targetType: "campaign",
+        targetId: `campaign-${suffix}`,
+        reason: "Prove a slot without a runtime renderer cannot self-verify",
+      }),
+      { params: Promise.resolve({ id: runId }) },
+    );
+    unsupportedPlacementId = (await unsupportedPlacementResponse.json()).data.placementId;
+    const unsupportedVerification = await verifyPlacement(
+      request(`/api/v2/admin/creative/runs/${runId}/placements/${unsupportedPlacementId}/verification`, {
+        entityVersion: 8,
+        reason: "Runtime resolver is intentionally unavailable for feed_card",
+      }),
+      { params: Promise.resolve({ id: runId, placementId: unsupportedPlacementId }) },
+    );
+    expect((await unsupportedVerification.json()).data).toMatchObject({
+      verificationState: "failed",
+      runVersion: 9,
+      checks: { runtimeSurfaceSupported: false, placementVisibleInRuntime: false },
+    });
+    expect(await prisma.contentProductionBatch.findUniqueOrThrow({ where: { id: runId } })).toMatchObject({
+      lifecycleState: "active",
+      status: "reviewing",
+      verificationState: "failed",
     });
   });
 });

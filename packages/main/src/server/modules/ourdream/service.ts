@@ -86,6 +86,7 @@ import {
   verifyExposureContext,
   type ExposureSubject,
 } from "./exposure-context";
+import { resolveCommunityCampaignPlacements } from "./community-campaigns";
 
 type ApiMethod = "GET" | "POST" | "PATCH" | "DELETE" | "PUT";
 type JsonRecord = Record<string, Prisma.JsonValue>;
@@ -5273,21 +5274,7 @@ async function community(request: Request, segments: string[]) {
   }
 
   if (view === "campaigns") {
-    const campaigns = await prisma.mediaAssetPlacement.findMany({
-      where: {
-        slot: "campaign",
-        status: "published",
-        mediaAsset: {
-          deletedAt: null,
-          safetyStatus: "passed",
-          type: "image",
-          visibility: { in: ["public_pack", "unlisted"] },
-        },
-      },
-      include: { mediaAsset: true },
-      orderBy: [{ publishedAt: "desc" }, { createdAt: "desc" }],
-      take: 6,
-    });
+    const campaigns = await resolveCommunityCampaignPlacements(prisma);
     return ok({ campaigns: campaigns.map(communityCampaignDTO) });
   }
 
