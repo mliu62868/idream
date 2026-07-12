@@ -209,6 +209,7 @@ export async function getCharacterWorkspace(characterId: string) {
     sort: "project_id_asc",
   });
   const performance = portfolio.items.find((item) => item.characterId === characterId)?.performance ?? [];
+  const portfolioItem = portfolio.items.find((item) => item.characterId === characterId) ?? null;
   return {
     character: {
       id: character.id,
@@ -253,6 +254,10 @@ export async function getCharacterWorkspace(characterId: string) {
     })),
     preview: { live, draft, changedFields: changedFields(live, draft) },
     performance,
+    portfolio: {
+      latestDecision: portfolioItem?.latestDecision ?? null,
+      changeMarkers: portfolioItem?.changeMarkers ?? [],
+    },
   };
 }
 

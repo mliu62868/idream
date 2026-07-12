@@ -705,6 +705,10 @@ export const characterWorkspaceDetailSchema = z
       })
       .strict(),
     performance: z.array(characterPerformanceSummarySchema).readonly(),
+    portfolio: z.object({
+      latestDecision: characterPortfolioDecisionRecordSchema.nullable(),
+      changeMarkers: z.array(characterReleaseChangeMarkerSchema).readonly(),
+    }).strict(),
   })
   .strict();
 
