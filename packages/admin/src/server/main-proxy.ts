@@ -122,6 +122,9 @@ export async function proxyToMain(request: Request, pathname: string): Promise<R
   for (const name of requestHopByHopHeaders) headers.delete(name);
   headers.delete(BFF_HEADER);
   headers.delete(BFF_USER_HEADER);
+  headers.delete("x-idream-admin-domain");
+  headers.delete("x-idream-admin-read-authority");
+  addProvenanceHeaders(headers, domain, readAuthority);
   headers.set("x-forwarded-host", incomingURL.host);
   headers.set("x-forwarded-proto", incomingURL.protocol.replace(":", ""));
   if (!headers.has("x-request-id")) headers.set("x-request-id", randomUUID());

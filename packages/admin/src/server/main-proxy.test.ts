@@ -158,13 +158,24 @@ describe("Admin main HTTP proxy", () => {
     vi.stubEnv("ADMIN_CASE_READ_AUTHORITY", "compatibility_http");
     vi.stubEnv("ADMIN_CASE_COMPATIBILITY_READ_URL", "https://previous-main.internal");
     const targets: string[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (target: URL) => {
+    const upstreamProvenance: Array<[string | null, string | null]> = [];
+    vi.stubGlobal("fetch", vi.fn(async (target: URL, init: RequestInit) => {
       targets.push(target.toString());
+      const headers = new Headers(init.headers);
+      upstreamProvenance.push([
+        headers.get("x-idream-admin-domain"),
+        headers.get("x-idream-admin-read-authority"),
+      ]);
       return Response.json({ ok: true, data: [] });
     }));
 
     const caseResponse = await proxyToMain(
-      new Request("http://admin.local/api/v2/admin/cases?status=open"),
+      new Request("http://admin.local/api/v2/admin/cases?status=open", {
+        headers: {
+          "x-idream-admin-domain": "character",
+          "x-idream-admin-read-authority": "canonical_v2",
+        },
+      }),
       "/api/v2/admin/cases",
     );
     const incidentResponse = await proxyToMain(
@@ -175,6 +186,10 @@ describe("Admin main HTTP proxy", () => {
     expect(targets).toEqual([
       "https://previous-main.internal/api/v2/admin/cases?status=open",
       "http://127.0.0.1:3000/api/v2/admin/incidents?status=open",
+    ]);
+    expect(upstreamProvenance).toEqual([
+      ["case", "compatibility_http"],
+      ["incident", "canonical_v2"],
     ]);
     expect(caseResponse.headers.get("x-idream-admin-domain")).toBe("case");
     expect(caseResponse.headers.get("x-idream-admin-read-authority")).toBe("compatibility_http");
