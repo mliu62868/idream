@@ -80,6 +80,10 @@ export default defineConfig({
         "../shared/src/admin/permissions.ts",
         import.meta.url,
       ).pathname,
+      "@idream/shared/admin/canary": new URL(
+        "../shared/src/admin/canary.ts",
+        import.meta.url,
+      ).pathname,
       "@idream/shared/admin": new URL("../shared/src/admin/index.ts", import.meta.url).pathname,
       "@idream/shared/bff": new URL("../shared/src/bff/signing.ts", import.meta.url).pathname,
       "@idream/shared/media/generated-image-sanity": new URL(

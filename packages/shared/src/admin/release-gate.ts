@@ -8,6 +8,11 @@ import {
   type KeyObject,
 } from "node:crypto";
 import { canonicalJson } from "../contracts/durable";
+import {
+  adminCanaryScenarioPathIsRepresentative,
+  adminCanaryScenarioIdSchema,
+  requiredAdminCanaryScenarioIds,
+} from "./canary";
 import { availabilityErrorBudget, evaluateAdminOperationalSlos } from "./operational-slo";
 
 const evidenceResultSchema = z.object({
@@ -17,13 +22,37 @@ const evidenceResultSchema = z.object({
 }).strict();
 
 const canarySampleSchema = z.object({
+  iteration: z.number().int().nonnegative(),
+  scenarioId: adminCanaryScenarioIdSchema,
   name: z.string().min(1),
-  method: z.enum(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]),
+  method: z.enum(["GET", "POST"]),
   path: z.string().refine((value) => value === "/api/v2/admin" || value.startsWith("/api/v2/admin/"), "sample path must target Admin v2"),
   status: z.number().int().min(100).max(599).nullable(),
-  outcome: z.enum(["pass", "unexpected_status", "unavailable"]),
+  outcome: z.enum(["pass", "unexpected_status", "unavailable", "invalid_response", "dependency_failed"]),
   durationMs: z.number().nonnegative(),
 }).strict();
+
+const canaryAuthorityProbeSchema = z.object({
+  status: z.enum(["pass", "fail"]),
+  checks: z.array(z.object({
+    iteration: z.number().int().nonnegative(),
+    commandId: z.string().min(1),
+    commandStatus: z.string().min(1).nullable(),
+    auditRecordId: z.string().min(1).nullable(),
+    outboxEventId: z.string().min(1).nullable(),
+    outcome: z.enum(["pass", "fail"]),
+  }).strict()),
+}).strict().superRefine((probe, context) => {
+  const passed = probe.checks.length > 0 && probe.checks.every((check) =>
+    check.outcome === "pass"
+    && check.commandStatus === "succeeded"
+    && check.auditRecordId !== null
+    && check.outboxEventId !== null
+  );
+  if ((probe.status === "pass") !== passed) {
+    context.addIssue({ code: "custom", path: ["status"], message: "authority probe status must equal its command/Audit/Outbox checks" });
+  }
+});
 
 const canaryResultSchema = evidenceResultSchema.extend({
   mode: z.enum(["read", "write"]),
@@ -36,6 +65,7 @@ const canaryResultSchema = evidenceResultSchema.extend({
   availability: z.number().min(0).max(1),
   p95Ms: z.number().nonnegative().nullable(),
   samples: z.array(canarySampleSchema),
+  authorityProbe: canaryAuthorityProbeSchema.nullable(),
 }).strict().superRefine((value, context) => {
   const failures = value.samples.filter((sample) => sample.outcome !== "pass").length;
   if (value.sampleSize !== value.samples.length) {
@@ -52,6 +82,79 @@ const canaryResultSchema = evidenceResultSchema.extend({
   const expectedP95 = sortedDurations[Math.max(0, Math.ceil(sortedDurations.length * 0.95) - 1)] ?? null;
   if (value.p95Ms !== expectedP95) {
     context.addIssue({ code: "custom", path: ["p95Ms"], message: "p95Ms must equal the sample durations" });
+  }
+  const requiredScenarioIds = requiredAdminCanaryScenarioIds(value.mode);
+  const requiredScenarioSet = new Set<string>(requiredScenarioIds);
+  const scenarioCounts = requiredScenarioIds.map((scenarioId) =>
+    value.samples.filter((sample) => sample.scenarioId === scenarioId).length
+  );
+  const iterations = scenarioCounts[0] ?? 0;
+  if (
+    iterations === 0
+    || scenarioCounts.some((count) => count !== iterations)
+    || value.samples.some((sample) => !requiredScenarioSet.has(sample.scenarioId))
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["samples"],
+      message: `${value.mode} canary samples must cover every required scenario equally: ${requiredScenarioIds.join(", ")}`,
+    });
+  }
+  const expectedByScenario: Readonly<Record<string, { method: "GET" | "POST"; status: number }>> = {
+    "read.today": { method: "GET", status: 200 },
+    "read.list": { method: "GET", status: 200 },
+    "read.detail": { method: "GET", status: 200 },
+    "read.search": { method: "GET", status: 200 },
+    "write.command.accept": { method: "POST", status: 202 },
+    "write.command.replay": { method: "POST", status: 202 },
+    "write.command.collision": { method: "POST", status: 409 },
+    "write.command.readback": { method: "GET", status: 200 },
+    "write.state.readback": { method: "GET", status: 200 },
+  };
+  for (const [index, sample] of value.samples.entries()) {
+    const expected = expectedByScenario[sample.scenarioId];
+    if (!expected || sample.method !== expected.method) {
+      context.addIssue({ code: "custom", path: ["samples", index, "method"], message: "sample method does not match its fixed scenario" });
+    }
+    if (sample.outcome === "pass" && sample.status !== expected?.status) {
+      context.addIssue({ code: "custom", path: ["samples", index, "status"], message: "passing sample status does not match its fixed scenario" });
+    }
+    if (!adminCanaryScenarioPathIsRepresentative(sample.scenarioId, sample.path)) {
+      context.addIssue({ code: "custom", path: ["samples", index, "path"], message: "sample path does not represent its fixed scenario" });
+    }
+  }
+  const sampleIterations = [...new Set(value.samples.map((sample) => sample.iteration))].sort((left, right) => left - right);
+  if (sampleIterations.some((iteration, index) => iteration !== index)) {
+    context.addIssue({ code: "custom", path: ["samples"], message: "sample iterations must be contiguous from zero" });
+  }
+  for (const iteration of sampleIterations) {
+    const ids = value.samples.filter((sample) => sample.iteration === iteration).map((sample) => sample.scenarioId);
+    const idSet = new Set<string>(ids);
+    if (ids.length !== requiredScenarioIds.length || idSet.size !== requiredScenarioIds.length || requiredScenarioIds.some((id) => !idSet.has(id))) {
+      context.addIssue({ code: "custom", path: ["samples"], message: `iteration ${iteration} is missing a required scenario` });
+    }
+  }
+  if (value.mode === "read" && value.authorityProbe !== null) {
+    context.addIssue({ code: "custom", path: ["authorityProbe"], message: "read canary cannot claim write authority evidence" });
+  }
+  if (value.mode === "write") {
+    if (value.authorityProbe === null) {
+      context.addIssue({ code: "custom", path: ["authorityProbe"], message: "write canary requires command/Audit/Outbox authority evidence" });
+    } else if (value.authorityProbe.checks.length !== iterations) {
+      context.addIssue({ code: "custom", path: ["authorityProbe", "checks"], message: "authority checks must match write iterations" });
+    } else {
+      for (const check of value.authorityProbe.checks) {
+        const samples = value.samples.filter((sample) => sample.iteration === check.iteration);
+        const commandReadback = samples.find((sample) => sample.scenarioId === "write.command.readback");
+        if (!commandReadback?.path.endsWith(`/commands/${encodeURIComponent(check.commandId)}`)) {
+          context.addIssue({ code: "custom", path: ["authorityProbe", "checks"], message: "command readback must target the authority-probed command" });
+        }
+      }
+    }
+  }
+  const reportPassed = failures === 0 && (value.mode === "read" || value.authorityProbe?.status === "pass");
+  if ((value.status === "pass") !== reportPassed) {
+    context.addIssue({ code: "custom", path: ["status"], message: "canary status must include HTTP and authority outcomes" });
   }
 });
 
@@ -87,7 +190,7 @@ const signoffSchema = z.object({
 }).strict();
 
 export const adminUnsignedReleaseGateEvidenceSchema = z.object({
-  schemaVersion: z.literal(3),
+  schemaVersion: z.literal(4),
   environment: z.enum(["local", "staging", "production"]),
   generatedAt: z.string().datetime({ offset: true }),
   observationWindow: z.object({
@@ -289,6 +392,9 @@ function evaluateAdminReleaseGateSemantics(
     if (canary.failures > 0 || canary.failures > canary.sampleSize) block(`${kind}_canary_has_failures`, `${kind} canary evidence must have zero failed samples.`, `runtime.${kind}Canary.failures`);
     if (canary.availability !== 1) block(`${kind}_canary_availability_below_gate`, `${kind} canary availability must be 100% for the bounded release drill.`, `runtime.${kind}Canary.availability`);
     if (canary.p95Ms === null) block(`${kind}_canary_latency_missing`, `${kind} canary must contain a measured p95 latency.`, `runtime.${kind}Canary.p95Ms`);
+    if (kind === "write" && canary.authorityProbe?.status !== "pass") {
+      block("write_canary_authority_probe_failed", "Write canary must prove the canonical Command, Audit, and Outbox records.", "runtime.writeCanary.authorityProbe");
+    }
     const runStartedAt = new Date(canary.startedAt).getTime();
     const runEndedAt = new Date(canary.endedAt).getTime();
     if (runStartedAt > runEndedAt || canary.observedAt !== canary.endedAt) {
@@ -352,7 +458,7 @@ function evaluateAdminReleaseGateSemantics(
   };
 }
 
-const SIGNATURE_DOMAIN = "idream.admin.release-gate.v3\0";
+const SIGNATURE_DOMAIN = "idream.admin.release-gate.v4\0";
 
 type SignatureErrorCode =
   | "evidence_signature_missing"

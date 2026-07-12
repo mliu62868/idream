@@ -43,23 +43,38 @@ const canaryEvidence = (mode: "read" | "write") => ({
   runId: mode === "read" ? "13d64d65-962a-4a24-8ac1-490404a25581" : "a9399d08-9112-4a57-8e88-3382e8bf89c8",
   startedAt: "2026-07-10T00:00:00.000Z",
   endedAt: "2026-07-10T00:00:00.000Z",
-  sampleSize: 1,
+  sampleSize: mode === "read" ? 4 : 5,
   failures: 0,
   availability: 1,
   p95Ms: mode === "read" ? 420 : 610,
-  samples: [{
-    name: `${mode} authority`,
-    method: mode === "read" ? "GET" as const : "POST" as const,
-    path: mode === "read" ? "/api/v2/admin/today" : "/api/v2/admin/cases/rehearsal/commands/close",
-    status: mode === "read" ? 200 : 202,
-    outcome: "pass" as const,
-    durationMs: mode === "read" ? 420 : 610,
-  }],
+  samples: mode === "read" ? [
+    { iteration: 0, scenarioId: "read.today" as const, name: "Today", method: "GET" as const, path: "/api/v2/admin/today", status: 200, outcome: "pass" as const, durationMs: 420 },
+    { iteration: 0, scenarioId: "read.list" as const, name: "Case list", method: "GET" as const, path: "/api/v2/admin/cases?limit=10", status: 200, outcome: "pass" as const, durationMs: 410 },
+    { iteration: 0, scenarioId: "read.detail" as const, name: "Case detail", method: "GET" as const, path: "/api/v2/admin/cases/rehearsal", status: 200, outcome: "pass" as const, durationMs: 400 },
+    { iteration: 0, scenarioId: "read.search" as const, name: "Search", method: "GET" as const, path: "/api/v2/admin/search?q=canary", status: 200, outcome: "pass" as const, durationMs: 390 },
+  ] : [
+    { iteration: 0, scenarioId: "write.command.accept" as const, name: "Accept", method: "POST" as const, path: "/api/v2/admin/cases/rehearsal/commands/close", status: 202, outcome: "pass" as const, durationMs: 610 },
+    { iteration: 0, scenarioId: "write.command.replay" as const, name: "Replay", method: "POST" as const, path: "/api/v2/admin/cases/rehearsal/commands/close", status: 202, outcome: "pass" as const, durationMs: 600 },
+    { iteration: 0, scenarioId: "write.command.collision" as const, name: "Collision", method: "POST" as const, path: "/api/v2/admin/cases/rehearsal/commands/close", status: 409, outcome: "pass" as const, durationMs: 590 },
+    { iteration: 0, scenarioId: "write.command.readback" as const, name: "Command readback", method: "GET" as const, path: "/api/v2/admin/commands/canary-command", status: 200, outcome: "pass" as const, durationMs: 580 },
+    { iteration: 0, scenarioId: "write.state.readback" as const, name: "State readback", method: "GET" as const, path: "/api/v2/admin/cases/rehearsal", status: 200, outcome: "pass" as const, durationMs: 570 },
+  ],
+  authorityProbe: mode === "read" ? null : {
+    status: "pass" as const,
+    checks: [{
+      iteration: 0,
+      commandId: "canary-command",
+      commandStatus: "succeeded",
+      auditRecordId: "canary-audit",
+      outboxEventId: "canary-outbox",
+      outcome: "pass" as const,
+    }],
+  },
 });
 
 function productionEvidence() {
   return signAdminReleaseEvidence({
-    schemaVersion: 3 as const,
+    schemaVersion: 4 as const,
     environment: "production" as const,
     generatedAt: "2026-07-11T00:00:00.000Z",
     observationWindow: {
@@ -163,14 +178,10 @@ describe("Admin final release gate", () => {
     });
   });
 
-  it("blocks non-zero shadow truth, missing canary samples, legacy traffic, and short observation", () => {
+  it("blocks non-zero shadow truth, legacy traffic, and a short observation window", () => {
     const input = productionEvidence();
     input.observationWindow.startedAt = "2026-07-09T00:00:00.000Z";
     input.truth.unknownShadowMismatches = 1;
-    input.runtime.writeCanary.sampleSize = 0;
-    input.runtime.writeCanary.samples = [];
-    input.runtime.writeCanary.availability = 0;
-    input.runtime.writeCanary.p95Ms = null;
     input.runtime.readCanary.observedAt = "2026-07-02T00:00:00.000Z";
     input.runtime.legacyTrafficCycles[1]!.requests = 2;
     const report = evaluateAdminReleaseGate(input, new Date("2026-07-11T00:00:00.000Z"));
@@ -178,10 +189,20 @@ describe("Admin final release gate", () => {
     expect(report.blockers.map((blocker) => blocker.code)).toEqual(expect.arrayContaining([
       "observation_window_too_short",
       "unknown_shadow_mismatch",
-      "write_canary_missing_samples",
       "read_canary_outside_observation_window",
       "legacy_traffic_not_zero",
     ]));
+  });
+
+  it("rejects a trivial canary that omits any fixed representative scenario", () => {
+    const input = productionEvidence();
+    input.runtime.readCanary.samples = input.runtime.readCanary.samples.slice(0, 1);
+    input.runtime.readCanary.sampleSize = 1;
+    input.runtime.readCanary.p95Ms = input.runtime.readCanary.samples[0]!.durationMs;
+    expect(evaluateAdminReleaseGate(input, new Date("2026-07-11T00:00:00.000Z"))).toMatchObject({
+      status: "blocked",
+      blockers: [expect.objectContaining({ code: "evidence_signature_invalid" })],
+    });
   });
 
   it("blocks stale manifests, failed named evidence, exhausted budgets, and no-go signoff", () => {
@@ -217,7 +238,8 @@ describe("Admin final release gate", () => {
     expect(evaluateAdminReleaseGate(input, new Date("2026-07-11T00:00:00.000Z")).status).toBe("pass");
 
     input.runtime.writeCanary.failures = 1;
-    input.runtime.writeCanary.availability = 0;
+    input.runtime.writeCanary.availability = 0.8;
+    input.runtime.writeCanary.status = "fail";
     input.runtime.writeCanary.samples[0]!.status = 500;
     input.runtime.writeCanary.samples[0]!.outcome = "unexpected_status";
     expect(evaluateAdminReleaseGate(input, new Date("2026-07-11T00:00:00.000Z")).blockers.map((blocker) => blocker.code)).toEqual(expect.arrayContaining([

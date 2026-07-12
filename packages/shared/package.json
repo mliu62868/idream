@@ -11,6 +11,7 @@
     "./contracts": "./src/contracts/index.ts",
     "./admin": "./src/admin/index.ts",
     "./admin/contracts": "./src/admin/contracts/index.ts",
+    "./admin/canary": "./src/admin/canary.ts",
     "./admin/permissions": "./src/admin/permissions.ts",
     "./admin/api-manifest": "./src/admin/api-manifest.ts",
     "./admin/contract-registry": "./src/admin/contract-registry.ts",

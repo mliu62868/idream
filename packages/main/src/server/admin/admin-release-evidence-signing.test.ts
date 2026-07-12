@@ -13,6 +13,18 @@ const observed = () => ({
 
 function canary(mode: "read" | "write") {
   const durationMs = mode === "read" ? 420 : 610;
+  const samples = mode === "read" ? [
+    { iteration: 0, scenarioId: "read.today" as const, name: "Today", method: "GET" as const, path: "/api/v2/admin/today", status: 200, outcome: "pass" as const, durationMs },
+    { iteration: 0, scenarioId: "read.list" as const, name: "List", method: "GET" as const, path: "/api/v2/admin/cases", status: 200, outcome: "pass" as const, durationMs },
+    { iteration: 0, scenarioId: "read.detail" as const, name: "Detail", method: "GET" as const, path: "/api/v2/admin/cases/rehearsal", status: 200, outcome: "pass" as const, durationMs },
+    { iteration: 0, scenarioId: "read.search" as const, name: "Search", method: "GET" as const, path: "/api/v2/admin/search?q=canary", status: 200, outcome: "pass" as const, durationMs },
+  ] : [
+    { iteration: 0, scenarioId: "write.command.accept" as const, name: "Accept", method: "POST" as const, path: "/api/v2/admin/cases/rehearsal/commands/close", status: 202, outcome: "pass" as const, durationMs },
+    { iteration: 0, scenarioId: "write.command.replay" as const, name: "Replay", method: "POST" as const, path: "/api/v2/admin/cases/rehearsal/commands/close", status: 202, outcome: "pass" as const, durationMs },
+    { iteration: 0, scenarioId: "write.command.collision" as const, name: "Collision", method: "POST" as const, path: "/api/v2/admin/cases/rehearsal/commands/close", status: 409, outcome: "pass" as const, durationMs },
+    { iteration: 0, scenarioId: "write.command.readback" as const, name: "Command", method: "GET" as const, path: "/api/v2/admin/commands/canary-command", status: 200, outcome: "pass" as const, durationMs },
+    { iteration: 0, scenarioId: "write.state.readback" as const, name: "State", method: "GET" as const, path: "/api/v2/admin/cases/rehearsal", status: 200, outcome: "pass" as const, durationMs },
+  ];
   return {
     ...observed(),
     mode,
@@ -20,24 +32,28 @@ function canary(mode: "read" | "write") {
     runId: mode === "read" ? "13d64d65-962a-4a24-8ac1-490404a25581" : "a9399d08-9112-4a57-8e88-3382e8bf89c8",
     startedAt: "2026-07-10T00:00:00.000Z",
     endedAt: "2026-07-10T00:00:00.000Z",
-    sampleSize: 1,
+    sampleSize: samples.length,
     failures: 0,
     availability: 1,
     p95Ms: durationMs,
-    samples: [{
-      name: `${mode} authority`,
-      method: mode === "read" ? "GET" as const : "POST" as const,
-      path: mode === "read" ? "/api/v2/admin/today" : "/api/v2/admin/cases/rehearsal/commands/close",
-      status: mode === "read" ? 200 : 202,
-      outcome: "pass" as const,
-      durationMs,
-    }],
+    samples,
+    authorityProbe: mode === "read" ? null : {
+      status: "pass" as const,
+      checks: [{
+        iteration: 0,
+        commandId: "canary-command",
+        commandStatus: "succeeded",
+        auditRecordId: "canary-audit",
+        outboxEventId: "canary-outbox",
+        outcome: "pass" as const,
+      }],
+    },
   };
 }
 
 function unsignedEvidence() {
   return {
-    schemaVersion: 3 as const,
+    schemaVersion: 4 as const,
     environment: "production" as const,
     generatedAt: "2026-07-11T00:00:00.000Z",
     observationWindow: { startedAt: "2026-07-03T00:00:00.000Z", endedAt: "2026-07-10T00:00:00.000Z" },

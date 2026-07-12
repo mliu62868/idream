@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { runAdminCanary } from "@/server/admin/admin-canary-runner";
+import { verifyAdminCanaryAuthority } from "@/server/admin/admin-canary-authority-probe";
 
 async function main() {
   const planPath = process.argv[2] ?? process.env.ADMIN_CANARY_PLAN_PATH;
@@ -15,6 +16,7 @@ async function main() {
       cookie: process.env.ADMIN_CANARY_COOKIE,
       authorization: process.env.ADMIN_CANARY_AUTHORIZATION,
       writeConfirmation: process.env.ADMIN_CANARY_WRITE_CONFIRMATION,
+      verifyAuthority: verifyAdminCanaryAuthority,
     });
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
     if (report.status !== "pass") process.exitCode = 2;
