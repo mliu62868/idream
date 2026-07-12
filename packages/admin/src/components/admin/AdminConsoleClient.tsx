@@ -50,7 +50,6 @@ import { AnnouncementsView } from "@/components/admin/AnnouncementsView";
 import { ExperimentsView } from "@/components/admin/ExperimentsView";
 import { TodayView, type TodayData, type TodayLegacyData } from "@/components/admin/today/TodayView";
 import {
-  type AdminCommandStatus,
   type MetricDashboardResponse,
   type TodayProjection,
 } from "@idream/shared/admin";
@@ -92,6 +91,7 @@ import { GlobalAdminSearch } from "@/features/search/GlobalAdminSearch";
 import { CharacterWorkspace } from "@/features/characters/CharacterWorkspace";
 import { CreativeRunWorkspace } from "@/features/creative/CreativeRunWorkspace";
 import { JobsView as GenerationJobsWorkspace } from "@/features/jobs/JobsView";
+import { AuditWorkspace } from "@/features/audit/AuditWorkspace";
 import {
   buildCompatibilityListUrl,
   readCompatibilityListQuery,
@@ -276,7 +276,8 @@ type SectionData =
         | "workflows"
         | "generation-metrics"
         | "incidents"
-        | "cases";
+        | "cases"
+        | "audit";
     }
   | {
       kind: "chatops";
@@ -289,8 +290,7 @@ type SectionData =
       events: Row[];
       pageInfo: { sessions: PageInfo; usage: PageInfo; events: PageInfo };
       query: ListQuery;
-    }
-  | { kind: "audit"; rows: Row[]; command: AdminCommandStatus | null; pageInfo: PageInfo; query: ListQuery };
+    };
 
 type PendingAction = {
   title: string;
@@ -621,7 +621,6 @@ export function AdminConsoleClient({
   const sidebarNavRef = useRef<HTMLElement | null>(null);
   const { sectionId, view: subview } = parseAdminPath(initialSection);
   const initialRouteParams = new URLSearchParams(initialSection.split("?", 2)[1] ?? "");
-  const commandId = initialRouteParams.get("commandId");
   const activeItem = adminSectionItem(sectionId);
   const permissions = useMemo(() => new Set(initialPermissions), [initialPermissions]);
   const canAccessActiveSection = sectionIsPermitted(sectionId, permissions);
@@ -690,7 +689,6 @@ export function AdminConsoleClient({
     try {
       setData(await fetchSection(sectionId, {
         chatOps: nextChatOpsFilters,
-        commandId,
         workMode: nextWorkMode,
         includeLegacyAnalytics: permissions.has("analytics.export"),
         searchParams: new URLSearchParams(window.location.search),
@@ -709,7 +707,7 @@ export function AdminConsoleClient({
     return () => window.clearTimeout(timer);
     // sectionId is derived from the route; load should run when the route changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sectionId, commandId, initialAccess, canAccessActiveSection]);
+  }, [sectionId, initialAccess, canAccessActiveSection]);
 
   useEffect(() => {
     const onPopState = () => {
@@ -1388,7 +1386,6 @@ async function fetchSection(
   sectionId: string,
   options: {
     chatOps?: ChatOpsFilters;
-    commandId?: string | null;
     workMode?: WorkMode;
     includeLegacyAnalytics?: boolean;
     searchParams?: URLSearchParams;
@@ -1400,6 +1397,7 @@ async function fetchSection(
   }
   if (sectionId === "ops/incidents") return { kind: "selfFetch", view: "incidents" };
   if (sectionId === "cases") return { kind: "selfFetch", view: "cases" };
+  if (sectionId === "audit-log") return { kind: "selfFetch", view: "audit" };
   if (sectionId === "generation/dead-letter") {
     const query = listQuery(params, ["deadSearch", "deadMode", "deadStatus", "deadError", "deadCursor"]);
     const payload = await apiGet<{ items: Row[]; pageInfo: PageInfo }>(`/api/v1/admin/generation/dead-letter${queryString({
@@ -1485,16 +1483,6 @@ async function fetchSection(
   if (sectionId === "risk") {
     const payload = await apiGet<AbuseData>("/api/v1/admin/risk/abuse");
     return { kind: "risk", data: payload };
-  }
-  if (sectionId === "audit-log") {
-    const query = listQuery(params, ["auditSearch", "auditAction", "auditActor", "auditTargetType", "auditCursor"]);
-    const [payload, command] = await Promise.all([
-      apiGet<{ items: Row[]; pageInfo: PageInfo }>(`/api/v1/admin/audit-log${queryString({ search: query.auditSearch, action: query.auditAction, actorId: query.auditActor, targetType: query.auditTargetType, cursor: query.auditCursor, limit: "25" })}`),
-      options.commandId
-        ? apiGet<AdminCommandStatus>(`/api/v2/admin/commands/${encodeURIComponent(options.commandId)}`)
-        : Promise.resolve(null),
-    ]);
-    return { kind: "audit", rows: payload.items, command, pageInfo: payload.pageInfo ?? emptyPageInfo, query };
   }
   if (sectionId === "support") {
     const payload = await apiGet<{ items: Row[] }>("/api/v1/admin/support/requests");
@@ -2587,6 +2575,7 @@ function renderSection(
         />
       );
     }
+    if (section.view === "audit") return <AuditWorkspace />;
     return <ReviewQueueView />;
   }
   if (section.kind === "chatops") {
@@ -2607,7 +2596,7 @@ function renderSection(
       />
     );
   }
-    return <AuditView command={section.command} rows={section.rows} pageInfo={section.pageInfo} query={section.query} updateQuery={ctx.updateQuery} />;
+  return null;
 }
 
 function ConfigOverviewHeader() {
@@ -5602,42 +5591,6 @@ function ProviderOpsView({ data }: { data: ProviderOpsData }) {
         rows={data.providers}
         title="Provider health & cost"
       />
-    </div>
-  );
-}
-
-function AuditView({ command, rows, pageInfo, query, updateQuery }: { command: AdminCommandStatus | null; rows: Row[]; pageInfo: PageInfo; query: ListQuery; updateQuery: (updates: Record<string, string | null>, clearCursors?: readonly string[]) => void }) {
-  return (
-    <div className="space-y-5">
-      <ServerListToolbar cursorKeys={["auditCursor"]} fields={[
-        { key: "auditSearch", label: "Search" },
-        { key: "auditAction", label: "Exact action" },
-        { key: "auditActor", label: "Actor ID" },
-        { key: "auditTargetType", label: "Target type" },
-      ]} query={query} updateQuery={updateQuery} />
-      {command ? (
-        <DataTable
-          columns={["commandId", "commandType", "targetType", "targetId", "status", "verificationState", "needsReconciliation", "updatedAt"]}
-          rows={[{
-            commandId: command.commandId,
-            commandType: command.commandType,
-            targetType: command.target.type,
-            targetId: command.target.id,
-            status: command.status,
-            verificationState: command.verificationState ?? "pending",
-            needsReconciliation: command.needsReconciliation,
-            updatedAt: command.updatedAt,
-          }]}
-          title="Command context"
-        />
-      ) : null}
-      <DataTable
-        columns={["id", "actorId", "actorRole", "action", "targetType", "targetId", "reason", "createdAt"]}
-        rows={rows}
-        title="Audit"
-        empty={queryIsFiltered(query, ["auditSearch", "auditAction", "auditActor", "auditTargetType"]) ? "No audit events match these filters" : "No audit events exist yet"}
-      />
-      <CanonicalPager cursorKey="auditCursor" pageInfo={pageInfo} updateQuery={updateQuery} />
     </div>
   );
 }

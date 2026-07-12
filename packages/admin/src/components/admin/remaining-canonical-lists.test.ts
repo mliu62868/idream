@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 const source = [
   readFileSync(new URL("./AdminConsoleClient.tsx", import.meta.url), "utf8"),
   readFileSync(new URL("./AnnouncementsView.tsx", import.meta.url), "utf8"),
+  readFileSync(new URL("../../features/audit/AuditWorkspace.tsx", import.meta.url), "utf8"),
+  readFileSync(new URL("../../features/audit/query.ts", import.meta.url), "utf8"),
 ].join("\n");
 
 describe("remaining canonical admin list surfaces", () => {

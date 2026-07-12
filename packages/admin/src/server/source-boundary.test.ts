@@ -22,4 +22,19 @@ describe("admin source boundary", () => {
       .catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? [] : Promise.reject(error));
     expect(legacyMainUi.filter((entry) => /\.[cm]?[jt]sx?$/.test(entry))).toEqual([]);
   });
+
+  it("keeps the migrated Audit domain out of the catch-all client", async () => {
+    const catchAll = await readFile(
+      path.join(packageRoot, "src/components/admin/AdminConsoleClient.tsx"),
+      "utf8",
+    );
+    const auditFeature = await readFile(
+      path.join(packageRoot, "src/features/audit/AuditWorkspace.tsx"),
+      "utf8",
+    ).catch(() => "");
+
+    expect(catchAll).not.toContain("/api/v1/admin/audit-log");
+    expect(catchAll).not.toContain("function AuditView");
+    expect(auditFeature).toContain("export function AuditWorkspace");
+  });
 });
