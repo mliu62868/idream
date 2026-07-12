@@ -14,6 +14,7 @@ import {
   type OperationsCase,
 } from "@idream/shared/admin";
 import { adminV2Request, setWorkspaceUrl } from "@/lib/admin-v2-api";
+import { createWorkspaceHistoryController, observeWorkspacePopState } from "@/lib/workspace-history";
 import { CollaborationPanel } from "@/features/collaboration/CollaborationPanel";
 import { SavedViewsControl } from "@/features/collaboration/SavedViewsControl";
 import {
@@ -21,7 +22,16 @@ import {
   caseSavedState,
   type SavedViewRecord,
 } from "@/features/collaboration/saved-views";
-import { buildCaseQuery, type CaseQueryDraft } from "./query";
+import {
+  buildCaseQuery,
+  buildCaseWorkspaceParams,
+  caseWorkspacePath,
+  caseViews,
+  defaultCaseQuery,
+  parseCaseWorkspaceParams,
+  type CaseQueryDraft,
+  type CaseWorkspaceUrlState,
+} from "./query";
 import {
   EmptyWorkspace,
   fieldClass,
@@ -50,24 +60,12 @@ type CaseDetail = {
   activity: Array<{ id: string; action: string; reason: string | null; createdAt: string }>;
 };
 
-const views = ["mine", "unassigned", "overdue", "appeals", "recently_resolved", "all"] as const;
-
-const initialQuery: CaseQueryDraft = {
-  view: "mine",
-  search: "",
-  type: "",
-  status: "",
-  priority: "",
-  ownerId: "",
-  sort: "updated_desc",
-  limit: 30,
-};
-
 export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { canAssign: boolean; canDecide: boolean; initialCaseId?: string | null }) {
-  const [query, setQuery] = useState<CaseQueryDraft>(() => queryFromLocation());
+  const [initialUrlState] = useState(() => stateFromLocation(initialCaseId));
+  const [query, setQuery] = useState<CaseQueryDraft>(initialUrlState.query);
   const [list, setList] = useState<CaseList | null>(null);
-  const [selectedId, setSelectedId] = useState(() => initialCaseId ?? valueFromLocation("case"));
-  const [selectedSavedViewId, setSelectedSavedViewId] = useState(() => valueFromLocation("savedView"));
+  const [selectedId, setSelectedId] = useState(initialUrlState.selectedId);
+  const [selectedSavedViewId, setSelectedSavedViewId] = useState(initialUrlState.savedViewId);
   const [detail, setDetail] = useState<CaseDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -75,21 +73,20 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const firstQuery = useRef(query);
+  const history = useRef(createWorkspaceHistoryController(initialUrlState));
   const listRequestId = useRef(0);
   const detailRequestId = useRef(0);
 
-  const loadList = useCallback(async (next: CaseQueryDraft, append = false) => {
+  const loadList = useCallback(async (next: CaseQueryDraft) => {
     const requestId = ++listRequestId.current;
-    setLoading(!append);
+    setLoading(true);
     setError(null);
     try {
       const response = await adminV2Request<CaseList>(`/api/v2/admin/cases?${buildCaseQuery(next)}`, {
         schema: operationsCaseListResponseSchema,
       });
       if (requestId !== listRequestId.current) return;
-      setList((current) => append && current
-        ? { ...response, items: [...current.items, ...response.items] }
-        : response);
+      setList(response);
     } catch (loadError) {
       if (requestId === listRequestId.current) setError(message(loadError));
     } finally {
@@ -112,21 +109,40 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
   }, []);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => { void loadList(firstQuery.current); }, 0);
+    const timer = window.setTimeout(() => {
+      history.current.replace(initialUrlState, writeCaseUrl);
+      void loadList(firstQuery.current);
+      if (initialUrlState.selectedId) void loadDetail(initialUrlState.selectedId);
+    }, 0);
     return () => window.clearTimeout(timer);
-  }, [loadList]);
+  }, [initialUrlState, loadDetail, loadList]);
+
   useEffect(() => {
-    if (!selectedId) return;
-    const timer = window.setTimeout(() => { void loadDetail(selectedId); }, 0);
-    return () => window.clearTimeout(timer);
-  }, [loadDetail, selectedId]);
+    return observeWorkspacePopState(window, () => stateFromLocation(null), (restored) => {
+      listRequestId.current += 1;
+      detailRequestId.current += 1;
+      setQuery(restored.query);
+      history.current.restore(restored);
+      setSelectedSavedViewId(restored.savedViewId);
+      setSelectedId(restored.selectedId);
+      setDetail(null);
+      void loadList(restored.query);
+      if (restored.selectedId) void loadDetail(restored.selectedId);
+    });
+  }, [loadDetail, loadList]);
+
+  function updateDraft(patch: Partial<CaseQueryDraft>) {
+    const next = { ...query, ...patch, cursor: undefined };
+    setQuery(next);
+    history.current.draft({ ...history.current.current(), query: next }, writeCaseUrl);
+  }
 
   function applyFilters(event?: FormEvent) {
     event?.preventDefault();
     const next = { ...query, cursor: undefined };
     setSelectedSavedViewId(null);
     setQuery(next);
-    updateUrl(next, selectedId, null);
+    history.current.navigate({ query: next, selectedId, savedViewId: null }, writeCaseUrl);
     void loadList(next);
   }
 
@@ -134,15 +150,15 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
     const next = { ...query, view, cursor: undefined };
     setSelectedSavedViewId(null);
     setQuery(next);
-    updateUrl(next, selectedId, null);
+    history.current.navigate({ query: next, selectedId, savedViewId: null }, writeCaseUrl);
     void loadList(next);
   }
 
   function clearFilters() {
-    const next = { ...initialQuery, view: query.view };
+    const next = { ...defaultCaseQuery, view: query.view };
     setSelectedSavedViewId(null);
     setQuery(next);
-    updateUrl(next, selectedId, null);
+    history.current.navigate({ query: next, selectedId, savedViewId: null }, writeCaseUrl);
     void loadList(next);
   }
 
@@ -150,14 +166,15 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
     detailRequestId.current += 1;
     setSelectedId(id);
     setDetail(null);
-    updateUrl(query, id, selectedSavedViewId);
+    history.current.navigate({ ...history.current.current(), selectedId: id }, writeCaseUrl);
+    if (id) void loadDetail(id);
   }
 
   const applySavedView = useCallback((view: SavedViewRecord) => {
     const next = caseQueryFromSavedState(view.queryState);
     setSelectedSavedViewId(view.id);
     setQuery(next);
-    updateUrl(next, selectedId, view.id);
+    history.current.navigate({ query: next, selectedId, savedViewId: view.id }, writeCaseUrl);
     void loadList(next);
   }, [loadList, selectedId]);
 
@@ -172,7 +189,10 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
     try {
       await execute();
       setNotice(label);
-      await Promise.all([loadList({ ...query, cursor: undefined }), selectedId ? loadDetail(selectedId) : Promise.resolve()]);
+      const next = { ...history.current.current().query, cursor: undefined };
+      setQuery(next);
+      history.current.replace({ query: next, selectedId, savedViewId: selectedSavedViewId }, writeCaseUrl);
+      await Promise.all([loadList(next), selectedId ? loadDetail(selectedId) : Promise.resolve()]);
     } catch (mutationError) {
       setError(message(mutationError));
     } finally {
@@ -200,11 +220,11 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
       />
 
       <form className="grid gap-3 rounded-xl bg-[var(--ad-surface)] p-4 md:grid-cols-2 xl:grid-cols-[minmax(220px,1fr)_repeat(4,150px)_auto]" onSubmit={applyFilters}>
-        <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Search all cases<input className={fieldClass} onChange={(event) => setQuery({ ...query, search: event.target.value })} placeholder="target or case key" value={query.search} /></label>
-        <Select label="Type" onChange={(type) => setQuery({ ...query, type })} options={["", "content_report", "appeal", "support_request", "billing_dispute"]} value={query.type} />
-        <Select label="Status" onChange={(status) => setQuery({ ...query, status })} options={["", "new", "triaged", "in_progress", "waiting", "resolved", "closed", "reopened"]} value={query.status} />
-        <Select label="Priority" onChange={(priority) => setQuery({ ...query, priority })} options={["", "urgent", "high", "normal", "low"]} value={query.priority} />
-        <Select label="Sort" onChange={(sort) => setQuery({ ...query, sort: sort as CaseQueryDraft["sort"] })} options={["updated_desc", "updated_asc"]} value={query.sort} />
+        <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Search all cases<input className={fieldClass} onChange={(event) => updateDraft({ search: event.target.value })} placeholder="target or case key" value={query.search} /></label>
+        <Select label="Type" onChange={(type) => updateDraft({ type })} options={["", "content_report", "appeal", "support_request", "billing_dispute"]} value={query.type} />
+        <Select label="Status" onChange={(status) => updateDraft({ status })} options={["", "new", "triaged", "in_progress", "waiting", "resolved", "closed", "reopened"]} value={query.status} />
+        <Select label="Priority" onChange={(priority) => updateDraft({ priority })} options={["", "urgent", "high", "normal", "low"]} value={query.priority} />
+        <Select label="Sort" onChange={(sort) => updateDraft({ sort: sort as CaseQueryDraft["sort"] })} options={["updated_desc", "updated_asc"]} value={query.sort} />
         <div className="flex items-end gap-2"><WorkspaceButton tone="primary" type="submit">Apply</WorkspaceButton>{filtered ? <WorkspaceButton onClick={clearFilters}>Clear</WorkspaceButton> : null}</div>
       </form>
 
@@ -215,7 +235,7 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
         <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,0.92fr)_minmax(460px,1.08fr)]">
           <div className="space-y-2" aria-label="Case results">
             {list?.items.map((adminCase) => <CaseRow adminCase={adminCase} active={selectedId === adminCase.id} key={adminCase.id} onSelect={() => selectCase(adminCase.id)} referenceTime={list.asOf} />)}
-            {list?.pageInfo.hasNextPage && list.pageInfo.endCursor ? <WorkspaceButton disabled={loading} onClick={() => void loadList({ ...query, cursor: list.pageInfo.endCursor ?? undefined }, true)}><RefreshCcw className="h-4 w-4" />Load more</WorkspaceButton> : null}
+            {list?.pageInfo.hasNextPage && list.pageInfo.endCursor ? <WorkspaceButton disabled={loading} onClick={() => { const next = { ...history.current.current().query, cursor: list.pageInfo.endCursor ?? undefined }; setQuery(next); history.current.navigate({ query: next, selectedId, savedViewId: selectedSavedViewId }, writeCaseUrl); void loadList(next); }}><RefreshCcw className="h-4 w-4" />Next page</WorkspaceButton> : null}
           </div>
           {selectedId ? detailLoading && !detail ? <LoadingWorkspace label="Loading case detail" /> : detail ? <CaseInspector busy={busy} canAssign={canAssign} canDecide={canDecide} detail={detail} key={detail.case.id} onClose={() => selectCase(null)} onMutate={mutate} /> : null : <aside className="hidden rounded-xl bg-[var(--ad-surface-subtle)] p-8 text-sm text-[var(--ad-text-muted)] xl:block">Select a case to inspect evidence and complete the decision loop.</aside>}
         </div>
@@ -230,11 +250,11 @@ function CaseTabs({ active, onChange }: { active: string; onChange: (view: strin
     if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
     event.preventDefault();
     const direction = event.key === 'ArrowRight' ? 1 : -1;
-    const next = (index + direction + views.length) % views.length;
+    const next = (index + direction + caseViews.length) % caseViews.length;
     refs.current[next]?.focus();
-    onChange(views[next]);
+    onChange(caseViews[next]);
   }
-  return <div aria-label="Case queue views" className="flex gap-1 overflow-x-auto rounded-lg bg-[var(--ad-surface-subtle)] p-1" role="group">{views.map((view, index) => <button aria-pressed={active === view} className={`min-h-11 shrink-0 rounded-md px-3 text-sm font-semibold transition ${active === view ? "bg-[var(--ad-surface)] text-[var(--ad-ink)] shadow-sm" : "text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]"}`} key={view} onClick={() => onChange(view)} onKeyDown={(event) => onKeyDown(event, index)} ref={(node) => { refs.current[index] = node; }} type="button">{view.replaceAll("_", " ")}</button>)}</div>;
+  return <div aria-label="Case queue views" className="flex gap-1 overflow-x-auto rounded-lg bg-[var(--ad-surface-subtle)] p-1" role="group">{caseViews.map((view, index) => <button aria-pressed={active === view} className={`min-h-11 shrink-0 rounded-md px-3 text-sm font-semibold transition ${active === view ? "bg-[var(--ad-surface)] text-[var(--ad-ink)] shadow-sm" : "text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]"}`} key={view} onClick={() => onChange(view)} onKeyDown={(event) => onKeyDown(event, index)} ref={(node) => { refs.current[index] = node; }} type="button">{view.replaceAll("_", " ")}</button>)}</div>;
 }
 
 function CaseRow({ active, adminCase, onSelect, referenceTime }: { active: boolean; adminCase: OperationsCase; onSelect: () => void; referenceTime: string }) {
@@ -290,8 +310,6 @@ function CaseInspector({ busy, canAssign, canDecide, detail, onClose, onMutate }
 
 function Select({ label, onChange, options, value }: { label: string; onChange: (value: string) => void; options: readonly string[]; value: string }) { return <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{label}<select className={fieldClass} onChange={(event) => onChange(event.target.value)} value={value}>{options.map((option) => <option key={option || "all"} value={option}>{option ? option.replaceAll("_", " ") : "All"}</option>)}</select></label>; }
 function Stat({ label, value }: { label: string; value: ReactNode }) { return <div><dt className="text-[10px] font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">{label}</dt><dd className="mt-1 truncate font-mono text-sm text-[var(--ad-ink)]" title={typeof value === "string" ? value : undefined}>{value}</dd></div>; }
-function queryFromLocation(): CaseQueryDraft { if (typeof window === "undefined") return initialQuery; const params = new URLSearchParams(window.location.search); const view = params.get("view"); const sort = params.get("sort"); return { ...initialQuery, view: views.includes(view as (typeof views)[number]) ? view ?? "mine" : "mine", search: params.get("search") ?? "", type: params.get("type") ?? "", status: params.get("status") ?? "", priority: params.get("priority") ?? "", ownerId: params.get("ownerId") ?? "", sort: sort === "updated_asc" ? "updated_asc" : "updated_desc", limit: boundedLimit(params.get("limit"), initialQuery.limit) }; }
-function valueFromLocation(key: string) { return typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get(key); }
-function updateUrl(query: CaseQueryDraft, selectedId: string | null, savedViewId: string | null) { const params = new URLSearchParams(buildCaseQuery({ ...query, cursor: undefined })); if (selectedId) params.set("case", selectedId); if (savedViewId) params.set("savedView", savedViewId); setWorkspaceUrl(params); }
-function boundedLimit(value: string | null, fallback: number) { const parsed = Number(value); return Number.isInteger(parsed) && parsed >= 1 && parsed <= 200 ? parsed : fallback; }
+function stateFromLocation(initialCaseId: string | null) { const parsed = typeof window === "undefined" ? { query: defaultCaseQuery, selectedId: null, savedViewId: null } : parseCaseWorkspaceParams(new URLSearchParams(window.location.search)); return { ...parsed, selectedId: initialCaseId ?? parsed.selectedId }; }
+function writeCaseUrl(state: CaseWorkspaceUrlState, mode: "push" | "replace") { setWorkspaceUrl(buildCaseWorkspaceParams(state), { mode, pathname: caseWorkspacePath(state.selectedId) }); }
 function message(error: unknown) { return error instanceof Error ? error.message : "Case operation failed"; }

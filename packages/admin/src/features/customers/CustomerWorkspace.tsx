@@ -10,6 +10,15 @@ import {
 } from "@idream/shared/admin";
 import { ArrowLeft, RefreshCcw, Search, UserRound } from "lucide-react";
 import { adminV2Request, setWorkspaceUrl } from "@/lib/admin-v2-api";
+import { createWorkspaceHistoryController, observeWorkspacePopState } from "@/lib/workspace-history";
+import {
+  buildCustomerWorkspaceParams,
+  customerWorkspacePath,
+  defaultCustomerQuery,
+  parseCustomerWorkspaceParams,
+  type CustomerQuery,
+  type CustomerWorkspaceUrlState,
+} from "./query";
 import {
   EmptyWorkspace,
   fieldClass,
@@ -19,23 +28,23 @@ import {
   WorkspaceButton,
 } from "@/features/operations/WorkspaceUi";
 
-type Query = { search: string; status: string; cursor?: string };
-
-export function CustomerWorkspace() {
-  const [query, setQuery] = useState<Query>(() => queryFromLocation());
+export function CustomerWorkspace({ initialCustomerId = null }: { initialCustomerId?: string | null }) {
+  const [initialUrlState] = useState(() => stateFromLocation(initialCustomerId));
+  const [query, setQuery] = useState<CustomerQuery>(initialUrlState.query);
   const [list, setList] = useState<CustomerListResponse | null>(null);
-  const [selectedId, setSelectedId] = useState(() => valueFromLocation("customer"));
+  const [selectedId, setSelectedId] = useState(initialUrlState.selectedId);
   const [detail, setDetail] = useState<Customer360 | null>(null);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const firstQuery = useRef(query);
+  const history = useRef(createWorkspaceHistoryController(initialUrlState));
   const listRequestId = useRef(0);
   const detailRequestId = useRef(0);
 
-  const loadList = useCallback(async (next: Query, append = false) => {
+  const loadList = useCallback(async (next: CustomerQuery) => {
     const requestId = ++listRequestId.current;
-    setLoading(!append);
+    setLoading(true);
     setError(null);
     try {
       const params = new URLSearchParams({ search: next.search, status: next.status, limit: "30" });
@@ -44,9 +53,7 @@ export function CustomerWorkspace() {
         schema: customerListResponseSchema,
       });
       if (requestId !== listRequestId.current) return;
-      setList((current) => append && current
-        ? { ...response, items: [...current.items, ...response.items] }
-        : response);
+      setList(response);
     } catch (cause) {
       if (requestId === listRequestId.current) setError(message(cause));
     } finally {
@@ -71,25 +78,46 @@ export function CustomerWorkspace() {
   }, []);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void loadList(firstQuery.current), 0);
+    const timer = window.setTimeout(() => {
+      history.current.replace(initialUrlState, writeCustomerUrl);
+      void loadList(firstQuery.current);
+      if (initialUrlState.selectedId) void loadDetail(initialUrlState.selectedId);
+    }, 0);
     return () => window.clearTimeout(timer);
-  }, [loadList]);
-  useEffect(() => {
-    if (!selectedId) return;
-    const timer = window.setTimeout(() => void loadDetail(selectedId), 0);
-    return () => window.clearTimeout(timer);
-  }, [loadDetail, selectedId]);
+  }, [initialUrlState, loadDetail, loadList]);
 
-  function applyQuery(next: Query) {
+  useEffect(() => {
+    return observeWorkspacePopState(window, () => stateFromLocation(null), (restored) => {
+      listRequestId.current += 1;
+      detailRequestId.current += 1;
+      setQuery(restored.query);
+      history.current.restore(restored);
+      setSelectedId(restored.selectedId);
+      setDetail(null);
+      void loadList(restored.query);
+      if (restored.selectedId) void loadDetail(restored.selectedId);
+    });
+  }, [loadDetail, loadList]);
+
+  function updateDraft(patch: Partial<CustomerQuery>) {
+    const next = { ...query, ...patch, cursor: undefined };
+    setQuery(next);
+    history.current.draft({ ...history.current.current(), query: next }, writeCustomerUrl);
+  }
+
+  function applyQuery(next: CustomerQuery) {
     const normalized = { ...next, cursor: undefined };
     setQuery(normalized);
-    updateWorkspaceUrl({ search: normalized.search, status: normalized.status });
+    history.current.navigate({ query: normalized, selectedId }, writeCustomerUrl);
     void loadList(normalized);
   }
 
-  function selectCustomer(id: string) {
+  function selectCustomer(id: string | null) {
+    detailRequestId.current += 1;
     setSelectedId(id);
-    updateWorkspaceUrl({ search: query.search, status: query.status, customer: id });
+    setDetail(null);
+    history.current.navigate({ ...history.current.current(), selectedId: id }, writeCustomerUrl);
+    if (id) void loadDetail(id);
   }
 
   if (loading && !list) return <LoadingWorkspace label="Loading customers…" />;
@@ -102,7 +130,7 @@ export function CustomerWorkspace() {
           <h2 className="mt-1 text-2xl font-semibold">Customers</h2>
           <p className="mt-1 max-w-2xl text-sm text-[var(--ad-text-muted)]">One authoritative view of relationship activity, generations, billing, Cases, and operator history.</p>
         </div>
-        <WorkspaceButton onClick={() => void loadList({ ...query, cursor: undefined })}>
+        <WorkspaceButton onClick={() => void loadList(history.current.current().query)}>
           <RefreshCcw className="h-4 w-4" />Refresh
         </WorkspaceButton>
       </header>
@@ -112,11 +140,11 @@ export function CustomerWorkspace() {
       <form className="grid gap-3 rounded-xl bg-[var(--ad-surface)] p-4 sm:grid-cols-[minmax(0,1fr)_180px_auto]" onSubmit={(event) => { event.preventDefault(); applyQuery(query); }}>
         <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
           Search
-          <span className="relative"><Search className="pointer-events-none absolute left-3 top-3 h-4 w-4" /><input className={`${fieldClass} pl-9`} onChange={(event) => setQuery({ ...query, search: event.target.value })} placeholder="Email, name, or customer ID" value={query.search} /></span>
+          <span className="relative"><Search className="pointer-events-none absolute left-3 top-3 h-4 w-4" /><input className={`${fieldClass} pl-9`} onChange={(event) => updateDraft({ search: event.target.value })} placeholder="Email, name, or customer ID" value={query.search} /></span>
         </label>
         <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
           Status
-          <select className={fieldClass} onChange={(event) => setQuery({ ...query, status: event.target.value })} value={query.status}><option value="">All</option><option value="active">Active</option><option value="suspended">Suspended</option><option value="deleted">Deleted</option></select>
+          <select className={fieldClass} onChange={(event) => updateDraft({ status: event.target.value })} value={query.status}><option value="">All</option><option value="active">Active</option><option value="suspended">Suspended</option><option value="deleted">Deleted</option></select>
         </label>
         <WorkspaceButton tone="primary" type="submit">Apply</WorkspaceButton>
       </form>
@@ -136,12 +164,12 @@ export function CustomerWorkspace() {
                 </li>
               ))}
             </ul>
-          ) : <EmptyWorkspace filtered={Boolean(query.search || query.status)} onClear={() => applyQuery({ search: "", status: "" })} />}
-          {list?.pageInfo.hasNextPage ? <div className="border-t border-[var(--ad-border)] p-4"><WorkspaceButton onClick={() => void loadList({ ...query, cursor: list.pageInfo.endCursor ?? undefined }, true)}>Load more</WorkspaceButton></div> : null}
+          ) : <EmptyWorkspace filtered={Boolean(query.search || query.status)} onClear={() => applyQuery(defaultCustomerQuery)} />}
+          {list?.pageInfo.hasNextPage ? <div className="border-t border-[var(--ad-border)] p-4"><WorkspaceButton onClick={() => { const next = { ...history.current.current().query, cursor: list.pageInfo.endCursor ?? undefined }; setQuery(next); history.current.navigate({ query: next, selectedId }, writeCustomerUrl); void loadList(next); }}>Next page</WorkspaceButton></div> : null}
         </section>
 
         {selectedId ? (
-          detailLoading && !detail ? <LoadingWorkspace label="Loading Customer 360…" /> : detail ? <CustomerInspector detail={detail} onClose={() => { setSelectedId(""); setDetail(null); updateWorkspaceUrl({ search: query.search, status: query.status }); }} /> : null
+          detailLoading && !detail ? <LoadingWorkspace label="Loading Customer 360…" /> : detail ? <CustomerInspector detail={detail} onClose={() => selectCustomer(null)} /> : null
         ) : <aside className="hidden rounded-xl bg-[var(--ad-surface-subtle)] p-8 text-sm text-[var(--ad-text-muted)] xl:block">Select a customer to inspect their complete operational context.</aside>}
       </div>
     </div>
@@ -164,7 +192,6 @@ function CustomerInspector({ detail, onClose }: { detail: Customer360; onClose: 
 
 function DetailSection({ children, title }: { children: React.ReactNode; title: string }) { return <section className="border-t border-[var(--ad-border)] pt-4"><h4 className="mb-3 text-sm font-semibold">{title}</h4>{children}</section>; }
 function ListStat({ label, value }: { label: string; value: React.ReactNode }) { return <span><span className="block text-[10px] font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">{label}</span><span className="mt-1 block font-mono text-sm">{value}</span></span>; }
-function queryFromLocation(): Query { if (typeof window === "undefined") return { search: "", status: "" }; const params = new URLSearchParams(window.location.search); return { search: params.get("search") ?? "", status: params.get("status") ?? "" }; }
-function valueFromLocation(key: string) { if (typeof window === "undefined") return ""; return new URLSearchParams(window.location.search).get(key) ?? ""; }
-function updateWorkspaceUrl(values: Record<string, string>) { const params = new URLSearchParams(); for (const [key, value] of Object.entries(values)) if (value) params.set(key, value); setWorkspaceUrl(params); }
+function stateFromLocation(initialCustomerId: string | null) { const parsed = typeof window === "undefined" ? { query: defaultCustomerQuery, selectedId: null } : parseCustomerWorkspaceParams(new URLSearchParams(window.location.search)); return { ...parsed, selectedId: initialCustomerId ?? parsed.selectedId }; }
+function writeCustomerUrl(state: CustomerWorkspaceUrlState, mode: "push" | "replace") { setWorkspaceUrl(buildCustomerWorkspaceParams(state), { mode, pathname: customerWorkspacePath(state.selectedId) }); }
 function message(cause: unknown) { return cause instanceof Error ? cause.message : "Customer workspace request failed"; }

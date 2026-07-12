@@ -26,6 +26,7 @@ import {
   Workflow,
   type LucideIcon,
 } from "lucide-react";
+import type { AdminPermissionKey } from "@idream/shared/admin/permissions";
 
 export const ADMIN_WORKSPACES = [
   "Today",
@@ -54,11 +55,15 @@ export type NavItem = {
   legacyHref: string;
   icon: LucideIcon;
   group: AdminWorkspace;
-  permissions: readonly string[];
+  read: { allOf: readonly AdminPermissionKey[] };
   tier: "daily" | "folded";
 };
 
 type ItemInput = Omit<NavItem, "legacyHref" | "tier">;
+
+function read(...allOf: AdminPermissionKey[]): NavItem["read"] {
+  return { allOf };
+}
 
 function item(input: ItemInput): NavItem {
   return {
@@ -72,46 +77,46 @@ function item(input: ItemInput): NavItem {
 // 34 shipped capabilities stay reachable; `href` is the canonical decision-workspace URL.
 // Permissions are existing effective keys, not client-side role guesses.
 export const navItems: NavItem[] = [
-  item({ id: "dashboard", label: "Today", href: "/admin/today", icon: Gauge, group: "Today", permissions: ["dashboard.read"] }),
+  item({ id: "dashboard", label: "Today", href: "/admin/today", icon: Gauge, group: "Today", read: read("dashboard.read") }),
 
-  item({ id: "content/official", label: "Portfolio & Projects", href: "/admin/characters", icon: ShieldCheck, group: "Character Studio", permissions: ["character.project.read", "character.project.write", "character.performance.read", "content.read"] }),
-  item({ id: "content/review-queue", label: "Character Review", href: "/admin/characters/review", icon: ClipboardCheck, group: "Character Studio", permissions: ["safety.review.read", "content.read"] }),
-  item({ id: "content/templates", label: "Character Starters", href: "/admin/characters/starters", icon: Sparkles, group: "Character Studio", permissions: ["content.read"] }),
-  item({ id: "content/tags", label: "Taxonomy", href: "/admin/characters/taxonomy", icon: Flag, group: "Character Studio", permissions: ["content.read"] }),
+  item({ id: "content/official", label: "Portfolio & Projects", href: "/admin/characters", icon: ShieldCheck, group: "Character Studio", read: read("character.project.read", "character.release.read", "character.performance.read") }),
+  item({ id: "content/review-queue", label: "Character Review", href: "/admin/characters/review", icon: ClipboardCheck, group: "Character Studio", read: read("safety.review.read") }),
+  item({ id: "content/templates", label: "Character Starters", href: "/admin/characters/starters", icon: Sparkles, group: "Character Studio", read: read("content.read") }),
+  item({ id: "content/tags", label: "Taxonomy", href: "/admin/characters/taxonomy", icon: Flag, group: "Character Studio", read: read("content.read") }),
 
-  item({ id: "content/production", label: "Creative Runs", href: "/admin/creative/runs", icon: Play, group: "Creative Studio", permissions: ["creative.run.read", "content.production.write"] }),
-  item({ id: "content/assets", label: "Library", href: "/admin/creative/library", icon: ImageIcon, group: "Creative Studio", permissions: ["creative.asset.read", "content.asset.read"] }),
-  item({ id: "content/placements", label: "Placements", href: "/admin/creative/placements", icon: Bookmark, group: "Creative Studio", permissions: ["creative.placement.read", "creative.placement.publish", "content.asset.read", "content.placement.write"] }),
+  item({ id: "content/production", label: "Creative Runs", href: "/admin/creative/runs", icon: Play, group: "Creative Studio", read: read("creative.run.read") }),
+  item({ id: "content/assets", label: "Library", href: "/admin/creative/library", icon: ImageIcon, group: "Creative Studio", read: read("content.asset.read") }),
+  item({ id: "content/placements", label: "Placements", href: "/admin/creative/placements", icon: Bookmark, group: "Creative Studio", read: read("content.asset.read") }),
 
-  item({ id: "cases", label: "Cases", href: "/admin/cases?view=mine", icon: Ticket, group: "Customer Operations", permissions: ["case.read"] }),
-  item({ id: "users", label: "Customers", href: "/admin/customers", icon: Users, group: "Customer Operations", permissions: ["customer.read"] }),
-  item({ id: "billing", label: "Billing Operations", href: "/admin/customer-ops/billing", icon: BadgeDollarSign, group: "Customer Operations", permissions: ["billing.read"] }),
-  item({ id: "compliance", label: "Account Requests", href: "/admin/customer-ops/account-requests", icon: ShieldAlert, group: "Customer Operations", permissions: ["compliance.read"] }),
+  item({ id: "cases", label: "Cases", href: "/admin/cases?view=mine", icon: Ticket, group: "Customer Operations", read: read("case.read") }),
+  item({ id: "users", label: "Customers", href: "/admin/customers", icon: Users, group: "Customer Operations", read: read("customer.read") }),
+  item({ id: "billing", label: "Billing Operations", href: "/admin/customer-ops/billing", icon: BadgeDollarSign, group: "Customer Operations", read: read("billing.read") }),
+  item({ id: "compliance", label: "Account Requests", href: "/admin/customer-ops/account-requests", icon: ShieldAlert, group: "Customer Operations", read: read("compliance.read") }),
 
-  item({ id: "analytics", label: "Product Health", href: "/admin/growth/health", icon: BarChart3, group: "Growth", permissions: ["analytics.metric.read", "analytics.metric.export", "analytics.export"] }),
-  item({ id: "insights", label: "Funnels & Retention", href: "/admin/growth/funnels", icon: BarChart3, group: "Growth", permissions: ["analytics.metric.read", "analytics.metric.export", "analytics.export"] }),
-  item({ id: "experiments", label: "Experiments", href: "/admin/growth/experiments", icon: Flag, group: "Growth", permissions: ["analytics.metric.read", "experiment.manage", "analytics.export", "config.feature_flag.write"] }),
-  item({ id: "content", label: "Featured Merchandising", href: "/admin/growth/merchandising?view=featured", icon: Library, group: "Growth", permissions: ["content.read"] }),
-  item({ id: "announcements", label: "Announcements", href: "/admin/growth/merchandising?view=announcements", icon: MessageSquare, group: "Growth", permissions: ["content.cms.write"] }),
-  item({ id: "cms", label: "CMS & SEO", href: "/admin/growth/content", icon: FileText, group: "Growth", permissions: ["content.cms.write"] }),
-  item({ id: "pricing", label: "Pricing", href: "/admin/growth/offers?view=pricing", icon: Coins, group: "Growth", permissions: ["config.pricing.write"] }),
-  item({ id: "promo", label: "Promotions", href: "/admin/growth/offers?view=promo", icon: Ticket, group: "Growth", permissions: ["growth.promo.read"] }),
+  item({ id: "analytics", label: "Product Health", href: "/admin/growth/health", icon: BarChart3, group: "Growth", read: read("analytics.metric.read") }),
+  item({ id: "insights", label: "Funnels & Retention", href: "/admin/growth/funnels", icon: BarChart3, group: "Growth", read: read("analytics.metric.read") }),
+  item({ id: "experiments", label: "Experiments", href: "/admin/growth/experiments", icon: Flag, group: "Growth", read: read("experiment.manage") }),
+  item({ id: "content", label: "Featured Merchandising", href: "/admin/growth/merchandising?view=featured", icon: Library, group: "Growth", read: read("content.read") }),
+  item({ id: "announcements", label: "Announcements", href: "/admin/growth/merchandising?view=announcements", icon: MessageSquare, group: "Growth", read: read("growth.promo.read") }),
+  item({ id: "cms", label: "CMS & SEO", href: "/admin/growth/content", icon: FileText, group: "Growth", read: read("content.read") }),
+  item({ id: "pricing", label: "Pricing", href: "/admin/growth/offers?view=pricing", icon: Coins, group: "Growth", read: read("billing.read") }),
+  item({ id: "promo", label: "Promotions", href: "/admin/growth/offers?view=promo", icon: Ticket, group: "Growth", read: read("growth.promo.read") }),
 
-  item({ id: "ops/incidents", label: "Incidents", href: "/admin/ops/incidents", icon: ShieldAlert, group: "Platform Operations", permissions: ["ops.incident.read"] }),
-  item({ id: "generation/jobs", label: "Generation Jobs", href: "/admin/ops/jobs", icon: Activity, group: "Platform Operations", permissions: ["generation.job.read"] }),
-  item({ id: "generation/dead-letter", label: "Dead-letter", href: "/admin/ops/jobs?view=dead-letter", icon: Inbox, group: "Platform Operations", permissions: ["generation.job.requeue", "ops.deadletter.write"] }),
-  item({ id: "ops/providers", label: "Providers", href: "/admin/ops/providers", icon: Gauge, group: "Platform Operations", permissions: ["ops.queue.read"] }),
-  item({ id: "generation/backends", label: "Backend Diagnostics", href: "/admin/ops/providers?view=backends", icon: Server, group: "Platform Operations", permissions: ["ops.queue.read"] }),
-  item({ id: "generation/metrics", label: "Generation Health", href: "/admin/ops/providers?view=generation-metrics", icon: BarChart3, group: "Platform Operations", permissions: ["ops.queue.read"] }),
-  item({ id: "generation/config", label: "Profiles & Rollout", href: "/admin/ops/profiles", icon: SlidersHorizontal, group: "Platform Operations", permissions: ["generation.config.read"] }),
-  item({ id: "generation/recipes", label: "Prompt Recipes", href: "/admin/ops/recipes", icon: ScrollText, group: "Platform Operations", permissions: ["generation.config.read"] }),
-  item({ id: "generation/presets", label: "Presets", href: "/admin/ops/recipes?view=presets", icon: Layers, group: "Platform Operations", permissions: ["generation.config.read"] }),
-  item({ id: "generation/workflows", label: "Workflow Diagnostics", href: "/admin/ops/recipes?view=workflows", icon: Workflow, group: "Platform Operations", permissions: ["generation.config.read"] }),
-  item({ id: "chat", label: "Chat Operations", href: "/admin/ops/chat", icon: MessageSquare, group: "Platform Operations", permissions: ["chat.ops.read"] }),
+  item({ id: "ops/incidents", label: "Incidents", href: "/admin/ops/incidents", icon: ShieldAlert, group: "Platform Operations", read: read("ops.incident.read") }),
+  item({ id: "generation/jobs", label: "Generation Jobs", href: "/admin/ops/jobs", icon: Activity, group: "Platform Operations", read: read("generation.job.read") }),
+  item({ id: "generation/dead-letter", label: "Dead-letter", href: "/admin/ops/jobs?view=dead-letter", icon: Inbox, group: "Platform Operations", read: read("ops.queue.read") }),
+  item({ id: "ops/providers", label: "Providers", href: "/admin/ops/providers", icon: Gauge, group: "Platform Operations", read: read("ops.queue.read") }),
+  item({ id: "generation/backends", label: "Backend Diagnostics", href: "/admin/ops/providers?view=backends", icon: Server, group: "Platform Operations", read: read("ops.queue.read") }),
+  item({ id: "generation/metrics", label: "Generation Health", href: "/admin/ops/providers?view=generation-metrics", icon: BarChart3, group: "Platform Operations", read: read("ops.queue.read") }),
+  item({ id: "generation/config", label: "Profiles & Rollout", href: "/admin/ops/profiles", icon: SlidersHorizontal, group: "Platform Operations", read: read("generation.config.read", "ops.queue.read", "generation.job.read") }),
+  item({ id: "generation/recipes", label: "Prompt Recipes", href: "/admin/ops/recipes", icon: ScrollText, group: "Platform Operations", read: read("generation.config.read") }),
+  item({ id: "generation/presets", label: "Presets", href: "/admin/ops/recipes?view=presets", icon: Layers, group: "Platform Operations", read: read("generation.config.read") }),
+  item({ id: "generation/workflows", label: "Workflow Diagnostics", href: "/admin/ops/recipes?view=workflows", icon: Workflow, group: "Platform Operations", read: read("generation.config.read") }),
+  item({ id: "chat", label: "Chat Operations", href: "/admin/ops/chat", icon: MessageSquare, group: "Platform Operations", read: read("chat.ops.read") }),
 
-  item({ id: "approvals", label: "Approvals", href: "/admin/system/approvals", icon: ClipboardCheck, group: "System", permissions: ["admin.approval.review"] }),
-  item({ id: "system/access", label: "Team Access", href: "/admin/system/access", icon: Users, group: "System", permissions: ["user.status.write", "user.role.write"] }),
-  item({ id: "audit-log", label: "Audit Log", href: "/admin/system/audit", icon: History, group: "System", permissions: ["audit.read"] }),
+  item({ id: "approvals", label: "Approvals", href: "/admin/system/approvals", icon: ClipboardCheck, group: "System", read: read("admin.approval.review") }),
+  item({ id: "system/access", label: "Team Access", href: "/admin/system/access", icon: Users, group: "System", read: read("user.read") }),
+  item({ id: "audit-log", label: "Audit Log", href: "/admin/system/audit", icon: History, group: "System", read: read("audit.read") }),
 ];
 
 export const NAV_GROUP_ORDER = [...ADMIN_WORKSPACES];
@@ -138,17 +143,25 @@ export function defaultWorkModeForRole(role: string | undefined): WorkMode {
   return "admin";
 }
 
-export function sectionIsPermitted(sectionId: string, permissions: ReadonlySet<string>) {
+export function sectionIsPermitted(sectionId: string, permissions: ReadonlySet<AdminPermissionKey>) {
   const navItem = ALL_SECTION_ITEMS.find((candidate) => candidate.id === sectionId);
-  return Boolean(navItem?.permissions.some((permission) => permissions.has(permission)));
+  return Boolean(navItem && canReadWorkspace(navItem, permissions));
 }
 
-export function navGroupsForPermissions(permissions: ReadonlySet<string>, mode: WorkMode) {
+export function canReadWorkspace(navItem: NavItem, permissions: ReadonlySet<AdminPermissionKey>) {
+  return navItem.read.allOf.every((permission) => permissions.has(permission));
+}
+
+export function canReadAnyWorkspace(permissions: ReadonlySet<AdminPermissionKey>) {
+  return ALL_SECTION_ITEMS.some((navItem) => canReadWorkspace(navItem, permissions));
+}
+
+export function navGroupsForPermissions(permissions: ReadonlySet<AdminPermissionKey>, mode: WorkMode) {
   return MODE_GROUP_ORDER[mode]
     .map((group) => ({
       group,
       items: navItems.filter(
-        (navItem) => navItem.group === group && navItem.permissions.some((key) => permissions.has(key)),
+        (navItem) => navItem.group === group && canReadWorkspace(navItem, permissions),
       ),
     }))
     .filter(({ items }) => items.length > 0);
@@ -158,9 +171,9 @@ export function navGroupsForPermissions(permissions: ReadonlySet<string>, mode: 
 // They stay out of primary navigation but remain directly addressable for saved links
 // and legacy operators; production traffic telemetry decides their eventual sunset.
 const HIDDEN_COMPATIBILITY_ITEMS: NavItem[] = [
-  item({ id: "moderation", label: "Moderation Cases", href: "/admin/moderation", icon: ShieldAlert, group: "Customer Operations", permissions: ["safety.review.read"] }),
-  item({ id: "support", label: "Support Cases", href: "/admin/support", icon: Ticket, group: "Customer Operations", permissions: ["support.request.read"] }),
-  item({ id: "risk", label: "Risk Cases", href: "/admin/risk", icon: ShieldAlert, group: "Customer Operations", permissions: ["audit.read"] }),
+  item({ id: "moderation", label: "Moderation Cases", href: "/admin/moderation", icon: ShieldAlert, group: "Customer Operations", read: read("safety.review.read") }),
+  item({ id: "support", label: "Support Cases", href: "/admin/support", icon: Ticket, group: "Customer Operations", read: read("support.request.read") }),
+  item({ id: "risk", label: "Risk Cases", href: "/admin/risk", icon: ShieldAlert, group: "Customer Operations", read: read("billing.read") }),
 ];
 
 const ALL_SECTION_ITEMS = [...navItems, ...HIDDEN_COMPATIBILITY_ITEMS];
@@ -222,6 +235,9 @@ function canonicalSection(path: string, query: URLSearchParams): AdminPath | nul
   }
   if (path === "cases") {
     return { sectionId: "cases", view: { kind: "list" } };
+  }
+  if (path.startsWith("customers/") && path.split("/").length === 2) {
+    return { sectionId: "users", view: { kind: "detail", id: path.slice("customers/".length) } };
   }
   if (path.startsWith("ops/incidents/") && path.split("/").length === 3) {
     return { sectionId: "ops/incidents", view: { kind: "detail", id: path.slice("ops/incidents/".length) } };

@@ -3,7 +3,7 @@ import { adminBootstrapSchema, type AdminBootstrap } from "@idream/shared/admin"
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { AdminDevLogin } from "@/components/admin/AdminDevLogin";
-import { adminEntryRedirect } from "@/components/admin/nav-config";
+import { adminEntryRedirect, canReadAnyWorkspace } from "@/components/admin/nav-config";
 import { proxyToMain } from "../../../server/main-proxy";
 import { AdminConsoleClientOnly } from "../AdminConsoleClientOnly";
 
@@ -34,9 +34,10 @@ export default async function AdminPage({ params, searchParams }: AdminPageProps
   const headerList = await headers();
   const bootstrap = await loadBootstrap(headerList);
   if (!bootstrap) return <AdminAuthorityUnavailable />;
+  const canReadAdmin = Boolean(bootstrap.actor) && canReadAnyWorkspace(new Set(bootstrap.permissions));
 
   // 本地开发：无后台权限时给出内置账号的快捷登录，而非裸的 access denied。
-  if (!bootstrap.canReadDashboard && bootstrap.devLogin.enabled) {
+  if (!canReadAdmin && bootstrap.devLogin.enabled) {
     return (
       <AdminDevLogin
         accounts={bootstrap.devLogin.accounts}
@@ -48,7 +49,7 @@ export default async function AdminPage({ params, searchParams }: AdminPageProps
   return (
     <AdminConsoleClientOnly
       actor={bootstrap.actor}
-      initialAccess={bootstrap.canReadDashboard}
+      initialAccess={Boolean(bootstrap.actor)}
       initialPermissions={bootstrap.permissions}
       initialSection={withSearchParams(section.join("/"), query)}
       shellSignals={bootstrap.shellSignals}

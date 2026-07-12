@@ -9,6 +9,7 @@ import {
   type OpsIncident,
 } from "@idream/shared/admin";
 import { adminV2Request, setWorkspaceUrl } from "@/lib/admin-v2-api";
+import { createWorkspaceHistoryController, observeWorkspacePopState } from "@/lib/workspace-history";
 import { CollaborationPanel } from "@/features/collaboration/CollaborationPanel";
 import { SavedViewsControl } from "@/features/collaboration/SavedViewsControl";
 import {
@@ -16,7 +17,15 @@ import {
   incidentSavedState,
   type SavedViewRecord,
 } from "@/features/collaboration/saved-views";
-import { buildIncidentQuery, type IncidentQueryDraft } from "./query";
+import {
+  buildIncidentQuery,
+  buildIncidentWorkspaceParams,
+  defaultIncidentQuery,
+  incidentWorkspacePath,
+  parseIncidentWorkspaceParams,
+  type IncidentQueryDraft,
+  type IncidentWorkspaceUrlState,
+} from "./query";
 import {
   EmptyWorkspace,
   fieldClass,
@@ -54,19 +63,12 @@ type IncidentPlan = {
   expiresAt: string;
 };
 
-const initialQuery: IncidentQueryDraft = {
-  search: "",
-  status: "",
-  severity: "",
-  ownerId: "",
-  limit: 30,
-};
-
 export function IncidentWorkspace({ canManage, initialIncidentId = null }: { canManage: boolean; initialIncidentId?: string | null }) {
-  const [query, setQuery] = useState<IncidentQueryDraft>(() => queryFromLocation());
+  const [initialUrlState] = useState(() => stateFromLocation(initialIncidentId));
+  const [query, setQuery] = useState<IncidentQueryDraft>(initialUrlState.query);
   const [list, setList] = useState<IncidentList | null>(null);
-  const [selectedId, setSelectedId] = useState(() => initialIncidentId ?? valueFromLocation("incident"));
-  const [selectedSavedViewId, setSelectedSavedViewId] = useState(() => valueFromLocation("savedView"));
+  const [selectedId, setSelectedId] = useState(initialUrlState.selectedId);
+  const [selectedSavedViewId, setSelectedSavedViewId] = useState(initialUrlState.savedViewId);
   const [detail, setDetail] = useState<IncidentDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -74,12 +76,13 @@ export function IncidentWorkspace({ canManage, initialIncidentId = null }: { can
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const firstQuery = useRef(query);
+  const history = useRef(createWorkspaceHistoryController(initialUrlState));
   const listRequestId = useRef(0);
   const detailRequestId = useRef(0);
 
-  const loadList = useCallback(async (next: IncidentQueryDraft, append = false) => {
+  const loadList = useCallback(async (next: IncidentQueryDraft) => {
     const requestId = ++listRequestId.current;
-    setLoading(!append);
+    setLoading(true);
     setError(null);
     try {
       const response = await adminV2Request<IncidentList>(
@@ -87,9 +90,7 @@ export function IncidentWorkspace({ canManage, initialIncidentId = null }: { can
         { schema: incidentListResponseSchema },
       );
       if (requestId !== listRequestId.current) return;
-      setList((current) => append && current
-        ? { ...response, items: [...current.items, ...response.items] }
-        : response);
+      setList(response);
     } catch (loadError) {
       if (requestId === listRequestId.current) setError(message(loadError));
     } finally {
@@ -112,43 +113,63 @@ export function IncidentWorkspace({ canManage, initialIncidentId = null }: { can
   }, []);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => { void loadList(firstQuery.current); }, 0);
+    const timer = window.setTimeout(() => {
+      history.current.replace(initialUrlState, writeIncidentUrl);
+      void loadList(firstQuery.current);
+      if (initialUrlState.selectedId) void loadDetail(initialUrlState.selectedId);
+    }, 0);
     return () => window.clearTimeout(timer);
-  }, [loadList]);
+  }, [initialUrlState, loadDetail, loadList]);
+
   useEffect(() => {
-    if (!selectedId) return;
-    const timer = window.setTimeout(() => { void loadDetail(selectedId); }, 0);
-    return () => window.clearTimeout(timer);
-  }, [loadDetail, selectedId]);
+    return observeWorkspacePopState(window, () => stateFromLocation(null), (restored) => {
+      listRequestId.current += 1;
+      detailRequestId.current += 1;
+      setQuery(restored.query);
+      history.current.restore(restored);
+      setSelectedSavedViewId(restored.savedViewId);
+      setSelectedId(restored.selectedId);
+      setDetail(null);
+      void loadList(restored.query);
+      if (restored.selectedId) void loadDetail(restored.selectedId);
+    });
+  }, [loadDetail, loadList]);
+
+  function updateDraft(patch: Partial<IncidentQueryDraft>) {
+    const next = { ...query, ...patch, cursor: undefined };
+    setQuery(next);
+    history.current.draft({ ...history.current.current(), query: next }, writeIncidentUrl);
+  }
 
   function applyFilters(event?: FormEvent) {
     event?.preventDefault();
     const next = { ...query, cursor: undefined };
     setSelectedSavedViewId(null);
     setQuery(next);
-    updateUrl(next, selectedId, null);
+    history.current.navigate({ query: next, selectedId, savedViewId: null }, writeIncidentUrl);
     void loadList(next);
   }
 
   function clearFilters() {
     setSelectedSavedViewId(null);
-    setQuery(initialQuery);
-    updateUrl(initialQuery, selectedId, null);
-    void loadList(initialQuery);
+    setQuery(defaultIncidentQuery);
+    history.current.navigate({ query: defaultIncidentQuery, selectedId, savedViewId: null }, writeIncidentUrl);
+    void loadList(defaultIncidentQuery);
   }
 
   function selectIncident(id: string | null) {
     detailRequestId.current += 1;
     setSelectedId(id);
     setDetail(null);
-    updateUrl(query, id, selectedSavedViewId);
+    history.current.navigate({ ...history.current.current(), selectedId: id }, writeIncidentUrl);
+    if (id) void loadDetail(id);
   }
 
   const applySavedView = useCallback((view: SavedViewRecord) => {
     const next = incidentQueryFromSavedState(view.queryState);
     setSelectedSavedViewId(view.id);
     setQuery(next);
-    updateUrl(next, selectedId, view.id);
+    history.current.navigate({ query: next, selectedId, savedViewId: view.id }, writeIncidentUrl);
     void loadList(next);
   }, [loadList, selectedId]);
 
@@ -163,7 +184,10 @@ export function IncidentWorkspace({ canManage, initialIncidentId = null }: { can
     try {
       await execute();
       setNotice(label);
-      await Promise.all([loadList({ ...query, cursor: undefined }), selectedId ? loadDetail(selectedId) : Promise.resolve()]);
+      const next = { ...history.current.current().query, cursor: undefined };
+      setQuery(next);
+      history.current.replace({ query: next, selectedId, savedViewId: selectedSavedViewId }, writeIncidentUrl);
+      await Promise.all([loadList(next), selectedId ? loadDetail(selectedId) : Promise.resolve()]);
     } catch (mutationError) {
       setError(message(mutationError));
     } finally {
@@ -201,13 +225,13 @@ export function IncidentWorkspace({ canManage, initialIncidentId = null }: { can
       <form className="grid gap-3 rounded-xl bg-[var(--ad-surface)] p-4 md:grid-cols-2 xl:grid-cols-[minmax(240px,1fr)_repeat(3,180px)_auto]" onSubmit={applyFilters}>
         <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
           Search all incidents
-          <input className={fieldClass} onChange={(event) => setQuery({ ...query, search: event.target.value })} placeholder="signature or suspected cause" value={query.search} />
+          <input className={fieldClass} onChange={(event) => updateDraft({ search: event.target.value })} placeholder="signature or suspected cause" value={query.search} />
         </label>
-        <Select label="Status" onChange={(status) => setQuery({ ...query, status })} options={["", "detected", "triaged", "mitigating", "monitoring", "resolved", "closed"]} value={query.status} />
-        <Select label="Severity" onChange={(severity) => setQuery({ ...query, severity })} options={["", "critical", "high", "medium", "low"]} value={query.severity} />
+        <Select label="Status" onChange={(status) => updateDraft({ status })} options={["", "detected", "triaged", "mitigating", "monitoring", "resolved", "closed"]} value={query.status} />
+        <Select label="Severity" onChange={(severity) => updateDraft({ severity })} options={["", "critical", "high", "medium", "low"]} value={query.severity} />
         <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
           Owner ID
-          <input className={fieldClass} onChange={(event) => setQuery({ ...query, ownerId: event.target.value })} value={query.ownerId} />
+          <input className={fieldClass} onChange={(event) => updateDraft({ ownerId: event.target.value })} value={query.ownerId} />
         </label>
         <div className="flex items-end gap-2"><WorkspaceButton tone="primary" type="submit">Apply</WorkspaceButton>{filtered ? <WorkspaceButton onClick={clearFilters}>Clear</WorkspaceButton> : null}</div>
       </form>
@@ -237,7 +261,7 @@ export function IncidentWorkspace({ canManage, initialIncidentId = null }: { can
               </button>
             ))}
             {list?.pageInfo.hasNextPage && list.pageInfo.endCursor ? (
-              <WorkspaceButton disabled={loading} onClick={() => void loadList({ ...query, cursor: list.pageInfo.endCursor ?? undefined }, true)}><RefreshCcw className="h-4 w-4" />Load more</WorkspaceButton>
+              <WorkspaceButton disabled={loading} onClick={() => { const next = { ...history.current.current().query, cursor: list.pageInfo.endCursor ?? undefined }; setQuery(next); history.current.navigate({ query: next, selectedId, savedViewId: selectedSavedViewId }, writeIncidentUrl); void loadList(next); }}><RefreshCcw className="h-4 w-4" />Next page</WorkspaceButton>
             ) : null}
           </div>
 
@@ -425,27 +449,9 @@ function Stat({ label, value }: { label: string; value: React.ReactNode }) {
   return <div><dt className="text-[10px] font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">{label}</dt><dd className="mt-1 font-mono text-sm text-[var(--ad-ink)]">{value}</dd></div>;
 }
 
-function queryFromLocation(): IncidentQueryDraft {
-  if (typeof window === "undefined") return initialQuery;
-  const params = new URLSearchParams(window.location.search);
-  return { ...initialQuery, search: params.get("search") ?? "", status: params.get("status") ?? "", severity: params.get("severity") ?? "", ownerId: params.get("ownerId") ?? "", limit: boundedLimit(params.get("limit"), initialQuery.limit) };
-}
+function stateFromLocation(initialIncidentId: string | null) { const parsed = typeof window === "undefined" ? { query: defaultIncidentQuery, selectedId: null, savedViewId: null } : parseIncidentWorkspaceParams(new URLSearchParams(window.location.search)); return { ...parsed, selectedId: initialIncidentId ?? parsed.selectedId }; }
 
-function valueFromLocation(key: string) {
-  return typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get(key);
-}
-
-function updateUrl(query: IncidentQueryDraft, selectedId: string | null, savedViewId: string | null) {
-  const params = new URLSearchParams(buildIncidentQuery({ ...query, cursor: undefined }));
-  if (selectedId) params.set("incident", selectedId);
-  if (savedViewId) params.set("savedView", savedViewId);
-  setWorkspaceUrl(params);
-}
-
-function boundedLimit(value: string | null, fallback: number) {
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 200 ? parsed : fallback;
-}
+function writeIncidentUrl(state: IncidentWorkspaceUrlState, mode: "push" | "replace") { setWorkspaceUrl(buildIncidentWorkspaceParams(state), { mode, pathname: incidentWorkspacePath(state.selectedId) }); }
 
 function message(error: unknown) {
   return error instanceof Error ? error.message : "Incident operation failed";

@@ -63,8 +63,13 @@ export async function adminV2Request<T>(
   return options.schema ? options.schema.parse(payload.data) : payload.data;
 }
 
-export function setWorkspaceUrl(params: URLSearchParams) {
+export type WorkspaceHistoryMode = "push" | "replace";
+
+export function setWorkspaceUrl(
+  params: URLSearchParams,
+  options: { mode?: WorkspaceHistoryMode; pathname?: string } = {},
+) {
   if (typeof window === "undefined") return;
-  const next = `${window.location.pathname}${params.size ? `?${params.toString()}` : ""}`;
-  window.history.replaceState(null, "", next);
+  const next = `${options.pathname ?? window.location.pathname}${params.size ? `?${params.toString()}` : ""}`;
+  window.history[options.mode === "push" ? "pushState" : "replaceState"](null, "", next);
 }

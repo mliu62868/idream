@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { adminV2Request } from "./admin-v2-api";
+import { adminV2Request, setWorkspaceUrl } from "./admin-v2-api";
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("admin v2 client", () => {
   it("preserves authority error messages", async () => {
@@ -51,5 +53,37 @@ describe("admin v2 client", () => {
     const [, init] = fetchMock.mock.calls[0] ?? [];
     expect(init?.method).toBe("PUT");
     expect(new Headers(init?.headers).get("idempotency-key")).toBe("watch-1");
+  });
+});
+
+describe("setWorkspaceUrl", () => {
+  it("uses replace for draft state and push for navigable state", () => {
+    const pushState = vi.fn();
+    const replaceState = vi.fn();
+    vi.stubGlobal("window", {
+      location: { pathname: "/admin/cases" },
+      history: { pushState, replaceState },
+    });
+
+    setWorkspaceUrl(new URLSearchParams({ search: "draft" }), { mode: "replace" });
+    setWorkspaceUrl(new URLSearchParams({ cursor: "page-2" }), { mode: "push" });
+
+    expect(replaceState).toHaveBeenCalledWith(null, "", "/admin/cases?search=draft");
+    expect(pushState).toHaveBeenCalledWith(null, "", "/admin/cases?cursor=page-2");
+  });
+
+  it("can preserve a canonical detail pathname while updating its query state", () => {
+    const replaceState = vi.fn();
+    vi.stubGlobal("window", {
+      location: { pathname: "/admin/cases/case-7" },
+      history: { pushState: vi.fn(), replaceState },
+    });
+
+    setWorkspaceUrl(new URLSearchParams({ case: "case-7" }), {
+      mode: "replace",
+      pathname: "/admin/cases/case-7",
+    });
+
+    expect(replaceState).toHaveBeenCalledWith(null, "", "/admin/cases/case-7?case=case-7");
   });
 });

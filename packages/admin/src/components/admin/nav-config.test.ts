@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import type { AdminPermissionKey } from "@idream/shared/admin/permissions";
 import {
   ADMIN_WORKSPACES,
   adminEntryRedirect,
+  canReadAnyWorkspace,
   defaultWorkModeForRole,
   navGroupsForPermissions,
   navItems,
@@ -41,6 +43,7 @@ describe("admin navigation information architecture", () => {
     expect(parseAdminPath("characters/char-1")).toEqual({ sectionId: "content/official", view: { kind: "detail", id: "char-1" } });
     expect(parseAdminPath("cases?view=overdue").sectionId).toBe("cases");
     expect(parseAdminPath("cases/case-1")).toEqual({ sectionId: "cases", view: { kind: "detail", id: "case-1" } });
+    expect(parseAdminPath("customers/customer-1")).toEqual({ sectionId: "users", view: { kind: "detail", id: "customer-1" } });
     expect(parseAdminPath("ops/incidents").sectionId).toBe("ops/incidents");
     expect(parseAdminPath("ops/incidents/incident-1")).toEqual({ sectionId: "ops/incidents", view: { kind: "detail", id: "incident-1" } });
     expect(parseAdminPath("characters/char-1?tab=release&releaseId=release-1")).toEqual({ sectionId: "content/official", view: { kind: "detail", id: "char-1" } });
@@ -73,8 +76,8 @@ describe("admin navigation information architecture", () => {
 });
 
 describe("permission and work-mode navigation", () => {
-  it("never exposes a section without one of its effective permissions", () => {
-    const supportPermissions = new Set([
+  it("uses the exact workspace read predicate for navigation and direct access", () => {
+    const supportPermissions = new Set<AdminPermissionKey>([
       "dashboard.read", "case.read", "support.request.read", "customer.read", "billing.read", "audit.read",
     ]);
     const groups = navGroupsForPermissions(supportPermissions, "support");
@@ -83,13 +86,40 @@ describe("permission and work-mode navigation", () => {
     expect(ids).toContain("cases");
     expect(ids).toContain("users");
     expect(ids).not.toContain("generation/config");
-    expect(ids).not.toContain("pricing");
+    expect(ids).toContain("pricing");
     for (const id of ids) expect(sectionIsPermitted(id, supportPermissions)).toBe(true);
-    expect(sectionIsPermitted("content/official", new Set(["character.project.write"]))).toBe(true);
+    expect(sectionIsPermitted("content/official", new Set(["character.project.write"]))).toBe(false);
+    expect(sectionIsPermitted("content/official", new Set([
+      "character.project.read",
+      "character.release.read",
+      "character.performance.read",
+    ]))).toBe(true);
+    expect(sectionIsPermitted("content/production", new Set(["content.production.write"]))).toBe(false);
+    expect(sectionIsPermitted("content/production", new Set(["creative.run.read"]))).toBe(true);
+    expect(sectionIsPermitted("content/assets", new Set(["creative.asset.read"]))).toBe(false);
+    expect(sectionIsPermitted("content/assets", new Set(["content.asset.read"]))).toBe(true);
+  });
+
+  it("allows bootstrap when any exact workspace predicate is satisfied", () => {
+    expect(canReadAnyWorkspace(new Set(["ops.incident.read"]))).toBe(true);
+    expect(canReadAnyWorkspace(new Set(["character.project.read"]))).toBe(false);
+    expect(canReadAnyWorkspace(new Set(["character.project.write"]))).toBe(false);
+    expect(canReadAnyWorkspace(new Set())).toBe(false);
+  });
+
+  it("fails every workspace closed when any required read key is missing", () => {
+    for (const workspace of navItems) {
+      const complete = new Set(workspace.read.allOf);
+      expect(sectionIsPermitted(workspace.id, complete), workspace.id).toBe(true);
+      for (const missing of workspace.read.allOf) {
+        const incomplete = new Set(workspace.read.allOf.filter((permission) => permission !== missing));
+        expect(sectionIsPermitted(workspace.id, incomplete), `${workspace.id} without ${missing}`).toBe(false);
+      }
+    }
   });
 
   it("uses work mode only to reorder permitted workspaces, never to grant access", () => {
-    const permissions = new Set(navItems.flatMap((item) => item.permissions));
+    const permissions = new Set(navItems.flatMap((item) => item.read.allOf));
     const expectedIds = new Set(navItems.map((item) => item.id));
     const modes: WorkMode[] = [
       "character_producer", "creative_operator", "platform_ops", "support",
@@ -112,6 +142,7 @@ describe("permission and work-mode navigation", () => {
       "creative.run.review",
       "creative.asset.read",
       "creative.placement.read",
+      "content.asset.read",
     ]), "creative_operator").flatMap((group) => group.items.map((item) => item.id));
     expect(creative).toEqual(expect.arrayContaining(["content/production", "content/assets", "content/placements"]));
 

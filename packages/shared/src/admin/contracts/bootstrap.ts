@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { adminPermissionKeySchema } from "../permissions";
 
 export const adminShellSignalsSchema = z.object({
   environment: z.enum(["production", "staging", "local", "test", "unknown"]),
@@ -16,7 +17,7 @@ export const adminShellSignalsSchema = z.object({
 
 export const adminBootstrapSchema = z.object({
   actor: z.object({ id: z.string().min(1), role: z.string().min(1) }).nullable(),
-  permissions: z.array(z.string().min(1)),
+  permissions: z.array(adminPermissionKeySchema),
   canReadDashboard: z.boolean(),
   devLogin: z.object({
     enabled: z.boolean(),

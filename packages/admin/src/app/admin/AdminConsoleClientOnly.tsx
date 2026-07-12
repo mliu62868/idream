@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import type { ComponentType } from "react";
+import type { AdminPermissionKey } from "@idream/shared/admin/permissions";
 import type { AdminShellSignals } from "@/components/admin/shell-signals";
 
 type AdminActor = {
@@ -13,7 +14,7 @@ type AdminConsoleClientOnlyProps = {
   actor: AdminActor | null;
   initialSection: string;
   initialAccess: boolean;
-  initialPermissions: string[];
+  initialPermissions: AdminPermissionKey[];
   shellSignals: AdminShellSignals;
   devLogout?: boolean;
 };

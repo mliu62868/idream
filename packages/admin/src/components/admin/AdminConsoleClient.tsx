@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ADMIN_PERMISSION_KEYS } from "@idream/shared/admin/permissions";
+import { ADMIN_PERMISSION_KEYS, type AdminPermissionKey } from "@idream/shared/admin/permissions";
 import { type FormEvent, type KeyboardEvent, type ReactNode, type WheelEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -102,7 +102,7 @@ type AdminConsoleClientProps = {
   actor: Actor | null;
   initialSection: string;
   initialAccess: boolean;
-  initialPermissions: string[];
+  initialPermissions: AdminPermissionKey[];
   shellSignals: AdminShellSignals;
   // dev-only：展示退出按钮以便切换内置账号。
   devLogout?: boolean;
@@ -1090,6 +1090,7 @@ export function AdminConsoleClient({
                 },
                 reload: () => void load(),
                 permissions,
+                canRead: canAccessActiveSection,
                 workMode,
               })
             )}
@@ -2288,7 +2289,8 @@ function renderSection(
     setChatOpsFilters: (value: ChatOpsFilters) => void;
     applyChatOpsFilters: (value: ChatOpsFilters) => void;
     reload: () => void | Promise<void>;
-    permissions: ReadonlySet<string>;
+    permissions: ReadonlySet<AdminPermissionKey>;
+    canRead: boolean;
     workMode: WorkMode;
   },
 ) {
@@ -2318,7 +2320,7 @@ function renderSection(
     );
   }
   if (section.kind === "users") {
-    return <CustomerWorkspace />;
+    return <CustomerWorkspace initialCustomerId={subview.kind === "detail" ? subview.id : null} />;
   }
   if (section.kind === "access") {
     return (
@@ -2393,7 +2395,7 @@ function renderSection(
     }
     if (section.view === "production") {
       return <CreativeRunWorkspace permissions={{
-        read: ctx.permissions.has("creative.run.read"),
+        read: ctx.canRead,
         write: ctx.permissions.has("creative.run.write"),
         review: ctx.permissions.has("creative.run.review"),
         place: ctx.permissions.has("creative.placement.publish"),
@@ -2404,7 +2406,7 @@ function renderSection(
     if (section.view === "placements") return <PlacementsSection view={subview} />;
     if (section.view === "official") {
       return <CharacterWorkspace permissions={{
-        read: ctx.permissions.has("character.project.read") && ctx.permissions.has("character.release.read") && ctx.permissions.has("character.performance.read"),
+        read: ctx.canRead,
         writeProject: ctx.permissions.has("character.project.write"),
         proposeRelease: ctx.permissions.has("character.release.propose"),
         publishRelease: ctx.permissions.has("character.release.publish"),
