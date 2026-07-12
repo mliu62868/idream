@@ -46,6 +46,7 @@ describe("Admin v2 canonical metrics query", () => {
     await prisma.metricDefinitionSnapshot.deleteMany({ where: { key: { in: ADMIN_METRIC_REGISTRY.map((row) => row.key) } } });
     await prisma.metricProjectionReceipt.deleteMany({ where: { sourceEventId: { startsWith: prefix } } });
     await prisma.customerSignupFact.deleteMany({ where: { userId: { startsWith: prefix } } });
+    await prisma.aiUsageFact.deleteMany({ where: { sourceEventId: { startsWith: prefix } } });
     await prisma.user.deleteMany({ where: { id: { in: [analystId, customerId] } } });
     await prisma.$disconnect();
   });
@@ -141,6 +142,96 @@ describe("Admin v2 canonical metrics query", () => {
     expect(parsed.freshness).toBe("degraded");
     expect(parsed.definitions.find((row) => row.key === "north_star.wscu")?.decisionGate).toBe("NS-01");
     expect(parsed.asOf).toBe("2026-08-20T00:00:00.000Z");
+  });
+
+  it("publishes complete provider cost while failing closed for unavailable cash margin", async () => {
+    await prisma.aiUsageFact.createMany({
+      data: [
+        {
+          source: "chat",
+          provider: "test-provider",
+          model: "test-model",
+          usage: { inputTokens: 10, outputTokens: 20 },
+          costMicros: BigInt(125),
+          pricingVersion: "test-v1",
+          sourceService: "main",
+          sourceEventId: `${prefix}-usage-priced-1`,
+          environment: "production",
+          dataClass: "customer",
+          trustClass: "canonical",
+          actorIsInternal: false,
+          occurredAt: new Date("2026-08-19T00:00:00.000Z"),
+        },
+        {
+          source: "generation",
+          provider: "test-provider",
+          model: "test-model",
+          usage: { images: 1 },
+          costMicros: BigInt(375),
+          pricingVersion: "test-v1",
+          sourceService: "main",
+          sourceEventId: `${prefix}-usage-priced-2`,
+          environment: "production",
+          dataClass: "customer",
+          trustClass: "canonical",
+          actorIsInternal: false,
+          occurredAt: new Date("2026-08-19T01:00:00.000Z"),
+        },
+      ],
+    });
+
+    const response = await getMetricDashboard(request("/api/v2/admin/metrics?asOf=2026-08-20T00:00:00.000Z"));
+    const body = await response.json();
+    const parsed = metricDashboardResponseSchema.parse(body.data);
+    const byKey = Object.fromEntries(parsed.cards.map((card) => [card.key, card]));
+
+    expect(byKey["cost.provider_variable_7d"]).toMatchObject({
+      value: 500,
+      numeratorValue: 500,
+      sampleSize: 2,
+      matureSampleSize: 2,
+      maturity: "mature",
+      qualityState: "directional",
+      decisionUse: "directional_only",
+    });
+    expect(byKey["margin.character_contribution_7d"]).toMatchObject({
+      value: null,
+      qualityState: "invalid",
+      decisionUse: "blocked",
+    });
+  });
+
+  it("does not report a partial provider cost when pricing coverage is incomplete", async () => {
+    await prisma.aiUsageFact.create({
+      data: {
+        source: "chat",
+        provider: "test-provider",
+        model: "unpriced-model",
+        usage: { inputTokens: 1 },
+        costMicros: null,
+        sourceService: "main",
+        sourceEventId: `${prefix}-usage-unpriced`,
+        environment: "production",
+        dataClass: "customer",
+        trustClass: "canonical",
+        actorIsInternal: false,
+        occurredAt: new Date("2026-08-19T02:00:00.000Z"),
+      },
+    });
+
+    const response = await getMetricDashboard(request("/api/v2/admin/metrics?asOf=2026-08-20T00:00:00.000Z"));
+    const body = await response.json();
+    const parsed = metricDashboardResponseSchema.parse(body.data);
+    expect(parsed.cards.find((card) => card.key === "cost.provider_variable_7d")).toMatchObject({
+      value: null,
+      sampleSize: 3,
+      matureSampleSize: 2,
+      immatureSampleSize: 1,
+      maturity: "immature",
+      qualityState: "invalid",
+      decisionUse: "blocked",
+      qualityEvidence: expect.arrayContaining(["priced_invocations=2/3"]),
+    });
   });
 
   it("fails closed for unauthenticated callers", async () => {

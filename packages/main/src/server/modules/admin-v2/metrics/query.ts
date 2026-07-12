@@ -1,5 +1,6 @@
 import {
   ADMIN_METRIC_REGISTRY,
+  metricCardSchema,
   metricDashboardResponseSchema,
   metricQualityReportSchema,
   metricReconciliationReportSchema,
@@ -290,7 +291,10 @@ async function buildMetricDashboardData(db: PrismaClient, asOf: Date) {
   const rawDataset = await loadCanonicalMetricDataset(db);
   const dataset = filterDatasetFrom(rawDataset, factsValidFrom());
   const liveQuality = await qualityReport(db, asOf);
-  const cards = await buildCards({ db, dataset, asOf });
+  const cards = [
+    ...await buildCards({ db, dataset, asOf }),
+    ...await buildBusinessFactCards(db, asOf),
+  ];
   const quality = cards.every((card) => card.decisionUse === "blocked")
     ? { ...liveQuality, qualityState: "invalid" as const }
     : liveQuality;
@@ -305,6 +309,84 @@ async function buildMetricDashboardData(db: PrismaClient, asOf: Date) {
         ? "stale"
         : "fresh",
   });
+}
+
+async function buildBusinessFactCards(db: PrismaClient, asOf: Date): Promise<MetricCard[]> {
+  const windowStart = new Date(asOf.getTime() - 7 * 24 * 60 * 60 * 1_000);
+  const usage = await db.aiUsageFact.findMany({
+    where: {
+      environment: "production",
+      dataClass: "customer",
+      trustClass: "canonical",
+      actorIsInternal: false,
+      occurredAt: { gte: windowStart, lte: asOf },
+    },
+    select: { costMicros: true, occurredAt: true },
+  });
+  const costDefinition = DEFINITION_BY_KEY.get("cost.provider_variable_7d") as MetricDefinition;
+  const marginDefinition = DEFINITION_BY_KEY.get("margin.character_contribution_7d") as MetricDefinition;
+  const priced = usage.filter((fact) => fact.costMicros !== null);
+  const costMicrosBigInt = priced.reduce((sum, fact) => sum + (fact.costMicros ?? BigInt(0)), BigInt(0));
+  const costIsSafeInteger = costMicrosBigInt <= BigInt(Number.MAX_SAFE_INTEGER);
+  const hasCompletePricing = usage.length > 0 && priced.length === usage.length && costIsSafeInteger;
+  const costMicros = hasCompletePricing ? Number(costMicrosBigInt) : null;
+  const latestDataAt = usage.length > 0
+    ? new Date(Math.max(...usage.map((fact) => fact.occurredAt.getTime()))).toISOString()
+    : null;
+  return [
+    {
+      key: costDefinition.key,
+      definitionVersion: costDefinition.version,
+      publicationStatus: costDefinition.publicationStatus,
+      name: costDefinition.name,
+      value: costMicros,
+      unit: "micros",
+      numeratorLabel: costDefinition.numerator,
+      denominatorLabel: costDefinition.denominator,
+      numeratorValue: costMicros,
+      denominatorValue: null,
+      sampleSize: usage.length,
+      matureSampleSize: priced.length,
+      immatureSampleSize: usage.length - priced.length,
+      window: costDefinition.window,
+      timezone: "UTC",
+      maturity: usage.length === 0 ? "insufficient_data" : hasCompletePricing ? "mature" : "immature",
+      asOf: asOf.toISOString(),
+      validFrom: costDefinition.validFrom,
+      latestDataAt,
+      qualityState: hasCompletePricing ? "directional" : "invalid",
+      decisionUse: hasCompletePricing ? "directional_only" : "blocked",
+      qualityEvidence: [
+        `priced_invocations=${priced.length}/${usage.length}`,
+        ...(costIsSafeInteger ? [] : ["provider_cost_total_exceeds_safe_numeric_range"]),
+        "Cash revenue is not inferred from provider cost.",
+      ],
+    },
+    {
+      key: marginDefinition.key,
+      definitionVersion: marginDefinition.version,
+      publicationStatus: marginDefinition.publicationStatus,
+      name: marginDefinition.name,
+      value: null,
+      unit: "micros",
+      numeratorLabel: marginDefinition.numerator,
+      denominatorLabel: marginDefinition.denominator,
+      numeratorValue: null,
+      denominatorValue: null,
+      sampleSize: 0,
+      matureSampleSize: 0,
+      immatureSampleSize: 0,
+      window: marginDefinition.window,
+      timezone: "UTC",
+      maturity: "insufficient_data",
+      asOf: asOf.toISOString(),
+      validFrom: marginDefinition.validFrom,
+      latestDataAt: null,
+      qualityState: "invalid",
+      decisionUse: "blocked",
+      qualityEvidence: ["cash_attribution_authority_unavailable", "Dreamcoin consumption is not cash revenue."],
+    },
+  ].map((card) => metricCardSchema.parse(card));
 }
 
 export async function publishMetricRegistrySnapshots(db: PrismaClient) {
@@ -378,7 +460,10 @@ export async function materializeMetricSnapshots(db: PrismaClient, asOf = new Da
       });
     }
   });
-  const cards = await buildCards({ db, dataset, asOf, requireMetricSnapshot: false });
+  const cards = [
+    ...await buildCards({ db, dataset, asOf, requireMetricSnapshot: false }),
+    ...await buildBusinessFactCards(db, asOf),
+  ];
   const dashboard = metricDashboardResponseSchema.parse({
     definitions: CANONICAL_DEFINITIONS,
     cards,
