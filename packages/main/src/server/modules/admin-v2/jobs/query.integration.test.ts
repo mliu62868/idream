@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   generationJobDetailResponseSchema,
   generationJobListResponseSchema,
+  generationJobQuerySchema,
   retryGenerationRequestResultSchema,
 } from "@idream/shared/admin";
 import { GET as getJobRoute } from "@/app/api/v2/admin/jobs/[id]/route";
@@ -10,6 +11,7 @@ import { POST as retryJobRoute } from "@/app/api/v2/admin/jobs/[id]/commands/ret
 import { GET as listJobsRoute } from "@/app/api/v2/admin/jobs/route";
 import { prisma } from "@/server/lib/db";
 import { ADMIN_SESSION_COOKIE } from "@/server/lib/auth";
+import { queryGenerationJobsV2Authority } from "./query";
 
 describe("Generation Jobs v2 server query", () => {
   const suffix = randomUUID();
@@ -231,6 +233,28 @@ describe("Generation Jobs v2 server query", () => {
       request(`mode=all&legacyStatus=cancelled&userId=${customerId}&sort=created_desc&limit=25`),
     )).json()).data);
     expect(cancelled.items.map((item) => item.id)).toEqual([jobIds[4]]);
+  });
+
+  it("exposes the production list DTO through an injectable query authority", async () => {
+    const data = await queryGenerationJobsV2Authority({
+      db: prisma,
+      query: generationJobQuerySchema.parse({
+        search: "needle",
+        mode: "image",
+        legacyStatus: "failed",
+        provider: "provider-alpha",
+        userId: customerId,
+        sort: "created_desc",
+        limit: 1,
+      }),
+      now: new Date("2026-07-12T00:00:00.000Z"),
+    });
+
+    expect(generationJobListResponseSchema.parse(data)).toEqual(data);
+    expect(data.items).toHaveLength(1);
+    expect(data.items[0]?.id).toBe(jobIds[0]);
+    expect(data.summary.totalCount).toBe(1);
+    expect(data.asOf).toBe("2026-07-12T00:00:00.000Z");
   });
 
   it("enforces effective permission and fails closed on unsupported query state", async () => {

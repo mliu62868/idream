@@ -2,6 +2,8 @@ import {
   generationJobDetailResponseSchema,
   generationJobListResponseSchema,
   generationJobQuerySchema,
+  type GenerationJobQuery,
+  type GenerationJobListResponse,
   type GenerationJobSort,
 } from "@idream/shared/admin";
 import { createHash } from "node:crypto";
@@ -221,52 +223,63 @@ function generationJobProjection(
   };
 }
 
-export async function listGenerationJobsV2(request: Request) {
-  await actorWithPermission(request, "generation.job.read");
-  const url = new URL(request.url);
-  const query = generationJobQuerySchema.parse(Object.fromEntries(url.searchParams));
+export type GenerationJobsQueryAuthorityDb = Pick<
+  Prisma.TransactionClient,
+  | "generationJob"
+  | "generationAttempt"
+  | "generationDelivery"
+  | "generationSettlementLink"
+  | "dreamcoinLedger"
+>;
+
+export async function queryGenerationJobsV2Authority(input: {
+  readonly db: GenerationJobsQueryAuthorityDb;
+  readonly query: GenerationJobQuery;
+  readonly now?: Date;
+}): Promise<GenerationJobListResponse> {
+  const { db, query } = input;
   const filters = baseWhere(query);
   const queryHash = cursorQueryHash(query);
   const cursor = query.cursor ? decodeCursor(query.cursor, query.sort, queryHash) : null;
   const pageWhere: Prisma.GenerationJobWhereInput = cursor ? { AND: [filters, cursorWhere(cursor)] } : filters;
 
   const [rows, totals, statusGroups, modeGroups, providerGroups, sourceGroups] = await Promise.all([
-    prisma.generationJob.findMany({
+    db.generationJob.findMany({
       where: pageWhere,
       orderBy: sortOrder(query.sort),
       take: query.limit + 1,
       include: { _count: { select: { assets: true } } },
     }),
-    prisma.generationJob.aggregate({
+    db.generationJob.aggregate({
       where: filters,
       _count: { _all: true },
       _sum: { costDreamcoins: true, outputCount: true, deliveredOutputCount: true },
     }),
-    prisma.generationJob.groupBy({ by: ["status"], where: filters, _count: { _all: true } }),
-    prisma.generationJob.groupBy({ by: ["mode"], where: filters, _count: { _all: true } }),
-    prisma.generationJob.groupBy({ by: ["provider"], where: filters, _count: { _all: true } }),
-    prisma.generationJob.groupBy({ by: ["sourceType"], where: filters, _count: { _all: true } }),
+    db.generationJob.groupBy({ by: ["status"], where: filters, _count: { _all: true } }),
+    db.generationJob.groupBy({ by: ["mode"], where: filters, _count: { _all: true } }),
+    db.generationJob.groupBy({ by: ["provider"], where: filters, _count: { _all: true } }),
+    db.generationJob.groupBy({ by: ["sourceType"], where: filters, _count: { _all: true } }),
   ]);
   const hasNextPage = rows.length > query.limit;
   const page = rows.slice(0, query.limit);
   const last = page.at(-1);
   const pageIds = page.map((row) => row.id);
   const [attempts, deliveryGroups, settlementLinks] = pageIds.length > 0 ? await Promise.all([
-    prisma.generationAttempt.findMany({
+    db.generationAttempt.findMany({
       where: { requestId: { in: pageIds } },
       orderBy: [{ requestId: "asc" }, { attemptNo: "desc" }],
     }),
-    prisma.generationDelivery.groupBy({
+    db.generationDelivery.groupBy({
       by: ["requestId", "status"],
       where: { requestId: { in: pageIds } },
       _count: { _all: true },
     }),
-    prisma.generationSettlementLink.findMany({
+    db.generationSettlementLink.findMany({
       where: { requestId: { in: pageIds } },
       select: { requestId: true, ledgerEntryId: true },
     }),
   ]) : [[], [], []];
-  const ledgerEntries = settlementLinks.length > 0 ? await prisma.dreamcoinLedger.findMany({
+  const ledgerEntries = settlementLinks.length > 0 ? await db.dreamcoinLedger.findMany({
     where: { id: { in: settlementLinks.map((link) => link.ledgerEntryId) } },
     select: { id: true, delta: true, reason: true },
   }) : [];
@@ -313,9 +326,17 @@ export async function listGenerationJobsV2(request: Request) {
       totalOutputCount: totals._sum.outputCount ?? 0,
       totalDeliveredOutputCount: totals._sum.deliveredOutputCount ?? 0,
     },
-    asOf: new Date().toISOString(),
+    asOf: (input.now ?? new Date()).toISOString(),
     freshness: "fresh",
   });
+  return response;
+}
+
+export async function listGenerationJobsV2(request: Request) {
+  await actorWithPermission(request, "generation.job.read");
+  const url = new URL(request.url);
+  const query = generationJobQuerySchema.parse(Object.fromEntries(url.searchParams));
+  const response = await queryGenerationJobsV2Authority({ db: prisma, query });
   return ok(response, { headers: { "Cache-Control": "no-store" } });
 }
 
