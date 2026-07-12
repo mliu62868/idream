@@ -115,8 +115,8 @@ export const ADMIN_V2_MUTATION_TRANSPORT = {
   "POST /api/v2/admin/saved-views": idempotencyKey(),
   "PATCH /api/v2/admin/saved-views/:id": ifMatch(),
   "DELETE /api/v2/admin/saved-views/:id": ifMatch(),
-  "POST /api/v2/admin/today/claim": pending("operations-workspace", "Claim retries can assign the same work more than once."),
-  "PUT /api/v2/admin/today/preferences": pending("operations-workspace", "Preference replacement has no optimistic concurrency precondition.", "If-Match"),
+  "POST /api/v2/admin/today/claim": idempotencyKey(),
+  "PUT /api/v2/admin/today/preferences": ifMatch(),
   "POST /api/v2/admin/users/:id/grant-bundles": pending("identity-access", "Grant retries can duplicate authorization audit events."),
   "DELETE /api/v2/admin/users/:id/grant-bundles/:bundleKey": pending("identity-access", "Grant revocation has no optimistic concurrency precondition.", "If-Match"),
 } as const satisfies Partial<Record<AdminV2OperationId, AdminV2MutationTransport>>;

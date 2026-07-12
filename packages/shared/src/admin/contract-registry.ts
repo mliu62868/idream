@@ -123,10 +123,6 @@ export const ADMIN_V2_PENDING_CONTRACTS = {
     owner: "packages/main/src/server/modules/admin-v2/metrics/query.ts",
     reason: "Metric reconciliation asOf parsing is main-local and has no exported shared query schema.",
   },
-  operationalWorkPreferenceSchema: {
-    owner: "packages/main/src/server/modules/admin-v2/today/preferences.ts",
-    reason: "Today preference mutation returns a persistence row without an exported shared response DTO schema.",
-  },
   operationsCaseDetailSchema: {
     owner: "packages/main/src/server/modules/admin-v2/cases/query.ts",
     reason: "Case detail is a composite evidence read model without an exported shared response schema.",

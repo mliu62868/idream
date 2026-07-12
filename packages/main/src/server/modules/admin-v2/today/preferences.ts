@@ -1,4 +1,8 @@
-import type { AdminPermissionKey, TodaySourceType } from "@idream/shared/admin";
+import {
+  operationalWorkPreferenceSchema,
+  type AdminPermissionKey,
+  type TodaySourceType,
+} from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
@@ -97,9 +101,11 @@ export async function updateOperationalWorkPreference(input: {
   pinned?: boolean;
   snoozedUntil?: Date | null;
   requestId: string;
+  expectedVersion: number;
 }) {
   await assertReadableSource(input.actor, input.permissions, input.sourceType, input.sourceId);
   return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${input.actor.id}:${input.sourceType}:${input.sourceId}`}))`;
     const prior = await tx.operationalWorkPreference.findUnique({
       where: {
         actorId_sourceType_sourceId: {
@@ -109,28 +115,37 @@ export async function updateOperationalWorkPreference(input: {
         },
       },
     });
-    const preference = await tx.operationalWorkPreference.upsert({
-      where: {
-        actorId_sourceType_sourceId: {
+    if ((prior?.version ?? 0) !== input.expectedVersion) {
+      throw Errors.conflict("Today preference version changed", {
+        expectedVersion: input.expectedVersion,
+        currentVersion: prior?.version ?? 0,
+      });
+    }
+    let preference;
+    if (!prior) {
+      preference = await tx.operationalWorkPreference.create({
+        data: {
           actorId: input.actor.id,
           sourceType: input.sourceType,
           sourceId: input.sourceId,
+          watching: input.watching ?? false,
+          pinned: input.pinned ?? false,
+          snoozedUntil: input.snoozedUntil ?? null,
         },
-      },
-      create: {
-        actorId: input.actor.id,
-        sourceType: input.sourceType,
-        sourceId: input.sourceId,
-        watching: input.watching ?? false,
-        pinned: input.pinned ?? false,
-        snoozedUntil: input.snoozedUntil ?? null,
-      },
-      update: {
-        watching: input.watching,
-        pinned: input.pinned,
-        snoozedUntil: input.snoozedUntil,
-      },
-    });
+      });
+    } else {
+      const changed = await tx.operationalWorkPreference.updateMany({
+        where: { id: prior.id, version: input.expectedVersion },
+        data: {
+          watching: input.watching,
+          pinned: input.pinned,
+          snoozedUntil: input.snoozedUntil,
+          version: { increment: 1 },
+        },
+      });
+      if (changed.count !== 1) throw Errors.conflict("Today preference version changed");
+      preference = await tx.operationalWorkPreference.findUniqueOrThrow({ where: { id: prior.id } });
+    }
     await tx.adminAuditLog.create({
       data: {
         actorId: input.actor.id,
@@ -138,11 +153,18 @@ export async function updateOperationalWorkPreference(input: {
         action: "today.preference.updated",
         targetType: input.sourceType,
         targetId: input.sourceId,
-        before: prior ? toInputJson({ watching: prior.watching, pinned: prior.pinned, snoozedUntil: prior.snoozedUntil }) : undefined,
-        after: toInputJson({ watching: preference.watching, pinned: preference.pinned, snoozedUntil: preference.snoozedUntil }),
+        before: prior ? toInputJson({ watching: prior.watching, pinned: prior.pinned, snoozedUntil: prior.snoozedUntil, version: prior.version }) : undefined,
+        after: toInputJson({ watching: preference.watching, pinned: preference.pinned, snoozedUntil: preference.snoozedUntil, version: preference.version }),
         requestId: input.requestId,
       },
     });
-    return preference;
+    return operationalWorkPreferenceSchema.parse({
+      sourceType: preference.sourceType,
+      sourceId: preference.sourceId,
+      watching: preference.watching,
+      pinned: preference.pinned,
+      snoozedUntil: preference.snoozedUntil?.toISOString() ?? null,
+      version: preference.version,
+    });
   });
 }

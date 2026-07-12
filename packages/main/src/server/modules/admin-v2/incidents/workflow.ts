@@ -256,7 +256,7 @@ async function deriveIncidentRecoveryChecks(
   };
 }
 
-export async function triageIncident(input: {
+type TriageIncidentInput = {
   readonly incidentId: string;
   readonly actor: Actor;
   readonly expectedVersion: number;
@@ -269,61 +269,68 @@ export async function triageIncident(input: {
   readonly rollbackTarget?: string;
   readonly reason: string;
   readonly requestId: string;
-}) {
-  return prisma.$transaction(async (tx) => {
-    const current = await tx.opsIncident.findUnique({ where: { id: input.incidentId } });
-    if (!current) throw Errors.notFound("Incident not found");
-    if (current.version !== input.expectedVersion) throw Errors.conflict("Incident version changed");
-    if (["resolved", "closed", "duplicate", "merged"].includes(current.status)) {
-      throw Errors.conflict("Terminal Incident cannot be triaged");
+};
+
+export async function triageIncidentInTransaction(
+  tx: Prisma.TransactionClient,
+  input: TriageIncidentInput,
+) {
+  const current = await tx.opsIncident.findUnique({ where: { id: input.incidentId } });
+  if (!current) throw Errors.notFound("Incident not found");
+  if (current.version !== input.expectedVersion) throw Errors.conflict("Incident version changed");
+  if (["resolved", "closed", "duplicate", "merged"].includes(current.status)) {
+    throw Errors.conflict("Terminal Incident cannot be triaged");
+  }
+  if (input.ownerId) {
+    const owner = await tx.user.findUnique({ where: { id: input.ownerId }, select: { role: true, status: true } });
+    if (!owner || owner.status !== "active" || owner.role === "user") {
+      throw Errors.badRequest("Incident owner must be an active operator");
     }
-    if (input.ownerId) {
-      const owner = await tx.user.findUnique({ where: { id: input.ownerId }, select: { role: true, status: true } });
-      if (!owner || owner.status !== "active" || owner.role === "user") {
-        throw Errors.badRequest("Incident owner must be an active operator");
-      }
-    }
-    const mitigation = {
-      ...record(current.mitigation),
-      ...(input.runbookUrl ? { runbookUrl: input.runbookUrl } : {}),
-      ...(input.rollbackTarget ? { rollbackTarget: input.rollbackTarget } : {}),
-    };
-    const updated = await tx.opsIncident.update({
-      where: { id: current.id, version: current.version },
-      data: {
-        status: current.status === "detected" ? "triaged" : current.status,
-        ownerId: input.ownerId,
-        severity: input.severity,
-        slaDueAt: input.slaDueAt,
-        suspectedCause: input.suspectedCause,
-        confidence: input.confidence,
-        mitigation,
-        version: { increment: 1 },
-      },
-    });
-    await tx.adminAuditLog.create({
-      data: {
-        actorId: input.actor.id,
-        actorRole: input.actor.role,
-        action: "incident.triaged",
-        targetType: "ops_incident",
-        targetId: current.id,
-        reason: input.reason,
-        before: toInputJson({ status: current.status, ownerId: current.ownerId, severity: current.severity, version: current.version }),
-        after: toInputJson({ status: updated.status, ownerId: updated.ownerId, severity: updated.severity, version: updated.version }),
-        requestId: input.requestId,
-      },
-    });
-    await tx.mainOutboxEvent.create({
-      data: {
-        eventType: "ops.incident.triaged.v2",
-        aggregateType: "ops_incident",
-        aggregateId: current.id,
-        payload: toInputJson({ incidentId: current.id, ownerId: updated.ownerId, severity: updated.severity, version: updated.version }),
-      },
-    });
-    return updated;
+  }
+  const mitigation = {
+    ...record(current.mitigation),
+    ...(input.runbookUrl ? { runbookUrl: input.runbookUrl } : {}),
+    ...(input.rollbackTarget ? { rollbackTarget: input.rollbackTarget } : {}),
+  };
+  const updated = await tx.opsIncident.update({
+    where: { id: current.id, version: current.version },
+    data: {
+      status: current.status === "detected" ? "triaged" : current.status,
+      ownerId: input.ownerId,
+      severity: input.severity,
+      slaDueAt: input.slaDueAt,
+      suspectedCause: input.suspectedCause,
+      confidence: input.confidence,
+      mitigation,
+      version: { increment: 1 },
+    },
   });
+  await tx.adminAuditLog.create({
+    data: {
+      actorId: input.actor.id,
+      actorRole: input.actor.role,
+      action: "incident.triaged",
+      targetType: "ops_incident",
+      targetId: current.id,
+      reason: input.reason,
+      before: toInputJson({ status: current.status, ownerId: current.ownerId, severity: current.severity, version: current.version }),
+      after: toInputJson({ status: updated.status, ownerId: updated.ownerId, severity: updated.severity, version: updated.version }),
+      requestId: input.requestId,
+    },
+  });
+  await tx.mainOutboxEvent.create({
+    data: {
+      eventType: "ops.incident.triaged.v2",
+      aggregateType: "ops_incident",
+      aggregateId: current.id,
+      payload: toInputJson({ incidentId: current.id, ownerId: updated.ownerId, severity: updated.severity, version: updated.version }),
+    },
+  });
+  return updated;
+}
+
+export async function triageIncident(input: TriageIncidentInput) {
+  return prisma.$transaction((tx) => triageIncidentInTransaction(tx, input));
 }
 
 export async function verifyIncidentRecovery(input: {

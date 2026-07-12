@@ -169,6 +169,7 @@ function WorkItem({ compact, item, onPreferenceChanged, watched }: { compact: bo
     try {
       await adminV2Request("/api/v2/admin/today/preferences", {
         method: "PUT",
+        ifMatch: item.preferenceVersion,
         body: { sourceType: item.sourceType, sourceId: item.sourceId, ...patch },
       });
       setStatus(label);

@@ -1836,6 +1836,7 @@ model OperationalWorkPreference {
   watching     Boolean   @default(false)
   pinned       Boolean   @default(false)
   snoozedUntil DateTime?
+  version      Int       @default(1)
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 

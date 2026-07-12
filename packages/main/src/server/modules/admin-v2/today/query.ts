@@ -110,6 +110,7 @@ function projectRow(
   row: ProjectableRow,
   pinnedKeys: ReadonlySet<string>,
   permissions: ReadonlySet<AdminPermissionKey> = new Set(),
+  preferenceVersions: ReadonlyMap<string, number> = new Map(),
 ): TodayWorkItem {
   const environment = deploymentEnvironment();
   if (row.sourceType === "collaboration_mention") {
@@ -137,6 +138,7 @@ function projectRow(
       environment,
       dataClass: row.target.dataClass,
       pinned: pinnedKeys.has(`${row.sourceType}:${row.row.id}`),
+      preferenceVersion: preferenceVersions.get(`${row.sourceType}:${row.row.id}`) ?? 0,
       claim: null,
     };
   }
@@ -160,6 +162,7 @@ function projectRow(
       environment,
       dataClass: "customer",
       pinned: pinnedKeys.has(`${row.sourceType}:${item.id}`),
+      preferenceVersion: preferenceVersions.get(`${row.sourceType}:${item.id}`) ?? 0,
       claim: item.ownerId === null && permissions.has("case.assign") ? { entityVersion: item.version } : null,
     };
   }
@@ -184,6 +187,7 @@ function projectRow(
       environment,
       dataClass: "internal",
       pinned: pinnedKeys.has(`${row.sourceType}:${item.id}`),
+      preferenceVersion: preferenceVersions.get(`${row.sourceType}:${item.id}`) ?? 0,
       claim: item.ownerId === null && permissions.has("ops.incident.manage") ? { entityVersion: item.version } : null,
     };
   }
@@ -215,6 +219,7 @@ function projectRow(
       environment,
       dataClass: "internal",
       pinned: pinnedKeys.has(`${row.sourceType}:${item.id}`),
+      preferenceVersion: preferenceVersions.get(`${row.sourceType}:${item.id}`) ?? 0,
       claim: row.project.ownerId === null && permissions.has("character.project.write")
         ? { entityVersion: row.project.version }
         : null,
@@ -248,6 +253,7 @@ function projectRow(
       environment,
       dataClass: "internal",
       pinned: pinnedKeys.has(`${row.sourceType}:${item.id}`),
+      preferenceVersion: preferenceVersions.get(`${row.sourceType}:${item.id}`) ?? 0,
       claim: item.ownerId === null && permissions.has("creative.run.write") ? { entityVersion: item.version } : null,
     };
   }
@@ -277,6 +283,7 @@ function projectRow(
     environment,
     dataClass: "audit",
     pinned: pinnedKeys.has(`${row.sourceType}:${item.id}`),
+    preferenceVersion: preferenceVersions.get(`${row.sourceType}:${item.id}`) ?? 0,
     claim: null,
   };
 }
@@ -323,13 +330,14 @@ function sortItems(items: TodayWorkItem[], now: Date, workMode: TodayWorkMode) {
 function queue(
   rows: QueueRows,
   pinnedKeys: ReadonlySet<string>,
+  preferenceVersions: ReadonlyMap<string, number>,
   now: Date,
   workMode: TodayWorkMode,
   permissions: ReadonlySet<AdminPermissionKey>,
 ) {
   return {
     totalCount: rows.totalCount,
-    items: sortItems(rows.rows.map((row) => projectRow(row, pinnedKeys, permissions)), now, workMode).slice(0, QUEUE_LIMIT),
+    items: sortItems(rows.rows.map((row) => projectRow(row, pinnedKeys, permissions, preferenceVersions)), now, workMode).slice(0, QUEUE_LIMIT),
   };
 }
 
@@ -562,6 +570,7 @@ export async function buildTodayProjection(input: {
   const monitorActionReleaseIds = new Set(currentMonitorServings.flatMap((item) => item.currentReleaseId ? [item.currentReleaseId] : []));
   const preferences = await prisma.operationalWorkPreference.findMany({ where: { actorId: input.actor.id } });
   const pinnedKeys = new Set(preferences.filter((item) => item.pinned).map((item) => `${item.sourceType}:${item.sourceId}`));
+  const preferenceVersions = new Map(preferences.map((item) => [`${item.sourceType}:${item.sourceId}`, item.version]));
   const snoozed = preferences.filter((item) => item.snoozedUntil && item.snoozedUntil > now);
   const snoozedCaseIds = snoozed.filter((item) => item.sourceType === "admin_case").map((item) => item.sourceId);
   const snoozedIncidentIds = snoozed.filter((item) => item.sourceType === "ops_incident").map((item) => item.sourceId);
@@ -727,11 +736,11 @@ export async function buildTodayProjection(input: {
   };
 
   return todayProjectionSchema.parse({
-    myShift: queue(myShift, pinnedKeys, now, workMode, input.permissions),
-    nextBestActions: queue(nextBest, pinnedKeys, now, workMode, input.permissions),
-    unassigned: queue(unassigned, pinnedKeys, now, workMode, input.permissions),
-    watching: queue(watching, pinnedKeys, now, workMode, input.permissions),
-    recentlyResolved: queue(recentlyResolved, pinnedKeys, now, workMode, input.permissions),
+    myShift: queue(myShift, pinnedKeys, preferenceVersions, now, workMode, input.permissions),
+    nextBestActions: queue(nextBest, pinnedKeys, preferenceVersions, now, workMode, input.permissions),
+    unassigned: queue(unassigned, pinnedKeys, preferenceVersions, now, workMode, input.permissions),
+    watching: queue(watching, pinnedKeys, preferenceVersions, now, workMode, input.permissions),
+    recentlyResolved: queue(recentlyResolved, pinnedKeys, preferenceVersions, now, workMode, input.permissions),
     asOf: now.toISOString(),
     freshness: "fresh",
     workMode,

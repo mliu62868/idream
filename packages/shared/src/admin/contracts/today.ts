@@ -48,6 +48,7 @@ export const todayWorkItemSchema = z
     environment: adminEnvironmentSchema,
     dataClass: adminDataClassSchema,
     pinned: z.boolean(),
+    preferenceVersion: z.number().int().nonnegative(),
     claim: z
       .object({
         entityVersion: z.number().int().nonnegative(),
@@ -91,6 +92,17 @@ export const operationalWorkPreferenceUpdateSchema = z
     message: "At least one preference field is required",
   });
 
+export const operationalWorkPreferenceSchema = z
+  .object({
+    sourceType: todaySourceTypeSchema,
+    sourceId: adminIdSchema,
+    watching: z.boolean(),
+    pinned: z.boolean(),
+    snoozedUntil: adminIsoDateTimeSchema.nullable(),
+    version: z.number().int().positive(),
+  })
+  .strict();
+
 export const todayClaimRequestSchema = z
   .object({
     sourceType: z.enum(["admin_case", "ops_incident", "character_release", "creative_run"]),
@@ -115,3 +127,4 @@ export type TodayQueue = z.infer<typeof todayQueueSchema>;
 export type TodayProjection = z.infer<typeof todayProjectionSchema>;
 export type TodayClaimRequest = z.infer<typeof todayClaimRequestSchema>;
 export type TodayClaimResponse = z.infer<typeof todayClaimResponseSchema>;
+export type OperationalWorkPreference = z.infer<typeof operationalWorkPreferenceSchema>;

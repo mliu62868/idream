@@ -106,6 +106,9 @@ describe("Today authoritative projection", () => {
 
   afterAll(async () => {
     await prisma.operationalWorkPreference.deleteMany({ where: { actorId } });
+    await prisma.controlPlaneCommand.deleteMany({ where: { actorId, commandType: "today.work.claim" } });
+    await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: { in: caseIds } } });
+    await prisma.adminAuditLog.deleteMany({ where: { targetId: { in: caseIds } } });
     await prisma.opsIncident.deleteMany({ where: { id: incidentId } });
     await prisma.adminCase.deleteMany({ where: { id: { in: caseIds } } });
     await prisma.user.deleteMany({ where: { id: actorId } });
@@ -136,6 +139,7 @@ describe("Today authoritative projection", () => {
       sourceId: caseIds[0],
       ownerId: actorId,
       pinned: true,
+      preferenceVersion: 1,
       environment: "test",
       dataClass: "customer",
     });
@@ -167,6 +171,7 @@ describe("Today authoritative projection", () => {
         "content-type": "application/json",
         "x-idream-user-id": actorId,
         "x-idream-role": "support",
+        "idempotency-key": `today-claim-key-${suffix}`,
         "x-request-id": `today-claim-${suffix}`,
       },
       body: JSON.stringify({ sourceType: "admin_case", sourceId: caseIds[12], entityVersion: 1 }),
@@ -260,6 +265,7 @@ describe("Today domain roots", () => {
 
   afterAll(async () => {
     await prisma.operationalWorkPreference.deleteMany({ where: { actorId } });
+    await prisma.controlPlaneCommand.deleteMany({ where: { actorId, commandType: "today.work.claim" } });
     await prisma.releaseMonitor.deleteMany({ where: { releaseId: { in: [releaseId, `today-superseded-release-${suffix}`] } } });
     await prisma.characterServing.deleteMany({ where: { id: servingId } });
     await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: { in: [projectId, creativeRunId] } } });
@@ -306,6 +312,7 @@ describe("Today domain roots", () => {
           "content-type": "application/json",
           "x-idream-user-id": actorId,
           "x-idream-role": "admin",
+          "idempotency-key": `today-claim:${sourceType}:${sourceId}`,
           "x-request-id": requestId,
         },
         body: JSON.stringify({ sourceType, sourceId, entityVersion: 1 }),
@@ -629,6 +636,7 @@ describe("Today mentions and collaboration watch aliases", () => {
         pinned: true,
         snoozedUntil: null,
         requestId: requestIds[0],
+        expectedVersion: 0,
       });
       const pinned = await buildTodayProjection({
         actor: { id: actorId, role: "support" },
@@ -648,6 +656,7 @@ describe("Today mentions and collaboration watch aliases", () => {
         pinned: false,
         snoozedUntil: new Date("2026-07-12T12:00:00.000Z"),
         requestId: requestIds[1],
+        expectedVersion: 1,
       });
       const snoozed = await buildTodayProjection({
         actor: { id: actorId, role: "support" },

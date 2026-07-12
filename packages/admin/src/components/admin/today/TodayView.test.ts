@@ -30,6 +30,7 @@ const item = {
   environment: "test" as const,
   dataClass: "customer" as const,
   pinned: false,
+  preferenceVersion: 0,
   claim: null,
 };
 

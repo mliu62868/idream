@@ -671,7 +671,7 @@ async function importTerminalReviewEvidence(
   return evidence;
 }
 
-export async function assignReviewCase(input: {
+type AssignReviewCaseInput = {
   readonly caseId: string;
   readonly actor: Actor;
   readonly expectedVersion: number;
@@ -680,52 +680,59 @@ export async function assignReviewCase(input: {
   readonly slaDueAt?: Date;
   readonly reason: string;
   readonly requestId: string;
-}) {
-  return prisma.$transaction(async (tx) => {
-    const current = await tx.adminCase.findUnique({ where: { id: input.caseId } });
-    if (!current) throw Errors.notFound("Case not found");
-    assertCaseScope(current, input.actor);
-    if (current.version !== input.expectedVersion) throw Errors.conflict("Case version changed");
-    if (input.ownerId) {
-      const owner = await tx.user.findUnique({ where: { id: input.ownerId }, select: { role: true, status: true } });
-      if (!owner || owner.status !== "active" || owner.role === "user") {
-        throw Errors.badRequest("Case owner must be an active operator");
-      }
+};
+
+export async function assignReviewCaseInTransaction(
+  tx: Prisma.TransactionClient,
+  input: AssignReviewCaseInput,
+) {
+  const current = await tx.adminCase.findUnique({ where: { id: input.caseId } });
+  if (!current) throw Errors.notFound("Case not found");
+  assertCaseScope(current, input.actor);
+  if (current.version !== input.expectedVersion) throw Errors.conflict("Case version changed");
+  if (input.ownerId) {
+    const owner = await tx.user.findUnique({ where: { id: input.ownerId }, select: { role: true, status: true } });
+    if (!owner || owner.status !== "active" || owner.role === "user") {
+      throw Errors.badRequest("Case owner must be an active operator");
     }
-    const nextStatus = current.status === "new" ? "triaged" : current.status;
-    const updated = await tx.adminCase.update({
-      where: { id: current.id, version: current.version },
-      data: {
-        ownerId: input.ownerId,
-        priority: input.priority,
-        slaDueAt: input.slaDueAt,
-        status: nextStatus,
-        version: { increment: 1 },
-      },
-    });
-    await tx.adminAuditLog.create({
-      data: {
-        actorId: input.actor.id,
-        actorRole: input.actor.role,
-        action: "case.assigned",
-        targetType: "admin_case",
-        targetId: current.id,
-        reason: input.reason,
-        before: toInputJson({ ownerId: current.ownerId, priority: current.priority, slaDueAt: current.slaDueAt, status: current.status }),
-        after: toInputJson({ ownerId: updated.ownerId, priority: updated.priority, slaDueAt: updated.slaDueAt, status: updated.status }),
-        requestId: input.requestId,
-      },
-    });
-    await tx.mainOutboxEvent.create({
-      data: {
-        eventType: "admin.case.assigned.v2",
-        aggregateType: "admin_case",
-        aggregateId: current.id,
-        payload: toInputJson({ caseId: current.id, ownerId: updated.ownerId, version: updated.version }),
-      },
-    });
-    return updated;
+  }
+  const nextStatus = current.status === "new" ? "triaged" : current.status;
+  const updated = await tx.adminCase.update({
+    where: { id: current.id, version: current.version },
+    data: {
+      ownerId: input.ownerId,
+      priority: input.priority,
+      slaDueAt: input.slaDueAt,
+      status: nextStatus,
+      version: { increment: 1 },
+    },
   });
+  await tx.adminAuditLog.create({
+    data: {
+      actorId: input.actor.id,
+      actorRole: input.actor.role,
+      action: "case.assigned",
+      targetType: "admin_case",
+      targetId: current.id,
+      reason: input.reason,
+      before: toInputJson({ ownerId: current.ownerId, priority: current.priority, slaDueAt: current.slaDueAt, status: current.status }),
+      after: toInputJson({ ownerId: updated.ownerId, priority: updated.priority, slaDueAt: updated.slaDueAt, status: updated.status }),
+      requestId: input.requestId,
+    },
+  });
+  await tx.mainOutboxEvent.create({
+    data: {
+      eventType: "admin.case.assigned.v2",
+      aggregateType: "admin_case",
+      aggregateId: current.id,
+      payload: toInputJson({ caseId: current.id, ownerId: updated.ownerId, version: updated.version }),
+    },
+  });
+  return updated;
+}
+
+export async function assignReviewCase(input: AssignReviewCaseInput) {
+  return prisma.$transaction((tx) => assignReviewCaseInTransaction(tx, input));
 }
 
 export async function recordReviewCaseDecision(
