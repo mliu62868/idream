@@ -239,18 +239,13 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await expect(page).toHaveURL(new RegExp(`incident=${incidentId}`));
     await expect(page.getByRole("heading", { level: 3, name: `E2E provider regression ${suffix}` })).toBeVisible();
     await page.getByLabel("Audit reason").fill("Recovery window and settlement reviewed");
-    await page.getByLabel("Evidence reference").fill(`monitor://e2e/${suffix}`);
-    for (const label of [
-      "Success rate recovered for the required window",
-      "Failure signature stopped growing",
-      "Backlog is recovering",
-      "Every failed request has a retry or terminal plan",
-      "Spend and refunds are reconciled",
-    ]) {
-      await page.getByLabel(label).check();
-    }
-    await page.getByRole("button", { name: "Mark recovery verified" }).click();
-    await expect(page.getByRole("status").filter({ hasText: "Recovery verification recorded" })).toBeVisible();
+    await page.getByLabel("Supplemental evidence reference (optional for authority check)").fill(`monitor://e2e/${suffix}`);
+    await page.getByRole("button", { name: "Run authority verification" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Authority recovery verification evaluated" })).toBeVisible();
+    await page.getByText("Exceptional override").click();
+    await page.getByLabel("Override reason").fill("Synthetic E2E fixture has no real generation authority window.");
+    await page.getByRole("button", { name: "Override with audit" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Recovery verification explicitly overridden" })).toBeVisible();
     await page.getByRole("button", { name: "Resolve incident" }).click();
     await expect(page.getByRole("heading", { level: 4, name: "Postmortem and close" })).toBeVisible();
     await page.getByLabel("Summary", { exact: true }).fill("Provider route recovered and all affected requests were reconciled.");
@@ -264,7 +259,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await expect.poll(async () => prisma.opsIncident.findUnique({
       where: { id: incidentId },
       select: { status: true, verificationState: true, activeCorrelationKey: true },
-    })).toEqual({ status: "closed", verificationState: "passed", activeCorrelationKey: null });
+    })).toEqual({ status: "closed", verificationState: "overridden", activeCorrelationKey: null });
     await expect.poll(async () => prisma.incidentPostmortem.count({
       where: { incidentId, rootCause: "Provider route regression" },
     })).toBe(1);

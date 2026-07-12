@@ -197,7 +197,7 @@ describe("Admin API v2 public contracts", () => {
         recommendedActions: ["pause route"],
         runbookUrl: "/admin/system/runbooks/provider-timeout",
         rollbackTarget: null,
-        recoveryVerification: { state: "verifying", checkedAt: now, evidenceRefs: [] },
+        recoveryVerification: { state: "verifying", checkedAt: now, evidenceRefs: [], checks: null },
         version: 2,
         createdAt: now,
         updatedAt: now,
@@ -228,10 +228,10 @@ describe("Admin API v2 public contracts", () => {
   });
 
   it("requires evidence and an audited reason for verification overrides", () => {
-    const incidentVerification = {
+    expect(incidentRecoveryVerificationRequestSchema.safeParse({
       entityVersion: 4,
-      state: "overridden",
-      evidenceRefs: ["metric-window-1"],
+      mode: "derive",
+      evidenceRefs: [],
       checks: {
         successRateRecovered: true,
         signatureGrowthStopped: true,
@@ -239,11 +239,17 @@ describe("Admin API v2 public contracts", () => {
         failedRequestPlanComplete: true,
         settlementReconciled: true,
       },
-    };
-    expect(incidentRecoveryVerificationRequestSchema.safeParse(incidentVerification).success).toBe(false);
+    }).success).toBe(false);
+    expect(incidentRecoveryVerificationRequestSchema.safeParse({
+      entityVersion: 4,
+      mode: "derive",
+      evidenceRefs: [],
+    }).success).toBe(true);
     expect(
       incidentRecoveryVerificationRequestSchema.safeParse({
-        ...incidentVerification,
+        entityVersion: 4,
+        mode: "override",
+        evidenceRefs: ["metric-window-1"],
         overrideReason: "Backlog signal is unavailable; manual queue sample attached.",
       }).success,
     ).toBe(true);

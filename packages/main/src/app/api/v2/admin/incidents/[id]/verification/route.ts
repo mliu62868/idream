@@ -16,10 +16,9 @@ export async function POST(request: Request, context: Context) {
       incidentId: id,
       actor,
       expectedVersion: body.entityVersion,
-      state: body.state,
+      mode: body.mode,
       evidenceRefs: body.evidenceRefs,
-      checks: body.checks,
-      overrideReason: body.overrideReason,
+      overrideReason: body.mode === "override" ? body.overrideReason : undefined,
       requestId: request.headers.get("x-request-id") ?? crypto.randomUUID(),
     });
   });

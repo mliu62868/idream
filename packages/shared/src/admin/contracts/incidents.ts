@@ -25,28 +25,33 @@ export const incidentTriageRequestSchema = z
   })
   .strict();
 
-export const incidentRecoveryVerificationRequestSchema = z
-  .object({
+export const incidentRecoveryVerificationRequestSchema = z.discriminatedUnion("mode", [
+  z.object({
     entityVersion: z.number().int().nonnegative(),
-    state: z.enum(["passed", "failed", "overridden"]),
-    evidenceRefs: z.array(z.string().trim().min(1)).min(1),
-    checks: z
-      .object({
-        successRateRecovered: z.boolean(),
-        signatureGrowthStopped: z.boolean(),
-        backlogRecovering: z.boolean(),
-        failedRequestPlanComplete: z.boolean(),
-        settlementReconciled: z.boolean(),
-      })
-      .strict(),
-    overrideReason: z.string().trim().min(1).optional(),
-  })
-  .strict()
-  .superRefine((value, ctx) => {
-    if (value.state === "overridden" && !value.overrideReason) {
-      ctx.addIssue({ code: "custom", path: ["overrideReason"], message: "Override reason is required" });
-    }
-  });
+    mode: z.literal("derive"),
+    evidenceRefs: z.array(z.string().trim().min(1)).max(20).default([]),
+  }).strict(),
+  z.object({
+    entityVersion: z.number().int().nonnegative(),
+    mode: z.literal("override"),
+    evidenceRefs: z.array(z.string().trim().min(1)).min(1).max(20),
+    overrideReason: z.string().trim().min(10).max(2_000),
+  }).strict(),
+]);
+
+export const incidentRecoveryCheckSchema = z.object({
+  passed: z.boolean(),
+  summary: z.string().trim().min(1),
+  observed: z.record(z.string(), z.unknown()),
+}).strict();
+
+export const incidentRecoveryChecksSchema = z.object({
+  successRateRecovered: incidentRecoveryCheckSchema,
+  signatureGrowthStopped: incidentRecoveryCheckSchema,
+  backlogRecovering: incidentRecoveryCheckSchema,
+  failedRequestPlanComplete: incidentRecoveryCheckSchema,
+  settlementReconciled: incidentRecoveryCheckSchema,
+}).strict();
 
 export const incidentActionPlanPreviewRequestSchema = z
   .object({
@@ -97,6 +102,7 @@ export const recoveryVerificationSchema = z
     state: adminVerificationStateSchema,
     checkedAt: adminIsoDateTimeSchema.nullable(),
     evidenceRefs: z.array(z.string().trim().min(1)).readonly(),
+    checks: incidentRecoveryChecksSchema.nullable(),
   })
   .strict();
 

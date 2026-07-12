@@ -273,6 +273,7 @@ function IncidentInspector({ busy, canManage, detail, onClose, onMutate }: {
   const [resolveIdempotencyKey] = useState(() => crypto.randomUUID());
   const [confirmation, setConfirmation] = useState("");
   const [evidence, setEvidence] = useState("");
+  const [verificationOverrideReason, setVerificationOverrideReason] = useState("");
   const [selectedOccurrenceIds, setSelectedOccurrenceIds] = useState<string[]>([]);
   const [mergeSources, setMergeSources] = useState("");
   const [postmortemSummary, setPostmortemSummary] = useState("");
@@ -280,13 +281,6 @@ function IncidentInspector({ busy, canManage, detail, onClose, onMutate }: {
   const [contributingFactors, setContributingFactors] = useState("");
   const [correctiveActions, setCorrectiveActions] = useState("");
   const [closeConfirmation, setCloseConfirmation] = useState("");
-  const [recoveryChecks, setRecoveryChecks] = useState({
-    successRateRecovered: false,
-    signatureGrowthStopped: false,
-    backlogRecovering: false,
-    failedRequestPlanComplete: false,
-    settlementReconciled: false,
-  });
 
   const expectedPlanConfirmation = plan ? `${incident.id}:${plan.id}:${plan.action}` : "";
   const canVerify = ["mitigating", "monitoring"].includes(incident.status);
@@ -335,8 +329,12 @@ function IncidentInspector({ busy, canManage, detail, onClose, onMutate }: {
               className="space-y-3 border-t border-[var(--ad-border)] pt-5"
             >
               <h4 className="text-sm font-semibold" id="incident-verification-title">Recovery verification</h4>
+              <p className="text-xs leading-5 text-[var(--ad-text-muted)]">
+                Pass/fail is derived by main from route outcomes, signature growth, affected-request backlog,
+                completed mitigation scope, and Dreamcoin ledger authority. Operator input cannot make these checks pass.
+              </p>
               <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
-                Evidence reference
+                Supplemental evidence reference (optional for authority check)
                 <input
                   className={fieldClass}
                   onChange={(event) => setEvidence(event.target.value)}
@@ -344,8 +342,8 @@ function IncidentInspector({ busy, canManage, detail, onClose, onMutate }: {
                   value={evidence}
                 />
               </label>
-              <fieldset className="grid gap-2 rounded-md bg-[var(--ad-surface-subtle)] p-3">
-                <legend className="px-1 text-xs font-semibold">Required observed checks</legend>
+              <div className="grid gap-2 rounded-md bg-[var(--ad-surface-subtle)] p-3" aria-label="Authority-derived recovery checks">
+                <p className="text-xs font-semibold">Authority-derived checks</p>
                 {([
                   ["successRateRecovered", "Success rate recovered for the required window"],
                   ["signatureGrowthStopped", "Failure signature stopped growing"],
@@ -353,36 +351,31 @@ function IncidentInspector({ busy, canManage, detail, onClose, onMutate }: {
                   ["failedRequestPlanComplete", "Every failed request has a retry or terminal plan"],
                   ["settlementReconciled", "Spend and refunds are reconciled"],
                 ] as const).map(([key, label]) => (
-                  <label className="flex min-h-9 items-center gap-2 text-xs" key={key}>
-                    <input
-                      checked={recoveryChecks[key]}
-                      onChange={(event) => setRecoveryChecks((current) => ({
-                        ...current,
-                        [key]: event.target.checked,
-                      }))}
-                      type="checkbox"
-                    />
-                    {label}
-                  </label>
+                  <div className="rounded border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 text-xs" key={key}>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="font-semibold">{label}</span>
+                      <StatusBadge value={incident.recoveryVerification.checks?.[key].passed ? "passed" : incident.recoveryVerification.checks ? "failed" : "not checked"} />
+                    </div>
+                    {incident.recoveryVerification.checks?.[key] ? <p className="mt-2 text-[var(--ad-text-muted)]">{incident.recoveryVerification.checks[key].summary}</p> : null}
+                  </div>
                 ))}
-              </fieldset>
+              </div>
               <div className="flex flex-wrap gap-2">
                 <WorkspaceButton
-                  disabled={busy || !canVerify || !evidence.trim() || !Object.values(recoveryChecks).every(Boolean)}
+                  disabled={busy || !canVerify}
                   onClick={() => void onMutate(
-                    "Recovery verification recorded",
+                    "Authority recovery verification evaluated",
                     () => adminV2Request(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/verification`, {
                       method: "POST",
                       body: {
                         entityVersion: incident.version,
-                        state: "passed",
-                        evidenceRefs: [evidence.trim()],
-                        checks: recoveryChecks,
+                        mode: "derive",
+                        evidenceRefs: evidence.trim() ? [evidence.trim()] : [],
                       },
                     }),
                   )}
                 >
-                  <CheckCircle2 className="h-4 w-4" />Mark recovery verified
+                  <CheckCircle2 className="h-4 w-4" />Run authority verification
                 </WorkspaceButton>
                 <WorkspaceButton
                   disabled={busy || !canResolve || reason.trim().length < 3}
@@ -403,6 +396,12 @@ function IncidentInspector({ busy, canManage, detail, onClose, onMutate }: {
                   Resolve incident
                 </WorkspaceButton>
               </div>
+              <details className="rounded-md border border-[var(--ad-yellow-text)]/30 bg-[var(--ad-yellow-bg)] p-3">
+                <summary className="cursor-pointer text-xs font-semibold">Exceptional override</summary>
+                <p className="mt-2 text-xs leading-5 text-[var(--ad-text-muted)]">Override does not change any derived check. It requires durable evidence and an audited reason.</p>
+                <label className="mt-3 grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Override reason<textarea className={textAreaClass} onChange={(event) => setVerificationOverrideReason(event.target.value)} value={verificationOverrideReason} /></label>
+                <div className="mt-3"><WorkspaceButton disabled={busy || !canVerify || !evidence.trim() || verificationOverrideReason.trim().length < 10} tone="danger" onClick={() => void onMutate("Recovery verification explicitly overridden", () => adminV2Request(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/verification`, { method: "POST", body: { entityVersion: incident.version, mode: "override", evidenceRefs: [evidence.trim()], overrideReason: verificationOverrideReason.trim() } }))}>Override with audit</WorkspaceButton></div>
+              </details>
               {!canVerify ? (
                 <p className="text-xs text-[var(--ad-yellow-text)]">
                   <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />Execute mitigation before verification.

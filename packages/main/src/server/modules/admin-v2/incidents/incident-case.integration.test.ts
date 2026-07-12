@@ -264,6 +264,10 @@ describe("Incident and P0 Review Case authority loops", () => {
       where: { sourceCommandId: executed.id },
       data: { status: "succeeded", finishedAt: new Date() },
     });
+    await prisma.generationJob.updateMany({
+      where: { id: { in: [requestA, requestB] } },
+      data: { status: "completed", deliveredOutputCount: 1, finishedAt: new Date() },
+    });
     expect(await verifyIncidentActionPlanCommands(prisma)).toMatchObject({ succeeded: 1, failed: 0 });
     expect(await prisma.controlPlaneCommand.findUniqueOrThrow({ where: { id: executed.id } })).toMatchObject({
       status: "succeeded",
@@ -273,18 +277,12 @@ describe("Incident and P0 Review Case authority loops", () => {
       incidentId: first.id,
       actor,
       expectedVersion: 3,
-      state: "passed",
+      mode: "derive",
       evidenceRefs: ["metrics:success-rate-window", "queue:backlog-window"],
-      checks: {
-        successRateRecovered: true,
-        signatureGrowthStopped: true,
-        backlogRecovering: true,
-        failedRequestPlanComplete: true,
-        settlementReconciled: true,
-      },
       requestId: `verify-${suffix}`,
+      now: new Date(Date.now() + 16 * 60 * 1_000),
     });
-    expect(verified.status).toBe("monitoring");
+    expect(verified).toMatchObject({ status: "monitoring", verificationState: "passed" });
     const response = await resolveIncident(
       commandRequest(`/api/v2/admin/incidents/${first.id}/commands/resolve`, {
         entityVersion: 4,
@@ -303,6 +301,68 @@ describe("Incident and P0 Review Case authority loops", () => {
       version: 5,
       activeCorrelationKey: null,
     });
+  });
+
+  it("fails closed without authority evidence and permits only an explicit audited override", async () => {
+    const incident = await prisma.opsIncident.create({
+      data: {
+        signature: `manual-missing-authority-${suffix}`,
+        signatureVersion: "generation-error-v1",
+        activeCorrelationKey: `manual-missing-authority-${suffix}`,
+        status: "monitoring",
+        severity: "high",
+        ownerId: adminId,
+        firstSeen: new Date(Date.now() - 2 * 60 * 60 * 1_000),
+        lastSeen: new Date(Date.now() - 60 * 60 * 1_000),
+        impact: { affectedRequests: 1, affectedUsers: 1, failedCostMicros: 0, refundMicros: 0 },
+        mitigation: {},
+      },
+    });
+    createdIncidentIds.push(incident.id);
+    await prisma.opsIncidentOccurrence.create({
+      data: {
+        incidentId: incident.id,
+        requestId: requestA,
+        attemptId: incompleteAttempt,
+        occurrenceKey: `manual-missing-authority:${suffix}`,
+        observedAt: incident.lastSeen,
+      },
+    });
+
+    const failed = await verifyIncidentRecovery({
+      incidentId: incident.id,
+      actor,
+      expectedVersion: incident.version,
+      mode: "derive",
+      evidenceRefs: [],
+      requestId: `verify-fail-closed-${suffix}`,
+      now: new Date(),
+    });
+    expect(failed).toMatchObject({ status: "monitoring", verificationState: "failed", version: 2 });
+    const storedFailure = await prisma.opsIncident.findUniqueOrThrow({ where: { id: incident.id } });
+    expect(storedFailure.mitigation).toMatchObject({
+      verification: {
+        state: "failed",
+        checks: {
+          successRateRecovered: { passed: false },
+          signatureGrowthStopped: { passed: false },
+        },
+      },
+    });
+
+    const overridden = await verifyIncidentRecovery({
+      incidentId: incident.id,
+      actor,
+      expectedVersion: 2,
+      mode: "override",
+      evidenceRefs: [`runbook://manual-reconciliation/${suffix}`],
+      overrideReason: "Incident commander approved a documented manual reconciliation.",
+      requestId: `verify-override-${suffix}`,
+    });
+    expect(overridden).toMatchObject({ verificationState: "overridden", version: 3 });
+    expect(await prisma.adminAuditLog.count({
+      where: { targetId: incident.id, action: "incident.recovery.overridden" },
+    })).toBe(1);
   });
 
   it("serializes cross-bucket correlation so concurrent failures cannot split one signature", async () => {

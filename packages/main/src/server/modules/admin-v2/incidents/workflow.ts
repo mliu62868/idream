@@ -1,14 +1,259 @@
-import type { Prisma } from "@prisma/client";
+import { incidentRecoveryChecksSchema, type IncidentRecoveryVerificationRequest } from "@idream/shared/admin";
+import { Prisma, type OpsIncident } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
+import { canonicalSha256 } from "../shared/canonical-json";
 import { toInputJson } from "../shared/prisma-json";
 
 type Actor = { readonly id: string; readonly role: string };
+type Db = Prisma.TransactionClient;
+
+const RECOVERY_WINDOW_MS = 15 * 60 * 1_000;
+const REQUIRED_SUCCESS_RATE = 0.95;
+const ACTIVE_REQUEST_STATES = new Set(["queued", "moderating_input", "running", "moderating_output", "processing"]);
+const ACTIVE_ATTEMPT_STATES = new Set(["queued", "running", "processing"]);
+const TERMINAL_ATTEMPT_STATES = new Set(["succeeded", "failed", "cancelled", "unknown"]);
 
 function record(value: Prisma.JsonValue | null) {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function strings(value: Prisma.JsonValue): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function stringValue(value: unknown) {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function latestDate(values: ReadonlyArray<Date | null | undefined>, fallback: Date) {
+  return values.reduce<Date>((latest, value) => value && value > latest ? value : latest, fallback);
+}
+
+async function deriveIncidentRecoveryChecks(
+  tx: Db,
+  incident: OpsIncident,
+  now: Date,
+) {
+  const occurrences = await tx.opsIncidentOccurrence.findMany({
+    where: { incidentId: incident.id },
+    orderBy: [{ observedAt: "asc" }, { id: "asc" }],
+  });
+  const requestIds = [...new Set(occurrences.flatMap((row) => row.requestId ? [row.requestId] : []))];
+  const mitigation = record(incident.mitigation);
+  const signature = record((mitigation.signatureComponents ?? null) as Prisma.JsonValue | null);
+  const provider = stringValue(signature.provider);
+  const profileKey = stringValue(signature.profileKey);
+  const workflowKey = stringValue(signature.workflowKey);
+  const errorClass = stringValue(signature.errorClass);
+  const normalizedError = stringValue(signature.normalizedError);
+
+  const [jobs, requestAttempts, plans, ledger] = await Promise.all([
+    requestIds.length > 0
+      ? tx.generationJob.findMany({ where: { id: { in: requestIds } } })
+      : [],
+    requestIds.length > 0
+      ? tx.generationAttempt.findMany({
+          where: { requestId: { in: requestIds } },
+          orderBy: [{ requestId: "asc" }, { attemptNo: "desc" }],
+        })
+      : [],
+    tx.incidentActionPlan.findMany({ where: { incidentId: incident.id } }),
+    requestIds.length > 0
+      ? tx.dreamcoinLedger.findMany({
+          where: { sourceId: { in: requestIds }, reason: { in: ["generation_spend", "refund"] } },
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        })
+      : [],
+  ]);
+  const commands = plans.length > 0
+    ? await tx.controlPlaneCommand.findMany({
+        where: {
+          commandType: "incident.action_plan.execute",
+          targetId: { in: plans.map((plan) => plan.id) },
+        },
+      })
+    : [];
+  const succeededCommandIds = new Set(commands.filter((command) => command.status === "succeeded").map((command) => command.id));
+  const successfulPlans = plans.filter((plan) =>
+    commands.some((command) => command.targetId === plan.id && succeededCommandIds.has(command.id))
+  );
+  const latestMitigationAt = latestDate(
+    commands.filter((command) => command.status === "succeeded").map((command) => command.finishedAt ?? command.updatedAt),
+    incident.lastSeen,
+  );
+  const recoveryWindowStart = latestMitigationAt > incident.lastSeen ? latestMitigationAt : incident.lastSeen;
+  const windowMature = now.getTime() - recoveryWindowStart.getTime() >= RECOVERY_WINDOW_MS;
+
+  const routeEvidenceAvailable = Boolean(provider && profileKey && workflowKey);
+  const routeAttempts = routeEvidenceAvailable
+    ? await tx.generationAttempt.findMany({
+        where: {
+          provider,
+          profileKey,
+          workflowKey,
+          OR: [
+            { finishedAt: { gt: incident.lastSeen, lte: now } },
+            { finishedAt: null, createdAt: { gt: incident.lastSeen, lte: now } },
+          ],
+        },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      })
+    : [];
+  const terminalRouteAttempts = routeAttempts.filter((attempt) => TERMINAL_ATTEMPT_STATES.has(attempt.status));
+  const successfulRouteAttempts = terminalRouteAttempts.filter((attempt) => attempt.status === "succeeded");
+  const successRate = terminalRouteAttempts.length > 0
+    ? successfulRouteAttempts.length / terminalRouteAttempts.length
+    : null;
+  const successRateRecovered = routeEvidenceAvailable && windowMature && routeAttempts.length > 0
+    && terminalRouteAttempts.length === routeAttempts.length
+    && successRate !== null && successRate >= REQUIRED_SUCCESS_RATE;
+  const recurringSignatureAttempts = routeAttempts.filter((attempt) =>
+    ["failed", "unknown"].includes(attempt.status)
+      && attempt.errorClass === errorClass
+      && attempt.errorSignature === normalizedError
+  );
+  const signatureGrowthStopped = routeEvidenceAvailable && Boolean(errorClass && normalizedError)
+    && windowMature && recurringSignatureAttempts.length === 0;
+
+  const latestAttemptByRequest = new Map<string, (typeof requestAttempts)[number]>();
+  for (const attempt of requestAttempts) {
+    if (!latestAttemptByRequest.has(attempt.requestId)) latestAttemptByRequest.set(attempt.requestId, attempt);
+  }
+  const jobsById = new Map(jobs.map((job) => [job.id, job]));
+  const activeJobIds = jobs.filter((job) => ACTIVE_REQUEST_STATES.has(job.status)).map((job) => job.id);
+  const activeAttemptIds = [...latestAttemptByRequest.values()]
+    .filter((attempt) => ACTIVE_ATTEMPT_STATES.has(attempt.status))
+    .map((attempt) => attempt.id);
+  const backlogRecovering = requestIds.length > 0 && jobs.length === requestIds.length
+    && activeJobIds.length === 0 && activeAttemptIds.length === 0;
+
+  const ledgerByRequest = new Map(requestIds.map((requestId) => {
+    const entries = ledger.filter((entry) => entry.sourceId === requestId);
+    const captured = -entries
+      .filter((entry) => entry.reason === "generation_spend" && entry.delta < 0)
+      .reduce((sum, entry) => sum + entry.delta, 0);
+    const refunded = entries
+      .filter((entry) => entry.reason === "refund" && entry.delta > 0)
+      .reduce((sum, entry) => sum + entry.delta, 0);
+    return [requestId, { captured, refunded, entryIds: entries.map((entry) => entry.id) }] as const;
+  }));
+  const requestRecovered = (requestId: string) => {
+    const job = jobsById.get(requestId);
+    const latestAttempt = latestAttemptByRequest.get(requestId);
+    return Boolean(
+      latestAttempt?.status === "succeeded"
+      && job
+      && job.status === "completed"
+      && job.outputCount > 0
+      && job.deliveredOutputCount >= job.outputCount,
+    );
+  };
+  const requestFullyRefunded = (requestId: string) => {
+    const settlement = ledgerByRequest.get(requestId);
+    return Boolean(settlement && settlement.captured > 0 && settlement.refunded === settlement.captured);
+  };
+  const completedOccurrenceIds = new Set(successfulPlans
+    .filter((plan) => ["retry_eligible", "refund"].includes(plan.action))
+    .flatMap((plan) => strings(plan.eligibleIds)));
+  const incompleteOccurrenceIds = occurrences.filter((occurrence) => {
+    if (!occurrence.requestId) return true;
+    return !completedOccurrenceIds.has(occurrence.id)
+      && !requestRecovered(occurrence.requestId)
+      && !requestFullyRefunded(occurrence.requestId);
+  }).map((occurrence) => occurrence.id);
+  const failedRequestPlanComplete = occurrences.length > 0 && incompleteOccurrenceIds.length === 0;
+
+  const unsettledRequestIds = requestIds.filter((requestId) => {
+    const settlement = ledgerByRequest.get(requestId) ?? { captured: 0, refunded: 0 };
+    if (settlement.refunded > settlement.captured) return true;
+    return requestRecovered(requestId)
+      ? false
+      : settlement.refunded !== settlement.captured;
+  });
+  const settlementReconciled = requestIds.length > 0 && unsettledRequestIds.length === 0;
+
+  const checks = incidentRecoveryChecksSchema.parse({
+    successRateRecovered: {
+      passed: successRateRecovered,
+      summary: successRateRecovered
+        ? "The matching route sustained the required successful terminal outcome rate."
+        : "The matching route lacks a mature, sufficiently successful terminal outcome window.",
+      observed: {
+        routeEvidenceAvailable,
+        windowMature,
+        recoveryWindowStart: recoveryWindowStart.toISOString(),
+        recoveryWindowMinutes: RECOVERY_WINDOW_MS / 60_000,
+        sampleSize: routeAttempts.length,
+        terminalSampleSize: terminalRouteAttempts.length,
+        succeeded: successfulRouteAttempts.length,
+        successRate,
+        requiredSuccessRate: REQUIRED_SUCCESS_RATE,
+      },
+    },
+    signatureGrowthStopped: {
+      passed: signatureGrowthStopped,
+      summary: signatureGrowthStopped
+        ? "The original normalized error signature did not recur during the mature window."
+        : "The original signature recurred or the quiet window is not yet authoritative.",
+      observed: {
+        routeEvidenceAvailable,
+        signatureEvidenceAvailable: Boolean(errorClass && normalizedError),
+        windowMature,
+        recurringFailureCount: recurringSignatureAttempts.length,
+        recurringAttemptIds: recurringSignatureAttempts.map((attempt) => attempt.id),
+      },
+    },
+    backlogRecovering: {
+      passed: backlogRecovering,
+      summary: backlogRecovering
+        ? "No affected Generation Request or latest Attempt remains active."
+        : "Affected work is missing or remains queued/running.",
+      observed: { affectedRequestCount: requestIds.length, loadedRequestCount: jobs.length, activeJobIds, activeAttemptIds },
+    },
+    failedRequestPlanComplete: {
+      passed: failedRequestPlanComplete,
+      summary: failedRequestPlanComplete
+        ? "Every occurrence has a completed retry/refund plan or a verified terminal result."
+        : "At least one failed occurrence lacks a completed terminal plan.",
+      observed: {
+        occurrenceCount: occurrences.length,
+        completedPlanIds: successfulPlans.map((plan) => plan.id),
+        incompleteOccurrenceIds,
+      },
+    },
+    settlementReconciled: {
+      passed: settlementReconciled,
+      summary: settlementReconciled
+        ? "Captured spend and refunds reconcile for every affected request."
+        : "At least one affected request has unreconciled or excessive refund value.",
+      observed: {
+        affectedRequestCount: requestIds.length,
+        unsettledRequestIds,
+        settlements: Object.fromEntries([...ledgerByRequest.entries()].map(([requestId, value]) => [requestId, {
+          captured: value.captured,
+          refunded: value.refunded,
+          recovered: requestRecovered(requestId),
+        }])),
+      },
+    },
+  });
+  const authoritySnapshot = {
+    incidentId: incident.id,
+    incidentVersion: incident.version,
+    checkedAt: now.toISOString(),
+    occurrenceIds: occurrences.map((row) => row.id),
+    routeAttemptIds: routeAttempts.map((row) => row.id),
+    commandIds: commands.map((row) => row.id),
+    ledgerEntryIds: ledger.map((row) => row.id),
+    checks,
+  };
+  return {
+    checks,
+    authorityRef: `authority:incident-recovery:${canonicalSha256(authoritySnapshot)}`,
+  };
 }
 
 export async function triageIncident(input: {
@@ -85,40 +330,45 @@ export async function verifyIncidentRecovery(input: {
   readonly incidentId: string;
   readonly actor: Actor;
   readonly expectedVersion: number;
-  readonly state: "passed" | "failed" | "overridden";
+  readonly mode: IncidentRecoveryVerificationRequest["mode"];
   readonly evidenceRefs: readonly string[];
-  readonly checks: {
-    readonly successRateRecovered: boolean;
-    readonly signatureGrowthStopped: boolean;
-    readonly backlogRecovering: boolean;
-    readonly failedRequestPlanComplete: boolean;
-    readonly settlementReconciled: boolean;
-  };
   readonly overrideReason?: string;
   readonly requestId: string;
+  readonly now?: Date;
 }) {
-  if (input.evidenceRefs.length === 0) throw Errors.badRequest("Recovery verification requires evidence");
-  const allChecksPassed = Object.values(input.checks).every(Boolean);
-  if (input.state === "passed" && !allChecksPassed) {
-    throw Errors.conflict("Recovery verification cannot pass while required checks fail");
-  }
-  if (input.state === "overridden" && !input.overrideReason?.trim()) {
+  if (input.mode === "override" && !input.overrideReason?.trim()) {
     throw Errors.badRequest("Recovery verification override requires a reason");
   }
+  if (input.mode === "override" && input.evidenceRefs.length === 0) {
+    throw Errors.badRequest("Recovery verification override requires evidence");
+  }
   return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "ops_incidents" WHERE id = ${input.incidentId} FOR UPDATE`;
     const current = await tx.opsIncident.findUnique({ where: { id: input.incidentId } });
     if (!current) throw Errors.notFound("Incident not found");
     if (current.version !== input.expectedVersion) throw Errors.conflict("Incident version changed");
     if (!["mitigating", "monitoring"].includes(current.status)) {
       throw Errors.conflict("Incident must be mitigating or monitoring before recovery verification");
     }
+    const now = input.now ?? new Date();
+    const derived = input.mode === "derive"
+      ? await deriveIncidentRecoveryChecks(tx, current, now)
+      : null;
+    const state = input.mode === "override"
+      ? "overridden" as const
+      : Object.values(derived!.checks).every((check) => check.passed)
+        ? "passed" as const
+        : "failed" as const;
+    const evidenceRefs = input.mode === "derive"
+      ? [derived!.authorityRef, ...input.evidenceRefs]
+      : [...input.evidenceRefs];
     const mitigation = {
       ...record(current.mitigation),
       verification: {
-        state: input.state,
-        checkedAt: new Date().toISOString(),
-        evidenceRefs: [...input.evidenceRefs],
-        checks: input.checks,
+        state,
+        checkedAt: now.toISOString(),
+        evidenceRefs,
+        checks: derived?.checks ?? null,
         overrideReason: input.overrideReason ?? null,
       },
     };
@@ -126,8 +376,8 @@ export async function verifyIncidentRecovery(input: {
       where: { id: current.id, version: current.version },
       data: {
         status: "monitoring",
-        verificationState: input.state,
-        mitigation,
+        verificationState: state,
+        mitigation: toInputJson(mitigation),
         version: { increment: 1 },
       },
     });
@@ -135,15 +385,33 @@ export async function verifyIncidentRecovery(input: {
       data: {
         actorId: input.actor.id,
         actorRole: input.actor.role,
-        action: input.state === "overridden" ? "incident.recovery.overridden" : "incident.recovery.verified",
+        action: state === "overridden"
+          ? "incident.recovery.overridden"
+          : state === "passed"
+            ? "incident.recovery.verified"
+            : "incident.recovery.failed",
         targetType: "ops_incident",
         targetId: current.id,
-        reason: input.overrideReason ?? `Recovery verification ${input.state}`,
+        reason: input.overrideReason ?? `Authority-derived recovery verification ${state}`,
         before: toInputJson({ status: current.status, verificationState: current.verificationState, version: current.version }),
-        after: toInputJson({ status: updated.status, verificationState: updated.verificationState, version: updated.version }),
+        after: toInputJson({
+          status: updated.status,
+          verificationState: updated.verificationState,
+          version: updated.version,
+          evidenceRefs,
+          checks: derived?.checks ?? null,
+        }),
         requestId: input.requestId,
       },
     });
+    await tx.mainOutboxEvent.create({
+      data: {
+        eventType: `ops.incident.recovery_${state}.v2`,
+        aggregateType: "ops_incident",
+        aggregateId: current.id,
+        payload: toInputJson({ incidentId: current.id, state, evidenceRefs, version: updated.version }),
+      },
+    });
     return updated;
-  });
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 }

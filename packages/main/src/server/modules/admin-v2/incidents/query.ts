@@ -1,4 +1,4 @@
-import { incidentQuerySchema } from "@idream/shared/admin";
+import { incidentQuerySchema, incidentRecoveryChecksSchema } from "@idream/shared/admin";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
@@ -20,6 +20,7 @@ function incidentDto(row: Awaited<ReturnType<typeof prisma.opsIncident.findUniqu
   const mitigation = record(row.mitigation);
   const impact = record(row.impact);
   const verification = record(mitigation.verification as Prisma.JsonValue | null);
+  const checks = incidentRecoveryChecksSchema.safeParse(verification.checks);
   return {
     id: row.id,
     signature: row.signature,
@@ -51,6 +52,7 @@ function incidentDto(row: Awaited<ReturnType<typeof prisma.opsIncident.findUniqu
       evidenceRefs: Array.isArray(verification.evidenceRefs)
         ? verification.evidenceRefs.filter((item): item is string => typeof item === "string")
         : [],
+      checks: checks.success ? checks.data : null,
     },
     version: row.version,
     createdAt: row.createdAt.toISOString(),
