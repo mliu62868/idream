@@ -185,7 +185,7 @@ type AnalyticsData = {
 };
 
 type AnalyticsWorkspaceData = {
-  legacy: AnalyticsData;
+  legacy: AnalyticsData | null;
   canonical: MetricDashboardResponse;
 };
 
@@ -681,7 +681,12 @@ export function AdminConsoleClient({
     setLoading(true);
     setError(null);
     try {
-      setData(await fetchSection(sectionId, { chatOps: nextChatOpsFilters, commandId, workMode: nextWorkMode }));
+      setData(await fetchSection(sectionId, {
+        chatOps: nextChatOpsFilters,
+        commandId,
+        workMode: nextWorkMode,
+        includeLegacyAnalytics: permissions.has("analytics.export"),
+      }));
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Failed to load admin data");
     } finally {
@@ -1282,7 +1287,12 @@ async function fetchGenerationConfig(): Promise<ConfigData> {
 
 async function fetchSection(
   sectionId: string,
-  options: { chatOps?: ChatOpsFilters; commandId?: string | null; workMode?: WorkMode } = {},
+  options: {
+    chatOps?: ChatOpsFilters;
+    commandId?: string | null;
+    workMode?: WorkMode;
+    includeLegacyAnalytics?: boolean;
+  } = {},
 ): Promise<SectionData> {
   if (sectionId === "generation/jobs") {
     const payload = await apiGet<{ items: Row[] }>("/api/v1/admin/generation/jobs?mode=image");
@@ -1342,7 +1352,9 @@ async function fetchSection(
   }
   if (sectionId === "analytics") {
     const [legacy, canonical] = await Promise.all([
-      apiGet<AnalyticsData>("/api/v1/admin/analytics/overview"),
+      options.includeLegacyAnalytics
+        ? apiGet<AnalyticsData>("/api/v1/admin/analytics/overview")
+        : Promise.resolve(null),
       apiGet<MetricDashboardResponse>("/api/v2/admin/metrics"),
     ]);
     return { kind: "analytics", data: { legacy, canonical } };
@@ -5491,40 +5503,32 @@ function AnalyticsView({ data }: { data: AnalyticsWorkspaceData }) {
           ))}
         </div>
       </div>
-      <p className="text-xs text-[var(--ad-text-muted)]">
-        {t("Window")} {compactDate(legacy.window.from, locale)} → {compactDate(legacy.window.to, locale)} ·{" "}
-        {t("legacy operational diagnostics")}
-      </p>
-      <div className="rounded-lg grid gap-px overflow-hidden border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
-        <Metric label="Signups" value={legacy.funnel.signups} meta="new users" />
-        <Metric label="Activated" value="Invalid" meta="invalid for decisions · definition v1" />
-        <Metric label="Paying" value={legacy.funnel.payingUsers} meta="subscribed" />
-        <Metric
-          label="Conversion"
-          value="Invalid"
-          meta="invalid for decisions · mixed cohort/window"
-        />
-      </div>
-      <div className="rounded-lg grid gap-px overflow-hidden border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
-        <Metric
-          label="Generations"
-          value={legacy.generation.total}
-          meta={t("{count} completed", { count: legacy.generation.completed })}
-        />
-        <Metric label="Failed" value={legacy.generation.failed} meta="generation jobs" />
-        <Metric label="Blocked" value={legacy.generation.blocked} meta="generation jobs" />
-        <Metric
-          label="Coins net"
-          value={legacy.economy.net}
-          meta={t("{count} granted", { count: legacy.economy.coinsGranted })}
-        />
-      </div>
-      <DataTable
-        columns={["reason", "totalDelta", "count"]}
-        rows={legacy.economy.byReason}
-        title="Coin economy by reason"
-      />
-      <DataTable columns={["name", "count"]} rows={legacy.topEvents} title="Top events" />
+      {legacy ? (
+        <>
+          <p className="text-xs text-[var(--ad-text-muted)]">
+            {t("Window")} {compactDate(legacy.window.from, locale)} → {compactDate(legacy.window.to, locale)} ·{" "}
+            {t("legacy operational diagnostics")}
+          </p>
+          <div className="rounded-lg grid gap-px overflow-hidden border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
+            <Metric label="Signups" value={legacy.funnel.signups} meta="new users" />
+            <Metric label="Activated" value="Invalid" meta="invalid for decisions · definition v1" />
+            <Metric label="Paying" value={legacy.funnel.payingUsers} meta="subscribed" />
+            <Metric label="Conversion" value="Invalid" meta="invalid for decisions · mixed cohort/window" />
+          </div>
+          <div className="rounded-lg grid gap-px overflow-hidden border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
+            <Metric label="Generations" value={legacy.generation.total} meta={t("{count} completed", { count: legacy.generation.completed })} />
+            <Metric label="Failed" value={legacy.generation.failed} meta="generation jobs" />
+            <Metric label="Blocked" value={legacy.generation.blocked} meta="generation jobs" />
+            <Metric label="Coins net" value={legacy.economy.net} meta={t("{count} granted", { count: legacy.economy.coinsGranted })} />
+          </div>
+          <DataTable columns={["reason", "totalDelta", "count"]} rows={legacy.economy.byReason} title="Coin economy by reason" />
+          <DataTable columns={["name", "count"]} rows={legacy.topEvents} title="Top events" />
+        </>
+      ) : (
+        <p className="rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 text-xs text-[var(--ad-text-muted)]">
+          Technical metric scope: business and legacy diagnostics are not included.
+        </p>
+      )}
     </div>
   );
 }
