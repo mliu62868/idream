@@ -116,10 +116,12 @@ describe("Today authoritative projection", () => {
   });
 
   it("separates complete counts from the ten displayed rows and preserves domain truth", async () => {
+    const sourceQueries: Array<{ sourceType: string; returnedRows: number; limit: number }> = [];
     const projection = await buildTodayProjection({
       actor: { id: actorId, role: "support" },
       permissions: resolvePermissions("support"),
       now,
+      diagnostics: { onSourceQuery: (event) => sourceQueries.push(event) },
     });
 
     expect(projection.myShift.totalCount).toBe(12);
@@ -145,6 +147,9 @@ describe("Today authoritative projection", () => {
     });
     expect(projection.myShift.items.some((item) => item.sourceId === caseIds[1])).toBe(false);
     expect(projection.watching.items[0]?.deepLink).toBe(`/admin/cases/${caseIds[0]}`);
+    expect(sourceQueries.length).toBeGreaterThan(0);
+    expect(sourceQueries.every((query) => query.returnedRows <= query.limit && query.limit === 10)).toBe(true);
+    expect(sourceQueries.some((query) => query.sourceType === "admin_case" && query.returnedRows === 10)).toBe(true);
   });
 
   it("returns real empty queues when effective permissions expose no authoritative source", async () => {

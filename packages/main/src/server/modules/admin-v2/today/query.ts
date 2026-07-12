@@ -5,6 +5,7 @@ import {
   type TodayWorkMode,
   type TodayWorkItem,
 } from "@idream/shared/admin";
+import { Prisma } from "@prisma/client";
 import type {
   AdminCollaborationActivity,
   AdminCase,
@@ -12,7 +13,7 @@ import type {
   ContentProductionBatch,
   ControlPlaneCommand,
   OpsIncident,
-  Prisma,
+  PrismaClient,
 } from "@prisma/client";
 import { effectivePermissions } from "@/server/admin/effective-permissions";
 import { prisma } from "@/server/lib/db";
@@ -35,7 +36,7 @@ const RESOLVED_RELEASE_STATUSES = ["published", "superseded", "withdrawn"];
 type ProjectableRow =
   | {
       sourceType: "collaboration_mention";
-      row: AdminCollaborationActivity;
+      row: Pick<AdminCollaborationActivity, "id" | "targetType" | "targetId" | "actorId" | "body" | "createdAt">;
       target: {
         label: string;
         deepLink: string;
@@ -63,6 +64,354 @@ type QueueRows = {
   totalCount: number;
   rows: ProjectableRow[];
 };
+
+type ReleaseQueueSelection =
+  | {
+      scope: "active";
+      owner: "all" | { actorId: string } | "unassigned";
+      snoozedIds: readonly string[];
+    }
+  | {
+      scope: "recently_resolved";
+      recentCutoff: Date;
+    }
+  | {
+      scope: "watching";
+      releaseIds: readonly string[];
+      projectIds: readonly string[];
+    };
+
+type TodayReadDb = PrismaClient | Prisma.TransactionClient;
+
+export type TodaySourceQueryDiagnostic = {
+  sourceType: TodayWorkItem["sourceType"];
+  lane: string;
+  returnedRows: number;
+  limit: number;
+};
+
+export type TodayQueryDiagnostics = {
+  onSourceQuery(event: TodaySourceQueryDiagnostic): void;
+};
+
+function recordSourceQuery(
+  diagnostics: TodayQueryDiagnostics | undefined,
+  sourceType: TodayWorkItem["sourceType"],
+  lane: string,
+  returnedRows: number,
+) {
+  diagnostics?.onSourceQuery({ sourceType, lane, returnedRows, limit: QUEUE_LIMIT });
+}
+
+function uniqueById<Row extends { id: string }>(rows: readonly Row[]) {
+  return [...new Map(rows.map((row) => [row.id, row])).values()];
+}
+
+async function findBoundedCaseRows(input: {
+  db: TodayReadDb;
+  where: Prisma.AdminCaseWhereInput | null;
+  pinnedIds: readonly string[];
+  diagnostics?: TodayQueryDiagnostics;
+}) {
+  if (!input.where) return { totalCount: 0, rows: [] as AdminCase[] };
+  const priorityLanes: Array<{ lane: string; where: Prisma.AdminCaseWhereInput }> = [
+    { lane: "urgent", where: { priority: "urgent" } },
+    { lane: "high", where: { priority: "high" } },
+    { lane: "normal", where: { priority: { notIn: ["urgent", "high", "low"] } } },
+    { lane: "low", where: { priority: "low" } },
+  ];
+  const readLane = async (lane: typeof priorityLanes[number], pinnedOnly: boolean) => {
+    if (pinnedOnly && input.pinnedIds.length === 0) return [];
+    const rows = await input.db.adminCase.findMany({
+      where: {
+        AND: [
+          input.where!,
+          lane.where,
+          ...(pinnedOnly ? [{ id: { in: [...input.pinnedIds] } }] : []),
+        ],
+      },
+      orderBy: [
+        { slaDueAt: { sort: "asc", nulls: "last" } },
+        { updatedAt: "asc" },
+        { id: "asc" },
+      ],
+      take: QUEUE_LIMIT,
+    });
+    recordSourceQuery(input.diagnostics, "admin_case", `${pinnedOnly ? "pinned:" : ""}${lane.lane}`, rows.length);
+    return rows;
+  };
+  const [totalCount, ...laneRows] = await Promise.all([
+    input.db.adminCase.count({ where: input.where }),
+    ...priorityLanes.flatMap((lane) => [readLane(lane, true), readLane(lane, false)]),
+  ]);
+  return { totalCount, rows: uniqueById(laneRows.flat()) };
+}
+
+async function findBoundedIncidentRows(input: {
+  db: TodayReadDb;
+  where: Prisma.OpsIncidentWhereInput | null;
+  pinnedIds: readonly string[];
+  diagnostics?: TodayQueryDiagnostics;
+}) {
+  if (!input.where) return { totalCount: 0, rows: [] as OpsIncident[] };
+  const severityLanes: Array<{ lane: string; where: Prisma.OpsIncidentWhereInput }> = [
+    { lane: "critical", where: { severity: "critical" } },
+    { lane: "high", where: { severity: "high" } },
+    { lane: "medium", where: { severity: { notIn: ["critical", "high", "low"] } } },
+    { lane: "low", where: { severity: "low" } },
+  ];
+  const readLane = async (lane: typeof severityLanes[number], pinnedOnly: boolean) => {
+    if (pinnedOnly && input.pinnedIds.length === 0) return [];
+    const rows = await input.db.opsIncident.findMany({
+      where: {
+        AND: [
+          input.where!,
+          lane.where,
+          ...(pinnedOnly ? [{ id: { in: [...input.pinnedIds] } }] : []),
+        ],
+      },
+      orderBy: [
+        { slaDueAt: { sort: "asc", nulls: "last" } },
+        { updatedAt: "asc" },
+        { id: "asc" },
+      ],
+      take: QUEUE_LIMIT,
+    });
+    recordSourceQuery(input.diagnostics, "ops_incident", `${pinnedOnly ? "pinned:" : ""}${lane.lane}`, rows.length);
+    return rows;
+  };
+  const [totalCount, ...laneRows] = await Promise.all([
+    input.db.opsIncident.count({ where: input.where }),
+    ...severityLanes.flatMap((lane) => [readLane(lane, true), readLane(lane, false)]),
+  ]);
+  return { totalCount, rows: uniqueById(laneRows.flat()) };
+}
+
+async function findBoundedCommandRows(input: {
+  db: TodayReadDb;
+  where: Prisma.ControlPlaneCommandWhereInput | null;
+  pinnedIds: readonly string[];
+  diagnostics?: TodayQueryDiagnostics;
+}) {
+  if (!input.where) return { totalCount: 0, rows: [] as ControlPlaneCommand[] };
+  const statusLanes: Array<{ lane: string; where: Prisma.ControlPlaneCommandWhereInput }> = [
+    { lane: "failed", where: { status: "failed" } },
+    { lane: "non_failed", where: { status: { not: "failed" } } },
+  ];
+  const readLane = async (lane: typeof statusLanes[number], pinnedOnly: boolean) => {
+    if (pinnedOnly && input.pinnedIds.length === 0) return [];
+    const rows = await input.db.controlPlaneCommand.findMany({
+      where: {
+        AND: [
+          input.where!,
+          lane.where,
+          ...(pinnedOnly ? [{ id: { in: [...input.pinnedIds] } }] : []),
+        ],
+      },
+      orderBy: [
+        { leaseExpiresAt: { sort: "asc", nulls: "last" } },
+        { updatedAt: "asc" },
+        { id: "asc" },
+      ],
+      take: QUEUE_LIMIT,
+    });
+    recordSourceQuery(input.diagnostics, "control_plane_command", `${pinnedOnly ? "pinned:" : ""}${lane.lane}`, rows.length);
+    return rows;
+  };
+  const [totalCount, ...laneRows] = await Promise.all([
+    input.db.controlPlaneCommand.count({ where: input.where }),
+    ...statusLanes.flatMap((lane) => [readLane(lane, true), readLane(lane, false)]),
+  ]);
+  return { totalCount, rows: uniqueById(laneRows.flat()) };
+}
+
+async function findBoundedCreativeRows(input: {
+  db: TodayReadDb;
+  where: Prisma.ContentProductionBatchWhereInput | null;
+  pinnedIds: readonly string[];
+  diagnostics?: TodayQueryDiagnostics;
+}) {
+  if (!input.where) return { totalCount: 0, rows: [] as ContentProductionBatch[] };
+  const verificationLanes: Array<{ lane: string; where: Prisma.ContentProductionBatchWhereInput }> = [
+    { lane: "failed", where: { verificationState: "failed" } },
+    { lane: "non_failed", where: { verificationState: { not: "failed" } } },
+  ];
+  const priorityLanes: Array<{ lane: string; where: Prisma.ContentProductionBatchWhereInput }> = [
+    { lane: "urgent", where: { priority: "urgent" } },
+    { lane: "high", where: { priority: "high" } },
+    { lane: "normal", where: { priority: { notIn: ["urgent", "high", "low"] } } },
+    { lane: "low", where: { priority: "low" } },
+  ];
+  const lanes = verificationLanes.flatMap((verification) => priorityLanes.map((priority) => ({
+    lane: `${verification.lane}:${priority.lane}`,
+    where: { AND: [verification.where, priority.where] } satisfies Prisma.ContentProductionBatchWhereInput,
+  })));
+  const readLane = async (lane: typeof lanes[number], pinnedOnly: boolean) => {
+    if (pinnedOnly && input.pinnedIds.length === 0) return [];
+    const rows = await input.db.contentProductionBatch.findMany({
+      where: {
+        AND: [
+          input.where!,
+          lane.where,
+          ...(pinnedOnly ? [{ id: { in: [...input.pinnedIds] } }] : []),
+        ],
+      },
+      orderBy: [
+        { dueAt: { sort: "asc", nulls: "last" } },
+        { updatedAt: "asc" },
+        { id: "asc" },
+      ],
+      take: QUEUE_LIMIT,
+    });
+    recordSourceQuery(input.diagnostics, "creative_run", `${pinnedOnly ? "pinned:" : ""}${lane.lane}`, rows.length);
+    return rows;
+  };
+  const [totalCount, ...laneRows] = await Promise.all([
+    input.db.contentProductionBatch.count({ where: input.where }),
+    ...lanes.flatMap((lane) => [readLane(lane, true), readLane(lane, false)]),
+  ]);
+  return { totalCount, rows: uniqueById(laneRows.flat()) };
+}
+
+type RankedReleaseIdRow = {
+  id: string | null;
+  totalCount: bigint;
+  monitorActionRequired: boolean | null;
+};
+
+async function findBoundedReleaseRows(input: {
+  db: TodayReadDb;
+  selection: ReleaseQueueSelection | null;
+  pinnedIds: readonly string[];
+  diagnostics?: TodayQueryDiagnostics;
+}) {
+  if (!input.selection) {
+    return { totalCount: 0, rows: [] as Array<Extract<ProjectableRow, { sourceType: "character_release" }> extends { row: infer Row; project: infer Project } ? { row: Row; project: Project; monitorActionRequired?: boolean } : never> };
+  }
+  const ownerSql = input.selection.scope === "active"
+    ? input.selection.owner === "all"
+      ? Prisma.empty
+      : input.selection.owner === "unassigned"
+        ? Prisma.sql`AND project."ownerId" IS NULL`
+        : Prisma.sql`AND project."ownerId" = ${input.selection.owner.actorId}`
+    : Prisma.empty;
+  const snoozedSql = input.selection.scope === "active" && input.selection.snoozedIds.length > 0
+    ? Prisma.sql`AND release.id NOT IN (${Prisma.join(input.selection.snoozedIds)})`
+    : Prisma.empty;
+  const pinnedRankSql = input.pinnedIds.length > 0
+    ? Prisma.sql`CASE WHEN release.id IN (${Prisma.join(input.pinnedIds)}) THEN 1 ELSE 0 END`
+    : Prisma.sql`0`;
+  const monitorActionSql = Prisma.sql`
+    EXISTS (
+      SELECT 1
+      FROM "release_monitors" monitor
+      JOIN "character_serving" serving ON serving."currentReleaseId" = release.id
+      WHERE monitor."releaseId" = release.id
+        AND (
+          monitor.status = 'action_required'
+          OR monitor.verification ->> 'recommendation' = 'rollback_review'
+        )
+    )
+  `;
+  const eligibilitySql = input.selection.scope === "active"
+    ? Prisma.sql`
+        AND (
+          release.status IN (${Prisma.join(ACTIVE_RELEASE_STATUSES)})
+          OR ${monitorActionSql}
+        )
+      `
+    : input.selection.scope === "recently_resolved"
+      ? Prisma.sql`
+        AND release.status IN (${Prisma.join(RESOLVED_RELEASE_STATUSES)})
+        AND release."updatedAt" >= ${input.selection.recentCutoff}
+        AND NOT (${monitorActionSql})
+      `
+      : input.selection.releaseIds.length === 0 && input.selection.projectIds.length === 0
+        ? Prisma.sql`AND FALSE`
+        : Prisma.sql`
+          AND (
+            ${input.selection.releaseIds.length > 0
+              ? Prisma.sql`release.id IN (${Prisma.join(input.selection.releaseIds)})`
+              : Prisma.sql`FALSE`}
+            OR (
+              ${input.selection.projectIds.length > 0
+                ? Prisma.sql`release."projectId" IN (${Prisma.join(input.selection.projectIds)})`
+                : Prisma.sql`FALSE`}
+              AND (
+                EXISTS (SELECT 1 FROM "character_serving" serving WHERE serving."currentReleaseId" = release.id)
+                OR release.id = (
+                  SELECT candidate.id
+                  FROM "character_releases" candidate
+                  WHERE candidate."projectId" = release."projectId"
+                    AND candidate.status IN (${Prisma.join(ACTIVE_RELEASE_STATUSES)})
+                  ORDER BY candidate."createdAt" DESC, candidate.id DESC
+                  LIMIT 1
+                )
+              )
+            )
+          )
+        `;
+  const rankedIds = await input.db.$queryRaw<RankedReleaseIdRow[]>(Prisma.sql`
+    WITH eligible AS (
+      SELECT
+        release.id,
+        ${monitorActionSql} AS monitor_action_required,
+        ${pinnedRankSql} AS pinned_rank,
+        CASE
+          WHEN ${monitorActionSql} OR release.readiness = 'blocked' THEN 3
+          WHEN release.readiness = 'stale' THEN 2
+          ELSE 1
+        END AS severity_rank,
+        project."plannedLaunchAt" AS due_at,
+        release."updatedAt" AS changed_at
+      FROM "character_releases" release
+      JOIN "character_projects" project ON project.id = release."projectId"
+      WHERE TRUE
+        ${ownerSql}
+        ${snoozedSql}
+        ${eligibilitySql}
+    ), ranked AS (
+      SELECT *, row_number() OVER (
+        ORDER BY pinned_rank DESC, severity_rank DESC, due_at ASC NULLS LAST, changed_at ASC, id ASC
+      ) AS ordinal
+      FROM eligible
+    ), summary AS (
+      SELECT count(*)::bigint AS total_count FROM eligible
+    )
+    SELECT
+      ranked.id,
+      summary.total_count AS "totalCount",
+      ranked.monitor_action_required AS "monitorActionRequired"
+    FROM summary
+    LEFT JOIN ranked ON ranked.ordinal <= ${QUEUE_LIMIT}
+    ORDER BY ranked.ordinal ASC NULLS LAST
+  `);
+  const ids = rankedIds.flatMap((row) => row.id ? [row.id] : []);
+  recordSourceQuery(input.diagnostics, "character_release", input.selection.scope, ids.length);
+  if (ids.length === 0) {
+    return { totalCount: Number(rankedIds[0]?.totalCount ?? 0), rows: [] };
+  }
+  const releaseRows = await input.db.characterRelease.findMany({
+    where: { id: { in: ids } },
+    take: QUEUE_LIMIT,
+  });
+  const projects = await input.db.characterProject.findMany({
+    where: { id: { in: releaseRows.map((row) => row.projectId) } },
+    select: { id: true, ownerId: true, characterId: true, phase: true, plannedLaunchAt: true, version: true },
+    take: QUEUE_LIMIT,
+  });
+  const releasesById = new Map(releaseRows.map((row) => [row.id, row]));
+  const projectsById = new Map(projects.map((row) => [row.id, row]));
+  const monitorById = new Map(rankedIds.flatMap((row) => row.id ? [[row.id, Boolean(row.monitorActionRequired)] as const] : []));
+  return {
+    totalCount: Number(rankedIds[0]?.totalCount ?? 0),
+    rows: ids.flatMap((id) => {
+      const row = releasesById.get(id);
+      const project = row ? projectsById.get(row.projectId) : undefined;
+      return row && project ? [{ row, project, monitorActionRequired: monitorById.get(id) ?? false }] : [];
+    }),
+  };
+}
 
 function deploymentEnvironment(): TodayWorkItem["environment"] {
   if (env.APP_ENV === "preview") return "staging";
@@ -350,11 +699,12 @@ function scopedCaseWhere(
 }
 
 async function scopedIncidentWhere(
+  db: TodayReadDb,
   actor: { id: string; role: string },
   permissions: ReadonlySet<AdminPermissionKey>,
 ): Promise<Prisma.OpsIncidentWhereInput | null> {
   if (!permissions.has("ops.incident.read")) return null;
-  return incidentReadScopeWhere(prisma, actor);
+  return incidentReadScopeWhere(db, actor);
 }
 
 function readableCommandWhere(permissions: ReadonlySet<AdminPermissionKey>): Prisma.ControlPlaneCommandWhereInput | null {
@@ -392,43 +742,66 @@ function sourceRows(
 }
 
 async function findQueueRows(input: {
+  db: TodayReadDb;
   caseWhere: Prisma.AdminCaseWhereInput | null;
   incidentWhere: Prisma.OpsIncidentWhereInput | null;
   commandWhere: Prisma.ControlPlaneCommandWhereInput | null;
-  releaseWhere: Prisma.CharacterReleaseWhereInput | null;
+  releaseSelection: ReleaseQueueSelection | null;
   creativeWhere: Prisma.ContentProductionBatchWhereInput | null;
   permissions: ReadonlySet<AdminPermissionKey>;
   mentions?: Extract<ProjectableRow, { sourceType: "collaboration_mention" }>[];
-  monitorActionReleaseIds?: ReadonlySet<string>;
+  mentionTotalCount?: number;
+  pinnedIds: {
+    cases: readonly string[];
+    incidents: readonly string[];
+    commands: readonly string[];
+    releases: readonly string[];
+    creativeRuns: readonly string[];
+  };
+  diagnostics?: TodayQueryDiagnostics;
 }) {
   const commandPermissionWhere = readableCommandWhere(input.permissions);
   const commandWhere = input.commandWhere && commandPermissionWhere
     ? { AND: [input.commandWhere, commandPermissionWhere] }
     : null;
-  // Fetch the complete eligible set before applying the versioned cross-domain
-  // ranking policy. A per-domain updatedAt cap is not rank-preserving: an old
-  // critical/SLA-breached row can legitimately outrank every newer row.
-  const [cases, incidents, commands, releaseRows, creativeRuns] = await Promise.all([
-    input.caseWhere ? prisma.adminCase.findMany({ where: input.caseWhere }) : [],
-    input.incidentWhere ? prisma.opsIncident.findMany({ where: input.incidentWhere }) : [],
-    commandWhere ? prisma.controlPlaneCommand.findMany({ where: commandWhere }) : [],
-    input.releaseWhere ? prisma.characterRelease.findMany({ where: input.releaseWhere }) : [],
-    input.creativeWhere ? prisma.contentProductionBatch.findMany({ where: input.creativeWhere }) : [],
+  // Any row in the global top ten must also be in its source's top ten under
+  // the same total order. Query bounded, rank-preserving lanes per source,
+  // retain exact counts separately, then merge the at-most-ten candidates.
+  const [caseRows, incidentRows, commandRows, releaseRows, creativeRows] = await Promise.all([
+    findBoundedCaseRows({
+      db: input.db,
+      where: input.caseWhere,
+      pinnedIds: input.pinnedIds.cases,
+      diagnostics: input.diagnostics,
+    }),
+    findBoundedIncidentRows({
+      db: input.db,
+      where: input.incidentWhere,
+      pinnedIds: input.pinnedIds.incidents,
+      diagnostics: input.diagnostics,
+    }),
+    findBoundedCommandRows({
+      db: input.db,
+      where: commandWhere,
+      pinnedIds: input.pinnedIds.commands,
+      diagnostics: input.diagnostics,
+    }),
+    findBoundedReleaseRows({
+      db: input.db,
+      selection: input.releaseSelection,
+      pinnedIds: input.pinnedIds.releases,
+      diagnostics: input.diagnostics,
+    }),
+    findBoundedCreativeRows({
+      db: input.db,
+      where: input.creativeWhere,
+      pinnedIds: input.pinnedIds.creativeRuns,
+      diagnostics: input.diagnostics,
+    }),
   ]);
-  const projects = releaseRows.length > 0
-    ? await prisma.characterProject.findMany({
-        where: { id: { in: releaseRows.map((item) => item.projectId) } },
-        select: { id: true, ownerId: true, characterId: true, phase: true, plannedLaunchAt: true, version: true },
-      })
-    : [];
-  const projectsById = new Map(projects.map((item) => [item.id, item]));
-  const releases = releaseRows.flatMap((row) => {
-    const project = projectsById.get(row.projectId);
-    return project ? [{ row, project, monitorActionRequired: input.monitorActionReleaseIds?.has(row.id) ?? false }] : [];
-  });
   return {
-    totalCount: cases.length + incidents.length + commands.length + releases.length + creativeRuns.length + (input.mentions?.length ?? 0),
-    rows: sourceRows(cases, incidents, commands, releases, creativeRuns, input.mentions),
+    totalCount: caseRows.totalCount + incidentRows.totalCount + commandRows.totalCount + releaseRows.totalCount + creativeRows.totalCount + (input.mentionTotalCount ?? input.mentions?.length ?? 0),
+    rows: sourceRows(caseRows.rows, incidentRows.rows, commandRows.rows, releaseRows.rows, creativeRows.rows, input.mentions),
   };
 }
 
@@ -448,18 +821,137 @@ function mentionTargetFromItem(item: TodayWorkItem, ownerId: string): MentionRow
   };
 }
 
-async function findMentionRows(input: {
+async function findRankedMentionIds(input: {
+  db: TodayReadDb;
   actor: { id: string; role: string };
   permissions: ReadonlySet<AdminPermissionKey>;
-  caseScope: Prisma.AdminCaseWhereInput | null;
-  incidentScope: Prisma.OpsIncidentWhereInput | null;
   now: Date;
-}): Promise<MentionRow[]> {
-  const activities = await prisma.adminCollaborationActivity.findMany({
-    where: { mentionedIds: { has: input.actor.id } },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+  pinnedIds: readonly string[];
+  excludeIds?: readonly string[];
+  onlyIds?: readonly string[];
+}) {
+  if (input.onlyIds && input.onlyIds.length === 0) return { totalCount: 0, ids: [] as string[] };
+  const exclusionSql = input.excludeIds && input.excludeIds.length > 0
+    ? Prisma.sql`AND activity.id NOT IN (${Prisma.join(input.excludeIds)})`
+    : Prisma.empty;
+  const onlySql = input.onlyIds
+    ? Prisma.sql`AND activity.id IN (${Prisma.join(input.onlyIds)})`
+    : Prisma.empty;
+  const pinnedRank = input.pinnedIds.length > 0
+    ? Prisma.sql`CASE WHEN activity.id IN (${Prisma.join(input.pinnedIds)}) THEN 1 ELSE 0 END`
+    : Prisma.sql`0`;
+  const sources: Prisma.Sql[] = [];
+  if (input.permissions.has("case.read")) {
+    const scope = input.actor.role === "support"
+      ? Prisma.sql`AND target.type IN ('support_request', 'billing_dispute')`
+      : Prisma.empty;
+    sources.push(Prisma.sql`
+      SELECT activity.id, ${pinnedRank} AS pinned_rank,
+        CASE target.priority WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'low' THEN 1 ELSE 2 END AS severity_rank,
+        CASE target.priority WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'low' THEN 1 ELSE 2 END AS priority_rank,
+        target."slaDueAt" AS due_at, activity."createdAt" AS changed_at
+      FROM "admin_collaboration_activities" activity
+      JOIN "admin_cases" target ON target.id = activity."targetId"
+      WHERE activity."targetType" = 'case' AND ${input.actor.id} = ANY(activity."mentionedIds")
+        ${scope} ${exclusionSql} ${onlySql}
+    `);
+  }
+  if (input.permissions.has("ops.incident.read")) {
+    const scope = input.actor.role === "support"
+      ? Prisma.sql`AND (
+          target."ownerId" = ${input.actor.id}
+          OR EXISTS (
+            SELECT 1 FROM "ops_incident_occurrences" occurrence
+            JOIN "generation_jobs" job ON job.id = occurrence."requestId"
+            JOIN "admin_cases" customer_case
+              ON customer_case."targetType" = 'user'
+              AND customer_case."targetId" = job."userId"
+              AND customer_case.type IN ('support_request', 'billing_dispute')
+            WHERE occurrence."incidentId" = target.id
+          )
+        )`
+      : Prisma.empty;
+    sources.push(Prisma.sql`
+      SELECT activity.id, ${pinnedRank} AS pinned_rank,
+        CASE target.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'low' THEN 1 ELSE 2 END AS severity_rank,
+        CASE target.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'low' THEN 1 ELSE 2 END AS priority_rank,
+        target."slaDueAt" AS due_at, activity."createdAt" AS changed_at
+      FROM "admin_collaboration_activities" activity
+      JOIN "ops_incidents" target ON target.id = activity."targetId"
+      WHERE activity."targetType" = 'incident' AND ${input.actor.id} = ANY(activity."mentionedIds")
+        ${scope} ${exclusionSql} ${onlySql}
+    `);
+  }
+  if (input.permissions.has("creative.run.read")) {
+    sources.push(Prisma.sql`
+      SELECT activity.id, ${pinnedRank} AS pinned_rank,
+        CASE WHEN target."verificationState" = 'failed' THEN 3 ELSE 2 END AS severity_rank,
+        CASE target.priority WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'low' THEN 1 ELSE 2 END AS priority_rank,
+        target."dueAt" AS due_at, activity."createdAt" AS changed_at
+      FROM "admin_collaboration_activities" activity
+      JOIN "content_production_batches" target ON target.id = activity."targetId"
+      WHERE activity."targetType" = 'creative_run' AND ${input.actor.id} = ANY(activity."mentionedIds")
+        ${exclusionSql} ${onlySql}
+    `);
+  }
+  if (input.permissions.has("character.project.read")) {
+    sources.push(Prisma.sql`
+      SELECT activity.id, ${pinnedRank} AS pinned_rank,
+        CASE WHEN target."plannedLaunchAt" <= ${input.now} THEN 3 ELSE 2 END AS severity_rank,
+        CASE WHEN target."plannedLaunchAt" <= ${input.now} THEN 3 ELSE 2 END AS priority_rank,
+        target."plannedLaunchAt" AS due_at, activity."createdAt" AS changed_at
+      FROM "admin_collaboration_activities" activity
+      JOIN "character_projects" target ON target.id = activity."targetId"
+      WHERE activity."targetType" = 'character_project' AND ${input.actor.id} = ANY(activity."mentionedIds")
+        ${exclusionSql} ${onlySql}
+    `);
+  }
+  if (sources.length === 0) return { totalCount: 0, ids: [] as string[] };
+  const ranked = await input.db.$queryRaw<Array<{ id: string | null; totalCount: bigint }>>(Prisma.sql`
+    WITH eligible AS (${Prisma.join(sources, " UNION ALL ")}),
+    ranked AS (
+      SELECT id, row_number() OVER (
+        ORDER BY pinned_rank DESC, severity_rank DESC, priority_rank DESC,
+          due_at ASC NULLS LAST, changed_at ASC, id ASC
+      ) AS ordinal
+      FROM eligible
+    ), summary AS (SELECT count(*)::bigint AS total_count FROM eligible)
+    SELECT ranked.id, summary.total_count AS "totalCount"
+    FROM summary
+    LEFT JOIN ranked ON ranked.ordinal <= ${QUEUE_LIMIT}
+    ORDER BY ranked.ordinal ASC NULLS LAST
+  `);
+  return {
+    totalCount: Number(ranked[0]?.totalCount ?? 0),
+    ids: ranked.flatMap((row) => row.id ? [row.id] : []),
+  };
+}
+
+async function findMentionRows(input: {
+  db: TodayReadDb;
+  actor: { id: string; role: string };
+  permissions: ReadonlySet<AdminPermissionKey>;
+  now: Date;
+  pinnedIds: readonly string[];
+  excludeIds?: readonly string[];
+  onlyIds?: readonly string[];
+  diagnostics?: TodayQueryDiagnostics;
+}): Promise<{ totalCount: number; rows: MentionRow[] }> {
+  const ranked = await findRankedMentionIds(input);
+  recordSourceQuery(input.diagnostics, "collaboration_mention", input.onlyIds ? "watching" : "eligible", ranked.ids.length);
+  if (ranked.ids.length === 0) return { totalCount: ranked.totalCount, rows: [] };
+  const activities = await input.db.adminCollaborationActivity.findMany({
+    where: { id: { in: ranked.ids } },
+    select: {
+      id: true,
+      targetType: true,
+      targetId: true,
+      actorId: true,
+      body: true,
+      createdAt: true,
+    },
+    take: QUEUE_LIMIT,
   });
-  if (activities.length === 0) return [];
 
   const ids = (targetType: string) => activities
     .filter((activity) => activity.targetType === targetType)
@@ -469,17 +961,17 @@ async function findMentionRows(input: {
   const projectIds = ids("character_project");
   const creativeIds = ids("creative_run");
   const [cases, incidents, projects, creativeRuns] = await Promise.all([
-    input.caseScope && caseIds.length > 0
-      ? prisma.adminCase.findMany({ where: { AND: [input.caseScope, { id: { in: caseIds } }] } })
+    input.permissions.has("case.read") && caseIds.length > 0
+      ? input.db.adminCase.findMany({ where: { id: { in: caseIds } }, take: QUEUE_LIMIT })
       : [],
-    input.incidentScope && incidentIds.length > 0
-      ? prisma.opsIncident.findMany({ where: { AND: [input.incidentScope, { id: { in: incidentIds } }] } })
+    input.permissions.has("ops.incident.read") && incidentIds.length > 0
+      ? input.db.opsIncident.findMany({ where: { id: { in: incidentIds } }, take: QUEUE_LIMIT })
       : [],
     input.permissions.has("character.project.read") && projectIds.length > 0
-      ? prisma.characterProject.findMany({ where: { id: { in: projectIds } } })
+      ? input.db.characterProject.findMany({ where: { id: { in: projectIds } }, take: QUEUE_LIMIT })
       : [],
     input.permissions.has("creative.run.read") && creativeIds.length > 0
-      ? prisma.contentProductionBatch.findMany({ where: { id: { in: creativeIds } } })
+      ? input.db.contentProductionBatch.findMany({ where: { id: { in: creativeIds } }, take: QUEUE_LIMIT })
       : [],
   ]);
   const casesById = new Map(cases.map((row) => [row.id, row]));
@@ -488,7 +980,7 @@ async function findMentionRows(input: {
   const creativeById = new Map(creativeRuns.map((row) => [row.id, row]));
   const noPins = new Set<string>();
 
-  return activities.flatMap((row): MentionRow[] => {
+  const rows = activities.flatMap((row): MentionRow[] => {
     if (row.targetType === "case") {
       const target = casesById.get(row.targetId);
       if (!target) return [];
@@ -526,6 +1018,7 @@ async function findMentionRows(input: {
       },
     }];
   });
+  return { totalCount: ranked.totalCount, rows };
 }
 
 export async function buildTodayProjection(input: {
@@ -533,42 +1026,30 @@ export async function buildTodayProjection(input: {
   permissions: ReadonlySet<AdminPermissionKey>;
   now?: Date;
   workMode?: TodayWorkMode;
+  db?: TodayReadDb;
+  diagnostics?: TodayQueryDiagnostics;
 }): Promise<TodayProjection> {
+  const db = input.db ?? prisma;
   const now = input.now ?? new Date();
   const workMode = input.workMode ?? defaultWorkMode(input.actor.role);
   const endOfToday = new Date(now);
   endOfToday.setUTCHours(23, 59, 59, 999);
   const recentCutoff = new Date(now.getTime() - 24 * 60 * 60 * 1_000);
   const caseScope = scopedCaseWhere(input.actor, input.permissions);
-  const incidentScope = await scopedIncidentWhere(input.actor, input.permissions);
+  const incidentScope = await scopedIncidentWhere(db, input.actor, input.permissions);
   const releaseReadable = input.permissions.has("character.release.read");
   const creativeReadable = input.permissions.has("creative.run.read");
-  const projects = releaseReadable
-    ? await prisma.characterProject.findMany({ select: { id: true, ownerId: true } })
-    : [];
-  const allProjectIds = projects.map((item) => item.id);
-  const ownedProjectIds = projects.filter((item) => item.ownerId === input.actor.id).map((item) => item.id);
-  const unassignedProjectIds = projects.filter((item) => item.ownerId === null).map((item) => item.id);
-  const monitorActionRows = releaseReadable
-    ? await prisma.releaseMonitor.findMany({
-        where: {
-          OR: [
-            { status: "action_required" },
-            { verification: { path: ["recommendation"], equals: "rollback_review" } },
-          ],
-        },
-        select: { releaseId: true },
-      })
-    : [];
-  const monitorCandidateIds = monitorActionRows.map((item) => item.releaseId);
-  const currentMonitorServings = monitorCandidateIds.length > 0
-    ? await prisma.characterServing.findMany({
-        where: { currentReleaseId: { in: monitorCandidateIds } },
-        select: { currentReleaseId: true },
-      })
-    : [];
-  const monitorActionReleaseIds = new Set(currentMonitorServings.flatMap((item) => item.currentReleaseId ? [item.currentReleaseId] : []));
-  const preferences = await prisma.operationalWorkPreference.findMany({ where: { actorId: input.actor.id } });
+  const preferences = await db.operationalWorkPreference.findMany({
+    where: { actorId: input.actor.id },
+    select: {
+      actorId: true,
+      sourceType: true,
+      sourceId: true,
+      watching: true,
+      pinned: true,
+      snoozedUntil: true,
+    },
+  });
   const pinnedKeys = new Set(preferences.filter((item) => item.pinned).map((item) => `${item.sourceType}:${item.sourceId}`));
   const preferenceVersions = new Map(preferences.map((item) => [`${item.sourceType}:${item.sourceId}`, item.version]));
   const snoozed = preferences.filter((item) => item.snoozedUntil && item.snoozedUntil > now);
@@ -587,52 +1068,65 @@ export async function buildTodayProjection(input: {
     status: { in: ACTIVE_COMMAND_STATUSES },
     id: withoutIds(snoozedCommandIds),
   } satisfies Prisma.ControlPlaneCommandWhereInput;
-  const activeReleaseWhere = releaseReadable
+  const activeReleaseSelection = releaseReadable
     ? {
-        AND: [
-          { projectId: { in: allProjectIds } },
-          { id: withoutIds(snoozedReleaseIds) },
-          { OR: [{ status: { in: ACTIVE_RELEASE_STATUSES } }, { id: { in: [...monitorActionReleaseIds] } }] },
-        ],
+        scope: "active" as const,
+        owner: "all" as const,
+        snoozedIds: snoozedReleaseIds,
       }
     : null;
   const activeCreativeWhere = creativeReadable
     ? { lifecycleState: "active", id: withoutIds(snoozedCreativeIds) }
     : null;
-  const allMentions = await findMentionRows({
+  const pinnedIds = {
+    cases: preferences.filter((item) => item.pinned && item.sourceType === "admin_case").map((item) => item.sourceId),
+    incidents: preferences.filter((item) => item.pinned && item.sourceType === "ops_incident").map((item) => item.sourceId),
+    commands: preferences.filter((item) => item.pinned && item.sourceType === "control_plane_command").map((item) => item.sourceId),
+    releases: preferences.filter((item) => item.pinned && item.sourceType === "character_release").map((item) => item.sourceId),
+    creativeRuns: preferences.filter((item) => item.pinned && item.sourceType === "creative_run").map((item) => item.sourceId),
+  };
+  const mentionRows = await findMentionRows({
+    db,
     actor: input.actor,
     permissions: input.permissions,
-    caseScope,
-    incidentScope,
     now,
+    pinnedIds: preferences.filter((item) => item.pinned && item.sourceType === "collaboration_mention").map((item) => item.sourceId),
+    excludeIds: snoozedMentionIds,
+    diagnostics: input.diagnostics,
   });
-  const snoozedMentionSet = new Set(snoozedMentionIds);
-  const mentions = allMentions.filter((mention) => !snoozedMentionSet.has(mention.row.id));
+  const mentions = mentionRows.rows;
 
   const [myShift, nextBest, unassigned, recentlyResolved] = await Promise.all([
     findQueueRows({
+      db,
       caseWhere: activeCaseWhere && { AND: [activeCaseWhere, { ownerId: input.actor.id }, { OR: [{ slaDueAt: { lte: endOfToday } }, { verificationState: "failed" }] }] },
       incidentWhere: activeIncidentWhere && { AND: [activeIncidentWhere, { ownerId: input.actor.id }, { OR: [{ slaDueAt: { lte: endOfToday } }, { verificationState: "failed" }] }] },
       commandWhere: actorCommandWhere,
-      releaseWhere: activeReleaseWhere && { AND: [activeReleaseWhere, { projectId: { in: ownedProjectIds } }] },
+      releaseSelection: activeReleaseSelection && { ...activeReleaseSelection, owner: { actorId: input.actor.id } },
       creativeWhere: activeCreativeWhere && {
         AND: [activeCreativeWhere, { ownerId: input.actor.id }, { OR: [{ dueAt: { lte: endOfToday } }, { verificationState: "failed" }] }],
       },
       permissions: input.permissions,
       mentions,
-      monitorActionReleaseIds,
+      mentionTotalCount: mentionRows.totalCount,
+      pinnedIds,
+      diagnostics: input.diagnostics,
     }),
     findQueueRows({
+      db,
       caseWhere: activeCaseWhere,
       incidentWhere: activeIncidentWhere,
       commandWhere: actorCommandWhere,
-      releaseWhere: activeReleaseWhere,
+      releaseSelection: activeReleaseSelection,
       creativeWhere: activeCreativeWhere,
       permissions: input.permissions,
       mentions,
-      monitorActionReleaseIds,
+      mentionTotalCount: mentionRows.totalCount,
+      pinnedIds,
+      diagnostics: input.diagnostics,
     }),
     findQueueRows({
+      db,
       caseWhere: input.permissions.has("case.assign") && activeCaseWhere
         ? { AND: [activeCaseWhere, { ownerId: null }] }
         : null,
@@ -640,24 +1134,28 @@ export async function buildTodayProjection(input: {
         ? { AND: [activeIncidentWhere, { ownerId: null }] }
         : null,
       commandWhere: null,
-      releaseWhere: input.permissions.has("character.project.write") && activeReleaseWhere
-        ? { AND: [activeReleaseWhere, { projectId: { in: unassignedProjectIds } }] }
+      releaseSelection: input.permissions.has("character.project.write") && activeReleaseSelection
+        ? { ...activeReleaseSelection, owner: "unassigned" }
         : null,
       creativeWhere: input.permissions.has("creative.run.write") && activeCreativeWhere
         ? { AND: [activeCreativeWhere, { ownerId: null }] }
         : null,
       permissions: input.permissions,
-      monitorActionReleaseIds,
+      pinnedIds,
+      diagnostics: input.diagnostics,
     }),
     findQueueRows({
+      db,
       caseWhere: caseScope && { AND: [caseScope, { status: { in: RESOLVED_CASE_STATUSES }, verificationState: { in: ["passed", "overridden"] }, updatedAt: { gte: recentCutoff } }] },
       incidentWhere: incidentScope && { AND: [incidentScope, { status: { in: RESOLVED_INCIDENT_STATUSES }, verificationState: { in: ["passed", "overridden"] }, updatedAt: { gte: recentCutoff } }] },
       commandWhere: { actorId: input.actor.id, status: "succeeded", finishedAt: { gte: recentCutoff } },
-      releaseWhere: releaseReadable ? { status: { in: RESOLVED_RELEASE_STATUSES }, id: { notIn: [...monitorActionReleaseIds] }, updatedAt: { gte: recentCutoff } } : null,
+      releaseSelection: releaseReadable ? { scope: "recently_resolved", recentCutoff } : null,
       creativeWhere: creativeReadable
         ? { lifecycleState: { in: ["closed", "archived"] }, verificationState: { in: ["passed", "overridden"] }, updatedAt: { gte: recentCutoff } }
         : null,
       permissions: input.permissions,
+      pinnedIds,
+      diagnostics: input.diagnostics,
     }),
   ]);
 
@@ -669,71 +1167,42 @@ export async function buildTodayProjection(input: {
   const directlyWatchedReleaseIds = watchedPreferences.filter((item) => item.sourceType === "character_release").map((item) => item.sourceId);
   const watchedProjectIds = watchedPreferences.filter((item) => item.sourceType === "character_project").map((item) => item.sourceId);
   const watchedCreativeIds = watchedPreferences.filter((item) => item.sourceType === "creative_run").map((item) => item.sourceId);
-  const commandPermissionWhere = readableCommandWhere(input.permissions);
-  const watchedCharacterProjects = releaseReadable && input.permissions.has("character.project.read") && watchedProjectIds.length > 0
-    ? await prisma.characterProject.findMany({ where: { id: { in: watchedProjectIds } } })
-    : [];
-  const [watchedProjectServings, watchedProjectCandidates] = watchedCharacterProjects.length > 0
-    ? await Promise.all([
-        prisma.characterServing.findMany({
-          where: { characterId: { in: watchedCharacterProjects.map((project) => project.characterId) } },
-          select: { characterId: true, currentReleaseId: true },
-        }),
-        prisma.characterRelease.findMany({
-          where: { projectId: { in: watchedCharacterProjects.map((project) => project.id) }, status: { in: ACTIVE_RELEASE_STATUSES } },
-          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-        }),
-      ])
-    : [[], []] as const;
-  const candidateByProject = new Map<string, CharacterRelease>();
-  for (const release of watchedProjectCandidates) {
-    if (!candidateByProject.has(release.projectId)) candidateByProject.set(release.projectId, release);
-  }
-  const servingByCharacter = new Map(watchedProjectServings.map((serving) => [serving.characterId, serving.currentReleaseId]));
-  const watchedReleaseIds = [...new Set([
-    ...directlyWatchedReleaseIds,
-    ...watchedCharacterProjects.flatMap((project) => {
-      const currentReleaseId = servingByCharacter.get(project.characterId);
-      const candidateReleaseId = candidateByProject.get(project.id)?.id;
-      return [currentReleaseId, candidateReleaseId].filter((id): id is string => Boolean(id));
-    }),
-  ])];
-  const [watchedCases, watchedIncidents, watchedCommands, watchedReleases, watchedCreativeRuns] = await Promise.all([
-    caseScope && watchedCaseIds.length > 0 ? prisma.adminCase.findMany({ where: { AND: [caseScope, { id: { in: watchedCaseIds } }] } }) : [],
-    incidentScope && watchedIncidentIds.length > 0 ? prisma.opsIncident.findMany({ where: { AND: [incidentScope, { id: { in: watchedIncidentIds } }] } }) : [],
-    watchedCommandIds.length > 0 && commandPermissionWhere
-      ? prisma.controlPlaneCommand.findMany({ where: { AND: [{ id: { in: watchedCommandIds }, actorId: input.actor.id }, commandPermissionWhere] } })
-      : [],
-    releaseReadable && watchedReleaseIds.length > 0
-      ? prisma.characterRelease.findMany({ where: { id: { in: watchedReleaseIds } } })
-      : [],
-    creativeReadable && watchedCreativeIds.length > 0
-      ? prisma.contentProductionBatch.findMany({ where: { id: { in: watchedCreativeIds } } })
-      : [],
-  ]);
-  const watchedProjects = watchedReleases.length > 0
-    ? await prisma.characterProject.findMany({
-        where: { id: { in: watchedReleases.map((item) => item.projectId) } },
-        select: { id: true, ownerId: true, characterId: true, phase: true, plannedLaunchAt: true, version: true },
-      })
-    : [];
-  const watchedProjectsById = new Map(watchedProjects.map((item) => [item.id, item]));
-  const projectedWatchedReleases = watchedReleases.flatMap((row) => {
-    const project = watchedProjectsById.get(row.projectId);
-    return project ? [{ row, project }] : [];
+  const watchedMentionRows = await findMentionRows({
+    db,
+    actor: input.actor,
+    permissions: input.permissions,
+    now,
+    pinnedIds: preferences.filter((item) => item.pinned && item.sourceType === "collaboration_mention").map((item) => item.sourceId),
+    onlyIds: [...watchedMentionIds],
+    diagnostics: input.diagnostics,
   });
-  const watchedMentions = allMentions.filter((mention) => watchedMentionIds.has(mention.row.id));
-  const watching = {
-    totalCount: watchedCases.length + watchedIncidents.length + watchedCommands.length + projectedWatchedReleases.length + watchedCreativeRuns.length + watchedMentions.length,
-    rows: sourceRows(
-      watchedCases,
-      watchedIncidents,
-      watchedCommands,
-      projectedWatchedReleases,
-      watchedCreativeRuns,
-      watchedMentions,
-    ),
-  };
+  const watching = await findQueueRows({
+    db,
+    caseWhere: caseScope && watchedCaseIds.length > 0
+      ? { AND: [caseScope, { id: { in: watchedCaseIds } }] }
+      : null,
+    incidentWhere: incidentScope && watchedIncidentIds.length > 0
+      ? { AND: [incidentScope, { id: { in: watchedIncidentIds } }] }
+      : null,
+    commandWhere: watchedCommandIds.length > 0
+      ? { id: { in: watchedCommandIds }, actorId: input.actor.id }
+      : null,
+    releaseSelection: releaseReadable && (directlyWatchedReleaseIds.length > 0 || watchedProjectIds.length > 0)
+      ? {
+          scope: "watching",
+          releaseIds: directlyWatchedReleaseIds,
+          projectIds: input.permissions.has("character.project.read") ? watchedProjectIds : [],
+        }
+      : null,
+    creativeWhere: creativeReadable && watchedCreativeIds.length > 0
+      ? { id: { in: watchedCreativeIds } }
+      : null,
+    permissions: input.permissions,
+    mentions: watchedMentionRows.rows,
+    mentionTotalCount: watchedMentionRows.totalCount,
+    pinnedIds,
+    diagnostics: input.diagnostics,
+  });
 
   return todayProjectionSchema.parse({
     myShift: queue(myShift, pinnedKeys, preferenceVersions, now, workMode, input.permissions),
