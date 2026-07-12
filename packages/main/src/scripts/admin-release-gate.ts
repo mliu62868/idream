@@ -19,14 +19,14 @@ async function main() {
     return;
   }
 
-  const publicKeyPath = process.env.ADMIN_RELEASE_EVIDENCE_PUBLIC_KEY_PATH;
-  const expectedKeyId = process.env.ADMIN_RELEASE_EVIDENCE_KEY_ID;
-  const publicKeyPem = publicKeyPath
-    ? await readFile(resolve(publicKeyPath)).catch(() => undefined)
+  const trustRegistryPath = process.env.ADMIN_RELEASE_TRUST_REGISTRY_PATH;
+  const trustRegistry = trustRegistryPath
+    ? await readFile(resolve(trustRegistryPath), "utf8")
+        .then((value) => JSON.parse(value) as unknown)
+        .catch(() => undefined)
     : undefined;
   const report = evaluateAdminReleaseGate(input, {
-    publicKeyPem,
-    expectedKeyId,
+    trustRegistry,
   });
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   if (report.status !== "pass") process.exitCode = 2;

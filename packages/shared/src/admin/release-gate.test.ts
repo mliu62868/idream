@@ -1,39 +1,106 @@
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  ADMIN_RELEASE_DRI_ROLES,
   evaluateAdminReleaseGate as evaluateSignedReleaseGate,
+  signAdminDriApproval,
+  signAdminEvidenceArtifact,
   signAdminReleaseEvidence,
+  type AdminReleaseDriRole,
 } from "./release-gate";
 
-const pair = generateKeyPairSync("ed25519");
-const privateKeyPem = pair.privateKey.export({ format: "pem", type: "pkcs8" }).toString();
-const publicKeyPem = pair.publicKey.export({ format: "pem", type: "spki" }).toString();
+function pair() {
+  const keys = generateKeyPairSync("ed25519");
+  return {
+    privateKeyPem: keys.privateKey.export({ format: "pem", type: "pkcs8" }).toString(),
+    publicKeyPem: keys.publicKey.export({ format: "pem", type: "spki" }).toString(),
+  };
+}
+
+const releaseKeys = pair();
+const collectorKeys = pair();
+const driKeys = Object.fromEntries(ADMIN_RELEASE_DRI_ROLES.map((role) => [role, pair()])) as Record<AdminReleaseDriRole, ReturnType<typeof pair>>;
+const actors: Record<AdminReleaseDriRole, string> = {
+  product: "product-dri",
+  engineering: "engineering-dri",
+  data: "data-dri",
+  design: "design-dri",
+  operations: "operations-dri",
+  release: "release-dri",
+};
+const trustRegistry = {
+  schemaVersion: 1 as const,
+  releaseKeys: [{ keyId: "release-2026-q3", publicKeyPem: releaseKeys.publicKeyPem }],
+  collectorKeys: [{ issuer: "admin-readiness-collector", keyId: "collector-2026-q3", publicKeyPem: collectorKeys.publicKeyPem }],
+  driKeys: ADMIN_RELEASE_DRI_ROLES.map((role) => ({ role, actor: actors[role], keyId: `${role}-2026-q3`, publicKeyPem: driKeys[role].publicKeyPem })),
+};
+
+function seal(core: Record<string, unknown>, signoffClaims?: Record<string, { decision?: "go" | "no_go"; signedAt?: string }>) {
+  const signoffs = Object.fromEntries(ADMIN_RELEASE_DRI_ROLES.map((role) => [role, signAdminDriApproval(core, role, {
+    privateKeyPem: driKeys[role].privateKeyPem,
+    actor: actors[role],
+    keyId: `${role}-2026-q3`,
+    decision: signoffClaims?.[role]?.decision,
+    signedAt: new Date(signoffClaims?.[role]?.signedAt ?? "2026-07-10T12:00:00.000Z"),
+  })]));
+  return signAdminReleaseEvidence({ ...core, signoffs }, {
+    privateKeyPem: releaseKeys.privateKeyPem,
+    keyId: "release-2026-q3",
+    signedAt: new Date("2026-07-11T00:00:00.000Z"),
+  });
+}
+
+function coreOf(evidence: ReturnType<typeof signAdminReleaseEvidence>) {
+  const { provenance: _, signoffs: __, ...core } = evidence;
+  return core;
+}
+
+function signoffsFor(core: Record<string, unknown>, privateKeys = driKeys) {
+  return Object.fromEntries(ADMIN_RELEASE_DRI_ROLES.map((role) => [role, signAdminDriApproval(core, role, {
+    privateKeyPem: privateKeys[role].privateKeyPem,
+    actor: actors[role],
+    keyId: `${role}-2026-q3`,
+    signedAt: new Date("2026-07-10T12:00:00.000Z"),
+  })]));
+}
+
+function releaseEnvelope(core: Record<string, unknown>, signoffs: Record<string, unknown>) {
+  return signAdminReleaseEvidence({ ...core, signoffs }, {
+    privateKeyPem: releaseKeys.privateKeyPem,
+    keyId: "release-2026-q3",
+    signedAt: new Date("2026-07-11T00:00:00.000Z"),
+  });
+}
 
 function evaluateAdminReleaseGate(input: unknown, now: Date) {
   let candidate = input;
   if (input && typeof input === "object" && "provenance" in input) {
-    const { provenance: _, ...unsigned } = input as Record<string, unknown>;
+    const { provenance: _, signoffs, ...core } = input as Record<string, unknown>;
     try {
-      candidate = signAdminReleaseEvidence(unsigned, {
-        privateKeyPem,
-        keyId: "release-2026-q3",
-        signedAt: new Date("2026-07-11T00:00:00.000Z"),
-      });
+      candidate = seal(core, signoffs as Record<string, { decision?: "go" | "no_go"; signedAt?: string }>);
     } catch {
       candidate = input;
     }
   }
   return evaluateSignedReleaseGate(candidate, {
-    publicKeyPem,
-    expectedKeyId: "release-2026-q3",
+    trustRegistry,
     now,
   });
 }
 
+const artifactDigest = "a".repeat(64);
 const evidence = (status: "pass" | "fail" = "pass") => ({
   status,
   observedAt: "2026-07-10T00:00:00.000Z",
-  evidenceRefs: ["run://admin-readiness/evidence"],
+  evidenceRefs: [signAdminEvidenceArtifact({
+    uri: `artifact://sha256/${artifactDigest}`,
+    contentDigest: `sha256:${artifactDigest}`,
+    collectedAt: "2026-07-10T00:00:00.000Z",
+  }, {
+    privateKeyPem: collectorKeys.privateKeyPem,
+    issuer: "admin-readiness-collector",
+    keyId: "collector-2026-q3",
+  })],
 });
 
 const canaryEvidence = (mode: "read" | "write") => ({
@@ -73,8 +140,8 @@ const canaryEvidence = (mode: "read" | "write") => ({
 });
 
 function productionEvidence() {
-  return signAdminReleaseEvidence({
-    schemaVersion: 4 as const,
+  const core = {
+    schemaVersion: 5 as const,
     environment: "production" as const,
     generatedAt: "2026-07-11T00:00:00.000Z",
     observationWindow: {
@@ -145,19 +212,8 @@ function productionEvidence() {
         { cycle: "2026-W28", startedAt: "2026-07-06T00:00:00.000Z", endedAt: "2026-07-10T00:00:00.000Z", requests: 0 },
       ],
     },
-    signoffs: {
-      product: { actor: "product-dri", decision: "go" as const, signedAt: "2026-07-10T12:00:00.000Z" },
-      engineering: { actor: "engineering-dri", decision: "go" as const, signedAt: "2026-07-10T12:00:00.000Z" },
-      data: { actor: "data-dri", decision: "go" as const, signedAt: "2026-07-10T12:00:00.000Z" },
-      design: { actor: "design-dri", decision: "go" as const, signedAt: "2026-07-10T12:00:00.000Z" },
-      operations: { actor: "operations-dri", decision: "go" as const, signedAt: "2026-07-10T12:00:00.000Z" },
-      release: { actor: "release-dri", decision: "go" as const, signedAt: "2026-07-10T12:00:00.000Z" },
-    },
-  }, {
-    privateKeyPem,
-    keyId: "release-2026-q3",
-    signedAt: new Date("2026-07-11T00:00:00.000Z"),
-  });
+  };
+  return seal(core);
 }
 
 describe("Admin final release gate", () => {
@@ -166,6 +222,68 @@ describe("Admin final release gate", () => {
       status: "pass",
       decisionUse: "allowed",
       blockers: [],
+    });
+  });
+
+  it("blocks an unverifiable artifact signature and an untrusted collector issuer", () => {
+    const core = coreOf(productionEvidence());
+    const artifact = core.truth.metricGoldenDataset.evidenceRefs[0]!;
+    core.truth.metricGoldenDataset.evidenceRefs[0] = {
+      ...artifact,
+      collector: { ...artifact.collector, signature: `${artifact.collector.signature.slice(0, -1)}A` },
+    };
+    const invalidArtifact = releaseEnvelope(core, signoffsFor(core));
+    expect(evaluateSignedReleaseGate(invalidArtifact, { trustRegistry })).toMatchObject({
+      status: "blocked",
+      blockers: [expect.objectContaining({ code: "evidence_artifact_signature_invalid" })],
+    });
+
+    const wrongIssuerCore = coreOf(productionEvidence());
+    wrongIssuerCore.truth.metricGoldenDataset.evidenceRefs[0] = signAdminEvidenceArtifact({
+      uri: `artifact://sha256/${artifactDigest}`,
+      contentDigest: `sha256:${artifactDigest}`,
+      collectedAt: "2026-07-10T00:00:00.000Z",
+    }, {
+      privateKeyPem: collectorKeys.privateKeyPem,
+      issuer: "untrusted-collector",
+      keyId: "collector-2026-q3",
+    });
+    const wrongIssuer = releaseEnvelope(wrongIssuerCore, signoffsFor(wrongIssuerCore));
+    expect(evaluateSignedReleaseGate(wrongIssuer, { trustRegistry })).toMatchObject({
+      status: "blocked",
+      blockers: [expect.objectContaining({ code: "evidence_artifact_key_untrusted" })],
+    });
+  });
+
+  it("blocks artifact replacement even when every embedded claim still says pass", () => {
+    const replaced = productionEvidence();
+    const replacementDigest = "b".repeat(64);
+    replaced.truth.metricGoldenDataset.evidenceRefs[0] = {
+      ...replaced.truth.metricGoldenDataset.evidenceRefs[0]!,
+      uri: `artifact://sha256/${replacementDigest}`,
+      contentDigest: `sha256:${replacementDigest}`,
+    };
+    expect(evaluateSignedReleaseGate(replaced, { trustRegistry })).toMatchObject({
+      status: "blocked",
+      blockers: [expect.objectContaining({ code: "evidence_signature_invalid" })],
+    });
+  });
+
+  it("blocks one private key forging six roles and blocks role-signature reuse", () => {
+    const core = coreOf(productionEvidence());
+    const forgedKeys = Object.fromEntries(ADMIN_RELEASE_DRI_ROLES.map((role) => [role, releaseKeys])) as Record<AdminReleaseDriRole, ReturnType<typeof pair>>;
+    const forged = releaseEnvelope(core, signoffsFor(core, forgedKeys));
+    expect(evaluateSignedReleaseGate(forged, { trustRegistry })).toMatchObject({
+      status: "blocked",
+      blockers: [expect.objectContaining({ code: "dri_signature_invalid" })],
+    });
+
+    const signoffs = signoffsFor(core) as Record<AdminReleaseDriRole, ReturnType<typeof signAdminDriApproval>>;
+    signoffs.engineering = { ...signoffs.engineering, signature: signoffs.product.signature };
+    const reused = releaseEnvelope(core, signoffs);
+    expect(evaluateSignedReleaseGate(reused, { trustRegistry })).toMatchObject({
+      status: "blocked",
+      blockers: [expect.objectContaining({ code: "dri_signature_invalid" })],
     });
   });
 
@@ -260,7 +378,7 @@ describe("Admin final release gate", () => {
   });
 
   it("rejects the superseded release manifest schema", () => {
-    const input = { ...productionEvidence(), schemaVersion: 2 };
+    const input = { ...productionEvidence(), schemaVersion: 4 };
     expect(evaluateAdminReleaseGate(input, new Date("2026-07-11T00:00:00.000Z"))).toMatchObject({
       status: "blocked",
       blockers: [expect.objectContaining({ code: "evidence_signature_invalid" })],
@@ -279,8 +397,7 @@ describe("Admin final release gate", () => {
   it("does not expose a semantic bypass for unsigned evidence", () => {
     const { provenance: _, ...unsigned } = productionEvidence();
     expect(evaluateSignedReleaseGate(unsigned, {
-      publicKeyPem,
-      expectedKeyId: "release-2026-q3",
+      trustRegistry,
       now: new Date("2026-07-11T00:00:00.000Z"),
     })).toMatchObject({
       status: "blocked",

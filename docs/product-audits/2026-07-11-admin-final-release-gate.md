@@ -6,9 +6,9 @@ The repository-owned implementation and production cutover are intentionally sep
 
 ## Machine-verifiable Go / No-Go
 
-`bun run --cwd packages/main admin:readiness:release-gate -- <production-evidence.json>` evaluates the final §24.5 gate. The typed contract is `packages/shared/src/admin/release-gate.ts`; the authoritative manifest is schema version 4. Version 2 was superseded because a self-authored JSON document could claim `production`, arbitrary actors/evidence refs, and passing results without proving who issued the manifest; version 3 is now superseded by the fixed canary scenario and authority requirements below.
+`bun run --cwd packages/main admin:readiness:release-gate -- <production-evidence.json>` evaluates the final §24.5 gate. The typed contract is `packages/shared/src/admin/release-gate.ts`; the authoritative manifest is schema version 5. Versions 2–4 are superseded: v4 fixed canary representativeness, while v5 makes evidence artifacts and six-role approval provenance independently verifiable.
 
-Schema v4 uses a domain-separated Ed25519 signature over the canonical complete evidence document plus `algorithm/keyId/signedAt`. The manifest contains only the key ID, signature and signing timestamp—never a private or public key. The production gate independently loads its trusted public key and expected key ID; unsigned evidence, a wrong key, an untrusted key ID, malformed provenance, or any post-signature change fails closed before semantic Go/No-Go evaluation. Version 4 supersedes v3 because canary evidence now has a fixed representative scenario matrix and write-authority probe rather than accepting an arbitrary non-empty sample list.
+Schema v5 uses three domain-separated Ed25519 layers. Every named result references an immutable `artifact://sha256`, `ipfs://`, or digest-pinned `oci://` URI with a SHA-256 content digest and collector issuer/key signature. Product, Engineering, Data, Design, Operations, and Release each sign the same canonical approval digest with a distinct role-bound key. Only after those attestations exist does the release key sign the complete envelope. The manifest never contains trusted public keys.
 
 Operator flow:
 
@@ -19,14 +19,22 @@ openssl pkey -in /secure/admin-release-private.pem -pubout -out /secure/admin-re
 
 ADMIN_RELEASE_EVIDENCE_PRIVATE_KEY_PATH=/secure/admin-release-private.pem \
 ADMIN_RELEASE_EVIDENCE_KEY_ID=release-2026-q3 \
-bun run --cwd packages/main admin:readiness:sign -- unsigned-v4-evidence.json > signed-v4-evidence.json
+bun run --cwd packages/main admin:readiness:sign -- unsigned-v5-evidence.json > signed-v5-evidence.json
 
-ADMIN_RELEASE_EVIDENCE_PUBLIC_KEY_PATH=/secure/admin-release-public.pem \
-ADMIN_RELEASE_EVIDENCE_KEY_ID=release-2026-q3 \
-bun run --cwd packages/main admin:readiness:release-gate -- signed-v4-evidence.json
+ADMIN_RELEASE_TRUST_REGISTRY_PATH=/secure/admin-release-trust-registry.json \
+bun run --cwd packages/main admin:readiness:release-gate -- signed-v5-evidence.json
 ```
 
-The signer and verifier deliberately use different key files. The signer accepts only PKCS8 `PRIVATE KEY` PEM; the gate accepts only SPKI `PUBLIC KEY` PEM and explicitly rejects private-key input even though generic crypto APIs can derive a public key from it. The signed payload covers all sign-off actors, evidence references, observations, canary samples and truth counts, so editing any of them invalidates the signature. The Node-only release-gate module is exposed through the dedicated `@idream/shared/admin/release-gate` entrypoint rather than the browser-safe Admin barrel, and its public evaluator always performs cryptographic verification—there is no exported semantic-only bypass.
+The trust registry is an independent, access-controlled JSON file with `schemaVersion: 1` and three arrays: `releaseKeys[{keyId,publicKeyPem}]`, `collectorKeys[{issuer,keyId,publicKeyPem}]`, and exactly six `driKeys[{role,actor,keyId,publicKeyPem}]`. Each DRI role must have a distinct key ID and distinct Ed25519 public-key fingerprint. The gate rejects private keys, missing roles, duplicate role keys, an unknown collector issuer, or a release key absent from this registry. Changing the manifest cannot change trust.
+
+The required assembly order avoids signature cycles:
+
+1. Store each raw report at an immutable URI and create its collector attestation with `signAdminEvidenceArtifact` (domain `idream.admin.evidence-artifact.v1`).
+2. Assemble the schema-v5 core and compute its canonical approval digest with `computeAdminReleaseApprovalDigest` (domain `idream.admin.release-approval.v5`).
+3. Each DRI independently signs that digest and its own role/actor/decision/time/key ID with `signAdminDriApproval` (domain `idream.admin.release-dri.v1`). The release-key holder does not possess these six keys and cannot manufacture approvals.
+4. Assemble the six attestations and run `admin:readiness:sign`; the release envelope uses domain `idream.admin.release-gate.v5`.
+
+All private keys remain outside the repository and trust registry. The signer accepts only PKCS8 private PEM; the gate accepts only SPKI public PEM. Artifact replacement invalidates the collector signature and approval digest; role-signature reuse fails because the role is signed; a release-envelope re-sign cannot repair stale DRI approvals.
 
 It fails closed unless all of the following are true:
 
@@ -54,7 +62,7 @@ Both increment `admin_proxy_kill_switch_total{scope=read|write}`. A read kill sw
 
 ## Executable read/write canary
 
-`bun run --cwd packages/main admin:readiness:canary -- <canary-plan.json>` sends bounded requests to a non-local HTTPS production target and returns release-gate-compatible `status`, `observedAt`, `evidenceRefs`, `sampleSize`, availability, p95 and redacted per-scenario samples.
+`bun run --cwd packages/main admin:readiness:canary -- <canary-plan.json>` sends bounded requests to a non-local HTTPS production target and returns a redacted report with status, samples, availability, and p95. Before inclusion in schema v5, the report must be stored immutably, digested, and signed by a trusted collector; direct stdout or an unversioned URL is not final evidence.
 
 - The plan uses schema version 2 and must contain every fixed scenario ID exactly once. Read requires `read.today`, `read.list`, `read.detail`, and `read.search`; list/detail are canonical Admin resources and search requires a non-trivial query. A single Today request, duplicates, or a missing scenario fails before any credential is sent.
 - Every scenario is same-origin and restricted to `/api/v2/admin`; only 2xx statuses can be declared successful, so an arbitrary endpoint or expected 5xx cannot manufacture a green canary.
@@ -63,7 +71,7 @@ Both increment `admin_proxy_kill_switch_total{scope=read|write}`. A read kill sw
 - Authentication comes only from `ADMIN_CANARY_COOKIE` or `ADMIN_CANARY_AUTHORIZATION`; neither is emitted in the report.
 - Any timeout, transport failure, or unexpected status fails the run. The runner never changes authority endpoints or falls back to v1.
 
-The plan contract is `packages/main/src/server/admin/admin-canary-runner.ts`; database verification is `admin-canary-authority-probe.ts`. The runner output is accepted directly by the schema-v4 release manifest, covered by the manifest signature, and independently checked for mode, production environment, run interval, exact scenario coverage, expected per-scenario method/status, failures, availability, measured p95, and write Command/Audit/Outbox authority. Production operators must choose a reviewed reversible Case already in verified `resolved` state; the repository deliberately does not ship a fake production target ID or credentials.
+The plan contract is `packages/main/src/server/admin/admin-canary-runner.ts`; database verification is `admin-canary-authority-probe.ts`. After collector attestation, schema v5 independently checks mode, production environment, run interval, exact scenario coverage, expected per-scenario method/status, failures, availability, measured p95, and write Command/Audit/Outbox authority. Production operators must choose a reviewed reversible Case already in verified `resolved` state; the repository deliberately does not ship a fake production target ID or credentials.
 
 ## §21 verification matrix audit
 

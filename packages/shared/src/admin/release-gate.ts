@@ -15,10 +15,34 @@ import {
 } from "./canary";
 import { availabilityErrorBudget, evaluateAdminOperationalSlos } from "./operational-slo";
 
+const sha256DigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+const ed25519SignatureSchema = z.string().regex(/^[A-Za-z0-9_-]{86}$/, "signature must be a 64-byte base64url Ed25519 signature");
+
+export const adminEvidenceArtifactSchema = z.object({
+  uri: z.string().min(1).refine((value) =>
+    /^artifact:\/\/sha256\/[a-f0-9]{64}$/.test(value)
+    || /^ipfs:\/\/[A-Za-z0-9]+(?:\/.*)?$/.test(value)
+    || /^oci:\/\/.+@sha256:[a-f0-9]{64}$/.test(value),
+  "evidence artifact URI must be immutable (artifact://sha256, ipfs://, or oci://@sha256)",
+  ),
+  contentDigest: sha256DigestSchema,
+  collectedAt: z.string().datetime({ offset: true }),
+  collector: z.object({
+    issuer: z.string().trim().min(1).max(120),
+    keyId: z.string().trim().min(1).max(120),
+    algorithm: z.literal("Ed25519"),
+    signature: ed25519SignatureSchema,
+  }).strict(),
+}).strict().superRefine((artifact, context) => {
+  if (artifact.uri.startsWith("artifact://sha256/") && artifact.uri.slice("artifact://sha256/".length) !== artifact.contentDigest.slice("sha256:".length)) {
+    context.addIssue({ code: "custom", path: ["contentDigest"], message: "artifact URI digest must equal contentDigest" });
+  }
+});
+
 const evidenceResultSchema = z.object({
   status: z.enum(["pass", "fail"]),
   observedAt: z.string().datetime({ offset: true }),
-  evidenceRefs: z.array(z.string().min(1)).min(1),
+  evidenceRefs: z.array(adminEvidenceArtifactSchema).min(1),
 }).strict();
 
 const canarySampleSchema = z.object({
@@ -183,14 +207,28 @@ const errorBudgetEvidenceSchema = z.object({
   path: ["failures"],
 });
 
+export const ADMIN_RELEASE_DRI_ROLES = [
+  "product",
+  "engineering",
+  "data",
+  "design",
+  "operations",
+  "release",
+] as const;
+export type AdminReleaseDriRole = (typeof ADMIN_RELEASE_DRI_ROLES)[number];
+
 const signoffSchema = z.object({
   actor: z.string().min(1),
   decision: z.enum(["go", "no_go"]),
   signedAt: z.string().datetime({ offset: true }),
+  keyId: z.string().trim().min(1).max(120),
+  algorithm: z.literal("Ed25519"),
+  approvalDigest: sha256DigestSchema,
+  signature: ed25519SignatureSchema,
 }).strict();
 
-export const adminUnsignedReleaseGateEvidenceSchema = z.object({
-  schemaVersion: z.literal(4),
+export const adminReleaseGateCoreEvidenceSchema = z.object({
+  schemaVersion: z.literal(5),
   environment: z.enum(["local", "staging", "production"]),
   generatedAt: z.string().datetime({ offset: true }),
   observationWindow: z.object({
@@ -248,6 +286,9 @@ export const adminUnsignedReleaseGateEvidenceSchema = z.object({
       requests: z.number().int().nonnegative(),
     }).strict()).min(2),
   }).strict(),
+}).strict();
+
+export const adminUnsignedReleaseGateEvidenceSchema = adminReleaseGateCoreEvidenceSchema.extend({
   signoffs: z.object({
     product: signoffSchema,
     engineering: signoffSchema,
@@ -256,21 +297,72 @@ export const adminUnsignedReleaseGateEvidenceSchema = z.object({
     operations: signoffSchema,
     release: signoffSchema,
   }).strict(),
-}).strict();
+}).strict().superRefine((evidence, context) => {
+  const { signoffs: _, provenance: __, ...core } = evidence as typeof evidence & { provenance?: unknown };
+  const approvalDigest = computeAdminReleaseApprovalDigest(core);
+  const keyIds = new Set<string>();
+  for (const role of ADMIN_RELEASE_DRI_ROLES) {
+    const signoff = evidence.signoffs[role];
+    if (signoff.approvalDigest !== approvalDigest) {
+      context.addIssue({ code: "custom", path: ["signoffs", role, "approvalDigest"], message: "DRI approval digest must bind the canonical release core" });
+    }
+    if (keyIds.has(signoff.keyId)) {
+      context.addIssue({ code: "custom", path: ["signoffs", role, "keyId"], message: "Each DRI role must use an independent key ID" });
+    }
+    keyIds.add(signoff.keyId);
+  }
+});
 
 export const adminReleaseGateProvenanceSchema = z.object({
   algorithm: z.literal("Ed25519"),
   keyId: z.string().trim().min(1).max(120),
   signedAt: z.string().datetime({ offset: true }),
-  signature: z.string().regex(/^[A-Za-z0-9_-]{86}$/, "signature must be a 64-byte base64url Ed25519 signature"),
+  signature: ed25519SignatureSchema,
 }).strict();
 
-export const adminReleaseGateEvidenceSchema = adminUnsignedReleaseGateEvidenceSchema.extend({
+export const adminReleaseGateEvidenceSchema = adminUnsignedReleaseGateEvidenceSchema.safeExtend({
   provenance: adminReleaseGateProvenanceSchema,
 }).strict();
 
 export type AdminReleaseGateEvidence = z.infer<typeof adminReleaseGateEvidenceSchema>;
 export type AdminUnsignedReleaseGateEvidence = z.infer<typeof adminUnsignedReleaseGateEvidenceSchema>;
+export type AdminReleaseGateCoreEvidence = z.infer<typeof adminReleaseGateCoreEvidenceSchema>;
+
+const trustedPublicKeySchema = z.object({
+  keyId: z.string().trim().min(1).max(120),
+  publicKeyPem: z.string().min(1),
+}).strict();
+
+export const adminReleaseTrustRegistrySchema = z.object({
+  schemaVersion: z.literal(1),
+  releaseKeys: z.array(trustedPublicKeySchema).min(1),
+  collectorKeys: z.array(trustedPublicKeySchema.extend({
+    issuer: z.string().trim().min(1).max(120),
+  }).strict()).min(1),
+  driKeys: z.array(trustedPublicKeySchema.extend({
+    role: z.enum(ADMIN_RELEASE_DRI_ROLES),
+    actor: z.string().min(1),
+  }).strict()).length(ADMIN_RELEASE_DRI_ROLES.length),
+}).strict().superRefine((registry, context) => {
+  const releaseIds = registry.releaseKeys.map((key) => key.keyId);
+  if (new Set(releaseIds).size !== releaseIds.length) {
+    context.addIssue({ code: "custom", path: ["releaseKeys"], message: "release key IDs must be unique" });
+  }
+  const collectorIds = registry.collectorKeys.map((key) => `${key.issuer}:${key.keyId}`);
+  if (new Set(collectorIds).size !== collectorIds.length) {
+    context.addIssue({ code: "custom", path: ["collectorKeys"], message: "collector issuer/key IDs must be unique" });
+  }
+  const roles = registry.driKeys.map((key) => key.role);
+  if (new Set(roles).size !== ADMIN_RELEASE_DRI_ROLES.length || ADMIN_RELEASE_DRI_ROLES.some((role) => !roles.includes(role))) {
+    context.addIssue({ code: "custom", path: ["driKeys"], message: "trust registry must contain exactly one key for every DRI role" });
+  }
+  const driIds = registry.driKeys.map((key) => key.keyId);
+  if (new Set(driIds).size !== driIds.length) {
+    context.addIssue({ code: "custom", path: ["driKeys"], message: "DRI key IDs must be unique across roles" });
+  }
+});
+
+export type AdminReleaseTrustRegistry = z.infer<typeof adminReleaseTrustRegistrySchema>;
 
 interface AdminReleaseGateSignatureVerification {
   readonly verified: true;
@@ -458,19 +550,98 @@ function evaluateAdminReleaseGateSemantics(
   };
 }
 
-const SIGNATURE_DOMAIN = "idream.admin.release-gate.v4\0";
+const ARTIFACT_SIGNATURE_DOMAIN = "idream.admin.evidence-artifact.v1\0";
+const APPROVAL_DIGEST_DOMAIN = "idream.admin.release-approval.v5\0";
+const DRI_SIGNATURE_DOMAIN = "idream.admin.release-dri.v1\0";
+const SIGNATURE_DOMAIN = "idream.admin.release-gate.v5\0";
 
 type SignatureErrorCode =
   | "evidence_signature_missing"
   | "evidence_signature_key_untrusted"
   | "evidence_signature_invalid"
-  | "evidence_signature_trust_unconfigured";
+  | "evidence_signature_trust_unconfigured"
+  | "evidence_artifact_key_untrusted"
+  | "evidence_artifact_signature_invalid"
+  | "dri_signature_key_untrusted"
+  | "dri_signature_invalid"
+  | "dri_key_reused";
 
 class ReleaseEvidenceSignatureError extends Error {
-  constructor(readonly code: SignatureErrorCode, message: string) {
+  constructor(readonly code: SignatureErrorCode, message: string, readonly path = "provenance.signature") {
     super(message);
     this.name = "ReleaseEvidenceSignatureError";
   }
+}
+
+type EvidenceArtifactInput = Omit<z.input<typeof adminEvidenceArtifactSchema>, "collector">;
+
+function artifactSigningBytes(
+  artifact: EvidenceArtifactInput,
+  collector: { readonly issuer: string; readonly keyId: string; readonly algorithm: "Ed25519" },
+) {
+  return Buffer.from(`${ARTIFACT_SIGNATURE_DOMAIN}${canonicalJson({ artifact, collector })}`, "utf8");
+}
+
+export function signAdminEvidenceArtifact(
+  artifactInput: EvidenceArtifactInput,
+  options: {
+    readonly privateKeyPem: string | Buffer;
+    readonly issuer: string;
+    readonly keyId: string;
+  },
+) {
+  const artifact = z.object({
+    uri: adminEvidenceArtifactSchema.shape.uri,
+    contentDigest: sha256DigestSchema,
+    collectedAt: z.string().datetime({ offset: true }),
+  }).strict().parse(artifactInput);
+  const collector = {
+    issuer: options.issuer.trim(),
+    keyId: options.keyId.trim(),
+    algorithm: "Ed25519" as const,
+  };
+  if (!collector.issuer || !collector.keyId) throw new Error("Collector issuer and key ID are required");
+  const privateKey = createPrivateKey(requirePemKind(options.privateKeyPem, "PRIVATE"));
+  assertEd25519Key(privateKey, "private");
+  const signature = sign(null, artifactSigningBytes(artifact, collector), privateKey).toString("base64url");
+  return adminEvidenceArtifactSchema.parse({ ...artifact, collector: { ...collector, signature } });
+}
+
+export function computeAdminReleaseApprovalDigest(input: unknown) {
+  const core = adminReleaseGateCoreEvidenceSchema.parse(input);
+  return `sha256:${createHash("sha256").update(`${APPROVAL_DIGEST_DOMAIN}${canonicalJson(core)}`).digest("hex")}`;
+}
+
+function driSigningBytes(
+  role: AdminReleaseDriRole,
+  attestation: Omit<z.infer<typeof signoffSchema>, "signature">,
+) {
+  return Buffer.from(`${DRI_SIGNATURE_DOMAIN}${canonicalJson({ role, attestation })}`, "utf8");
+}
+
+export function signAdminDriApproval(
+  coreInput: unknown,
+  role: AdminReleaseDriRole,
+  options: {
+    readonly privateKeyPem: string | Buffer;
+    readonly actor: string;
+    readonly keyId: string;
+    readonly decision?: "go" | "no_go";
+    readonly signedAt?: Date;
+  },
+) {
+  const attestation = {
+    actor: options.actor,
+    decision: options.decision ?? "go" as const,
+    signedAt: (options.signedAt ?? new Date()).toISOString(),
+    keyId: options.keyId.trim(),
+    algorithm: "Ed25519" as const,
+    approvalDigest: computeAdminReleaseApprovalDigest(coreInput),
+  };
+  const privateKey = createPrivateKey(requirePemKind(options.privateKeyPem, "PRIVATE"));
+  assertEd25519Key(privateKey, "private");
+  const signature = sign(null, driSigningBytes(role, attestation), privateKey).toString("base64url");
+  return signoffSchema.parse({ ...attestation, signature });
 }
 
 interface ProvenancePayload {
@@ -509,6 +680,125 @@ function assertEd25519Key(key: KeyObject, kind: "public" | "private") {
   }
 }
 
+function evidenceResults(core: AdminReleaseGateCoreEvidence) {
+  return [
+    core.truth.metricGoldenDataset,
+    core.truth.northStarDecisionConsistent,
+    core.workflows.character,
+    core.workflows.creative,
+    core.workflows.incident,
+    core.workflows.case,
+    core.workflows.today,
+    core.migration.freshDeploy,
+    core.migration.repeatDeploy,
+    core.migration.currentSnapshotUpgrade,
+    core.migration.appRollbackForwardFix,
+    core.migration.backfillDryRun,
+    core.migration.shadowComparison,
+    core.migration.moduleRollback,
+    core.permissionsAndAudit.permissionMatrix,
+    core.permissionsAndAudit.atomicAuditOutbox,
+    core.permissionsAndAudit.highRiskConfirmation,
+    core.experience.roleNavigation,
+    core.experience.serverQueryAndUrlState,
+    core.experience.responsiveCoreFlows,
+    core.experience.wcag22AA,
+    core.runtime.operationalSlos,
+    core.runtime.productionLoad,
+    core.runtime.dependencyFailureInjection,
+    core.runtime.dispatcherRestartRecovery,
+    core.runtime.projectorLagRecovery,
+    core.runtime.killSwitchDrill,
+    core.runtime.readCanary,
+    core.runtime.writeCanary,
+  ] as const;
+}
+
+function trustedPublicKey(pem: string) {
+  const publicKey = createPublicKey(requirePemKind(pem, "PUBLIC"));
+  assertEd25519Key(publicKey, "public");
+  return publicKey;
+}
+
+function verifyArtifactAttestations(
+  core: AdminReleaseGateCoreEvidence,
+  registry: AdminReleaseTrustRegistry,
+) {
+  for (const result of evidenceResults(core)) {
+    for (const artifact of result.evidenceRefs) {
+      const trusted = registry.collectorKeys.find((key) =>
+        key.issuer === artifact.collector.issuer && key.keyId === artifact.collector.keyId
+      );
+      if (!trusted) {
+        throw new ReleaseEvidenceSignatureError(
+          "evidence_artifact_key_untrusted",
+          `Evidence collector ${artifact.collector.issuer}/${artifact.collector.keyId} is not trusted`,
+          "evidenceRefs.collector",
+        );
+      }
+      const { collector, ...artifactInput } = artifact;
+      const { signature, ...collectorPayload } = collector;
+      if (!verify(
+        null,
+        artifactSigningBytes(artifactInput, collectorPayload),
+        trustedPublicKey(trusted.publicKeyPem),
+        Buffer.from(signature, "base64url"),
+      )) {
+        throw new ReleaseEvidenceSignatureError(
+          "evidence_artifact_signature_invalid",
+          `Evidence artifact ${artifact.uri} did not verify`,
+          "evidenceRefs.collector.signature",
+        );
+      }
+    }
+  }
+}
+
+function verifyDriApprovals(
+  evidence: AdminUnsignedReleaseGateEvidence,
+  registry: AdminReleaseTrustRegistry,
+) {
+  const { signoffs, ...core } = evidence;
+  const approvalDigest = computeAdminReleaseApprovalDigest(core);
+  const fingerprints = new Set<string>();
+  for (const role of ADMIN_RELEASE_DRI_ROLES) {
+    const attestation = signoffs[role];
+    const trusted = registry.driKeys.find((key) =>
+      key.role === role && key.actor === attestation.actor && key.keyId === attestation.keyId
+    );
+    if (!trusted) {
+      throw new ReleaseEvidenceSignatureError(
+        "dri_signature_key_untrusted",
+        `${role} DRI actor/key is not trusted for that role`,
+        `signoffs.${role}.keyId`,
+      );
+    }
+    const publicKey = trustedPublicKey(trusted.publicKeyPem);
+    const fingerprint = createHash("sha256").update(publicKey.export({ format: "der", type: "spki" })).digest("hex");
+    if (fingerprints.has(fingerprint)) {
+      throw new ReleaseEvidenceSignatureError(
+        "dri_key_reused",
+        "Each DRI role must be backed by an independent public key",
+        `signoffs.${role}.keyId`,
+      );
+    }
+    fingerprints.add(fingerprint);
+    const { signature, ...payload } = attestation;
+    if (payload.approvalDigest !== approvalDigest || !verify(
+      null,
+      driSigningBytes(role, payload),
+      publicKey,
+      Buffer.from(signature, "base64url"),
+    )) {
+      throw new ReleaseEvidenceSignatureError(
+        "dri_signature_invalid",
+        `${role} DRI signature did not approve the canonical manifest digest`,
+        `signoffs.${role}.signature`,
+      );
+    }
+  }
+}
+
 export function signAdminReleaseEvidence(
   input: unknown,
   options: {
@@ -532,15 +822,15 @@ export function signAdminReleaseEvidence(
 
 function verifyAdminReleaseEvidence(
   input: unknown,
-  options: {
-    readonly publicKeyPem?: string | Buffer;
-    readonly expectedKeyId?: string;
-  },
+  registryInput: unknown,
 ) {
-  if (!options.publicKeyPem || !options.expectedKeyId?.trim()) {
+  let registry: AdminReleaseTrustRegistry;
+  try {
+    registry = adminReleaseTrustRegistrySchema.parse(registryInput);
+  } catch {
     throw new ReleaseEvidenceSignatureError(
       "evidence_signature_trust_unconfigured",
-      "Trusted Admin release public key and key ID are required",
+      "A valid independent release/collector/DRI trust registry is required",
     );
   }
   const raw = input as { provenance?: { signature?: unknown } } | null;
@@ -554,17 +844,20 @@ function verifyAdminReleaseEvidence(
   } catch {
     throw new ReleaseEvidenceSignatureError("evidence_signature_invalid", "Admin release evidence or signature envelope is malformed");
   }
-  if (manifest.provenance.keyId !== options.expectedKeyId.trim()) {
+  const trustedReleaseKey = registry.releaseKeys.find((key) => key.keyId === manifest.provenance.keyId);
+  if (!trustedReleaseKey) {
     throw new ReleaseEvidenceSignatureError("evidence_signature_key_untrusted", "Admin release evidence key ID is not trusted by this gate");
   }
-  const publicKey = createPublicKey(requirePemKind(options.publicKeyPem, "PUBLIC"));
-  assertEd25519Key(publicKey, "public");
+  const publicKey = trustedPublicKey(trustedReleaseKey.publicKeyPem);
   const { provenance, ...evidence } = manifest;
   const { signature, ...provenancePayload } = provenance;
   const payload = signingBytes(evidence, provenancePayload);
   if (!verify(null, payload, publicKey, Buffer.from(signature, "base64url"))) {
     throw new ReleaseEvidenceSignatureError("evidence_signature_invalid", "Admin release evidence signature verification failed");
   }
+  const { signoffs: _, ...core } = evidence;
+  verifyArtifactAttestations(core, registry);
+  verifyDriApprovals(evidence, registry);
   return {
     manifest,
     verification: {
@@ -580,7 +873,7 @@ function blockedSignatureReport(error: ReleaseEvidenceSignatureError) {
   return {
     status: "blocked" as const,
     decisionUse: "blocked" as const,
-    blockers: [{ code: error.code, message: error.message, path: "provenance.signature" }],
+    blockers: [{ code: error.code, message: error.message, path: error.path }],
     evidence: null,
   };
 }
@@ -588,13 +881,12 @@ function blockedSignatureReport(error: ReleaseEvidenceSignatureError) {
 export function evaluateAdminReleaseGate(
   input: unknown,
   options: {
-    readonly publicKeyPem?: string | Buffer;
-    readonly expectedKeyId?: string;
+    readonly trustRegistry?: unknown;
     readonly now?: Date;
   },
 ) {
   try {
-    const { manifest, verification } = verifyAdminReleaseEvidence(input, options);
+    const { manifest, verification } = verifyAdminReleaseEvidence(input, options.trustRegistry);
     return evaluateAdminReleaseGateSemantics(manifest, options.now ?? new Date(), verification);
   } catch (error) {
     if (error instanceof ReleaseEvidenceSignatureError) return blockedSignatureReport(error);
