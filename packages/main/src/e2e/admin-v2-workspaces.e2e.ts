@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import type { Prisma } from "@prisma/client";
 import axe, { type AxeResults } from "axe-core";
 import { prisma } from "@/server/lib/db";
 import {
@@ -39,6 +40,41 @@ const oldReleaseId = `e2e-v2-release-old-${suffix}`;
 const candidateReleaseId = `e2e-v2-release-candidate-${suffix}`;
 const releaseRouteFingerprint = `e2e-v2-release-route-${suffix}`;
 let wizardCharacterId: string | null = null;
+
+type ResponsiveCoreFixture = {
+  label: "mobile" | "tablet";
+  viewport: { width: 375 | 834; height: number };
+  candidateReleaseId: string;
+  creativeRunId: string;
+  creativeItemId: string;
+  creativeAssetId: string;
+  incidentId: string;
+  incidentRequestId: string;
+  incidentAttemptId: string;
+  incidentOccurrenceId: string;
+  caseId: string;
+  caseTargetId: string;
+  caseEvidenceId: string;
+};
+
+const responsiveCoreFixtures: ResponsiveCoreFixture[] = ([
+  ["mobile", 375, 812],
+  ["tablet", 834, 1_112],
+] as const).map(([label, width, height]) => ({
+  label,
+  viewport: { width, height },
+  candidateReleaseId: `e2e-v2-release-${label}-${suffix}`,
+  creativeRunId: `e2e-v2-creative-${label}-${suffix}`,
+  creativeItemId: `e2e-v2-creative-item-${label}-${suffix}`,
+  creativeAssetId: `e2e-v2-creative-asset-${label}-${suffix}`,
+  incidentId: `e2e-v2-incident-${label}-${suffix}`,
+  incidentRequestId: `e2e-v2-incident-request-${label}-${suffix}`,
+  incidentAttemptId: `e2e-v2-incident-attempt-${label}-${suffix}`,
+  incidentOccurrenceId: `e2e-v2-incident-occurrence-${label}-${suffix}`,
+  caseId: `e2e-v2-case-${label}-${suffix}`,
+  caseTargetId: `e2e-v2-customer-${label}-${suffix}`,
+  caseEvidenceId: `e2e-v2-evidence-${label}-${suffix}`,
+}));
 
 function adminBaseURL() {
   if (process.env.PW_ADMIN_BASE_URL) return process.env.PW_ADMIN_BASE_URL.replace(/\/$/, "");
@@ -107,6 +143,327 @@ async function expectWcag22AA(page: Page) {
     })),
   }));
   expect(violations, `${page.url()}\n${JSON.stringify(violations, null, 2)}`).toEqual([]);
+}
+
+function requiredInputJson(value: Prisma.JsonValue, field: string): Prisma.InputJsonValue {
+  if (value === null) throw new Error(`${field} fixture must contain JSON evidence`);
+  return value;
+}
+
+async function seedResponsiveCoreFixture(fixture: ResponsiveCoreFixture) {
+  await prisma.mediaAsset.create({
+    data: {
+      id: fixture.creativeAssetId,
+      ownerId: actorId,
+      type: "image",
+      url: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Crect width='64' height='64' fill='%2396a68d'/%3E%3C/svg%3E",
+      visibility: "private",
+      safetyStatus: "passed",
+      metadata: { source: `admin_v2_playwright_${fixture.label}` },
+    },
+  });
+  await prisma.contentProductionBatch.create({
+    data: {
+      id: fixture.creativeRunId,
+      title: `E2E ${fixture.label} Creative Run ${suffix}`,
+      purpose: "campaign",
+      targetType: "campaign",
+      targetId: `campaign-${fixture.label}-${suffix}`,
+      presetIds: [],
+      count: 1,
+      totalItems: 1,
+      completedItems: 1,
+      status: "reviewing",
+      lifecycleState: "active",
+      workflowStage: "review",
+      verificationState: "pending",
+      ownerId: actorId,
+      createdById: actorId,
+      items: {
+        create: {
+          id: fixture.creativeItemId,
+          itemIndex: 0,
+          status: "generated",
+          mediaAssetId: fixture.creativeAssetId,
+          tags: [],
+        },
+      },
+    },
+  });
+
+  const incidentLastSeen = new Date(Date.now() - 30 * 60_000);
+  await prisma.generationJob.create({
+    data: {
+      id: fixture.incidentRequestId,
+      userId: actorId,
+      mode: "image",
+      controls: {},
+      presetIds: [],
+      status: "completed",
+      outputCount: 1,
+      deliveredOutputCount: 1,
+      finishedAt: new Date(incidentLastSeen.getTime() + 5 * 60_000),
+    },
+  });
+  await prisma.generationAttempt.create({
+    data: {
+      id: fixture.incidentAttemptId,
+      requestId: fixture.incidentRequestId,
+      attemptNo: 1,
+      provider: `e2e-${fixture.label}-provider`,
+      profileKey: `e2e-${fixture.label}-profile`,
+      workflowKey: `e2e-${fixture.label}-workflow`,
+      status: "succeeded",
+      finishedAt: new Date(incidentLastSeen.getTime() + 5 * 60_000),
+    },
+  });
+  await prisma.opsIncident.create({
+    data: {
+      id: fixture.incidentId,
+      signature: `provider:profile:e2e-${fixture.label}-${suffix}`,
+      signatureVersion: "v1",
+      activeCorrelationKey: `e2e-${fixture.label}-active-${suffix}`,
+      status: "monitoring",
+      severity: "high",
+      ownerId: actorId,
+      firstSeen: new Date(incidentLastSeen.getTime() - 5 * 60_000),
+      lastSeen: incidentLastSeen,
+      slaDueAt: new Date(Date.now() + 3_600_000),
+      impact: { affectedRequests: 2, affectedUsers: 1, failedCostMicros: 900, refundedDreamcoins: 0 },
+      mitigation: {
+        recommendedActions: ["inspect responsive route"],
+        signatureComponents: {
+          provider: `e2e-${fixture.label}-provider`,
+          profileKey: `e2e-${fixture.label}-profile`,
+          workflowKey: `e2e-${fixture.label}-workflow`,
+          errorClass: "provider_regression",
+          normalizedError: `e2e-${fixture.label}-regression-${suffix}`,
+        },
+      },
+      suspectedCause: `E2E ${fixture.label} provider regression ${suffix}`,
+      confidence: 0.8,
+    },
+  });
+  await prisma.opsIncidentOccurrence.create({
+    data: {
+      id: fixture.incidentOccurrenceId,
+      incidentId: fixture.incidentId,
+      requestId: fixture.incidentRequestId,
+      attemptId: fixture.incidentAttemptId,
+      occurrenceKey: `e2e-${fixture.label}-recovered:${suffix}`,
+      observedAt: incidentLastSeen,
+    },
+  });
+
+  await prisma.adminCase.create({
+    data: {
+      id: fixture.caseId,
+      type: "support_request",
+      targetType: "user",
+      targetId: fixture.caseTargetId,
+      caseKey: `support:e2e:${fixture.label}:${suffix}`,
+      activeKey: `support_request:user:${fixture.caseTargetId}:support:e2e:${fixture.label}:${suffix}`,
+      status: "in_progress",
+      priority: "high",
+      ownerId: actorId,
+      slaDueAt: new Date(Date.now() + 3_600_000),
+      resolution: { severity: "high" },
+    },
+  });
+  await prisma.caseEvidence.create({
+    data: {
+      id: fixture.caseEvidenceId,
+      caseId: fixture.caseId,
+      sourceType: "support_message",
+      sourceId: `support-message-${fixture.label}-${suffix}`,
+      snapshot: { description: `Customer supplied immutable ${fixture.label} reproduction evidence.` },
+      occurredAt: new Date(),
+    },
+  });
+}
+
+async function seedResponsiveCharacterCandidate(fixture: ResponsiveCoreFixture) {
+  const source = await prisma.characterRelease.findUniqueOrThrow({ where: { id: oldReleaseId } });
+  const serving = await prisma.characterServing.findUniqueOrThrow({ where: { characterId: releaseCharacterId } });
+  await prisma.characterRelease.create({
+    data: {
+      id: fixture.candidateReleaseId,
+      projectId: source.projectId,
+      revisionId: source.revisionId,
+      characterContentVersionId: source.characterContentVersionId,
+      visualProfileId: source.visualProfileId,
+      visualProfileVersion: source.visualProfileVersion,
+      referenceSetRevisionId: source.referenceSetRevisionId,
+      generationProvenance: requiredInputJson(source.generationProvenance, "generationProvenance"),
+      releasePlacementManifest: requiredInputJson(source.releasePlacementManifest, "releasePlacementManifest"),
+      snapshotHash: source.snapshotHash,
+      readiness: "unknown",
+      legacy: false,
+      status: "approved",
+      supersedesId: serving.currentReleaseId,
+    },
+  });
+}
+
+async function completeResponsiveCoreFlows(page: Page, fixture: ResponsiveCoreFixture) {
+  const failures = consoleFailures(page);
+  await login(page);
+  await page.setViewportSize(fixture.viewport);
+  await seedResponsiveCharacterCandidate(fixture);
+
+  await page.goto(`${adminBaseURL()}/admin/characters/${releaseCharacterId}?tab=release`);
+  await expect(page.getByRole("heading", { level: 2, name: releaseCharacterName })).toBeVisible();
+  await expectNoHorizontalOverflow(page);
+  await expectWcag22AA(page);
+  const releaseTab = page.getByRole("tab", { name: "release" });
+  await releaseTab.focus();
+  await expect(releaseTab).toBeFocused();
+  await releaseTab.press("ArrowRight");
+  await expect(page.getByRole("tab", { name: "monitor" })).toBeFocused();
+  await expect(page.getByRole("tab", { name: "monitor" })).toHaveAttribute("aria-selected", "true");
+  await page.getByRole("tab", { name: "monitor" }).press("ArrowLeft");
+  await expect(releaseTab).toBeFocused();
+  const candidateCard = page.locator("article").filter({ hasText: fixture.candidateReleaseId });
+  await expect(candidateCard).toContainText("unknown");
+  await page.getByLabel("Exact confirmation").fill(`${releaseCharacterId}:${fixture.candidateReleaseId}:validate`);
+  const validateRelease = page.getByRole("button", { name: "Validate pinned snapshot" });
+  await validateRelease.focus();
+  await expect(validateRelease).toBeFocused();
+  await validateRelease.press("Enter");
+  await expect(candidateCard).toContainText("ready");
+  await page.getByLabel("Exact confirmation").fill(`${releaseCharacterId}:${fixture.candidateReleaseId}:publish`);
+  const publishRelease = page.getByRole("button", { name: "Publish candidate" });
+  await publishRelease.focus();
+  await expect(publishRelease).toBeFocused();
+  await publishRelease.press("Enter");
+  await expect.poll(async () => prisma.controlPlaneCommand.findFirst({
+    where: { commandType: "character.release.publish", targetId: fixture.candidateReleaseId },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
+  })).not.toBeNull();
+  const queuedPublish = await prisma.controlPlaneCommand.findFirstOrThrow({
+    where: { commandType: "character.release.publish", targetId: fixture.candidateReleaseId },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
+  });
+  await executeCharacterReleaseCommand(prisma, {
+    commandId: queuedPublish.id,
+    workerId: `playwright-release-${fixture.label}-${suffix}`,
+  });
+  await expect.poll(async () => prisma.characterServing.findUnique({
+    where: { characterId: releaseCharacterId },
+    select: { currentReleaseId: true, state: true },
+  })).toEqual({ currentReleaseId: fixture.candidateReleaseId, state: "live" });
+  await page.reload();
+  await expect(page.locator("article").filter({ hasText: fixture.candidateReleaseId })).toContainText("serving now");
+
+  await page.goto(`${adminBaseURL()}/admin/creative/runs/${fixture.creativeRunId}`);
+  await expect(page.getByRole("heading", { level: 2, name: `E2E ${fixture.label} Creative Run ${suffix}` })).toBeVisible();
+  await expectNoHorizontalOverflow(page);
+  await expectWcag22AA(page);
+  const approve = page.getByRole("button", { name: "Approve" });
+  await approve.focus();
+  await expect(approve).toBeFocused();
+  await approve.press("Enter");
+  await expect(page.getByText("approved · passed")).toBeVisible();
+  await page.getByLabel("Target type").fill("campaign");
+  await page.getByLabel("Target ID").fill(`campaign-${fixture.label}-${suffix}`);
+  const publishPlacement = page.getByRole("button", { name: "Publish placement" });
+  await publishPlacement.focus();
+  await expect(publishPlacement).toBeFocused();
+  await publishPlacement.press("Enter");
+  await expect(page.getByText("campaign · verifying")).toBeVisible();
+  const verifyPlacement = page.getByRole("button", { name: "Verify live slot" });
+  await verifyPlacement.focus();
+  await expect(verifyPlacement).toBeFocused();
+  await verifyPlacement.press("Enter");
+  await expect(page.getByText("campaign · passed")).toBeVisible();
+  await expect.poll(async () => prisma.contentProductionBatch.findUnique({
+    where: { id: fixture.creativeRunId },
+    select: { workflowStage: true, verificationState: true },
+  })).toEqual({ workflowStage: "verification", verificationState: "passed" });
+  await expect.poll(async () => prisma.creativeReviewDecision.count({
+    where: { runItemId: fixture.creativeItemId, decision: "approved" },
+  })).toBe(1);
+  await expect.poll(async () => prisma.mediaAssetPlacement.count({
+    where: { mediaAssetId: fixture.creativeAssetId, status: "published", verificationState: "passed" },
+  })).toBe(1);
+
+  await page.goto(`${adminBaseURL()}/admin/ops/incidents/${fixture.incidentId}`);
+  await expect(page.getByRole("heading", { level: 3, name: `E2E ${fixture.label} provider regression ${suffix}` })).toBeVisible();
+  await expectNoHorizontalOverflow(page);
+  await expectWcag22AA(page);
+  await page.getByLabel("Audit reason").fill(`Recovery authority reviewed at ${fixture.label}`);
+  await page.getByLabel("Supplemental evidence reference (optional for authority check)").fill(`monitor://e2e/${fixture.label}/${suffix}`);
+  const verifyIncident = page.getByRole("button", { name: "Run authority verification" });
+  await verifyIncident.focus();
+  await expect(verifyIncident).toBeFocused();
+  await verifyIncident.press("Enter");
+  await expect(page.getByRole("status").filter({ hasText: "Authority recovery verification evaluated" })).toBeVisible();
+  const resolveIncident = page.getByRole("button", { name: "Resolve incident" });
+  await resolveIncident.focus();
+  await expect(resolveIncident).toBeFocused();
+  await resolveIncident.press("Enter");
+  await expect(page.getByRole("heading", { level: 4, name: "Postmortem and close" })).toBeVisible();
+  await page.getByLabel("Summary", { exact: true }).fill(`Provider route recovered and ${fixture.label} authority evidence was reconciled.`);
+  await page.getByLabel("Root cause").fill(`${fixture.label} provider route regression`);
+  await page.getByLabel("Contributing factors (one per line)").fill("Capacity signal lag");
+  await page.getByLabel("Corrective actions (one per line)").fill("Keep the responsive authority canary active");
+  await page.getByLabel("Type close confirmation").fill(`${fixture.incidentId}:close`);
+  const closeIncident = page.getByRole("button", { name: "Record postmortem and close" });
+  await closeIncident.focus();
+  await expect(closeIncident).toBeFocused();
+  await closeIncident.press("Enter");
+  await expect(page.getByRole("status").filter({ hasText: "Postmortem recorded and Incident closed" })).toBeVisible();
+  await expect.poll(async () => prisma.opsIncident.findUnique({
+    where: { id: fixture.incidentId },
+    select: { status: true, verificationState: true, activeCorrelationKey: true },
+  })).toEqual({ status: "closed", verificationState: "passed", activeCorrelationKey: null });
+
+  await page.goto(`${adminBaseURL()}/admin/cases/${fixture.caseId}`);
+  await expect(page.getByRole("heading", { level: 4, name: "Evidence" })).toBeVisible();
+  await expect(page.getByText(`Customer supplied immutable ${fixture.label} reproduction evidence.`)).toBeVisible();
+  await expectNoHorizontalOverflow(page);
+  await expectWcag22AA(page);
+  const caseDecision = page.locator('section[aria-labelledby="case-decision-title"]');
+  await caseDecision.locator("select").selectOption("incident_escalated");
+  await page.getByLabel("Outcome reference").fill(`incident:${fixture.incidentId}`);
+  await page.getByLabel("Resolution summary").fill(`Escalated the ${fixture.label} customer impact and verified the recovered Incident authority state.`);
+  const recordCaseAction = page.getByRole("button", { name: "Record action" });
+  await recordCaseAction.focus();
+  await expect(recordCaseAction).toBeFocused();
+  await recordCaseAction.press("Enter");
+  await expect(page.getByRole("status").filter({ hasText: "Customer Case action recorded" })).toBeVisible();
+  const verifyCase = page.getByRole("button", { name: "Verify from authority" });
+  await expect(verifyCase).toBeEnabled();
+  await verifyCase.focus();
+  await expect(verifyCase).toBeFocused();
+  await verifyCase.press("Enter");
+  await expect(page.getByRole("status").filter({ hasText: "Downstream outcome verified" })).toBeVisible();
+  await page.getByLabel("Audit reason").fill(`${fixture.label} authority outcome verified for closure`);
+  await page.getByLabel("Type confirmation").fill(`${fixture.caseId}:close`);
+  const closeCase = page.getByRole("button", { name: "Close case", exact: true });
+  await closeCase.focus();
+  await expect(closeCase).toBeFocused();
+  await closeCase.press("Enter");
+  await expect(page.getByRole("status").filter({ hasText: "Case close command accepted" })).toBeVisible();
+  await expect.poll(async () => prisma.adminCase.findUnique({
+    where: { id: fixture.caseId },
+    select: { status: true, verificationState: true, activeKey: true },
+  })).toEqual({ status: "closed", verificationState: "passed", activeKey: null });
+  await expect.poll(async () => prisma.decisionRecord.count({
+    where: { sourceId: fixture.caseId, decision: "incident_escalated" },
+  })).toBe(1);
+  await expectNoHorizontalOverflow(page);
+
+  if (fixture.label === "mobile") {
+    await page.goto(`${adminBaseURL()}/admin/cases?view=mine`);
+    await page.getByLabel("Search all cases").fill(`missing-${suffix}`);
+    await page.getByRole("button", { name: "Apply" }).click();
+    await expect(page.getByRole("heading", { level: 3, name: "No work matches these filters" })).toBeVisible();
+    await page.getByRole("button", { name: "Clear filters" }).click();
+  }
+  expect(failures).toEqual([]);
 }
 
 test.describe.serial("Admin v2 operator workspaces", () => {
@@ -493,9 +850,33 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         version: 1,
       },
     });
+    for (const fixture of responsiveCoreFixtures) {
+      await seedResponsiveCoreFixture(fixture);
+    }
   });
 
   test.afterAll(async () => {
+    const responsiveCreativeRunIds = responsiveCoreFixtures.map((fixture) => fixture.creativeRunId);
+    const responsiveCreativeItemIds = responsiveCoreFixtures.map((fixture) => fixture.creativeItemId);
+    const responsiveCreativeAssetIds = responsiveCoreFixtures.map((fixture) => fixture.creativeAssetId);
+    const responsiveIncidentIds = responsiveCoreFixtures.map((fixture) => fixture.incidentId);
+    const responsiveIncidentRequestIds = responsiveCoreFixtures.map((fixture) => fixture.incidentRequestId);
+    const responsiveIncidentAttemptIds = responsiveCoreFixtures.map((fixture) => fixture.incidentAttemptId);
+    const responsiveCaseIds = responsiveCoreFixtures.map((fixture) => fixture.caseId);
+    const responsiveReleaseIds = responsiveCoreFixtures.map((fixture) => fixture.candidateReleaseId);
+    const authorityTargetIds = [
+      creativeRunId,
+      creativeItemId,
+      incidentId,
+      caseId,
+      candidateReleaseId,
+      releaseCharacterId,
+      ...responsiveCreativeRunIds,
+      ...responsiveCreativeItemIds,
+      ...responsiveIncidentIds,
+      ...responsiveCaseIds,
+      ...responsiveReleaseIds,
+    ];
     const characters = await prisma.character.findMany({ where: { name: { startsWith: "E2E V2 Companion " } }, select: { id: true } });
     const characterIds = [...new Set([
       ...characters.map((character) => character.id),
@@ -515,33 +896,33 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       await prisma.character.deleteMany({ where: { id: { in: characterIds } } });
     }
     const commandIds = (await prisma.controlPlaneCommand.findMany({
-      where: { targetId: { in: [creativeRunId, incidentId, caseId, candidateReleaseId, releaseCharacterId] } },
+      where: { targetId: { in: authorityTargetIds } },
       select: { id: true },
     })).map((command) => command.id);
     await prisma.controlPlaneCommandAttempt.deleteMany({ where: { commandId: { in: commandIds } } });
     await prisma.controlPlaneCommand.deleteMany({ where: { id: { in: commandIds } } });
     await prisma.mainOutboxEvent.deleteMany({
-      where: { aggregateId: { in: [creativeRunId, creativeItemId, incidentId, caseId, releaseProjectId, oldReleaseId, candidateReleaseId, releaseCharacterId] } },
+      where: { aggregateId: { in: [...authorityTargetIds, releaseProjectId, oldReleaseId] } },
     });
     await prisma.adminAuditLog.deleteMany({
-      where: { targetId: { in: [creativeRunId, creativeItemId, incidentId, caseId, releaseProjectId, oldReleaseId, candidateReleaseId, releaseCharacterId] } },
+      where: { targetId: { in: [...authorityTargetIds, releaseProjectId, oldReleaseId] } },
     });
-    await prisma.decisionRecord.deleteMany({ where: { sourceId: caseId } });
-    await prisma.incidentPostmortem.deleteMany({ where: { incidentId } });
-    await prisma.opsIncidentOccurrence.deleteMany({ where: { incidentId } });
-    await prisma.caseEvidence.deleteMany({ where: { caseId } });
-    await prisma.adminCase.deleteMany({ where: { id: caseId } });
-    await prisma.opsIncident.deleteMany({ where: { id: incidentId } });
-    await prisma.generationAttempt.deleteMany({ where: { id: incidentAttemptId } });
-    await prisma.generationJob.deleteMany({ where: { id: incidentRequestId } });
+    await prisma.decisionRecord.deleteMany({ where: { sourceId: { in: [caseId, ...responsiveCaseIds] } } });
+    await prisma.incidentPostmortem.deleteMany({ where: { incidentId: { in: [incidentId, ...responsiveIncidentIds] } } });
+    await prisma.opsIncidentOccurrence.deleteMany({ where: { incidentId: { in: [incidentId, ...responsiveIncidentIds] } } });
+    await prisma.caseEvidence.deleteMany({ where: { caseId: { in: [caseId, ...responsiveCaseIds] } } });
+    await prisma.adminCase.deleteMany({ where: { id: { in: [caseId, ...responsiveCaseIds] } } });
+    await prisma.opsIncident.deleteMany({ where: { id: { in: [incidentId, ...responsiveIncidentIds] } } });
+    await prisma.generationAttempt.deleteMany({ where: { id: { in: [incidentAttemptId, ...responsiveIncidentAttemptIds] } } });
+    await prisma.generationJob.deleteMany({ where: { id: { in: [incidentRequestId, ...responsiveIncidentRequestIds] } } });
     await prisma.generationAttemptEvent.deleteMany({ where: { attemptId: retryAttemptId } });
     await prisma.generationAttempt.deleteMany({ where: { requestId: retryRequestId } });
     await prisma.generationJob.deleteMany({ where: { id: retryRequestId } });
-    await prisma.creativeReviewDecision.deleteMany({ where: { runItemId: creativeItemId } });
-    await prisma.mediaAssetPlacement.deleteMany({ where: { mediaAssetId: creativeAssetId } });
-    await prisma.contentProductionItem.deleteMany({ where: { id: creativeItemId } });
-    await prisma.contentProductionBatch.deleteMany({ where: { id: creativeRunId } });
-    await prisma.mediaAsset.deleteMany({ where: { id: creativeAssetId } });
+    await prisma.creativeReviewDecision.deleteMany({ where: { runItemId: { in: [creativeItemId, ...responsiveCreativeItemIds] } } });
+    await prisma.mediaAssetPlacement.deleteMany({ where: { mediaAssetId: { in: [creativeAssetId, ...responsiveCreativeAssetIds] } } });
+    await prisma.contentProductionItem.deleteMany({ where: { id: { in: [creativeItemId, ...responsiveCreativeItemIds] } } });
+    await prisma.contentProductionBatch.deleteMany({ where: { id: { in: [creativeRunId, ...responsiveCreativeRunIds] } } });
+    await prisma.mediaAsset.deleteMany({ where: { id: { in: [creativeAssetId, ...responsiveCreativeAssetIds] } } });
 
     const releaseIds = (await prisma.characterRelease.findMany({
       where: { projectId: releaseProjectId },
@@ -854,50 +1235,10 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     expect(failures).toEqual([]);
   });
 
-  test("keeps all four core workspaces usable at 375px and exposes filtered-empty recovery", async ({ page }) => {
-    const failures = consoleFailures(page);
-    await login(page);
-    await page.setViewportSize({ width: 375, height: 812 });
-    const routes = [
-      ["/admin/characters", "Portfolio & Projects", 2],
-      ["/admin/creative/runs", "Creative Runs", 2],
-      ["/admin/ops/incidents", "Incidents", 2],
-      ["/admin/cases?view=mine", "Cases", 2],
-    ] as const;
-    for (const [route, heading, level] of routes) {
-      await page.goto(`${adminBaseURL()}${route}`);
-      const locator = heading === "Creative Runs"
-        ? page.locator("#creative-runs-title")
-        : heading === "Portfolio & Projects"
-          ? page.locator("#character-portfolio-title")
-          : page.getByRole("heading", { level, name: heading });
-      await expect(locator).toBeVisible();
-      await expectNoHorizontalOverflow(page);
-    }
-    await page.getByLabel("Search all cases").fill(`missing-${suffix}`);
-    await page.getByRole("button", { name: "Apply" }).click();
-    await expect(page.getByRole("heading", { level: 3, name: "No work matches these filters" })).toBeVisible();
-    await page.getByRole("button", { name: "Clear filters" }).click();
-    await expect(page.getByText(caseTargetId)).toBeVisible();
-    expect(failures).toEqual([]);
-  });
-
-  test("keeps the four core authority details usable at the tablet breakpoint", async ({ page }) => {
-    const failures = consoleFailures(page);
-    await login(page);
-    await page.setViewportSize({ width: 834, height: 1_112 });
-    const routes = [
-      `/admin/characters/${releaseCharacterId}?tab=release`,
-      `/admin/creative/runs/${creativeRunId}`,
-      `/admin/ops/incidents/${incidentId}`,
-      `/admin/cases/${caseId}`,
-    ];
-    for (const route of routes) {
-      await page.goto(`${adminBaseURL()}${route}`);
-      await expect(page.locator("#admin-main-content")).toBeVisible();
-      await expect(page.locator("h1")).toHaveCount(1);
-      await expectNoHorizontalOverflow(page);
-    }
-    expect(failures).toEqual([]);
-  });
+  for (const fixture of responsiveCoreFixtures) {
+    test(`completes all four authority workflows with keyboard and WCAG gates at ${fixture.viewport.width}px`, async ({ page }) => {
+      test.setTimeout(180_000);
+      await completeResponsiveCoreFlows(page, fixture);
+    });
+  }
 });

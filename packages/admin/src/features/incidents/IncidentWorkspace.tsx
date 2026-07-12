@@ -295,6 +295,9 @@ function IncidentInspector({ busy, canManage, detail, onClose, onMutate }: {
   const [plan, setPlan] = useState<IncidentPlan | null>(null);
   const [planIdempotencyKey, setPlanIdempotencyKey] = useState(() => crypto.randomUUID());
   const [resolveIdempotencyKey] = useState(() => crypto.randomUUID());
+  const [verificationIdempotencyKey, setVerificationIdempotencyKey] = useState(() => crypto.randomUUID());
+  const [verificationOverrideIdempotencyKey, setVerificationOverrideIdempotencyKey] = useState(() => crypto.randomUUID());
+  const [closeIdempotencyKey] = useState(() => crypto.randomUUID());
   const [confirmation, setConfirmation] = useState("");
   const [evidence, setEvidence] = useState("");
   const [verificationOverrideReason, setVerificationOverrideReason] = useState("");
@@ -389,14 +392,19 @@ function IncidentInspector({ busy, canManage, detail, onClose, onMutate }: {
                   disabled={busy || !canVerify}
                   onClick={() => void onMutate(
                     "Authority recovery verification evaluated",
-                    () => adminV2Request(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/verification`, {
-                      method: "POST",
-                      body: {
-                        entityVersion: incident.version,
-                        mode: "derive",
-                        evidenceRefs: evidence.trim() ? [evidence.trim()] : [],
-                      },
-                    }),
+                    async () => {
+                      const result = await adminV2Request(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/verification`, {
+                        method: "POST",
+                        idempotencyKey: verificationIdempotencyKey,
+                        body: {
+                          entityVersion: incident.version,
+                          mode: "derive",
+                          evidenceRefs: evidence.trim() ? [evidence.trim()] : [],
+                        },
+                      });
+                      setVerificationIdempotencyKey(crypto.randomUUID());
+                      return result;
+                    },
                   )}
                 >
                   <CheckCircle2 className="h-4 w-4" />Run authority verification
@@ -424,7 +432,7 @@ function IncidentInspector({ busy, canManage, detail, onClose, onMutate }: {
                 <summary className="cursor-pointer text-xs font-semibold">Exceptional override</summary>
                 <p className="mt-2 text-xs leading-5 text-[var(--ad-text-muted)]">Override does not change any derived check. It requires durable evidence and an audited reason.</p>
                 <label className="mt-3 grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Override reason<textarea className={textAreaClass} onChange={(event) => setVerificationOverrideReason(event.target.value)} value={verificationOverrideReason} /></label>
-                <div className="mt-3"><WorkspaceButton disabled={busy || !canVerify || !evidence.trim() || verificationOverrideReason.trim().length < 10} tone="danger" onClick={() => void onMutate("Recovery verification explicitly overridden", () => adminV2Request(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/verification`, { method: "POST", body: { entityVersion: incident.version, mode: "override", evidenceRefs: [evidence.trim()], overrideReason: verificationOverrideReason.trim() } }))}>Override with audit</WorkspaceButton></div>
+                <div className="mt-3"><WorkspaceButton disabled={busy || !canVerify || !evidence.trim() || verificationOverrideReason.trim().length < 10} tone="danger" onClick={() => void onMutate("Recovery verification explicitly overridden", async () => { const result = await adminV2Request(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/verification`, { method: "POST", idempotencyKey: verificationOverrideIdempotencyKey, body: { entityVersion: incident.version, mode: "override", evidenceRefs: [evidence.trim()], overrideReason: verificationOverrideReason.trim() } }); setVerificationOverrideIdempotencyKey(crypto.randomUUID()); return result; })}>Override with audit</WorkspaceButton></div>
               </details>
               {!canVerify ? (
                 <p className="text-xs text-[var(--ad-yellow-text)]">
@@ -432,7 +440,7 @@ function IncidentInspector({ busy, canManage, detail, onClose, onMutate }: {
                 </p>
               ) : null}
             </section>
-            {incident.status === "resolved" ? <section className="space-y-3 border-t border-[var(--ad-border)] pt-5" aria-labelledby="incident-postmortem-title"><h4 className="text-sm font-semibold" id="incident-postmortem-title">Postmortem and close</h4><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Summary<textarea className={textAreaClass} onChange={(event) => setPostmortemSummary(event.target.value)} value={postmortemSummary} /></label><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Root cause<textarea className={textAreaClass} onChange={(event) => setRootCause(event.target.value)} value={rootCause} /></label><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Contributing factors (one per line)<textarea className={textAreaClass} onChange={(event) => setContributingFactors(event.target.value)} value={contributingFactors} /></label><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Corrective actions (one per line)<textarea className={textAreaClass} onChange={(event) => setCorrectiveActions(event.target.value)} value={correctiveActions} /></label><code className="block text-xs">{incident.id}:close</code><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Type close confirmation<input className={fieldClass} onChange={(event) => setCloseConfirmation(event.target.value)} value={closeConfirmation} /></label><WorkspaceButton disabled={busy || postmortemSummary.trim().length < 10 || rootCause.trim().length < 3 || !correctiveActions.trim() || !evidence.trim() || closeConfirmation !== `${incident.id}:close` || reason.trim().length < 3} onClick={() => void onMutate("Postmortem recorded and Incident closed", () => adminV2Request(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/commands/close`, { method: "POST", body: { entityVersion: incident.version, summary: postmortemSummary.trim(), rootCause: rootCause.trim(), contributingFactors: contributingFactors.split("\n").map((item) => item.trim()).filter(Boolean), correctiveActions: correctiveActions.split("\n").map((item) => item.trim()).filter(Boolean), evidenceRefs: [evidence.trim()], reason: reason.trim(), confirmation: closeConfirmation } }))} tone="primary">Record postmortem and close</WorkspaceButton></section> : null}
+            {incident.status === "resolved" ? <section className="space-y-3 border-t border-[var(--ad-border)] pt-5" aria-labelledby="incident-postmortem-title"><h4 className="text-sm font-semibold" id="incident-postmortem-title">Postmortem and close</h4><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Summary<textarea className={textAreaClass} onChange={(event) => setPostmortemSummary(event.target.value)} value={postmortemSummary} /></label><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Root cause<textarea className={textAreaClass} onChange={(event) => setRootCause(event.target.value)} value={rootCause} /></label><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Contributing factors (one per line)<textarea className={textAreaClass} onChange={(event) => setContributingFactors(event.target.value)} value={contributingFactors} /></label><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Corrective actions (one per line)<textarea className={textAreaClass} onChange={(event) => setCorrectiveActions(event.target.value)} value={correctiveActions} /></label><code className="block text-xs">{incident.id}:close</code><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Type close confirmation<input className={fieldClass} onChange={(event) => setCloseConfirmation(event.target.value)} value={closeConfirmation} /></label><WorkspaceButton disabled={busy || postmortemSummary.trim().length < 10 || rootCause.trim().length < 3 || !correctiveActions.trim() || !evidence.trim() || closeConfirmation !== `${incident.id}:close` || reason.trim().length < 3} onClick={() => void onMutate("Postmortem recorded and Incident closed", () => adminV2Request(`/api/v2/admin/incidents/${encodeURIComponent(incident.id)}/commands/close`, { method: "POST", idempotencyKey: closeIdempotencyKey, body: { entityVersion: incident.version, summary: postmortemSummary.trim(), rootCause: rootCause.trim(), contributingFactors: contributingFactors.split("\n").map((item) => item.trim()).filter(Boolean), correctiveActions: correctiveActions.split("\n").map((item) => item.trim()).filter(Boolean), evidenceRefs: [evidence.trim()], reason: reason.trim(), confirmation: closeConfirmation } }))} tone="primary">Record postmortem and close</WorkspaceButton></section> : null}
           </>
         ) : <p className="rounded-md bg-[var(--ad-surface-subtle)] p-3 text-sm text-[var(--ad-text-muted)]">Read access only. Incident actions require <code>ops.incident.manage</code>.</p>}
         <CollaborationPanel canWrite={canManage} targetId={incident.id} targetType="incident" targetVersion={incident.version} />

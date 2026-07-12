@@ -760,6 +760,7 @@ function ShellSignalBar({ signals }: { signals: AdminShellSignals }) {
       className="flex gap-2 overflow-x-auto border-t border-[var(--ad-border)] px-4 py-2 md:px-6"
       data-testid="admin-shell-signals"
       role="status"
+      tabIndex={0}
     >
       {signalItems.map((signal) => (
         <span
