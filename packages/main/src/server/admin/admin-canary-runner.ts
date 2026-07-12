@@ -8,7 +8,7 @@ const canaryRequestSchema = z.object({
     const sentinel = new URL("https://admin-canary.invalid");
     const target = new URL(value, sentinel);
     if (target.origin !== sentinel.origin) {
-      context.addIssue({ code: "custom", message: "path must stay on the same configured origin" });
+      context.addIssue({ code: "custom", message: "path must stay on the same origin as the configured base URL" });
       return;
     }
     if (target.pathname !== "/api/v2/admin" && !target.pathname.startsWith("/api/v2/admin/")) {
