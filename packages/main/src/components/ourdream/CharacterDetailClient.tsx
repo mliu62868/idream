@@ -1,10 +1,12 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import { ArrowLeft, Flag, Heart, MessageCircle, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { CharacterCardData } from "@/types/ourdream";
+import {
+  CharacterDetailHero,
+  type CharacterDetailPresentationData,
+} from "./CharacterDetailHero";
 import { AppSidebar } from "./AppSidebar";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { SiteFooter } from "./SiteFooter";
@@ -16,12 +18,7 @@ type CharacterDetailResponse = {
   };
 };
 
-type CharacterDetail = CharacterCardData & {
-  tags?: Array<{ label: string; slug: string }>;
-  liked?: boolean;
-  style?: string;
-  gender?: string;
-};
+type CharacterDetail = CharacterDetailPresentationData;
 
 export function CharacterDetailClient({ id }: Readonly<{ id: string }>) {
   const [character, setCharacter] = useState<CharacterDetail>();
@@ -154,49 +151,9 @@ export function CharacterDetailClient({ id }: Readonly<{ id: string }>) {
           </Link>
 
           {character ? (
-            <div className="mt-6 grid max-w-6xl gap-6 md:grid-cols-[380px_1fr]">
-              <div className="relative aspect-[240/400] overflow-hidden rounded-[20px] bg-[rgb(36,36,36)]">
-                <Image
-                  alt=""
-                  className="object-cover object-top"
-                  fill
-                  loading="eager"
-                  sizes="380px"
-                  src={character.image}
-                  unoptimized={isPrivateMediaUrl(character.image)}
-                />
-                <div className="absolute inset-0 bg-[linear-gradient(0deg,rgba(0,0,0,.72),transparent_55%)]" />
-              </div>
-
-              <div className="flex flex-col justify-center">
-                <p className="text-[12px] font-black uppercase leading-4 text-[rgb(253,95,194)]">
-                  {character.style ?? "realistic"} companion
-                </p>
-                <div className="mt-3 flex flex-wrap items-end gap-x-3 gap-y-2">
-                  <h1 className="text-[44px] font-black uppercase leading-[0.95] md:text-[72px]">
-                    {character.title}
-                  </h1>
-                  <span
-                    aria-label={`${character.age} years old`}
-                    className="pb-1 text-[28px] font-black leading-none text-white/80 md:pb-2 md:text-[42px]"
-                  >
-                    {character.age}
-                  </span>
-                </div>
-                <p className="mt-5 max-w-2xl text-[15px] font-medium leading-7 text-[rgb(170,170,170)] md:text-[17px]">
-                  {character.description}
-                </p>
-                <div className="mt-5 flex flex-wrap gap-2">
-                  {character.tags?.slice(0, 8).map((tag) => (
-                    <span
-                      className="rounded-full bg-[rgb(36,36,36)] px-3 py-2 text-[12px] font-bold text-[rgb(170,170,170)]"
-                      key={tag.slug}
-                    >
-                      {tag.label}
-                    </span>
-                  ))}
-                </div>
-                <div className="mt-7 flex flex-wrap gap-3" data-testid="character-detail-actions">
+            <div className="mt-6">
+              <CharacterDetailHero
+                actions={<div className="mt-7 flex flex-wrap gap-3" data-testid="character-detail-actions">
                   <button
                     className="inline-flex h-12 items-center justify-center gap-2 rounded-full bg-white px-6 text-[14px] font-black text-[rgb(13,13,13)] disabled:opacity-70"
                     disabled={busy}
@@ -231,8 +188,10 @@ export function CharacterDetailClient({ id }: Readonly<{ id: string }>) {
                     <Flag className="h-4 w-4" />
                     Report
                   </button>
-                </div>
-                {status && (
+                </div>}
+                character={character}
+              />
+              {status && (
                   <p
                     aria-live="polite"
                     className="mt-5 text-[13px] font-medium text-[rgb(170,170,170)]"
@@ -241,8 +200,7 @@ export function CharacterDetailClient({ id }: Readonly<{ id: string }>) {
                   >
                     {status}
                   </p>
-                )}
-              </div>
+              )}
             </div>
           ) : (
             <div
@@ -262,9 +220,6 @@ export function CharacterDetailClient({ id }: Readonly<{ id: string }>) {
   );
 }
 
-function isPrivateMediaUrl(url: string) {
-  return url.startsWith("/api/v1/media/") || url.startsWith("/user-content/");
-}
 
 function signupUrlForCurrentCharacter() {
   const next = `${window.location.pathname}${window.location.search}${window.location.hash}`;

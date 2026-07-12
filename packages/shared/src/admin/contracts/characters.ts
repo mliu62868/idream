@@ -593,6 +593,7 @@ export const characterPreviewSnapshotSchema = z
     opening: z.record(z.string(), z.unknown()),
     appearance: z.record(z.string(), z.unknown()),
     imageUrl: z.string().nullable(),
+    renderUrl: z.string().url().nullable(),
   })
   .strict();
 

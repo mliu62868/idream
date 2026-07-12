@@ -6,6 +6,7 @@ import { POST as refreshReleaseMonitor } from "@/app/api/v2/admin/characters/[id
 import { PATCH as patchCharacterProjectRoute } from "@/app/api/v2/admin/characters/[id]/project/route";
 import { GET as getCharacterWorkspaceRoute } from "@/app/api/v2/admin/characters/[id]/route";
 import { getCharacterWorkspace, updateCharacterProjectDraft } from "./workspace";
+import { loadCharacterRendererPreview } from "./renderer-preview";
 
 describe("Character operator workspace", () => {
   const suffix = randomUUID();
@@ -122,8 +123,16 @@ describe("Character operator workspace", () => {
     const detail = characterWorkspaceDetailSchema.parse(await getCharacterWorkspace(characterId));
     expect(detail.preview).toMatchObject({
       live: null,
-      draft: { label: "Draft Preview", contentVersionId: contentId, releaseId },
+      draft: { label: "Draft Preview", contentVersionId: contentId, releaseId, renderUrl: expect.any(String) },
       changedFields: ["new_release"],
+    });
+    const renderUrl = new URL(detail.preview.draft.renderUrl ?? "");
+    const token = renderUrl.pathname.split("/").at(-1);
+    if (!token) throw new Error("Expected a signed renderer token");
+    await expect(loadCharacterRendererPreview(token)).resolves.toMatchObject({
+      authority: { characterId, contentVersionId: contentId, releaseId, label: "Draft Preview" },
+      character: { title: "Mara" },
+      openingMessage: "You made it.",
     });
     expect(detail.project).toMatchObject({ productionPackage: "", qaPlan: "" });
     expect(detail.releases[0]).toMatchObject({ release: { readiness: "blocked" }, checks: [], monitors: [] });

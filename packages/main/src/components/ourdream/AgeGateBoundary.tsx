@@ -9,7 +9,7 @@ const AGE_GATE_STORAGE_KEY = "AdultContentAcceptedOD";
 const AGE_GATE_COOKIE_NAME = "AdultContentAcceptedOD";
 const AGE_GATE_COOKIE =
   "AdultContentAcceptedOD=true; path=/; max-age=31536000; samesite=lax";
-const ageGateBypassPrefixes = ["/safety"];
+const ageGateBypassPrefixes = ["/safety", "/internal-preview"];
 const ageGateBypassExact = new Set(["/terms"]);
 
 type MePayload = {

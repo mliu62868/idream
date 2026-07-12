@@ -9,10 +9,12 @@ import {
 
 export function CharacterCard({
   card,
+  href = `/characters/${card.id}`,
   imageLoading = "lazy",
   imageUnoptimized = false,
 }: Readonly<{
   card: CharacterCardData;
+  href?: string;
   imageLoading?: "eager" | "lazy";
   imageUnoptimized?: boolean;
 }>) {
@@ -29,7 +31,7 @@ export function CharacterCard({
     <Link
       aria-label={label}
       className="group relative block aspect-[240/400] w-full cursor-pointer overflow-hidden rounded-[12px] bg-[rgb(36,36,36)] transition-transform duration-200 ease-out hover:scale-[1.012]"
-      href={`/characters/${card.id}`}
+      href={href}
     >
       {card.vivid && (
         <div className="pointer-events-none absolute right-3 top-2 z-10 -skew-x-6">

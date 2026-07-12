@@ -5,12 +5,14 @@ import type {
 import { characterProjectDraftResumeSchema } from "@idream/shared/admin";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
+import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import type { AdminActor } from "@/server/modules/admin/service";
 import { listCharacterPortfolioData } from "./portfolio";
 import { collectReleaseMonitorFacts } from "./release-monitor";
 import { toInputJson } from "../shared/prisma-json";
 import { characterDraftSnapshots } from "./draft-content";
+import { issueCharacterPreviewToken } from "./preview-token";
 
 function record(value: Prisma.JsonValue | null | undefined): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -111,7 +113,7 @@ function releaseDto(release: {
 }
 
 function previewSnapshot(input: {
-  character: { name: string; description: string; appearance: Prisma.JsonValue; advancedDetails: Prisma.JsonValue };
+  character: { id: string; name: string; description: string; appearance: Prisma.JsonValue; advancedDetails: Prisma.JsonValue };
   content: {
     id: string;
     personaSnapshot: Prisma.JsonValue;
@@ -127,6 +129,17 @@ function previewSnapshot(input: {
     firstMessage: record(input.character.advancedDetails).firstMessage ?? null,
   };
   const appearance = input.content ? record(input.content.appearanceSnapshot) : record(input.character.appearance);
+  const renderUrl = input.content
+    ? new URL(
+        `/internal-preview/characters/${encodeURIComponent(issueCharacterPreviewToken({
+          characterId: input.character.id,
+          contentVersionId: input.content.id,
+          releaseId: input.releaseId,
+          label: input.label,
+        }, env.BETTER_AUTH_SECRET))}`,
+        env.BETTER_AUTH_URL,
+      ).toString()
+    : null;
   return {
     releaseId: input.releaseId,
     contentVersionId: input.content?.id ?? null,
@@ -137,6 +150,7 @@ function previewSnapshot(input: {
     opening,
     appearance,
     imageUrl: input.imageUrl,
+    renderUrl,
   };
 }
 

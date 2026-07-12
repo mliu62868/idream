@@ -214,6 +214,19 @@ function PreviewDiff({ data }: { data: CharacterWorkspaceDetail }) {
   return (
     <div>
       <div className="mb-4 flex flex-wrap gap-2" aria-label="Changed fields">{data.preview.changedFields.map((field) => <StatusBadge key={field} tone="warn" value={`${field} changed`} />)}</div>
+      <section aria-labelledby="real-renderer-preview-title">
+        <div className="flex flex-wrap items-end justify-between gap-2">
+          <div><h2 className="font-semibold" id="real-renderer-preview-title">Real user-surface renderer</h2><p className="mt-1 text-xs text-[var(--ad-text-muted)]">Short-lived signed snapshots render in main without mutating Serving, chats, or assets.</p></div>
+          <StatusBadge value="read only" />
+        </div>
+        <div className="mt-4 grid gap-4 xl:grid-cols-2">
+          {snapshots.map((snapshot) => <article className="overflow-hidden rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)]" key={`renderer-${snapshot.label}`}>
+            <div className="flex items-center justify-between border-b border-[var(--ad-border)] px-4 py-3"><strong className="text-xs uppercase tracking-wide">{snapshot.label}</strong><span className="text-xs text-[var(--ad-text-muted)]">Desktop + responsive mobile layout</span></div>
+            {snapshot.renderUrl ? <iframe className="h-[760px] w-full bg-[rgb(13,13,13)]" loading="lazy" sandbox="" src={snapshot.renderUrl} title={`${snapshot.label} real frontend renderer`} /> : <div className="p-6 text-sm text-[var(--ad-text-muted)]">Renderer unavailable until an immutable ContentVersion exists.</div>}
+          </article>)}
+        </div>
+      </section>
+      <h2 className="mb-4 mt-8 font-semibold">Snapshot evidence</h2>
       <div className="grid gap-4 lg:grid-cols-2">
         {snapshots.map((snapshot) => <article className={cn("overflow-hidden rounded-xl border bg-[var(--ad-surface)]", snapshot.label === "Draft Preview" ? "border-[var(--ad-yellow-text)]" : "border-[var(--ad-border)]")} key={snapshot.label}>
           <div className="border-b border-[var(--ad-border)] px-4 py-3 text-xs font-semibold uppercase tracking-wide">{snapshot.label}</div>
