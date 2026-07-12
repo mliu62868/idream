@@ -19,8 +19,8 @@ export function ExperimentsView() {
   const [experiments, setExperiments] = useState<ManagedExperiment[]>([]);
   const [flags, setFlags] = useState<FlagRow[]>([]);
   const [analysis, setAnalysis] = useState<Record<string, Analysis>>({});
-  const [key, setKey] = useState("");
-  const [hypothesis, setHypothesis] = useState("");
+  const [key, setKey] = useState("community.character-ranking.v1");
+  const [hypothesis, setHypothesis] = useState("Relationship-first Community ranking increases qualified conversations");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -53,15 +53,20 @@ export function ExperimentsView() {
     event.preventDefault();
     setBusy("create"); setError(null);
     try {
+      const isCommunityRanking = key === "community.character-ranking.v1";
       await apiWrite("/api/v2/admin/experiments", "POST", {
         key,
         hypothesis,
-        eligibility: {},
-        variants: [{ key: "control", allocationBps: 5_000 }, { key: "treatment", allocationBps: 5_000 }],
+        eligibility: isCommunityRanking ? { surface: "community.leaderboard" } : {},
+        variants: isCommunityRanking
+          ? [{ key: "control", allocationBps: 5_000 }, { key: "relationship_first", allocationBps: 5_000 }]
+          : [{ key: "control", allocationBps: 5_000 }, { key: "treatment", allocationBps: 5_000 }],
         salt: `${idempotencyKey()}-${idempotencyKey()}`,
         metrics: { primary: "relationship.qce_activation.v1", controlVariant: "control", minimumMaturePerArm: 100, guardrails: [{ metricKey: "guardrail.support_contact_rate.v1", maxAbsoluteRegression: 0.02 }] },
       }, { "idempotency-key": idempotencyKey() });
-      setKey(""); setHypothesis(""); await load();
+      setKey("community.character-ranking.v1");
+      setHypothesis("Relationship-first Community ranking increases qualified conversations");
+      await load();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Create failed"); }
     finally { setBusy(null); }
   }

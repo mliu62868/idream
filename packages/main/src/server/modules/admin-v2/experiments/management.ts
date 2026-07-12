@@ -38,6 +38,32 @@ function definitionDto(row: Awaited<ReturnType<typeof prisma.experimentDefinitio
   });
 }
 
+export function knownExperimentSurfaceBlockers(input: {
+  key: string;
+  eligibility: Prisma.JsonValue;
+  variants: Prisma.JsonValue;
+}): string[] {
+  if (input.key !== "community.character-ranking.v1") return [];
+  const eligibility = input.eligibility !== null && typeof input.eligibility === "object" && !Array.isArray(input.eligibility)
+    ? input.eligibility as Record<string, Prisma.JsonValue | undefined>
+    : {};
+  const variantKeys = Array.isArray(input.variants)
+    ? input.variants.flatMap((variant) => {
+        if (variant === null || typeof variant !== "object" || Array.isArray(variant)) return [];
+        const key = (variant as Record<string, Prisma.JsonValue | undefined>).key;
+        return typeof key === "string" ? [key] : [];
+      })
+    : [];
+  const blockers: string[] = [];
+  if (eligibility.surface !== "community.leaderboard" || Object.keys(eligibility).some((key) => key !== "surface")) {
+    blockers.push("community_ranking_eligibility_must_match_runtime_surface");
+  }
+  if (variantKeys.length !== 2 || !variantKeys.includes("control") || !variantKeys.includes("relationship_first")) {
+    blockers.push("community_ranking_variants_must_match_runtime_behavior");
+  }
+  return blockers;
+}
+
 export async function listExperimentDefinitions(request: Request) {
   await actorWithPermission(request, "experiment.manage");
   const url = new URL(request.url);
@@ -127,6 +153,10 @@ async function transitionExperiment(request: Request, id: string, transition: "s
     const expectedStatus = transition === "start" ? "draft" : "running";
     if (current.status !== expectedStatus || current.stateVersion !== input.expectedStateVersion) throw Errors.conflict("Experiment lifecycle changed; reload before retrying");
     if (transition === "start") {
+      const blockers = knownExperimentSurfaceBlockers(current);
+      if (blockers.length > 0) {
+        throw Errors.badRequest("Experiment definition does not match its implemented product surface", { blockers });
+      }
       const running = await tx.experimentDefinition.findFirst({ where: { key: current.key, status: "running", id: { not: id } } });
       if (running) throw Errors.conflict("Another version of this experiment is already running");
     }
