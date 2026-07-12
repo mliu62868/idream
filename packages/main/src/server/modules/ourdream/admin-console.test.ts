@@ -2535,6 +2535,12 @@ describe("admin writes are audited", () => {
     });
     expectOk(roleChange);
     expect(roleChange.data.user.role).toBe("support");
+    await expect(prisma.mainOutboxEvent.count({
+      where: {
+        aggregateId: target,
+        eventType: { in: ["admin.user.status_changed.v2", "admin.user.role_changed.v2"] },
+      },
+    })).resolves.toBe(2);
 
     const wrongAdjustConfirmation = await api("POST", "admin/billing/adjustments", {
       userId: admin,
@@ -3399,6 +3405,9 @@ describe("user permission overrides", () => {
         "admin.permission.clear",
       ]),
     );
+    await expect(prisma.mainOutboxEvent.count({
+      where: { aggregateId: support, eventType: "admin.user.permission_changed.v2" },
+    })).resolves.toBe(3);
   });
 });
 

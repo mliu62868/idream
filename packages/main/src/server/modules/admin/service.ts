@@ -919,19 +919,31 @@ async function updateUserStatus(request: Request, userId: string) {
   if (body.confirmation !== userStatusConfirmation(userId, body.status)) {
     throw Errors.badRequest("Confirmation did not match user status target");
   }
-  const before = await prisma.user.findUnique({ where: { id: userId } });
-  if (!before) throw Errors.notFound("User not found");
-  const after = await prisma.user.update({
-    where: { id: userId },
-    data: { status: body.status, deletedAt: body.status === "active" ? null : undefined },
-  });
-  await writeAudit(request, actor, {
-    action: "user.status.write",
-    targetType: "user",
-    targetId: userId,
-    reason: body.reason,
-    before: { status: before.status },
-    after: { status: after.status },
+  const after = await prisma.$transaction(async (tx) => {
+    const before = await tx.user.findUnique({ where: { id: userId } });
+    if (!before) throw Errors.notFound("User not found");
+    const updated = await tx.user.update({
+      where: { id: userId },
+      data: { status: body.status, deletedAt: body.status === "active" ? null : undefined },
+    });
+    await tx.adminAuditLog.create({ data: {
+      actorId: actor.id,
+      actorRole: actor.role,
+      action: "user.status.write",
+      targetType: "user",
+      targetId: userId,
+      reason: body.reason,
+      before: { status: before.status },
+      after: { status: updated.status },
+      requestId: request.headers.get("x-request-id"),
+    } });
+    await tx.mainOutboxEvent.create({ data: {
+      eventType: "admin.user.status_changed.v2",
+      aggregateType: "user",
+      aggregateId: userId,
+      payload: { userId, from: before.status, to: updated.status, actorId: actor.id },
+    } });
+    return updated;
   });
   return ok({ user: publicUser(after) });
 }
@@ -946,19 +958,28 @@ async function updateUserRole(request: Request, userId: string) {
   if (body.confirmation !== userRoleConfirmation(userId, body.role)) {
     throw Errors.badRequest("Confirmation did not match role-change target");
   }
-  const before = await prisma.user.findUnique({ where: { id: userId } });
-  if (!before) throw Errors.notFound("User not found");
-  const after = await prisma.user.update({
-    where: { id: userId },
-    data: { role: body.role },
-  });
-  await writeAudit(request, actor, {
-    action: "user.role.write",
-    targetType: "user",
-    targetId: userId,
-    reason: body.reason,
-    before: { role: before.role },
-    after: { role: after.role },
+  const after = await prisma.$transaction(async (tx) => {
+    const before = await tx.user.findUnique({ where: { id: userId } });
+    if (!before) throw Errors.notFound("User not found");
+    const updated = await tx.user.update({ where: { id: userId }, data: { role: body.role } });
+    await tx.adminAuditLog.create({ data: {
+      actorId: actor.id,
+      actorRole: actor.role,
+      action: "user.role.write",
+      targetType: "user",
+      targetId: userId,
+      reason: body.reason,
+      before: { role: before.role },
+      after: { role: updated.role },
+      requestId: request.headers.get("x-request-id"),
+    } });
+    await tx.mainOutboxEvent.create({ data: {
+      eventType: "admin.user.role_changed.v2",
+      aggregateType: "user",
+      aggregateId: userId,
+      payload: { userId, from: before.role, to: updated.role, actorId: actor.id },
+    } });
+    return updated;
   });
   return ok({ user: publicUser(after) });
 }
@@ -991,35 +1012,44 @@ async function setUserPermission(request: Request, userId: string) {
   if (body.effect !== "clear" && !isPermissionKey(body.permissionKey)) {
     throw Errors.badRequest("Unknown permission key");
   }
-  const user = await prisma.user.findUnique({ where: { id: userId } });
-  if (!user) throw Errors.notFound("User not found");
-  // 一个 key 至多一条 override：先清同 key 旧记录，再按 effect 写。
-  await prisma.adminUserPermission.deleteMany({
-    where: { userId, permissionKey: body.permissionKey },
-  });
-  const override =
-    body.effect === "clear"
+  const override = await prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({ where: { id: userId } });
+    if (!user) throw Errors.notFound("User not found");
+    const before = await tx.adminUserPermission.findFirst({ where: { userId, permissionKey: body.permissionKey } });
+    // 一个 key 至多一条 override：先清同 key 旧记录，再按 effect 写。
+    await tx.adminUserPermission.deleteMany({ where: { userId, permissionKey: body.permissionKey } });
+    const updated = body.effect === "clear"
       ? null
-      : await prisma.adminUserPermission.create({
-          data: {
-            userId,
-            permissionKey: body.permissionKey,
-            effect: body.effect,
-            reason: body.reason,
-            createdById: actor.id,
-          },
-        });
-  await writeAudit(request, actor, {
-    action:
-      body.effect === "grant"
-        ? "admin.permission.grant"
-        : body.effect === "revoke"
-          ? "admin.permission.revoke"
-          : "admin.permission.clear",
-    targetType: "user",
-    targetId: userId,
-    reason: body.reason,
-    after: { permissionKey: body.permissionKey, effect: body.effect },
+      : await tx.adminUserPermission.create({ data: {
+          userId,
+          permissionKey: body.permissionKey,
+          effect: body.effect,
+          reason: body.reason,
+          createdById: actor.id,
+        } });
+    const action = body.effect === "grant"
+      ? "admin.permission.grant"
+      : body.effect === "revoke"
+        ? "admin.permission.revoke"
+        : "admin.permission.clear";
+    await tx.adminAuditLog.create({ data: {
+      actorId: actor.id,
+      actorRole: actor.role,
+      action,
+      targetType: "user",
+      targetId: userId,
+      reason: body.reason,
+      before: before ? { permissionKey: before.permissionKey, effect: before.effect } : undefined,
+      after: { permissionKey: body.permissionKey, effect: body.effect },
+      requestId: request.headers.get("x-request-id"),
+    } });
+    await tx.mainOutboxEvent.create({ data: {
+      eventType: "admin.user.permission_changed.v2",
+      aggregateType: "user",
+      aggregateId: userId,
+      payload: { userId, permissionKey: body.permissionKey, effect: body.effect, actorId: actor.id },
+    } });
+    return updated;
   });
   return ok({ override, cleared: body.effect === "clear" });
 }
