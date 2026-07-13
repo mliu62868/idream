@@ -10,20 +10,27 @@ import { AdminConsoleClientOnly } from "../AdminConsoleClientOnly";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export const metadata: Metadata = {
-  title: "Admin | iDream",
-  robots: {
-    index: false,
-    follow: false,
-  },
-};
-
 type AdminPageProps = {
   params: Promise<{
     section?: string[];
   }>;
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 };
+
+export async function generateMetadata({ params }: Pick<AdminPageProps, "params">): Promise<Metadata> {
+  const { section = [] } = await params;
+  const sectionId = section.length === 0 ? "today" : section.join("/");
+  const label = sectionId
+    .split("/")
+    .filter(Boolean)
+    .map((part) => part.replaceAll("-", " "))
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" · ");
+  return {
+    title: `${label || "Today"} | iDream Admin`,
+    robots: { index: false, follow: false },
+  };
+}
 
 export default async function AdminPage({ params, searchParams }: AdminPageProps) {
   const { section = [] } = await params;

@@ -64,6 +64,16 @@ const placementStatusSchema = z.enum(["draft", "scheduled", "published", "paused
 const releaseOwnedPlacementSlots = new Set(["character_avatar", "character_hero"]);
 const assetReviewStatusSchema = z.enum(["draft", "generated", "approved", "rejected", "published", "archived"]);
 const consistencyModeSchema = z.enum(["strict", "balanced", "creative"]);
+const productionDirectionSchema = z.object({
+  id: z.string().trim().min(1).max(180),
+  title: z.string().trim().min(2).max(80),
+  scenePrompt: z.string().trim().min(12).max(1_200),
+  mood: z.string().trim().min(1).max(120),
+  setting: z.string().trim().min(1).max(120),
+  outfit: z.string().trim().min(1).max(120),
+  camera: z.string().trim().min(1).max(120),
+  lighting: z.string().trim().min(1).max(120),
+}).strict();
 
 const optionalText = (max: number) =>
   z.preprocess(
@@ -71,7 +81,7 @@ const optionalText = (max: number) =>
     z.string().trim().max(max).optional(),
   );
 
-const productionBatchCreateSchema = z.object({
+const productionBatchCreateBaseSchema = z.object({
   title: optionalText(160),
   purpose: productionPurposeSchema,
   targetType: productionTargetTypeSchema.default("none"),
@@ -82,13 +92,24 @@ const productionBatchCreateSchema = z.object({
   orientation: optionalText(20),
   count: z.number().int().min(1).max(24).default(4),
   brief: optionalText(2_000),
+  directions: z.array(productionDirectionSchema).min(1).max(12).optional(),
+  outputsPerDirection: z.number().int().min(1).max(24).optional(),
   consistencyMode: consistencyModeSchema.default("balanced"),
   dueAt: optionalText(80),
   priority: z.enum(["low", "normal", "high", "urgent"]).default("normal"),
   reason: optionalText(2_000),
 });
 
-const productionEstimateSchema = productionBatchCreateSchema.pick({
+const productionBatchCreateSchema = productionBatchCreateBaseSchema.superRefine((value, ctx) => {
+  if (!value.directions && value.outputsPerDirection !== undefined) {
+    ctx.addIssue({ code: "custom", path: ["outputsPerDirection"], message: "Outputs per direction requires persisted directions" });
+  }
+  if (value.directions && value.directions.length * (value.outputsPerDirection ?? 1) > 24) {
+    ctx.addIssue({ code: "custom", path: ["outputsPerDirection"], message: "A Creative Run cannot exceed 24 outputs" });
+  }
+});
+
+const productionEstimateSchema = productionBatchCreateBaseSchema.pick({
   profileId: true,
   count: true,
 });
@@ -263,15 +284,6 @@ export async function createProductionBatchCore(
     body.title ??
     `${purposeLabel(body.purpose)} ${new Date().toISOString().slice(0, 10)}`;
   const presetFragment = presetPromptFragment(body.presetIds, presets);
-  const prompt = productionPrompt({
-    purpose: body.purpose,
-    target,
-    recipeBody: recipe.body,
-    presetFragment,
-    brief: body.brief,
-    visualProfile,
-    consistencyMode: body.consistencyMode,
-  });
   const controls = productionControls({
     orientation,
     dimensions,
@@ -293,6 +305,13 @@ export async function createProductionBatchCore(
     1,
     profile.costMultiplier ?? 1,
   );
+  const workItems = body.directions
+    ? body.directions.flatMap((direction) => Array.from(
+        { length: body.outputsPerDirection ?? 1 },
+        () => direction,
+      ))
+    : Array.from({ length: body.count }, () => null);
+  const totalOutputCount = workItems.length;
 
   let replayed = false;
   const batch = await auditedTransaction("content.production.batch.create", async (tx) => {
@@ -336,9 +355,9 @@ export async function createProductionBatchCore(
         presetIds: toInputJson(body.presetIds),
         orientation,
         brief: body.brief ?? null,
-        count: body.count,
-        totalItems: body.count,
-        estimatedCostDreamcoins: perItemCostDreamcoins * body.count,
+        count: totalOutputCount,
+        totalItems: totalOutputCount,
+        estimatedCostDreamcoins: perItemCostDreamcoins * totalOutputCount,
         status: "queued",
         ownerId: actor.id,
         dueAt: parseOptionalDate(body.dueAt),
@@ -350,11 +369,38 @@ export async function createProductionBatchCore(
       },
     });
 
-    for (let itemIndex = 0; itemIndex < body.count; itemIndex += 1) {
+    for (let itemIndex = 0; itemIndex < workItems.length; itemIndex += 1) {
+      const direction = workItems[itemIndex];
+      const directionSnapshot = direction ? toInputJson(direction) : undefined;
+      const directionHash = direction ? canonicalSha256(direction) : null;
+      const directionBrief = direction
+        ? [
+            body.brief,
+            `Direction: ${direction.title}`,
+            `Scene: ${direction.scenePrompt}`,
+            `Mood: ${direction.mood}`,
+            `Setting: ${direction.setting}`,
+            `Outfit: ${direction.outfit}`,
+            `Camera: ${direction.camera}`,
+            `Lighting: ${direction.lighting}`,
+          ].filter(Boolean).join("\n")
+        : body.brief;
+      const prompt = productionPrompt({
+        purpose: body.purpose,
+        target,
+        recipeBody: recipe.body,
+        presetFragment,
+        brief: directionBrief,
+        visualProfile,
+        consistencyMode: body.consistencyMode,
+      });
       const item = await tx.contentProductionItem.create({
         data: {
           batchId: createdBatch.id,
           itemIndex,
+          directionId: direction?.id,
+          directionSnapshot,
+          directionHash,
           status: "queued",
           tags: [],
         },
@@ -391,6 +437,8 @@ export async function createProductionBatchCore(
             targetType: body.targetType,
             targetId: body.targetId ?? null,
             itemIndex,
+            directionId: direction?.id ?? null,
+            directionHash,
             consistencyMode: visualProfile ? body.consistencyMode : null,
           }),
         },
@@ -476,7 +524,7 @@ export async function createProductionBatchCore(
       include: productionBatchInclude,
     });
   });
-  if (!replayed) await dispatchCreativeRetryOutbox(prisma, { limit: body.count });
+  if (!replayed) await dispatchCreativeRetryOutbox(prisma, { limit: totalOutputCount });
   return ok({ batch: productionBatchDTO(batch), replayed }, { status: replayed ? 200 : 202 });
 }
 

@@ -27,4 +27,33 @@ describe("Creative Run create contract", () => {
       lifecycleState: "closed",
     }).success).toBe(false);
   });
+
+  it("accepts bounded persisted directions and rejects fan-out above the Run limit", () => {
+    const direction = {
+      id: "direction-1",
+      title: "Intimate close-up",
+      scenePrompt: "A quiet close portrait with an emotionally readable gesture.",
+      mood: "warm",
+      setting: "window seat",
+      outfit: "soft knitwear",
+      camera: "85mm close portrait",
+      lighting: "soft directional light",
+    };
+    expect(creativeRunCreateRequestSchema.safeParse({
+      ...request,
+      count: 1,
+      directions: [direction],
+      outputsPerDirection: 4,
+    }).success).toBe(true);
+    expect(creativeRunCreateRequestSchema.safeParse({
+      ...request,
+      count: 1,
+      directions: Array.from({ length: 12 }, (_, index) => ({ ...direction, id: `direction-${index}` })),
+      outputsPerDirection: 3,
+    }).success).toBe(false);
+    expect(creativeRunCreateRequestSchema.safeParse({
+      ...request,
+      outputsPerDirection: 2,
+    }).success).toBe(false);
+  });
 });

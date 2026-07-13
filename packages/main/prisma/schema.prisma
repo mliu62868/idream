@@ -678,25 +678,29 @@ model ContentProductionBatch {
 }
 
 model ContentProductionItem {
-  id           String                 @id @default(cuid())
-  batchId      String
-  jobId        String?                @unique
-  mediaAssetId String?                @unique
-  itemIndex    Int                    @default(0)
-  status       String                 @default("queued") // enum: queued | generated | approved | rejected | regenerate_requested | published | failed
-  reviewNote   String?
-  rating       Int?
-  tags         Json
-  reviewedById String?
-  reviewedAt   DateTime?
-  version      Int                    @default(1)
-  batch        ContentProductionBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
-  job          GenerationJob?         @relation(fields: [jobId], references: [id], onDelete: SetNull)
-  mediaAsset   MediaAsset?            @relation(fields: [mediaAssetId], references: [id], onDelete: SetNull)
-  createdAt    DateTime               @default(now())
-  updatedAt    DateTime               @updatedAt
+  id                String                 @id @default(cuid())
+  batchId           String
+  jobId             String?                @unique
+  mediaAssetId      String?                @unique
+  itemIndex         Int                    @default(0)
+  directionId       String?
+  directionSnapshot Json?
+  directionHash     String?
+  status            String                 @default("queued") // enum: queued | generated | approved | rejected | regenerate_requested | published | failed
+  reviewNote        String?
+  rating            Int?
+  tags              Json
+  reviewedById      String?
+  reviewedAt        DateTime?
+  version           Int                    @default(1)
+  batch             ContentProductionBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  job               GenerationJob?         @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  mediaAsset        MediaAsset?             @relation(fields: [mediaAssetId], references: [id], onDelete: SetNull)
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
 
   @@index([batchId, status])
+  @@index([batchId, directionId])
   @@index([mediaAssetId])
   @@map("content_production_items")
 }

@@ -95,4 +95,72 @@ describe("Creative Run v2 brief and launch", () => {
     const response = await createCreativeRun(request({ ...body, count: 3 }));
     expect(response.status).toBe(409);
   });
+
+  it("persists selected directions as immutable item lineage inside one Run", async () => {
+    const directionKey = `${idempotencyKey}-directions`;
+    const directedRequest = new Request("http://localhost/api/v2/admin/creative/runs", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": directionKey,
+        "x-idream-user-id": actorId,
+        "x-idream-role": "admin",
+        "x-request-id": randomUUID(),
+      },
+      body: JSON.stringify({
+        ...body,
+        count: 1,
+        directions: [
+          {
+            id: "direction-intimate",
+            title: "Intimate close-up",
+            scenePrompt: "A quiet close portrait with an emotionally readable gesture.",
+            mood: "warm",
+            setting: "window seat",
+            outfit: "soft knitwear",
+            camera: "85mm close portrait",
+            lighting: "soft directional light",
+          },
+          {
+            id: "direction-story",
+            title: "Environmental story",
+            scenePrompt: "A wider environmental portrait that reveals the story context.",
+            mood: "reflective",
+            setting: "late-night studio",
+            outfit: "tailored casualwear",
+            camera: "35mm environmental portrait",
+            lighting: "practical lights and a gentle key",
+          },
+        ],
+        outputsPerDirection: 2,
+      }),
+    });
+
+    const response = await createCreativeRun(directedRequest);
+    expect(response.status).toBe(202);
+    const payload = await response.json();
+    const directedBatchId = payload.data.batch.id as string;
+    const items = await prisma.contentProductionItem.findMany({
+      where: { batchId: directedBatchId },
+      orderBy: { itemIndex: "asc" },
+      select: { directionId: true, directionSnapshot: true, directionHash: true, jobId: true },
+    });
+    expect(items).toHaveLength(4);
+    expect(items.map((item) => item.directionId)).toEqual([
+      "direction-intimate",
+      "direction-intimate",
+      "direction-story",
+      "direction-story",
+    ]);
+    expect(items.every((item) => typeof item.directionHash === "string" && item.directionHash.length > 20)).toBe(true);
+    expect(items[0]?.directionSnapshot).toMatchObject({ title: "Intimate close-up" });
+
+    const jobIds = items.flatMap((item) => item.jobId ? [item.jobId] : []);
+    await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: directedBatchId } });
+    await prisma.generationAttemptEvent.deleteMany({ where: { attempt: { requestId: { in: jobIds } } } });
+    await prisma.generationAttempt.deleteMany({ where: { requestId: { in: jobIds } } });
+    await prisma.contentProductionBatch.delete({ where: { id: directedBatchId } });
+    await prisma.generationJob.deleteMany({ where: { id: { in: jobIds } } });
+    await prisma.controlPlaneCommand.deleteMany({ where: { scope: { contains: "creative.run.create" }, idempotencyKey: directionKey } });
+  });
 });

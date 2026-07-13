@@ -39,6 +39,17 @@ export const creativeRunCreateRequestSchema = z
     orientation: z.string().trim().min(1).max(20).optional(),
     count: z.number().int().min(1).max(24).default(4),
     brief: z.string().trim().min(1).max(2_000),
+    directions: z.array(z.object({
+      id: adminIdSchema,
+      title: z.string().trim().min(2).max(80),
+      scenePrompt: z.string().trim().min(12).max(1_200),
+      mood: z.string().trim().min(1).max(120),
+      setting: z.string().trim().min(1).max(120),
+      outfit: z.string().trim().min(1).max(120),
+      camera: z.string().trim().min(1).max(120),
+      lighting: z.string().trim().min(1).max(120),
+    }).strict()).min(1).max(12).optional(),
+    outputsPerDirection: z.number().int().min(1).max(24).optional(),
     consistencyMode: z.enum(["strict", "balanced", "creative"]).default("balanced"),
     dueAt: adminIsoDateTimeSchema.optional(),
     priority: adminPrioritySchema.default("normal"),
@@ -51,6 +62,12 @@ export const creativeRunCreateRequestSchema = z
     }
     if (request.targetType === "none" && request.targetId) {
       ctx.addIssue({ code: "custom", path: ["targetId"], message: "Target ID must be omitted for a targetless Run" });
+    }
+    if (!request.directions && request.outputsPerDirection !== undefined) {
+      ctx.addIssue({ code: "custom", path: ["outputsPerDirection"], message: "Outputs per direction requires persisted directions" });
+    }
+    if (request.directions && request.directions.length * (request.outputsPerDirection ?? 1) > 24) {
+      ctx.addIssue({ code: "custom", path: ["outputsPerDirection"], message: "A Creative Run cannot exceed 24 outputs" });
     }
   });
 
@@ -293,6 +310,13 @@ export const creativeRunItemDetailSchema = z
     retryability: z.string(),
     lineage: z
       .object({
+        briefId: adminIdSchema,
+        directionId: adminIdSchema.nullable(),
+        directionHash: z.string().trim().min(1).nullable(),
+        generationProfileKey: z.string().trim().min(1).nullable(),
+        generationProfileVersion: z.string().trim().min(1).nullable(),
+        workflowKey: z.string().trim().min(1).nullable(),
+        workflowVersion: z.string().trim().min(1).nullable(),
         requestId: adminIdSchema.nullable(),
         attemptId: adminIdSchema.nullable(),
         assetId: adminIdSchema.nullable(),

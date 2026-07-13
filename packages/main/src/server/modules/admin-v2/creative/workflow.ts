@@ -796,6 +796,15 @@ export async function getCreativeRunDetail(input: {
         version: item.version,
         retryability: latestAttempt?.retryability ?? (item.status === "failed" ? "unknown" : "not_applicable"),
         lineage: {
+          briefId: run.id,
+          directionId: item.directionId,
+          directionHash: item.directionHash,
+          generationProfileKey: run.profileId,
+          generationProfileVersion: run.profileVersion === null ? null : String(run.profileVersion),
+          workflowKey: item.job?.model ?? null,
+          workflowVersion: item.job?.profileVersion === null || item.job?.profileVersion === undefined
+            ? null
+            : String(item.job.profileVersion),
           requestId: item.jobId,
           attemptId: latestAttempt?.id ?? null,
           assetId: asset?.id ?? null,

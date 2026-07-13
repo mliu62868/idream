@@ -19,6 +19,7 @@ import {
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { AssetImage } from "@/components/admin/ui/AssetImage";
+import { adminV2Request } from "@/lib/admin-v2-api";
 import { cn } from "@/lib/utils";
 
 type ConsistencyMode = "strict" | "balanced" | "creative";
@@ -241,19 +242,6 @@ function uniqueAssets(character: CharacterOption | null, batches: ProductionBatc
   });
 }
 
-function directionBrief(direction: CreativeDirection, creativeBrief: string): string {
-  return [
-    `Creative theme: ${creativeBrief}`,
-    `Direction: ${direction.title}`,
-    `Scene: ${direction.scenePrompt}`,
-    `Mood: ${direction.mood}`,
-    `Setting: ${direction.setting}`,
-    `Outfit: ${direction.outfit}`,
-    `Camera: ${direction.camera}`,
-    `Lighting: ${direction.lighting}`,
-  ].join("\n");
-}
-
 function formatDate(value: string): string {
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(
     new Date(value),
@@ -448,30 +436,32 @@ export function CreativeProductionStudio() {
     setError(null);
     setNotice(null);
     try {
-      const created: ProductionBatch[] = [];
-      for (const direction of selected) {
-        const result = await apiWrite<{ batch: ProductionBatch }>(
-          "/api/v1/admin/content/production/batches",
-          "POST",
-          {
-            title: `${form.creativeBrief} · ${direction.title}`,
+      const result = await adminV2Request<{ batch: { id: string }; replayed: boolean }>(
+        "/api/v2/admin/creative/runs",
+        {
+          method: "POST",
+          idempotencyKey: crypto.randomUUID(),
+          body: {
+            title: form.creativeBrief.trim() || `${selected[0]?.title ?? "Creative direction"} production`,
             purpose: form.purpose,
             targetType: "character",
             targetId: form.characterId,
             profileId: form.profileId,
-            recipeId: form.recipeId,
+            ...(form.recipeId ? { recipeId: form.recipeId } : {}),
             presetIds: form.presetIds,
-            orientation: form.orientation,
-            count: countPerDirection,
-            brief: directionBrief(direction, form.creativeBrief),
+            ...(form.orientation ? { orientation: form.orientation } : {}),
+            count: 1,
+            brief: form.creativeBrief.trim() || selected.map((direction) => direction.title).join(", "),
+            directions: selected.map(({ selected: _selected, ...direction }) => direction),
+            outputsPerDirection: countPerDirection,
             consistencyMode: form.consistencyMode,
-            reason: "Created from Creative Production Studio",
+            priority: "normal",
+            reason: "Created from persisted Creative Production directions",
           },
-        );
-        created.push(result.batch);
-      }
+        },
+      );
       const refreshed = await refreshBatches();
-      const firstId = created[0]?.id ?? refreshed[0]?.id ?? null;
+      const firstId = result.batch.id ?? refreshed[0]?.id ?? null;
       setSelectedBatchId(firstId);
       setSelectedItemIds([]);
       setFocusedItemId(null);

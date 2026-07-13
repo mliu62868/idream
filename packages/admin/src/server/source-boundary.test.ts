@@ -6,6 +6,22 @@ const packageRoot = path.resolve(import.meta.dirname, "../..");
 const workspaceRoot = path.resolve(packageRoot, "../..");
 
 describe("admin source boundary", () => {
+  it("server-renders the interactive shell behind route-level recovery boundaries", async () => {
+    const clientEntry = await readFile(path.join(packageRoot, "src/app/admin/AdminConsoleClientOnly.tsx"), "utf8");
+    const routePage = await readFile(path.join(packageRoot, "src/app/admin/[[...section]]/page.tsx"), "utf8");
+    const loading = await readFile(path.join(packageRoot, "src/app/admin/loading.tsx"), "utf8");
+    const error = await readFile(path.join(packageRoot, "src/app/admin/error.tsx"), "utf8");
+    const notFound = await readFile(path.join(packageRoot, "src/app/admin/not-found.tsx"), "utf8");
+
+    expect(clientEntry).not.toContain("ssr: false");
+    expect(clientEntry).not.toContain("next/dynamic");
+    expect(clientEntry).toContain("<AdminConsoleClient");
+    expect(routePage).toContain("export async function generateMetadata");
+    expect(loading).toContain('aria-busy="true"');
+    expect(error).toContain('role="alert"');
+    expect(notFound).toContain('href="/admin/today"');
+  });
+
   it("resolves application source from the admin package only", async () => {
     const tsconfig = await readFile(path.join(packageRoot, "tsconfig.json"), "utf8");
     const globals = await readFile(path.join(packageRoot, "src/app/globals.css"), "utf8");
