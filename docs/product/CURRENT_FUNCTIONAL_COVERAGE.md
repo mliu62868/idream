@@ -14,6 +14,17 @@
 - Character Workspace 新增 `visual` tab：可通过既有 Visual Profile authority 创建并激活新 identity version；可查看 readiness blocker 与修复 deep link；可把 model-eval batch 提交给既有 v2 route evaluation authority，由服务端从生成资产证据计算分数和 candidate/qualified 结果。Reference candidate promotion 仍属于带用户资产所有权语义的既有生成/素材链路，Admin tab 只提供带 `characterId` 的角色图片生产跳转，不伪装成可直接 promotion。
 - Route 当前资格谓词已抽成 Release proposal 与 Visual Workspace 共用 authority，避免 UI/查询复制 `40 samples / 90% identity / current policy / unexpired` 状态计算；Visual blocker/deep link 复用 release readiness evaluator。Shared contract、Admin component 与隔离 PostgreSQL integration focused suites 已覆盖 DTO fail-closed、权限门、active ReferenceSet/asset availability 和 qualification evidence。
 
+## 2026-07-12 First-principles remediation gap closure
+
+- Creative Directions 不再只保存在浏览器并逐方向创建互相割裂的 Batch。一次 launch 现在创建一个 Creative Run；每个输出 Item 固化 `directionId + directionSnapshot + directionHash`，数据库 trigger 禁止原地改写。Run detail 的 lineage 同时返回 brief、direction、generation profile/workflow version、Request、Attempt、Asset、Review 与 Placement；旧 Run 明确保留 nullable legacy lineage。
+- Chat durable inbox 现以显式 `sourceService + sourceEventId + payloadHash` 复合 authority 做 replay/conflict，保留兼容 backfill；exchange correction 使用统一事务 seam，并让 correction 在相同 revision 下优先于迟到 completion，避免 regenerate/edit/delete/session supersede 被乱序事件错误恢复为 eligible。
+- 每次 generation provider invocation 现可贯通 `providerRequestId / latencyMs / costMicros / pricingVersion` 到 immutable completion manifest、`GenerationTransportExecution` 与 canonical `AiUsageFact`。没有 provider 原生 accounting 时保持 `null`，不猜价；transport retry 的每次真实调用分别记录，legacy finalize 不重复生成 usage fact。
+- Today 新增 typed、服务端有界的 `All work` cursor query 与 Summary / All work tabs。Cursor 绑定 actor、完整 filter、work mode 与 ranking policy；domain/severity/SLA/owner/status/environment 均进入 URL，Back/Forward 和刷新可恢复；筛选变化或失败会清除旧响应，避免旧数据冒充新查询。
+- Admin 核心域已有独立 Next 16 物理 routes（Today、Character、Creative Run、Incident、Case、Jobs），catch-all 只保留兼容入口并复用统一 server bootstrap renderer；整站不再通过 `ssr:false` 禁用服务端预渲染。Route-level loading/error/not-found、领域页面标题与可访问 mobile/tablet drawer 已落地。
+- Incident correlation 的 join-gap 不再是无名常量：每次新 Incident 与 occurrence Audit 都记录 `correlationPolicy.version + joinGapMs`，为后续策略校准与 recurrence 解释提供证据。
+
+以上关闭的是本地 code-owned seam，不改变最终 Go/No-Go：生产 snapshot backfill/reconciliation=0、真实 provider/route qualification 样本、read/write canary、成熟 cohort 窗口、legacy traffic=0、持续 error-budget 观察和独立 DRI 签字仍必须由外部环境提供证据。
+
 ## 2026-07-11 管理后台正确性复核
 
 2026-07-11 初始实机与源码复核确认了下列问题；后续实施批次已在代码态逐项修复或 fail closed。本节保留原始问题陈述，当前实现与未完成的生产 Gate 以紧随其后的实施证据为准。
