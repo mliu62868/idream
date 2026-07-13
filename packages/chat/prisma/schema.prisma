@@ -290,14 +290,19 @@ model ChatOutboxEvent {
 }
 
 model ChatInboxEvent {
-  id         String    @id
-  eventType  String    @map("event_type")
-  payload    Json      @default("{}")
-  status     String    @default("pending")
-  attempts   Int       @default(0)
-  createdAt  DateTime  @default(now()) @map("created_at")
-  consumedAt DateTime? @map("consumed_at")
+  id            String    @id
+  sourceService String    @default("main") @map("source_service")
+  sourceEventId String    @map("source_event_id")
+  payloadHash   String    @map("payload_hash")
+  eventType     String    @map("event_type")
+  payload       Json      @default("{}")
+  status        String    @default("pending")
+  attempts      Int       @default(0)
+  createdAt     DateTime  @default(now()) @map("created_at")
+  processedAt   DateTime? @map("processed_at")
+  consumedAt    DateTime? @map("consumed_at")
 
+  @@unique([sourceService, sourceEventId])
   @@index([status, createdAt], map: "chat_inbox_pending_idx")
   @@map("chat_inbox_events")
   @@schema("chat")

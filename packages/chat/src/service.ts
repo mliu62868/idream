@@ -12,6 +12,7 @@ import { FREE_DAILY_MESSAGES } from "./limits.js";
 import { enqueue } from "./queue.js";
 import { streamKey } from "./stream.js";
 import { recordOutbox, scheduleOutboxDelivery } from "./outbox.js";
+import { recordExchangeCorrection } from "./exchange-corrections.js";
 import { resolvePolicy, snapshotFromView } from "./policy.js";
 import type { ChatPolicy } from "./policy.js";
 import { logger } from "./logger.js";
@@ -539,17 +540,14 @@ export async function editUserMessage(
       message.engagementSessionId &&
       message.characterContentVersionId
     ) {
-      await recordOutbox(tx, {
-        eventType: CHAT_TO_MAIN_EVENTS.exchangeCorrectedV2,
-        schemaVersion: 2,
-        aggregateType: "exchange",
-        aggregateId: message.id,
-        payload: {
-          exchangeId: message.id,
-          correctionType: "edited",
-          correctionRevision: attempt,
-          userId: input.userId,
-        },
+      await recordExchangeCorrection(tx, {
+        exchangeId: message.id,
+        correctionType: "edited",
+        // The correction invalidates the previously completed attempt. The
+        // replacement completion uses the next attempt number and may therefore
+        // make the exchange eligible again, independent of delivery order.
+        correctionRevision: attempt - 1,
+        userId: input.userId,
       });
     }
 

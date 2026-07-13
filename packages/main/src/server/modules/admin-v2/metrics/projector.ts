@@ -409,8 +409,16 @@ async function applyEvent(tx: Transaction, event: MetricProductEvent): Promise<M
     );
     const existing = await tx.chatExchangeFact.findUnique({ where: { exchangeId: payload.exchangeId } });
     if (existing && (
+      existing.assistantAttemptNo > payload.assistantAttemptNo ||
       existing.correctionRevision > payload.assistantAttemptNo ||
-      existing.sourceUpdatedAt > event.occurredAt
+      (
+        existing.correctionRevision === payload.assistantAttemptNo &&
+        existing.correctionType !== null
+      ) ||
+      (
+        existing.assistantAttemptNo === payload.assistantAttemptNo &&
+        existing.sourceUpdatedAt > event.occurredAt
+      )
     )) {
       return { status: "applied", factType: "chat_exchange", factId: existing.id };
     }

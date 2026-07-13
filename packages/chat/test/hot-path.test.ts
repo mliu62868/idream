@@ -146,6 +146,10 @@ describe("chat hot path (P0-3)", () => {
     await drainQueue(CHAT_QUEUES.generate, async (job) => {
       await processGenerate(job.payload as Parameters<typeof processGenerate>[0], prisma);
     });
+    await prisma.message.update({
+      where: { id: first.userMessageId },
+      data: { characterContentVersionId: "content_hot_edit_v1" },
+    });
 
     const edited = await editUserMessage(
       { userId: EDIT_USER, messageId: first.userMessageId, content: "after edit pears" },
@@ -155,6 +159,15 @@ describe("chat hot path (P0-3)", () => {
     expect(edited.userMessageId).toBe(first.userMessageId);
     expect(edited.status).toBe("generating");
     expect(edited.streamUrl).toContain(first.assistantMessageId);
+    const correction = await prisma.chatOutboxEvent.findFirst({
+      where: { eventType: "chat.exchange.corrected.v2", aggregateId: first.userMessageId },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(correction?.payload).toMatchObject({ correctionType: "edited", correctionRevision: 1 });
+    await prisma.message.update({
+      where: { id: first.userMessageId },
+      data: { characterContentVersionId: null },
+    });
 
     const handled = await drainQueue(CHAT_QUEUES.generate, async (job) => {
       await processGenerate(job.payload as Parameters<typeof processGenerate>[0], prisma);

@@ -169,13 +169,38 @@ ALTER TABLE chat.chat_outbox_events
 
 -- Inbox (main → chat). Commands consumed idempotently on event_id.
 CREATE TABLE IF NOT EXISTS chat.chat_inbox_events (
-  id           text PRIMARY KEY,                        -- event_id from main
+  id           text PRIMARY KEY,                        -- chat-local receipt id
+  source_service text NOT NULL DEFAULT 'main',
+  source_event_id text NOT NULL,
+  payload_hash text NOT NULL,
   event_type   text NOT NULL,
   payload      jsonb NOT NULL DEFAULT '{}'::jsonb,
   status       text NOT NULL DEFAULT 'pending',         -- pending|consumed|failed
   attempts     integer NOT NULL DEFAULT 0,
   created_at   timestamp NOT NULL DEFAULT (timezone('utc', now())),
-  consumed_at  timestamp
+  processed_at timestamp,
+  consumed_at  timestamp                               -- legacy compatibility
 );
+ALTER TABLE chat.chat_inbox_events
+  ADD COLUMN IF NOT EXISTS source_service text,
+  ADD COLUMN IF NOT EXISTS source_event_id text,
+  ADD COLUMN IF NOT EXISTS payload_hash text,
+  ADD COLUMN IF NOT EXISTS processed_at timestamp;
+UPDATE chat.chat_inbox_events
+SET source_service = COALESCE(source_service, payload #>> '{__durable,sourceService}', 'main'),
+    source_event_id = COALESCE(source_event_id, id),
+    payload_hash = COALESCE(payload_hash, payload #>> '{__durable,payloadHash}', 'legacy:' || id),
+    processed_at = COALESCE(processed_at, consumed_at)
+WHERE source_service IS NULL
+   OR source_event_id IS NULL
+   OR payload_hash IS NULL
+   OR (processed_at IS NULL AND consumed_at IS NOT NULL);
+ALTER TABLE chat.chat_inbox_events
+  ALTER COLUMN source_service SET DEFAULT 'main',
+  ALTER COLUMN source_service SET NOT NULL,
+  ALTER COLUMN source_event_id SET NOT NULL,
+  ALTER COLUMN payload_hash SET NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS chat_inbox_source_key
+  ON chat.chat_inbox_events (source_service, source_event_id);
 CREATE INDEX IF NOT EXISTS chat_inbox_pending_idx
   ON chat.chat_inbox_events (status, created_at);

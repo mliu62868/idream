@@ -9,7 +9,7 @@ import { createChatPrisma } from "../src/db.js";
 import { consumeInbound, persistInboundEvent, reprocessPendingInbox } from "../src/inbox.js";
 import { reconcile } from "../src/reconcile.js";
 import { rollSessionLog, pruneExpiredSegments } from "../src/maintain.js";
-import { deleteSession, deleteAccount } from "../src/privacy.js";
+import { deleteMessage, deleteSession, deleteAccount } from "../src/privacy.js";
 import { appendLine, chatFsPaths, listPrefix } from "../src/chat-fs.js";
 import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { acceptAgeGate } from "./fixtures.js";
@@ -54,9 +54,21 @@ describe("inbox (P0-4 main→chat, idempotent)", () => {
       payload: { userId: USER, tier: "premium" },
     };
     expect(await persistInboundEvent(event, prisma)).toMatchObject({ acknowledged: true, status: "persisted" });
+    const receipt = await prisma.chatInboxEvent.findUnique({
+      where: { sourceService_sourceEventId: { sourceService: "main", sourceEventId: event.sourceEventId } },
+    });
+    expect(receipt).toMatchObject({
+      sourceService: "main",
+      sourceEventId: event.sourceEventId,
+      status: "pending",
+    });
+    if (!receipt) throw new Error("durable receipt was not persisted");
+    expect(receipt?.payloadHash).toMatch(/^[0-9a-f]{64}$/);
     expect(await persistInboundEvent(event, prisma)).toMatchObject({ acknowledged: true, status: "duplicate" });
     expect(await persistInboundEvent({ ...event, payload: { ...event.payload, tier: "free" } }, prisma))
       .toMatchObject({ acknowledged: false, status: "quarantined" });
+    const quarantined = await prisma.chatInboxEvent.findUnique({ where: { id: receipt.id } });
+    expect(quarantined?.processedAt).toBeInstanceOf(Date);
   });
 
   it("character.removed archives active sessions; re-consume is a no-op", async () => {
@@ -124,6 +136,17 @@ describe("privacy deletion (P0-5, PG + files)", () => {
       data: { id: "rel_del", userId: USER, characterId: CHAR, status: "active" },
     });
     await prisma.message.create({ data: { id: "rel_del_m", sessionId: s.id, role: "user", content: "hi", status: "sent" } });
+    await prisma.message.create({
+      data: {
+        id: "rel_del_a",
+        sessionId: s.id,
+        role: "assistant",
+        content: "hello",
+        status: "sent",
+        attempt: 2,
+        replyToMessageId: "rel_del_m",
+      },
+    });
     await appendLine(chatFsPaths.sessionLog(USER, s.id), JSON.stringify({ k: 1 }));
 
     await deleteSession({ userId: USER, sessionId: s.id }, prisma);
@@ -132,6 +155,37 @@ describe("privacy deletion (P0-5, PG + files)", () => {
     expect((await prisma.chatSession.findUnique({ where: { id: s.id } }))?.status).toBe("deleted");
     const files = await readdir(path.join(fsRoot, "sessions", USER)).catch(() => []);
     expect(files).not.toContain(`${s.id}.jsonl`);
+    const correction = await prisma.chatOutboxEvent.findFirst({
+      where: { eventType: "chat.exchange.corrected.v2", aggregateId: "rel_del_m" },
+    });
+    expect(correction?.payload).toMatchObject({ correctionType: "superseded", correctionRevision: 2 });
+  });
+
+  it("deleteMessage emits a typed deleted correction for the logical exchange", async () => {
+    const s = await prisma.chatSession.create({
+      data: { id: "rel_delete_message", userId: USER, characterId: CHAR, status: "active" },
+    });
+    await prisma.message.create({
+      data: { id: "rel_delete_user", sessionId: s.id, role: "user", content: "hi", status: "sent" },
+    });
+    await prisma.message.create({
+      data: {
+        id: "rel_delete_assistant",
+        sessionId: s.id,
+        role: "assistant",
+        content: "hello",
+        status: "sent",
+        attempt: 3,
+        replyToMessageId: "rel_delete_user",
+      },
+    });
+
+    await deleteMessage({ userId: USER, messageId: "rel_delete_assistant" }, prisma);
+
+    const correction = await prisma.chatOutboxEvent.findFirst({
+      where: { eventType: "chat.exchange.corrected.v2", aggregateId: "rel_delete_user" },
+    });
+    expect(correction?.payload).toMatchObject({ correctionType: "deleted", correctionRevision: 3 });
   });
 
   it("deleteAccount wipes chat rows + both file prefixes + emits erasure", async () => {

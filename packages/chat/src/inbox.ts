@@ -20,6 +20,7 @@ export interface InboundEvent {
   eventId: string;
   eventType: string;
   payload: Record<string, unknown>;
+  sourceService?: string;
 }
 
 export async function persistInboundEvent(
@@ -28,35 +29,52 @@ export async function persistInboundEvent(
 ): Promise<{ acknowledged: boolean; status: "persisted" | "duplicate" | "quarantined"; receiptId: string | null }> {
   const event = durableEventEnvelopeSchema.parse(rawEvent);
   const payloadHash = hashEvent(event);
-  const existing = await prisma.chatInboxEvent.findUnique({ where: { id: event.sourceEventId } });
+  const existing = await prisma.chatInboxEvent.findUnique({
+    where: {
+      sourceService_sourceEventId: {
+        sourceService: event.sourceService,
+        sourceEventId: event.sourceEventId,
+      },
+    },
+  });
   if (existing) {
-    const metadata = durableMetadata(existing.payload);
-    if (metadata?.payloadHash === payloadHash) {
+    const persistedHash = existing.payloadHash || durableMetadata(existing.payload)?.payloadHash;
+    if (persistedHash === payloadHash) {
       return { acknowledged: true, status: "duplicate", receiptId: existing.id };
     }
     await prisma.chatInboxEvent.update({
       where: { id: existing.id },
-      data: { status: "quarantined", attempts: { increment: 1 } },
+      data: { status: "quarantined", processedAt: new Date(), attempts: { increment: 1 } },
     });
     return { acknowledged: false, status: "quarantined", receiptId: existing.id };
   }
-  await prisma.chatInboxEvent.create({
-    data: {
-      id: event.sourceEventId,
-      eventType: event.eventType,
-      payload: {
-        ...event.payload,
-        __durable: {
-          sourceService: event.sourceService,
-          payloadHash,
-          occurredAt: event.occurredAt,
-          aggregateType: event.aggregateType,
-          aggregateId: event.aggregateId,
-        },
-      } as never,
-    },
-  });
-  return { acknowledged: true, status: "persisted", receiptId: event.sourceEventId };
+  try {
+    await prisma.chatInboxEvent.create({
+      data: {
+        id: receiptId(event.sourceService, event.sourceEventId),
+        sourceService: event.sourceService,
+        sourceEventId: event.sourceEventId,
+        payloadHash,
+        eventType: event.eventType,
+        payload: event.payload as never,
+      },
+    });
+  } catch (error) {
+    // Concurrent at-least-once deliveries can both observe no receipt. Let the
+    // unique source key choose the winner, then classify the loser as an exact
+    // replay or a payload conflict through the same public path.
+    if (isUniqueConstraintError(error)) return persistInboundEvent(rawEvent, prisma);
+    throw error;
+  }
+  return { acknowledged: true, status: "persisted", receiptId: receiptId(event.sourceService, event.sourceEventId) };
+}
+
+function isUniqueConstraintError(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && "code" in error && error.code === "P2002");
+}
+
+function receiptId(sourceService: string, sourceEventId: string): string {
+  return `${sourceService}:${sourceEventId}`;
 }
 
 function hashEvent(event: DurableEventEnvelope): string {
@@ -96,28 +114,52 @@ export async function consumeInbound(
   prisma: ChatPrismaClient = chatPrisma,
 ): Promise<{ applied: boolean }> {
   // Idempotency gate: insert pending row; if it exists & consumed, skip.
-  const existing = await prisma.chatInboxEvent.findUnique({ where: { id: event.eventId } });
+  const sourceService = event.sourceService ?? "main";
+  const existing = await prisma.chatInboxEvent.findUnique({
+    where: { sourceService_sourceEventId: { sourceService, sourceEventId: event.eventId } },
+  });
   if (existing?.status === "consumed") return { applied: false };
   if (!existing) {
     await prisma.chatInboxEvent.create({
-      data: { id: event.eventId, eventType: event.eventType, payload: event.payload as never },
+      data: {
+        id: receiptId(sourceService, event.eventId),
+        sourceService,
+        sourceEventId: event.eventId,
+        payloadHash: hashInboundEvent(event),
+        eventType: event.eventType,
+        payload: event.payload as never,
+      },
     });
   }
+  const eventToApply: InboundEvent = existing
+    ? {
+        eventId: existing.sourceEventId,
+        sourceService: existing.sourceService,
+        eventType: existing.eventType,
+        payload: (existing.payload ?? {}) as Record<string, unknown>,
+      }
+    : event;
 
   try {
-    await applyEffect(event, prisma);
+    await applyEffect(eventToApply, prisma);
     await prisma.chatInboxEvent.update({
-      where: { id: event.eventId },
-      data: { status: "consumed", consumedAt: new Date() },
+      where: { id: existing?.id ?? receiptId(sourceService, event.eventId) },
+      data: { status: "consumed", processedAt: new Date(), consumedAt: new Date() },
     });
     return { applied: true };
   } catch (error) {
     await prisma.chatInboxEvent.update({
-      where: { id: event.eventId },
+      where: { id: existing?.id ?? receiptId(sourceService, event.eventId) },
       data: { status: "failed", attempts: { increment: 1 } },
     });
     throw error;
   }
+}
+
+function hashInboundEvent(event: InboundEvent): string {
+  return createHash("sha256")
+    .update(canonicalJson({ eventType: event.eventType, payload: event.payload }))
+    .digest("hex");
 }
 
 async function applyEffect(event: InboundEvent, prisma: ChatPrismaClient): Promise<void> {
@@ -284,12 +326,17 @@ export async function reprocessPendingInbox(
   for (const row of pending) {
     try {
       await applyEffect(
-        { eventId: row.id, eventType: row.eventType, payload: (row.payload ?? {}) as Record<string, unknown> },
+        {
+          eventId: row.sourceEventId,
+          sourceService: row.sourceService,
+          eventType: row.eventType,
+          payload: (row.payload ?? {}) as Record<string, unknown>,
+        },
         prisma,
       );
       await prisma.chatInboxEvent.update({
         where: { id: row.id },
-        data: { status: "consumed", consumedAt: new Date() },
+        data: { status: "consumed", processedAt: new Date(), consumedAt: new Date() },
       });
       applied += 1;
     } catch {

@@ -13,6 +13,7 @@ import { deletePrefix } from "./chat-fs.js";
 import { forgetByMessageIds } from "./memories.js";
 import { recordOutbox } from "./outbox.js";
 import { CHAT_TO_MAIN_EVENTS } from "@idream/shared/contracts";
+import { recordExchangeCorrection } from "./exchange-corrections.js";
 
 export async function deleteMessage(
   input: { userId: string; messageId: string },
@@ -25,11 +26,26 @@ export async function deleteMessage(
     throw new Error("not your message");
   }
   await prisma.$transaction(async (tx) => {
+    const assistant = message.role === "assistant"
+      ? message
+      : await tx.message.findFirst({
+          where: { replyToMessageId: message.id, role: "assistant", deletedAt: null },
+          orderBy: { createdAt: "desc" },
+        });
+    const exchangeId = message.role === "user" ? message.id : message.replyToMessageId;
     await tx.messageVersion.deleteMany({ where: { messageId: message.id } });
     await tx.message.update({
       where: { id: message.id },
       data: { status: "deleted", content: "", deletedAt: new Date() },
     });
+    if (assistant?.status === "sent" && exchangeId) {
+      await recordExchangeCorrection(tx, {
+        exchangeId,
+        correctionType: "deleted",
+        correctionRevision: assistant.attempt,
+        userId: input.userId,
+      });
+    }
   });
   // Clear source linkage: drop any long-term memory derived from this message
   // (PRD §12 — deletion must reach the index/files, not just filter retrieval).
@@ -45,7 +61,10 @@ export async function deleteSession(
     throw new Error("not your session");
   }
   const deletedIds = await prisma.$transaction(async (tx) => {
-    const messages = await tx.message.findMany({ where: { sessionId: session.id }, select: { id: true } });
+    const messages = await tx.message.findMany({
+      where: { sessionId: session.id },
+      select: { id: true, role: true, status: true, attempt: true, replyToMessageId: true },
+    });
     const ids = messages.map((m) => m.id);
     if (ids.length) await tx.messageVersion.deleteMany({ where: { messageId: { in: ids } } });
     await tx.message.deleteMany({ where: { sessionId: session.id } });
@@ -53,6 +72,15 @@ export async function deleteSession(
       where: { id: session.id },
       data: { status: "deleted", deletedAt: new Date() },
     });
+    for (const message of messages) {
+      if (message.role !== "assistant" || message.status !== "sent" || !message.replyToMessageId) continue;
+      await recordExchangeCorrection(tx, {
+        exchangeId: message.replyToMessageId,
+        correctionType: "superseded",
+        correctionRevision: message.attempt,
+        userId: input.userId,
+      });
+    }
     await recordOutbox(tx, {
       eventType: CHAT_TO_MAIN_EVENTS.sessionDeleted,
       aggregateType: "session",

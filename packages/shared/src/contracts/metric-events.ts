@@ -30,13 +30,23 @@ export const chatExchangeCompletedV2Schema = z
     }
   });
 
-export const chatExchangeCorrectionV2Schema = z.object({
-  exchangeId: z.string().min(1),
-  correctionType: z.enum(["selected", "edited", "deleted", "superseded"]),
-  correctionRevision: z.number().int().positive(),
-  userId: z.string().min(1),
-  selectedAssistantMessageId: z.string().min(1).optional(),
-});
+export const chatExchangeCorrectionV2Schema = z
+  .object({
+    exchangeId: z.string().min(1),
+    correctionType: z.enum(["selected", "edited", "deleted", "superseded"]),
+    correctionRevision: z.number().int().positive(),
+    userId: z.string().min(1),
+    selectedAssistantMessageId: z.string().min(1).optional(),
+  })
+  .superRefine((event, ctx) => {
+    if (event.correctionType === "selected" && !event.selectedAssistantMessageId) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["selectedAssistantMessageId"],
+        message: "Selection corrections require the selected assistant message id",
+      });
+    }
+  });
 
 export const customerSignupCompletedV2Schema = z.object({
   userId: z.string().min(1),

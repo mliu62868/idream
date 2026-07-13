@@ -252,8 +252,15 @@ describe("canonical metric fact projector", () => {
         occurredAt: new Date(d0.getTime() + 22_000),
       }));
       await projectCanonicalMetricEvent(prisma, completedEvent({
-        exchangeId: `${replayId}-d0-replacement`,
+        exchangeId: `${replayId}-d0-3`,
         occurredAt: new Date(d0.getTime() + 23_000),
+        sessionId: `${replayId}-d0-session`,
+        attemptNo: 2,
+        isRegeneration: true,
+      }));
+      await projectCanonicalMetricEvent(prisma, completedEvent({
+        exchangeId: `${replayId}-d0-replacement`,
+        occurredAt: new Date(d0.getTime() + 24_000),
         sessionId: `${replayId}-d0-session`,
       }));
       for (let index = 0; index < 5; index += 1) {
