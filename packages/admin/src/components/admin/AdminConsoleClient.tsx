@@ -10,6 +10,7 @@ import {
   ChevronRight,
   Languages,
   Loader2,
+  Menu,
   RefreshCcw,
   X,
 } from "lucide-react";
@@ -178,6 +179,8 @@ export function AdminConsoleClient({
   devLogout = false,
 }: AdminConsoleClientProps) {
   const sidebarNavRef = useRef<HTMLElement | null>(null);
+  const mobileNavRef = useRef<HTMLElement | null>(null);
+  const mobileNavTriggerRef = useRef<HTMLButtonElement | null>(null);
   const { sectionId, view: subview } = parseAdminPath(initialSection);
   const activeItem = adminSectionItem(sectionId);
   const permissions = useMemo(() => new Set(initialPermissions), [initialPermissions]);
@@ -188,6 +191,7 @@ export function AdminConsoleClient({
     [permissions, workMode],
   );
   const [data, setData] = useState<SectionData | null>(null);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
@@ -200,6 +204,57 @@ export function AdminConsoleClient({
   const [localeReady, setLocaleReady] = useState(false);
   const t = (key: string, values?: Record<string, string | number>) =>
     translateAdmin(locale, key, values);
+
+  useEffect(() => {
+    if (!mobileNavOpen) return;
+    const skipLink = document.getElementById("admin-skip-link");
+    const trigger = mobileNavTriggerRef.current;
+    const previousOverflow = document.body.style.overflow;
+    skipLink?.setAttribute("aria-hidden", "true");
+    if (skipLink instanceof HTMLElement) skipLink.inert = true;
+    document.body.style.overflow = "hidden";
+    const timer = window.setTimeout(() => {
+      mobileNavRef.current?.querySelector<HTMLElement>("button, a")?.focus();
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      skipLink?.removeAttribute("aria-hidden");
+      if (skipLink instanceof HTMLElement) skipLink.inert = false;
+      document.body.style.overflow = previousOverflow;
+      trigger?.focus();
+    };
+  }, [mobileNavOpen]);
+
+  useEffect(() => {
+    const persistentSidebar = window.matchMedia("(min-width: 1280px)");
+    const closeDrawer = (event: MediaQueryListEvent) => {
+      if (event.matches) setMobileNavOpen(false);
+    };
+    persistentSidebar.addEventListener("change", closeDrawer);
+    return () => persistentSidebar.removeEventListener("change", closeDrawer);
+  }, []);
+
+  function handleMobileNavKeyDown(event: KeyboardEvent<HTMLElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setMobileNavOpen(false);
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = [...(mobileNavRef.current?.querySelectorAll<HTMLElement>(
+      "button:not([disabled]), a[href], [tabindex]:not([tabindex='-1'])",
+    ) ?? [])];
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable.at(-1)!;
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -435,7 +490,8 @@ export function AdminConsoleClient({
     <main className="min-h-screen overflow-x-hidden bg-[var(--ad-canvas)] text-[var(--ad-ink)]">
       <div className="flex min-h-screen" id="admin-shell-background">
         <aside
-          className="sticky top-0 hidden h-screen w-[248px] shrink-0 overflow-hidden border-r border-[var(--ad-border)] bg-[var(--ad-surface)] lg:flex lg:flex-col"
+          inert={mobileNavOpen ? true : undefined}
+          className="sticky top-0 hidden h-screen w-[248px] shrink-0 overflow-hidden border-r border-[var(--ad-border)] bg-[var(--ad-surface)] xl:flex xl:flex-col"
           onWheel={handleSidebarWheel}
         >
           <div className="flex h-14 shrink-0 items-center border-b border-[var(--ad-border)] px-5">
@@ -487,12 +543,79 @@ export function AdminConsoleClient({
           </nav>
         </aside>
 
-        <section className="min-w-0 flex-1" id="admin-main-content">
+        {mobileNavOpen ? (
+          <div className="fixed inset-0 z-50 xl:hidden">
+            <button
+              aria-label={t("Close navigation")}
+              className="absolute inset-0 bg-black/50"
+              onClick={() => setMobileNavOpen(false)}
+              type="button"
+            />
+            <aside
+              aria-label={t("Admin navigation")}
+              aria-modal="true"
+              className="relative flex h-full w-[min(22rem,88vw)] flex-col border-r border-[var(--ad-border)] bg-[var(--ad-surface)] shadow-2xl"
+              id="admin-mobile-navigation"
+              onKeyDown={handleMobileNavKeyDown}
+              ref={mobileNavRef}
+              role="dialog"
+            >
+              <div className="flex min-h-14 items-center justify-between border-b border-[var(--ad-border)] px-4">
+                <div>
+                  <p className="text-sm font-semibold">iDream Admin</p>
+                  <p className="text-[11px] text-[var(--ad-text-muted)]">{actor.role}</p>
+                </div>
+                <button
+                  aria-label={t("Close navigation")}
+                  className="grid min-h-11 min-w-11 place-items-center rounded-md hover:bg-black/[0.04]"
+                  onClick={() => setMobileNavOpen(false)}
+                  type="button"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              <nav className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
+                {navGroups.map(({ group, items }) => (
+                  <section className="border-b border-[var(--ad-border)] py-2 last:border-b-0" key={group}>
+                    {group === "Today" ? null : (
+                      <h2 className="px-3 pb-1 text-[10px] font-semibold uppercase text-[var(--ad-text-muted)]">
+                        {t(group)}
+                      </h2>
+                    )}
+                    {items.map((item) => (
+                      <NavLink
+                        active={item.id === sectionId}
+                        item={item}
+                        key={item.id}
+                        onNavigate={() => setMobileNavOpen(false)}
+                      />
+                    ))}
+                  </section>
+                ))}
+              </nav>
+            </aside>
+          </div>
+        ) : null}
+
+        <section className="min-w-0 flex-1" id="admin-main-content" inert={mobileNavOpen ? true : undefined}>
           <header className="sticky top-0 z-20 border-b border-[var(--ad-border)] bg-[rgba(247,246,243,0.92)] backdrop-blur">
             <div className="grid gap-3 px-4 py-3 md:px-6 lg:flex lg:min-h-14 lg:items-center">
-              <div className="min-w-0">
-                <h1 className="text-base font-semibold md:text-lg">{t(activeItem.label)}</h1>
-                <p className="truncate text-[11px] text-[var(--ad-text-muted)]">{actor.id} · {t(workModeLabel(workMode))}</p>
+              <div className="flex min-w-0 items-center gap-3">
+                <button
+                  aria-controls="admin-mobile-navigation"
+                  aria-expanded={mobileNavOpen}
+                  aria-label={t("Open navigation")}
+                  className="grid min-h-11 min-w-11 shrink-0 place-items-center rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] xl:hidden"
+                  onClick={() => setMobileNavOpen(true)}
+                  ref={mobileNavTriggerRef}
+                  type="button"
+                >
+                  <Menu className="h-5 w-5" />
+                </button>
+                <div className="min-w-0">
+                  <h1 className="truncate text-base font-semibold md:text-lg">{t(activeItem.label)}</h1>
+                  <p className="truncate text-[11px] text-[var(--ad-text-muted)]">{actor.id} · {t(workModeLabel(workMode))}</p>
+                </div>
               </div>
               <div className="grid gap-2 sm:grid-cols-[1fr_auto] lg:ml-auto lg:flex lg:items-center">
                 <GlobalAdminSearch />
@@ -562,25 +685,6 @@ export function AdminConsoleClient({
               </div>
             </div>
             <ShellSignalBar signals={shellSignals} />
-            <nav className="flex gap-2 overflow-x-auto border-t border-[var(--ad-border)] px-4 py-2 md:px-6 lg:hidden">
-              {navGroups.flatMap((group) => group.items).map((item) => {
-                const Icon = item.icon;
-                const active = item.id === sectionId;
-                return (
-                  <Link
-                    className={cn(
-                      "inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-xs font-medium text-[var(--ad-text-muted)]",
-                      active && "bg-[var(--ad-ink)] text-white",
-                    )}
-                    href={item.href}
-                    key={item.id}
-                  >
-                    <Icon className="h-4 w-4" />
-                    {t(item.label)}
-                  </Link>
-                );
-              })}
-            </nav>
           </header>
 
           <div className="p-4 md:p-6">
@@ -749,7 +853,7 @@ function workModeLabel(mode: WorkMode) {
 
 // SPEC: shared sidebar link markup for both the pinned daily section and the
 // folded groups, so the two render paths (and any future ones) can't drift apart.
-function NavLink({ active, item }: { active: boolean; item: NavItem }) {
+function NavLink({ active, item, onNavigate }: { active: boolean; item: NavItem; onNavigate?: () => void }) {
   const { t } = useAdminI18n();
   const Icon = item.icon;
 
@@ -760,6 +864,7 @@ function NavLink({ active, item }: { active: boolean; item: NavItem }) {
         active && "bg-black/[0.05] text-[var(--ad-ink)]",
       )}
       href={item.href}
+      onClick={onNavigate}
     >
       <Icon className="h-4 w-4" />
       <span>{t(item.label)}</span>

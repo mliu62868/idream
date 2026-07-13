@@ -9,6 +9,7 @@ describe("admin source boundary", () => {
   it("server-renders the interactive shell behind route-level recovery boundaries", async () => {
     const clientEntry = await readFile(path.join(packageRoot, "src/app/admin/AdminConsoleClientOnly.tsx"), "utf8");
     const routePage = await readFile(path.join(packageRoot, "src/app/admin/[[...section]]/page.tsx"), "utf8");
+    const routeRenderer = await readFile(path.join(packageRoot, "src/app/admin/_server/render-admin-route.tsx"), "utf8");
     const loading = await readFile(path.join(packageRoot, "src/app/admin/loading.tsx"), "utf8");
     const error = await readFile(path.join(packageRoot, "src/app/admin/error.tsx"), "utf8");
     const notFound = await readFile(path.join(packageRoot, "src/app/admin/not-found.tsx"), "utf8");
@@ -17,6 +18,8 @@ describe("admin source boundary", () => {
     expect(clientEntry).not.toContain("next/dynamic");
     expect(clientEntry).toContain("<AdminConsoleClient");
     expect(routePage).toContain("export async function generateMetadata");
+    expect(routePage).toContain("renderAdminRoute(section");
+    expect(routeRenderer).toContain("<AdminConsoleClientOnly");
     expect(loading).toContain('aria-busy="true"');
     expect(error).toContain('role="alert"');
     expect(notFound).toContain('href="/admin/today"');
