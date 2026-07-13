@@ -17,6 +17,7 @@ import {
   isGenerationTransportExecutionTransitionAllowed,
 } from "./generation-evidence-transition-authority";
 import { isGenerationAttemptTransitionAllowed } from "@/server/modules/admin-v2/shared/state-transition-authority";
+import { recordGenerationInvocationUsageFact } from "./generation-invocation-usage";
 
 export async function ingestGenerationManifest(
   rawInput: unknown,
@@ -81,7 +82,7 @@ export async function ingestGenerationManifest(
       if (existingTransport && !isGenerationTransportExecutionTransitionAllowed(existingTransport.status, "succeeded")) {
         throw Errors.conflict("Completion manifest cannot rewrite a terminal TransportExecution", { status: existingTransport.status });
       }
-      await tx.generationTransportExecution.upsert({
+      const transport = await tx.generationTransportExecution.upsert({
         where: transportKey,
         create: {
           attemptId: existingAttempt.id,
@@ -89,11 +90,22 @@ export async function ingestGenerationManifest(
           providerRequestId: input.manifest.providerRequestId,
           idempotencyKey: input.manifest.providerIdempotencyKey ?? existingAttempt.id,
           status: "succeeded",
+          latencyMs: input.manifest.accounting?.latencyMs,
+          costMicros: manifestCostMicros(input),
+          pricingVersion: input.manifest.accounting?.pricingVersion,
           manifestRef: input.manifestRef,
           finishedAt: new Date(input.manifest.completedAt),
         },
-        update: { status: "succeeded", manifestRef: input.manifestRef, finishedAt: new Date(input.manifest.completedAt) },
+        update: {
+          status: "succeeded",
+          latencyMs: input.manifest.accounting?.latencyMs,
+          costMicros: manifestCostMicros(input),
+          pricingVersion: input.manifest.accounting?.pricingVersion,
+          manifestRef: input.manifestRef,
+          finishedAt: new Date(input.manifest.completedAt),
+        },
       });
+      await recordGenerationInvocationUsageFact(tx, manifestUsageFactInput(input, transport.id));
       for (const asset of input.manifest.assets) {
         const artifactKey = { attemptId_ordinal: { attemptId: existingAttempt.id, ordinal: asset.ordinal } };
         const existingArtifact = await tx.generationArtifact.findUnique({ where: artifactKey });
@@ -208,7 +220,7 @@ export async function ingestGenerationManifest(
     if (existingTransport && !isGenerationTransportExecutionTransitionAllowed(existingTransport.status, "succeeded")) {
       throw Errors.conflict("Completion manifest cannot rewrite a terminal TransportExecution", { status: existingTransport.status });
     }
-    await tx.generationTransportExecution.upsert({
+    const transport = await tx.generationTransportExecution.upsert({
       where: transportKey,
       create: {
         attemptId: attempt.id,
@@ -216,11 +228,23 @@ export async function ingestGenerationManifest(
         providerRequestId: input.manifest.providerRequestId,
         idempotencyKey: input.manifest.providerIdempotencyKey ?? attempt.id,
         status: "succeeded",
+        latencyMs: input.manifest.accounting?.latencyMs,
+        costMicros: manifestCostMicros(input),
+        pricingVersion: input.manifest.accounting?.pricingVersion,
         manifestRef: input.manifestRef,
         finishedAt: new Date(input.manifest.completedAt),
       },
-      update: { status: "succeeded", providerRequestId: input.manifest.providerRequestId, manifestRef: input.manifestRef, finishedAt: new Date(input.manifest.completedAt) },
+      update: {
+        status: "succeeded",
+        providerRequestId: input.manifest.providerRequestId,
+        latencyMs: input.manifest.accounting?.latencyMs,
+        costMicros: manifestCostMicros(input),
+        pricingVersion: input.manifest.accounting?.pricingVersion,
+        manifestRef: input.manifestRef,
+        finishedAt: new Date(input.manifest.completedAt),
+      },
     });
+    await recordGenerationInvocationUsageFact(tx, manifestUsageFactInput(input, transport.id));
     for (const asset of input.manifest.assets) {
       await tx.generationArtifact.upsert({
         where: { attemptId_ordinal: { attemptId: attempt.id, ordinal: asset.ordinal } },
@@ -256,6 +280,30 @@ export async function ingestGenerationManifest(
     );
   }
   return result;
+}
+
+function manifestCostMicros(input: GenerationManifestIngest): bigint | null {
+  const costMicros = input.manifest.accounting?.costMicros;
+  return costMicros === null || costMicros === undefined ? null : BigInt(costMicros);
+}
+
+function manifestUsageFactInput(
+  input: GenerationManifestIngest,
+  transportExecutionId: string,
+) {
+  return {
+    attemptId: input.manifest.attemptId,
+    generationJobId: input.manifest.generationJobId,
+    transportAttemptNo: input.manifest.transportAttemptNo,
+    transportExecutionId,
+    provider: input.manifest.provider,
+    model: input.manifest.model,
+    usage: input.manifest.accounting?.usage ?? input.manifest.usage,
+    latencyMs: input.manifest.accounting?.latencyMs ?? null,
+    costMicros: input.manifest.accounting?.costMicros ?? null,
+    pricingVersion: input.manifest.accounting?.pricingVersion ?? null,
+    occurredAt: new Date(input.manifest.completedAt),
+  };
 }
 
 function finalizePayload(input: GenerationManifestIngest) {

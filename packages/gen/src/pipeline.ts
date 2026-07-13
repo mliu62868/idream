@@ -25,7 +25,14 @@ import {
 import { mockVideoMp4Bytes } from "@idream/shared";
 import { env } from "./env";
 import { assertGeneratedImageSanity, GeneratedImageSanityError } from "./generated-image-sanity";
-import { type GenProviders, type ImageModel, type ProviderFailure, type VideoModel, providers as defaultProviders } from "./providers";
+import {
+  type GenProviders,
+  type ImageModel,
+  type ProviderFailure,
+  type ProviderInvocationMetadata,
+  type VideoModel,
+  providers as defaultProviders,
+} from "./providers";
 import type { EnqueueFn, JsonPayload } from "./queue";
 import { hydratedImageReferenceInputs } from "./reference-images";
 import { loadPersistedCompletionManifest, persistCompletionManifest } from "./completion-manifest";
@@ -131,6 +138,8 @@ async function recordTransport(
   provider: string,
   status: "running" | "failed" | "unknown",
   error: { code: string; message: string } | null = null,
+  accounting?: ReturnType<typeof invocationAccounting>,
+  providerRequestId: string | null = null,
 ) {
   if (!deps.recordTransportExecution) return;
   const identity = transportIdentity(payload, deps);
@@ -139,11 +148,31 @@ async function recordTransport(
     ...identity,
     generationJobId: payload.generationJobId,
     provider,
-    providerRequestId: null,
+    model: payload.model ?? provider,
+    providerRequestId,
     status,
     occurredAt: new Date().toISOString(),
     error,
+    ...(accounting ? { accounting } : {}),
   });
+}
+
+function invocationAccounting(
+  invocation: ProviderInvocationMetadata | undefined,
+  latencyMs: number,
+  fallbackUsage: Readonly<Record<string, unknown>> = {},
+) {
+  const pricingVersion = invocation?.pricingVersion?.trim() || null;
+  const providerCost = invocation?.costMicros;
+  const costMicros = pricingVersion !== null && Number.isSafeInteger(providerCost) && (providerCost ?? -1) >= 0
+    ? providerCost ?? null
+    : null;
+  return {
+    usage: { ...(invocation?.usage ?? fallbackUsage) },
+    latencyMs: Math.max(0, Math.round(latencyMs)),
+    costMicros,
+    pricingVersion,
+  };
 }
 
 export async function processImageGenerate(
@@ -185,6 +214,7 @@ export async function processImageGenerate(
   const imageProvider = payload.model ?? "image-provider";
   const imageTransport = transportIdentity(payload, deps);
   await recordTransport(deps, payload, imageProvider, "running");
+  const invocationStartedAt = performance.now();
   const result = await imageModel.generate({
     prompt: payload.prompt,
     count: payload.count,
@@ -196,12 +226,21 @@ export async function processImageGenerate(
     orientation: payload.orientation,
     ...(referenceImages.length > 0 ? { referenceImages } : {}),
   });
+  const invocationLatencyMs = performance.now() - invocationStartedAt;
 
   if (!result.ok) {
     const safeRetry = canAutomaticallyRetry(imageModel, result.error);
     const ambiguous = result.error.retryable && !safeRetry && ["timeout", "internal"].includes(result.error.code);
     try {
-      await recordTransport(deps, payload, imageProvider, ambiguous ? "unknown" : "failed", result.error);
+      await recordTransport(
+        deps,
+        payload,
+        imageProvider,
+        ambiguous ? "unknown" : "failed",
+        result.error,
+        invocationAccounting(result.invocation, invocationLatencyMs),
+        result.invocation?.providerRequestId ?? null,
+      );
     } catch (recordError) {
       if (safeRetry && !isFinalAttempt(deps)) throw recordError;
     }
@@ -290,6 +329,7 @@ export async function processImageGenerate(
     assets,
     usage: { gpuSeconds: assets.length * 1.2, model: payload.model },
   };
+  const accounting = invocationAccounting(result.invocation, invocationLatencyMs, completedPayload.usage);
   if (deps.acknowledgeCompletion) {
     const ingest = await persistCompletionManifest(providers.blob, {
       version: 1,
@@ -301,10 +341,12 @@ export async function processImageGenerate(
       generationJobId: payload.generationJobId,
       mode: "image",
       provider: payload.model,
-      providerRequestId: null,
+      model: payload.model,
+      providerRequestId: result.invocation?.providerRequestId ?? null,
       completedAt: new Date().toISOString(),
       assets: assets.map((asset, ordinal) => ({ ordinal, ...asset })),
       usage: completedPayload.usage,
+      accounting,
     });
     await deps.acknowledgeCompletion(ingest);
     return;
@@ -375,6 +417,7 @@ export async function processVideoGenerate(
   const videoProvider = payload.model ?? "video-provider";
   const videoTransport = transportIdentity(payload, deps);
   await recordTransport(deps, payload, videoProvider, "running");
+  const invocationStartedAt = performance.now();
   const result = await videoModel.generate({
     prompt: payload.prompt,
     seconds: payload.seconds,
@@ -384,12 +427,21 @@ export async function processVideoGenerate(
     controls: payload.controls,
     requestId: videoTransport.idempotencyKey,
   });
+  const invocationLatencyMs = performance.now() - invocationStartedAt;
 
   if (!result.ok) {
     const safeRetry = canAutomaticallyRetry(videoModel, result.error);
     const ambiguous = result.error.retryable && !safeRetry && ["timeout", "internal"].includes(result.error.code);
     try {
-      await recordTransport(deps, payload, videoProvider, ambiguous ? "unknown" : "failed", result.error);
+      await recordTransport(
+        deps,
+        payload,
+        videoProvider,
+        ambiguous ? "unknown" : "failed",
+        result.error,
+        invocationAccounting(result.invocation, invocationLatencyMs),
+        result.invocation?.providerRequestId ?? null,
+      );
     } catch (recordError) {
       if (safeRetry && !isFinalAttempt(deps)) throw recordError;
     }
@@ -442,6 +494,7 @@ export async function processVideoGenerate(
     }],
     usage: { gpuSeconds: payload.seconds * 2, model: payload.model },
   };
+  const accounting = invocationAccounting(result.invocation, invocationLatencyMs, completedPayload.usage);
   if (deps.acknowledgeCompletion) {
     const ingest = await persistCompletionManifest(providers.blob, {
       version: 1,
@@ -453,10 +506,12 @@ export async function processVideoGenerate(
       generationJobId: payload.generationJobId,
       mode: "video",
       provider: payload.model,
-      providerRequestId: null,
+      model: payload.model,
+      providerRequestId: result.invocation?.providerRequestId ?? null,
       completedAt: new Date().toISOString(),
       assets: completedPayload.assets.map((asset, ordinal) => ({ ordinal, ...asset })),
       usage: completedPayload.usage,
+      accounting,
     });
     await deps.acknowledgeCompletion(ingest);
     return;

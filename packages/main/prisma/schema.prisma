@@ -1654,7 +1654,9 @@ model GenerationTransportExecution {
   providerRequestId  String?
   idempotencyKey     String?
   status             String
+  latencyMs          Int?
   costMicros         BigInt?
+  pricingVersion     String?
   manifestRef        String?
   startedAt          DateTime  @default(now())
   finishedAt         DateTime?

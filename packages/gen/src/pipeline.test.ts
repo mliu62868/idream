@@ -140,7 +140,25 @@ describe("processImageGenerate", () => {
   it("persists an immutable manifest and waits for main durable ACK before completing", async () => {
     const enqueue = vi.fn(async (_: EnqueueInput) => {});
     const acknowledgeCompletion = vi.fn(async () => {});
-    const providers = makeProviders();
+    const providers = makeProviders({
+      image: {
+        generate: vi.fn(async () => ({
+          ok: true as const,
+          data: {
+            assets: [
+              { key: "mock/images/seed_1-1.png", width: 1024, height: 1024 },
+              { key: "mock/images/seed_1-2.png", width: 1024, height: 1024 },
+            ],
+          },
+          invocation: {
+            providerRequestId: "provider-request-image-1",
+            usage: { images: 2 },
+            costMicros: 125_000,
+            pricingVersion: "mock-image-v2",
+          },
+        })),
+      },
+    });
 
     await processImageGenerate(
       imagePayload({ attemptId: "attempt_img_1", attemptNo: 1 }),
@@ -158,6 +176,14 @@ describe("processImageGenerate", () => {
       manifest: expect.objectContaining({
         attemptId: "attempt_img_1",
         generationJobId: "job_img_1",
+        model: "mock-image",
+        providerRequestId: "provider-request-image-1",
+        accounting: {
+          usage: { images: 2 },
+          latencyMs: expect.any(Number),
+          costMicros: 125_000,
+          pricingVersion: "mock-image-v2",
+        },
         assets: expect.arrayContaining([expect.objectContaining({ ordinal: 0 })]),
       }),
     }));

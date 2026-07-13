@@ -17,6 +17,7 @@ const manifest = {
   generationJobId: "durable_manifest_job_1",
   mode: "image" as const,
   provider: "mock-image",
+  model: "mock-image-v2",
   providerRequestId: "provider-1",
   completedAt: "2026-07-11T12:00:00.000Z",
   assets: [{
@@ -28,6 +29,12 @@ const manifest = {
     providerKey: "provider-asset-1",
   }],
   usage: { gpuSeconds: 1.2, model: "mock-image" },
+  accounting: {
+    usage: { images: 1, gpuSeconds: 1.2 },
+    latencyMs: 640,
+    costMicros: 125_000,
+    pricingVersion: "mock-image-pricing-v2",
+  },
 };
 
 beforeEach(async () => {
@@ -37,6 +44,7 @@ beforeEach(async () => {
   await prisma.generationTransportExecution.deleteMany({ where: { attemptId } });
   await prisma.generationAttemptEvent.deleteMany({ where: { attemptId } });
   await prisma.generationAttempt.deleteMany({ where: { id: attemptId } });
+  await prisma.aiUsageFact.deleteMany({ where: { attemptId } });
 });
 
 afterAll(async () => {
@@ -73,7 +81,20 @@ describe("generation completion manifest durable ingest", () => {
     expect(await prisma.generationTransportExecution.findUnique({ where: { attemptId_transportAttemptNo: { attemptId, transportAttemptNo: 2 } } })).toMatchObject({
       status: "succeeded",
       idempotencyKey: manifest.providerIdempotencyKey,
+      latencyMs: manifest.accounting.latencyMs,
+      costMicros: BigInt(manifest.accounting.costMicros),
+      pricingVersion: manifest.accounting.pricingVersion,
     });
+    expect(await prisma.aiUsageFact.findMany({ where: { attemptId } })).toEqual([
+      expect.objectContaining({
+        requestId: manifest.generationJobId,
+        provider: manifest.provider,
+        model: manifest.model,
+        latencyMs: manifest.accounting.latencyMs,
+        costMicros: BigInt(manifest.accounting.costMicros),
+        pricingVersion: manifest.accounting.pricingVersion,
+      }),
+    ]);
     expect(await prisma.generationArtifact.count({ where: { attemptId } })).toBe(1);
     expect(await prisma.mainOutboxEvent.findUnique({ where: { id: outboxId } })).toMatchObject({
       eventType: "generation.manifest.accepted.v1",

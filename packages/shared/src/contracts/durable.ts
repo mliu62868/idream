@@ -28,6 +28,21 @@ const generationManifestAssetSchema = z.object({
   providerKey: z.string().nullable(),
 });
 
+export const generationProviderAccountingSchema = z.object({
+  usage: z.record(z.string(), z.unknown()),
+  latencyMs: z.number().int().nonnegative(),
+  costMicros: z.number().int().nonnegative().safe().nullable(),
+  pricingVersion: z.string().min(1).nullable(),
+}).superRefine((accounting, context) => {
+  if (accounting.costMicros !== null && accounting.pricingVersion === null) {
+    context.addIssue({
+      code: "custom",
+      path: ["pricingVersion"],
+      message: "priced provider cost requires an authoritative pricing version",
+    });
+  }
+});
+
 export const generationCompletionManifestSchema = z.object({
   version: z.literal(1),
   attemptId: z.string().min(1),
@@ -38,10 +53,12 @@ export const generationCompletionManifestSchema = z.object({
   generationJobId: z.string().min(1),
   mode: z.enum(["image", "video"]),
   provider: z.string().min(1),
+  model: z.string().min(1).optional(),
   providerRequestId: z.string().nullable(),
   completedAt: z.string().datetime(),
   assets: z.array(generationManifestAssetSchema).min(1),
   usage: z.record(z.string(), z.unknown()),
+  accounting: generationProviderAccountingSchema.optional(),
 });
 
 export const generationTransportExecutionEventSchema = z.object({
@@ -51,11 +68,13 @@ export const generationTransportExecutionEventSchema = z.object({
   generationJobId: z.string().min(1),
   transportAttemptNo: z.number().int().positive(),
   provider: z.string().min(1),
+  model: z.string().min(1).optional(),
   providerRequestId: z.string().nullable(),
   idempotencyKey: z.string().min(1),
   status: z.enum(["running", "failed", "unknown"]),
   occurredAt: z.string().datetime(),
   error: z.object({ code: z.string().min(1), message: z.string().min(1) }).nullable().default(null),
+  accounting: generationProviderAccountingSchema.optional(),
 });
 
 export const generationManifestIngestSchema = z.object({

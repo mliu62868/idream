@@ -91,7 +91,15 @@ export const aiUsageRecordedV2Schema = z.object({
   usage: z.record(z.string(), z.unknown()),
   latencyMs: z.number().int().nonnegative().optional(),
   costMicros: z.number().int().nonnegative().optional(),
-  pricingVersion: z.string().min(1),
+  pricingVersion: z.string().min(1).nullable().optional(),
+}).superRefine((usage, context) => {
+  if (usage.costMicros !== undefined && usage.pricingVersion == null) {
+    context.addIssue({
+      code: "custom",
+      path: ["pricingVersion"],
+      message: "priced provider cost requires an authoritative pricing version",
+    });
+  }
 });
 
 export const experimentExposedV2Schema = z.object({

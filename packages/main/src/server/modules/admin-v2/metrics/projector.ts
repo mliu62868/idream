@@ -666,7 +666,7 @@ async function applyEvent(tx: Transaction, event: MetricProductEvent): Promise<M
         usage: toInputJson(payload.usage),
         latencyMs: payload.latencyMs,
         costMicros: payload.costMicros === undefined ? null : BigInt(payload.costMicros),
-        pricingVersion: payload.pricingVersion,
+        pricingVersion: payload.pricingVersion ?? null,
         environment: event.environment,
         dataClass: event.dataClass,
         trustClass: event.trustClass,

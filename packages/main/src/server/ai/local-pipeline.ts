@@ -883,23 +883,25 @@ async function finalizeGenerationCompleted(
         },
       });
     }
-    await appendLocalCanonicalProductEvent(tx, {
-      sourceEventId: `ai-usage:${attemptId ?? job.id}:v2`,
-      eventType: "ai.usage.recorded.v2",
-      occurredAt: completedAt,
-      userId: job.userId,
-      context: { characterId: job.characterId, characterReleaseId: null },
-      payload: {
-        invocationId: attemptId ?? job.id,
-        requestId: job.id,
-        ...(attemptId ? { attemptId } : {}),
+    if (!payload.completionManifestRef) {
+      await appendLocalCanonicalProductEvent(tx, {
+        sourceEventId: `ai-usage:${attemptId ?? job.id}:v2`,
+        eventType: "ai.usage.recorded.v2",
+        occurredAt: completedAt,
         userId: job.userId,
-        provider: job.provider ?? "local-pipeline",
-        model: job.model ?? (typeof payload.usage.model === "string" ? payload.usage.model : "unknown"),
-        usage: payload.usage,
-        pricingVersion: `generation-${job.profileVersion ?? "legacy"}`,
-      },
-    });
+        context: { characterId: job.characterId, characterReleaseId: null },
+        payload: {
+          invocationId: attemptId ?? job.id,
+          requestId: job.id,
+          ...(attemptId ? { attemptId } : {}),
+          userId: job.userId,
+          provider: job.provider ?? "local-pipeline",
+          model: job.model ?? (typeof payload.usage.model === "string" ? payload.usage.model : "unknown"),
+          usage: payload.usage,
+          pricingVersion: null,
+        },
+      });
+    }
   });
 
   await trackEvent("generation_completed", { jobId: job.id, mode: payload.mode }, { userId: job.userId });

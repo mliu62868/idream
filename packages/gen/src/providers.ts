@@ -19,9 +19,16 @@ export interface ProviderFailure {
   retryable: boolean;
 }
 
+export interface ProviderInvocationMetadata {
+  providerRequestId: string | null;
+  usage: Readonly<Record<string, unknown>>;
+  costMicros: number | null;
+  pricingVersion: string | null;
+}
+
 export type ProviderResult<T> =
-  | { ok: true; data: T }
-  | { ok: false; error: ProviderFailure };
+  | { ok: true; data: T; invocation?: ProviderInvocationMetadata }
+  | { ok: false; error: ProviderFailure; invocation?: ProviderInvocationMetadata };
 
 export interface ProviderRetryCapabilities {
   readonly deterministicIdempotencyKey: boolean;
@@ -253,7 +260,7 @@ class PipelineImageModel implements ImageModel {
       const json = (await response.json().catch(() => ({}))) as unknown;
       if (!response.ok) return pipelineFailure(json, response.status);
       const parsed = pipelineResponseSchema.parse(json, count);
-      return { ok: true as const, data: parsed };
+      return { ok: true as const, data: parsed, invocation: pipelineInvocationMetadata(json) };
     } catch (error) {
       const aborted = error instanceof Error && error.name === "AbortError";
       return {
@@ -391,7 +398,7 @@ class PipelineVideoModel implements VideoModel {
       const json = (await response.json().catch(() => ({}))) as unknown;
       if (!response.ok) return pipelineFailure(json, response.status);
       const parsed = pipelineVideoResponseSchema.parse(json, input);
-      return { ok: true as const, data: parsed };
+      return { ok: true as const, data: parsed, invocation: pipelineInvocationMetadata(json) };
     } catch (error) {
       const aborted = error instanceof Error && error.name === "AbortError";
       return {
@@ -771,6 +778,33 @@ function pipelineFailure(value: unknown, status: number): ProviderResult<never> 
       message,
       retryable: retryablePipelineCategories.has(category),
     },
+    invocation: pipelineInvocationMetadata(record),
+  };
+}
+
+function pipelineInvocationMetadata(value: unknown): ProviderInvocationMetadata {
+  const record = typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  const usage = typeof record.usage === "object" && record.usage !== null && !Array.isArray(record.usage)
+    ? record.usage as Record<string, unknown>
+    : {};
+  const rawCost = record.costMicros ?? record.cost_micros;
+  const rawPricingVersion = record.pricingVersion ?? record.pricing_version;
+  const pricingVersion = typeof rawPricingVersion === "string" && rawPricingVersion.trim().length > 0
+    ? rawPricingVersion.trim()
+    : null;
+  const costMicros = pricingVersion !== null && typeof rawCost === "number" && Number.isSafeInteger(rawCost) && rawCost >= 0
+    ? rawCost
+    : null;
+  const rawProviderRequestId = record.providerRequestId ?? record.provider_request_id ?? record.id;
+  return {
+    providerRequestId: typeof rawProviderRequestId === "string" && rawProviderRequestId.length > 0
+      ? rawProviderRequestId
+      : null,
+    usage,
+    costMicros,
+    pricingVersion,
   };
 }
 
