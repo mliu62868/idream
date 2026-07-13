@@ -115,6 +115,18 @@ describe("character age hard rule (>= 18)", () => {
         tags: [],
       },
     });
+    const preview = await api("POST", `character-drafts/${draft.id}/preview`, {
+      userId,
+      ageGate: true,
+    });
+    expectOk(preview);
+    await runQueuedGenerationJobs(4);
+    const selected = await api("POST", `character-drafts/${draft.id}/preview-anchor`, {
+      userId,
+      ageGate: true,
+      body: { previewJobId: preview.data.previewJob.id },
+    });
+    expectOk(selected);
     const result = await api("POST", `character-drafts/${draft.id}/submit`, {
       userId,
       ageGate: true,

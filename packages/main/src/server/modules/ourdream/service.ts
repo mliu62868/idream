@@ -1287,7 +1287,15 @@ async function updateDraft(request: Request, id: string) {
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const body = draftPatchSchema.parse(await jsonBody(request));
-  await assertDraftOwner(id, user.id);
+  const currentDraft = await assertDraftOwner(id, user.id);
+  const identityChanged =
+    (body.name !== undefined && body.name !== currentDraft.name) ||
+    (body.gender !== undefined && body.gender !== currentDraft.gender) ||
+    (body.style !== undefined && body.style !== currentDraft.style) ||
+    jsonFieldChanged(body.appearance, currentDraft.appearance) ||
+    jsonFieldChanged(body.hair, currentDraft.hair) ||
+    jsonFieldChanged(body.body, currentDraft.body) ||
+    jsonFieldChanged(body.advancedDetails, currentDraft.advancedDetails);
 
   const draft = await prisma.characterDraft.update({
     where: { id },
@@ -1301,10 +1309,15 @@ async function updateDraft(request: Request, id: string) {
       body: body.body ? toInputJson(body.body) : undefined,
       advancedDetails: body.advancedDetails ? toInputJson(body.advancedDetails) : undefined,
       tags: body.tags ? toInputJson(body.tags.map(slugify)) : undefined,
+      previewJobId: identityChanged ? null : undefined,
     },
   });
 
   return ok({ draft });
+}
+
+function jsonFieldChanged(next: Record<string, unknown> | undefined, current: unknown) {
+  return next !== undefined && JSON.stringify(next) !== JSON.stringify(current ?? {});
 }
 
 async function previewDraft(request: Request, id: string) {
@@ -1433,13 +1446,10 @@ async function submitDraft(request: Request, id: string) {
         },
       })
     : null;
-  const latestPreview =
-    selectedPreview ??
-    (await prisma.characterPreviewJob.findFirst({
-      where: { draftId: draft.id, status: "completed", resultAssetId: { not: null } },
-      orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }],
-    }));
-  const anchorAssetId = latestPreview?.resultAssetId ?? null;
+  if (!selectedPreview?.resultAssetId) {
+    throw Errors.badRequest("Choose an identity image before publishing this character");
+  }
+  const anchorAssetId = selectedPreview.resultAssetId;
 
   const character = await prisma.$transaction(async (tx) => {
     const created = await tx.character.create({
@@ -1477,8 +1487,8 @@ async function submitDraft(request: Request, id: string) {
         gender,
         appearance: draft.appearance,
         advancedDetails: draft.advancedDetails,
-        anchorAssetIds: anchorAssetId ? [anchorAssetId] : [],
-        createdFrom: anchorAssetId ? "create_preview" : "create_submit",
+        anchorAssetIds: [anchorAssetId],
+        createdFrom: "create_preview",
       }),
     });
     await tx.characterStats.create({ data: { characterId: created.id } });

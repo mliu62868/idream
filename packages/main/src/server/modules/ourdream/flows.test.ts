@@ -3,6 +3,7 @@ import { prisma } from "@/server/lib/db";
 import {
   api,
   createUser,
+  expectError,
   expectOk,
   grantCoins,
   purgeTestData,
@@ -337,6 +338,44 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
     expect(previewState.data.previewJob.status).toBe("completed");
     expect(previewState.data.asset).toBeTruthy();
 
+    const selected = await api("POST", `character-drafts/${draftId}/preview-anchor`, {
+      userId,
+      ageGate: true,
+      body: { previewJobId: previewState.data.previewJob.id },
+    });
+    expectOk(selected);
+
+    const changedIdentity = await api("PATCH", `character-drafts/${draftId}`, {
+      userId,
+      ageGate: true,
+      body: { appearance: { prompt: "silver hair with a new identity-defining face" } },
+    });
+    expectOk(changedIdentity);
+    const staleIdentitySubmit = await api("POST", `character-drafts/${draftId}/submit`, {
+      userId,
+      ageGate: true,
+      body: { age: 25, visibility: "public" },
+    });
+    expectError(staleIdentitySubmit, 400, "bad_request");
+
+    const refreshedPreview = await api("POST", `character-drafts/${draftId}/preview`, {
+      userId,
+      ageGate: true,
+    });
+    expectOk(refreshedPreview);
+    await runQueuedGenerationJobs(8);
+    const refreshedPreviewState = await api("GET", `character-drafts/${draftId}/preview`, {
+      userId,
+      ageGate: true,
+    });
+    expectOk(refreshedPreviewState);
+    const refreshedSelection = await api("POST", `character-drafts/${draftId}/preview-anchor`, {
+      userId,
+      ageGate: true,
+      body: { previewJobId: refreshedPreviewState.data.previewJob.id },
+    });
+    expectOk(refreshedSelection);
+
     const submit = await api("POST", `character-drafts/${draftId}/submit`, {
       userId,
       ageGate: true,
@@ -351,7 +390,7 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
     expect((library.data.items as Array<{ id: string }>).map((c) => c.id)).toContain(characterId);
   });
 
-  it("routes a public submission to pending_review", async () => {
+  it("requires an explicitly selected identity image before publishing", async () => {
     const userId = `${P}creator-public`;
     await createUser({ id: userId });
     const draftRes = await api("POST", "character-drafts", {
@@ -360,6 +399,34 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
       body: { name: "ZZ Public" },
     });
     const draftId = draftRes.data.draft.id as string;
+    const blockedSubmit = await api("POST", `character-drafts/${draftId}/submit`, {
+      userId,
+      ageGate: true,
+      body: { age: 25, visibility: "public" },
+    });
+    expectError(blockedSubmit, 400, "bad_request");
+    expect(blockedSubmit.error?.message).toBe(
+      "Choose an identity image before publishing this character",
+    );
+
+    const preview = await api("POST", `character-drafts/${draftId}/preview`, {
+      userId,
+      ageGate: true,
+    });
+    expectOk(preview);
+    await runQueuedGenerationJobs(8);
+    const previewState = await api("GET", `character-drafts/${draftId}/preview`, {
+      userId,
+      ageGate: true,
+    });
+    expectOk(previewState);
+    const selected = await api("POST", `character-drafts/${draftId}/preview-anchor`, {
+      userId,
+      ageGate: true,
+      body: { previewJobId: previewState.data.previewJob.id },
+    });
+    expectOk(selected);
+
     const submit = await api("POST", `character-drafts/${draftId}/submit`, {
       userId,
       ageGate: true,

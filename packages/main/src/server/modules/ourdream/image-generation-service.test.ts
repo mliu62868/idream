@@ -69,6 +69,12 @@ describe("image generation service contract", () => {
     });
     expectOk(previewResponse);
     await runQueuedGenerationJobs(4);
+    const selectedPreview = await api("POST", `character-drafts/${draftId}/preview-anchor`, {
+      userId,
+      ageGate: true,
+      body: { previewJobId: previewResponse.data.previewJob.id },
+    });
+    expectOk(selectedPreview);
 
     const submitResponse = await api("POST", `character-drafts/${draftId}/submit`, {
       userId,

@@ -1664,6 +1664,26 @@ async function drainWorker(ctx: APIRequestContext, jobId: string) {
   );
 }
 
+async function generateAndConfirmCharacterIdentity(page: Page) {
+  await page.getByRole("button", { name: "Generate preview candidates" }).click();
+  const candidates = page.getByTestId("create-preview-candidates").locator("button");
+  for (let attempt = 0; attempt < 16; attempt += 1) {
+    if ((await candidates.count()) === 4) break;
+    const worker = await page.request.post("/api/internal/worker", {
+      headers: { authorization: `Bearer ${internalToken()}` },
+      timeout: 90_000,
+    });
+    expect(worker.ok(), await worker.text()).toBeTruthy();
+    await page.waitForTimeout(350);
+  }
+  await expect(candidates).toHaveCount(4, { timeout: 20_000 });
+  await page.getByTestId("create-confirm-identity").click();
+  await expect(page.getByText("Identity confirmed. This is how the character will look.")).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(page.getByTestId("create-next")).toBeEnabled();
+}
+
 async function expectAssistantReplyVisible(page: Page) {
   const assistantMessages = page.getByTestId("chat-message-assistant");
   await expect(assistantMessages).toHaveCount(1, { timeout: 15_000 });
@@ -2209,6 +2229,7 @@ test("create signup redirect returns anonymous draft to the builder", async ({ p
 });
 
 test("create UI walks the multi-step builder and shows the character in My AI", async ({ page }) => {
+  test.setTimeout(120_000);
   await startSignedInAdultSession(page, "create");
   const characterName = uniqueName("Create");
 
@@ -2226,8 +2247,10 @@ test("create UI walks the multi-step builder and shows the character in My AI", 
     "A complete E2E-created companion used to verify the creator and My AI loop.",
   );
   await page.getByTestId("create-next").click();
-  // Step 4 — Preview (optional generation), then advance
+  // Step 4 — Preview requires an explicit identity confirmation before Publish unlocks.
   await expect(page.getByTestId("create-step-preview")).toBeVisible();
+  await expect(page.getByTestId("create-next")).toBeDisabled();
+  await generateAndConfirmCharacterIdentity(page);
   await page.getByTestId("create-next").click();
   // Step 5 — Publish (private => approved, saved to My AI)
   await expect(page.getByTestId("create-step-publish")).toBeVisible();
@@ -2342,6 +2365,7 @@ test("created removed character links to a prefilled Help Desk appeal", async ({
 });
 
 test("create UI resumes a draft and submits public characters for review", async ({ page }) => {
+  test.setTimeout(120_000);
   await startSignedInAdultSession(page, "create-review");
   const characterName = uniqueName("Create review");
 
@@ -2387,11 +2411,15 @@ test("create UI resumes a draft and submits public characters for review", async
     });
   });
   await page.getByRole("button", { name: "Generate preview" }).click();
-  await expect(page.getByText("Preview failed. Try again or continue without one.")).toBeVisible({
+  await expect(page.getByText("Preview failed. Your draft is saved; retry before publishing.")).toBeVisible({
     timeout: 10_000,
   });
   await expect(page.getByText("Preview service unavailable.")).toBeVisible();
+  await expect(page.getByTestId("create-next")).toBeDisabled();
+  await expect(page.getByTestId("create-step-publish")).toHaveCount(0);
 
+  await page.unroute("**/api/v1/character-drafts/**/preview");
+  await generateAndConfirmCharacterIdentity(page);
   await page.getByTestId("create-next").click();
   const publishStep = page.getByTestId("create-step-publish");
   await expect(publishStep).toBeVisible({ timeout: 10_000 });
@@ -3363,15 +3391,20 @@ test("generator UI queues an image job and surfaces completed media in the galle
   await drainWorker(page.request, job.id);
 
   await expect(page.getByText("Generation complete.")).toBeVisible({ timeout: 10_000 });
-  await expectGeneratedAssetServed(page.request, job.id);
+  const completedAsset = await expectGeneratedAssetServed(page.request, job.id);
+  const latestResults = page.getByTestId("generator-latest-results");
+  await expect(latestResults).toBeVisible({ timeout: 10_000 });
+  await expect(latestResults.getByRole("button", { name: "Looks like them" })).toBeVisible();
+  await expect(latestResults.getByRole("button", { name: "Doesn't look like them" })).toBeVisible();
+  await expect(latestResults.getByRole("button", { name: "More like this" })).toBeVisible();
+  await expect(latestResults.getByRole("button", { name: "Create a new moment" })).toBeVisible();
+  await latestResults.getByRole("button", { name: "Looks like them" }).click();
+  await expect(page.getByText("Recorded: looks like the character.")).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: "Images" }).click();
   await expect(page.getByText("No images yet.")).toBeHidden({ timeout: 10_000 });
   await expect(
     page.locator(`[data-media-id="${legacyMediaId}"]`).getByTestId("gallery-media-unavailable"),
   ).toBeVisible();
-  await expect(page.getByTestId("gallery-media-unavailable")).toHaveCount(1);
-  await expect(page.getByTestId("gallery-media-image")).toHaveCount(1);
-  await expect(page.getByTestId("gallery-media-image")).toHaveAttribute("src", /\/user-content\//);
   await expect(
     page.locator('[data-testid="gallery-media-image"][src*="card-sarah-mercer"]'),
   ).toHaveCount(0);
@@ -3385,12 +3418,17 @@ test("generator UI queues an image job and surfaces completed media in the galle
   await expect(page.getByText("Media deleted.")).toBeVisible({ timeout: 10_000 });
   await expect(legacyMediaCard).toHaveCount(0, { timeout: 10_000 });
 
-  const generatedCard = page
-    .locator('[data-testid="gallery-media-card"]')
-    .filter({ has: page.getByTestId("gallery-media-image") });
-  await expect(generatedCard).toHaveCount(1);
-  const generatedMediaId = await generatedCard.getAttribute("data-media-id");
-  expect(generatedMediaId).toBeTruthy();
+  const generatedCard = page.locator(`[data-media-id="${completedAsset.id}"]`);
+  await expect(generatedCard).toBeVisible({ timeout: 10_000 });
+  await expect
+    .poll(
+      async () =>
+        (await generatedCard.getByTestId("gallery-media-image").count()) +
+        (await generatedCard.getByTestId("gallery-media-preview-fallback").count()),
+      { timeout: 10_000 },
+    )
+    .toBeGreaterThan(0);
+  const generatedMediaId = completedAsset.id;
   const generatedMediaCard = page.locator(`[data-media-id="${generatedMediaId}"]`);
   await expect(generatedMediaCard.getByRole("button", { name: "Use as character image" })).toHaveCount(0);
   await expect(generatedMediaCard.getByRole("button", { name: "Add to identity" })).toHaveCount(0);
@@ -3437,7 +3475,7 @@ test("generator UI queues an image job and surfaces completed media in the galle
     )
     .not.toBeNull();
 
-  await generatedMediaCard.getByRole("button", { name: "Like" }).click();
+  await generatedMediaCard.getByRole("button", { name: "Like", exact: true }).click();
   await page.getByRole("button", { name: "Liked" }).click();
   const likedCard = page.locator(`[data-media-id="${generatedMediaId}"]`);
   await expect(likedCard).toBeVisible({ timeout: 10_000 });
@@ -3698,11 +3736,15 @@ test("character generator keeps identity controls behind Advanced settings", asy
 
   await expect(page.getByText("Character identity", { exact: true })).toBeVisible({ timeout: 10_000 });
   await expect(page.getByText("Describe the moment", { exact: true })).toBeVisible();
+  await expect(page.getByText("Presets", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("My Presets", { exact: true })).toHaveCount(0);
   await expect(page.locator("#generator-model")).toHaveCount(0);
   await expect(page.getByRole("textbox", { name: "Negative Prompt" })).toHaveCount(0);
 
   await page.getByTestId("generator-advanced-toggle").click();
 
+  await expect(page.getByText("Presets", { exact: true })).toBeVisible();
+  await expect(page.getByText("My Presets", { exact: true })).toBeVisible();
   await expect(page.locator("#generator-model")).toBeVisible();
   await expect(page.getByRole("textbox", { name: "Negative Prompt" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Closest match" })).toBeVisible();

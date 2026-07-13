@@ -167,6 +167,7 @@ export function GeneratorWorkspace() {
   const [outfitPresetId, setOutfitPresetId] = useState("");
   const [jobs, setJobs] = useState<GenerationJob[]>([]);
   const [media, setMedia] = useState<MediaItem[]>([]);
+  const [latestResults, setLatestResults] = useState<MediaItem[]>([]);
   const [identityMedia, setIdentityMedia] = useState<MediaItem[]>([]);
   const [galleryTab, setGalleryTab] = useState<GalleryTab>("image");
   const [view, setView] = useState<WorkspaceView>("create");
@@ -175,6 +176,8 @@ export function GeneratorWorkspace() {
   const [pending, setPending] = useState(false);
   const [failedMediaIds, setFailedMediaIds] = useState<Set<string>>(() => new Set());
   const [invalidPreviewMediaIds, setInvalidPreviewMediaIds] = useState<Set<string>>(() => new Set());
+  const [failedLatestResultIds, setFailedLatestResultIds] = useState<Set<string>>(() => new Set());
+  const [invalidLatestResultIds, setInvalidLatestResultIds] = useState<Set<string>>(() => new Set());
   const [userPresets, setUserPresets] = useState<UserPreset[]>([]);
   const [presetName, setPresetName] = useState("");
   const [manageMode, setManageMode] = useState(false);
@@ -446,9 +449,11 @@ export function GeneratorWorkspace() {
     }>;
     const job = payload.data?.job;
     if (!job) return;
+    const assets = payload.data?.assets ?? [];
     setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
     if (job.status === "completed") {
       setStatus("Generation complete.");
+      setLatestResults(assets);
       setGalleryTab(job.mode);
       void refreshConfig();
       void refreshMedia(job.mode);
@@ -647,11 +652,12 @@ export function GeneratorWorkspace() {
   async function recordIdentityFeedback(
     item: MediaItem,
     feedbackType: "identity_match" | "identity_mismatch",
+    sourceSurface: "generator" | "gallery" = "gallery",
   ) {
     const response = await fetch(`/api/v1/media/${item.id}/feedback`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ feedbackType, sourceSurface: "gallery" }),
+      body: JSON.stringify({ feedbackType, sourceSurface }),
     });
     const payload = (await response.json().catch(() => null)) as ApiPayload<unknown> | null;
     if (!response.ok || !payload?.ok) {
@@ -661,8 +667,22 @@ export function GeneratorWorkspace() {
     setStatus(
       feedbackType === "identity_match"
         ? "Recorded: looks like the character."
-        : "Recorded: identity doesn't match.",
+        : "Recorded: identity doesn't match. Try another direction or generate again.",
     );
+  }
+
+  function startNewMomentFromResult(item: MediaItem) {
+    if (item.characterId) {
+      setCharacterId(item.characterId);
+      setFreeplay(false);
+    }
+    setPrompt("");
+    setImageWorkflow("presets");
+    setView("create");
+    setStatus("Describe the next moment. The character identity stays locked.");
+    window.setTimeout(() => {
+      workspaceTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 0);
   }
 
   function openLookEditor(item: MediaItem) {
@@ -1021,7 +1041,7 @@ export function GeneratorWorkspace() {
                     }}
                     type="button"
                   >
-                    {item === "presets" ? "Presets" : "Image Edit"}
+                    {item === "presets" ? "Moment" : "Image Edit"}
                   </button>
                 ))}
               </div>
@@ -1151,7 +1171,7 @@ export function GeneratorWorkspace() {
                 </div>
                 {!selectedCharacter?.visualProfile && (
                   <div className="mt-2 rounded-[10px] border border-[rgb(255,184,112)]/30 bg-[rgb(36,28,18)] p-3 text-[12px] font-semibold leading-5 text-[rgb(255,184,112)]">
-                    Generate a first image, then choose Use as character image in Gallery to lock this character&apos;s visual identity.
+                    This legacy character has no confirmed identity image. New characters establish identity before publishing; results for this character may vary.
                   </div>
                 )}
                 {looks.length > 0 && (
@@ -1283,7 +1303,10 @@ export function GeneratorWorkspace() {
               </label>
             )}
 
-            {mode === "image" && !imageEditMode && (config?.presets?.length ?? 0) > 0 && (
+            {mode === "image" &&
+              !imageEditMode &&
+              (!characterImageMode || advancedOpen) &&
+              (config?.presets?.length ?? 0) > 0 && (
               <div className="mt-4 grid gap-3">
                 <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">Presets</p>
                 <div className="grid grid-cols-2 gap-2">
@@ -1315,7 +1338,7 @@ export function GeneratorWorkspace() {
               </div>
             )}
 
-            {mode === "image" && !imageEditMode && (
+            {mode === "image" && !imageEditMode && (!characterImageMode || advancedOpen) && (
               <div className="mt-4 grid gap-3" data-testid="my-presets">
                 <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
                   My Presets
@@ -1529,7 +1552,15 @@ export function GeneratorWorkspace() {
               type="submit"
             >
               <WandSparkles className="h-4 w-4" />
-              {pending ? (imageEditMode ? "Queuing edit..." : "Queuing...") : imageEditMode ? "Create edit" : "Generate"}
+              {pending
+                ? imageEditMode
+                  ? "Queuing edit..."
+                  : "Queuing..."
+                : imageEditMode
+                  ? "Create edit"
+                  : characterImageMode
+                    ? `Generate this moment · ${estimatedCost} coins`
+                    : "Generate"}
             </button>
             {configError && (
               <p
@@ -1554,6 +1585,108 @@ export function GeneratorWorkspace() {
           </form>
 
           <div className="grid gap-5">
+            {latestResults.length > 0 && (
+              <section
+                className="rounded-[14px] border border-[rgb(255,48,170)]/30 bg-[rgb(18,18,18)] p-4"
+                data-testid="generator-latest-results"
+              >
+                <div className="mb-4">
+                  <p className="text-[12px] font-bold uppercase text-[rgb(255,95,194)]">
+                    Latest moment
+                  </p>
+                  <h2 className="mt-1 text-[18px] font-black text-white">
+                    Keep the relationship moving
+                  </h2>
+                  <p className="mt-1 text-[12px] font-medium text-[rgb(170,170,170)]">
+                    Tell us whether the identity feels right, or continue from this image.
+                  </p>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {latestResults.map((item, index) => {
+                    const source = item.thumbnailUrl ?? item.url;
+                    const previewUnavailable =
+                      failedLatestResultIds.has(item.id) ||
+                      invalidLatestResultIds.has(item.id) ||
+                      isUnusableImagePreview(item) ||
+                      isBuiltInMediaPlaceholderUrl(source);
+                    return (
+                      <article
+                        className="overflow-hidden rounded-[12px] bg-[rgb(36,36,36)]"
+                        data-latest-media-id={item.id}
+                        key={item.id}
+                      >
+                        <div className="relative aspect-[4/5] overflow-hidden bg-black/30">
+                          {previewUnavailable ? (
+                            <div
+                              className="grid h-full place-items-center px-4 text-center text-[13px] font-semibold text-[rgb(170,170,170)]"
+                              data-testid="latest-result-unavailable"
+                            >
+                              Preview unavailable
+                            </div>
+                          ) : (
+                            <MediaPreview
+                              item={item}
+                              loading={index === 0 ? "eager" : "lazy"}
+                              onError={() =>
+                                setFailedLatestResultIds((current) => new Set(current).add(item.id))
+                              }
+                              onInvalidPreview={() =>
+                                setInvalidLatestResultIds((current) => new Set(current).add(item.id))
+                              }
+                              source={source}
+                              testIdPrefix="latest-result"
+                            />
+                          )}
+                        </div>
+                        <div className="grid gap-2 p-3">
+                          {item.type === "image" && item.characterId && (
+                            <div
+                              aria-label="Character identity feedback"
+                              className="grid grid-cols-2 gap-2"
+                            >
+                              <button
+                                className="min-h-10 rounded-full bg-white px-3 text-[11px] font-black text-[rgb(13,13,13)]"
+                                onClick={() =>
+                                  void recordIdentityFeedback(item, "identity_match", "generator")
+                                }
+                                type="button"
+                              >
+                                Looks like them
+                              </button>
+                              <button
+                                className="min-h-10 rounded-full bg-black/40 px-3 text-[11px] font-black text-white"
+                                onClick={() =>
+                                  void recordIdentityFeedback(item, "identity_mismatch", "generator")
+                                }
+                                type="button"
+                              >
+                                Doesn&apos;t look like them
+                              </button>
+                            </div>
+                          )}
+                          {item.type === "image" && (
+                            <button
+                              className="min-h-10 rounded-full bg-[rgb(255,48,170)] px-3 text-[11px] font-black text-white"
+                              onClick={() => void createMediaVariation(item)}
+                              type="button"
+                            >
+                              More like this
+                            </button>
+                          )}
+                          <button
+                            className="min-h-10 rounded-full border border-white/15 px-3 text-[11px] font-black text-white"
+                            onClick={() => startNewMomentFromResult(item)}
+                            type="button"
+                          >
+                            Create a new moment
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
             <section
               className={`${view === "jobs" ? "block" : "hidden"} rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-4 md:block`}
             >
@@ -2026,12 +2159,14 @@ function MediaPreview({
   onError,
   onInvalidPreview,
   source,
+  testIdPrefix = "gallery",
 }: {
   item: MediaItem;
   loading: "eager" | "lazy";
   onError: () => void;
   onInvalidPreview: () => void;
   source: string;
+  testIdPrefix?: "gallery" | "latest-result";
 }) {
   if (item.type === "video") {
     return (
@@ -2039,7 +2174,7 @@ function MediaPreview({
         aria-label="Generated video"
         className="h-full w-full object-cover object-top"
         controls
-        data-testid="gallery-media-video"
+        data-testid={`${testIdPrefix}-media-video`}
         playsInline
         preload="none"
       >
@@ -2053,7 +2188,7 @@ function MediaPreview({
     <Image
       alt=""
       className="object-cover object-top"
-      data-testid="gallery-media-image"
+      data-testid={`${testIdPrefix}-media-image`}
       fill
       loading={loading}
       onLoad={(event) => {

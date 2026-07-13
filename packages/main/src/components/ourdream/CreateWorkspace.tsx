@@ -60,6 +60,8 @@ const STEPS = ["Identity", "Appearance", "Personality", "Preview", "Publish"] as
 
 type WizardState = {
   draftId: string;
+  confirmedPreviewJobId: string;
+  confirmedPreviewUrl: string;
   step: number;
   name: string;
   age: number;
@@ -75,6 +77,8 @@ type WizardState = {
 
 const INITIAL: WizardState = {
   draftId: "",
+  confirmedPreviewJobId: "",
+  confirmedPreviewUrl: "",
   step: 0,
   name: "Nova Vale",
   age: 21,
@@ -116,13 +120,23 @@ export function CreateWorkspace() {
     let restored: WizardState | null = null;
     try {
       const raw = window.localStorage.getItem(STORAGE_KEY);
-      if (raw) restored = { ...INITIAL, ...(JSON.parse(raw) as Partial<WizardState>) };
+      if (raw) {
+        restored = { ...INITIAL, ...(JSON.parse(raw) as Partial<WizardState>) };
+        if (restored.step > 3 && !restored.confirmedPreviewJobId) restored.step = 3;
+      }
     } catch {
       // ignore malformed storage
     }
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot hydration from browser storage
-    if (restored) setState(restored);
+    /* eslint-disable react-hooks/set-state-in-effect -- one-shot hydration from browser storage */
+    if (restored) {
+      setState(restored);
+      if (restored.confirmedPreviewUrl) {
+        setPreview(restored.confirmedPreviewUrl);
+        setPreviewStatus("complete");
+      }
+    }
     setHydrated(true);
+    /* eslint-enable react-hooks/set-state-in-effect */
   }, []);
 
   useEffect(() => {
@@ -158,6 +172,8 @@ export function CreateWorkspace() {
     setTemplateId(template.id);
     setState((current) => ({
       ...current,
+      confirmedPreviewJobId: "",
+      confirmedPreviewUrl: "",
       gender: template.gender || current.gender,
       style: template.style || current.style,
       appearance: pickString(template.appearance, "prompt", "summary") || current.appearance,
@@ -165,7 +181,24 @@ export function CreateWorkspace() {
         pickString(template.advancedDetails, "description") || template.summary || current.description,
       tags: pickTags(template.tags) || current.tags,
     }));
+    setPreview(DEFAULT_PREVIEW);
+    setPreviewStatus("idle");
+    setPreviewCandidates([]);
+    setSelectedPreviewJobId("");
     setStatus(`Started from "${template.name}". Edit any field before publishing.`);
+  }
+
+  function setIdentityField<K extends keyof WizardState>(key: K, value: WizardState[K]) {
+    setState((current) => ({
+      ...current,
+      [key]: value,
+      confirmedPreviewJobId: "",
+      confirmedPreviewUrl: "",
+    }));
+    setPreview(DEFAULT_PREVIEW);
+    setPreviewStatus("idle");
+    setPreviewCandidates([]);
+    setSelectedPreviewJobId("");
   }
 
   const nameError = state.name.trim().length < 2 ? "Name needs at least 2 characters." : "";
@@ -208,6 +241,10 @@ export function CreateWorkspace() {
       setStatus(nameError || ageError);
       return;
     }
+    if (step === 3 && !state.confirmedPreviewJobId) {
+      setStatus("Choose and confirm an identity image before publishing.");
+      return;
+    }
     setPending(true);
     setStatus("");
     try {
@@ -231,6 +268,8 @@ export function CreateWorkspace() {
     setStatus("");
     setPreviewCandidates([]);
     setSelectedPreviewJobId("");
+    set("confirmedPreviewJobId", "");
+    set("confirmedPreviewUrl", "");
     try {
       const draftId = await ensureDraft();
       await saveStep(3);
@@ -256,11 +295,14 @@ export function CreateWorkspace() {
           setSelectedPreviewJobId(candidate.previewJobId);
         }
       }
-      const selected = generated.find((candidate) => candidate.previewJobId === selectedPreviewJobId) ?? generated[0];
+      const selected = generated[0];
       if (selected) {
-        await selectPreviewCandidate(draftId, selected);
+        setPreview(selected.url);
+        setSelectedPreviewJobId(selected.previewJobId);
+        setPreviewStatus("complete");
+      } else {
+        throw new Error("Preview generation failed. Try again.");
       }
-      setPreviewStatus("complete");
     } catch (error) {
       setPreviewStatus("failed");
       setStatus(messageFrom(error));
@@ -288,24 +330,39 @@ export function CreateWorkspace() {
     throw new Error("Preview timed out. Try again.");
   }
 
-  async function selectPreviewCandidate(draftId: string, candidate: PreviewCandidate) {
-    setPreview(candidate.url);
-    setSelectedPreviewJobId(candidate.previewJobId);
-    await api(`/api/v1/character-drafts/${draftId}/preview-anchor`, {
-      previewJobId: candidate.previewJobId,
-    });
-  }
-
-  async function handleCandidateSelect(candidate: PreviewCandidate) {
+  function handleCandidateSelect(candidate: PreviewCandidate) {
     setStatus("");
     setPreview(candidate.url);
     setSelectedPreviewJobId(candidate.previewJobId);
+    set("confirmedPreviewJobId", "");
+    set("confirmedPreviewUrl", "");
+  }
+
+  async function confirmPreviewCandidate() {
+    const candidate = previewCandidates.find(
+      (item) => item.previewJobId === selectedPreviewJobId,
+    );
+    if (!candidate) {
+      setStatus("Choose an identity candidate first.");
+      return;
+    }
+    setPending(true);
+    setStatus("");
     try {
       const draftId = await ensureDraft();
-      await selectPreviewCandidate(draftId, candidate);
-      setStatus("Identity image selected.");
+      await api(`/api/v1/character-drafts/${draftId}/preview-anchor`, {
+        previewJobId: candidate.previewJobId,
+      });
+      setState((current) => ({
+        ...current,
+        confirmedPreviewJobId: candidate.previewJobId,
+        confirmedPreviewUrl: candidate.url,
+      }));
+      setStatus("Identity confirmed. This is how the character will look.");
     } catch (error) {
       setStatus(messageFrom(error));
+    } finally {
+      setPending(false);
     }
   }
 
@@ -313,6 +370,11 @@ export function CreateWorkspace() {
     // Guard against double-submit: once a character is created, don't reuse the same
     // draft to create a duplicate (the success state already links onward).
     if (pending || createdCharacterId) return;
+    if (!state.confirmedPreviewJobId) {
+      set("step", 3);
+      setStatus("Choose and confirm an identity image before publishing.");
+      return;
+    }
     setPending(true);
     setStatus("");
     setCreatedCharacterId("");
@@ -344,7 +406,19 @@ export function CreateWorkspace() {
         // ignore
       }
     } catch (error) {
-      setStatus(messageFrom(error));
+      const message = messageFrom(error);
+      if (message === "Choose an identity image before publishing this character") {
+        setState((current) => ({
+          ...current,
+          confirmedPreviewJobId: "",
+          confirmedPreviewUrl: "",
+          step: 3,
+        }));
+        setPreviewStatus("idle");
+        setPreviewCandidates([]);
+        setSelectedPreviewJobId("");
+      }
+      setStatus(message);
     } finally {
       setPending(false);
     }
@@ -387,7 +461,13 @@ export function CreateWorkspace() {
               </div>
             )}
             <div className="absolute inset-x-0 bottom-0 p-5">
-              <p className="text-[12px] font-black uppercase text-[rgb(253,95,194)]">Preview</p>
+              <p className="text-[12px] font-black uppercase text-[rgb(253,95,194)]">
+                {state.confirmedPreviewJobId
+                  ? "Identity confirmed"
+                  : previewCandidates.length > 0
+                    ? "Candidate preview"
+                    : "Example preview"}
+              </p>
               <h2 className="mt-2 text-[26px] font-black leading-7">{state.name}</h2>
               <p className="mt-2 text-[13px] font-medium leading-5 text-[rgb(170,170,170)]">
                 {state.description}
@@ -440,7 +520,7 @@ export function CreateWorkspace() {
                 <Field label="Name">
                   <input
                     className="mt-2 w-full bg-transparent text-[18px] font-bold leading-6 outline-none"
-                    onChange={(event) => set("name", event.target.value)}
+                    onChange={(event) => setIdentityField("name", event.target.value)}
                     value={state.name}
                   />
                 </Field>
@@ -449,7 +529,7 @@ export function CreateWorkspace() {
                     className="mt-2 w-full bg-transparent text-[18px] font-bold leading-6 outline-none"
                     max={99}
                     min={18}
-                    onChange={(event) => set("age", Number(event.target.value))}
+                    onChange={(event) => setIdentityField("age", Number(event.target.value))}
                     type="number"
                     value={state.age}
                   />
@@ -457,7 +537,7 @@ export function CreateWorkspace() {
                 <Field label="Gender">
                   <select
                     className="mt-2 w-full bg-transparent text-[18px] font-bold leading-6 outline-none"
-                    onChange={(event) => set("gender", event.target.value)}
+                    onChange={(event) => setIdentityField("gender", event.target.value)}
                     value={state.gender}
                   >
                     <option value="female">Female</option>
@@ -468,7 +548,7 @@ export function CreateWorkspace() {
                 <Field label="Style">
                   <select
                     className="mt-2 w-full bg-transparent text-[18px] font-bold leading-6 outline-none"
-                    onChange={(event) => set("style", event.target.value)}
+                    onChange={(event) => setIdentityField("style", event.target.value)}
                     value={state.style}
                   >
                     <option value="realistic">Realistic</option>
@@ -487,21 +567,21 @@ export function CreateWorkspace() {
                 <Field label="Appearance">
                   <input
                     className="mt-2 w-full bg-transparent text-[14px] font-semibold leading-6 outline-none"
-                    onChange={(event) => set("appearance", event.target.value)}
+                    onChange={(event) => setIdentityField("appearance", event.target.value)}
                     value={state.appearance}
                   />
                 </Field>
                 <Field label="Hair">
                   <input
                     className="mt-2 w-full bg-transparent text-[14px] font-semibold leading-6 outline-none"
-                    onChange={(event) => set("hair", event.target.value)}
+                    onChange={(event) => setIdentityField("hair", event.target.value)}
                     value={state.hair}
                   />
                 </Field>
                 <Field label="Body">
                   <input
                     className="mt-2 w-full bg-transparent text-[14px] font-semibold leading-6 outline-none"
-                    onChange={(event) => set("body", event.target.value)}
+                    onChange={(event) => setIdentityField("body", event.target.value)}
                     value={state.body}
                   />
                 </Field>
@@ -513,7 +593,7 @@ export function CreateWorkspace() {
                 <Field label="Advanced Details">
                   <textarea
                     className="mt-3 min-h-28 w-full rounded-[12px] border border-white/10 bg-[rgb(13,13,13)] p-4 text-[14px] font-medium leading-6 text-white outline-none"
-                    onChange={(event) => set("description", event.target.value)}
+                    onChange={(event) => setIdentityField("description", event.target.value)}
                     value={state.description}
                   />
                 </Field>
@@ -549,6 +629,7 @@ export function CreateWorkspace() {
                   <div className="grid grid-cols-2 gap-3" data-testid="create-preview-candidates">
                     {previewCandidates.map((candidate, index) => {
                       const selected = selectedPreviewJobId === candidate.previewJobId;
+                      const confirmed = state.confirmedPreviewJobId === candidate.previewJobId;
                       return (
                         <button
                           aria-pressed={selected}
@@ -556,7 +637,7 @@ export function CreateWorkspace() {
                             selected ? "border-[rgb(253,95,194)]" : "border-white/10"
                           }`}
                           key={candidate.previewJobId}
-                          onClick={() => void handleCandidateSelect(candidate)}
+                          onClick={() => handleCandidateSelect(candidate)}
                           type="button"
                         >
                           <Image
@@ -567,12 +648,12 @@ export function CreateWorkspace() {
                             src={candidate.url}
                           />
                           <span className="absolute left-2 top-2 rounded-full bg-black/70 px-2 py-1 text-[11px] font-black text-white">
-                            {selected ? "Identity" : `Option ${index + 1}`}
+                            {confirmed ? "Identity confirmed" : selected ? "Selected" : `Option ${index + 1}`}
                           </span>
                           {selected && (
                             <span className="absolute bottom-2 left-2 inline-flex items-center gap-1 rounded-full bg-[rgb(253,95,194)] px-2 py-1 text-[11px] font-black text-white">
                               <Check className="h-3 w-3" />
-                              Selected
+                              {confirmed ? "Confirmed" : "Confirm below"}
                             </span>
                           )}
                         </button>
@@ -582,21 +663,41 @@ export function CreateWorkspace() {
                 )}
                 {previewStatus === "complete" && previewCandidates.length > 0 && (
                   <div className="grid gap-2 rounded-[12px] bg-black/25 p-3">
-                    <p className="flex items-center gap-2 text-[13px] font-semibold text-[rgb(120,220,170)]">
-                      <ImageIcon className="h-4 w-4" />
-                      Identity candidate selected. This image becomes the character anchor when you publish.
-                    </p>
-                    <button
-                      className="inline-flex h-9 w-fit items-center gap-2 rounded-full bg-white px-3 text-[12px] font-black text-[rgb(13,13,13)]"
-                      onClick={() => {
-                        set("step", 1);
-                        setStatus("Adjust appearance traits, then return to Preview.");
-                      }}
-                      type="button"
-                    >
-                      <Sparkles className="h-3.5 w-3.5" />
-                      Edit traits
-                    </button>
+                    {state.confirmedPreviewJobId ? (
+                      <p className="flex items-center gap-2 text-[13px] font-semibold text-[rgb(120,220,170)]">
+                        <Check className="h-4 w-4" />
+                        Identity confirmed. Future images will use this character anchor.
+                      </p>
+                    ) : (
+                      <p className="text-[13px] font-semibold text-white">
+                        Select the face that feels right, then confirm “this is them”.
+                      </p>
+                    )}
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        className="inline-flex h-10 items-center gap-2 rounded-full bg-[rgb(253,95,194)] px-4 text-[12px] font-black text-white disabled:opacity-50"
+                        data-testid="create-confirm-identity"
+                        disabled={!selectedPreviewJobId || pending}
+                        onClick={() => void confirmPreviewCandidate()}
+                        type="button"
+                      >
+                        <ImageIcon className="h-3.5 w-3.5" />
+                        {state.confirmedPreviewJobId === selectedPreviewJobId
+                          ? "Identity confirmed"
+                          : "Confirm this identity"}
+                      </button>
+                      <button
+                        className="inline-flex h-10 items-center gap-2 rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]"
+                        onClick={() => {
+                          set("step", 1);
+                          setStatus("Adjust appearance traits, then generate a new identity family.");
+                        }}
+                        type="button"
+                      >
+                        <Sparkles className="h-3.5 w-3.5" />
+                        Edit traits
+                      </button>
+                    </div>
                   </div>
                 )}
                 {previewStatus === "complete" && (
@@ -604,7 +705,7 @@ export function CreateWorkspace() {
                 )}
                 {previewStatus === "failed" && (
                   <p className="text-[13px] font-semibold text-[rgb(255,140,140)]">
-                    Preview failed. Try again or continue without one.
+                    Preview failed. Your draft is saved; retry before publishing.
                   </p>
                 )}
               </div>
@@ -612,6 +713,10 @@ export function CreateWorkspace() {
 
             {step === 4 && (
               <div className="grid gap-4" data-testid="create-step-publish">
+                <div className="flex items-center gap-2 rounded-[12px] bg-black/25 p-3 text-[13px] font-semibold text-[rgb(120,220,170)]">
+                  <Check className="h-4 w-4" />
+                  Identity confirmed. This character is ready to publish.
+                </div>
                 <div>
                   <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">Visibility</p>
                   <div className="mt-2 flex flex-wrap gap-2">
@@ -641,7 +746,7 @@ export function CreateWorkspace() {
                 <button
                   className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[linear-gradient(0deg,#ff1cac,#fd5fc2_50%,#ff79d1)] text-[14px] font-black text-white disabled:opacity-70"
                   data-testid="create-submit"
-                  disabled={pending || Boolean(createdCharacterId)}
+                  disabled={pending || Boolean(createdCharacterId) || !state.confirmedPreviewJobId}
                   onClick={() => void submit()}
                   type="button"
                 >
@@ -663,9 +768,9 @@ export function CreateWorkspace() {
               </button>
               {step < STEPS.length - 1 && (
                 <button
-                  className="inline-flex h-11 items-center gap-2 rounded-full bg-white px-5 text-[13px] font-black text-[rgb(13,13,13)] disabled:opacity-60"
+                  className="inline-flex h-11 items-center gap-2 rounded-full bg-white px-5 text-[13px] font-black text-[rgb(13,13,13)] disabled:cursor-not-allowed disabled:bg-[rgb(55,55,55)] disabled:text-[rgb(114,113,112)]"
                   data-testid="create-next"
-                  disabled={pending}
+                  disabled={pending || (step === 3 && !state.confirmedPreviewJobId)}
                   onClick={() => void next()}
                   type="button"
                 >
@@ -675,6 +780,12 @@ export function CreateWorkspace() {
                 </button>
               )}
             </div>
+
+            {step === 3 && !state.confirmedPreviewJobId && (
+              <p className="mt-3 text-[12px] font-semibold text-[rgb(255,184,112)]">
+                Confirm one identity image to unlock Publish. Your draft stays saved until then.
+              </p>
+            )}
 
             {status && (
               <p

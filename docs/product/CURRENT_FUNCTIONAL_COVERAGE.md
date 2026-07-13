@@ -1,12 +1,19 @@
 # iDream 当前功能覆盖审计
 
-更新日期：2026-07-12
+更新日期：2026-07-13
 
 ## 结论
 
 这份文档是当前代码态的功能覆盖表，覆盖的是“用户能否完整使用”和“有没有测试证据”。它补充并修正 `ProductFeatureMap.md` 里 2026-06-13 的旧状态描述。
 
 当前状态：**本地产品闭环可用，内部 pipeline 6/6 通过；当前目标仍是内部演示/受控 beta，公开上线仍被真实生产依赖阻断**。
+
+## 2026-07-13 角色身份确认与视觉时刻闭环
+
+- Create 的 Preview 不再是可跳过装饰步骤：四张候选生成后只预选第一张，用户必须显式点击 `Confirm this identity`；确认前 Publish 保持锁定，生成失败时草稿保留但不能把默认占位图发布成角色身份。确认后的候选 URL/Job 会随本地草稿恢复，编辑姓名、年龄、性别、风格、外观、发型、体型或人格描述会使旧确认失效。
+- `POST /api/v1/character-drafts/:id/submit` 现服务端强制校验 draft 上显式选择且已完成的 preview anchor，不再回退到“最近一张 preview”；draft 的身份字段发生实际变化时，服务端清空旧 `previewJobId`，防止绕过前端使用过期身份图。成功创建的角色因此始终以所选图片建立 `Character.imageAssetId` 与 active Visual Profile v1 anchor。
+- Generate 的角色默认页签从 `Presets` 收敛为 `Moment`；模型、negative prompt、内置 presets 和 My Presets 统一下沉 Advanced，主 CTA 明示当前时刻成本。完成任务后当前页面直接展示 Latest moment，以及 `Looks like them` / `Doesn't look like them` / `More like this` / `Create a new moment`，身份反馈与继续创作不再依赖先进入 Gallery。
+- 回归证据覆盖 draft submit 未确认拒绝、确认后提交、身份字段变更使 anchor 失效、Create 私有/公开浏览器流程、Generate Latest moment 即时动作与 Advanced 信息层级；Gallery 的图片/降级预览继续保持原有动作和所有权边界。
 
 ## 2026-07-12 Canonical Character Visual Qualification Workbench
 
