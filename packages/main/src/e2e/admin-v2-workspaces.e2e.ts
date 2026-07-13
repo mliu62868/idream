@@ -405,7 +405,14 @@ async function completeResponsiveCoreFlows(page: Page, fixture: ResponsiveCoreFi
   await resolveIncident.focus();
   await expect(resolveIncident).toBeFocused();
   await resolveIncident.press("Enter");
+  await expect.poll(async () => prisma.opsIncident.findUnique({
+    where: { id: fixture.incidentId },
+    select: { status: true },
+  }), { timeout: 45_000 }).toEqual({ status: "resolved" });
+  await page.goto(`${adminBaseURL()}/admin/ops/incidents/${fixture.incidentId}`);
   await expect(page.getByRole("heading", { level: 4, name: "Postmortem and close" })).toBeVisible();
+  await page.getByLabel("Audit reason").fill(`Recovery authority reviewed at ${fixture.label}`);
+  await page.getByLabel("Supplemental evidence reference (optional for authority check)").fill(`monitor://e2e/${fixture.label}/${suffix}`);
   await page.getByLabel("Summary", { exact: true }).fill(`Provider route recovered and ${fixture.label} authority evidence was reconciled.`);
   await page.getByLabel("Root cause").fill(`${fixture.label} provider route regression`);
   await page.getByLabel("Contributing factors (one per line)").fill("Capacity signal lag");

@@ -113,16 +113,12 @@ export async function consumeInbound(
   event: InboundEvent,
   prisma: ChatPrismaClient = chatPrisma,
 ): Promise<{ applied: boolean }> {
-  // Idempotency gate: insert pending row; if it exists & consumed, skip.
   const sourceService = event.sourceService ?? "main";
-  const existing = await prisma.chatInboxEvent.findUnique({
-    where: { sourceService_sourceEventId: { sourceService, sourceEventId: event.eventId } },
-  });
-  if (existing?.status === "consumed") return { applied: false };
-  if (!existing) {
+  const id = receiptId(sourceService, event.eventId);
+  try {
     await prisma.chatInboxEvent.create({
       data: {
-        id: receiptId(sourceService, event.eventId),
+        id,
         sourceService,
         sourceEventId: event.eventId,
         payloadHash: hashInboundEvent(event),
@@ -130,26 +126,42 @@ export async function consumeInbound(
         payload: event.payload as never,
       },
     });
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) throw error;
   }
-  const eventToApply: InboundEvent = existing
-    ? {
-        eventId: existing.sourceEventId,
-        sourceService: existing.sourceService,
-        eventType: existing.eventType,
-        payload: (existing.payload ?? {}) as Record<string, unknown>,
-      }
-    : event;
+
+  const claimStartedAt = new Date();
+  const staleBefore = new Date(claimStartedAt.getTime() - 5 * 60_000);
+  const claim = await prisma.chatInboxEvent.updateMany({
+    where: {
+      id,
+      OR: [
+        { status: { in: ["pending", "failed"] } },
+        { status: "processing", processedAt: { lt: staleBefore } },
+      ],
+    },
+    data: { status: "processing", processedAt: claimStartedAt },
+  });
+  if (claim.count === 0) return { applied: false };
+
+  const claimed = await prisma.chatInboxEvent.findUniqueOrThrow({ where: { id } });
+  const eventToApply: InboundEvent = {
+    eventId: claimed.sourceEventId,
+    sourceService: claimed.sourceService,
+    eventType: claimed.eventType,
+    payload: (claimed.payload ?? {}) as Record<string, unknown>,
+  };
 
   try {
     await applyEffect(eventToApply, prisma);
-    await prisma.chatInboxEvent.update({
-      where: { id: existing?.id ?? receiptId(sourceService, event.eventId) },
+    await prisma.chatInboxEvent.updateMany({
+      where: { id, status: "processing", processedAt: claimStartedAt },
       data: { status: "consumed", processedAt: new Date(), consumedAt: new Date() },
     });
     return { applied: true };
   } catch (error) {
-    await prisma.chatInboxEvent.update({
-      where: { id: existing?.id ?? receiptId(sourceService, event.eventId) },
+    await prisma.chatInboxEvent.updateMany({
+      where: { id, status: "processing", processedAt: claimStartedAt },
       data: { status: "failed", attempts: { increment: 1 } },
     });
     throw error;
@@ -317,30 +329,29 @@ export async function reprocessPendingInbox(
   prisma: ChatPrismaClient = chatPrisma,
   batch = 100,
 ): Promise<number> {
+  const staleBefore = new Date(Date.now() - 5 * 60_000);
   const pending = await prisma.chatInboxEvent.findMany({
-    where: { status: { in: ["pending", "failed"] } },
+    where: {
+      OR: [
+        { status: { in: ["pending", "failed"] } },
+        { status: "processing", processedAt: { lt: staleBefore } },
+      ],
+    },
     orderBy: { createdAt: "asc" },
     take: batch,
   });
   let applied = 0;
   for (const row of pending) {
     try {
-      await applyEffect(
-        {
-          eventId: row.sourceEventId,
-          sourceService: row.sourceService,
-          eventType: row.eventType,
-          payload: (row.payload ?? {}) as Record<string, unknown>,
-        },
-        prisma,
-      );
-      await prisma.chatInboxEvent.update({
-        where: { id: row.id },
-        data: { status: "consumed", processedAt: new Date(), consumedAt: new Date() },
-      });
-      applied += 1;
+      const result = await consumeInbound({
+        eventId: row.sourceEventId,
+        sourceService: row.sourceService,
+        eventType: row.eventType,
+        payload: (row.payload ?? {}) as Record<string, unknown>,
+      }, prisma);
+      if (result.applied) applied += 1;
     } catch {
-      await prisma.chatInboxEvent.update({ where: { id: row.id }, data: { attempts: { increment: 1 } } });
+      // consumeInbound records the failed attempt while retaining the event.
     }
   }
   return applied;

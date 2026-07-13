@@ -801,10 +801,10 @@ export async function getCreativeRunDetail(input: {
           directionHash: item.directionHash,
           generationProfileKey: run.profileId,
           generationProfileVersion: run.profileVersion === null ? null : String(run.profileVersion),
-          workflowKey: item.job?.model ?? null,
-          workflowVersion: item.job?.profileVersion === null || item.job?.profileVersion === undefined
+          workflowKey: latestAttempt?.workflowKey ?? null,
+          workflowVersion: latestAttempt?.workflowVersion === null || latestAttempt?.workflowVersion === undefined
             ? null
-            : String(item.job.profileVersion),
+            : String(latestAttempt.workflowVersion),
           requestId: item.jobId,
           attemptId: latestAttempt?.id ?? null,
           assetId: asset?.id ?? null,

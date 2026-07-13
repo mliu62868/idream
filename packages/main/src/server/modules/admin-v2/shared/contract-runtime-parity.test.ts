@@ -55,7 +55,7 @@ const refs = [...new Set(ADMIN_V2_API_OPERATIONS.flatMap((operation) => [
 describe("Admin v2 shared contract HTTP/in-process parity", () => {
   it("keeps the entire manifest executable with no pending escape hatch", () => {
     expect(Object.keys(ADMIN_V2_PENDING_CONTRACTS)).toHaveLength(0);
-    expect(refs).toHaveLength(132);
+    expect(refs).toHaveLength(134);
     for (const ref of refs) expect(requireExecutableAdminV2Contract(ref).fixtureKey).toBe(ref);
   });
 

@@ -12,6 +12,7 @@ import {
   type TodayWorkItem,
 } from "@idream/shared/admin";
 import { Prisma } from "@prisma/client";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import type {
   AdminCollaborationActivity,
   AdminCase,
@@ -29,6 +30,7 @@ import { fail, ok } from "@/server/lib/http";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 
 const QUEUE_LIMIT = 10;
+const MAX_ALL_WORK_SCAN_LIMIT = 5_000;
 const RANKING_POLICY_VERSION = "today-ranking-v1";
 const ACTIVE_CASE_STATUSES = ["new", "triaged", "in_progress", "waiting", "reopened"];
 const ACTIVE_INCIDENT_STATUSES = ["detected", "triaged", "mitigating", "monitoring"];
@@ -1391,12 +1393,21 @@ function allWorkQueryContext(query: TodayAllWorkQuery) {
 }
 
 function encodeTodayCursor(input: Omit<TodayCursor, "version" | "policyVersion">) {
-  return Buffer.from(JSON.stringify({ version: 1, policyVersion: RANKING_POLICY_VERSION, ...input } satisfies TodayCursor)).toString("base64url");
+  const payload = Buffer.from(JSON.stringify({ version: 1, policyVersion: RANKING_POLICY_VERSION, ...input } satisfies TodayCursor)).toString("base64url");
+  return `${payload}.${signTodayCursor(payload)}`;
 }
 
 function decodeTodayCursor(value: string, input: { workMode: TodayWorkMode; actorId: string; query: TodayAllWorkQuery }): TodayCursor {
   try {
-    const decoded = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as TodayCursor;
+    if (value.length > 64_000) throw new Error("cursor is too large");
+    const [payload, signature, extra] = value.split(".");
+    if (!payload || !signature || extra) throw new Error("cursor signature is missing");
+    const expected = Buffer.from(signTodayCursor(payload));
+    const received = Buffer.from(signature);
+    if (expected.length !== received.length || !timingSafeEqual(expected, received)) {
+      throw new Error("cursor signature is invalid");
+    }
+    const decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as TodayCursor;
     if (
       decoded.version !== 1
       || decoded.workMode !== input.workMode
@@ -1405,13 +1416,19 @@ function decodeTodayCursor(value: string, input: { workMode: TodayWorkMode; acto
       || decoded.queryContext !== allWorkQueryContext(input.query)
       || !Number.isInteger(decoded.scanLimit)
       || decoded.scanLimit < 1
+      || decoded.scanLimit > MAX_ALL_WORK_SCAN_LIMIT
       || !Number.isInteger(decoded.consumedCount)
       || decoded.consumedCount < 0
+      || decoded.consumedCount > decoded.scanLimit
     ) throw new Error("cursor context changed");
     return { ...decoded, item: todayWorkItemSchema.parse(decoded.item) };
   } catch {
     throw new AppError("bad_request", "Today All Work cursor is invalid or belongs to another work mode");
   }
+}
+
+function signTodayCursor(payload: string) {
+  return createHmac("sha256", env.INTERNAL_TOKEN).update(payload).digest("base64url");
 }
 
 function matchesAllWorkFilters(
@@ -1452,7 +1469,7 @@ export async function buildTodayAllWork(input: {
   const query = todayAllWorkQuerySchema.parse(input.query ?? {});
   const workMode = query.workMode ?? defaultWorkMode(input.actor.role);
   const cursor = query.cursor ? decodeTodayCursor(query.cursor, { workMode, actorId: input.actor.id, query }) : null;
-  const scanLimit = (cursor?.scanLimit ?? 0) + query.limit + 1;
+  const scanLimit = Math.min(MAX_ALL_WORK_SCAN_LIMIT, (cursor?.scanLimit ?? 0) + query.limit + 1);
   if (query.environment && query.environment !== deploymentEnvironment()) {
     return todayAllWorkResponseSchema.parse({
       items: [], totalCount: 0, pageInfo: { endCursor: null, hasNextPage: false },
@@ -1572,6 +1589,9 @@ export async function buildTodayAllWork(input: {
     : allItems;
   const items = remaining.slice(0, query.limit);
   const consumedCount = (cursor?.consumedCount ?? 0) + items.length;
+  if (scanLimit === MAX_ALL_WORK_SCAN_LIMIT && remaining.length <= items.length && rows.totalCount > consumedCount) {
+    throw new AppError("bad_request", "Today All Work exceeds the bounded scan window; narrow the filters");
+  }
   const hasNextPage = remaining.length > items.length || rows.totalCount > consumedCount;
   return todayAllWorkResponseSchema.parse({
     items,

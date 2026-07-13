@@ -87,6 +87,24 @@ describe("inbox (P0-4 main→chat, idempotent)", () => {
     const second = await consumeInbound(event, prisma);
     expect(second.applied).toBe(false); // idempotent on eventId
   });
+
+  it("atomically claims concurrent deliveries so only one worker applies the event", async () => {
+    const event = {
+      eventId: `rel_concurrent_${Date.now()}`,
+      eventType: MAIN_TO_CHAT_EVENTS.entitlementUpdated,
+      payload: { userId: USER, tier: "premium" },
+    };
+
+    const results = await Promise.all([
+      consumeInbound(event, prisma),
+      consumeInbound(event, prisma),
+    ]);
+
+    expect(results.filter((result) => result.applied)).toHaveLength(1);
+    expect(results.filter((result) => !result.applied)).toHaveLength(1);
+    expect(await prisma.chatInboxEvent.findUnique({ where: { id: `main:${event.eventId}` } }))
+      .toMatchObject({ status: "consumed", attempts: 0 });
+  });
 });
 
 describe("reconcile (P0-4 convergence)", () => {

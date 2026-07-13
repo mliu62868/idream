@@ -87,6 +87,8 @@ describe("Creative retry through verified placement", () => {
         provider: "pipeline",
         profileKey: profileId,
         profileVersion: 1,
+        workflowKey: "mock-image",
+        workflowVersion: 7,
         status: "failed",
         errorClass: "provider",
         errorCode: "provider_timeout",
@@ -351,6 +353,8 @@ describe("Creative retry through verified placement", () => {
     expect(detail.items[0].lineage).toMatchObject({
       requestId: jobId,
       attemptId: expect.any(String),
+      workflowKey: "mock-image",
+      workflowVersion: "7",
       assetId,
       reviewDecisionId: expect.any(String),
       placementVersionId: placementId,

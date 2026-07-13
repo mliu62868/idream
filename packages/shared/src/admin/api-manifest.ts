@@ -137,6 +137,7 @@ export const ADMIN_V2_API_OPERATIONS = [
   operation("GET", "/api/v2/admin/characters/performance/reconciliation", allOf("analytics.metric.read"), "none", "characterPerformanceReconciliationSchema"),
   operation("POST", "/api/v2/admin/characters/route-qualifications/commands/evaluate", allOf("content.production.write"), "generationRouteQualificationEvaluateRequestSchema+idempotency-key", "generationRouteQualificationEvaluateResponseSchema"),
   operation("GET", "/api/v2/admin/characters/:id", allOf("character.project.read", "character.release.read", "character.performance.read"), "path:id", "characterWorkspaceDetailSchema"),
+  operation("POST", "/api/v2/admin/characters/:id/reference-sets", allOf("content.official.write"), "characterReferenceSetPublishRequestSchema+idempotency-key", "characterReferenceSetPublishResponseSchema"),
   operation("POST", "/api/v2/admin/characters/:id/commands/pause", allOf("character.release.publish"), "adminCommandRequestSchema+idempotency-key", "adminCommandAcceptedSchema"),
   operation("POST", "/api/v2/admin/characters/:id/commands/resume", allOf("character.release.publish"), "adminCommandRequestSchema+idempotency-key", "adminCommandAcceptedSchema"),
   operation("POST", "/api/v2/admin/characters/:id/commands/retire", allOf("character.release.publish"), "adminCommandRequestSchema+idempotency-key", "adminCommandAcceptedSchema"),

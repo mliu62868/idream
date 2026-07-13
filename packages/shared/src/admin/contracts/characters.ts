@@ -157,6 +157,22 @@ export const characterVisualReferenceSetSchema = z
   })
   .strict();
 
+export const characterReferenceSetPublishRequestSchema = z.object({
+  visualProfileId: adminIdSchema,
+  selectorVersion: z.string().trim().min(1).max(80),
+  references: z.array(z.object({
+    mediaAssetId: adminIdSchema,
+    role: characterVisualReferenceRoleSchema,
+    weight: z.number().positive().max(10).default(1),
+  }).strict()).min(1).max(24),
+  reason: adminCommandReasonSchema,
+  confirmation: z.string().trim().min(1).max(240),
+}).strict();
+
+export const characterReferenceSetPublishResponseSchema = characterVisualReferenceSetSchema.extend({
+  replayed: z.boolean(),
+}).strict();
+
 export const characterRouteQualificationEvidenceSchema = z
   .object({
     id: adminIdSchema,
@@ -874,6 +890,7 @@ export type CharacterPerformanceBackfillRequest = z.infer<typeof characterPerfor
 export type CharacterPerformanceReconciliation = z.infer<typeof characterPerformanceReconciliationSchema>;
 export type CharacterProjectDraftPatchRequest = z.infer<typeof characterProjectDraftPatchRequestSchema>;
 export type CharacterWorkspaceDetail = z.infer<typeof characterWorkspaceDetailSchema>;
+export type CharacterReferenceSetPublishRequest = z.infer<typeof characterReferenceSetPublishRequestSchema>;
 export type CharacterQaCheck = z.infer<typeof characterQaCheckSchema>;
 export type CharacterQaCheckInput = z.infer<typeof characterQaCheckInputSchema>;
 export type CharacterQaRun = z.infer<typeof characterQaRunSchema>;

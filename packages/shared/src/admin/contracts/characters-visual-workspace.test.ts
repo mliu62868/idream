@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { characterVisualWorkspaceSchema } from "./characters";
+import { characterReferenceSetPublishRequestSchema, characterVisualWorkspaceSchema } from "./characters";
 
 describe("Character Visual workspace contract", () => {
   it("keeps selection, published references, qualification evidence and readiness distinct", () => {
@@ -28,5 +28,15 @@ describe("Character Visual workspace contract", () => {
 
   it("rejects a readiness claim without explicit evidence collections", () => {
     expect(characterVisualWorkspaceSchema.safeParse({ readiness: { ready: true, qualificationPolicyVersion: "v2", blockers: [], productionDeepLink: "/admin/content/production" } }).success).toBe(false);
+  });
+
+  it("requires an explicit immutable Reference Set publication command", () => {
+    expect(characterReferenceSetPublishRequestSchema.parse({
+      visualProfileId: "identity-1",
+      selectorVersion: "admin-visual-workbench-v1",
+      references: [{ mediaAssetId: "asset-anchor", role: "identity_anchor", weight: 1 }],
+      reason: { code: "reference_snapshot_publish", summary: "Seal reviewed identity references" },
+      confirmation: "PUBLISH REFERENCES character-1",
+    }).references).toHaveLength(1);
   });
 });

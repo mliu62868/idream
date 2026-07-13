@@ -374,15 +374,15 @@ describe("Incident and P0 Review Case authority loops", () => {
 
   it("serializes cross-bucket correlation so concurrent failures cannot split one signature", async () => {
     const [left, right] = await Promise.all([
-      correlateFailedGenerationAttempt(boundaryAttemptA, { joinGapMs: 1_000 }),
-      correlateFailedGenerationAttempt(boundaryAttemptB, { joinGapMs: 1_000 }),
+      correlateFailedGenerationAttempt(boundaryAttemptA),
+      correlateFailedGenerationAttempt(boundaryAttemptB),
     ]);
     createdIncidentIds.push(left.id);
     expect(right.id).toBe(left.id);
     expect(await prisma.opsIncidentOccurrence.count({ where: { incidentId: left.id } })).toBe(2);
     const stored = await prisma.opsIncident.findUniqueOrThrow({ where: { id: left.id } });
     expect(stored.mitigation).toMatchObject({
-      correlationPolicy: { version: "generation-correlation-v1", joinGapMs: 1_000 },
+      correlationPolicy: { version: "generation-correlation-v1", joinGapMs: 24 * 60 * 60 * 1_000 },
     });
     expect(await prisma.adminAuditLog.findFirst({
       where: { targetId: left.id, action: "incident.occurrence.correlated" },
@@ -390,7 +390,7 @@ describe("Incident and P0 Review Case authority loops", () => {
     })).toMatchObject({
       after: expect.objectContaining({
         correlationPolicyVersion: "generation-correlation-v1",
-        joinGapMs: 1_000,
+        joinGapMs: 24 * 60 * 60 * 1_000,
       }),
     });
   });

@@ -177,6 +177,7 @@ describe("processImageGenerate", () => {
         attemptId: "attempt_img_1",
         generationJobId: "job_img_1",
         model: "mock-image",
+        provider: "backend",
         providerRequestId: "provider-request-image-1",
         accounting: {
           usage: { images: 2 },

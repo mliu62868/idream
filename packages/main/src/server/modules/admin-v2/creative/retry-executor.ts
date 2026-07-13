@@ -195,6 +195,8 @@ export async function executeCreativeRetryCommand(
             provider: item.job.provider,
             profileKey: item.job.profileId,
             profileVersion: item.job.profileVersion,
+            workflowKey: latest?.workflowKey,
+            workflowVersion: latest?.workflowVersion,
             status: "queued",
             sourceCommandId: claimed.id,
             creativeRunItemId: item.id,

@@ -36,6 +36,7 @@ describe("Visual Identity operator workbench", () => {
     expect(html).toContain("Visual Identity authority");
     expect(html).toContain("reference set not active");
     expect(html).toContain("Open role image production");
+    expect(html).toContain("Publish Reference Set");
     expect(html).toContain("38/40 passed");
     expect(html).toContain("Submit route evaluation");
   });
@@ -45,5 +46,6 @@ describe("Visual Identity operator workbench", () => {
     expect(html).toContain("content.official.write is not granted");
     expect(html).toContain("content.production.write is not granted");
     expect(html).toMatch(/disabled=""[^>]*>Create &amp; activate version/);
+    expect(html).toMatch(/disabled=""[^>]*>Publish Reference Set/);
   });
 });

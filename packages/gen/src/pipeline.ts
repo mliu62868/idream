@@ -211,7 +211,7 @@ export async function processImageGenerate(
     providers.blob,
   );
   const imageModel = providers.image;
-  const imageProvider = payload.model ?? "image-provider";
+  const imageProvider = env.IMAGE_PROVIDER;
   const imageTransport = transportIdentity(payload, deps);
   await recordTransport(deps, payload, imageProvider, "running");
   const invocationStartedAt = performance.now();
@@ -340,7 +340,7 @@ export async function processImageGenerate(
       requestId: payload.requestId,
       generationJobId: payload.generationJobId,
       mode: "image",
-      provider: payload.model,
+      provider: imageProvider,
       model: payload.model,
       providerRequestId: result.invocation?.providerRequestId ?? null,
       completedAt: new Date().toISOString(),

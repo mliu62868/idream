@@ -63,7 +63,7 @@ describe("Admin v2 authority execution matrix", () => {
       outcomes.push({ id: operation.id, status: response.status });
     }
 
-    expect(outcomes).toHaveLength(84);
+    expect(outcomes).toHaveLength(85);
     expect(outcomes.filter((outcome) => outcome.status !== 401)).toEqual([]);
   });
 });

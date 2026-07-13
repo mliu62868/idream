@@ -203,6 +203,19 @@ describe("Today authoritative projection", () => {
       ...authority,
       query: { limit: 5, domain: "ops_incident", cursor: first.pageInfo.endCursor ?? undefined },
     })).rejects.toThrow("cursor is invalid");
+    const cursor = first.pageInfo.endCursor;
+    if (!cursor) throw new Error("expected a signed Today cursor");
+    const [payload, signature] = cursor.split(".");
+    const decoded = JSON.parse(Buffer.from(payload ?? "", "base64url").toString("utf8")) as Record<string, unknown>;
+    const forged = `${Buffer.from(JSON.stringify({ ...decoded, scanLimit: 1_000_000 })).toString("base64url")}.${signature}`;
+    await expect(buildTodayAllWork({
+      ...authority,
+      query: { limit: 5, cursor: forged },
+    })).rejects.toThrow("cursor is invalid");
+    await expect(buildTodayAllWork({
+      ...authority,
+      query: { limit: 5, cursor: `${payload}.${signature?.slice(0, -1)}x` },
+    })).rejects.toThrow("cursor is invalid");
   });
 
   it("authenticates before returning the Today read model", async () => {

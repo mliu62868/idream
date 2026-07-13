@@ -10,6 +10,9 @@ const INCIDENT_SIGNATURE_VERSION = "generation-error-v1";
 const INCIDENT_CORRELATION_POLICY_VERSION = "generation-correlation-v1";
 const OPEN_INCIDENT_STATUSES = ["detected", "triaged", "mitigating", "monitoring"] as const;
 const DEFAULT_JOIN_GAP_MS = 24 * 60 * 60 * 1_000;
+const INCIDENT_CORRELATION_POLICIES = {
+  [INCIDENT_CORRELATION_POLICY_VERSION]: { joinGapMs: DEFAULT_JOIN_GAP_MS },
+} as const;
 
 type Db = PrismaClient | Prisma.TransactionClient;
 type JsonRecord = Record<string, unknown>;
@@ -144,7 +147,7 @@ async function refreshIncidentImpact(db: Db, incidentId: string) {
 
 export async function correlateFailedGenerationAttempt(
   attemptId: string,
-  options: { readonly joinGapMs?: number; readonly policyVersion?: string; readonly db?: PrismaClient } = {},
+  options: { readonly policyVersion?: keyof typeof INCIDENT_CORRELATION_POLICIES; readonly db?: PrismaClient } = {},
 ) {
   const database = options.db ?? prisma;
   const result = await database.$transaction(async (tx) => {
@@ -167,8 +170,8 @@ export async function correlateFailedGenerationAttempt(
       });
     }
     const observedAt = attempt.finishedAt ?? attempt.createdAt;
-    const joinGapMs = options.joinGapMs ?? DEFAULT_JOIN_GAP_MS;
     const policyVersion = options.policyVersion ?? INCIDENT_CORRELATION_POLICY_VERSION;
+    const joinGapMs = INCIDENT_CORRELATION_POLICIES[policyVersion].joinGapMs;
     const cutoff = new Date(observedAt.getTime() - joinGapMs);
     await tx.$queryRaw(Prisma.sql`
       SELECT 1::int AS locked

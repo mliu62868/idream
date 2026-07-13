@@ -3,6 +3,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import {
+  characterReferenceSetPublishResponseSchema,
   generationRouteQualificationEvaluateResponseSchema,
   characterPortfolioResponseSchema,
   characterWorkspaceDetailSchema,
@@ -293,7 +294,11 @@ export function VisualIdentityPanel({ data, permissions, reload }: {
   const [matrixKey, setMatrixKey] = useState("");
   const [guardrailEvidence, setGuardrailEvidence] = useState("");
   const [qualificationReason, setQualificationReason] = useState("");
-  const [busy, setBusy] = useState<"identity" | "qualification" | null>(null);
+  const referenceCandidates = [...data.visual.anchors, ...data.visual.references].filter((asset) => asset.available);
+  const [selectedReferenceIds, setSelectedReferenceIds] = useState<string[]>(() => referenceCandidates.map((asset) => asset.mediaAssetId));
+  const [referenceReason, setReferenceReason] = useState("");
+  const [referenceConfirmed, setReferenceConfirmed] = useState(false);
+  const [busy, setBusy] = useState<"identity" | "references" | "qualification" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const createIdentityVersion = async () => {
@@ -350,6 +355,34 @@ export function VisualIdentityPanel({ data, permissions, reload }: {
     }
   };
 
+  const publishReferenceSet = async () => {
+    if (!identity) return;
+    setBusy("references");
+    setError(null);
+    try {
+      const selected = referenceCandidates.filter((asset) => selectedReferenceIds.includes(asset.mediaAssetId));
+      await adminV2Request(`/api/v2/admin/characters/${data.character.id}/reference-sets`, {
+        method: "POST",
+        idempotencyKey: crypto.randomUUID(),
+        schema: characterReferenceSetPublishResponseSchema,
+        body: {
+          visualProfileId: identity.id,
+          selectorVersion: "admin-visual-workbench-v1",
+          references: selected.map((asset) => ({ mediaAssetId: asset.mediaAssetId, role: asset.role, weight: 1 })),
+          reason: { code: "reference_snapshot_publish", summary: referenceReason.trim() },
+          confirmation: referenceConfirmed ? `PUBLISH REFERENCES ${data.character.id}` : "",
+        },
+      });
+      setReferenceReason("");
+      setReferenceConfirmed(false);
+      await reload();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Reference Set could not be published");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const publishedAssets = [...data.visual.anchors, ...(data.visual.activeReferenceSet?.references ?? [])];
   return <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
     <div className="space-y-5">
@@ -360,8 +393,9 @@ export function VisualIdentityPanel({ data, permissions, reload }: {
       </section>
 
       <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" aria-labelledby="reference-set-title">
-        <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-semibold" id="reference-set-title">Anchors & published references</h3><p className="mt-1 text-xs text-[var(--ad-text-muted)]">Candidate promotion remains in the role-scoped production and asset workflow.</p></div><Link className="inline-flex min-h-11 items-center rounded-lg border border-[var(--ad-border)] px-3 text-sm font-semibold" href={data.visual.readiness.productionDeepLink}>Open role image production</Link></div>
+        <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-semibold" id="reference-set-title">Anchors & published references</h3><p className="mt-1 text-xs text-[var(--ad-text-muted)]">Select available Identity assets, then seal an immutable Reference Set revision.</p></div><Link className="inline-flex min-h-11 items-center rounded-lg border border-[var(--ad-border)] px-3 text-sm font-semibold" href={data.visual.readiness.productionDeepLink}>Open role image production</Link></div>
         <div className="mt-4 grid gap-3 sm:grid-cols-2">{publishedAssets.length === 0 ? <p className="text-sm text-[var(--ad-text-muted)]">No anchor or published reference assets.</p> : publishedAssets.map((asset, index) => <article className="rounded-lg border border-[var(--ad-border)] p-3" key={`${asset.role}-${asset.mediaAssetId}-${index}`}><div className="flex items-center justify-between gap-2"><span className="text-xs font-semibold">{asset.role.replaceAll("_", " ")}</span><StatusBadge value={asset.available ? "available" : "unavailable"} /></div><p className="mt-2 truncate text-xs text-[var(--ad-text-muted)]">{asset.mediaAssetId}</p>{asset.thumbnailUrl ?? asset.url ? <Image alt="Visual reference evidence" className="mt-3 aspect-video w-full rounded-md object-cover" height={180} src={asset.thumbnailUrl ?? asset.url ?? ""} unoptimized width={320} /> : null}</article>)}</div>
+        {identity ? <div className="mt-5 border-t border-[var(--ad-border)] pt-4"><h4 className="text-sm font-semibold">Publish Reference Set revision</h4><div className="mt-3 grid gap-2 sm:grid-cols-2">{referenceCandidates.map((asset) => <label className="flex min-h-11 items-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-xs" key={asset.mediaAssetId}><input checked={selectedReferenceIds.includes(asset.mediaAssetId)} onChange={(event) => setSelectedReferenceIds((current) => event.target.checked ? [...new Set([...current, asset.mediaAssetId])] : current.filter((id) => id !== asset.mediaAssetId))} type="checkbox" /><span className="min-w-0 truncate">{asset.role.replaceAll("_", " ")} · {asset.mediaAssetId}</span></label>)}</div><label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">Publication reason<input className={`${fieldClass} mt-1`} onChange={(event) => setReferenceReason(event.target.value)} value={referenceReason} /></label><label className="mt-3 flex items-start gap-2 text-xs"><input checked={referenceConfirmed} className="mt-0.5" onChange={(event) => setReferenceConfirmed(event.target.checked)} type="checkbox" /><span>Publish a new immutable reference snapshot and supersede the active revision.</span></label><div className="mt-4"><WorkspaceButton disabled={!permissions.writeVisual || busy !== null || selectedReferenceIds.length === 0 || referenceReason.trim().length < 3 || !referenceConfirmed} onClick={() => void publishReferenceSet()} tone="primary">Publish Reference Set</WorkspaceButton></div></div> : null}
       </section>
 
       <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" aria-labelledby="qualification-evidence-title"><h3 className="font-semibold" id="qualification-evidence-title">Route qualification evidence</h3>{data.visual.routeQualifications.length === 0 ? <p className="mt-3 text-sm text-[var(--ad-text-muted)]">No evaluation evidence for the active identity style.</p> : <div className="mt-3 overflow-x-auto"><table className="min-w-full text-left text-xs"><thead><tr className="border-b border-[var(--ad-border)] text-[var(--ad-text-muted)]"><th className="py-2 pr-3">Route</th><th className="py-2 pr-3">Matrix</th><th className="py-2 pr-3">Evidence</th><th className="py-2">Result</th></tr></thead><tbody>{data.visual.routeQualifications.map((route) => <tr className="border-b border-[var(--ad-border)]" key={route.id}><td className="py-3 pr-3">{route.generationProfileKey} v{route.generationProfileVersion}<span className="block text-[var(--ad-text-muted)]">{route.workflowKey} v{route.workflowVersion}</span></td><td className="py-3 pr-3">{route.matrixKey}<span className="block text-[var(--ad-text-muted)]">{route.policyVersion}</span></td><td className="py-3 pr-3">{route.passCount}/{route.sampleCount} passed<span className="block text-[var(--ad-text-muted)]">{percent(route.identityMatch)} identity match</span></td><td className="py-3"><StatusBadge value={route.stale ? "stale" : route.result} /></td></tr>)}</tbody></table></div>}</section>
