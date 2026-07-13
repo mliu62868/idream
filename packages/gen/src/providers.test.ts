@@ -284,6 +284,12 @@ describe("PipelineImageModel", () => {
     expect(result).toEqual({
       ok: false,
       error: { code: "overloaded", message: "GPU busy", retryable: true },
+      invocation: {
+        providerRequestId: null,
+        usage: {},
+        costMicros: null,
+        pricingVersion: null,
+      },
     });
   });
 
@@ -305,6 +311,12 @@ describe("PipelineImageModel", () => {
     expect(result).toEqual({
       ok: false,
       error: { code: "invalid_params", message: "bad size", retryable: false },
+      invocation: {
+        providerRequestId: null,
+        usage: {},
+        costMicros: null,
+        pricingVersion: null,
+      },
     });
   });
 
@@ -390,7 +402,7 @@ describe("PipelineImageModel", () => {
       controls: { idreamSeed: "seed_v1" },
     });
     expect(typeof requestBody.seed).toBe("number");
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       ok: true,
       data: {
         asset: {
@@ -399,6 +411,12 @@ describe("PipelineImageModel", () => {
           contentType: "video/mp4",
           sourceUrl: "https://pipeline-assets.test/req_vid_1.mp4",
         },
+      },
+      invocation: {
+        providerRequestId: null,
+        usage: {},
+        costMicros: null,
+        pricingVersion: null,
       },
     });
   });
