@@ -1,8 +1,13 @@
 import {
+  todayAllWorkQuerySchema,
+  todayAllWorkResponseSchema,
   todayProjectionSchema,
   todayProjectionQuerySchema,
+  todayWorkItemSchema,
   type AdminPermissionKey,
   type TodayProjection,
+  type TodayAllWorkQuery,
+  type TodayAllWorkResponse,
   type TodayWorkMode,
   type TodayWorkItem,
 } from "@idream/shared/admin";
@@ -70,6 +75,7 @@ type ReleaseQueueSelection =
       scope: "active";
       owner: "all" | { actorId: string } | "unassigned";
       snoozedIds: readonly string[];
+      filters?: Pick<TodayAllWorkQuery, "severity" | "sla" | "status"> & { now: Date };
     }
   | {
       scope: "recently_resolved";
@@ -88,6 +94,7 @@ type IncidentQueueSelection =
       owner: "all" | { actorId: string } | "unassigned";
       dueOrFailedBy?: Date;
       snoozedIds: readonly string[];
+      filters?: Pick<TodayAllWorkQuery, "severity" | "sla" | "status"> & { now: Date };
     }
   | {
       scope: "recently_resolved";
@@ -101,6 +108,16 @@ type IncidentQueueSelection =
     };
 
 type TodayReadDb = PrismaClient | Prisma.TransactionClient;
+
+function sqlSlaFilter(column: Prisma.Sql, sla: TodayAllWorkQuery["sla"], now: Date) {
+  if (!sla) return Prisma.empty;
+  const endOfToday = new Date(now);
+  endOfToday.setUTCHours(23, 59, 59, 999);
+  if (sla === "none") return Prisma.sql`AND ${column} IS NULL`;
+  if (sla === "overdue") return Prisma.sql`AND ${column} < ${now}`;
+  if (sla === "due_today") return Prisma.sql`AND ${column} >= ${now} AND ${column} <= ${endOfToday}`;
+  return Prisma.sql`AND ${column} > ${endOfToday}`;
+}
 
 export type TodaySourceQueryDiagnostic = {
   sourceType: TodayWorkItem["sourceType"];
@@ -118,8 +135,9 @@ function recordSourceQuery(
   sourceType: TodayWorkItem["sourceType"],
   lane: string,
   returnedRows: number,
+  limit = QUEUE_LIMIT,
 ) {
-  diagnostics?.onSourceQuery({ sourceType, lane, returnedRows, limit: QUEUE_LIMIT });
+  diagnostics?.onSourceQuery({ sourceType, lane, returnedRows, limit });
 }
 
 function uniqueById<Row extends { id: string }>(rows: readonly Row[]) {
@@ -131,6 +149,7 @@ async function findBoundedCaseRows(input: {
   where: Prisma.AdminCaseWhereInput | null;
   pinnedIds: readonly string[];
   diagnostics?: TodayQueryDiagnostics;
+  limit?: number;
 }) {
   if (!input.where) return { totalCount: 0, rows: [] as AdminCase[] };
   const priorityLanes: Array<{ lane: string; where: Prisma.AdminCaseWhereInput }> = [
@@ -154,9 +173,9 @@ async function findBoundedCaseRows(input: {
         { updatedAt: "asc" },
         { id: "asc" },
       ],
-      take: QUEUE_LIMIT,
+      ...(input.limit === undefined ? {} : { take: input.limit }),
     });
-    recordSourceQuery(input.diagnostics, "admin_case", `${pinnedOnly ? "pinned:" : ""}${lane.lane}`, rows.length);
+    recordSourceQuery(input.diagnostics, "admin_case", `${pinnedOnly ? "pinned:" : ""}${lane.lane}`, rows.length, input.limit);
     return rows;
   };
   const [totalCount, ...laneRows] = await Promise.all([
@@ -171,6 +190,7 @@ async function findBoundedIncidentRows(input: {
   selection: IncidentQueueSelection | null;
   pinnedIds: readonly string[];
   diagnostics?: TodayQueryDiagnostics;
+  limit?: number;
 }) {
   if (!input.selection) return { totalCount: 0, rows: [] as OpsIncident[] };
   const actor = input.selection.actor;
@@ -208,6 +228,9 @@ async function findBoundedIncidentRows(input: {
         ${input.selection.dueOrFailedBy
           ? Prisma.sql`AND (incident."slaDueAt" <= ${input.selection.dueOrFailedBy} OR incident."verificationState" = 'failed')`
           : Prisma.empty}
+        ${input.selection.filters?.severity ? Prisma.sql`AND incident.severity = ${input.selection.filters.severity}` : Prisma.empty}
+        ${input.selection.filters?.status ? Prisma.sql`AND incident.status = ${input.selection.filters.status}` : Prisma.empty}
+        ${input.selection.filters ? sqlSlaFilter(Prisma.sql`incident."slaDueAt"`, input.selection.filters.sla, input.selection.filters.now) : Prisma.empty}
       `
     : input.selection.scope === "recently_resolved"
       ? Prisma.sql`
@@ -218,6 +241,7 @@ async function findBoundedIncidentRows(input: {
       : input.selection.incidentIds.length > 0
         ? Prisma.sql`AND incident.id IN (${Prisma.join(input.selection.incidentIds)})`
         : Prisma.sql`AND FALSE`;
+  const limitSql = input.limit === undefined ? Prisma.empty : Prisma.sql`WHERE ranked.ordinal <= ${input.limit}`;
   const ranked = await input.db.$queryRaw<Array<{ id: string | null; totalCount: bigint }>>(Prisma.sql`
     WITH eligible AS (
       SELECT
@@ -236,13 +260,14 @@ async function findBoundedIncidentRows(input: {
     ), summary AS (SELECT count(*)::bigint AS total_count FROM eligible)
     SELECT ranked.id, summary.total_count AS "totalCount"
     FROM summary
-    LEFT JOIN ranked ON ranked.ordinal <= ${QUEUE_LIMIT}
+    LEFT JOIN ranked ON TRUE
+    ${limitSql}
     ORDER BY ranked.ordinal ASC NULLS LAST
   `);
   const ids = ranked.flatMap((row) => row.id ? [row.id] : []);
-  recordSourceQuery(input.diagnostics, "ops_incident", input.selection.scope, ids.length);
+  recordSourceQuery(input.diagnostics, "ops_incident", input.selection.scope, ids.length, input.limit);
   const rows = ids.length > 0
-    ? await input.db.opsIncident.findMany({ where: { id: { in: ids } }, take: QUEUE_LIMIT })
+    ? await input.db.opsIncident.findMany({ where: { id: { in: ids } }, ...(input.limit === undefined ? {} : { take: input.limit }) })
     : [];
   const rowsById = new Map(rows.map((row) => [row.id, row]));
   return {
@@ -259,6 +284,7 @@ async function findBoundedCommandRows(input: {
   where: Prisma.ControlPlaneCommandWhereInput | null;
   pinnedIds: readonly string[];
   diagnostics?: TodayQueryDiagnostics;
+  limit?: number;
 }) {
   if (!input.where) return { totalCount: 0, rows: [] as ControlPlaneCommand[] };
   const statusLanes: Array<{ lane: string; where: Prisma.ControlPlaneCommandWhereInput }> = [
@@ -280,9 +306,9 @@ async function findBoundedCommandRows(input: {
         { updatedAt: "asc" },
         { id: "asc" },
       ],
-      take: QUEUE_LIMIT,
+      ...(input.limit === undefined ? {} : { take: input.limit }),
     });
-    recordSourceQuery(input.diagnostics, "control_plane_command", `${pinnedOnly ? "pinned:" : ""}${lane.lane}`, rows.length);
+    recordSourceQuery(input.diagnostics, "control_plane_command", `${pinnedOnly ? "pinned:" : ""}${lane.lane}`, rows.length, input.limit);
     return rows;
   };
   const [totalCount, ...laneRows] = await Promise.all([
@@ -297,6 +323,7 @@ async function findBoundedCreativeRows(input: {
   where: Prisma.ContentProductionBatchWhereInput | null;
   pinnedIds: readonly string[];
   diagnostics?: TodayQueryDiagnostics;
+  limit?: number;
 }) {
   if (!input.where) return { totalCount: 0, rows: [] as ContentProductionBatch[] };
   const verificationLanes: Array<{ lane: string; where: Prisma.ContentProductionBatchWhereInput }> = [
@@ -328,9 +355,9 @@ async function findBoundedCreativeRows(input: {
         { updatedAt: "asc" },
         { id: "asc" },
       ],
-      take: QUEUE_LIMIT,
+      ...(input.limit === undefined ? {} : { take: input.limit }),
     });
-    recordSourceQuery(input.diagnostics, "creative_run", `${pinnedOnly ? "pinned:" : ""}${lane.lane}`, rows.length);
+    recordSourceQuery(input.diagnostics, "creative_run", `${pinnedOnly ? "pinned:" : ""}${lane.lane}`, rows.length, input.limit);
     return rows;
   };
   const [totalCount, ...laneRows] = await Promise.all([
@@ -351,6 +378,7 @@ async function findBoundedReleaseRows(input: {
   selection: ReleaseQueueSelection | null;
   pinnedIds: readonly string[];
   diagnostics?: TodayQueryDiagnostics;
+  limit?: number;
 }) {
   if (!input.selection) {
     return { totalCount: 0, rows: [] as Array<Extract<ProjectableRow, { sourceType: "character_release" }> extends { row: infer Row; project: infer Project } ? { row: Row; project: Project; monitorActionRequired?: boolean } : never> };
@@ -380,6 +408,21 @@ async function findBoundedReleaseRows(input: {
         )
     )
   `;
+  const severityFilterSql = input.selection.scope === "active" && input.selection.filters?.severity
+    ? input.selection.filters.severity === "critical"
+      ? Prisma.sql`AND FALSE`
+      : input.selection.filters.severity === "high"
+        ? Prisma.sql`AND (${monitorActionSql} OR release.readiness = 'blocked')`
+        : input.selection.filters.severity === "medium"
+          ? Prisma.sql`AND NOT (${monitorActionSql}) AND release.readiness = 'stale'`
+          : Prisma.sql`AND NOT (${monitorActionSql}) AND release.readiness NOT IN ('blocked', 'stale')`
+    : Prisma.empty;
+  const activeStatusFilterSql = input.selection.scope === "active" && input.selection.filters?.status
+    ? Prisma.sql`AND release.status = ${input.selection.filters.status}`
+    : Prisma.empty;
+  const activeSlaFilterSql = input.selection.scope === "active" && input.selection.filters
+    ? sqlSlaFilter(Prisma.sql`project."plannedLaunchAt"`, input.selection.filters.sla, input.selection.filters.now)
+    : Prisma.empty;
   const eligibilitySql = input.selection.scope === "active"
     ? Prisma.sql`
         AND (
@@ -418,6 +461,7 @@ async function findBoundedReleaseRows(input: {
             )
           )
         `;
+  const limitSql = input.limit === undefined ? Prisma.empty : Prisma.sql`WHERE ranked.ordinal <= ${input.limit}`;
   const rankedIds = await input.db.$queryRaw<RankedReleaseIdRow[]>(Prisma.sql`
     WITH eligible AS (
       SELECT
@@ -437,6 +481,9 @@ async function findBoundedReleaseRows(input: {
         ${ownerSql}
         ${snoozedSql}
         ${eligibilitySql}
+        ${severityFilterSql}
+        ${activeStatusFilterSql}
+        ${activeSlaFilterSql}
     ), ranked AS (
       SELECT *, row_number() OVER (
         ORDER BY pinned_rank DESC, severity_rank DESC, due_at ASC NULLS LAST, changed_at ASC, id ASC
@@ -450,22 +497,23 @@ async function findBoundedReleaseRows(input: {
       summary.total_count AS "totalCount",
       ranked.monitor_action_required AS "monitorActionRequired"
     FROM summary
-    LEFT JOIN ranked ON ranked.ordinal <= ${QUEUE_LIMIT}
+    LEFT JOIN ranked ON TRUE
+    ${limitSql}
     ORDER BY ranked.ordinal ASC NULLS LAST
   `);
   const ids = rankedIds.flatMap((row) => row.id ? [row.id] : []);
-  recordSourceQuery(input.diagnostics, "character_release", input.selection.scope, ids.length);
+  recordSourceQuery(input.diagnostics, "character_release", input.selection.scope, ids.length, input.limit);
   if (ids.length === 0) {
     return { totalCount: Number(rankedIds[0]?.totalCount ?? 0), rows: [] };
   }
   const releaseRows = await input.db.characterRelease.findMany({
     where: { id: { in: ids } },
-    take: QUEUE_LIMIT,
+    ...(input.limit === undefined ? {} : { take: input.limit }),
   });
   const projects = await input.db.characterProject.findMany({
     where: { id: { in: releaseRows.map((row) => row.projectId) } },
     select: { id: true, ownerId: true, characterId: true, phase: true, plannedLaunchAt: true, version: true },
-    take: QUEUE_LIMIT,
+    ...(input.limit === undefined ? {} : { take: input.limit }),
   });
   const releasesById = new Map(releaseRows.map((row) => [row.id, row]));
   const projectsById = new Map(projects.map((row) => [row.id, row]));
@@ -533,6 +581,7 @@ function projectRow(
     return {
       sourceType: row.sourceType,
       sourceId: row.row.id,
+      sourceStatus: "active",
       title: `Mention on ${row.target.label}`,
       summary: row.row.body?.trim() || `${row.row.actorId} mentioned you`,
       severity: row.target.severity,
@@ -563,6 +612,7 @@ function projectRow(
     return {
       sourceType: row.sourceType,
       sourceId: item.id,
+      sourceStatus: item.status as TodayWorkItem["sourceStatus"],
       title: `${item.type.replaceAll("_", " ")} case`,
       summary: `${item.targetType} ${item.targetId} is ${item.status.replaceAll("_", " ")}`,
       severity: caseSeverity(item.priority),
@@ -588,6 +638,7 @@ function projectRow(
     return {
       sourceType: row.sourceType,
       sourceId: item.id,
+      sourceStatus: item.status as TodayWorkItem["sourceStatus"],
       title: `${severity} incident: ${item.signature}`,
       summary: item.suspectedCause ?? `Incident is ${item.status}`,
       severity,
@@ -613,6 +664,7 @@ function projectRow(
     return {
       sourceType: row.sourceType,
       sourceId: item.id,
+      sourceStatus: item.status as TodayWorkItem["sourceStatus"],
       title: `Character release ${item.status.replaceAll("_", " ")}`,
       summary: row.monitorActionRequired
         ? `${row.project.characterId} · published monitor requires action`
@@ -647,6 +699,7 @@ function projectRow(
     return {
       sourceType: row.sourceType,
       sourceId: item.id,
+      sourceStatus: item.lifecycleState as TodayWorkItem["sourceStatus"],
       title: item.title,
       summary: `${item.workflowStage.replaceAll("_", " ")} · ${item.status.replaceAll("_", " ")}`,
       severity,
@@ -678,6 +731,7 @@ function projectRow(
   return {
     sourceType: row.sourceType,
     sourceId: item.id,
+    sourceStatus: item.status as TodayWorkItem["sourceStatus"],
     title: item.commandType.replaceAll(".", " "),
     summary: `${item.targetType} ${item.targetId} command is ${item.status}`,
     severity: verificationState === "failed" ? "high" : "medium",
@@ -724,8 +778,7 @@ const MODE_SOURCE_ORDER: Record<TodayWorkMode, readonly TodayWorkItem["sourceTyp
   admin: ["collaboration_mention", "ops_incident", "character_release", "creative_run", "control_plane_command", "admin_case"],
 };
 
-function sortItems(items: TodayWorkItem[], now: Date, workMode: TodayWorkMode) {
-  return items.sort((left, right) => {
+function compareItems(left: TodayWorkItem, right: TodayWorkItem, now: Date, workMode: TodayWorkMode) {
     if (left.pinned !== right.pinned) return left.pinned ? -1 : 1;
     const severityDelta = severityScore[right.severity] - severityScore[left.severity];
     if (severityDelta !== 0) return severityDelta;
@@ -739,8 +792,13 @@ function sortItems(items: TodayWorkItem[], now: Date, workMode: TodayWorkMode) {
     if (leftDue !== rightDue) return leftDue - rightDue;
     const leftAge = now.getTime() - new Date(left.lastChangedAt).getTime();
     const rightAge = now.getTime() - new Date(right.lastChangedAt).getTime();
-    return rightAge - leftAge || left.sourceId.localeCompare(right.sourceId);
-  });
+    return rightAge - leftAge
+      || left.sourceType.localeCompare(right.sourceType)
+      || left.sourceId.localeCompare(right.sourceId);
+}
+
+function sortItems(items: TodayWorkItem[], now: Date, workMode: TodayWorkMode) {
+  return items.sort((left, right) => compareItems(left, right, now, workMode));
 }
 
 function queue(
@@ -817,7 +875,9 @@ async function findQueueRows(input: {
     creativeRuns: readonly string[];
   };
   diagnostics?: TodayQueryDiagnostics;
+  limit?: number | null;
 }) {
+  const limit = input.limit === undefined ? QUEUE_LIMIT : input.limit;
   const commandPermissionWhere = readableCommandWhere(input.permissions);
   const commandWhere = input.commandWhere && commandPermissionWhere
     ? { AND: [input.commandWhere, commandPermissionWhere] }
@@ -831,30 +891,35 @@ async function findQueueRows(input: {
       where: input.caseWhere,
       pinnedIds: input.pinnedIds.cases,
       diagnostics: input.diagnostics,
+      limit: limit ?? undefined,
     }),
     findBoundedIncidentRows({
       db: input.db,
       selection: input.incidentSelection,
       pinnedIds: input.pinnedIds.incidents,
       diagnostics: input.diagnostics,
+      limit: limit ?? undefined,
     }),
     findBoundedCommandRows({
       db: input.db,
       where: commandWhere,
       pinnedIds: input.pinnedIds.commands,
       diagnostics: input.diagnostics,
+      limit: limit ?? undefined,
     }),
     findBoundedReleaseRows({
       db: input.db,
       selection: input.releaseSelection,
       pinnedIds: input.pinnedIds.releases,
       diagnostics: input.diagnostics,
+      limit: limit ?? undefined,
     }),
     findBoundedCreativeRows({
       db: input.db,
       where: input.creativeWhere,
       pinnedIds: input.pinnedIds.creativeRuns,
       diagnostics: input.diagnostics,
+      limit: limit ?? undefined,
     }),
   ]);
   return {
@@ -887,6 +952,8 @@ async function findRankedMentionIds(input: {
   pinnedIds: readonly string[];
   excludeIds?: readonly string[];
   onlyIds?: readonly string[];
+  limit?: number;
+  filters?: TodayAllWorkQuery;
 }) {
   if (input.onlyIds && input.onlyIds.length === 0) return { totalCount: 0, ids: [] as string[] };
   const exclusionSql = input.excludeIds && input.excludeIds.length > 0
@@ -965,8 +1032,13 @@ async function findRankedMentionIds(input: {
     `);
   }
   if (sources.length === 0) return { totalCount: 0, ids: [] as string[] };
+  const severityRank = input.filters?.severity ? severityScore[input.filters.severity] : null;
+  const severityFilterSql = severityRank ? Prisma.sql`AND severity_rank = ${severityRank}` : Prisma.empty;
+  const slaFilterSql = input.filters ? sqlSlaFilter(Prisma.sql`due_at`, input.filters.sla, input.now) : Prisma.empty;
+  const limitSql = input.limit === undefined ? Prisma.empty : Prisma.sql`WHERE ranked.ordinal <= ${input.limit}`;
   const ranked = await input.db.$queryRaw<Array<{ id: string | null; totalCount: bigint }>>(Prisma.sql`
-    WITH eligible AS (${Prisma.join(sources, " UNION ALL ")}),
+    WITH candidates AS (${Prisma.join(sources, " UNION ALL ")}),
+    eligible AS (SELECT * FROM candidates WHERE TRUE ${severityFilterSql} ${slaFilterSql}),
     ranked AS (
       SELECT id, row_number() OVER (
         ORDER BY pinned_rank DESC, severity_rank DESC, priority_rank DESC,
@@ -976,7 +1048,8 @@ async function findRankedMentionIds(input: {
     ), summary AS (SELECT count(*)::bigint AS total_count FROM eligible)
     SELECT ranked.id, summary.total_count AS "totalCount"
     FROM summary
-    LEFT JOIN ranked ON ranked.ordinal <= ${QUEUE_LIMIT}
+    LEFT JOIN ranked ON TRUE
+    ${limitSql}
     ORDER BY ranked.ordinal ASC NULLS LAST
   `);
   return {
@@ -994,9 +1067,11 @@ async function findMentionRows(input: {
   excludeIds?: readonly string[];
   onlyIds?: readonly string[];
   diagnostics?: TodayQueryDiagnostics;
+  limit?: number;
+  filters?: TodayAllWorkQuery;
 }): Promise<{ totalCount: number; rows: MentionRow[] }> {
   const ranked = await findRankedMentionIds(input);
-  recordSourceQuery(input.diagnostics, "collaboration_mention", input.onlyIds ? "watching" : "eligible", ranked.ids.length);
+  recordSourceQuery(input.diagnostics, "collaboration_mention", input.onlyIds ? "watching" : "eligible", ranked.ids.length, input.limit);
   if (ranked.ids.length === 0) return { totalCount: ranked.totalCount, rows: [] };
   const activities = await input.db.adminCollaborationActivity.findMany({
     where: { id: { in: ranked.ids } },
@@ -1008,7 +1083,7 @@ async function findMentionRows(input: {
       body: true,
       createdAt: true,
     },
-    take: QUEUE_LIMIT,
+    ...(input.limit === undefined ? {} : { take: input.limit }),
   });
 
   const ids = (targetType: string) => activities
@@ -1020,16 +1095,16 @@ async function findMentionRows(input: {
   const creativeIds = ids("creative_run");
   const [cases, incidents, projects, creativeRuns] = await Promise.all([
     input.permissions.has("case.read") && caseIds.length > 0
-      ? input.db.adminCase.findMany({ where: { id: { in: caseIds } }, take: QUEUE_LIMIT })
+      ? input.db.adminCase.findMany({ where: { id: { in: caseIds } }, ...(input.limit === undefined ? {} : { take: input.limit }) })
       : [],
     input.permissions.has("ops.incident.read") && incidentIds.length > 0
-      ? input.db.opsIncident.findMany({ where: { id: { in: incidentIds } }, take: QUEUE_LIMIT })
+      ? input.db.opsIncident.findMany({ where: { id: { in: incidentIds } }, ...(input.limit === undefined ? {} : { take: input.limit }) })
       : [],
     input.permissions.has("character.project.read") && projectIds.length > 0
-      ? input.db.characterProject.findMany({ where: { id: { in: projectIds } }, take: QUEUE_LIMIT })
+      ? input.db.characterProject.findMany({ where: { id: { in: projectIds } }, ...(input.limit === undefined ? {} : { take: input.limit }) })
       : [],
     input.permissions.has("creative.run.read") && creativeIds.length > 0
-      ? input.db.contentProductionBatch.findMany({ where: { id: { in: creativeIds } }, take: QUEUE_LIMIT })
+      ? input.db.contentProductionBatch.findMany({ where: { id: { in: creativeIds } }, ...(input.limit === undefined ? {} : { take: input.limit }) })
       : [],
   ]);
   const casesById = new Map(cases.map((row) => [row.id, row]));
@@ -1159,6 +1234,7 @@ export async function buildTodayProjection(input: {
     pinnedIds: preferences.filter((item) => item.pinned && item.sourceType === "collaboration_mention").map((item) => item.sourceId),
     excludeIds: snoozedMentionIds,
     diagnostics: input.diagnostics,
+    limit: QUEUE_LIMIT,
   });
   const mentions = mentionRows.rows;
 
@@ -1247,6 +1323,7 @@ export async function buildTodayProjection(input: {
     pinnedIds: preferences.filter((item) => item.pinned && item.sourceType === "collaboration_mention").map((item) => item.sourceId),
     onlyIds: [...watchedMentionIds],
     diagnostics: input.diagnostics,
+    limit: QUEUE_LIMIT,
   });
   const watching = await findQueueRows({
     db,
@@ -1287,6 +1364,246 @@ export async function buildTodayProjection(input: {
     workMode,
     rankingPolicyVersion: RANKING_POLICY_VERSION,
   });
+}
+
+type TodayCursor = {
+  version: 1;
+  workMode: TodayWorkMode;
+  actorId: string;
+  policyVersion: string;
+  queryContext: string;
+  scanLimit: number;
+  consumedCount: number;
+  item: TodayWorkItem;
+};
+
+function allWorkQueryContext(query: TodayAllWorkQuery) {
+  return JSON.stringify({
+    domain: query.domain ?? null,
+    severity: query.severity ?? null,
+    sla: query.sla ?? null,
+    owner: query.owner ?? null,
+    ownerId: query.ownerId ?? null,
+    status: query.status ?? null,
+    environment: query.environment ?? null,
+    limit: query.limit,
+  });
+}
+
+function encodeTodayCursor(input: Omit<TodayCursor, "version" | "policyVersion">) {
+  return Buffer.from(JSON.stringify({ version: 1, policyVersion: RANKING_POLICY_VERSION, ...input } satisfies TodayCursor)).toString("base64url");
+}
+
+function decodeTodayCursor(value: string, input: { workMode: TodayWorkMode; actorId: string; query: TodayAllWorkQuery }): TodayCursor {
+  try {
+    const decoded = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as TodayCursor;
+    if (
+      decoded.version !== 1
+      || decoded.workMode !== input.workMode
+      || decoded.actorId !== input.actorId
+      || decoded.policyVersion !== RANKING_POLICY_VERSION
+      || decoded.queryContext !== allWorkQueryContext(input.query)
+      || !Number.isInteger(decoded.scanLimit)
+      || decoded.scanLimit < 1
+      || !Number.isInteger(decoded.consumedCount)
+      || decoded.consumedCount < 0
+    ) throw new Error("cursor context changed");
+    return { ...decoded, item: todayWorkItemSchema.parse(decoded.item) };
+  } catch {
+    throw new AppError("bad_request", "Today All Work cursor is invalid or belongs to another work mode");
+  }
+}
+
+function matchesAllWorkFilters(
+  item: TodayWorkItem,
+  query: TodayAllWorkQuery,
+  actorId: string,
+  now: Date,
+) {
+  if (query.domain && item.sourceType !== query.domain) return false;
+  if (query.severity && item.severity !== query.severity) return false;
+  if (query.status && item.sourceStatus !== query.status) return false;
+  if (query.environment && item.environment !== query.environment) return false;
+  if (query.owner === "mine" && item.ownerId !== actorId) return false;
+  if (query.owner === "unassigned" && item.ownerId !== null) return false;
+  if (query.ownerId && item.ownerId !== query.ownerId) return false;
+  if (query.sla) {
+    const endOfToday = new Date(now);
+    endOfToday.setUTCHours(23, 59, 59, 999);
+    const dueAt = item.slaDueAt ? new Date(item.slaDueAt) : null;
+    if (query.sla === "none" && dueAt !== null) return false;
+    if (query.sla === "overdue" && (!dueAt || dueAt >= now)) return false;
+    if (query.sla === "due_today" && (!dueAt || dueAt < now || dueAt > endOfToday)) return false;
+    if (query.sla === "upcoming" && (!dueAt || dueAt <= endOfToday)) return false;
+  }
+  return true;
+}
+
+export async function buildTodayAllWork(input: {
+  actor: { id: string; role: string };
+  permissions: ReadonlySet<AdminPermissionKey>;
+  query?: Partial<TodayAllWorkQuery>;
+  now?: Date;
+  db?: TodayReadDb;
+  diagnostics?: TodayQueryDiagnostics;
+}): Promise<TodayAllWorkResponse> {
+  const db = input.db ?? prisma;
+  const now = input.now ?? new Date();
+  const query = todayAllWorkQuerySchema.parse(input.query ?? {});
+  const workMode = query.workMode ?? defaultWorkMode(input.actor.role);
+  const cursor = query.cursor ? decodeTodayCursor(query.cursor, { workMode, actorId: input.actor.id, query }) : null;
+  const scanLimit = (cursor?.scanLimit ?? 0) + query.limit + 1;
+  if (query.environment && query.environment !== deploymentEnvironment()) {
+    return todayAllWorkResponseSchema.parse({
+      items: [], totalCount: 0, pageInfo: { endCursor: null, hasNextPage: false },
+      asOf: now.toISOString(), freshness: "fresh", workMode, rankingPolicyVersion: RANKING_POLICY_VERSION,
+    });
+  }
+  const caseScope = scopedCaseWhere(input.actor, input.permissions);
+  const requestedOwnerId = query.ownerId ?? (query.owner === "mine" ? input.actor.id : query.owner === "unassigned" ? null : undefined);
+  const ownerWhere = requestedOwnerId === undefined ? {} : { ownerId: requestedOwnerId };
+  const slaWhere = query.sla === "none" ? null : query.sla === "overdue" ? { lt: now } : (() => {
+    const endOfToday = new Date(now);
+    endOfToday.setUTCHours(23, 59, 59, 999);
+    return query.sla === "due_today" ? { gte: now, lte: endOfToday } : query.sla === "upcoming" ? { gt: endOfToday } : undefined;
+  })();
+  const preferences = await db.operationalWorkPreference.findMany({
+    where: { actorId: input.actor.id },
+    select: { sourceType: true, sourceId: true, pinned: true, snoozedUntil: true, version: true },
+  });
+  const activeSnoozes = preferences.filter((item) => item.snoozedUntil && item.snoozedUntil > now);
+  const idsFor = (sourceType: TodayWorkItem["sourceType"], field: "pinned" | "snoozed") => preferences
+    .filter((item) => item.sourceType === sourceType && (field === "pinned" ? item.pinned : activeSnoozes.includes(item)))
+    .map((item) => item.sourceId);
+  const withoutIds = (ids: string[]) => ids.length > 0 ? { notIn: ids } : undefined;
+  const pinnedIds = {
+    cases: idsFor("admin_case", "pinned"),
+    incidents: idsFor("ops_incident", "pinned"),
+    commands: idsFor("control_plane_command", "pinned"),
+    releases: idsFor("character_release", "pinned"),
+    creativeRuns: idsFor("creative_run", "pinned"),
+  };
+  const mentionEligible = (!query.domain || query.domain === "collaboration_mention")
+    && (!query.status || query.status === "active")
+    && requestedOwnerId !== null
+    && (requestedOwnerId === undefined || requestedOwnerId === input.actor.id);
+  const mentionRows = mentionEligible ? await findMentionRows({
+    db,
+    actor: input.actor,
+    permissions: input.permissions,
+    now,
+    pinnedIds: idsFor("collaboration_mention", "pinned"),
+    excludeIds: idsFor("collaboration_mention", "snoozed"),
+    filters: query,
+    limit: scanLimit,
+    diagnostics: input.diagnostics,
+  }) : { totalCount: 0, rows: [] };
+  const commandEligible = (!query.domain || query.domain === "control_plane_command")
+    && requestedOwnerId !== null
+    && (requestedOwnerId === undefined || requestedOwnerId === input.actor.id)
+    && (!query.severity || ["high", "medium"].includes(query.severity));
+  const commandWhere = commandEligible ? {
+    actorId: input.actor.id,
+    status: query.status
+      ? query.status
+      : query.severity === "high"
+        ? "failed"
+        : query.severity === "medium"
+          ? { in: ACTIVE_COMMAND_STATUSES.filter((status) => status !== "failed") }
+          : { in: ACTIVE_COMMAND_STATUSES },
+    id: withoutIds(idsFor("control_plane_command", "snoozed")),
+    ...(query.sla ? { leaseExpiresAt: slaWhere } : {}),
+  } satisfies Prisma.ControlPlaneCommandWhereInput : null;
+  const casePriority = query.severity === "critical" ? "urgent" : query.severity === "high" ? "high" : query.severity === "low" ? "low" : query.severity === "medium" ? { notIn: ["urgent", "high", "low"] } : undefined;
+  const caseWhere = caseScope && (!query.domain || query.domain === "admin_case") ? {
+    AND: [caseScope, {
+      status: query.status ?? { in: ACTIVE_CASE_STATUSES },
+      id: withoutIds(idsFor("admin_case", "snoozed")),
+      ...ownerWhere,
+      ...(casePriority ? { priority: casePriority } : {}),
+      ...(query.sla ? { slaDueAt: slaWhere } : {}),
+    }],
+  } satisfies Prisma.AdminCaseWhereInput : null;
+  const incidentOwner = requestedOwnerId === undefined ? "all" as const : requestedOwnerId === null ? "unassigned" as const : { actorId: requestedOwnerId };
+  const creativeEligible = (!query.domain || query.domain === "creative_run")
+    && (!query.status || query.status === "active")
+    && (!query.severity || ["high", "medium"].includes(query.severity));
+  const creativeWhere = input.permissions.has("creative.run.read") && creativeEligible ? {
+    lifecycleState: "active",
+    id: withoutIds(idsFor("creative_run", "snoozed")),
+    ...ownerWhere,
+    ...(query.severity === "high" ? { verificationState: "failed" } : query.severity === "medium" ? { verificationState: { not: "failed" } } : {}),
+    ...(query.sla ? { dueAt: slaWhere } : {}),
+  } satisfies Prisma.ContentProductionBatchWhereInput : null;
+  const rows = await findQueueRows({
+    db,
+    caseWhere,
+    incidentSelection: input.permissions.has("ops.incident.read") && (!query.domain || query.domain === "ops_incident") ? {
+      scope: "active",
+      actor: input.actor,
+      owner: incidentOwner,
+      snoozedIds: idsFor("ops_incident", "snoozed"),
+      filters: { severity: query.severity, sla: query.sla, status: query.status, now },
+    } : null,
+    commandWhere,
+    releaseSelection: input.permissions.has("character.release.read") && (!query.domain || query.domain === "character_release") ? {
+      scope: "active",
+      owner: incidentOwner,
+      snoozedIds: idsFor("character_release", "snoozed"),
+      filters: { severity: query.severity, sla: query.sla, status: query.status, now },
+    } : null,
+    creativeWhere,
+    permissions: input.permissions,
+    mentions: mentionRows.rows,
+    mentionTotalCount: mentionRows.totalCount,
+    pinnedIds,
+    limit: scanLimit,
+    diagnostics: input.diagnostics,
+  });
+  const pinnedKeys = new Set(preferences.filter((item) => item.pinned).map((item) => `${item.sourceType}:${item.sourceId}`));
+  const preferenceVersions = new Map(preferences.map((item) => [`${item.sourceType}:${item.sourceId}`, item.version]));
+  const allItems = sortItems(
+    rows.rows.map((row) => projectRow(row, pinnedKeys, input.permissions, preferenceVersions)),
+    now,
+    workMode,
+  ).filter((item) => matchesAllWorkFilters(item, query, input.actor.id, now));
+  const remaining = cursor
+    ? allItems.filter((item) => compareItems(item, cursor.item, now, workMode) > 0)
+    : allItems;
+  const items = remaining.slice(0, query.limit);
+  const consumedCount = (cursor?.consumedCount ?? 0) + items.length;
+  const hasNextPage = remaining.length > items.length || rows.totalCount > consumedCount;
+  return todayAllWorkResponseSchema.parse({
+    items,
+    totalCount: rows.totalCount,
+    pageInfo: {
+      endCursor: hasNextPage && items.length > 0 ? encodeTodayCursor({
+        workMode,
+        actorId: input.actor.id,
+        queryContext: allWorkQueryContext(query),
+        scanLimit,
+        consumedCount,
+        item: items[items.length - 1]!,
+      }) : null,
+      hasNextPage,
+    },
+    asOf: now.toISOString(),
+    freshness: "fresh",
+    workMode,
+    rankingPolicyVersion: RANKING_POLICY_VERSION,
+  });
+}
+
+export async function getTodayAllWork(request: Request) {
+  try {
+    const actor = await actorWithPermission(request, "dashboard.read");
+    const permissions = await effectivePermissions(actor.id, actor.role);
+    const query = todayAllWorkQuerySchema.parse(Object.fromEntries(new URL(request.url).searchParams));
+    return ok(await buildTodayAllWork({ actor, permissions, query }), { headers: { "Cache-Control": "no-store" } });
+  } catch (error) {
+    if (error instanceof AppError) return fail(error);
+    throw error;
+  }
 }
 
 export async function getTodayProjection(request: Request) {

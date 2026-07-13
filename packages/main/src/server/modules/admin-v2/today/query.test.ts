@@ -4,7 +4,7 @@ import { resolvePermissions } from "@/server/admin/permissions";
 import { prisma } from "@/server/lib/db";
 import { updateOperationalWorkPreference } from "./preferences";
 import { claimTodayWorkItem } from "./claim";
-import { buildTodayProjection, getTodayProjection } from "./query";
+import { buildTodayAllWork, buildTodayProjection, getTodayAllWork, getTodayProjection } from "./query";
 
 describe("Today authoritative projection", () => {
   const suffix = randomUUID();
@@ -164,8 +164,54 @@ describe("Today authoritative projection", () => {
     expect(projection.watching).toEqual({ totalCount: 0, items: [] });
   });
 
+  it("paginates the complete authoritative set with the same first-segment order as Summary", async () => {
+    const sourceQueries: Array<{ returnedRows: number; limit: number }> = [];
+    const authority = {
+      actor: { id: actorId, role: "support" },
+      permissions: resolvePermissions("support"),
+      now,
+    } as const;
+    const summary = await buildTodayProjection(authority);
+    const first = await buildTodayAllWork({ ...authority, query: { limit: 5 }, diagnostics: { onSourceQuery: (event) => sourceQueries.push(event) } });
+    const second = await buildTodayAllWork({
+      ...authority,
+      query: { limit: 5, cursor: first.pageInfo.endCursor ?? undefined },
+    });
+    const third = await buildTodayAllWork({
+      ...authority,
+      query: { limit: 5, cursor: second.pageInfo.endCursor ?? undefined },
+    });
+
+    expect(first.items.map((item) => `${item.sourceType}:${item.sourceId}`)).toEqual(
+      summary.nextBestActions.items.slice(0, 5).map((item) => `${item.sourceType}:${item.sourceId}`),
+    );
+    expect(first.totalCount).toBe(summary.nextBestActions.totalCount);
+    expect(first.pageInfo).toMatchObject({ hasNextPage: true });
+    expect(sourceQueries.every((event) => event.returnedRows <= 6 && event.limit === 6)).toBe(true);
+    const pagedItems = [...first.items, ...second.items, ...third.items];
+    expect(new Set(pagedItems.map((item) => `${item.sourceType}:${item.sourceId}`)).size).toBe(first.totalCount);
+    expect(pagedItems).toHaveLength(first.totalCount);
+    expect(third.pageInfo.hasNextPage).toBe(false);
+
+    const filtered = await buildTodayAllWork({
+      ...authority,
+      query: { domain: "admin_case", severity: "high", owner: "mine", status: "in_progress", environment: "test" },
+    });
+    expect(filtered.items.length).toBeGreaterThan(0);
+    expect(filtered.items.every((item) => item.sourceType === "admin_case" && item.severity === "high" && item.ownerId === actorId && item.sourceStatus === "in_progress" && item.environment === "test")).toBe(true);
+    await expect(buildTodayAllWork({
+      ...authority,
+      query: { limit: 5, domain: "ops_incident", cursor: first.pageInfo.endCursor ?? undefined },
+    })).rejects.toThrow("cursor is invalid");
+  });
+
   it("authenticates before returning the Today read model", async () => {
     const response = await getTodayProjection(new Request("http://localhost/api/v2/admin/today"));
+    expect(response.status).toBe(401);
+  });
+
+  it("authenticates before returning All Work", async () => {
+    const response = await getTodayAllWork(new Request("http://localhost/api/v2/admin/today/all-work"));
     expect(response.status).toBe(401);
   });
 

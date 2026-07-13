@@ -15,6 +15,7 @@ const legacy: TodayLegacyData = {
 const item = {
   sourceType: "admin_case" as const,
   sourceId: "case-1",
+  sourceStatus: "waiting" as const,
   title: "support request case",
   summary: "customer user-1 is waiting",
   severity: "high" as const,

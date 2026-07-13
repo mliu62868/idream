@@ -1,12 +1,13 @@
 "use client";
 
-import type { TodayProjection, TodayWorkItem } from "@idream/shared/admin";
+import { todayAllWorkResponseSchema, type TodayAllWorkResponse, type TodayProjection, type TodayWorkItem } from "@idream/shared/admin";
 import Link from "next/link";
 import { ArrowRight, Bell, CheckCircle2, Clock3, Eye, Inbox, Pin, UserPlus, UserRound } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAdminI18n } from "@/components/admin/i18n";
 import type { WorkMode } from "@/components/admin/nav-config";
 import { adminV2Request } from "@/lib/admin-v2-api";
+import { parseTodayUrl, todayAllWorkPath, todayBrowserPath, type TodayUrlState } from "./query";
 
 type Row = Record<string, unknown>;
 
@@ -39,6 +40,49 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
   const { t } = useAdminI18n();
   const { projection } = data;
   const refresh = onPreferenceChanged ?? (() => undefined);
+  const [urlState, setUrlState] = useState<TodayUrlState>({ tab: "summary", limit: 25 });
+  const [allWork, setAllWork] = useState<TodayAllWorkResponse | null>(null);
+  const [allWorkError, setAllWorkError] = useState("");
+  const [reloadVersion, setReloadVersion] = useState(0);
+
+  useEffect(() => {
+    const restore = () => {
+      setAllWork(null);
+      setAllWorkError("");
+      setUrlState(parseTodayUrl(new URLSearchParams(window.location.search)));
+    };
+    const initialRestore = window.setTimeout(restore, 0);
+    window.addEventListener("popstate", restore);
+    return () => {
+      window.clearTimeout(initialRestore);
+      window.removeEventListener("popstate", restore);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (urlState.tab !== "all") return;
+    let active = true;
+    void adminV2Request(todayAllWorkPath(urlState, workMode), { schema: todayAllWorkResponseSchema })
+      .then((value) => { if (active) { setAllWork(value); setAllWorkError(""); } })
+      .catch((error: unknown) => { if (active) setAllWorkError(error instanceof Error ? error.message : "All Work failed to load"); })
+    return () => { active = false; };
+  }, [reloadVersion, urlState, workMode]);
+
+  function navigate(next: TodayUrlState) {
+    window.history.pushState(null, "", todayBrowserPath(next));
+    setAllWork(null);
+    setAllWorkError("");
+    setUrlState(next);
+  }
+
+  function updateFilter(patch: Partial<TodayUrlState>) {
+    navigate({ ...urlState, ...patch, tab: "all", cursor: undefined });
+  }
+
+  async function refreshAllWork() {
+    await refresh();
+    setReloadVersion((value) => value + 1);
+  }
 
   return (
     <div className="space-y-6" data-testid="today-view">
@@ -59,6 +103,12 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
         </p>
       </section>
 
+      <div aria-label={t("Today view")} className="flex gap-1 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-1" role="tablist">
+        <button aria-selected={urlState.tab === "summary"} className="min-h-10 rounded-md px-4 text-sm font-semibold aria-selected:bg-[var(--ad-accent)] aria-selected:text-white" onClick={() => navigate({ tab: "summary", limit: 25 })} role="tab" type="button">{t("Summary")}</button>
+        <button aria-selected={urlState.tab === "all"} className="min-h-10 rounded-md px-4 text-sm font-semibold aria-selected:bg-[var(--ad-accent)] aria-selected:text-white" onClick={() => navigate({ ...urlState, tab: "all" })} role="tab" type="button">{t("All work")}</button>
+      </div>
+
+      {urlState.tab === "summary" ? <>
       <WorkQueue
         description="Overdue or due-today work owned by you, plus commands awaiting completion or verification."
         icon={UserRound}
@@ -111,8 +161,29 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
           <ContextValue label="Feature flags" value={data.legacy.featureFlags.length} />
         </div>
       </details>
+      </> : <section className="space-y-4" data-testid="today-all-work">
+        <div className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 sm:grid-cols-2 xl:grid-cols-6">
+          <TodayFilter label="Domain" onChange={(value) => updateFilter({ domain: value as TodayUrlState["domain"] })} value={urlState.domain} values={["admin_case", "ops_incident", "control_plane_command", "collaboration_mention", "character_release", "creative_run"]} />
+          <TodayFilter label="Severity" onChange={(value) => updateFilter({ severity: value as TodayUrlState["severity"] })} value={urlState.severity} values={["critical", "high", "medium", "low"]} />
+          <TodayFilter label="SLA" onChange={(value) => updateFilter({ sla: value as TodayUrlState["sla"] })} value={urlState.sla} values={["overdue", "due_today", "upcoming", "none"]} />
+          <TodayFilter label="Owner" onChange={(value) => updateFilter({ owner: value as TodayUrlState["owner"] })} value={urlState.owner} values={["mine", "unassigned", "any"]} />
+          <TodayFilter label="Status" onChange={(value) => updateFilter({ status: value as TodayUrlState["status"] })} value={urlState.status} values={["active", "new", "triaged", "in_progress", "waiting", "detected", "mitigating", "monitoring", "accepted", "running", "verifying", "failed", "draft", "validating", "in_review", "approved"]} />
+          <TodayFilter label="Environment" onChange={(value) => updateFilter({ environment: value as TodayUrlState["environment"] })} value={urlState.environment} values={["production", "staging", "development", "test"]} />
+        </div>
+        {allWorkError ? <p className="rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">{t(allWorkError)}</p> : null}
+        {!allWork && !allWorkError ? <p className="p-4 text-sm text-[var(--ad-text-muted)]">{t("Loading All Work…")}</p> : null}
+        {allWork ? <>
+          <WorkQueue description="Complete authorized work, filtered and ranked by the same authority as Summary." icon={Inbox} onPreferenceChanged={refreshAllWork} queue={{ totalCount: allWork.totalCount, items: allWork.items }} title="All work" />
+          {allWork.pageInfo.hasNextPage && allWork.pageInfo.endCursor ? <button className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" onClick={() => navigate({ ...urlState, cursor: allWork.pageInfo.endCursor ?? undefined })} type="button">{t("Next page")}</button> : null}
+        </> : null}
+      </section>}
     </div>
   );
+}
+
+function TodayFilter({ label, onChange, value, values }: { label: string; onChange: (value: string | undefined) => void; value?: string; values: readonly string[] }) {
+  const { t } = useAdminI18n();
+  return <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t(label)}<select className="mt-1 min-h-10 w-full rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-2 text-sm text-[var(--ad-text)]" onChange={(event) => onChange(event.target.value || undefined)} value={value ?? ""}><option value="">{t("All")}</option>{values.map((option) => <option key={option} value={option}>{t(option.replaceAll("_", " "))}</option>)}</select></label>;
 }
 
 function WorkQueue({

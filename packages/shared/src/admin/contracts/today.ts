@@ -29,6 +29,33 @@ export const todayWorkModeSchema = z.enum([
   "admin",
 ]);
 
+export const todaySourceStatusSchema = z.enum([
+  "active",
+  "new",
+  "triaged",
+  "in_progress",
+  "waiting",
+  "reopened",
+  "resolved",
+  "closed",
+  "detected",
+  "mitigating",
+  "monitoring",
+  "accepted",
+  "running",
+  "verifying",
+  "failed",
+  "succeeded",
+  "draft",
+  "validating",
+  "in_review",
+  "approved",
+  "published",
+  "superseded",
+  "withdrawn",
+  "archived",
+]);
+
 export const todayProjectionQuerySchema = z.object({
   workMode: todayWorkModeSchema.optional(),
 }).strict();
@@ -37,6 +64,7 @@ export const todayWorkItemSchema = z
   .object({
     sourceType: todaySourceTypeSchema,
     sourceId: adminIdSchema,
+    sourceStatus: todaySourceStatusSchema,
     title: z.string().trim().min(1),
     summary: z.string().trim().min(1),
     severity: adminSeveritySchema,
@@ -59,6 +87,38 @@ export const todayWorkItemSchema = z
       })
       .strict()
       .nullable(),
+  })
+  .strict();
+
+export const todayAllWorkQuerySchema = z
+  .object({
+    workMode: todayWorkModeSchema.optional(),
+    domain: todaySourceTypeSchema.optional(),
+    severity: adminSeveritySchema.optional(),
+    sla: z.enum(["overdue", "due_today", "upcoming", "none"]).optional(),
+    owner: z.enum(["mine", "unassigned", "any"]).optional(),
+    ownerId: adminIdSchema.optional(),
+    status: todaySourceStatusSchema.optional(),
+    environment: adminEnvironmentSchema.optional(),
+    cursor: z.string().trim().min(1).optional(),
+    limit: z.coerce.number().int().min(1).max(50).default(25),
+  })
+  .strict();
+
+export const todayAllWorkResponseSchema = z
+  .object({
+    items: z.array(todayWorkItemSchema).max(50).readonly(),
+    totalCount: z.number().int().nonnegative(),
+    pageInfo: z
+      .object({
+        endCursor: z.string().nullable(),
+        hasNextPage: z.boolean(),
+      })
+      .strict(),
+    asOf: adminIsoDateTimeSchema,
+    freshness: adminFreshnessSchema,
+    workMode: todayWorkModeSchema,
+    rankingPolicyVersion: z.string().trim().min(1),
   })
   .strict();
 
@@ -127,6 +187,9 @@ export const todayClaimResponseSchema = z
 export type TodaySourceType = z.infer<typeof todaySourceTypeSchema>;
 export type TodayWorkMode = z.infer<typeof todayWorkModeSchema>;
 export type TodayWorkItem = z.infer<typeof todayWorkItemSchema>;
+export type TodaySourceStatus = z.infer<typeof todaySourceStatusSchema>;
+export type TodayAllWorkQuery = z.infer<typeof todayAllWorkQuerySchema>;
+export type TodayAllWorkResponse = z.infer<typeof todayAllWorkResponseSchema>;
 export type TodayQueue = z.infer<typeof todayQueueSchema>;
 export type TodayProjection = z.infer<typeof todayProjectionSchema>;
 export type TodayClaimRequest = z.infer<typeof todayClaimRequestSchema>;

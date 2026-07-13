@@ -209,6 +209,7 @@ export const ADMIN_V2_API_OPERATIONS = [
   operation("GET", "/api/v2/admin/search", allOf("dashboard.read"), "globalAdminSearchQuerySchema", "globalAdminSearchResponseSchema", ["customer.read", "character.project.read", "creative.run.read", "case.read", "ops.incident.read", "generation.job.read"]),
 
   operation("GET", "/api/v2/admin/today", allOf("dashboard.read"), "todayProjectionQuerySchema", "todayProjectionSchema"),
+  operation("GET", "/api/v2/admin/today/all-work", allOf("dashboard.read"), "todayAllWorkQuerySchema", "todayAllWorkResponseSchema"),
   operation("POST", "/api/v2/admin/today/claim", allOfAndOneOfBy("today_claim_source_write", ["dashboard.read"], todayClaimWrite), "todayClaimRequestSchema+idempotency-key", "todayClaimResponseSchema"),
   operation("PUT", "/api/v2/admin/today/preferences", allOf("dashboard.read"), "operationalWorkPreferenceUpdateSchema+if-match", "operationalWorkPreferenceSchema"),
 
