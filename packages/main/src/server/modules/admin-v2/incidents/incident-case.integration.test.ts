@@ -380,6 +380,19 @@ describe("Incident and P0 Review Case authority loops", () => {
     createdIncidentIds.push(left.id);
     expect(right.id).toBe(left.id);
     expect(await prisma.opsIncidentOccurrence.count({ where: { incidentId: left.id } })).toBe(2);
+    const stored = await prisma.opsIncident.findUniqueOrThrow({ where: { id: left.id } });
+    expect(stored.mitigation).toMatchObject({
+      correlationPolicy: { version: "generation-correlation-v1", joinGapMs: 1_000 },
+    });
+    expect(await prisma.adminAuditLog.findFirst({
+      where: { targetId: left.id, action: "incident.occurrence.correlated" },
+      orderBy: { createdAt: "desc" },
+    })).toMatchObject({
+      after: expect.objectContaining({
+        correlationPolicyVersion: "generation-correlation-v1",
+        joinGapMs: 1_000,
+      }),
+    });
   });
 
   it("reports insufficient historical evidence instead of inventing an Incident", async () => {
