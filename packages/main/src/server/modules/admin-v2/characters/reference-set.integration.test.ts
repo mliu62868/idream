@@ -9,7 +9,7 @@ describe("Character Reference Set publication", () => {
   const actorId = `${prefix}admin`;
   const characterId = `${prefix}character`;
   const profileId = `${prefix}profile`;
-  const assetIds = [`${prefix}anchor`, `${prefix}reference`];
+  const assetIds = [`${prefix}anchor`, `${prefix}reference`, `${prefix}deleted-reference`];
 
   beforeAll(async () => {
     await purgeTestData(prefix);
@@ -37,7 +37,7 @@ describe("Character Reference Set publication", () => {
       signatureTraits: {},
       styleTraits: {},
       anchorAssetIds: [assetIds[0]],
-      referenceAssetIds: [assetIds[1]],
+      referenceAssetIds: [assetIds[1], assetIds[2]],
       adapterRefs: {},
       createdFrom: "test",
     } });
@@ -80,5 +80,28 @@ describe("Character Reference Set publication", () => {
     expect(firstBody.data.references).toHaveLength(2);
     expect(await prisma.referenceSetRevision.count({ where: { visualProfileId: profileId } })).toBe(1);
     expect(await prisma.adminAuditLog.count({ where: { action: "character.reference_set.published", targetId: firstBody.data.id } })).toBe(1);
+  });
+
+  it("fails closed instead of sealing a soft-deleted reference", async () => {
+    await prisma.mediaAsset.update({ where: { id: assetIds[2] }, data: { deletedAt: new Date() } });
+    const response = await publishReferenceSet(new Request(`http://localhost/api/v2/admin/characters/${characterId}/reference-sets`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-idream-user-id": actorId,
+        "x-idream-role": "admin",
+        "idempotency-key": `${prefix}deleted-key`,
+      },
+      body: JSON.stringify({
+        visualProfileId: profileId,
+        selectorVersion: "admin-visual-workbench-v1",
+        references: [{ mediaAssetId: assetIds[2], role: "identity_reference", weight: 1 }],
+        reason: { code: "reference_snapshot_publish", summary: "Attempt to seal deleted evidence" },
+        confirmation: `PUBLISH REFERENCES ${characterId}`,
+      }),
+    }), { params: Promise.resolve({ id: characterId }) });
+
+    expect(response.status).toBe(409);
+    expect(await prisma.referenceSetRevision.count({ where: { visualProfileId: profileId } })).toBe(1);
   });
 });

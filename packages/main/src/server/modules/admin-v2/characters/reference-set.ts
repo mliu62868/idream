@@ -37,7 +37,9 @@ export async function publishCharacterReferenceSet(input: {
   if (uniqueAssetIds.some((id) => !eligibleIds.has(id))) {
     throw Errors.conflict("A selected reference is not pinned by the active Visual Identity");
   }
-  const assets = await input.tx.mediaAsset.findMany({ where: { id: { in: uniqueAssetIds } } });
+  const assets = await input.tx.mediaAsset.findMany({
+    where: { id: { in: uniqueAssetIds }, deletedAt: null, type: "image" },
+  });
   if (assets.length !== uniqueAssetIds.length) {
     throw Errors.conflict("Every selected reference asset must still be available");
   }
