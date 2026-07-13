@@ -261,7 +261,15 @@ export async function createProductionBatchCore(
   const profile = await resolveProductionProfile(body.profileId);
   const workflowKey = profile.workflowKey ?? profile.pipelineModel;
   const workflow = await generationWorkflowDescriptor(workflowKey);
-  if (!workflow) throw Errors.conflict("The exact production workflow is unavailable", { workflowKey });
+  const configuredWorkflowVersion = jsonRecord(profile.runnerConfig).workflowVersion;
+  const workflowVersion = workflow?.version ?? (
+    typeof configuredWorkflowVersion === "number" && Number.isSafeInteger(configuredWorkflowVersion) && configuredWorkflowVersion > 0
+      ? configuredWorkflowVersion
+      : null
+  );
+  if (workflowVersion === null) {
+    throw Errors.conflict("The exact production workflow version is unavailable", { workflowKey });
+  }
   const recipe = await resolveProductionRecipe(body.recipeId, body.targetType);
   const target = await resolveProductionTarget(body.targetType, body.targetId);
   const visualProfile = await resolveProductionVisualProfile(body.targetType, body.targetId);
@@ -465,7 +473,7 @@ export async function createProductionBatchCore(
           profileKey: job.profileId,
           profileVersion: job.profileVersion,
           workflowKey,
-          workflowVersion: workflow.version,
+          workflowVersion,
           status: "queued",
           creativeRunItemId: item.id,
         },
