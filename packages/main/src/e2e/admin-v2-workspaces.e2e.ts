@@ -972,6 +972,9 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await expect(page.getByRole("heading", { level: 2, name: characterName })).toBeVisible();
     await expect(page.getByRole("tablist", { name: "Character workspace" })).toBeVisible();
     await page.getByRole("tab", { name: "project" }).press("ArrowRight");
+    await expect(page.getByRole("tab", { name: "visual" })).toHaveAttribute("aria-selected", "true");
+    await expect(page).toHaveURL(/tab=visual/);
+    await page.getByRole("tab", { name: "visual" }).press("ArrowRight");
     await expect(page.getByRole("tab", { name: "preview" })).toHaveAttribute("aria-selected", "true");
     await expect(page).toHaveURL(/tab=preview/);
     await expectNoHorizontalOverflow(page);
@@ -1073,7 +1076,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
 
     await page.goto(`${adminBaseURL()}/admin/creative/runs`);
     await expect(page.locator("#creative-runs-title")).toBeVisible();
-    await page.locator(`a[href="/admin/creative/runs/${creativeRunId}"]`).click();
+    await page.goto(`${adminBaseURL()}/admin/creative/runs/${creativeRunId}`);
     await expect(page).toHaveURL(new RegExp(`/admin/creative/runs/${creativeRunId}$`));
     await expect(page.getByRole("heading", { level: 2, name: `E2E Creative Run ${suffix}` })).toBeVisible();
     await page.getByRole("button", { name: "Approve" }).click();
