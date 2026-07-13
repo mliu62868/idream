@@ -414,7 +414,7 @@ export async function processVideoGenerate(
   }
 
   const videoModel = providers.video;
-  const videoProvider = payload.model ?? "video-provider";
+  const videoProvider = env.VIDEO_PROVIDER;
   const videoTransport = transportIdentity(payload, deps);
   await recordTransport(deps, payload, videoProvider, "running");
   const invocationStartedAt = performance.now();
@@ -505,7 +505,7 @@ export async function processVideoGenerate(
       requestId: payload.requestId,
       generationJobId: payload.generationJobId,
       mode: "video",
-      provider: payload.model,
+      provider: videoProvider,
       model: payload.model,
       providerRequestId: result.invocation?.providerRequestId ?? null,
       completedAt: new Date().toISOString(),

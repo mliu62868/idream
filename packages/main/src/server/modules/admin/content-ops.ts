@@ -29,6 +29,7 @@ import {
   parseIsoCursorKey,
 } from "@/server/modules/admin-v2/shared/list-cursor";
 import { isCreativeRunItemTransitionAllowed } from "@/server/modules/admin-v2/shared/state-transition-authority";
+import { generationWorkflowDescriptor } from "./generation-catalog";
 
 const productionPurposeSchema = z.enum([
   "character_cover",
@@ -258,6 +259,9 @@ export async function createProductionBatchCore(
   const commandScope = `${env.APP_ENV}:${actor.id}:creative.run.create`;
   const requestHash = canonicalSha256({ commandType: "creative.run.create", payload: body });
   const profile = await resolveProductionProfile(body.profileId);
+  const workflowKey = profile.workflowKey ?? profile.pipelineModel;
+  const workflow = await generationWorkflowDescriptor(workflowKey);
+  if (!workflow) throw Errors.conflict("The exact production workflow is unavailable", { workflowKey });
   const recipe = await resolveProductionRecipe(body.recipeId, body.targetType);
   const target = await resolveProductionTarget(body.targetType, body.targetId);
   const visualProfile = await resolveProductionVisualProfile(body.targetType, body.targetId);
@@ -419,7 +423,7 @@ export async function createProductionBatchCore(
           negativePrompt: productionNegativePrompt(recipe.negativeBase, visualProfile?.negativeIdentityPrompt),
           controls: toInputJson(controls),
           presetIds: toInputJson(body.presetIds),
-          model: profile.workflowKey ?? profile.pipelineModel,
+          model: workflowKey,
           profileId: profile.profileKey,
           profileVersion: profile.version,
           recipeId: recipe.recipeKey,
@@ -460,6 +464,8 @@ export async function createProductionBatchCore(
           provider: job.provider,
           profileKey: job.profileId,
           profileVersion: job.profileVersion,
+          workflowKey,
+          workflowVersion: workflow.version,
           status: "queued",
           creativeRunItemId: item.id,
         },

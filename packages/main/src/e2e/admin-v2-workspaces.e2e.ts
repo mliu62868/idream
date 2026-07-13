@@ -39,6 +39,8 @@ const releaseQaRunId = `e2e-v2-release-qa-${suffix}`;
 const oldReleaseId = `e2e-v2-release-old-${suffix}`;
 const candidateReleaseId = `e2e-v2-release-candidate-${suffix}`;
 const releaseRouteFingerprint = `e2e-v2-release-route-${suffix}`;
+const wizardVisualAssetId = `e2e-v2-wizard-visual-asset-${suffix}`;
+const wizardVisualProfileId = `e2e-v2-wizard-visual-profile-${suffix}`;
 let wizardCharacterId: string | null = null;
 
 type ResponsiveCoreFixture = {
@@ -897,11 +899,15 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       await prisma.adminCollaborationActivity.deleteMany({ where: { targetId: { in: projectIds } } });
       await prisma.adminAuditLog.deleteMany({ where: { targetId: { in: projectIds } } });
       await prisma.controlPlaneCommand.deleteMany({ where: { actorId, targetId: { in: projectIds } } });
+      await prisma.controlPlaneCommand.deleteMany({ where: { actorId, targetId: { in: characterIds } } });
+      await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: { in: characterIds } } });
+      await prisma.adminAuditLog.deleteMany({ where: { actorId, action: "character.reference_set.published" } });
       await prisma.characterRevision.deleteMany({ where: { projectId: { in: projectIds } } });
       await prisma.characterContentVersion.deleteMany({ where: { characterId: { in: characterIds } } });
       await prisma.characterServing.deleteMany({ where: { characterId: { in: characterIds } } });
       await prisma.characterProject.deleteMany({ where: { characterId: { in: characterIds } } });
       await prisma.character.deleteMany({ where: { id: { in: characterIds } } });
+      await prisma.mediaAsset.deleteMany({ where: { id: wizardVisualAssetId } });
     }
     const commandIds = (await prisma.controlPlaneCommand.findMany({
       where: { targetId: { in: authorityTargetIds } },
@@ -974,13 +980,46 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await page.getByRole("button", { name: "Save & continue" }).click();
     await page.getByRole("button", { name: "Save & continue" }).click();
     await page.getByRole("button", { name: "Save and open project" }).click();
-    await expect(page).toHaveURL(/\/admin\/characters\/[^/?]+/);
+    await expect(page).toHaveURL(/\/admin\/characters\/(?!new(?:[/?]|$))[^/?]+/);
     wizardCharacterId = new URL(page.url()).pathname.split("/").at(-1) ?? null;
+    if (!wizardCharacterId) throw new Error("Character wizard did not return a Character id");
+    await prisma.mediaAsset.create({ data: {
+      id: wizardVisualAssetId,
+      ownerId: actorId,
+      type: "image",
+      url: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Crect width='64' height='64' fill='%237a8f74'/%3E%3C/svg%3E",
+      visibility: "private",
+      safetyStatus: "passed",
+      metadata: { source: "admin_v2_visual_e2e" },
+    } });
+    await prisma.characterVisualProfile.create({ data: {
+      id: wizardVisualProfileId,
+      characterId: wizardCharacterId,
+      version: 1,
+      status: "active",
+      style: "realistic",
+      identityPrompt: "Stable E2E identity",
+      faceTraits: { shape: "oval" },
+      hairTraits: { color: "brown" },
+      bodyTraits: { build: "athletic" },
+      signatureTraits: { mark: "freckles" },
+      styleTraits: { rendering: "realistic" },
+      anchorAssetIds: [wizardVisualAssetId],
+      referenceAssetIds: [],
+      adapterRefs: {},
+      createdFrom: "playwright",
+    } });
+    await page.goto(`${adminBaseURL()}/admin/characters/${wizardCharacterId}?tab=project`);
     await expect(page.getByRole("heading", { level: 2, name: characterName })).toBeVisible();
     await expect(page.getByRole("tablist", { name: "Character workspace" })).toBeVisible();
     await page.getByRole("tab", { name: "project" }).press("ArrowRight");
     await expect(page.getByRole("tab", { name: "visual" })).toHaveAttribute("aria-selected", "true");
     await expect(page).toHaveURL(/tab=visual/);
+    await page.getByLabel("Publication reason").fill("Seal reviewed visual anchor evidence");
+    await page.getByLabel("Publish a new immutable reference snapshot and supersede the active revision.").check();
+    await page.getByRole("button", { name: "Publish Reference Set" }).click();
+    await expect(page.getByText("revision 1", { exact: true })).toBeVisible();
+    await expect.poll(async () => prisma.referenceSetRevision.count({ where: { visualProfileId: wizardVisualProfileId, status: "active" } })).toBe(1);
     await page.getByRole("tab", { name: "visual" }).press("ArrowRight");
     await expect(page.getByRole("tab", { name: "preview" })).toHaveAttribute("aria-selected", "true");
     await expect(page).toHaveURL(/tab=preview/);

@@ -592,9 +592,10 @@ function crc32(data: Buffer) {
 describe("processVideoGenerate", () => {
   it("writes a single blob and enqueues generation.completed with seconds asset", async () => {
     const enqueue = vi.fn(async (_: EnqueueInput) => {});
+    const recordTransportExecution = vi.fn(async () => {});
     const providers = makeProviders();
 
-    await processVideoGenerate(videoPayload(), { enqueue, providers });
+    await processVideoGenerate(videoPayload(), { enqueue, providers, recordTransportExecution });
 
     expect(providers.blob.putPrivate).toHaveBeenCalledTimes(1);
     expect(providers.blob.putPrivate).toHaveBeenCalledWith({
@@ -603,6 +604,11 @@ describe("processVideoGenerate", () => {
       contentType: "video/mp4",
     });
     expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(recordTransportExecution).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      provider: "mock",
+      model: "mock-video",
+      status: "running",
+    }));
 
     const [input] = enqueue.mock.calls[0];
     expect(input.queue).toBe(MAIN_QUEUES.aiFinalize);

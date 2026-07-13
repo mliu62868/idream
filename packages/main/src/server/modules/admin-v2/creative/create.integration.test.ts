@@ -78,6 +78,12 @@ describe("Creative Run v2 brief and launch", () => {
     const items = await prisma.contentProductionItem.findMany({ where: { batchId } });
     const jobIds = items.flatMap((item) => item.jobId ? [item.jobId] : []);
     expect(await prisma.generationAttempt.count({ where: { requestId: { in: jobIds } } })).toBe(2);
+    expect(await prisma.generationAttempt.findMany({
+      where: { requestId: { in: jobIds } },
+      select: { workflowKey: true, workflowVersion: true },
+    })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ workflowKey: expect.any(String), workflowVersion: expect.any(Number) }),
+    ]));
     expect(await prisma.mainOutboxEvent.count({
       where: { aggregateId: batchId, eventType: "creative.generation.dispatch.v2" },
     })).toBe(2);
