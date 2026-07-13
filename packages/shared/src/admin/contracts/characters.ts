@@ -71,6 +71,11 @@ export const characterPerformanceQualitySchema = z.enum([
   "directional",
   "invalid",
 ]);
+export const characterVisualStyleSchema = z.enum(["realistic", "anime", "hybrid", "other"]);
+export const characterVisualIdentityStatusSchema = z.enum(["draft", "active", "archived", "superseded", "retired"]);
+export const characterVisualReferenceSetStatusSchema = z.enum(["draft", "active", "superseded"]);
+export const characterVisualReferenceRoleSchema = z.enum(["primary_face", "identity_anchor", "identity_reference"]);
+export const generationRouteQualificationResultSchema = z.enum(["candidate", "qualified", "paused", "expired"]);
 
 export const generationRouteQualificationEvaluateRequestSchema = z
   .object({
@@ -101,6 +106,96 @@ export const generationRouteQualificationEvaluateResponseSchema = z
     evaluatorVersion: z.string().trim().min(1),
     evidenceHash: z.string().trim().min(1),
     replayed: z.boolean(),
+  })
+  .strict();
+
+export const characterVisualIdentityVersionSchema = z
+  .object({
+    id: adminIdSchema,
+    version: z.number().int().positive(),
+    status: characterVisualIdentityStatusSchema,
+    style: characterVisualStyleSchema,
+    identityPrompt: z.string(),
+    negativeIdentityPrompt: z.string().nullable(),
+    traits: z.object({
+      face: z.record(z.string(), z.unknown()),
+      hair: z.record(z.string(), z.unknown()),
+      body: z.record(z.string(), z.unknown()),
+      signature: z.record(z.string(), z.unknown()),
+      style: z.record(z.string(), z.unknown()),
+    }).strict(),
+    immutableHash: z.string().nullable(),
+    evidenceState: z.string().trim().min(1),
+    defaultSeed: z.string().nullable(),
+    createdFrom: z.string().trim().min(1),
+    createdAt: adminIsoDateTimeSchema,
+  })
+  .strict();
+
+export const characterVisualAssetSchema = z
+  .object({
+    mediaAssetId: adminIdSchema,
+    role: characterVisualReferenceRoleSchema,
+    available: z.boolean(),
+    url: z.string().nullable(),
+    thumbnailUrl: z.string().nullable(),
+    qualityScore: z.number().nullable(),
+    identityScore: z.number().nullable(),
+  })
+  .strict();
+
+export const characterVisualReferenceSetSchema = z
+  .object({
+    id: adminIdSchema,
+    revision: z.number().int().positive(),
+    status: characterVisualReferenceSetStatusSchema,
+    selectorVersion: z.string().trim().min(1),
+    snapshotHash: z.string().nullable(),
+    createdFrom: z.string().trim().min(1),
+    createdAt: adminIsoDateTimeSchema,
+    references: z.array(characterVisualAssetSchema).readonly(),
+  })
+  .strict();
+
+export const characterRouteQualificationEvidenceSchema = z
+  .object({
+    id: adminIdSchema,
+    routeFingerprint: z.string().trim().min(1),
+    generationProfileKey: z.string().trim().min(1),
+    generationProfileVersion: z.number().int().positive(),
+    workflowKey: z.string().trim().min(1),
+    workflowVersion: z.number().int().positive(),
+    style: characterVisualStyleSchema,
+    matrixKey: z.string().trim().min(1),
+    sampleCount: z.number().int().nonnegative(),
+    passCount: z.number().int().nonnegative(),
+    identityMatch: z.number().min(0).max(1),
+    result: generationRouteQualificationResultSchema,
+    evidence: z.record(z.string(), z.unknown()),
+    policyVersion: z.string().trim().min(1),
+    evaluatedAt: adminIsoDateTimeSchema,
+    expiresAt: adminIsoDateTimeSchema.nullable(),
+    stale: z.boolean(),
+  })
+  .strict();
+
+export const characterVisualWorkspaceSchema = z
+  .object({
+    activeIdentity: characterVisualIdentityVersionSchema.nullable(),
+    anchors: z.array(characterVisualAssetSchema).readonly(),
+    references: z.array(characterVisualAssetSchema).readonly(),
+    activeReferenceSet: characterVisualReferenceSetSchema.nullable(),
+    routeQualifications: z.array(characterRouteQualificationEvidenceSchema).readonly(),
+    readiness: z.object({
+      ready: z.boolean(),
+      qualificationPolicyVersion: z.string().trim().min(1),
+      blockers: z.array(z.object({
+        code: z.string().trim().min(1),
+        message: z.string().trim().min(1),
+        deepLink: z.string().startsWith("/admin/"),
+      }).strict()).readonly(),
+      productionDeepLink: z.string().startsWith("/admin/"),
+    }).strict(),
   })
   .strict();
 
@@ -723,6 +818,7 @@ export const characterWorkspaceDetailSchema = z
       })
       .strict(),
     project: characterWorkspaceProjectSchema,
+    visual: characterVisualWorkspaceSchema,
     serving: characterServingSchema.nullable(),
     releases: z.array(characterWorkspaceReleaseSchema).readonly(),
     qaRuns: z.array(characterQaRunSchema).readonly(),

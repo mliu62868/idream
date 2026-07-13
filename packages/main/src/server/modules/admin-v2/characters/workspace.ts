@@ -13,6 +13,10 @@ import { collectReleaseMonitorFacts } from "./release-monitor";
 import { toInputJson } from "../shared/prisma-json";
 import { characterDraftSnapshots } from "./draft-content";
 import { issueCharacterPreviewToken } from "./preview-token";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-executor";
+import { evaluateReleaseReadiness } from "./readiness";
+import { findQualifiedGenerationRoute } from "./visual-authority";
+import { characterVisualProfileSnapshotHash, referenceSetSnapshotHash } from "./release-snapshot";
 
 function record(value: Prisma.JsonValue | null | undefined): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -26,6 +30,46 @@ function strings(value: Prisma.JsonValue | null | undefined): string[] {
 
 function text(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function jsonObject(value: Prisma.JsonValue): Record<string, unknown> {
+  return record(value);
+}
+
+function visualAssetDto(asset: {
+  id: string;
+  url: string;
+  thumbnailUrl: string | null;
+  deletedAt: Date | null;
+}, role: string, scores: { qualityScore?: number | null; identityScore?: number | null } = {}) {
+  return {
+    mediaAssetId: asset.id,
+    role,
+    available: asset.deletedAt === null,
+    url: asset.deletedAt === null ? asset.url : null,
+    thumbnailUrl: asset.deletedAt === null ? asset.thumbnailUrl : null,
+    qualityScore: scores.qualityScore ?? null,
+    identityScore: scores.identityScore ?? null,
+  };
+}
+
+function visualPoolDtos(
+  assetIds: readonly string[],
+  role: "identity_anchor" | "identity_reference",
+  assets: ReadonlyMap<string, { id: string; url: string; thumbnailUrl: string | null; deletedAt: Date | null }>,
+) {
+  return assetIds.map((mediaAssetId) => {
+    const asset = assets.get(mediaAssetId);
+    return asset ? visualAssetDto(asset, role) : {
+      mediaAssetId,
+      role,
+      available: false,
+      url: null,
+      thumbnailUrl: null,
+      qualityScore: null,
+      identityScore: null,
+    };
+  });
 }
 
 function projectDto(project: {
@@ -188,6 +232,33 @@ export async function getCharacterWorkspace(characterId: string) {
     where: { projectId: project.id },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
   });
+  const activeIdentity = await prisma.characterVisualProfile.findFirst({
+    where: { characterId, status: "active" },
+    orderBy: { version: "desc" },
+  });
+  const activeReferenceSet = activeIdentity ? await prisma.referenceSetRevision.findFirst({
+    where: { visualProfileId: activeIdentity.id, status: "active" },
+    include: { references: { include: { mediaAsset: true }, orderBy: { position: "asc" } } },
+    orderBy: { revision: "desc" },
+  }) : null;
+  const visualPoolIds = activeIdentity
+    ? [...new Set([...strings(activeIdentity.anchorAssetIds), ...strings(activeIdentity.referenceAssetIds)])]
+    : [];
+  const visualAsOf = new Date();
+  const [visualPoolAssets, routeQualifications, qualifiedRoute] = await Promise.all([
+    prisma.mediaAsset.findMany({ where: { id: { in: visualPoolIds } } }),
+    activeIdentity ? prisma.generationRouteQualification.findMany({
+      where: { style: activeIdentity.style },
+      orderBy: { evaluatedAt: "desc" },
+      take: 20,
+    }) : Promise.resolve([]),
+    activeIdentity ? findQualifiedGenerationRoute(prisma, {
+      style: activeIdentity.style,
+      policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+      evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
+      at: visualAsOf,
+    }) : Promise.resolve(null),
+  ]);
   const releaseIds = releases.map((release) => release.id);
   const validationRuns = await prisma.releaseValidationRun.findMany({
     where: { releaseId: { in: releaseIds } },
@@ -248,6 +319,49 @@ export async function getCharacterWorkspace(characterId: string) {
   });
   const performance = portfolio.items.find((item) => item.characterId === characterId)?.performance ?? [];
   const portfolioItem = portfolio.items.find((item) => item.characterId === characterId) ?? null;
+  const poolAssetById = new Map(visualPoolAssets.map((asset) => [asset.id, asset]));
+  const anchors = activeIdentity
+    ? visualPoolDtos(strings(activeIdentity.anchorAssetIds), "identity_anchor", poolAssetById)
+    : [];
+  const references = activeIdentity
+    ? visualPoolDtos(strings(activeIdentity.referenceAssetIds), "identity_reference", poolAssetById)
+    : [];
+  const visualReadiness = evaluateReleaseReadiness({
+    releaseId: candidateRelease?.id ?? "visual-workbench",
+    releaseCharacterId: characterId,
+    snapshotHash: "visual-workbench",
+    currentSnapshotHash: "visual-workbench",
+    validatedPolicyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+    currentPolicyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+    content: { personaComplete: true, openingComplete: true },
+    visualIdentity: activeIdentity ? {
+      version: activeIdentity.version,
+      anchorCount: anchors.filter((asset) => asset.available).length,
+      requiredTraitsPresent: [
+        activeIdentity.faceTraits,
+        activeIdentity.hairTraits,
+        activeIdentity.bodyTraits,
+        activeIdentity.signatureTraits,
+      ].some((traits) => Object.keys(jsonObject(traits)).length > 0),
+      snapshotSealed: activeIdentity.immutableHash !== null
+        && activeIdentity.immutableHash === characterVisualProfileSnapshotHash(activeIdentity),
+    } : null,
+    referenceSet: activeReferenceSet ? {
+      revision: activeReferenceSet.revision,
+      status: activeReferenceSet.status,
+      snapshotSealed: activeReferenceSet.snapshotHash !== null
+        && activeReferenceSet.snapshotHash === referenceSetSnapshotHash(activeReferenceSet),
+      availableReferenceCount: activeReferenceSet.references.filter((item) => item.mediaAsset.deletedAt === null).length,
+    } : null,
+    routeQualification: qualifiedRoute ? { status: qualifiedRoute.result, stale: false } : null,
+    characterQa: { status: "passed" },
+  });
+  const visualBlockerCodes = new Set([
+    "visual_identity_missing", "visual_anchor_missing", "visual_traits_incomplete", "visual_identity_unsealed",
+    "reference_set_not_active", "reference_set_unsealed", "reference_assets_unavailable",
+    "generation_route_unqualified", "generation_route_stale",
+  ]);
+  const visualBlockers = visualReadiness.blockers.filter((blocker) => visualBlockerCodes.has(blocker.code));
   return {
     character: {
       id: character.id,
@@ -262,6 +376,68 @@ export async function getCharacterWorkspace(characterId: string) {
       updatedAt: character.updatedAt.toISOString(),
     },
     project: projectDto(project),
+    visual: {
+      activeIdentity: activeIdentity ? {
+        id: activeIdentity.id,
+        version: activeIdentity.version,
+        status: activeIdentity.status,
+        style: activeIdentity.style,
+        identityPrompt: activeIdentity.identityPrompt,
+        negativeIdentityPrompt: activeIdentity.negativeIdentityPrompt,
+        traits: {
+          face: jsonObject(activeIdentity.faceTraits),
+          hair: jsonObject(activeIdentity.hairTraits),
+          body: jsonObject(activeIdentity.bodyTraits),
+          signature: jsonObject(activeIdentity.signatureTraits),
+          style: jsonObject(activeIdentity.styleTraits),
+        },
+        immutableHash: activeIdentity.immutableHash,
+        evidenceState: activeIdentity.evidenceState,
+        defaultSeed: activeIdentity.defaultSeed,
+        createdFrom: activeIdentity.createdFrom,
+        createdAt: activeIdentity.createdAt.toISOString(),
+      } : null,
+      anchors,
+      references,
+      activeReferenceSet: activeReferenceSet ? {
+        id: activeReferenceSet.id,
+        revision: activeReferenceSet.revision,
+        status: activeReferenceSet.status,
+        selectorVersion: activeReferenceSet.selectorVersion,
+        snapshotHash: activeReferenceSet.snapshotHash,
+        createdFrom: activeReferenceSet.createdFrom,
+        createdAt: activeReferenceSet.createdAt.toISOString(),
+        references: activeReferenceSet.references.map((item) => visualAssetDto(item.mediaAsset, item.role, item)),
+      } : null,
+      routeQualifications: routeQualifications.map((qualification) => ({
+        id: qualification.id,
+        routeFingerprint: qualification.routeFingerprint,
+        generationProfileKey: qualification.generationProfileKey,
+        generationProfileVersion: qualification.generationProfileVersion,
+        workflowKey: qualification.workflowKey,
+        workflowVersion: qualification.workflowVersion,
+        style: qualification.style,
+        matrixKey: qualification.matrixKey,
+        sampleCount: qualification.sampleCount,
+        passCount: qualification.passCount,
+        identityMatch: qualification.identityMatch,
+        result: qualification.result,
+        evidence: record(qualification.evidence),
+        policyVersion: qualification.policyVersion,
+        evaluatedAt: qualification.evaluatedAt.toISOString(),
+        expiresAt: qualification.expiresAt?.toISOString() ?? null,
+        stale: qualification.result === "qualified" && qualification.id !== qualifiedRoute?.id,
+      })),
+      readiness: {
+        ready: visualBlockers.length === 0,
+        qualificationPolicyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+        blockers: visualBlockers.map((blocker) => ({
+          ...blocker,
+          deepLink: blocker.deepLink.replace("?tab=visual-identity", "?tab=visual"),
+        })),
+        productionDeepLink: `/admin/content/production?characterId=${encodeURIComponent(characterId)}`,
+      },
+    },
     serving: servingDto(serving),
     releases: releases.map((release) => {
       const validation = validationRuns.find((run) => run.releaseId === release.id);

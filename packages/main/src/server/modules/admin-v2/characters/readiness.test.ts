@@ -9,8 +9,8 @@ const readyCandidate = {
   validatedPolicyVersion: "release-policy-v1",
   currentPolicyVersion: "release-policy-v1",
   content: { personaComplete: true, openingComplete: true },
-  visualIdentity: { version: 2, anchorCount: 1, requiredTraitsPresent: true },
-  referenceSet: { revision: 3, status: "active", availableReferenceCount: 2 },
+  visualIdentity: { version: 2, anchorCount: 1, requiredTraitsPresent: true, snapshotSealed: true },
+  referenceSet: { revision: 3, status: "active", snapshotSealed: true, availableReferenceCount: 2 },
   routeQualification: { status: "qualified", stale: false },
   characterQa: { status: "passed" },
 } as const;
@@ -26,8 +26,10 @@ describe("character release readiness", () => {
 
   it.each([
     ["missing persona", { content: { personaComplete: false, openingComplete: true } }, "persona_incomplete"],
-    ["no anchor", { visualIdentity: { version: 2, anchorCount: 0, requiredTraitsPresent: true } }, "visual_anchor_missing"],
-    ["no published references", { referenceSet: { revision: 3, status: "draft", availableReferenceCount: 2 } }, "reference_set_not_active"],
+    ["no anchor", { visualIdentity: { version: 2, anchorCount: 0, requiredTraitsPresent: true, snapshotSealed: true } }, "visual_anchor_missing"],
+    ["visual snapshot drift", { visualIdentity: { version: 2, anchorCount: 1, requiredTraitsPresent: true, snapshotSealed: false } }, "visual_identity_unsealed"],
+    ["no published references", { referenceSet: { revision: 3, status: "draft", snapshotSealed: true, availableReferenceCount: 2 } }, "reference_set_not_active"],
+    ["unsealed references", { referenceSet: { revision: 3, status: "active", snapshotSealed: false, availableReferenceCount: 2 } }, "reference_set_unsealed"],
     ["route stale", { routeQualification: { status: "qualified", stale: true } }, "generation_route_stale"],
     ["QA failed", { characterQa: { status: "failed" } }, "character_qa_failed"],
     ["snapshot changed", { currentSnapshotHash: "snapshot-b" }, "snapshot_stale"],

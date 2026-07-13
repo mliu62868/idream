@@ -878,6 +878,8 @@ function renderSection(
         proposeRelease: ctx.permissions.has("character.release.propose"),
         publishRelease: ctx.permissions.has("character.release.publish"),
         reviewRelease: ctx.permissions.has("character.release.review"),
+        writeVisual: ctx.permissions.has("content.official.write"),
+        evaluateRoute: ctx.permissions.has("content.production.write"),
       }} view={subview} />;
     }
     if (section.view === "templates") return <StartersSection view={subview} />;

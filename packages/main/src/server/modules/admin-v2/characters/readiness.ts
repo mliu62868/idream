@@ -28,10 +28,12 @@ export interface ReleaseReadinessInput {
     readonly version: number;
     readonly anchorCount: number;
     readonly requiredTraitsPresent: boolean;
+    readonly snapshotSealed: boolean;
   } | null;
   readonly referenceSet: {
     readonly revision: number;
     readonly status: string;
+    readonly snapshotSealed: boolean;
     readonly availableReferenceCount: number;
   } | null;
   readonly routeQualification: {
@@ -88,9 +90,21 @@ export function evaluateReleaseReadiness(input: ReleaseReadinessInput) {
       `/admin/characters/${input.releaseCharacterId}?tab=visual-identity`,
     ),
     check(
+      input.visualIdentity?.snapshotSealed === true,
+      "visual_identity_unsealed",
+      "The active Visual Identity does not match its immutable snapshot hash.",
+      `/admin/characters/${input.releaseCharacterId}?tab=visual-identity`,
+    ),
+    check(
       input.referenceSet?.status === "active",
       "reference_set_not_active",
       "No active Reference Set revision is pinned.",
+      `/admin/characters/${input.releaseCharacterId}?tab=visual-identity`,
+    ),
+    check(
+      input.referenceSet?.snapshotSealed === true,
+      "reference_set_unsealed",
+      "The active Reference Set revision has no immutable snapshot hash.",
       `/admin/characters/${input.releaseCharacterId}?tab=visual-identity`,
     ),
     check(

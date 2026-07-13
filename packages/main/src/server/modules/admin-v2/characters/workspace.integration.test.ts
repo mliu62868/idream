@@ -8,6 +8,9 @@ import { PATCH as patchCharacterProjectRoute } from "@/app/api/v2/admin/characte
 import { GET as getCharacterWorkspaceRoute } from "@/app/api/v2/admin/characters/[id]/route";
 import { getCharacterWorkspace, updateCharacterProjectDraft } from "./workspace";
 import { loadCharacterRendererPreview } from "./renderer-preview";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-executor";
+import { env } from "@/server/lib/env";
+import { characterVisualProfileSnapshotHash, referenceSetSnapshotHash } from "./release-snapshot";
 
 describe("Character operator workspace", () => {
   const suffix = randomUUID();
@@ -20,6 +23,17 @@ describe("Character operator workspace", () => {
   const readOnlyActorId = `workspace-readonly-${suffix}`;
   const previewAssetId = `workspace-preview-asset-${suffix}`;
   const previewAssetUrl = `/user-content/${previewAssetId}/content.webp`;
+  const visualProfileId = `workspace-visual-${suffix}`;
+  const referenceSetId = `workspace-reference-set-${suffix}`;
+  const qualificationId = `workspace-qualification-${suffix}`;
+  const generationProfileId = `workspace-generation-profile-${suffix}`;
+  const generationProfileKey = `workspace-generation-${suffix}`;
+  const referenceSnapshotHash = referenceSetSnapshotHash({
+    visualProfileId,
+    revision: 1,
+    selectorVersion: "workspace-v1",
+    references: [{ mediaAssetId: previewAssetId, position: 0, role: "identity_anchor", weight: 1 }],
+  });
 
   beforeAll(async () => {
     await prisma.user.create({ data: { id: readOnlyActorId, email: `${readOnlyActorId}@example.test`, role: "user" } });
@@ -116,6 +130,46 @@ describe("Character operator workspace", () => {
     await prisma.characterServing.create({
       data: { id: `workspace-serving-${suffix}`, characterId, state: "inactive" },
     });
+    const visualProfile = await prisma.characterVisualProfile.create({ data: {
+      id: visualProfileId,
+      characterId,
+      version: 1,
+      status: "active",
+      style: "realistic",
+      identityPrompt: "same adult character",
+      faceTraits: { eyes: "brown" }, hairTraits: {}, bodyTraits: {}, signatureTraits: {}, styleTraits: {},
+      anchorAssetIds: [previewAssetId], referenceAssetIds: [previewAssetId], adapterRefs: {},
+      evidenceState: "candidate",
+      createdFrom: "workspace_test",
+    } });
+    await prisma.characterVisualProfile.update({ where: { id: visualProfileId }, data: { immutableHash: characterVisualProfileSnapshotHash(visualProfile) } });
+    await prisma.referenceSetRevision.create({ data: {
+      id: referenceSetId,
+      visualProfileId,
+      revision: 1,
+      status: "active",
+      selectorVersion: "workspace-v1",
+      snapshotHash: referenceSnapshotHash,
+      createdFrom: "workspace_test",
+      references: { create: { mediaAssetId: previewAssetId, position: 0, role: "identity_anchor", selectionReason: "workspace fixture" } },
+    } });
+    await prisma.generationModelProfile.create({ data: { id: generationProfileId, profileKey: generationProfileKey, label: "Workspace test", pipelineModel: "redcraft-krea2-txt2img", workflowKey: "redcraft-krea2-txt2img", allowedOrientations: ["portrait"], status: "active" } });
+    await prisma.generationRouteQualification.create({ data: {
+      id: qualificationId,
+      routeFingerprint: `workspace-route-${suffix}`,
+      generationProfileKey,
+      generationProfileVersion: 1,
+      workflowKey: "redcraft-krea2-txt2img",
+      workflowVersion: 1,
+      style: "realistic",
+      matrixKey: `workspace-matrix-${suffix}`,
+      sampleCount: 40,
+      passCount: 40,
+      identityMatch: 0.95,
+      result: "qualified",
+      evidence: { reviewerId: readOnlyActorId, batchIds: ["batch-1"], evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION },
+      policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+    } });
   });
 
   afterAll(async () => {
@@ -125,6 +179,11 @@ describe("Character operator workspace", () => {
     await prisma.adminAuditLog.deleteMany({ where: { targetId: projectId } });
     await prisma.characterServing.deleteMany({ where: { characterId } });
     await prisma.characterRelease.deleteMany({ where: { projectId } });
+    await prisma.generationRouteQualification.deleteMany({ where: { id: qualificationId } });
+    await prisma.generationModelProfile.deleteMany({ where: { id: generationProfileId } });
+    await prisma.characterVisualReferenceSnapshot.deleteMany({ where: { referenceSetRevisionId: referenceSetId } });
+    await prisma.referenceSetRevision.deleteMany({ where: { id: referenceSetId } });
+    await prisma.characterVisualProfile.deleteMany({ where: { id: visualProfileId } });
     await prisma.characterRevision.deleteMany({ where: { projectId } });
     await prisma.characterContentVersion.deleteMany({ where: { characterId } });
     await prisma.characterProject.deleteMany({ where: { id: projectId } });
@@ -151,6 +210,40 @@ describe("Character operator workspace", () => {
     });
     expect(detail.project).toMatchObject({ productionPackage: "", qaPlan: "" });
     expect(detail.releases[0]).toMatchObject({ release: { readiness: "blocked" }, checks: [], monitors: [] });
+    expect(detail.visual).toMatchObject({
+      activeIdentity: { id: visualProfileId, version: 1, evidenceState: "candidate" },
+      anchors: [{ mediaAssetId: previewAssetId, available: true }],
+      activeReferenceSet: { id: referenceSetId, revision: 1, references: [{ mediaAssetId: previewAssetId, available: true }] },
+      routeQualifications: [{ id: qualificationId, result: "qualified", stale: false, sampleCount: 40 }],
+      readiness: { ready: true, blockers: [], productionDeepLink: `/admin/content/production?characterId=${characterId}` },
+    });
+  });
+
+  it("fails visual readiness closed when traits, reference snapshot or route capability drifts", async () => {
+    await prisma.characterVisualProfile.update({ where: { id: visualProfileId }, data: { faceTraits: {} } });
+    let detail = characterWorkspaceDetailSchema.parse(await getCharacterWorkspace(characterId));
+    expect(detail.visual.readiness).toMatchObject({ ready: false });
+    expect(detail.visual.readiness.blockers.map((blocker) => blocker.code)).toContain("visual_traits_incomplete");
+    await prisma.characterVisualProfile.update({ where: { id: visualProfileId }, data: { faceTraits: { eyes: "brown" } } });
+
+    await prisma.referenceSetRevision.update({ where: { id: referenceSetId }, data: { snapshotHash: "drifted-reference-hash" } });
+    detail = characterWorkspaceDetailSchema.parse(await getCharacterWorkspace(characterId));
+    expect(detail.visual.readiness.blockers.map((blocker) => blocker.code)).toContain("reference_set_unsealed");
+    await prisma.referenceSetRevision.update({ where: { id: referenceSetId }, data: { snapshotHash: referenceSnapshotHash } });
+
+    await prisma.generationModelProfile.update({ where: { id: generationProfileId }, data: { status: "archived" } });
+    detail = characterWorkspaceDetailSchema.parse(await getCharacterWorkspace(characterId));
+    expect(detail.visual.readiness.blockers.map((blocker) => blocker.code)).toContain("generation_route_unqualified");
+    expect(detail.visual.routeQualifications[0]).toMatchObject({ id: qualificationId, stale: true });
+    await prisma.generationModelProfile.update({ where: { id: generationProfileId }, data: { status: "active" } });
+
+    await prisma.generationRouteQualification.update({ where: { id: qualificationId }, data: { evidence: { evaluatorVersion: "retired-evaluator" } } });
+    detail = characterWorkspaceDetailSchema.parse(await getCharacterWorkspace(characterId));
+    expect(detail.visual.readiness.blockers.map((blocker) => blocker.code)).toContain("generation_route_unqualified");
+    await prisma.generationRouteQualification.update({ where: { id: qualificationId }, data: { evidence: { evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION }, workflowVersion: 999 } });
+    detail = characterWorkspaceDetailSchema.parse(await getCharacterWorkspace(characterId));
+    expect(detail.visual.readiness.blockers.map((blocker) => blocker.code)).toContain("generation_route_unqualified");
+    await prisma.generationRouteQualification.update({ where: { id: qualificationId }, data: { workflowVersion: 1 } });
   });
 
   it("autosaves with optimistic concurrency and writes audit/outbox atomically", async () => {

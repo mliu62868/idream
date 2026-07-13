@@ -5,6 +5,7 @@ import { characterVisualProfileSnapshotHash, referenceSetSnapshotHash } from "./
 import { proposeCharacterRelease, reviewCharacterRelease, validateCharacterRelease } from "./release-lifecycle";
 import { changeCharacterServingState, publishCharacterRelease } from "../commands/authoritative";
 import { CHARACTER_RELEASE_POLICY_VERSION, executeCharacterReleaseCommand } from "./release-executor";
+import { env } from "@/server/lib/env";
 
 describe("Character Release proposal and review lifecycle", () => {
   const suffix = randomUUID();
@@ -17,6 +18,8 @@ describe("Character Release proposal and review lifecycle", () => {
   const contentId = `release-lifecycle-content-${suffix}`;
   const revisionId = `release-lifecycle-revision-${suffix}`;
   const routeFingerprint = `release-lifecycle-route-${suffix}`;
+  const generationProfileId = `release-lifecycle-generation-profile-${suffix}`;
+  const generationProfileKey = `release-lifecycle-generation-${suffix}`;
   const qaRunId = `release-lifecycle-qa-${suffix}`;
   const qaEvidenceHash = `release-lifecycle-qa-hash-${suffix}`;
   const headers = { "x-idream-user-id": actorId, "x-idream-role": "admin", "x-request-id": `release-lifecycle-${suffix}` };
@@ -31,7 +34,8 @@ describe("Character Release proposal and review lifecycle", () => {
     await prisma.referenceSetRevision.create({ data: { id: referenceSetId, visualProfileId: profileId, revision: 1, status: "active", selectorVersion: "v1", createdFrom: "test" } });
     await prisma.characterVisualReferenceSnapshot.create({ data: { referenceSetRevisionId: referenceSetId, mediaAssetId: assetId, position: 0, role: "primary_face", weight: 1, selectorVersion: "v1", selectionReason: "release lifecycle fixture" } });
     await prisma.referenceSetRevision.update({ where: { id: referenceSetId }, data: { snapshotHash: referenceSetSnapshotHash({ visualProfileId: profileId, revision: 1, selectorVersion: "v1", references: [{ mediaAssetId: assetId, position: 0, role: "primary_face", weight: 1 }] }) } });
-    await prisma.generationRouteQualification.create({ data: { routeFingerprint, generationProfileKey: "portrait", generationProfileVersion: 1, workflowKey: "identity", workflowVersion: 1, style: "realistic", matrixKey: "realistic-avatar", sampleCount: 40, passCount: 40, identityMatch: 1, result: "qualified", evidence: {}, policyVersion: CHARACTER_RELEASE_POLICY_VERSION } });
+    await prisma.generationModelProfile.create({ data: { id: generationProfileId, profileKey: generationProfileKey, label: "Release lifecycle test", pipelineModel: "redcraft-krea2-txt2img", workflowKey: "redcraft-krea2-txt2img", allowedOrientations: ["portrait"], status: "active" } });
+    await prisma.generationRouteQualification.create({ data: { routeFingerprint, generationProfileKey, generationProfileVersion: 1, workflowKey: "redcraft-krea2-txt2img", workflowVersion: 1, style: "realistic", matrixKey: "realistic-avatar", sampleCount: 40, passCount: 40, identityMatch: 1, result: "qualified", evidence: { evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION }, policyVersion: CHARACTER_RELEASE_POLICY_VERSION } });
     await prisma.characterContentVersion.create({ data: { id: contentId, characterId, version: 1, contentHash: `release-lifecycle-content-hash-${suffix}`, personaSnapshot: { name: "Released Candidate", age: 25, gender: "female", relationshipArchetype: "companion", characterPromise: "Complete persona", description: "Complete persona", systemPrompt: "Stay consistent" }, openingSnapshot: { firstMessage: "Hello" }, appearanceSnapshot: { style: "realistic" }, sourceType: "test", createdById: actorId } });
     await prisma.characterProject.create({ data: { id: projectId, characterId, ownerId: actorId, phase: "qa", audience: {}, successCriteria: ["five_turn_qa"], activeKey: `official:${characterId}` } });
     await prisma.characterRevision.create({ data: { id: revisionId, projectId, revision: 1, characterContentVersionId: contentId, projectSnapshot: {}, createdById: actorId } });
@@ -57,6 +61,7 @@ describe("Character Release proposal and review lifecycle", () => {
     await prisma.characterProject.deleteMany({ where: { id: projectId } });
     await prisma.characterContentVersion.deleteMany({ where: { id: contentId } });
     await prisma.generationRouteQualification.deleteMany({ where: { routeFingerprint } });
+    await prisma.generationModelProfile.deleteMany({ where: { id: generationProfileId } });
     await prisma.characterVisualReferenceSnapshot.deleteMany({ where: { referenceSetRevisionId: referenceSetId } });
     await prisma.referenceSetRevision.deleteMany({ where: { id: referenceSetId } });
     await prisma.characterVisualProfile.deleteMany({ where: { id: profileId } });

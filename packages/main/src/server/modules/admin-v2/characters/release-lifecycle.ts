@@ -2,6 +2,8 @@ import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { CHARACTER_RELEASE_POLICY_VERSION, validateCharacterReleaseSnapshot } from "./release-executor";
+import { findQualifiedGenerationRoute } from "./visual-authority";
+import { env } from "@/server/lib/env";
 import { characterReleaseSnapshotHash } from "./release-snapshot";
 import { toInputJson } from "../shared/prisma-json";
 import {
@@ -41,7 +43,12 @@ export async function proposeCharacterRelease(input: {
     const qaRun = await tx.characterQaRun.findUnique({ where: { id: input.qaRunId } });
     const profile = await tx.characterVisualProfile.findFirst({ where: { characterId: input.characterId, status: "active" }, orderBy: { version: "desc" } });
     const referenceSet = profile ? await tx.referenceSetRevision.findFirst({ where: { visualProfileId: profile.id, status: "active" }, include: { references: true }, orderBy: { revision: "desc" } }) : null;
-    const route = profile ? await tx.generationRouteQualification.findFirst({ where: { style: profile.style, policyVersion: CHARACTER_RELEASE_POLICY_VERSION, result: "qualified", sampleCount: { gte: 40 }, identityMatch: { gte: 0.9 }, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] }, orderBy: { evaluatedAt: "desc" } }) : null;
+    const route = profile ? await findQualifiedGenerationRoute(tx, {
+      style: profile.style,
+      policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+      evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
+      at: new Date(),
+    }) : null;
     const blockers = [
       ...(!character ? ["character_missing"] : []),
       ...(!revision ? ["revision_missing"] : []),

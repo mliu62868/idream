@@ -1,7 +1,9 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import {
+  generationRouteQualificationEvaluateResponseSchema,
   characterPortfolioResponseSchema,
   characterWorkspaceDetailSchema,
   type CharacterPortfolioItem,
@@ -12,6 +14,7 @@ import { ArrowLeft, Clock3, RefreshCcw, Rocket, RotateCcw, Save, ShieldAlert } f
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { AdminSubview } from "@/components/admin/nav-config";
 import { CharacterCreateWizard } from "@/features/characters/CharacterCreateWizard";
+import { apiWrite } from "@/components/admin/api";
 import { CollaborationPanel } from "@/features/collaboration/CollaborationPanel";
 import {
   EmptyWorkspace,
@@ -39,13 +42,15 @@ type Permissions = {
   proposeRelease: boolean;
   publishRelease: boolean;
   reviewRelease: boolean;
+  writeVisual: boolean;
+  evaluateRoute: boolean;
 };
 
 type ProjectDraft = Pick<CharacterWorkspaceDetail["project"],
   "ownerId" | "audience" | "companionNeed" | "hypothesis" | "differentiation" |
   "targetPlacementKeys" | "successCriteria" | "productionPackage" | "qaPlan" | "plannedLaunchAt">;
 
-const tabs = ["project", "preview", "release", "monitor", "portfolio"] as const;
+const tabs = ["project", "visual", "preview", "release", "monitor", "portfolio"] as const;
 type Tab = typeof tabs[number];
 
 function percent(value: number | null) {
@@ -266,6 +271,108 @@ function ProjectEditor({ data, permissions, onReload }: { data: CharacterWorkspa
       </div>
     </div>
   );
+}
+
+export type VisualIdentityPanelData = Pick<CharacterWorkspaceDetail, "visual"> & {
+  character: Pick<CharacterWorkspaceDetail["character"], "id" | "style">;
+};
+
+export function VisualIdentityPanel({ data, permissions, reload }: {
+  data: VisualIdentityPanelData;
+  permissions: Pick<Permissions, "writeVisual" | "evaluateRoute">;
+  reload: () => Promise<void>;
+}) {
+  const identity = data.visual.activeIdentity;
+  const [identityPrompt, setIdentityPrompt] = useState(identity?.identityPrompt ?? "");
+  const [negativeIdentityPrompt, setNegativeIdentityPrompt] = useState(identity?.negativeIdentityPrompt ?? "");
+  const [style, setStyle] = useState(identity?.style ?? data.character.style);
+  const [defaultSeed, setDefaultSeed] = useState(identity?.defaultSeed ?? "");
+  const [identityReason, setIdentityReason] = useState("");
+  const [identityConfirmed, setIdentityConfirmed] = useState(false);
+  const [batchIds, setBatchIds] = useState("");
+  const [matrixKey, setMatrixKey] = useState("");
+  const [guardrailEvidence, setGuardrailEvidence] = useState("");
+  const [qualificationReason, setQualificationReason] = useState("");
+  const [busy, setBusy] = useState<"identity" | "qualification" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const createIdentityVersion = async () => {
+    setBusy("identity");
+    setError(null);
+    try {
+      await apiWrite(`/api/v1/admin/content/characters/${data.character.id}/visual-profiles`, "POST", {
+        identityPrompt: identityPrompt.trim() || undefined,
+        negativeIdentityPrompt: negativeIdentityPrompt.trim() || undefined,
+        style,
+        defaultSeed: defaultSeed.trim() || undefined,
+        reason: identityReason.trim(),
+        confirmation: identityConfirmed ? `${data.character.id}:visual-profile` : "",
+      });
+      setIdentityReason("");
+      setIdentityConfirmed(false);
+      await reload();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Visual Identity version could not be created");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const evaluateRoute = async () => {
+    setBusy("qualification");
+    setError(null);
+    try {
+      const ids = [...new Set(batchIds.split(/[\s,]+/).map((value) => value.trim()).filter(Boolean))];
+      await adminV2Request("/api/v2/admin/characters/route-qualifications/commands/evaluate", {
+        method: "POST",
+        idempotencyKey: crypto.randomUUID(),
+        schema: generationRouteQualificationEvaluateResponseSchema,
+        body: {
+          batchIds: ids,
+          matrixKey: matrixKey.trim(),
+          style: identity?.style ?? style,
+          policyVersion: data.visual.readiness.qualificationPolicyVersion,
+          costLatencyGuardrail: { status: "passed", evidenceRef: guardrailEvidence.trim() },
+          expiresAt: null,
+          reason: { code: "route_eval_complete", summary: qualificationReason.trim() },
+          confirmation: `QUALIFY ${matrixKey.trim()}`,
+        },
+      });
+      setBatchIds("");
+      setMatrixKey("");
+      setGuardrailEvidence("");
+      setQualificationReason("");
+      await reload();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Route qualification could not be evaluated");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const publishedAssets = [...data.visual.anchors, ...(data.visual.activeReferenceSet?.references ?? [])];
+  return <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
+    <div className="space-y-5">
+      <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" aria-labelledby="visual-authority-title">
+        <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-semibold" id="visual-authority-title">Visual Identity authority</h3><p className="mt-1 text-xs text-[var(--ad-text-muted)]">Selection, published references and route qualification are separate evidence.</p></div><StatusBadge value={data.visual.readiness.ready ? "visual ready" : "blocked"} /></div>
+        {identity ? <><dl className="mt-4 grid gap-3 text-sm sm:grid-cols-3"><div><dt className="text-xs text-[var(--ad-text-muted)]">Active identity</dt><dd className="mt-1 font-semibold">v{identity.version} · {identity.style}</dd></div><div><dt className="text-xs text-[var(--ad-text-muted)]">Anchors available</dt><dd className="mt-1 font-semibold">{data.visual.anchors.filter((asset) => asset.available).length}/{data.visual.anchors.length}</dd></div><div><dt className="text-xs text-[var(--ad-text-muted)]">Reference Set</dt><dd className="mt-1 font-semibold">{data.visual.activeReferenceSet ? `revision ${data.visual.activeReferenceSet.revision}` : "Not published"}</dd></div></dl><p className="mt-4 rounded-lg bg-black/[0.03] p-3 text-sm">{identity.identityPrompt}</p></> : <p className="mt-4 text-sm text-[var(--ad-text-muted)]">No active immutable Visual Identity version exists.</p>}
+        {data.visual.readiness.blockers.length ? <div className="mt-4"><h4 className="text-xs font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">Blocking evidence</h4><ul className="mt-2 space-y-2">{data.visual.readiness.blockers.map((blocker) => <li className="flex flex-col gap-2 rounded-lg border border-[var(--ad-border)] p-3 text-sm sm:flex-row sm:items-center sm:justify-between" key={blocker.code}><span><strong>{blocker.code.replaceAll("_", " ")}</strong><span className="mt-1 block text-xs text-[var(--ad-text-muted)]">{blocker.message}</span></span><Link className="shrink-0 text-xs font-semibold underline" href={blocker.deepLink}>Resolve blocker</Link></li>)}</ul></div> : <p className="mt-4 text-sm text-[var(--ad-green-text)]">All visual evidence gates currently pass.</p>}
+      </section>
+
+      <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" aria-labelledby="reference-set-title">
+        <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-semibold" id="reference-set-title">Anchors & published references</h3><p className="mt-1 text-xs text-[var(--ad-text-muted)]">Candidate promotion remains in the role-scoped production and asset workflow.</p></div><Link className="inline-flex min-h-11 items-center rounded-lg border border-[var(--ad-border)] px-3 text-sm font-semibold" href={data.visual.readiness.productionDeepLink}>Open role image production</Link></div>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">{publishedAssets.length === 0 ? <p className="text-sm text-[var(--ad-text-muted)]">No anchor or published reference assets.</p> : publishedAssets.map((asset, index) => <article className="rounded-lg border border-[var(--ad-border)] p-3" key={`${asset.role}-${asset.mediaAssetId}-${index}`}><div className="flex items-center justify-between gap-2"><span className="text-xs font-semibold">{asset.role.replaceAll("_", " ")}</span><StatusBadge value={asset.available ? "available" : "unavailable"} /></div><p className="mt-2 truncate text-xs text-[var(--ad-text-muted)]">{asset.mediaAssetId}</p>{asset.thumbnailUrl ?? asset.url ? <Image alt="Visual reference evidence" className="mt-3 aspect-video w-full rounded-md object-cover" height={180} src={asset.thumbnailUrl ?? asset.url ?? ""} unoptimized width={320} /> : null}</article>)}</div>
+      </section>
+
+      <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" aria-labelledby="qualification-evidence-title"><h3 className="font-semibold" id="qualification-evidence-title">Route qualification evidence</h3>{data.visual.routeQualifications.length === 0 ? <p className="mt-3 text-sm text-[var(--ad-text-muted)]">No evaluation evidence for the active identity style.</p> : <div className="mt-3 overflow-x-auto"><table className="min-w-full text-left text-xs"><thead><tr className="border-b border-[var(--ad-border)] text-[var(--ad-text-muted)]"><th className="py-2 pr-3">Route</th><th className="py-2 pr-3">Matrix</th><th className="py-2 pr-3">Evidence</th><th className="py-2">Result</th></tr></thead><tbody>{data.visual.routeQualifications.map((route) => <tr className="border-b border-[var(--ad-border)]" key={route.id}><td className="py-3 pr-3">{route.generationProfileKey} v{route.generationProfileVersion}<span className="block text-[var(--ad-text-muted)]">{route.workflowKey} v{route.workflowVersion}</span></td><td className="py-3 pr-3">{route.matrixKey}<span className="block text-[var(--ad-text-muted)]">{route.policyVersion}</span></td><td className="py-3 pr-3">{route.passCount}/{route.sampleCount} passed<span className="block text-[var(--ad-text-muted)]">{percent(route.identityMatch)} identity match</span></td><td className="py-3"><StatusBadge value={route.stale ? "stale" : route.result} /></td></tr>)}</tbody></table></div>}</section>
+    </div>
+
+    <aside className="space-y-5">
+      <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" aria-labelledby="new-identity-title"><h3 className="font-semibold" id="new-identity-title">Create identity version</h3><p className="mt-1 text-xs text-[var(--ad-text-muted)]">Creates a new active immutable version; existing assets are carried forward.</p><label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">Identity lock<textarea className={`${textAreaClass} mt-1`} onChange={(event) => setIdentityPrompt(event.target.value)} value={identityPrompt} /></label><label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">Must not change<textarea className={`${textAreaClass} mt-1`} onChange={(event) => setNegativeIdentityPrompt(event.target.value)} value={negativeIdentityPrompt} /></label><div className="mt-3 grid grid-cols-2 gap-2"><label className="text-xs font-semibold text-[var(--ad-text-muted)]">Style<select className={`${fieldClass} mt-1`} onChange={(event) => setStyle(event.target.value)} value={style}>{["realistic", "anime", "hybrid", "other"].map((value) => <option key={value}>{value}</option>)}</select></label><label className="text-xs font-semibold text-[var(--ad-text-muted)]">Seed<input className={`${fieldClass} mt-1`} onChange={(event) => setDefaultSeed(event.target.value)} value={defaultSeed} /></label></div><label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">Change reason<input className={`${fieldClass} mt-1`} onChange={(event) => setIdentityReason(event.target.value)} value={identityReason} /></label><label className="mt-3 flex items-start gap-2 text-xs"><input checked={identityConfirmed} className="mt-0.5" onChange={(event) => setIdentityConfirmed(event.target.checked)} type="checkbox" /><span>Activate this as a new identity version.</span></label><div className="mt-4"><WorkspaceButton disabled={!permissions.writeVisual || busy !== null || identityReason.trim().length < 3 || !identityConfirmed} onClick={() => void createIdentityVersion()} tone="primary">Create & activate version</WorkspaceButton></div>{!permissions.writeVisual ? <p className="mt-2 text-xs text-[var(--ad-text-muted)]">Read-only: content.official.write is not granted.</p> : null}</section>
+      <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" aria-labelledby="evaluate-route-title"><h3 className="font-semibold" id="evaluate-route-title">Evaluate route evidence</h3><p className="mt-1 text-xs text-[var(--ad-text-muted)]">The server derives scores and qualification from completed model_eval batches.</p><label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">Batch IDs<textarea className={`${textAreaClass} mt-1`} onChange={(event) => setBatchIds(event.target.value)} placeholder="Comma or newline separated" value={batchIds} /></label><label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">Matrix key<input className={`${fieldClass} mt-1`} onChange={(event) => setMatrixKey(event.target.value)} value={matrixKey} /></label><label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">Cost/latency evidence reference<input className={`${fieldClass} mt-1`} onChange={(event) => setGuardrailEvidence(event.target.value)} value={guardrailEvidence} /></label><label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">Evaluation reason<input className={`${fieldClass} mt-1`} onChange={(event) => setQualificationReason(event.target.value)} value={qualificationReason} /></label><p className="mt-3 text-xs text-[var(--ad-text-muted)]">Policy: {data.visual.readiness.qualificationPolicyVersion}</p><div className="mt-4"><WorkspaceButton disabled={!permissions.evaluateRoute || busy !== null || !batchIds.trim() || !matrixKey.trim() || !guardrailEvidence.trim() || qualificationReason.trim().length < 3 || !identity} onClick={() => void evaluateRoute()} tone="primary">Submit route evaluation</WorkspaceButton></div>{!permissions.evaluateRoute ? <p className="mt-2 text-xs text-[var(--ad-text-muted)]">Read-only: content.production.write is not granted.</p> : null}</section>
+      {error ? <p className="text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}
+    </aside>
+  </div>;
 }
 
 const qaCheckKeys: readonly CharacterQaCheckInput["key"][] = [
@@ -681,7 +788,7 @@ function CharacterDetail({ id, permissions }: { id: string; permissions: Permiss
     document.getElementById(`character-tab-${next}`)?.focus();
   };
   const workspaceName = data.preview.draft?.name ?? data.preview.live?.name ?? data.character.name;
-  return <section aria-labelledby="character-workspace-title"><Link className="inline-flex min-h-11 items-center gap-2 text-sm text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]" href="/admin/characters"><ArrowLeft className="h-4 w-4" /> Portfolio</Link><div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-xs uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">Character Project · {data.project.id}</p><h2 className="mt-1 text-2xl font-semibold" id="character-workspace-title">{workspaceName}</h2><div className="mt-2 flex flex-wrap gap-2"><StatusBadge value={data.project.phase} /><StatusBadge value={data.serving?.state ?? "inactive"} /><StatusBadge value={data.character.visibility} /></div></div><p className="text-xs text-[var(--ad-text-muted)]">Project v{data.project.version} · Serving v{data.serving?.version ?? 0}</p></div>{error ? <p className="mt-4" role="alert">{error}</p> : null}<div className="mt-6 flex gap-1 overflow-x-auto border-b border-[var(--ad-border)]" role="tablist" aria-label="Character workspace">{tabs.map((item, index) => <button aria-controls={`character-panel-${item}`} aria-selected={tab === item} className={cn("min-h-11 shrink-0 border-b-2 px-3 text-sm capitalize focus-visible:outline focus-visible:outline-2", tab === item ? "border-[var(--ad-ink)] font-semibold text-[var(--ad-ink)]" : "border-transparent text-[var(--ad-text-muted)]")} id={`character-tab-${item}`} key={item} onClick={() => { setTab(item); const query = new URLSearchParams({ tab: item }); setWorkspaceUrl(query); }} onKeyDown={(event) => onTabKey(event, index)} role="tab" tabIndex={tab === item ? 0 : -1} type="button">{item}</button>)}</div><div className="mt-5" id={`character-panel-${tab}`} role="tabpanel" aria-labelledby={`character-tab-${tab}`}>{tab === "project" ? <ProjectEditor data={data} key={data.project.version} onReload={load} permissions={permissions} /> : tab === "preview" ? <PreviewDiff data={data} permissions={permissions} reload={load} /> : tab === "release" ? <ReleasePanel data={data} permissions={permissions} reload={load} /> : tab === "monitor" ? <MonitorPanel data={data} permissions={permissions} reload={load} /> : <PerformancePanel data={data} permissions={permissions} reload={load} />}</div></section>;
+  return <section aria-labelledby="character-workspace-title"><Link className="inline-flex min-h-11 items-center gap-2 text-sm text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]" href="/admin/characters"><ArrowLeft className="h-4 w-4" /> Portfolio</Link><div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-xs uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">Character Project · {data.project.id}</p><h2 className="mt-1 text-2xl font-semibold" id="character-workspace-title">{workspaceName}</h2><div className="mt-2 flex flex-wrap gap-2"><StatusBadge value={data.project.phase} /><StatusBadge value={data.serving?.state ?? "inactive"} /><StatusBadge value={data.character.visibility} /></div></div><p className="text-xs text-[var(--ad-text-muted)]">Project v{data.project.version} · Serving v{data.serving?.version ?? 0}</p></div>{error ? <p className="mt-4" role="alert">{error}</p> : null}<div className="mt-6 flex gap-1 overflow-x-auto border-b border-[var(--ad-border)]" role="tablist" aria-label="Character workspace">{tabs.map((item, index) => <button aria-controls={`character-panel-${item}`} aria-selected={tab === item} className={cn("min-h-11 shrink-0 border-b-2 px-3 text-sm capitalize focus-visible:outline focus-visible:outline-2", tab === item ? "border-[var(--ad-ink)] font-semibold text-[var(--ad-ink)]" : "border-transparent text-[var(--ad-text-muted)]")} id={`character-tab-${item}`} key={item} onClick={() => { setTab(item); const query = new URLSearchParams({ tab: item }); setWorkspaceUrl(query); }} onKeyDown={(event) => onTabKey(event, index)} role="tab" tabIndex={tab === item ? 0 : -1} type="button">{item}</button>)}</div><div className="mt-5" id={`character-panel-${tab}`} role="tabpanel" aria-labelledby={`character-tab-${tab}`}>{tab === "project" ? <ProjectEditor data={data} key={data.project.version} onReload={load} permissions={permissions} /> : tab === "visual" ? <VisualIdentityPanel data={data} key={data.visual.activeIdentity?.id ?? "visual-empty"} permissions={permissions} reload={load} /> : tab === "preview" ? <PreviewDiff data={data} permissions={permissions} reload={load} /> : tab === "release" ? <ReleasePanel data={data} permissions={permissions} reload={load} /> : tab === "monitor" ? <MonitorPanel data={data} permissions={permissions} reload={load} /> : <PerformancePanel data={data} permissions={permissions} reload={load} />}</div></section>;
 }
 
 export function CharacterWorkspace({ view, permissions }: { view: AdminSubview; permissions: Permissions }) {

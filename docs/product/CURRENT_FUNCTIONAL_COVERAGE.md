@@ -8,6 +8,12 @@
 
 当前状态：**本地产品闭环可用，内部 pipeline 6/6 通过；当前目标仍是内部演示/受控 beta，公开上线仍被真实生产依赖阻断**。
 
+## 2026-07-12 Canonical Character Visual Qualification Workbench
+
+- `GET /api/v2/admin/characters/:id` 的 canonical workspace DTO 现直接返回 active immutable Visual Identity、可用/缺失 anchor 与 reference pool、active `ReferenceSetRevision` 的发布快照，以及同 style 的 Route Qualification evidence（精确 profile/workflow version、matrix、sample/pass、identity match、policy、expiry 与 evidence）。Identity 被选中、Reference Set 已发布、route 合格继续作为三类独立事实，不互相替代。
+- Character Workspace 新增 `visual` tab：可通过既有 Visual Profile authority 创建并激活新 identity version；可查看 readiness blocker 与修复 deep link；可把 model-eval batch 提交给既有 v2 route evaluation authority，由服务端从生成资产证据计算分数和 candidate/qualified 结果。Reference candidate promotion 仍属于带用户资产所有权语义的既有生成/素材链路，Admin tab 只提供带 `characterId` 的角色图片生产跳转，不伪装成可直接 promotion。
+- Route 当前资格谓词已抽成 Release proposal 与 Visual Workspace 共用 authority，避免 UI/查询复制 `40 samples / 90% identity / current policy / unexpired` 状态计算；Visual blocker/deep link 复用 release readiness evaluator。Shared contract、Admin component 与隔离 PostgreSQL integration focused suites 已覆盖 DTO fail-closed、权限门、active ReferenceSet/asset availability 和 qualification evidence。
+
 ## 2026-07-11 管理后台正确性复核
 
 2026-07-11 初始实机与源码复核确认了下列问题；后续实施批次已在代码态逐项修复或 fail closed。本节保留原始问题陈述，当前实现与未完成的生产 Gate 以紧随其后的实施证据为准。
