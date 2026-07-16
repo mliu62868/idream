@@ -70,6 +70,7 @@ import { nameMatch } from "@/server/lib/db/search";
 import { generationCostDreamcoins } from "@/server/lib/generation-pricing";
 import { env } from "@/server/lib/env";
 import { AppError, Errors } from "@/server/lib/errors";
+import { isSyntheticMediaAsset } from "@/server/lib/media-asset-authority";
 import { empty, fail, ok } from "@/server/lib/http";
 import { getOurdreamRoute, ourdreamRoutePaths } from "@/lib/ourdream-data";
 import { activeAnnouncements, readAnnouncements } from "@/server/announcements/store";
@@ -1372,6 +1373,10 @@ async function selectPreviewAnchor(request: Request, id: string) {
     where: { id: job.resultAssetId, ownerId: user.id, deletedAt: null, type: "image" },
   });
   if (!asset) throw Errors.notFound("Preview anchor asset not found");
+  assertNonSyntheticMediaAsset(
+    asset,
+    "Demo preview images cannot be used as a character identity",
+  );
   const draft = await prisma.characterDraft.update({
     where: { id },
     data: { previewJobId: job.id },
@@ -1427,6 +1432,21 @@ async function submitDraft(request: Request, id: string) {
     throw Errors.badRequest("Choose an identity image before publishing this character");
   }
   const anchorAssetId = selectedPreview.resultAssetId;
+  const anchorAsset = await prisma.mediaAsset.findFirst({
+    where: {
+      id: anchorAssetId,
+      ownerId: user.id,
+      deletedAt: null,
+      type: "image",
+    },
+  });
+  if (!anchorAsset) {
+    throw Errors.badRequest("The selected identity image is no longer available");
+  }
+  assertNonSyntheticMediaAsset(
+    anchorAsset,
+    "Demo preview images cannot be published as a character identity",
+  );
 
   const character = await prisma.$transaction(async (tx) => {
     const created = await tx.character.create({
@@ -5536,6 +5556,26 @@ async function updateCharacter(request: Request, id: string) {
   const nextDescription = body.description ?? existing.description;
   const shouldRebuildPrompt = body.name !== undefined || body.description !== undefined;
   await prisma.$transaction(async (tx) => {
+    if (body.visibility === "public" && existing.imageAssetId) {
+      const imageAsset = await tx.mediaAsset.findFirst({
+        where: {
+          id: existing.imageAssetId,
+          deletedAt: null,
+          type: "image",
+        },
+        select: {
+          id: true,
+          metadata: true,
+        },
+      });
+      if (!imageAsset) {
+        throw Errors.badRequest("The character identity image is no longer available");
+      }
+      assertNonSyntheticMediaAsset(
+        imageAsset,
+        "Synthetic media cannot be published as a character identity",
+      );
+    }
     const updated = await tx.character.update({
       where: { id: existing.id },
       data: {
@@ -5710,6 +5750,7 @@ function mediaDTO(asset: {
       addedToReferences: booleanFromRecord(quality, "addedToReferences", false),
     },
     quality: Object.keys(quality).length > 0 ? quality : null,
+    isSynthetic: isSyntheticMediaAsset(asset.metadata),
     provenance: mediaProvenanceDTO(asset.sourceJob),
     createdAt: asset.createdAt,
   };
@@ -6176,7 +6217,19 @@ async function assertReadableMediaAsset(id: string, userId: string) {
 async function assertIdentityImageMedia(id: string, userId: string) {
   const asset = await assertMediaOwner(id, userId);
   if (asset.type !== "image") throw Errors.badRequest("Only image media can update character identity");
+  assertNonSyntheticMediaAsset(
+    asset,
+    "Synthetic media cannot update character identity",
+  );
   return asset;
+}
+
+function assertNonSyntheticMediaAsset(
+  asset: { id: string; metadata: Prisma.JsonValue },
+  message: string,
+) {
+  if (!isSyntheticMediaAsset(asset.metadata)) return;
+  throw Errors.badRequest(message, { mediaAssetId: asset.id });
 }
 
 async function assertIdentityTargetCharacter(characterId: string | null | undefined, userId: string) {

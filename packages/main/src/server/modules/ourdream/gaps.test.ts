@@ -270,6 +270,129 @@ describe("community collections", () => {
   });
 });
 
+describe("synthetic media identity authority", () => {
+  async function assertSyntheticIdentityBoundaries(
+    markerName: "boolean" | "malformed",
+    syntheticMarker: true | "true",
+  ) {
+    const ownerId = `${P}synthetic-${markerName}-owner`;
+    const mediaAssetId = `${P}synthetic-${markerName}-media`;
+    const characterId = `${P}synthetic-${markerName}-character`;
+    const draftId = `${P}synthetic-${markerName}-draft`;
+    const previewJobId = `${P}synthetic-${markerName}-preview`;
+    await createUser({ id: ownerId });
+    await prisma.mediaAsset.create({
+      data: {
+        id: mediaAssetId,
+        ownerId,
+        type: "image",
+        url: `/user-content/${mediaAssetId}/content.webp`,
+        visibility: "private",
+        safetyStatus: "passed",
+        metadata: { synthetic: syntheticMarker, source: "mock" },
+      },
+    });
+    await createCharacter({
+      id: characterId,
+      creatorId: ownerId,
+      visibility: "private",
+      status: "approved",
+      imageAssetId: mediaAssetId,
+    });
+
+    const library = await api("GET", "media", {
+      userId: ownerId,
+      ageGate: true,
+    });
+    expectOk(library);
+    expect(
+      (library.data.items as Array<{ id: string; isSynthetic: boolean }>).find(
+        (item) => item.id === mediaAssetId,
+      ),
+    ).toMatchObject({ isSynthetic: true });
+
+    const identityUpdate = await api(
+      "POST",
+      `media/${mediaAssetId}/use-as-character-image`,
+      {
+        userId: ownerId,
+        ageGate: true,
+        body: { characterId },
+      },
+    );
+    expectError(identityUpdate, 400, "bad_request");
+
+    const characterPublish = await api("PATCH", `characters/${characterId}`, {
+      userId: ownerId,
+      ageGate: true,
+      body: { visibility: "public" },
+    });
+    expectError(characterPublish, 400, "bad_request");
+    await expect(
+      prisma.character.findUniqueOrThrow({ where: { id: characterId } }),
+    ).resolves.toMatchObject({ visibility: "private" });
+
+    await prisma.characterDraft.create({
+      data: {
+        id: draftId,
+        ownerId,
+        gender: "female",
+        style: "realistic",
+        appearance: {},
+        hair: {},
+        body: {},
+        name: "Synthetic Preview Guard",
+        advancedDetails: {},
+        tags: [],
+      },
+    });
+    await prisma.characterPreviewJob.create({
+      data: {
+        id: previewJobId,
+        draftId,
+        status: "completed",
+        provider: "mock",
+        resultAssetId: mediaAssetId,
+        completedAt: new Date(),
+      },
+    });
+
+    const previewSelection = await api(
+      "POST",
+      `character-drafts/${draftId}/preview-anchor`,
+      {
+        userId: ownerId,
+        ageGate: true,
+        body: { previewJobId },
+      },
+    );
+    expectError(previewSelection, 400, "bad_request");
+
+    await prisma.characterDraft.update({
+      where: { id: draftId },
+      data: { previewJobId },
+    });
+    const draftSubmit = await api("POST", `character-drafts/${draftId}/submit`, {
+      userId: ownerId,
+      ageGate: true,
+      body: {
+        age: 25,
+        description: "A completed adult character draft.",
+        visibility: "private",
+      },
+    });
+    expectError(draftSubmit, 400, "bad_request");
+  }
+
+  it.each([
+    ["boolean", true],
+    ["malformed", "true"],
+  ] as const)(
+    "fails closed for %s synthetic identity markers",
+    assertSyntheticIdentityBoundaries,
+  );
+});
+
 describe("feed share and remix provenance", () => {
   it("mixes public media collections into feed and focuses collection share links", async () => {
     const owner = `${P}feed-coll-owner`;
