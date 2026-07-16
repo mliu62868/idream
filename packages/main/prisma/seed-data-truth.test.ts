@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 
@@ -19,6 +21,14 @@ const curatedCharacterIds = [
   "diana-weird-girl",
   "lola-moonstruck",
 ] as const;
+
+async function seedFunctionSource(name: string) {
+  const source = await readFile(fileURLToPath(new URL("./seed.ts", import.meta.url)), "utf8");
+  const start = source.indexOf(`async function ${name}(`);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const next = source.indexOf("\nasync function ", start + 1);
+  return source.slice(start, next === -1 ? undefined : next);
+}
 
 describe("seed data provenance", () => {
   it("marks system, probe, operator, and curated creator users as internal", async () => {
@@ -82,5 +92,32 @@ describe("seed data provenance", () => {
       { sourceKey: "creator-collections", voteCount: 0 },
       { sourceKey: "generator-recipes", voteCount: 0 },
     ]);
+  });
+
+  it("only creates missing cold-start rows and preserves operator edits on repeat seed runs", async () => {
+    const users = await seedFunctionSource("seedUsers");
+    const characters = await seedFunctionSource("seedCharacters");
+    const collections = await seedFunctionSource("seedCommunityCollections");
+    const feedback = await seedFunctionSource("seedOfficialFeedbackItems");
+    const plans = await seedFunctionSource("seedPlans");
+    const presets = await seedFunctionSource("seedPresets");
+
+    expect(users.slice(users.indexOf("const handles"))).toContain("update: {}");
+    expect(characters).toMatch(/mediaAsset\.upsert\(\{[\s\S]*?update: \{\},/);
+    expect(characters).toMatch(/character\.upsert\(\{[\s\S]*?update: \{\},/);
+    expect(characters).toMatch(
+      /characterStats\.upsert\(\{[\s\S]*?update: \{\},/,
+    );
+    expect(collections).not.toContain("mediaCollectionItem.deleteMany");
+    expect(collections).toMatch(
+      /mediaCollection\.upsert\(\{[\s\S]*?update: \{\},[\s\S]*?mediaCollectionItem\.createMany/,
+    );
+    expect(feedback).toMatch(
+      /productFeedbackItem\.upsert\(\{[\s\S]*?update: \{\},/,
+    );
+    expect(plans).toMatch(/plan\.upsert\(\{[\s\S]*?update: \{\},/);
+    expect(presets).toMatch(
+      /generationPreset\.upsert\(\{[\s\S]*?update: \{\},/,
+    );
   });
 });

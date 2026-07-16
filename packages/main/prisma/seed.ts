@@ -249,15 +249,7 @@ async function seedUsers() {
   for (const handle of handles) {
     await prisma.user.upsert({
       where: { id: creatorIdForHandle(handle) },
-      update: {
-        email: creatorEmailForHandle(handle),
-        emailVerified: true,
-        displayName: handle,
-        role: "user",
-        status: "active",
-        dataClass: "internal",
-        deletedAt: null,
-      },
+      update: {},
       create: {
         id: creatorIdForHandle(handle),
         email: creatorEmailForHandle(handle),
@@ -312,14 +304,7 @@ async function seedCharacters() {
 
     await prisma.mediaAsset.upsert({
       where: { id: mediaAssetId },
-      update: {
-        ownerId: creatorId,
-        url: card.image,
-        thumbnailUrl: card.image,
-        prompt: card.description,
-        visibility: "public_pack",
-        safetyStatus: "passed",
-      },
+      update: {},
       create: {
         id: mediaAssetId,
         ownerId: creatorId,
@@ -338,18 +323,7 @@ async function seedCharacters() {
 
     await prisma.character.upsert({
       where: { id: card.id },
-      update: {
-        creatorId,
-        name: card.title,
-        age,
-        description: card.description,
-        systemPrompt,
-        visibility: "public",
-        status: "approved",
-        source: "official",
-        imageAssetId: mediaAssetId,
-        vivid: card.vivid ?? false,
-      },
+      update: {},
       create: {
         id: card.id,
         creatorId,
@@ -408,12 +382,7 @@ async function seedCommunityCollections() {
     const ownerId = creatorIdForHandle(collection.ownerHandle);
     await prisma.mediaCollection.upsert({
       where: { id: collection.id },
-      update: {
-        ownerId,
-        name: collection.name,
-        visibility: "public",
-        source: "official",
-      },
+      update: {},
       create: {
         id: collection.id,
         ownerId,
@@ -421,10 +390,6 @@ async function seedCommunityCollections() {
         visibility: "public",
         source: "official",
       },
-    });
-
-    await prisma.mediaCollectionItem.deleteMany({
-      where: { collectionId: collection.id },
     });
 
     await prisma.mediaCollectionItem.createMany({
@@ -442,12 +407,7 @@ async function seedOfficialFeedbackItems() {
   for (const item of officialFeedbackItems) {
     await prisma.productFeedbackItem.upsert({
       where: { sourceKey: item.sourceKey },
-      update: {
-        title: item.title,
-        description: item.description,
-        category: item.category,
-        status: item.status,
-      },
+      update: {},
       create: {
         ...item,
         voteCount: 0,
@@ -526,7 +486,7 @@ async function seedPlans() {
           billingPeriod: plan.billingPeriod,
         },
       },
-      update: plan,
+      update: {},
       create: plan,
     });
   }
@@ -598,15 +558,7 @@ async function seedPresets() {
   for (const preset of presets) {
     await prisma.generationPreset.upsert({
       where: { id: preset.id },
-      update: {
-        scope: preset.scope ?? "built_in",
-        type: preset.type,
-        label: preset.label,
-        category: preset.category ?? null,
-        controls: preset.controls,
-        visibility: "public",
-        status: "active",
-      },
+      update: {},
       create: {
         id: preset.id,
         scope: preset.scope ?? "built_in",
