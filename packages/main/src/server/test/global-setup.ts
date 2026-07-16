@@ -8,9 +8,20 @@ import { defaultTestDatabaseUrl } from "../../../test-database-url";
 // dedicated Postgres database/schema.
 // INTENT: Deterministic suite — every run starts from the same seeded state, fully
 // isolated from the dev database.
-const DATABASE_URL =
+const DATABASE_URL = dedicatedTestDatabaseUrl(
   process.env.TEST_DATABASE_URL ??
-  defaultTestDatabaseUrl();
+    defaultTestDatabaseUrl(),
+);
+
+export function dedicatedTestDatabaseUrl(value: string) {
+  const databaseName = decodeURIComponent(new URL(value).pathname.replace(/^\//, ""));
+  if (!/(^|[_-])test([_-]|$)/i.test(databaseName)) {
+    throw new Error(
+      `Refusing to reset non-test database "${databaseName || "(missing)"}"; set TEST_DATABASE_URL to a dedicated test database`,
+    );
+  }
+  return value;
+}
 
 function postgresUrl(url: string, databaseName?: string) {
   const parsed = new URL(url);

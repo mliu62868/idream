@@ -975,6 +975,7 @@ model ProductFeedbackItem {
   description String
   category    String                @default("feature") // enum: bug | feature | improvement
   status      String                @default("under_review") // enum: under_review | planned | shipped
+  visibility  String                @default("public") // enum: public | unlisted
   voteCount   Int                   @default(0)
   createdAt   DateTime              @default(now())
   updatedAt   DateTime              @updatedAt
@@ -982,6 +983,7 @@ model ProductFeedbackItem {
   votes       ProductFeedbackVote[]
 
   @@index([status, voteCount, createdAt])
+  @@index([visibility, status, createdAt])
   @@index([createdById])
   @@map("product_feedback_items")
 }

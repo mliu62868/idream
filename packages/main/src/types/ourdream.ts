@@ -5,11 +5,20 @@ export interface CharacterCardData {
   description: string;
   likes: string;
   chats: string;
+  likesCount?: number;
+  chatsCount?: number;
+  source?: "official" | "user";
   creator: string;
   creatorId?: string | null;
   creatorName?: string | null;
   canEditIdentity?: boolean;
   image: string;
+  imageAssetId?: string | null;
+  heroImage?: string;
+  heroThumbnailUrl?: string;
+  heroImageAssetId?: string | null;
+  currentReleaseId?: string | null;
+  hasImage?: boolean;
   vivid?: boolean;
   visualProfile?: {
     id: string;

@@ -5,6 +5,7 @@ import {
   publicFeedbackAudienceWhere,
   rawPublicCharacterWhere,
   rawPublicCollectionWhere,
+  rawPublicFeedbackWhere,
 } from "@/server/modules/ourdream/public-content-audience";
 
 type CatalogProbeDb = PrismaClient | Prisma.TransactionClient;
@@ -90,6 +91,7 @@ const characterInclude = {
       url: true,
       thumbnailUrl: true,
       prompt: true,
+      metadata: true,
     },
   },
   stats: {
@@ -119,6 +121,7 @@ const collectionInclude = {
           prompt: true,
           url: true,
           thumbnailUrl: true,
+          metadata: true,
         },
       },
     },
@@ -179,6 +182,7 @@ export async function runPublicCatalogProbe(
         orderBy: [{ voteCount: "desc" }, { createdAt: "desc" }],
       }),
       db.productFeedbackItem.findMany({
+        where: rawPublicFeedbackWhere,
         include: feedbackInclude,
         orderBy: [{ voteCount: "desc" }, { createdAt: "desc" }],
       }),
@@ -201,23 +205,33 @@ export async function runPublicCatalogProbe(
     );
 
     for (const character of excludedCharacters) {
+      const syntheticImage = isSyntheticMetadata(character.imageAsset?.metadata);
       issues.push({
         severity: "fail",
         entity: "character",
         id: character.id,
-        field: "audience",
-        message: "Public user character is owned by a non-customer actor.",
-        value: character.creator?.dataClass ?? "missing_creator",
+        field: syntheticImage ? "imageAsset" : "audience",
+        message: syntheticImage
+          ? "Public character references a synthetic image authority."
+          : "Public user character is owned by a non-customer actor.",
+        value: syntheticImage
+          ? character.imageAsset?.id ?? "missing_image_asset"
+          : character.creator?.dataClass ?? "missing_creator",
       });
     }
     for (const collection of excludedCollections) {
+      const syntheticItem = collection.items.find(
+        (item) => isSyntheticMetadata(item.mediaAsset.metadata),
+      );
       issues.push({
         severity: "fail",
         entity: "collection",
         id: collection.id,
-        field: "audience",
-        message: "Public user collection is owned by a non-customer actor.",
-        value: collection.owner.dataClass,
+        field: syntheticItem ? "items" : "audience",
+        message: syntheticItem
+          ? "Public collection contains a synthetic media authority."
+          : "Public user collection is owned by a non-customer actor.",
+        value: syntheticItem?.mediaAsset.id ?? collection.owner.dataClass,
       });
     }
     for (const item of excludedFeedbackItems) {
@@ -384,6 +398,15 @@ export async function runPublicCatalogProbe(
       },
     };
   }
+}
+
+function isSyntheticMetadata(value: Prisma.JsonValue | null | undefined): boolean {
+  return Boolean(
+    value
+      && typeof value === "object"
+      && !Array.isArray(value)
+      && value.synthetic === true,
+  );
 }
 
 function emptyCounts(): PublicCatalogProbeReport["counts"] {

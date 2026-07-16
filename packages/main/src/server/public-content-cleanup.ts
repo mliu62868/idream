@@ -2,8 +2,10 @@ import type { PrismaClient } from "@prisma/client";
 import {
   publicCharacterAudienceWhere,
   publicCollectionAudienceWhere,
+  publicFeedbackAudienceWhere,
   rawPublicCharacterWhere,
   rawPublicCollectionWhere,
+  rawPublicFeedbackWhere,
 } from "@/server/modules/ourdream/public-content-audience";
 
 type CleanupDb = PrismaClient;
@@ -20,12 +22,24 @@ export type PublicContentCleanupPlan = {
     ownerDataClass: string;
     toVisibility: "unlisted";
   }>;
+  feedbackItems: Array<{
+    id: string;
+    ownerDataClass: string | null;
+    toVisibility: "unlisted";
+  }>;
 };
 
 export async function planPublicContentCleanup(
   db: CleanupDb,
 ): Promise<PublicContentCleanupPlan> {
-  const [rawCharacters, audienceCharacters, rawCollections, audienceCollections] =
+  const [
+    rawCharacters,
+    audienceCharacters,
+    rawCollections,
+    audienceCollections,
+    rawFeedbackItems,
+    audienceFeedbackItems,
+  ] =
     await Promise.all([
       db.character.findMany({
         where: rawPublicCharacterWhere,
@@ -49,9 +63,23 @@ export async function planPublicContentCleanup(
         where: publicCollectionAudienceWhere,
         select: { id: true },
       }),
+      db.productFeedbackItem.findMany({
+        where: rawPublicFeedbackWhere,
+        select: {
+          id: true,
+          createdBy: { select: { dataClass: true } },
+        },
+      }),
+      db.productFeedbackItem.findMany({
+        where: publicFeedbackAudienceWhere,
+        select: { id: true },
+      }),
     ]);
   const audienceCharacterIds = new Set(audienceCharacters.map((row) => row.id));
   const audienceCollectionIds = new Set(audienceCollections.map((row) => row.id));
+  const audienceFeedbackItemIds = new Set(
+    audienceFeedbackItems.map((row) => row.id),
+  );
 
   return {
     generatedAt: new Date().toISOString(),
@@ -69,6 +97,13 @@ export async function planPublicContentCleanup(
         ownerDataClass: row.owner.dataClass,
         toVisibility: "unlisted" as const,
       })),
+    feedbackItems: rawFeedbackItems
+      .filter((row) => !audienceFeedbackItemIds.has(row.id))
+      .map((row) => ({
+        id: row.id,
+        ownerDataClass: row.createdBy?.dataClass ?? null,
+        toVisibility: "unlisted" as const,
+      })),
   };
 }
 
@@ -78,20 +113,44 @@ export async function applyPublicContentCleanup(
 ) {
   const characterIds = plan.characters.map((row) => row.id);
   const collectionIds = plan.collections.map((row) => row.id);
-  const [characters, collections] = await db.$transaction([
+  const feedbackItemIds = plan.feedbackItems.map((row) => row.id);
+  const [characters, collections, feedbackItems] = await db.$transaction([
     db.character.updateMany({
       where: {
-        id: { in: characterIds },
-        source: "user",
-        visibility: "public",
+        AND: [
+          {
+            id: { in: characterIds },
+            source: "user",
+            visibility: "public",
+          },
+          { NOT: publicCharacterAudienceWhere },
+        ],
       },
       data: { visibility: "unlisted" },
     }),
     db.mediaCollection.updateMany({
       where: {
-        id: { in: collectionIds },
-        source: "user",
-        visibility: "public",
+        AND: [
+          {
+            id: { in: collectionIds },
+            source: "user",
+            visibility: "public",
+          },
+          { NOT: publicCollectionAudienceWhere },
+        ],
+      },
+      data: { visibility: "unlisted" },
+    }),
+    db.productFeedbackItem.updateMany({
+      where: {
+        AND: [
+          {
+            id: { in: feedbackItemIds },
+            sourceKey: null,
+            visibility: "public",
+          },
+          { NOT: publicFeedbackAudienceWhere },
+        ],
       },
       data: { visibility: "unlisted" },
     }),
@@ -100,5 +159,6 @@ export async function applyPublicContentCleanup(
   return {
     charactersUpdated: characters.count,
     collectionsUpdated: collections.count,
+    feedbackItemsUpdated: feedbackItems.count,
   };
 }

@@ -1,0 +1,24 @@
+<svg width="768" height="1024" viewBox="0 0 768 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="background" x1="80" y1="32" x2="688" y2="992" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2A183D"/>
+      <stop offset="0.52" stop-color="#171021"/>
+      <stop offset="1" stop-color="#0B0910"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(384 374) rotate(90) scale(350 300)">
+      <stop stop-color="#A855F7" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#A855F7" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="figure" x1="384" y1="268" x2="384" y2="900" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#D7C5E8" stop-opacity="0.78"/>
+      <stop offset="1" stop-color="#6F5B80" stop-opacity="0.28"/>
+    </linearGradient>
+  </defs>
+  <rect width="768" height="1024" rx="32" fill="url(#background)"/>
+  <rect width="768" height="1024" rx="32" fill="url(#glow)"/>
+  <circle cx="384" cy="354" r="132" fill="url(#figure)"/>
+  <path d="M151 904C165 676 250 558 384 558C518 558 603 676 617 904H151Z" fill="url(#figure)"/>
+  <circle cx="384" cy="354" r="172" stroke="#E9D5FF" stroke-opacity="0.12" stroke-width="2"/>
+  <path d="M276 936H492" stroke="#E9D5FF" stroke-opacity="0.32" stroke-width="2" stroke-linecap="round"/>
+  <text x="384" y="972" fill="#F3E8FF" fill-opacity="0.72" font-family="Arial, sans-serif" font-size="24" font-weight="600" letter-spacing="4" text-anchor="middle">OURDREAM</text>
+</svg>

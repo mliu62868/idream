@@ -209,7 +209,7 @@ async function probeApiAgeGate(baseUrl: string | null): Promise<ApiAgeGateEviden
 
 async function probeAdmin(baseUrl: string | null): Promise<AdminEvidence> {
   try {
-    const url = buildUrl(baseUrl, "/admin");
+    const url = buildUrl(baseUrl, "/admin/today");
     const response = await fetch(url, {
       headers: { accept: "text/html" },
       redirect: "follow",

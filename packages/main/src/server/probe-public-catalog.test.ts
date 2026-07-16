@@ -102,4 +102,91 @@ describe("public catalog probe audience audit", () => {
       ]),
     );
   });
+
+  it("reports legacy synthetic image authorities separately from owner provenance", async () => {
+    const customerId = `catalog-synthetic-customer-${suffix}`;
+    const assetId = `catalog-synthetic-asset-${suffix}`;
+    const syntheticCharacterId = `catalog-synthetic-character-${suffix}`;
+    const syntheticCollectionId = `catalog-synthetic-collection-${suffix}`;
+    await prisma.user.create({
+      data: {
+        id: customerId,
+        email: `${customerId}@example.test`,
+        displayName: "Real customer",
+        dataClass: "customer",
+      },
+    });
+    await prisma.mediaAsset.create({
+      data: {
+        id: assetId,
+        ownerId: customerId,
+        type: "image",
+        url: `/user-content/${assetId}/content.webp`,
+        safetyStatus: "passed",
+        metadata: { synthetic: true, source: "mock" },
+      },
+    });
+    await prisma.character.create({
+      data: {
+        id: syntheticCharacterId,
+        creatorId: customerId,
+        imageAssetId: assetId,
+        name: "Legacy synthetic character",
+        age: 24,
+        description: "A legacy row that must be quarantined.",
+        visibility: "public",
+        status: "approved",
+        source: "user",
+        appearance: {},
+        advancedDetails: {},
+      },
+    });
+    await prisma.mediaCollection.create({
+      data: {
+        id: syntheticCollectionId,
+        ownerId: customerId,
+        name: "Legacy synthetic collection",
+        visibility: "public",
+        source: "user",
+        items: {
+          create: {
+            mediaAssetId: assetId,
+          },
+        },
+      },
+    });
+
+    try {
+      const report = await runPublicCatalogProbe(prisma, {
+        report: null,
+        maxDuplicateImageRatio: 0.4,
+        maxPublicMetric: 10_000_000,
+        maxIssues: 100,
+      });
+
+      expect(report.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            severity: "fail",
+            entity: "character",
+            id: syntheticCharacterId,
+            field: "imageAsset",
+            value: assetId,
+          }),
+          expect.objectContaining({
+            severity: "fail",
+            entity: "collection",
+            id: syntheticCollectionId,
+            field: "items",
+            value: assetId,
+          }),
+        ]),
+      );
+    } finally {
+      await prisma.mediaCollection.deleteMany({ where: { id: syntheticCollectionId } });
+      await prisma.character.deleteMany({ where: { id: syntheticCharacterId } });
+      await prisma.mediaAsset.deleteMany({ where: { id: assetId } });
+      await prisma.user.deleteMany({ where: { id: customerId } });
+    }
+  });
 });

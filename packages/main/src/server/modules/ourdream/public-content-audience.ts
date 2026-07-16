@@ -1,6 +1,15 @@
 import type { Prisma } from "@prisma/client";
+import {
+  nonSyntheticMediaAssetWhere,
+  syntheticMediaAssetWhere,
+} from "@/server/lib/media-asset-authority";
 
-const activeCustomerOwnerWhere = {
+export {
+  nonSyntheticMediaAssetWhere,
+  syntheticMediaAssetWhere,
+} from "@/server/lib/media-asset-authority";
+
+export const activeCustomerUserWhere = {
   dataClass: "customer",
   status: "active",
   deletedAt: null,
@@ -13,12 +22,22 @@ export const rawPublicCharacterWhere = {
 } as const satisfies Prisma.CharacterWhereInput;
 
 export const publicCharacterAudienceWhere = {
-  ...rawPublicCharacterWhere,
-  OR: [
-    { source: "official" },
+  AND: [
+    rawPublicCharacterWhere,
     {
-      source: "user",
-      creator: { is: activeCustomerOwnerWhere },
+      OR: [
+        { source: "official" },
+        {
+          source: "user",
+          creator: { is: activeCustomerUserWhere },
+        },
+      ],
+    },
+    {
+      OR: [
+        { imageAssetId: null },
+        { imageAsset: { is: nonSyntheticMediaAssetWhere } },
+      ],
     },
   ],
 } as const satisfies Prisma.CharacterWhereInput;
@@ -28,22 +47,38 @@ export const rawPublicCollectionWhere = {
 } as const satisfies Prisma.MediaCollectionWhereInput;
 
 export const publicCollectionAudienceWhere = {
-  ...rawPublicCollectionWhere,
-  OR: [
-    { source: "official" },
+  AND: [
+    rawPublicCollectionWhere,
     {
-      source: "user",
-      owner: { is: activeCustomerOwnerWhere },
+      OR: [
+        { source: "official" },
+        {
+          source: "user",
+          owner: { is: activeCustomerUserWhere },
+        },
+      ],
+    },
+    {
+      items: {
+        none: {
+          mediaAsset: syntheticMediaAssetWhere,
+        },
+      },
     },
   ],
 } as const satisfies Prisma.MediaCollectionWhereInput;
 
+export const rawPublicFeedbackWhere = {
+  visibility: "public",
+} as const satisfies Prisma.ProductFeedbackItemWhereInput;
+
 export const publicFeedbackAudienceWhere = {
+  ...rawPublicFeedbackWhere,
   OR: [
     { sourceKey: { not: null } },
     {
       sourceKey: null,
-      createdBy: { is: activeCustomerOwnerWhere },
+      createdBy: { is: activeCustomerUserWhere },
     },
   ],
 } as const satisfies Prisma.ProductFeedbackItemWhereInput;

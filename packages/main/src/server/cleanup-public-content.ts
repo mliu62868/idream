@@ -11,7 +11,11 @@ async function main() {
   const plan = await planPublicContentCleanup(prisma);
   const result = apply
     ? await applyPublicContentCleanup(prisma, plan)
-    : { charactersUpdated: 0, collectionsUpdated: 0 };
+    : {
+        charactersUpdated: 0,
+        collectionsUpdated: 0,
+        feedbackItemsUpdated: 0,
+      };
 
   process.stdout.write(`${JSON.stringify({ mode: apply ? "apply" : "dry_run", plan, result }, null, 2)}\n`);
 }

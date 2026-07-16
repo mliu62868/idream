@@ -2,13 +2,15 @@ import { PrismaClient } from "@prisma/client";
 import { buildCharacterSystemPrompt } from "@idream/shared";
 import {
   categoryFilters,
-  characterCards,
   getOurdreamRoute,
   ourdreamRoutePaths,
 } from "../src/lib/ourdream-data";
 import { createPrismaClientOptions } from "../src/server/lib/prisma-adapter";
 import { safetyDocuments } from "../src/lib/ourdream-safety-data";
-import { officialFeedbackItems } from "../src/lib/official-cold-start-content";
+import {
+  officialCharacterSeeds,
+  officialFeedbackItems,
+} from "../src/lib/official-cold-start-content";
 
 process.env.DB_PROVIDER ??= "postgresql";
 process.env.DATABASE_URL ??= "postgresql://postgres:postgres@localhost:5433/idream";
@@ -97,7 +99,7 @@ function tagCategory(label: string) {
   return "theme";
 }
 
-function inferredTagSlugs(card: (typeof characterCards)[number]) {
+function inferredTagSlugs(card: (typeof officialCharacterSeeds)[number]) {
   const haystack = `${card.title} ${card.description}`.toLowerCase();
   return categoryFilters
     .filter((label) => label !== "All")
@@ -243,7 +245,7 @@ async function seedUsers() {
     },
   });
 
-  const handles = [...new Set(characterCards.map((card) => card.creator))];
+  const handles = [...new Set(officialCharacterSeeds.map((card) => card.creator))];
   for (const handle of handles) {
     await prisma.user.upsert({
       where: { id: creatorIdForHandle(handle) },
@@ -292,7 +294,7 @@ async function seedTags() {
 }
 
 async function seedCharacters() {
-  for (const card of characterCards) {
+  for (const card of officialCharacterSeeds) {
     const mediaAssetId = `seed-image-${card.id}`;
     const creatorId = creatorIdForHandle(card.creator);
     const age = parseAge(card.age);
@@ -328,7 +330,7 @@ async function seedCharacters() {
         visibility: "public_pack",
         safetyStatus: "passed",
         metadata: {
-          seedSource: "src/lib/ourdream-data.ts",
+          seedSource: "src/lib/official-cold-start-content.ts",
           originalCreator: card.creator,
         },
       },
@@ -372,10 +374,7 @@ async function seedCharacters() {
 
     await prisma.characterStats.upsert({
       where: { characterId: card.id },
-      update: {
-        likesCount: 0,
-        chatsCount: 0,
-      },
+      update: {},
       create: {
         characterId: card.id,
         likesCount: 0,
@@ -622,17 +621,57 @@ async function seedPresets() {
   }
 }
 
+async function ensureDefaultPricingRule(input: {
+  id: string;
+  ruleKey: string;
+  label: string;
+  mode: "image" | "video" | "voice";
+  baseCost: number;
+  publishedAt: Date;
+}) {
+  const activeAuthorities = await prisma.pricingRule.findMany({
+    where: { mode: input.mode, status: "active" },
+    select: { id: true },
+    take: 2,
+  });
+  if (activeAuthorities.length > 1) {
+    throw new Error(`Multiple active pricing rules exist for ${input.mode}`);
+  }
+  if (activeAuthorities.length === 1) return;
+
+  const existingHistory = await prisma.pricingRule.findFirst({
+    where: { mode: input.mode },
+    select: { id: true },
+  });
+  if (existingHistory) {
+    throw new Error(
+      `Pricing authority for ${input.mode} has history but no active rule; publish one explicitly`,
+    );
+  }
+
+  const authority = {
+    ruleKey: input.ruleKey,
+    label: input.label,
+    mode: input.mode,
+    baseCost: input.baseCost,
+    multiplier: 1,
+    status: "active",
+    version: 1,
+    effectiveFrom: input.publishedAt,
+    publishedAt: input.publishedAt,
+    archivedAt: null,
+  };
+  await prisma.pricingRule.create({
+    data: { id: input.id, ...authority },
+  });
+}
+
 async function seedAdminControlPlane() {
   await prisma.featureFlag.upsert({
     where: { key: "video_gen" },
     update: {
       label: "Video generation",
       description: "Single gate for all video generation traffic.",
-      enabled: false,
-      rolloutPercent: 0,
-      targetRoles: [],
-      targetPlans: ["deluxe"],
-      hardPolicy: false,
     },
     create: {
       key: "video_gen",
@@ -651,11 +690,6 @@ async function seedAdminControlPlane() {
     update: {
       label: "Voice generation",
       description: "Single gate for all on-demand voice (TTS) traffic.",
-      enabled: true,
-      rolloutPercent: 100,
-      targetRoles: [],
-      targetPlans: ["premium", "deluxe"],
-      hardPolicy: false,
     },
     create: {
       key: "voice_gen",
@@ -674,11 +708,6 @@ async function seedAdminControlPlane() {
     update: {
       label: "Image edit",
       description: "Unlocks the image edit surface when providers are ready.",
-      enabled: false,
-      rolloutPercent: 0,
-      targetRoles: [],
-      targetPlans: [],
-      hardPolicy: false,
     },
     create: {
       key: "image_edit",
@@ -694,21 +723,7 @@ async function seedAdminControlPlane() {
 
   await prisma.generationRecipe.upsert({
     where: { id: "seed-template-image-character-v1" },
-    update: {
-      recipeKey: "template_image_character_default",
-      label: "Image character default",
-      mode: "image",
-      useCase: "character",
-      body: "Character image generation template with appearance, pose, outfit, background, style, and quality blocks.",
-      negativeBase: "low quality, distorted anatomy, extra fingers, watermark, text",
-      presetOrder: ["background", "pose", "outfit", "mode"],
-      safetyHints: { hardPolicies: ["age_under_18", "real_person_nonconsensual"] },
-      sampleMatrix: [{ character: "seed", orientation: "4:5", presets: ["background", "pose"] }],
-      dryRunSummary: { sampleCount: 6, successRate: 1, blockedRate: 0 },
-      version: 1,
-      status: "active",
-      publishedAt: new Date("2026-06-24T00:00:00.000Z"),
-    },
+    update: {},
     create: {
       id: "seed-template-image-character-v1",
       recipeKey: "template_image_character_default",
@@ -720,7 +735,7 @@ async function seedAdminControlPlane() {
       presetOrder: ["background", "pose", "outfit", "mode"],
       safetyHints: { hardPolicies: ["age_under_18", "real_person_nonconsensual"] },
       sampleMatrix: [{ character: "seed", orientation: "4:5", presets: ["background", "pose"] }],
-      dryRunSummary: { sampleCount: 6, successRate: 1, blockedRate: 0 },
+      dryRunSummary: { sampleCount: 6, validationPassRate: 1, blockedRate: 0, source: "seed_matrix_validation" },
       version: 1,
       status: "active",
       publishedAt: new Date("2026-06-24T00:00:00.000Z"),
@@ -729,21 +744,7 @@ async function seedAdminControlPlane() {
 
   await prisma.generationRecipe.upsert({
     where: { id: "seed-template-image-freeplay-v1" },
-    update: {
-      recipeKey: "template_image_freeplay_default",
-      label: "Image freeplay default",
-      mode: "image",
-      useCase: "freeplay",
-      body: "Freeplay image generation template with user prompt, style, preset fragments, and quality blocks.",
-      negativeBase: "low quality, distorted anatomy, watermark, text",
-      presetOrder: ["background", "pose", "outfit", "mode"],
-      safetyHints: { hardPolicies: ["age_under_18", "real_person_nonconsensual"] },
-      sampleMatrix: [{ freeplay: true, orientation: "1:1" }],
-      dryRunSummary: { sampleCount: 4, successRate: 1, blockedRate: 0 },
-      version: 1,
-      status: "active",
-      publishedAt: new Date("2026-06-24T00:00:00.000Z"),
-    },
+    update: {},
     create: {
       id: "seed-template-image-freeplay-v1",
       recipeKey: "template_image_freeplay_default",
@@ -755,7 +756,7 @@ async function seedAdminControlPlane() {
       presetOrder: ["background", "pose", "outfit", "mode"],
       safetyHints: { hardPolicies: ["age_under_18", "real_person_nonconsensual"] },
       sampleMatrix: [{ freeplay: true, orientation: "1:1" }],
-      dryRunSummary: { sampleCount: 4, successRate: 1, blockedRate: 0 },
+      dryRunSummary: { sampleCount: 4, validationPassRate: 1, blockedRate: 0, source: "seed_matrix_validation" },
       version: 1,
       status: "active",
       publishedAt: new Date("2026-06-24T00:00:00.000Z"),
@@ -764,21 +765,7 @@ async function seedAdminControlPlane() {
 
   await prisma.generationRecipe.upsert({
     where: { id: "seed-template-video-character-v1" },
-    update: {
-      recipeKey: "template_video_character_default",
-      label: "Video character beta",
-      mode: "video",
-      useCase: "character",
-      body: "Video generation beta template. Draftable while video_gen is disabled.",
-      negativeBase: "low quality, flicker, watermark, text",
-      presetOrder: ["pose", "mode"],
-      safetyHints: { disabledUntilFlag: "video_gen" },
-      sampleMatrix: [{ character: "seed", seconds: 4 }],
-      dryRunSummary: { sampleCount: 2, successRate: 1, blockedRate: 0 },
-      version: 1,
-      status: "active",
-      publishedAt: new Date("2026-06-24T00:00:00.000Z"),
-    },
+    update: {},
     create: {
       id: "seed-template-video-character-v1",
       recipeKey: "template_video_character_default",
@@ -790,14 +777,21 @@ async function seedAdminControlPlane() {
       presetOrder: ["pose", "mode"],
       safetyHints: { disabledUntilFlag: "video_gen" },
       sampleMatrix: [{ character: "seed", seconds: 4 }],
-      dryRunSummary: { sampleCount: 2, successRate: 1, blockedRate: 0 },
+      dryRunSummary: { sampleCount: 2, validationPassRate: 1, blockedRate: 0, source: "seed_matrix_validation" },
       version: 1,
       status: "active",
       publishedAt: new Date("2026-06-24T00:00:00.000Z"),
     },
   });
 
-  await prisma.generationModelProfile.upsert({
+  const existingProfileKeys = new Set(
+    (await prisma.generationModelProfile.findMany({
+      select: { profileKey: true },
+    })).map((profile) => profile.profileKey),
+  );
+
+  if (!existingProfileKeys.has("profile_image_default_v1")) {
+    await prisma.generationModelProfile.upsert({
     where: { id: "seed-profile-image-default-v1" },
     update: {
       profileKey: "profile_image_default_v1",
@@ -835,7 +829,7 @@ async function seedAdminControlPlane() {
       rolloutPercent: 100,
       version: 1,
       status: "active",
-      dryRunSummary: { sampleCount: 6, successRate: 1, p95LatencyMs: 45_000 },
+      dryRunSummary: { configurationSampleCount: 6, configurationPassRate: 1, source: "seed_configuration_check" },
       publishedAt: new Date("2026-06-24T00:00:00.000Z"),
     },
     create: {
@@ -875,12 +869,14 @@ async function seedAdminControlPlane() {
       rolloutPercent: 100,
       version: 1,
       status: "active",
-      dryRunSummary: { sampleCount: 6, successRate: 1, p95LatencyMs: 45_000 },
+      dryRunSummary: { configurationSampleCount: 6, configurationPassRate: 1, source: "seed_configuration_check" },
       publishedAt: new Date("2026-06-24T00:00:00.000Z"),
     },
-  });
+    });
+  }
 
-  await prisma.generationModelProfile.upsert({
+  if (!existingProfileKeys.has("profile_image_premium_v1")) {
+    await prisma.generationModelProfile.upsert({
     where: { id: "seed-profile-image-premium-v1" },
     update: {
       profileKey: "profile_image_premium_v1",
@@ -918,7 +914,7 @@ async function seedAdminControlPlane() {
       rolloutPercent: 100,
       version: 1,
       status: "active",
-      dryRunSummary: { sampleCount: 6, successRate: 1, p95LatencyMs: 120_000 },
+      dryRunSummary: { configurationSampleCount: 6, configurationPassRate: 1, source: "seed_configuration_check" },
       publishedAt: new Date("2026-06-24T00:00:00.000Z"),
     },
     create: {
@@ -958,12 +954,14 @@ async function seedAdminControlPlane() {
       rolloutPercent: 100,
       version: 1,
       status: "active",
-      dryRunSummary: { sampleCount: 6, successRate: 1, p95LatencyMs: 120_000 },
+      dryRunSummary: { configurationSampleCount: 6, configurationPassRate: 1, source: "seed_configuration_check" },
       publishedAt: new Date("2026-06-24T00:00:00.000Z"),
     },
-  });
+    });
+  }
 
-  await prisma.generationModelProfile.upsert({
+  if (!existingProfileKeys.has("profile_comfyui_redcraft_krea2_checkpoint_v1")) {
+    await prisma.generationModelProfile.upsert({
     where: { id: "seed-profile-sdcpp-redcraft-krea2-text-v1" },
     update: {
       profileKey: "profile_comfyui_redcraft_krea2_checkpoint_v1",
@@ -1170,31 +1168,11 @@ async function seedAdminControlPlane() {
       },
       publishedAt: null,
     },
-  });
+    });
+  }
 
-  await prisma.generationModelProfile.updateMany({
-    where: {
-      mode: "image",
-      status: "draft",
-      pipelineModel: {
-        in: ["redcraftkrea2redmix_krea2edition", "redcraft-krea2-text", "redcraft-krea2-comfyui"],
-      },
-    },
-    data: {
-      enabled: false,
-      rolloutPercent: 0,
-    },
-  });
-
-  await prisma.generationModelProfile.updateMany({
-    where: { status: "draft" },
-    data: {
-      enabled: false,
-      rolloutPercent: 0,
-    },
-  });
-
-  await prisma.generationModelProfile.upsert({
+  if (!existingProfileKeys.has("profile_sdcpp_darkbeast_krea2_img2img_v1")) {
+    await prisma.generationModelProfile.upsert({
     where: { id: "seed-profile-sdcpp-darkbeast-krea2-img2img-v1" },
     update: {
       profileKey: "profile_sdcpp_darkbeast_krea2_img2img_v1",
@@ -1351,9 +1329,11 @@ async function seedAdminControlPlane() {
       },
       publishedAt: null,
     },
-  });
+    });
+  }
 
-  await prisma.generationModelProfile.upsert({
+  if (!existingProfileKeys.has("chat-image-edit")) {
+    await prisma.generationModelProfile.upsert({
     where: { id: "seed-profile-chat-image-edit-v1" },
     update: {
       profileKey: "chat-image-edit",
@@ -1369,14 +1349,14 @@ async function seedAdminControlPlane() {
         capabilities: {
           textToImage: false,
           stableSeed: true,
-          referenceImages: false,
+          referenceImages: true,
           initImage: true,
           lora: false,
         },
       },
       defaultWidth: 832,
       defaultHeight: 1216,
-      allowedOrientations: ["4:5"],
+      allowedOrientations: ["4:5", "16:9"],
       steps: 20,
       sampler: "euler",
       scheduler: "model_default",
@@ -1388,7 +1368,7 @@ async function seedAdminControlPlane() {
       rolloutPercent: 100,
       version: 1,
       status: "active",
-      dryRunSummary: { sampleCount: 0, successRate: 0, notes: "Qwen-Edit img2img profile for chat edit_last_image; landing without a dry-run batch." },
+      dryRunSummary: { status: "not_run", source: "seed_configuration_state", notes: "Qwen-Edit img2img profile for chat edit_last_image; landing without a provider test batch." },
       publishedAt: new Date("2026-07-07T00:00:00.000Z"),
     },
     create: {
@@ -1406,14 +1386,14 @@ async function seedAdminControlPlane() {
         capabilities: {
           textToImage: false,
           stableSeed: true,
-          referenceImages: false,
+          referenceImages: true,
           initImage: true,
           lora: false,
         },
       },
       defaultWidth: 832,
       defaultHeight: 1216,
-      allowedOrientations: ["4:5"],
+      allowedOrientations: ["4:5", "16:9"],
       steps: 20,
       sampler: "euler",
       scheduler: "model_default",
@@ -1425,12 +1405,14 @@ async function seedAdminControlPlane() {
       rolloutPercent: 100,
       version: 1,
       status: "active",
-      dryRunSummary: { sampleCount: 0, successRate: 0, notes: "Qwen-Edit img2img profile for chat edit_last_image; landing without a dry-run batch." },
+      dryRunSummary: { status: "not_run", source: "seed_configuration_state", notes: "Qwen-Edit img2img profile for chat edit_last_image; landing without a provider test batch." },
       publishedAt: new Date("2026-07-07T00:00:00.000Z"),
     },
-  });
+    });
+  }
 
-  await prisma.generationModelProfile.upsert({
+  if (!existingProfileKeys.has("profile_video_beta_v1")) {
+    await prisma.generationModelProfile.upsert({
     where: { id: "seed-profile-video-beta-v1" },
     update: {
       profileKey: "profile_video_beta_v1",
@@ -1456,7 +1438,7 @@ async function seedAdminControlPlane() {
       rolloutPercent: 0,
       version: 1,
       status: "active",
-      dryRunSummary: { sampleCount: 2, successRate: 1, disabledByFlag: "video_gen" },
+      dryRunSummary: { status: "not_run", source: "seed_configuration_state", disabledByFlag: "video_gen" },
       publishedAt: new Date("2026-06-24T00:00:00.000Z"),
     },
     create: {
@@ -1484,60 +1466,38 @@ async function seedAdminControlPlane() {
       rolloutPercent: 0,
       version: 1,
       status: "active",
-      dryRunSummary: { sampleCount: 2, successRate: 1, disabledByFlag: "video_gen" },
+      dryRunSummary: { status: "not_run", source: "seed_configuration_state", disabledByFlag: "video_gen" },
       publishedAt: new Date("2026-06-24T00:00:00.000Z"),
     },
+    });
+  }
+
+  await ensureDefaultPricingRule({
+    id: "seed-pricing-image-default-v1",
+    ruleKey: "generation_image_default",
+    label: "Image generation default",
+    mode: "image",
+    baseCost: 5,
+    publishedAt: new Date("2026-06-24T00:00:00.000Z"),
   });
 
-  await prisma.pricingRule.upsert({
-    where: { id: "seed-pricing-image-default-v1" },
-    update: {
-      ruleKey: "generation_image_default",
-      label: "Image generation default",
-      mode: "image",
-      baseCost: 5,
-      multiplier: 1,
-      status: "active",
-      version: 1,
-      publishedAt: new Date("2026-06-24T00:00:00.000Z"),
-    },
-    create: {
-      id: "seed-pricing-image-default-v1",
-      ruleKey: "generation_image_default",
-      label: "Image generation default",
-      mode: "image",
-      baseCost: 5,
-      multiplier: 1,
-      status: "active",
-      version: 1,
-      publishedAt: new Date("2026-06-24T00:00:00.000Z"),
-    },
+  await ensureDefaultPricingRule({
+    id: "seed-pricing-video-default-v1",
+    ruleKey: "generation_video_default",
+    label: "Video generation default",
+    mode: "video",
+    baseCost: 100,
+    publishedAt: new Date("2026-06-24T00:00:00.000Z"),
   });
 
   // Per-clip overflow price once a user's monthly voice-minute allowance is spent.
-  await prisma.pricingRule.upsert({
-    where: { id: "seed-pricing-voice-default-v1" },
-    update: {
-      ruleKey: "generation_voice_default",
-      label: "Voice clip overflow",
-      mode: "voice",
-      baseCost: 2,
-      multiplier: 1,
-      status: "active",
-      version: 1,
-      publishedAt: new Date("2026-06-28T00:00:00.000Z"),
-    },
-    create: {
-      id: "seed-pricing-voice-default-v1",
-      ruleKey: "generation_voice_default",
-      label: "Voice clip overflow",
-      mode: "voice",
-      baseCost: 2,
-      multiplier: 1,
-      status: "active",
-      version: 1,
-      publishedAt: new Date("2026-06-28T00:00:00.000Z"),
-    },
+  await ensureDefaultPricingRule({
+    id: "seed-pricing-voice-default-v1",
+    ruleKey: "generation_voice_default",
+    label: "Voice clip overflow",
+    mode: "voice",
+    baseCost: 2,
+    publishedAt: new Date("2026-06-28T00:00:00.000Z"),
   });
 }
 
@@ -1575,16 +1535,7 @@ async function seedRoutePages() {
 
     await prisma.routePage.upsert({
       where: { path: route.path },
-      update: {
-        template: route.path === "/" ? "home" : route.template,
-        title: route.title,
-        description: route.description,
-        canonical: route.path,
-        contentStatus: "template",
-        body: {
-          eyebrow: route.eyebrow,
-        },
-      },
+      update: {},
       create: {
         path: route.path,
         template: route.path === "/" ? "home" : route.template,

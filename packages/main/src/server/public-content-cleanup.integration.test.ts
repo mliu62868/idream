@@ -11,6 +11,7 @@ describe("public content cleanup", () => {
   const userId = `cleanup-fixture-${suffix}`;
   const characterId = `cleanup-character-${suffix}`;
   const collectionId = `cleanup-collection-${suffix}`;
+  const feedbackId = `cleanup-feedback-${suffix}`;
 
   beforeAll(async () => {
     await prisma.user.create({
@@ -43,9 +44,18 @@ describe("public content cleanup", () => {
         source: "user",
       },
     });
+    await prisma.productFeedbackItem.create({
+      data: {
+        id: feedbackId,
+        createdById: userId,
+        title: "Cleanup feedback",
+        description: "Public fixture feedback.",
+      },
+    });
   });
 
   afterAll(async () => {
+    await prisma.productFeedbackItem.deleteMany({ where: { id: feedbackId } });
     await prisma.mediaCollection.deleteMany({ where: { id: collectionId } });
     await prisma.character.deleteMany({ where: { id: characterId } });
     await prisma.user.deleteMany({ where: { id: userId } });
@@ -60,14 +70,23 @@ describe("public content cleanup", () => {
     expect(plan.collections).toEqual(
       expect.arrayContaining([expect.objectContaining({ id: collectionId, toVisibility: "unlisted" })]),
     );
+    expect(plan.feedbackItems).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: feedbackId, toVisibility: "unlisted" })]),
+    );
     await expect(prisma.character.findUniqueOrThrow({ where: { id: characterId } }))
       .resolves.toMatchObject({ visibility: "public" });
 
     const applied = await applyPublicContentCleanup(prisma, plan);
-    expect(applied).toMatchObject({ charactersUpdated: 1, collectionsUpdated: 1 });
+    expect(applied).toMatchObject({
+      charactersUpdated: 1,
+      collectionsUpdated: 1,
+      feedbackItemsUpdated: 1,
+    });
     await expect(prisma.character.findUniqueOrThrow({ where: { id: characterId } }))
       .resolves.toMatchObject({ visibility: "unlisted", status: "approved" });
     await expect(prisma.mediaCollection.findUniqueOrThrow({ where: { id: collectionId } }))
+      .resolves.toMatchObject({ visibility: "unlisted" });
+    await expect(prisma.productFeedbackItem.findUniqueOrThrow({ where: { id: feedbackId } }))
       .resolves.toMatchObject({ visibility: "unlisted" });
   });
 });
