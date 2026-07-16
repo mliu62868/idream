@@ -16,6 +16,12 @@ import {
   creativeRunListResponseSchema,
   creativeRunQuerySchema,
 } from "@idream/shared/admin";
+import {
+  CREATIVE_MEDIA_AUTHORITY_METADATA_KEY,
+  evaluateCreativeMediaAuthority,
+  parseCreativeMediaAuthorityEvidence,
+  type CreativeMediaProviderSnapshot,
+} from "@/server/lib/creative-media-authority";
 
 const RELEASE_OWNED_SLOTS = new Set(["character_avatar", "character_hero"]);
 
@@ -27,6 +33,61 @@ function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+}
+
+async function creativeMediaProviderSnapshot(
+  tx: Prisma.TransactionClient,
+  asset: { readonly sourceJobId: string | null },
+): Promise<CreativeMediaProviderSnapshot> {
+  if (!asset.sourceJobId) {
+    return {
+      sourceJobId: null,
+      jobProvider: null,
+      latestAttemptProvider: null,
+    };
+  }
+  const [job, latestAttempt] = await Promise.all([
+    tx.generationJob.findUnique({
+      where: { id: asset.sourceJobId },
+      select: { provider: true },
+    }),
+    tx.generationAttempt.findFirst({
+      where: { requestId: asset.sourceJobId },
+      orderBy: { attemptNo: "desc" },
+      select: { provider: true },
+    }),
+  ]);
+  return {
+    sourceJobId: asset.sourceJobId,
+    jobProvider: job?.provider ?? null,
+    latestAttemptProvider: latestAttempt?.provider ?? null,
+  };
+}
+
+async function assertCustomerPublishableCreativeAsset(
+  tx: Prisma.TransactionClient,
+  asset: {
+    readonly id: string;
+    readonly metadata: unknown;
+    readonly sourceJobId: string | null;
+  },
+  pinned?: CreativeMediaProviderSnapshot,
+) {
+  const current = await creativeMediaProviderSnapshot(tx, asset);
+  const authority = evaluateCreativeMediaAuthority({
+    metadata: asset.metadata,
+    current,
+    pinned,
+  });
+  if (authority.publishable) return authority.snapshot;
+  throw Errors.badRequest(
+    "Synthetic or mock-provider media cannot become customer-facing Creative authority",
+    {
+      code: "creative_asset_not_customer_publishable",
+      mediaAssetId: asset.id,
+      reasons: authority.reasons,
+    },
+  );
 }
 
 export async function attachCreativeRunToIncident(input: {
@@ -200,6 +261,9 @@ export async function recordCreativeReviewDecision(input: {
     if (!asset || asset.deletedAt || asset.safetyStatus !== "passed") {
       throw Errors.badRequest("Only a valid generated asset can be reviewed");
     }
+    if (input.decision === "approved") {
+      await assertCustomerPublishableCreativeAsset(tx, asset);
+    }
     const claimedRun = await tx.contentProductionBatch.updateMany({
       where: {
         id: run.id,
@@ -358,6 +422,10 @@ export async function publishDistributionPlacement(input: {
     if (item.mediaAsset.deletedAt || item.mediaAsset.safetyStatus !== "passed") {
       throw Errors.badRequest("Placement asset is not valid");
     }
+    const customerMediaAuthority = await assertCustomerPublishableCreativeAsset(
+      tx,
+      item.mediaAsset,
+    );
     const latestReview = await tx.creativeReviewDecision.findFirst({
       where: { runItemId: item.id, artifactId: input.assetId },
       orderBy: { createdAt: "desc" },
@@ -424,7 +492,11 @@ export async function publishDistributionPlacement(input: {
         status: "published",
         publishedAt: new Date(),
         createdById: input.actor.id,
-        metadata: toInputJson({ creativeRunId: run.id, creativeRunItemId: item.id }),
+        metadata: toInputJson({
+          creativeRunId: run.id,
+          creativeRunItemId: item.id,
+          [CREATIVE_MEDIA_AUTHORITY_METADATA_KEY]: customerMediaAuthority,
+        }),
         verificationState: "verifying",
         rollbackPlacementId: rollbackTarget?.id,
       },
@@ -507,6 +579,26 @@ export async function verifyCreativePlacement(input: {
     if (!placement) throw Errors.notFound("Creative placement not found");
     const metadata = placement.metadata as Record<string, unknown>;
     if (metadata.creativeRunId !== run.id) throw Errors.notFound("Placement does not belong to Creative Run");
+    const authorityEvidence = parseCreativeMediaAuthorityEvidence(
+      placement.metadata,
+    );
+    if (authorityEvidence.kind === "invalid") {
+      throw Errors.badRequest(
+        "Creative placement provider authority evidence is malformed",
+        {
+          code: "creative_asset_not_customer_publishable",
+          mediaAssetId: placement.mediaAsset.id,
+          reasons: ["provider_authority_evidence_invalid"],
+        },
+      );
+    }
+    await assertCustomerPublishableCreativeAsset(
+      tx,
+      placement.mediaAsset,
+      authorityEvidence.kind === "present"
+        ? authorityEvidence.snapshot
+        : undefined,
+    );
     const renderedCampaigns = placement.slot === "campaign"
       ? await resolveCommunityCampaignPlacements(tx)
       : [];
