@@ -18,6 +18,8 @@ const HOST = process.env.PGHOST ?? "localhost";
 const PORT = process.env.PGPORT ?? "5433";
 const SUPER_PASSWORD = process.env.PGPASSWORD ?? process.env.POSTGRES_PASSWORD ?? "postgres";
 const CHAT_SERVICE_PASSWORD = process.env.CHAT_SERVICE_PASSWORD ?? "chat_service_change_me";
+const TEST_DATABASE_TOKEN = /(^|[_-])test([_-]|$)/i;
+const PLAYWRIGHT_DATABASE_TOKEN = /(^|[_-])playwright([_-]|$)/i;
 
 function userInfo(user, password) {
   return `${encodeURIComponent(user)}${password ? `:${encodeURIComponent(password)}` : ""}`;
@@ -31,6 +33,10 @@ function psqlSuper(db, sql) {
 }
 
 export function provisionChatTestDb() {
+  assertSafeChatTestDatabaseName(DB, {
+    requirePlaywright: process.env.CHAT_TEST_REQUIRE_PLAYWRIGHT === "1",
+  });
+
   // 1. fresh database
   psqlSuper("postgres", `DROP DATABASE IF EXISTS ${DB} WITH (FORCE);`);
   psqlSuper("postgres", `CREATE DATABASE ${DB};`);
@@ -62,4 +68,26 @@ export function provisionChatTestDb() {
     superUrl: url,
     chatServiceUrl: `postgresql://${userInfo("chat_service", CHAT_SERVICE_PASSWORD)}@${HOST}:${PORT}/${DB}`,
   };
+}
+
+export function assertSafeChatTestDatabaseName(
+  value,
+  { requirePlaywright = false } = {},
+) {
+  if (
+    typeof value !== "string" ||
+    !/^[a-zA-Z0-9_]+$/.test(value) ||
+    Buffer.byteLength(value, "utf8") > 63 ||
+    !TEST_DATABASE_TOKEN.test(value)
+  ) {
+    throw new Error(
+      `Refusing to recreate non-test chat database "${String(value || "(missing)")}"`,
+    );
+  }
+  if (requirePlaywright && !PLAYWRIGHT_DATABASE_TOKEN.test(value)) {
+    throw new Error(
+      `Refusing Playwright chat database "${value}"; the database name must contain both test and playwright`,
+    );
+  }
+  return value;
 }

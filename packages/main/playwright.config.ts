@@ -1,65 +1,34 @@
 import "dotenv/config";
 import { defineConfig } from "@playwright/test";
+import {
+  managedPlaywrightWebServers,
+  resolvePlaywrightEnvironment,
+} from "./playwright-environment";
 
-// SPEC (docs/architecture/11-testing.md §5): L4 E2E runs against a real `next dev`
-// server backed by seeded Postgres with the provider config from the active env.
-// Keep a single dev server so browser flows share the same seeded state.
-//
-// Server management: by default the suite expects a dev server already running at
-// baseURL (start it with `bun run dev`, e.g. in tmux/CI before the run). Set
-// PW_WEBSERVER=1 to let Playwright boot and manage `next dev` itself.
-const managedWebServer = process.env.PW_WEBSERVER === "1";
-const baseURL = process.env.PW_BASE_URL ?? "http://127.0.0.1:3000";
-const basePort = new URL(baseURL).port || "3000";
-if (managedWebServer && !process.env.BULLMQ_PREFIX) {
-  process.env.BULLMQ_PREFIX = `idream:e2e:${basePort}`;
-}
-const adminBaseURL =
-  process.env.PW_ADMIN_BASE_URL ??
-  (() => {
-    const url = new URL(baseURL);
-    url.port = String(Number(basePort) + 1);
-    return url.toString().replace(/\/$/, "");
-  })();
-const adminPort = new URL(adminBaseURL).port || "3001";
+// Browser tests own every writable dependency. Ambient Main/Admin/Chat processes,
+// CHAT_SERVICE_URL, CHAT_DATABASE_URL, Redis db 0, and the live chat file store
+// are never reused.
+const environment = resolvePlaywrightEnvironment(process.env);
+Object.assign(process.env, environment.serviceEnv, {
+  PW_WEBSERVER: "1",
+  PW_BASE_URL: environment.mainBaseURL,
+  PW_ADMIN_BASE_URL: environment.adminBaseURL,
+});
 
 export default defineConfig({
   testDir: "src",
   testMatch: "**/*.e2e.ts",
   fullyParallel: false,
   workers: 1,
-  // One retry: the suite runs serially against the live standalone server on a shared
-  // machine, where the heaviest tests (chat streaming, generation pipeline) occasionally
-  // exceed a timeout under cumulative load. A real failure still fails on retry; this only
-  // absorbs environmental contention, not product/test defects.
   retries: 1,
   reporter: "list",
   timeout: 90_000,
   expect: { timeout: 15_000 },
   use: {
-    baseURL,
+    baseURL: environment.mainBaseURL,
     actionTimeout: 15_000,
     navigationTimeout: 30_000,
     trace: "retain-on-failure",
   },
-  webServer: managedWebServer
-    ? [
-        {
-          command: `BETTER_AUTH_URL=${baseURL} bun run dev -- --port ${basePort}`,
-          url: baseURL,
-          reuseExistingServer: true,
-          timeout: 120_000,
-        },
-        ...(process.env.PW_ADMIN_BASE_URL
-          ? []
-          : [
-            {
-                command: `MAIN_WEB_URL=${baseURL} bun run --cwd ../admin dev -- --port ${adminPort}`,
-                url: adminBaseURL,
-                reuseExistingServer: true,
-                timeout: 120_000,
-              },
-            ]),
-      ]
-    : undefined,
+  webServer: managedPlaywrightWebServers(environment),
 });

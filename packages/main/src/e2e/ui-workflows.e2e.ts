@@ -1,6 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { config as loadEnvFile } from "dotenv";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { deflateSync } from "node:zlib";
 import path from "node:path";
@@ -11,8 +10,8 @@ import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
 import { redeemCodeHash } from "@/server/lib/redeem-codes";
 import { PrismaClient as ChatPrismaClient } from "../../../chat/generated/client/client";
+import { assertPlaywrightChatDatabaseUrl } from "../../playwright-environment";
 
-loadChatEnv();
 const chatPrisma = new ChatPrismaClient({
   adapter: new PrismaPg({ connectionString: chatDatabaseUrl(), max: 5 }),
 });
@@ -29,17 +28,15 @@ test.afterAll(async () => {
   await chatPrisma.$disconnect();
 });
 
-function loadChatEnv() {
-  const chatEnvPath = process.cwd().endsWith(path.join("packages", "main"))
-    ? path.resolve(process.cwd(), "../chat/.env")
-    : path.resolve(process.cwd(), "packages/chat/.env");
-  loadEnvFile({ path: chatEnvPath, override: false });
-}
-
 function chatDatabaseUrl() {
-  const value = process.env.CHAT_DATABASE_URL ?? process.env.DATABASE_URL;
-  if (!value) throw new Error("CHAT_DATABASE_URL or DATABASE_URL is required for chat e2e fixtures");
-  return value;
+  const authority = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL;
+  const value = process.env.CHAT_DATABASE_URL;
+  if (!authority || !value) {
+    throw new Error(
+      "Managed Playwright TEST_DATABASE_URL and CHAT_DATABASE_URL are required for chat e2e fixtures",
+    );
+  }
+  return assertPlaywrightChatDatabaseUrl(value, authority);
 }
 
 function uniqueEmail(tag: string) {
@@ -694,16 +691,18 @@ async function seedGenerationRecoveryJobs(email: string) {
 }
 
 function chatFsRoot() {
-  const chatPackageDir = process.cwd().endsWith(path.join("packages", "main"))
-    ? path.resolve(process.cwd(), "../chat")
-    : path.resolve(process.cwd(), "packages/chat");
   const configuredRoot = process.env.CHAT_FS_ROOT;
-  if (configuredRoot) {
-    return path.isAbsolute(configuredRoot)
-      ? configuredRoot
-      : path.resolve(chatPackageDir, configuredRoot);
+  if (
+    process.env.PLAYWRIGHT_E2E !== "1" ||
+    !configuredRoot ||
+    !path.isAbsolute(configuredRoot) ||
+    !path.basename(configuredRoot).startsWith("playwright-chat-")
+  ) {
+    throw new Error(
+      "Managed Playwright CHAT_FS_ROOT is required; refusing the ambient chat file store",
+    );
   }
-  return path.resolve(chatPackageDir, "data/chat");
+  return path.resolve(configuredRoot);
 }
 
 async function seedChatCompanionFiles(email: string, characterId: string) {
