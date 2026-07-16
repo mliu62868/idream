@@ -297,66 +297,74 @@ describe("public content audience", () => {
     );
   });
 
-  it("excludes synthetic image authorities even when legacy rows are marked public", async () => {
-    const assetId = `audience-synthetic-asset-${suffix}`;
-    const characterId = `audience-synthetic-character-${suffix}`;
-    const collectionId = `audience-synthetic-collection-${suffix}`;
-    await prisma.mediaAsset.create({
-      data: {
-        id: assetId,
-        ownerId: userIds.customer,
-        type: "image",
-        url: `/user-content/${assetId}/content.webp`,
-        visibility: "public_pack",
-        safetyStatus: "passed",
-        metadata: { synthetic: true, source: "mock" },
-      },
-    });
-    await prisma.character.create({
-      data: {
-        id: characterId,
-        creatorId: userIds.customer,
-        name: "Synthetic legacy character",
-        age: 24,
-        description: "Must not enter the public audience.",
-        visibility: "public",
-        status: "approved",
-        source: "user",
-        style: "hybrid",
-        gender: "female",
-        imageAssetId: assetId,
-        appearance: {},
-        advancedDetails: {},
-      },
-    });
-    await prisma.mediaCollection.create({
-      data: {
-        id: collectionId,
-        ownerId: userIds.customer,
-        name: "Synthetic legacy collection",
-        visibility: "public",
-        source: "user",
-        items: { create: { mediaAssetId: assetId } },
-      },
-    });
+  it.each([
+    ["boolean", true],
+    ["string", "true"],
+    ["numeric", 1],
+    ["yes", "yes"],
+  ] as const)(
+    "excludes %s synthetic markers even when legacy rows are marked public",
+    async (markerName, marker) => {
+      const assetId = `audience-synthetic-${markerName}-asset-${suffix}`;
+      const characterId = `audience-synthetic-${markerName}-character-${suffix}`;
+      const collectionId = `audience-synthetic-${markerName}-collection-${suffix}`;
+      await prisma.mediaAsset.create({
+        data: {
+          id: assetId,
+          ownerId: userIds.customer,
+          type: "image",
+          url: `/user-content/${assetId}/content.webp`,
+          visibility: "public_pack",
+          safetyStatus: "passed",
+          metadata: { synthetic: marker, source: "mock" },
+        },
+      });
+      await prisma.character.create({
+        data: {
+          id: characterId,
+          creatorId: userIds.customer,
+          name: "Synthetic legacy character",
+          age: 24,
+          description: "Must not enter the public audience.",
+          visibility: "public",
+          status: "approved",
+          source: "user",
+          style: "hybrid",
+          gender: "female",
+          imageAssetId: assetId,
+          appearance: {},
+          advancedDetails: {},
+        },
+      });
+      await prisma.mediaCollection.create({
+        data: {
+          id: collectionId,
+          ownerId: userIds.customer,
+          name: "Synthetic legacy collection",
+          visibility: "public",
+          source: "user",
+          items: { create: { mediaAssetId: assetId } },
+        },
+      });
 
-    try {
-      await expect(
-        prisma.character.count({
-          where: { AND: [publicCharacterAudienceWhere, { id: characterId }] },
-        }),
-      ).resolves.toBe(0);
-      await expect(
-        prisma.mediaCollection.count({
-          where: { AND: [publicCollectionAudienceWhere, { id: collectionId }] },
-        }),
-      ).resolves.toBe(0);
-    } finally {
-      await prisma.mediaCollection.deleteMany({ where: { id: collectionId } });
-      await prisma.character.deleteMany({ where: { id: characterId } });
-      await prisma.mediaAsset.deleteMany({ where: { id: assetId } });
-    }
-  });
+      try {
+        await expect(
+          prisma.character.count({
+            where: { AND: [publicCharacterAudienceWhere, { id: characterId }] },
+          }),
+        ).resolves.toBe(0);
+        await expect(
+          prisma.mediaCollection.count({
+            where: { AND: [publicCollectionAudienceWhere, { id: collectionId }] },
+          }),
+        ).resolves.toBe(0);
+      } finally {
+        await prisma.mediaCollection.deleteMany({ where: { id: collectionId } });
+        await prisma.character.deleteMany({ where: { id: characterId } });
+        await prisma.mediaAsset.deleteMany({ where: { id: assetId } });
+      }
+    },
+  );
 
   it("treats source-keyed roadmap items as official and otherwise requires a customer creator", async () => {
     const rows = await prisma.productFeedbackItem.findMany({

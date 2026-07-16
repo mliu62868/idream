@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { evaluateMediaAssetCustomerPublishability } from "./media-asset-authority";
+import {
+  evaluateMediaAssetCustomerPublishability,
+  isSyntheticMediaAsset,
+} from "./media-asset-authority";
 
 describe("media asset customer publishability", () => {
   it("accepts non-synthetic assets with matching non-mock provider authority", () => {
@@ -45,6 +48,18 @@ describe("media asset customer publishability", () => {
       publishable: false,
       reasons: ["metadata_synthetic_marker_invalid"],
     });
+  });
+
+  it.each([
+    { metadata: { synthetic: true }, expected: true },
+    { metadata: { synthetic: "true" }, expected: true },
+    { metadata: { synthetic: 1 }, expected: true },
+    { metadata: { synthetic: "yes" }, expected: true },
+    { metadata: { synthetic: false }, expected: false },
+    { metadata: { synthetic: null }, expected: false },
+    { metadata: {}, expected: false },
+  ])("fails closed when classifying $metadata", ({ metadata, expected }) => {
+    expect(isSyntheticMediaAsset(metadata)).toBe(expected);
   });
 
   it.each([

@@ -7,7 +7,8 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 export function isSyntheticMediaAsset(metadata: unknown) {
-  return record(metadata).synthetic === true;
+  const marker = record(metadata).synthetic;
+  return marker !== undefined && marker !== null && marker !== false;
 }
 
 export type MediaAssetCustomerPublishabilityReason =
@@ -61,13 +62,6 @@ export function evaluateMediaAssetCustomerPublishability(input: {
   } as const;
 }
 
-export const syntheticMediaAssetWhere = {
-  metadata: {
-    path: ["synthetic"],
-    equals: true,
-  },
-} as const satisfies Prisma.MediaAssetWhereInput;
-
 export const nonSyntheticMediaAssetWhere = {
   OR: [
     {
@@ -83,4 +77,8 @@ export const nonSyntheticMediaAssetWhere = {
       },
     },
   ],
+} as const satisfies Prisma.MediaAssetWhereInput;
+
+export const syntheticMediaAssetWhere = {
+  NOT: nonSyntheticMediaAssetWhere,
 } as const satisfies Prisma.MediaAssetWhereInput;

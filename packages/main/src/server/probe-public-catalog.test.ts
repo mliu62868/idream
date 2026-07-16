@@ -123,7 +123,7 @@ describe("public catalog probe audience audit", () => {
         type: "image",
         url: `/user-content/${assetId}/content.webp`,
         safetyStatus: "passed",
-        metadata: { synthetic: true, source: "mock" },
+        metadata: { synthetic: "true", source: "mock" },
       },
     });
     await prisma.character.create({

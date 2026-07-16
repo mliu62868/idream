@@ -1,4 +1,5 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
+import { isSyntheticMediaAsset } from "@/server/lib/media-asset-authority";
 import {
   publicCharacterAudienceWhere,
   publicCollectionAudienceWhere,
@@ -205,7 +206,7 @@ export async function runPublicCatalogProbe(
     );
 
     for (const character of excludedCharacters) {
-      const syntheticImage = isSyntheticMetadata(character.imageAsset?.metadata);
+      const syntheticImage = isSyntheticMediaAsset(character.imageAsset?.metadata);
       issues.push({
         severity: "fail",
         entity: "character",
@@ -221,7 +222,7 @@ export async function runPublicCatalogProbe(
     }
     for (const collection of excludedCollections) {
       const syntheticItem = collection.items.find(
-        (item) => isSyntheticMetadata(item.mediaAsset.metadata),
+        (item) => isSyntheticMediaAsset(item.mediaAsset.metadata),
       );
       issues.push({
         severity: "fail",
@@ -398,15 +399,6 @@ export async function runPublicCatalogProbe(
       },
     };
   }
-}
-
-function isSyntheticMetadata(value: Prisma.JsonValue | null | undefined): boolean {
-  return Boolean(
-    value
-      && typeof value === "object"
-      && !Array.isArray(value)
-      && value.synthetic === true,
-  );
 }
 
 function emptyCounts(): PublicCatalogProbeReport["counts"] {
