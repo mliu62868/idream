@@ -3,8 +3,13 @@ import { z } from "zod";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
-import { actorWithPermission } from "@/server/modules/admin/shared/legacy-primitives";
 import { decodeAdminListCursor, encodeAdminListCursor } from "@/server/modules/admin-v2/shared/list-cursor";
+import { actorWithPermission } from "@/server/modules/admin/shared/legacy-primitives";
+import {
+  CUSTOMER_METRIC_DATA_SCOPE,
+  customerDreamcoinLedgerWhere,
+  customerSubscriptionWhere,
+} from "@/server/modules/admin/shared/metric-data-scope";
 
 const ledgerQuerySchema = z.object({
   search: z.string().trim().min(1).max(200).optional(),
@@ -131,11 +136,15 @@ export async function billingReconciliation(request: Request) {
   const [grouped, activeSubscriptions] = await Promise.all([
     prisma.dreamcoinLedger.groupBy({
       by: ["reason"],
-      where: { createdAt: { gte: from, lte: to } },
+      where: customerDreamcoinLedgerWhere({
+        createdAt: { gte: from, lte: to },
+      }),
       _sum: { delta: true },
       _count: { _all: true },
     }),
-    prisma.subscription.count({ where: { status: "active" } }),
+    prisma.subscription.count({
+      where: customerSubscriptionWhere({ status: "active" }),
+    }),
   ]);
   const byReason = grouped
     .map((row) => ({ reason: row.reason, totalDelta: row._sum.delta ?? 0, count: row._count._all }))
@@ -145,6 +154,7 @@ export async function billingReconciliation(request: Request) {
     { net: 0, entries: 0 },
   );
   return ok({
+    dataScope: CUSTOMER_METRIC_DATA_SCOPE,
     window: { from: from.toISOString(), to: to.toISOString() },
     activeSubscriptions,
     byReason,

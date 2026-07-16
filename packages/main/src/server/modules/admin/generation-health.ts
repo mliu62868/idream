@@ -8,6 +8,10 @@ import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import {
+  OPERATIONAL_METRIC_DATA_SCOPE,
+  operationalGenerationJobWhere,
+} from "@/server/modules/admin/shared/metric-data-scope";
+import {
   actorWithPermission,
   clampInt,
   jsonBody,
@@ -32,10 +36,10 @@ export async function profileHealth(request: Request, id: string): Promise<Respo
   const profile = await prisma.generationModelProfile.findUnique({ where: { id } });
   if (!profile) throw Errors.notFound("Model profile not found");
 
-  const where = {
+  const where = operationalGenerationJobWhere({
     profileId: { in: [profile.id, profile.profileKey] },
     createdAt: { gte: since },
-  };
+  });
   const [total, completed, failed, blocked, refunded, done] = await Promise.all([
     prisma.generationJob.count({ where }),
     prisma.generationJob.count({ where: { ...where, status: "completed" } }),
@@ -56,6 +60,7 @@ export async function profileHealth(request: Request, id: string): Promise<Respo
   const finished = completed + failed + blocked;
 
   return ok({
+    dataScope: OPERATIONAL_METRIC_DATA_SCOPE,
     profileId: profile.id,
     profileKey: profile.profileKey,
     window: { from: since.toISOString(), days },

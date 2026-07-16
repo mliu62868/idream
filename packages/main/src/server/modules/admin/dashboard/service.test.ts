@@ -52,10 +52,75 @@ describe("admin dashboard truth semantics", () => {
     );
     const payload = (await response.json()) as {
       data: {
+        dataScope: {
+          kind: string;
+          includedDataClasses: string[];
+          excludedDataClasses: string[];
+        };
         metrics: { generation: { successRate: number | null } };
       };
     };
 
+    expect(payload.data.dataScope).toEqual({
+      kind: "customer",
+      includedDataClasses: ["customer"],
+      excludedDataClasses: ["internal", "operational", "fixture", "audit"],
+    });
     expect(payload.data.metrics.generation.successRate).toBeNull();
+    expect(mocks.countUsers.mock.calls).toEqual([
+      [
+        {
+          where: {
+            AND: [
+              { dataClass: "customer" },
+              { status: "active", deletedAt: null },
+            ],
+          },
+        },
+      ],
+      [
+        {
+          where: {
+            AND: [
+              { dataClass: "customer" },
+              { status: "suspended" },
+            ],
+          },
+        },
+      ],
+    ]);
+    expect(mocks.countGenerationJobs.mock.calls[0]?.[0]).toMatchObject({
+      where: {
+        AND: [
+          { user: { is: { dataClass: "customer" } } },
+          {
+            status: {
+              in: [
+                "queued",
+                "moderating_input",
+                "running",
+                "moderating_output",
+              ],
+            },
+          },
+        ],
+      },
+    });
+    expect(mocks.countReports).toHaveBeenCalledWith({
+      where: {
+        AND: [
+          { reporter: { is: { dataClass: "customer" } } },
+          { status: { in: ["open", "triaged", "reviewing"] } },
+        ],
+      },
+    });
+    expect(mocks.countSubscriptions).toHaveBeenCalledWith({
+      where: {
+        AND: [
+          { user: { is: { dataClass: "customer" } } },
+          { status: "active" },
+        ],
+      },
+    });
   });
 });

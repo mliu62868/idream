@@ -2,6 +2,12 @@
 // INTENT: 只读，读 analytics.export。诚实标注：非随机分臂归因（需逐用户曝光埋点，延后）。
 import { prisma } from "@/server/lib/db";
 import { ok } from "@/server/lib/http";
+import {
+  CUSTOMER_METRIC_DATA_SCOPE,
+  customerGenerationJobWhere,
+  customerSubscriptionWhere,
+  customerUserWhere,
+} from "@/server/modules/admin/shared/metric-data-scope";
 import { actorWithPermission } from "@/server/modules/admin/shared/legacy-primitives";
 
 export async function listExperiments(request: Request): Promise<Response> {
@@ -11,12 +17,25 @@ export async function listExperiments(request: Request): Promise<Response> {
     flags.map(async (flag) => {
       const since = flag.createdAt;
       const [signups, activated, paying] = await Promise.all([
-        prisma.user.count({ where: { createdAt: { gte: since } } }),
+        prisma.user.count({
+          where: customerUserWhere({ createdAt: { gte: since } }),
+        }),
         prisma.generationJob
-          .groupBy({ by: ["userId"], where: { createdAt: { gte: since } } })
+          .groupBy({
+            by: ["userId"],
+            where: customerGenerationJobWhere({
+              createdAt: { gte: since },
+            }),
+          })
           .then((rows) => rows.length),
         prisma.subscription
-          .groupBy({ by: ["userId"], where: { status: "active", createdAt: { gte: since } } })
+          .groupBy({
+            by: ["userId"],
+            where: customerSubscriptionWhere({
+              status: "active",
+              createdAt: { gte: since },
+            }),
+          })
           .then((rows) => rows.length),
       ]);
       return {
@@ -31,7 +50,8 @@ export async function listExperiments(request: Request): Promise<Response> {
     }),
   );
   return ok({
+    dataScope: CUSTOMER_METRIC_DATA_SCOPE,
     items,
-    note: "Directional whole-population metrics since each flag's creation. Precise randomized-arm A/B attribution requires per-user exposure events (deferred).",
+    note: "Directional customer-only metrics since each flag's creation. Precise randomized-arm A/B attribution requires per-user exposure events (deferred).",
   });
 }

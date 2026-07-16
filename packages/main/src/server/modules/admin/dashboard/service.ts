@@ -1,5 +1,12 @@
 import { prisma } from "@/server/lib/db";
 import { ok } from "@/server/lib/http";
+import {
+  CUSTOMER_METRIC_DATA_SCOPE,
+  customerContentReportWhere,
+  customerGenerationJobWhere,
+  customerSubscriptionWhere,
+  customerUserWhere,
+} from "@/server/modules/admin/shared/metric-data-scope";
 import { actorWithPermission } from "@/server/modules/admin/shared/legacy-primitives";
 
 export async function adminDashboard(request: Request) {
@@ -15,22 +22,36 @@ export async function adminDashboard(request: Request) {
     activeSubscriptions,
     flags,
   ] = await Promise.all([
-    prisma.user.count({ where: { status: "active", deletedAt: null } }),
-    prisma.user.count({ where: { status: "suspended" } }),
+    prisma.user.count({
+      where: customerUserWhere({ status: "active", deletedAt: null }),
+    }),
+    prisma.user.count({
+      where: customerUserWhere({ status: "suspended" }),
+    }),
     prisma.generationJob.count({
-      where: {
+      where: customerGenerationJobWhere({
         status: {
           in: ["queued", "moderating_input", "running", "moderating_output"],
         },
-      },
+      }),
     }),
-    prisma.generationJob.count({ where: { status: "failed" } }),
-    prisma.generationJob.count({ where: { status: "completed" } }),
-    prisma.generationJob.count({ where: { status: "blocked" } }),
+    prisma.generationJob.count({
+      where: customerGenerationJobWhere({ status: "failed" }),
+    }),
+    prisma.generationJob.count({
+      where: customerGenerationJobWhere({ status: "completed" }),
+    }),
+    prisma.generationJob.count({
+      where: customerGenerationJobWhere({ status: "blocked" }),
+    }),
     prisma.contentReport.count({
-      where: { status: { in: ["open", "triaged", "reviewing"] } },
+      where: customerContentReportWhere({
+        status: { in: ["open", "triaged", "reviewing"] },
+      }),
     }),
-    prisma.subscription.count({ where: { status: "active" } }),
+    prisma.subscription.count({
+      where: customerSubscriptionWhere({ status: "active" }),
+    }),
     prisma.featureFlag.findMany({ orderBy: { key: "asc" }, take: 8 }),
   ]);
 
@@ -41,6 +62,7 @@ export async function adminDashboard(request: Request) {
       : null;
 
   return ok({
+    dataScope: CUSTOMER_METRIC_DATA_SCOPE,
     metrics: {
       users: { active: activeUsers, suspended: suspendedUsers },
       generation: {

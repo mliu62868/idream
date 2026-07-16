@@ -54,9 +54,59 @@ describe("generation profile health truth semantics", () => {
       "profile-1",
     );
     const payload = (await response.json()) as {
-      data: { metrics: { successRate: number | null } };
+      data: {
+        dataScope: {
+          kind: string;
+          includedDataClasses: string[];
+          excludedDataClasses: string[];
+        };
+        metrics: { successRate: number | null };
+      };
     };
 
+    expect(payload.data.dataScope).toEqual({
+      kind: "operational",
+      includedDataClasses: ["customer", "internal", "operational"],
+      excludedDataClasses: ["fixture", "audit"],
+    });
     expect(payload.data.metrics.successRate).toBeNull();
+    expect(mocks.countJobs.mock.calls[0]?.[0]).toEqual({
+      where: {
+        AND: [
+          {
+            user: {
+              is: {
+                dataClass: { in: ["customer", "internal"] },
+              },
+            },
+          },
+          {
+            profileId: { in: ["profile-1", "profile-key-1"] },
+            createdAt: { gte: expect.any(Date) },
+          },
+        ],
+      },
+    });
+    expect(mocks.listCompletedJobs).toHaveBeenCalledWith({
+      where: {
+        AND: [
+          {
+            user: {
+              is: {
+                dataClass: { in: ["customer", "internal"] },
+              },
+            },
+          },
+          {
+            profileId: { in: ["profile-1", "profile-key-1"] },
+            createdAt: { gte: expect.any(Date) },
+          },
+        ],
+        status: "completed",
+        completedAt: { not: null },
+      },
+      select: { createdAt: true, completedAt: true },
+      take: 1000,
+    });
   });
 });

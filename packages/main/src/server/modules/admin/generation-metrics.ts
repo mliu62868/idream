@@ -4,6 +4,12 @@
 // INVARIANTS: 只读；generation.config.read 门；days ∈ [1,90] 默认 7。
 import { prisma } from "@/server/lib/db";
 import { ok } from "@/server/lib/http";
+import {
+  OPERATIONAL_METRIC_DATA_SCOPE,
+  operationalAnalyticsEventWhere,
+  operationalGenerationJobWhere,
+  operationalMediaAssetPlacementWhere,
+} from "@/server/modules/admin/shared/metric-data-scope";
 import { actorWithPermission, clampInt } from "@/server/modules/admin/shared/legacy-primitives";
 
 const CONFIG_READ = "generation.config.read" as const;
@@ -38,32 +44,45 @@ export async function generationMetrics(request: Request): Promise<Response> {
   ] = await Promise.all([
     prisma.generationJob.groupBy({
       by: ["profileId", "profileVersion", "status"],
-      where: { createdAt: { gte: since } },
+      where: operationalGenerationJobWhere({
+        createdAt: { gte: since },
+      }),
       _count: { _all: true },
       _sum: { costDreamcoins: true },
     }),
     prisma.generationJob.groupBy({
       by: ["recipeId", "status"],
-      where: { createdAt: { gte: since } },
+      where: operationalGenerationJobWhere({
+        createdAt: { gte: since },
+      }),
       _count: { _all: true },
       _sum: { costDreamcoins: true },
     }),
     prisma.generationJob.groupBy({
       by: ["sourceType", "status"],
-      where: { createdAt: { gte: since } },
+      where: operationalGenerationJobWhere({
+        createdAt: { gte: since },
+      }),
       _count: { _all: true },
       _sum: { costDreamcoins: true },
     }),
     prisma.mediaAssetPlacement.groupBy({
       by: ["slot", "status"],
-      where: { createdAt: { gte: since } },
+      where: operationalMediaAssetPlacementWhere({
+        createdAt: { gte: since },
+      }),
       _count: { _all: true },
     }),
     prisma.$queryRaw<Array<{ profileId: string; avgMs: number | null }>>`
-      SELECT "profileId", GREATEST(0, AVG(EXTRACT(EPOCH FROM ("completedAt" - "createdAt")) * 1000))::float8 AS "avgMs"
-      FROM "generation_jobs"
-      WHERE "createdAt" >= ${since} AND "completedAt" IS NOT NULL AND "profileId" IS NOT NULL
-      GROUP BY "profileId"
+      SELECT jobs."profileId",
+             GREATEST(0, AVG(EXTRACT(EPOCH FROM (jobs."completedAt" - jobs."createdAt")) * 1000))::float8 AS "avgMs"
+      FROM "generation_jobs" jobs
+      JOIN "users" owners ON owners.id = jobs."userId"
+      WHERE jobs."createdAt" >= ${since}
+        AND jobs."completedAt" IS NOT NULL
+        AND jobs."profileId" IS NOT NULL
+        AND owners."dataClass" IN ('customer', 'internal')
+      GROUP BY jobs."profileId"
     `,
     prisma.$queryRaw<
       Array<{ slot: string; placementId: string | null; impressions: number; clicks: number }>
@@ -72,10 +91,17 @@ export async function generationMetrics(request: Request): Promise<Response> {
              count(*) FILTER (WHERE name='placement_impression')::int AS impressions,
              count(*) FILTER (WHERE name='placement_click')::int AS clicks
       FROM "analytics_events"
-      WHERE name IN ('placement_impression','placement_click') AND "createdAt" >= ${since}
+      WHERE name IN ('placement_impression','placement_click')
+        AND "createdAt" >= ${since}
+        AND "dataClass" IN ('customer', 'internal', 'operational')
       GROUP BY 1,2
     `,
-    prisma.analyticsEvent.count({ where: { name: "feed_item_remixed", createdAt: { gte: since } } }),
+    prisma.analyticsEvent.count({
+      where: operationalAnalyticsEventWhere({
+        name: "feed_item_remixed",
+        createdAt: { gte: since },
+      }),
+    }),
   ]);
   const byProfile = byProfileRaw.filter(
     (row): row is typeof row & { profileId: string } => row.profileId !== null,
@@ -138,6 +164,7 @@ export async function generationMetrics(request: Request): Promise<Response> {
   }
 
   return ok({
+    dataScope: OPERATIONAL_METRIC_DATA_SCOPE,
     windowDays,
     profiles: [...profileMap.values()]
       .map((entry) => ({

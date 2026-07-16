@@ -3,6 +3,12 @@
 // INTENT: 导出走 JSON 信封带 csv 字符串（便于 UI 触发下载 + 测试），不回任何单用户明文。
 import { prisma } from "@/server/lib/db";
 import { ok } from "@/server/lib/http";
+import {
+  CUSTOMER_METRIC_DATA_SCOPE,
+  customerAnalyticsEventWhere,
+  customerDreamcoinLedgerWhere,
+  customerUserWhere,
+} from "@/server/modules/admin/shared/metric-data-scope";
 import { actorWithPermission, clampInt } from "@/server/modules/admin/shared/legacy-primitives";
 
 const ANALYTICS_EXPORT = "analytics.export" as const;
@@ -19,16 +25,18 @@ export async function analyticsExport(request: Request): Promise<Response> {
   const since = new Date(Date.now() - days * DAY_MS);
 
   const [signups, ledger, events] = await Promise.all([
-    prisma.user.count({ where: { createdAt: { gte: since } } }),
+    prisma.user.count({
+      where: customerUserWhere({ createdAt: { gte: since } }),
+    }),
     prisma.dreamcoinLedger.groupBy({
       by: ["reason"],
-      where: { createdAt: { gte: since } },
+      where: customerDreamcoinLedgerWhere({ createdAt: { gte: since } }),
       _sum: { delta: true },
       _count: { _all: true },
     }),
     prisma.analyticsEvent.groupBy({
       by: ["name"],
-      where: { createdAt: { gte: since } },
+      where: customerAnalyticsEventWhere({ createdAt: { gte: since } }),
       _count: { _all: true },
       orderBy: { _count: { name: "desc" } },
       take: 20,
@@ -48,6 +56,7 @@ export async function analyticsExport(request: Request): Promise<Response> {
   }
   const csv = rows.join("\n");
   return ok({
+    dataScope: CUSTOMER_METRIC_DATA_SCOPE,
     window: { from: since.toISOString(), days },
     qualityState: "invalid",
     validForDecisions: false,
@@ -62,6 +71,7 @@ export async function analyticsRetention(request: Request): Promise<Response> {
   const since = new Date(Date.now() - weeks * 7 * DAY_MS);
 
   return ok({
+    dataScope: CUSTOMER_METRIC_DATA_SCOPE,
     window: { from: since.toISOString(), weeks },
     qualityState: "invalid",
     validForDecisions: false,

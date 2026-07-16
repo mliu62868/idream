@@ -2,6 +2,17 @@ import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import { actorWithPermission } from "@/server/modules/admin/shared/legacy-primitives";
+import {
+  CUSTOMER_METRIC_DATA_SCOPE,
+  OPERATIONAL_METRIC_DATA_SCOPE,
+  customerAnalyticsEventWhere,
+  customerDreamcoinLedgerWhere,
+  customerGenerationJobWhere,
+  customerReferralWhere,
+  customerSubscriptionWhere,
+  customerUserWhere,
+  operationalGenerationJobWhere,
+} from "@/server/modules/admin/shared/metric-data-scope";
 
 export async function analyticsOverview(request: Request) {
   await actorWithPermission(request, "analytics.export");
@@ -16,31 +27,45 @@ export async function analyticsOverview(request: Request) {
     ledgerByReason,
     eventRows,
   ] = await Promise.all([
-    prisma.user.count({ where: { createdAt, deletedAt: null } }),
-    prisma.generationJob.groupBy({ by: ["userId"], where: { createdAt } }),
-    prisma.subscription.groupBy({ by: ["userId"], where: { createdAt } }),
+    prisma.user.count({
+      where: customerUserWhere({ createdAt, deletedAt: null }),
+    }),
+    prisma.generationJob.groupBy({
+      by: ["userId"],
+      where: customerGenerationJobWhere({ createdAt }),
+    }),
+    prisma.subscription.groupBy({
+      by: ["userId"],
+      where: customerSubscriptionWhere({ createdAt }),
+    }),
     prisma.generationJob.groupBy({
       by: ["status"],
-      where: { createdAt },
+      where: customerGenerationJobWhere({ createdAt }),
       _count: { _all: true },
     }),
     prisma.dreamcoinLedger.aggregate({
-      where: { createdAt, delta: { gt: 0 } },
+      where: customerDreamcoinLedgerWhere({
+        createdAt,
+        delta: { gt: 0 },
+      }),
       _sum: { delta: true },
     }),
     prisma.dreamcoinLedger.aggregate({
-      where: { createdAt, delta: { lt: 0 } },
+      where: customerDreamcoinLedgerWhere({
+        createdAt,
+        delta: { lt: 0 },
+      }),
       _sum: { delta: true },
     }),
     prisma.dreamcoinLedger.groupBy({
       by: ["reason"],
-      where: { createdAt },
+      where: customerDreamcoinLedgerWhere({ createdAt }),
       _sum: { delta: true },
       _count: { _all: true },
     }),
     prisma.analyticsEvent.groupBy({
       by: ["name"],
-      where: { createdAt },
+      where: customerAnalyticsEventWhere({ createdAt }),
       _count: { _all: true },
     }),
   ]);
@@ -57,6 +82,7 @@ export async function analyticsOverview(request: Request) {
   const coinsGranted = grantedAgg._sum.delta ?? 0;
   const coinsSpent = spentAgg._sum.delta ?? 0;
   return ok({
+    dataScope: CUSTOMER_METRIC_DATA_SCOPE,
     window: { from: from.toISOString(), to: to.toISOString() },
     funnel: {
       signups,
@@ -105,17 +131,24 @@ export async function abuseOverview(request: Request) {
   const [signupGroups, referralGroups, adjustGroups] = await Promise.all([
     prisma.analyticsEvent.groupBy({
       by: ["anonymousId"],
-      where: { name: "signup", anonymousId: { not: null }, createdAt },
+      where: customerAnalyticsEventWhere({
+        name: "signup",
+        anonymousId: { not: null },
+        createdAt,
+      }),
       _count: { _all: true },
     }),
     prisma.referral.groupBy({
       by: ["inviterId"],
-      where: { createdAt },
+      where: customerReferralWhere({ createdAt }),
       _count: { _all: true },
     }),
     prisma.dreamcoinLedger.groupBy({
       by: ["userId"],
-      where: { reason: "admin_adjust", createdAt },
+      where: customerDreamcoinLedgerWhere({
+        reason: "admin_adjust",
+        createdAt,
+      }),
       _sum: { delta: true },
       _count: { _all: true },
     }),
@@ -128,7 +161,10 @@ export async function abuseOverview(request: Request) {
     .filter((id): id is string => Boolean(id));
   const events = flagged.length
     ? await prisma.analyticsEvent.findMany({
-        where: { name: "signup", anonymousId: { in: flagged } },
+        where: customerAnalyticsEventWhere({
+          name: "signup",
+          anonymousId: { in: flagged },
+        }),
         select: { anonymousId: true, userId: true },
       })
     : [];
@@ -140,6 +176,7 @@ export async function abuseOverview(request: Request) {
     accounts.set(event.anonymousId, users);
   }
   return ok({
+    dataScope: CUSTOMER_METRIC_DATA_SCOPE,
     window: { from: from.toISOString(), to: to.toISOString() },
     deviceClusters: flagged
       .map((anonymousId) => ({
@@ -173,12 +210,16 @@ export async function providerOps(request: Request) {
   const [grouped, completedJobs] = await Promise.all([
     prisma.generationJob.groupBy({
       by: ["provider", "status"],
-      where: { createdAt },
+      where: operationalGenerationJobWhere({ createdAt }),
       _count: { _all: true },
       _sum: { costDreamcoins: true },
     }),
     prisma.generationJob.findMany({
-      where: { createdAt, status: "completed", completedAt: { not: null } },
+      where: operationalGenerationJobWhere({
+        createdAt,
+        status: "completed",
+        completedAt: { not: null },
+      }),
       select: { provider: true, createdAt: true, completedAt: true },
       orderBy: { createdAt: "desc" },
       take: 5000,
@@ -226,7 +267,9 @@ export async function providerOps(request: Request) {
         provider,
         ...value,
         successRate:
-          finished > 0 ? Math.round((value.completed / finished) * 100) : 0,
+          finished > 0
+            ? Math.round((value.completed / finished) * 100)
+            : null,
         avgCostPerJob:
           value.total > 0
             ? Math.round((value.coinsCost / value.total) * 10) / 10
@@ -238,6 +281,7 @@ export async function providerOps(request: Request) {
     })
     .sort((a, b) => b.total - a.total);
   return ok({
+    dataScope: OPERATIONAL_METRIC_DATA_SCOPE,
     window: { from: from.toISOString(), to: to.toISOString() },
     providers,
   });
