@@ -11,7 +11,15 @@ import {
 } from "@idream/shared/admin";
 import { apiGet } from "@/components/admin/api";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { adminV2Request } from "@/lib/admin-v2-api";
+import {
+  authorityRequestFailed,
+  authorityRequestStarted,
+  authorityRequestSucceeded,
+  createAuthorityState,
+} from "@/lib/authority-state";
+import { createLatestRequestGate } from "@/lib/latest-request";
 import {
   adminDateLocale,
   type AdminLocale,
@@ -38,29 +46,32 @@ type HistoryMode = "push" | "replace";
 export function JobsView() {
   const { locale, t, value } = useAdminI18n();
   const [jobQuery, setJobQuery] = useState<GenerationJobQueryDraft>(defaultGenerationJobQuery);
-  const [jobData, setJobData] = useState<GenerationJobListResponse | null>(null);
-  const [jobsBusy, setJobsBusy] = useState(true);
-  const [jobsError, setJobsError] = useState<string | null>(null);
+  const [jobs, setJobs] = useState(() => createAuthorityState<GenerationJobListResponse>());
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [detail, setDetail] = useState<GenerationJobDetailResponse | null>(null);
   const [detailBusy, setDetailBusy] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [retrySpec, setRetrySpec] = useState<ConfirmSpec | null>(null);
   const detailTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const jobsGate = useRef(createLatestRequestGate());
 
   const loadJobs = useCallback(async (next: GenerationJobQueryDraft) => {
     const encoded = buildGenerationJobQuery(next);
-    setJobsBusy(true);
-    setJobsError(null);
-    setJobData(null);
+    const request = jobsGate.current.begin();
+    setJobs((current) => authorityRequestStarted(current, encoded));
     try {
-      setJobData(generationJobListResponseSchema.parse(
+      const data = generationJobListResponseSchema.parse(
         await apiGet<unknown>(`/api/v2/admin/jobs?${encoded}`),
-      ));
+      );
+      if (!request.isCurrent()) return;
+      setJobs(authorityRequestSucceeded(encoded, data));
     } catch (cause) {
-      setJobsError(cause instanceof Error ? cause.message : "Generation Jobs could not be loaded");
-    } finally {
-      setJobsBusy(false);
+      if (!request.isCurrent()) return;
+      setJobs((current) => authorityRequestFailed(
+        current,
+        encoded,
+        cause instanceof Error ? cause.message : "Generation Jobs could not be loaded",
+      ));
     }
   }, []);
 
@@ -88,6 +99,7 @@ export function JobsView() {
   }, []);
 
   useEffect(() => {
+    const gate = jobsGate.current;
     const params = new URLSearchParams(window.location.search);
     const initial = parseGenerationJobQuery(params);
     const initialJobId = params.get("job")?.trim() || null;
@@ -97,7 +109,10 @@ export function JobsView() {
       void loadJobs(initial);
       if (initialJobId) void loadJobDetail(initialJobId);
     }, 0);
-    return () => window.clearTimeout(timer);
+    return () => {
+      gate.invalidate();
+      window.clearTimeout(timer);
+    };
   }, [loadJobDetail, loadJobs, writeUrl]);
 
   useEffect(() => {
@@ -217,7 +232,7 @@ export function JobsView() {
       },
     },
   ];
-  const rows: Row[] = jobData?.items.map((item) => ({ ...item })) ?? [];
+  const rows: Row[] = jobs.data?.items.map((item) => ({ ...item })) ?? [];
   const fieldClass = "h-10 w-full rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]";
 
   return (
@@ -234,47 +249,50 @@ export function JobsView() {
           <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Mode<select className={`${fieldClass} mt-1`} onChange={(event) => updateJobQuery({ mode: event.target.value as GenerationJobQueryDraft["mode"] })} value={jobQuery.mode}><option value="all">All historical records</option><option value="image">Image</option><option value="video">Video (legacy records)</option></select></label>
           <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Legacy status filter<select className={`${fieldClass} mt-1`} onChange={(event) => updateJobQuery({ legacyStatus: event.target.value })} value={jobQuery.legacyStatus}><option value="">All</option>{generationJobStatusOptions.map((status) => <option key={status} value={status}>{value(status)}</option>)}</select></label>
           <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Provider<input className={`${fieldClass} mt-1`} list="job-provider-facets" onChange={(event) => updateJobQuery({ provider: event.target.value })} value={jobQuery.provider} /></label>
-          <datalist id="job-provider-facets">{jobData?.facets.providers.map((facet) => <option key={facet.value} value={facet.value}>{facet.count}</option>)}</datalist>
+          <datalist id="job-provider-facets">{jobs.data?.facets.providers.map((facet) => <option key={facet.value} value={facet.value}>{facet.count}</option>)}</datalist>
           <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Source type<input className={`${fieldClass} mt-1`} list="job-source-facets" onChange={(event) => updateJobQuery({ sourceType: event.target.value })} value={jobQuery.sourceType} /></label>
-          <datalist id="job-source-facets">{jobData?.facets.sourceTypes.map((facet) => <option key={facet.value} value={facet.value}>{facet.count}</option>)}</datalist>
+          <datalist id="job-source-facets">{jobs.data?.facets.sourceTypes.map((facet) => <option key={facet.value} value={facet.value}>{facet.count}</option>)}</datalist>
           <label className="text-xs font-semibold text-[var(--ad-text-muted)]">User ID<input className={`${fieldClass} mt-1`} onChange={(event) => updateJobQuery({ userId: event.target.value })} value={jobQuery.userId} /></label>
           <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Character ID<input className={`${fieldClass} mt-1`} onChange={(event) => updateJobQuery({ characterId: event.target.value })} value={jobQuery.characterId} /></label>
           <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Sort<select className={`${fieldClass} mt-1`} onChange={(event) => updateJobQuery({ sort: event.target.value as GenerationJobQueryDraft["sort"] })} value={jobQuery.sort}><option value="created_desc">Newest created</option><option value="created_asc">Oldest created</option><option value="updated_desc">Recently changed</option><option value="cost_desc">Highest cost</option></select></label>
           <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Page size<select className={`${fieldClass} mt-1`} onChange={(event) => updateJobQuery({ limit: Number(event.target.value) })} value={jobQuery.limit}>{[10, 25, 50, 100].map((limit) => <option key={limit} value={limit}>{limit}</option>)}</select></label>
         </div>
         <div className="mt-4 flex flex-wrap gap-2">
-          <button className="min-h-10 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white disabled:opacity-50" disabled={jobsBusy} type="submit">Apply server query</button>
-          <button className="min-h-10 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" disabled={jobsBusy} onClick={() => applyJobQuery(defaultGenerationJobQuery)} type="button">Reset</button>
-          {jobsBusy ? <span className="inline-flex items-center gap-2 text-xs text-[var(--ad-text-muted)]" role="status"><Loader2 className="h-4 w-4 animate-spin" /> Loading complete query</span> : null}
+          <button className="min-h-10 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white disabled:opacity-50" disabled={jobs.loading} type="submit">Apply server query</button>
+          <button className="min-h-10 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" disabled={jobs.loading} onClick={() => applyJobQuery(defaultGenerationJobQuery)} type="button">Reset</button>
+          {jobs.loading ? <span className="inline-flex items-center gap-2 text-xs text-[var(--ad-text-muted)]" role="status"><Loader2 className="h-4 w-4 animate-spin" /> Loading complete query</span> : null}
         </div>
       </form>
 
-      {jobsError ? <p className="rounded-lg bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">{jobsError}</p> : null}
-      {jobData ? (
+      {jobs.error ? <AuthorityRequestError message={jobs.error} onRetry={() => void loadJobs(jobQuery)} /> : null}
+      {jobs.data ? (
         <section aria-label="Generation Job query summary" className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
           {[
-            ["Matching jobs", jobData.summary.totalCount],
-            ["Dreamcoins cost", jobData.summary.totalCostDreamcoins],
-            ["Requested outputs", jobData.summary.totalOutputCount],
-            ["Delivered outputs", jobData.summary.totalDeliveredOutputCount],
+            ["Matching jobs", jobs.data.summary.totalCount],
+            ["Dreamcoins cost", jobs.data.summary.totalCostDreamcoins],
+            ["Requested outputs", jobs.data.summary.totalOutputCount],
+            ["Delivered outputs", jobs.data.summary.totalDeliveredOutputCount],
           ].map(([label, amount]) => <div className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3" key={label}><p className="text-xs text-[var(--ad-text-muted)]">{label}</p><p className="mt-1 text-lg font-semibold tabular-nums">{amount}</p></div>)}
         </section>
       ) : null}
 
-      <ReadonlyOpsView columns={columns} empty={jobsBusy ? "Loading authoritative jobs…" : "No jobs match the server query."} rows={rows} title="Generation Jobs" />
-      {jobData ? (
+      {jobs.loading && jobs.data === null ? (
+        <p className="text-sm text-[var(--ad-text-muted)]" role="status">Loading authoritative jobs…</p>
+      ) : null}
+      {jobs.data ? <ReadonlyOpsView columns={columns} empty="No jobs match the server query." rows={rows} title="Generation Jobs" /> : null}
+      {jobs.data ? (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] px-4 py-3">
           <p className="text-xs text-[var(--ad-text-muted)]">
-            Showing {rows.length} of {jobData.summary.totalCount} matching jobs
-            {" · "}operational owners: {jobData.dataScope.includedDataClasses.join(" + ")}
-            {" · "}excluded: {jobData.dataScope.excludedDataClasses.join(" + ")}
-            {" · "}fresh as of {compactDate(jobData.asOf, locale)}
+            Showing {rows.length} of {jobs.data.summary.totalCount} matching jobs
+            {" · "}operational owners: {jobs.data.dataScope.includedDataClasses.join(" + ")}
+            {" · "}excluded: {jobs.data.dataScope.excludedDataClasses.join(" + ")}
+            {" · "}fresh as of {compactDate(jobs.data.asOf, locale)}
           </p>
           <button
             className="min-h-10 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold disabled:opacity-50"
-            disabled={jobsBusy || !jobData.pageInfo.hasNextPage || !jobData.pageInfo.endCursor}
+            disabled={jobs.loading || !jobs.data.pageInfo.hasNextPage || !jobs.data.pageInfo.endCursor}
             onClick={() => {
-              const next = { ...jobQuery, cursor: jobData.pageInfo.endCursor ?? undefined };
+              const next = { ...jobQuery, cursor: jobs.data?.pageInfo.endCursor ?? undefined };
               applyJobQuery(next);
             }}
             type="button"

@@ -3,10 +3,18 @@
 // SPEC: 合规运营面板（ADMIN_PHASE3_DESIGN §4）。DSAR 数据导出/账号擦除 + 年龄验证人工复核。
 // INTENT: 自取数、无 props；样式对齐 TagsView。导出展示脱敏 JSON；擦除/override 需 reason+typed。
 // INVARIANTS: erase confirmation=userId、override confirmation=verificationId，均 reason≥3。
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Download, Loader2, RefreshCcw, ShieldAlert, Trash2 } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import {
+  authorityRequestFailed,
+  authorityRequestStarted,
+  authorityRequestSucceeded,
+  createAuthorityState,
+} from "@/lib/authority-state";
+import { createLatestRequestGate } from "@/lib/latest-request";
 
 const inputClass =
   "rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]";
@@ -176,34 +184,42 @@ function DsarSection() {
 
 function AgeVerificationSection() {
   const { t, value: valueLabel } = useAdminI18n();
-  const [rows, setRows] = useState<AgeRow[]>([]);
+  const [authority, setAuthority] = useState(() => createAuthorityState<AgeRow[]>());
   const [status, setStatus] = useState("pending");
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [overrideDraft, setOverrideDraft] = useState<AgeOverrideDraft | null>(null);
   const [overrideBusy, setOverrideBusy] = useState(false);
+  const requestGate = useRef(createLatestRequestGate());
+  const initialStatus = useRef(status);
 
-  async function load(options?: { silent?: boolean }) {
-    setLoading(true);
-    if (!options?.silent) setError(null);
+  const load = useCallback(async (nextStatus: string) => {
+    const queryKey = `status=${encodeURIComponent(nextStatus)}`;
+    const request = requestGate.current.begin();
+    setAuthority((current) => authorityRequestStarted(current, queryKey));
     try {
       const data = await apiGet<{ items: AgeRow[] }>(
-        `/api/v1/admin/compliance/age-verifications?status=${encodeURIComponent(status)}`,
+        `/api/v1/admin/compliance/age-verifications?${queryKey}`,
       );
-      setRows(data.items);
+      if (!request.isCurrent()) return;
+      setAuthority(authorityRequestSucceeded(queryKey, data.items));
     } catch (err) {
-      if (!options?.silent) setError(err instanceof Error ? err.message : "Load failed");
-    } finally {
-      setLoading(false);
+      if (!request.isCurrent()) return;
+      setAuthority((current) => authorityRequestFailed(
+        current,
+        queryKey,
+        err instanceof Error ? err.message : "Load failed",
+      ));
     }
-  }
+  }, []);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void load(), 0);
-    return () => window.clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status]);
+    const gate = requestGate.current;
+    const timer = window.setTimeout(() => void load(initialStatus.current), 0);
+    return () => {
+      gate.invalidate();
+      window.clearTimeout(timer);
+    };
+  }, [load]);
 
   async function override() {
     if (!overrideDraft || !canConfirm(overrideDraft, overrideDraft.id)) return;
@@ -216,21 +232,26 @@ function AgeVerificationSection() {
         confirmation: draft.confirmation.trim(),
       });
       setOverrideDraft(null);
-      setError(null);
       setNotice(t("Age verification updated."));
-      setRows((current) =>
-        current.flatMap((row) =>
+      setAuthority((current) => current.data ? {
+        ...current,
+        data: current.data.flatMap((row) =>
           row.id !== draft.id ? [row] : status === draft.next ? [{ ...row, status: draft.next }] : [],
         ),
-      );
-      void load({ silent: true });
+        error: null,
+      } : current);
+      void load(status);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Override failed");
+      setAuthority((current) => ({
+        ...current,
+        error: err instanceof Error ? err.message : "Override failed",
+      }));
     } finally {
       setOverrideBusy(false);
     }
   }
 
+  const rows = authority.data ?? [];
   return (
     <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
       <div className="flex items-center justify-between border-b border-[var(--ad-border)] p-3">
@@ -238,7 +259,13 @@ function AgeVerificationSection() {
         <div className="flex items-center gap-2">
           <select
             className="rounded-md h-9 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-2 text-sm outline-none"
-            onChange={(e) => setStatus(e.target.value)}
+            onChange={(e) => {
+              const nextStatus = e.target.value;
+              setStatus(nextStatus);
+              setNotice(null);
+              setOverrideDraft(null);
+              void load(nextStatus);
+            }}
             value={status}
           >
             {["pending", "required", "failed", "verified", "expired"].map((s) => (
@@ -249,16 +276,20 @@ function AgeVerificationSection() {
           </select>
           <button
             className="rounded-md inline-flex h-9 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm disabled:opacity-50"
-            disabled={loading}
-            onClick={() => void load()}
+            disabled={authority.loading}
+            onClick={() => void load(status)}
             type="button"
           >
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+            {authority.loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
             {t("Refresh")}
           </button>
         </div>
       </div>
-      {error ? <p role="alert" className="px-3 py-2 text-xs text-[var(--ad-red-text)]">{error}</p> : null}
+      {authority.error ? (
+        <div className="p-3">
+          <AuthorityRequestError message={authority.error} onRetry={() => void load(status)} />
+        </div>
+      ) : null}
       {notice ? <p className="px-3 py-2 text-xs text-[var(--ad-green-text)]">{notice}</p> : null}
       {overrideDraft ? (
         <section className="rounded-lg m-3 border border-[var(--ad-yellow-text)]/20 bg-[var(--ad-yellow-bg)] p-3">
@@ -299,7 +330,10 @@ function AgeVerificationSection() {
           </div>
         </section>
       ) : null}
-      <table className="w-full text-left text-sm">
+      {authority.loading && authority.data === null ? (
+        <p className="px-3 py-6 text-sm text-[var(--ad-text-muted)]" role="status">{t("Loading…")}</p>
+      ) : null}
+      {authority.data ? <table className="w-full text-left text-sm">
         <caption className="sr-only">Compliance records</caption>
         <thead className="border-b border-[var(--ad-border)] text-xs text-[var(--ad-text-muted)]">
           <tr>
@@ -323,7 +357,7 @@ function AgeVerificationSection() {
                     className="inline-flex h-8 items-center gap-1 bg-[var(--ad-ink)] px-2 text-xs font-semibold text-white"
                     disabled={overrideBusy}
                     onClick={() => {
-                      setError(null);
+                      setAuthority((current) => ({ ...current, error: null }));
                       setNotice(null);
                       setOverrideDraft({ id: row.id, next: "verified", reason: "", confirmation: "" });
                     }}
@@ -336,7 +370,7 @@ function AgeVerificationSection() {
                     className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
                     disabled={overrideBusy}
                     onClick={() => {
-                      setError(null);
+                      setAuthority((current) => ({ ...current, error: null }));
                       setNotice(null);
                       setOverrideDraft({ id: row.id, next: "failed", reason: "", confirmation: "" });
                     }}
@@ -348,7 +382,7 @@ function AgeVerificationSection() {
               </td>
             </tr>
           ))}
-          {rows.length === 0 && !loading ? (
+          {rows.length === 0 ? (
             <tr>
               <td className="px-3 py-6 text-center text-xs text-[var(--ad-text-muted)]" colSpan={5}>
                 {t("No records.")}
@@ -356,7 +390,7 @@ function AgeVerificationSection() {
             </tr>
           ) : null}
         </tbody>
-      </table>
+      </table> : null}
     </section>
   );
 }

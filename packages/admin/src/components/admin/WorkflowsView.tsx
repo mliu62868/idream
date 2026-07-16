@@ -7,10 +7,18 @@
 // INVARIANTS: 同一时间只展开一行（expandedKey 单值，非 Set）；inputs 直接渲染 API 返回的
 //             槽位数组，不做二次状态管理。
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronRight, Loader2, RefreshCcw } from "lucide-react";
 import { apiGet } from "@/components/admin/api";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { useAdminI18n } from "@/components/admin/i18n";
+import {
+  authorityRequestFailed,
+  authorityRequestStarted,
+  authorityRequestSucceeded,
+  createAuthorityState,
+} from "@/lib/authority-state";
+import { createLatestRequestGate } from "@/lib/latest-request";
 import { cn } from "@/lib/utils";
 
 type WorkflowSlotTarget = { nodeId: string; field: string } | { argFlag: string };
@@ -33,50 +41,64 @@ type WorkflowRow = {
 
 export function WorkflowsView() {
   const { t } = useAdminI18n();
-  const [workflows, setWorkflows] = useState<WorkflowRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [authority, setAuthority] = useState(() => createAuthorityState<WorkflowRow[]>());
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const requestGate = useRef(createLatestRequestGate());
 
-  async function load() {
-    setLoading(true);
-    setError(null);
+  const load = useCallback(async () => {
+    const queryKey = "/api/v1/admin/generation/workflows";
+    const request = requestGate.current.begin();
+    setAuthority((current) => authorityRequestStarted(current, queryKey));
     try {
       const data = await apiGet<{ items: WorkflowRow[] }>("/api/v1/admin/generation/workflows");
-      setWorkflows(data.items);
+      if (!request.isCurrent()) return;
+      setAuthority(authorityRequestSucceeded(queryKey, data.items));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Load failed");
-    } finally {
-      setLoading(false);
+      if (!request.isCurrent()) return;
+      setAuthority((current) => authorityRequestFailed(
+        current,
+        queryKey,
+        err instanceof Error ? err.message : "Load failed",
+      ));
     }
-  }
+  }, []);
 
   useEffect(() => {
+    const gate = requestGate.current;
     const timer = window.setTimeout(() => {
       void load();
     }, 0);
-    return () => window.clearTimeout(timer);
-  }, []);
+    return () => {
+      gate.invalidate();
+      window.clearTimeout(timer);
+    };
+  }, [load]);
+
+  const workflows = authority.data ?? [];
 
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold">
-          {t("Workflows")} ({workflows.length})
+          {t("Workflows")}{authority.data ? ` (${workflows.length})` : ""}
         </h2>
         <button
           className="rounded-md inline-flex h-9 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm disabled:opacity-50"
-          disabled={loading}
+          disabled={authority.loading}
           onClick={() => void load()}
           type="button"
         >
-          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+          {authority.loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
           {t("Refresh")}
         </button>
       </div>
-      {error ? <p role="alert" className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
+      {authority.error ? <AuthorityRequestError message={authority.error} onRetry={() => void load()} /> : null}
 
-      <section className="rounded-lg overflow-hidden border border-[var(--ad-border)] bg-[var(--ad-surface)]">
+      {authority.loading && authority.data === null ? (
+        <p className="text-sm text-[var(--ad-text-muted)]" role="status">{t("Loading…")}</p>
+      ) : null}
+
+      {authority.data ? <section className="rounded-lg overflow-hidden border border-[var(--ad-border)] bg-[var(--ad-surface)]">
         <table className="w-full text-left text-sm">
           <caption className="sr-only">Generation workflows</caption>
           <thead className="border-b border-[var(--ad-border)] text-xs text-[var(--ad-text-muted)]">
@@ -103,7 +125,7 @@ export function WorkflowsView() {
                 workflow={workflow}
               />
             ))}
-            {workflows.length === 0 && !loading ? (
+            {workflows.length === 0 ? (
               <tr>
                 <td className="px-3 py-6 text-center text-xs text-[var(--ad-text-muted)]" colSpan={7}>
                   {t("No workflows.")}
@@ -112,7 +134,7 @@ export function WorkflowsView() {
             ) : null}
           </tbody>
         </table>
-      </section>
+      </section> : null}
     </div>
   );
 }

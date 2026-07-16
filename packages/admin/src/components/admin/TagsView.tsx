@@ -9,12 +9,20 @@
 // 合并是破坏性操作（source 标签会被删除），走 ConfirmDialog 的 destructive.expectedName=目标标签
 // label，confirmation 仍自动填充为 `${sourceId}:${targetId}`（mergeTags 要求的精确格式）。
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { GitMerge, Loader2, Pencil, RefreshCcw, Save, X } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
+import {
+  authorityRequestFailed,
+  authorityRequestStarted,
+  authorityRequestSucceeded,
+  createAuthorityState,
+} from "@/lib/authority-state";
+import { createLatestRequestGate } from "@/lib/latest-request";
 import { cn } from "@/lib/utils";
 
 type TagRow = {
@@ -39,32 +47,42 @@ const inputClass =
 
 export function TagsView() {
   const { t } = useAdminI18n();
-  const [tags, setTags] = useState<TagRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [authority, setAuthority] = useState(() => createAuthorityState<TagRow[]>());
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<EditDraft>(emptyDraft());
   const [renaming, setRenaming] = useState(false);
+  const requestGate = useRef(createLatestRequestGate());
 
-  async function load() {
-    setLoading(true);
-    setError(null);
+  const load = useCallback(async () => {
+    const queryKey = "/api/v1/admin/content/tags";
+    const request = requestGate.current.begin();
+    setAuthority((current) => authorityRequestStarted(current, queryKey));
     try {
       const data = await apiGet<{ items: TagRow[] }>("/api/v1/admin/content/tags");
-      setTags(data.items);
+      if (!request.isCurrent()) return;
+      setAuthority(authorityRequestSucceeded(queryKey, data.items));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Load failed");
-    } finally {
-      setLoading(false);
+      if (!request.isCurrent()) return;
+      setAuthority((current) => authorityRequestFailed(
+        current,
+        queryKey,
+        err instanceof Error ? err.message : "Load failed",
+      ));
     }
-  }
+  }, []);
 
   useEffect(() => {
+    const gate = requestGate.current;
     const timer = window.setTimeout(() => {
       void load();
     }, 0);
-    return () => window.clearTimeout(timer);
-  }, []);
+    return () => {
+      gate.invalidate();
+      window.clearTimeout(timer);
+    };
+  }, [load]);
+
+  const tags = authority.data ?? [];
 
   function startEdit(tag: TagRow) {
     setEditingId(tag.id);
@@ -99,22 +117,26 @@ export function TagsView() {
         action={
           <button
             className="rounded-md inline-flex h-9 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm disabled:opacity-50"
-            disabled={loading}
+            disabled={authority.loading}
             onClick={() => void load()}
             type="button"
           >
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+            {authority.loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
             {t("Refresh")}
           </button>
         }
         purpose={t("Manage the tag vocabulary for characters.")}
         title={t("Tags")}
       />
-      {error ? <p role="alert" className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
+      {authority.error ? <AuthorityRequestError message={authority.error} onRetry={() => void load()} /> : null}
 
-      <MergeSection reload={load} tags={tags} />
+      {authority.loading && authority.data === null ? (
+        <p className="text-sm text-[var(--ad-text-muted)]" role="status">{t("Loading…")}</p>
+      ) : null}
 
-      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
+      {authority.data ? <MergeSection reload={load} tags={tags} /> : null}
+
+      {authority.data ? <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
         <div className="border-b border-[var(--ad-border)] px-3 py-2">
           <h2 className="text-sm font-semibold">{t("Tag taxonomy")} ({tags.length})</h2>
         </div>
@@ -143,7 +165,7 @@ export function TagsView() {
                 tag={tag}
               />
             ))}
-            {tags.length === 0 && !loading ? (
+            {tags.length === 0 ? (
               <tr>
                 <td className="px-3 py-6 text-center text-xs text-[var(--ad-text-muted)]" colSpan={7}>
                   {t("No tags.")}
@@ -152,7 +174,7 @@ export function TagsView() {
             ) : null}
           </tbody>
         </table>
-      </section>
+      </section> : null}
 
       {renameSpec ? <ConfirmDialog onClose={() => setRenaming(false)} spec={renameSpec} /> : null}
     </div>

@@ -8,13 +8,21 @@
 // INVARIANTS: 健康探测由后端每次请求时实时探测（无客户端缓存/轮询）；只有手动点击
 //             Refresh 才会重新拉取。
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { CircleCheck, CircleX, Loader2, RefreshCcw } from "lucide-react";
 import { apiGet } from "@/components/admin/api";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
 import { FailureReason } from "@/components/admin/generation/FailureReason";
 import { ReadonlyOpsView, type OpsColumn } from "@/components/admin/generation/ReadonlyOpsView";
 import { useAdminI18n } from "@/components/admin/i18n";
+import {
+  authorityRequestFailed,
+  authorityRequestStarted,
+  authorityRequestSucceeded,
+  createAuthorityState,
+} from "@/lib/authority-state";
+import { createLatestRequestGate } from "@/lib/latest-request";
 import { cn } from "@/lib/utils";
 
 type BackendHealth = { ok: boolean; detail?: string; latencyMs?: number };
@@ -37,29 +45,39 @@ function asBackend(row: Record<string, unknown>): BackendItem {
 
 export function BackendsView() {
   const { t } = useAdminI18n();
-  const [backends, setBackends] = useState<BackendItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [authority, setAuthority] = useState(() => createAuthorityState<BackendItem[]>());
+  const requestGate = useRef(createLatestRequestGate());
 
-  async function load() {
-    setLoading(true);
-    setError(null);
+  const load = useCallback(async () => {
+    const queryKey = "/api/v1/admin/generation/backends";
+    const request = requestGate.current.begin();
+    setAuthority((current) => authorityRequestStarted(current, queryKey));
     try {
       const data = await apiGet<{ items: BackendItem[] }>("/api/v1/admin/generation/backends");
-      setBackends(data.items);
+      if (!request.isCurrent()) return;
+      setAuthority(authorityRequestSucceeded(queryKey, data.items));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Load failed");
-    } finally {
-      setLoading(false);
+      if (!request.isCurrent()) return;
+      setAuthority((current) => authorityRequestFailed(
+        current,
+        queryKey,
+        err instanceof Error ? err.message : "Load failed",
+      ));
     }
-  }
+  }, []);
 
   useEffect(() => {
+    const gate = requestGate.current;
     const timer = window.setTimeout(() => {
       void load();
     }, 0);
-    return () => window.clearTimeout(timer);
-  }, []);
+    return () => {
+      gate.invalidate();
+      window.clearTimeout(timer);
+    };
+  }, [load]);
+
+  const backends = authority.data ?? [];
 
   const columns: OpsColumn[] = [
     {
@@ -131,22 +149,26 @@ export function BackendsView() {
       <div className="flex items-center justify-end">
         <button
           className="rounded-md inline-flex h-9 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm disabled:opacity-50"
-          disabled={loading}
+          disabled={authority.loading}
           onClick={() => void load()}
           type="button"
         >
-          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+          {authority.loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
           {t("Refresh")}
         </button>
       </div>
-      {error ? <p role="alert" className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
+      {authority.error ? <AuthorityRequestError message={authority.error} onRetry={() => void load()} /> : null}
 
-      <ReadonlyOpsView
+      {authority.loading && authority.data === null ? (
+        <p className="text-sm text-[var(--ad-text-muted)]" role="status">{t("Loading…")}</p>
+      ) : null}
+
+      {authority.data ? <ReadonlyOpsView
         columns={columns}
-        empty={loading ? t("Loading…") : t("No backends.")}
+        empty={t("No backends.")}
         rows={backends as unknown as Record<string, unknown>[]}
         title="Backends"
-      />
+      /> : null}
     </div>
   );
 }

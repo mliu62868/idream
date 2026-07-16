@@ -1,52 +1,61 @@
 "use client";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Plus } from "lucide-react";
 import { apiGet } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { FilterBar } from "@/components/admin/ui/FilterBar";
 import { CardGrid, EntityCard } from "@/components/admin/ui/CardGrid";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { PrimaryButton } from "@/components/admin/ui/buttons";
+import {
+  authorityRequestFailed,
+  authorityRequestStarted,
+  authorityRequestSucceeded,
+  createAuthorityState,
+} from "@/lib/authority-state";
+import { createLatestRequestGate } from "@/lib/latest-request";
 import { SCOPES, STARTERS_LIST, type Starter } from "./starters-api";
+
+type StartersResponse = { items: Starter[]; pageInfo: { endCursor: string | null; hasNextPage: boolean } };
 
 // SPEC: 角色模板列表页 —— 搜索/筛选 + 卡片网格（无图 monogram、范围·排序·标签数、上/下线状态）。
 // INTENT: 浏览页只浏览；创建在 /new，详情在 /<id>（spec §7 列表页）。
 export function StartersListPage() {
   const { t, value } = useAdminI18n();
-  const [rows, setRows] = useState<Starter[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [authority, setAuthority] = useState(() => createAuthorityState<StartersResponse>());
   const [search, setSearch] = useState("");
   const [scope, setScope] = useState("all");
   const [status, setStatus] = useState("all");
   const [cursor, setCursor] = useState<string | undefined>();
-  const [pageInfo, setPageInfo] = useState({ endCursor: null as string | null, hasNextPage: false });
   const [ready, setReady] = useState(false);
+  const requestGate = useRef(createLatestRequestGate());
 
   const reload = useCallback(async (nextCursor?: string) => {
-    setLoading(true);
-    setError(null);
+    const queryKey = startersQueryKey(search, scope, status, nextCursor);
+    const params = new URLSearchParams(queryKey);
+    const request = requestGate.current.begin();
+    setAuthority((current) => authorityRequestStarted(current, queryKey));
     try {
-      const params = new URLSearchParams({ limit: "25" });
-      if (search.trim()) params.set("search", search.trim());
-      if (scope !== "all") params.set("scope", scope);
-      if (status !== "all") params.set("status", status);
-      if (nextCursor) params.set("cursor", nextCursor);
-      const data = await apiGet<{ items: Starter[]; pageInfo: { endCursor: string | null; hasNextPage: boolean } }>(`${STARTERS_LIST}?${params}`);
-      setRows(data.items);
+      const data = await apiGet<StartersResponse>(`${STARTERS_LIST}?${params}`);
+      if (!request.isCurrent()) return;
+      setAuthority(authorityRequestSucceeded(queryKey, data));
       setCursor(nextCursor);
-      setPageInfo(data.pageInfo);
       window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : t("Request failed"));
-    } finally {
-      setLoading(false);
+      if (!request.isCurrent()) return;
+      setAuthority((current) => authorityRequestFailed(
+        current,
+        queryKey,
+        loadError instanceof Error ? loadError.message : t("Request failed"),
+      ));
     }
   }, [scope, search, status, t]);
 
   useEffect(() => {
+    const gate = requestGate.current;
     const params = new URLSearchParams(window.location.search);
     const timer = window.setTimeout(() => {
       setSearch(params.get("search") ?? "");
@@ -55,7 +64,10 @@ export function StartersListPage() {
       setCursor(params.get("cursor") ?? undefined);
       setReady(true);
     }, 0);
-    return () => window.clearTimeout(timer);
+    return () => {
+      gate.invalidate();
+      window.clearTimeout(timer);
+    };
   }, []);
 
   useEffect(() => {
@@ -65,6 +77,7 @@ export function StartersListPage() {
   }, [cursor, ready, reload, search]);
 
   const allOption = { value: "all", label: t("All") };
+  const rows = authority.data?.items ?? [];
   return (
     <div>
       <PageHeader
@@ -79,22 +92,46 @@ export function StartersListPage() {
         title={t("Character Starters")}
       />
       <FilterBar
-        onSearch={(value) => { setSearch(value); setCursor(undefined); }}
+        onSearch={(nextSearch) => {
+          requestGate.current.invalidate();
+          setSearch(nextSearch);
+          setCursor(undefined);
+          setAuthority((current) => authorityRequestStarted(
+            current,
+            startersQueryKey(nextSearch, scope, status),
+          ));
+        }}
         search={search}
         searchPlaceholder={t("Search by name")}
         selects={[
-          { name: t("Scope"), value: scope, onChange: (value) => { setScope(value); setCursor(undefined); },
+          { name: t("Scope"), value: scope, onChange: (nextScope) => {
+            requestGate.current.invalidate();
+            setScope(nextScope);
+            setCursor(undefined);
+            setAuthority((current) => authorityRequestStarted(
+              current,
+              startersQueryKey(search, nextScope, status),
+            ));
+          },
             options: [allOption, ...SCOPES.map((s) => ({ value: s, label: value(s) }))] },
-          { name: t("Status"), value: status, onChange: (value) => { setStatus(value); setCursor(undefined); },
+          { name: t("Status"), value: status, onChange: (nextStatus) => {
+            requestGate.current.invalidate();
+            setStatus(nextStatus);
+            setCursor(undefined);
+            setAuthority((current) => authorityRequestStarted(
+              current,
+              startersQueryKey(search, scope, nextStatus),
+            ));
+          },
             options: [allOption,
               { value: "active", label: t("Published") },
               { value: "disabled", label: t("Inactive") }] },
         ]}
       />
-      {error ? <p role="alert" className="mb-4 text-sm text-[var(--ad-red-text)]">{error}</p> : null}
-      {loading ? (
+      {authority.error ? <AuthorityRequestError message={authority.error} onRetry={() => void reload(cursor)} /> : null}
+      {authority.loading && authority.data === null ? (
         <p className="text-sm text-[var(--ad-text-muted)]">{t("Loading…")}</p>
-      ) : rows.length === 0 ? (
+      ) : authority.data && rows.length === 0 ? (
         <EmptyState
           action={
             <Link href="/admin/content/templates/new">
@@ -106,7 +143,7 @@ export function StartersListPage() {
           hint={t("Create the first starter template to get started.")}
           title={t("No starter templates yet.")}
         />
-      ) : (
+      ) : authority.data ? (
         <CardGrid>
           {rows.map((row) => (
             <EntityCard
@@ -124,8 +161,25 @@ export function StartersListPage() {
             />
           ))}
         </CardGrid>
-      )}
-      <div className="mt-4 flex justify-end"><button className="min-h-10 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold disabled:opacity-50" disabled={loading || !pageInfo.hasNextPage || !pageInfo.endCursor} onClick={() => setCursor(pageInfo.endCursor ?? undefined)} type="button">Next page</button></div>
+      ) : null}
+      <div className="mt-4 flex justify-end"><button className="min-h-10 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold disabled:opacity-50" disabled={authority.loading || !authority.data?.pageInfo.hasNextPage || !authority.data.pageInfo.endCursor} onClick={() => {
+        const nextCursor = authority.data?.pageInfo.endCursor ?? undefined;
+        requestGate.current.invalidate();
+        setCursor(nextCursor);
+        setAuthority((current) => authorityRequestStarted(
+          current,
+          startersQueryKey(search, scope, status, nextCursor),
+        ));
+      }} type="button">Next page</button></div>
     </div>
   );
+}
+
+function startersQueryKey(search: string, scope: string, status: string, cursor?: string) {
+  const params = new URLSearchParams({ limit: "25" });
+  if (search.trim()) params.set("search", search.trim());
+  if (scope !== "all") params.set("scope", scope);
+  if (status !== "all") params.set("status", status);
+  if (cursor) params.set("cursor", cursor);
+  return params.toString();
 }

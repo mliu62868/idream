@@ -12,6 +12,13 @@ import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
+import {
+  authorityRequestFailed,
+  authorityRequestStarted,
+  authorityRequestSucceeded,
+  createAuthorityState,
+  type AuthorityState,
+} from "@/lib/authority-state";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import {
   contentListPath,
@@ -22,21 +29,8 @@ import {
 
 type Row = Record<string, unknown>;
 type PageInfo = { endCursor: string | null; hasNextPage: boolean };
-type AuthorityState<T> = {
-  data: T | null;
-  loading: boolean;
-  error: string | null;
-  refreshedAt: string | null;
-};
 type CharacterResponse = { items: Row[]; pageInfo: PageInfo };
 type FeaturedResponse = { items: Row[]; characterIds: string[] };
-
-const initialState = <T,>(): AuthorityState<T> => ({
-  data: null,
-  loading: true,
-  error: null,
-  refreshedAt: null,
-});
 
 export function ContentMerchandisingWorkspace({
   canWrite,
@@ -46,9 +40,9 @@ export function ContentMerchandisingWorkspace({
   const [query, setQuery] = useState<ContentQuery>(() => currentQuery());
   const [draft, setDraft] = useState<ContentQuery>(() => currentQuery());
   const [characters, setCharacters] =
-    useState<AuthorityState<CharacterResponse>>(initialState);
+    useState(() => createAuthorityState<CharacterResponse>());
   const [featured, setFeatured] =
-    useState<AuthorityState<FeaturedResponse>>(initialState);
+    useState(() => createAuthorityState<FeaturedResponse>());
   const [featuredInput, setFeaturedInput] = useState("");
   const [reason, setReason] = useState("");
   const [confirmation, setConfirmation] = useState("");
@@ -61,39 +55,39 @@ export function ContentMerchandisingWorkspace({
   const initialQuery = useRef(query);
 
   const loadCharacters = useCallback(async (next: ContentQuery) => {
+    const queryKey = contentListPath(next);
     const request = characterGate.current.begin();
-    setCharacters((current) => ({ ...current, loading: true, error: null }));
+    setCharacters((current) => authorityRequestStarted(current, queryKey));
     try {
-      const data = await apiGet<CharacterResponse>(contentListPath(next));
+      const data = await apiGet<CharacterResponse>(queryKey);
       if (!request.isCurrent()) return;
-      setCharacters({ data, loading: false, error: null, refreshedAt: now() });
+      setCharacters(authorityRequestSucceeded(queryKey, data));
     } catch (cause) {
       if (!request.isCurrent()) return;
-      setCharacters((current) => ({
-        ...current,
-        loading: false,
-        error: errorMessage(cause, "Characters could not be loaded"),
-      }));
+      setCharacters((current) => authorityRequestFailed(
+        current,
+        queryKey,
+        errorMessage(cause, "Characters could not be loaded"),
+      ));
     }
   }, []);
 
   const loadFeatured = useCallback(async () => {
+    const queryKey = "/api/v1/admin/content/featured";
     const request = featuredGate.current.begin();
-    setFeatured((current) => ({ ...current, loading: true, error: null }));
+    setFeatured((current) => authorityRequestStarted(current, queryKey));
     try {
-      const data = await apiGet<FeaturedResponse>(
-        "/api/v1/admin/content/featured",
-      );
+      const data = await apiGet<FeaturedResponse>(queryKey);
       if (!request.isCurrent()) return;
-      setFeatured({ data, loading: false, error: null, refreshedAt: now() });
+      setFeatured(authorityRequestSucceeded(queryKey, data));
       setFeaturedInput(data.characterIds.join(", "));
     } catch (cause) {
       if (!request.isCurrent()) return;
-      setFeatured((current) => ({
-        ...current,
-        loading: false,
-        error: errorMessage(cause, "Featured content could not be loaded"),
-      }));
+      setFeatured((current) => authorityRequestFailed(
+        current,
+        queryKey,
+        errorMessage(cause, "Featured content could not be loaded"),
+      ));
     }
   }, []);
 
@@ -269,7 +263,12 @@ export function ContentMerchandisingWorkspace({
         error={featured.error}
         onRetry={() => void loadFeatured()}
       />
-      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
+      {featured.loading && featured.data === null ? (
+        <p className="text-sm text-[var(--ad-text-muted)]" role="status">
+          Loading featured authority…
+        </p>
+      ) : null}
+      {featured.data ? <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <h2 className="text-sm font-semibold">Featured curation</h2>
         <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
           Only public, approved characters are retained in the public feed.
@@ -335,18 +334,23 @@ export function ContentMerchandisingWorkspace({
             {saveError}
           </p>
         ) : null}
-      </section>
-      <DataTable
+      </section> : null}
+      {featured.data ? <DataTable
         caption="Currently featured"
         empty={<EmptyState title="No featured characters" />}
         headers={["ID", "Name", "Visibility", "Status"]}
         rows={featuredRows}
-      />
+      /> : null}
       <AuthorityError
         error={characters.error}
         onRetry={() => void loadCharacters(query)}
       />
-      <DataTable
+      {characters.loading && characters.data === null ? (
+        <p className="text-sm text-[var(--ad-text-muted)]" role="status">
+          Loading character authority…
+        </p>
+      ) : null}
+      {characters.data ? <DataTable
         caption="Characters"
         empty={<EmptyState title="No characters match these filters" />}
         headers={[
@@ -360,7 +364,7 @@ export function ContentMerchandisingWorkspace({
           "Actions",
         ]}
         rows={characterRows}
-      />
+      /> : null}
       {characters.data?.pageInfo.hasNextPage &&
       characters.data.pageInfo.endCursor ? (
         <button
@@ -394,7 +398,13 @@ function Freshness<T>({
   state: AuthorityState<T>;
 }) {
   if (state.loading) return <span>{authority}: refreshing</span>;
-  if (state.error) return <span>{authority}: stale · retry available</span>;
+  if (state.error) {
+    return (
+      <span>
+        {authority}: {state.data ? "stale" : "unavailable"} · retry available
+      </span>
+    );
+  }
   return (
     <span>
       {authority}: fresh{" "}
@@ -561,10 +571,6 @@ function currentQuery() {
   return typeof window === "undefined"
     ? contentQueryFromSearch("")
     : contentQueryFromSearch(window.location.search);
-}
-
-function now() {
-  return new Date().toISOString();
 }
 
 function errorMessage(cause: unknown, fallback: string) {
