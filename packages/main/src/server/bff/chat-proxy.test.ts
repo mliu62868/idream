@@ -175,6 +175,72 @@ describe("proxyChatRequest", () => {
     spy.mockRestore();
   });
 
+  it("keeps owner legacy test media visible with explicit source authority", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const db = await import("@/server/lib/db");
+    const characterSpy = vi
+      .spyOn(db.prisma.character, "findUnique")
+      .mockResolvedValue({
+        creatorId: "seed-dev-user",
+        name: "Mei",
+      } as never);
+    const mediaSpy = vi
+      .spyOn(db.prisma.mediaAsset, "findMany")
+      .mockResolvedValue([
+        {
+          height: 640,
+          id: "asset_legacy",
+          metadata: { synthetic: true, source: "mock" },
+          thumbnailUrl: null,
+          url: "/user-content/legacy.webp",
+          width: 512,
+        },
+      ] as never);
+    fetchMock.mockResolvedValueOnce(
+      jsonResp(
+        {
+          session: { id: "s1", title: null, characterId: "c1" },
+          messages: [{
+            id: "m1",
+            role: "assistant",
+            content: "",
+            attachments: [{
+              id: "attachment_1",
+              kind: "image",
+              mediaAssetId: "asset_legacy",
+              status: "completed",
+            }],
+          }],
+        },
+        200,
+      ),
+    );
+    const req = new Request("http://localhost/api/v1/chat/sessions/s1", {
+      method: "GET",
+      headers: { "x-idream-user-id": "seed-dev-user" },
+    });
+
+    const res = await proxyChatRequest(req, ["chat", "sessions", "s1"]);
+    const json = (await res.json()) as {
+      data: {
+        session: {
+          messages: Array<{
+            attachments: Array<Record<string, unknown>>;
+          }>;
+        };
+      };
+    };
+
+    expect(json.data.session.messages[0]?.attachments[0]).toMatchObject({
+      isSynthetic: true,
+      mediaUrl: "/user-content/legacy.webp",
+      sourceAuthority: "legacy_test_asset",
+    });
+    expect(mediaSpy).toHaveBeenCalledOnce();
+    mediaSpy.mockRestore();
+    characterSpy.mockRestore();
+  });
+
   it("passes through management endpoints (memories) unchanged", async () => {
     const { proxyChatRequest } = await import("./chat-proxy");
     fetchMock.mockResolvedValueOnce(jsonResp({ memories: [{ id: "mem_1" }] }, 200));

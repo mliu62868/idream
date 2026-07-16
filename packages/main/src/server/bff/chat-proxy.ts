@@ -13,6 +13,7 @@ import {
 import { getAuthCtx } from "@/server/lib/auth";
 import { env } from "@/server/lib/env";
 import { prisma } from "@/server/lib/db";
+import { isSyntheticMediaAsset } from "@/server/lib/media-asset-authority";
 import { isReusablePlatformAssetWhere } from "@/server/modules/ourdream/chat-image-reuse";
 
 const HOP_BY_HOP = new Set(["cookie", "host", "connection", "content-length", "transfer-encoding"]);
@@ -179,7 +180,14 @@ async function enrichAttachmentMedia(messages: Array<Record<string, unknown>>, u
       deletedAt: null,
       ...isReusablePlatformAssetWhere(userId),
     },
-    select: { id: true, url: true, thumbnailUrl: true, width: true, height: true },
+    select: {
+      id: true,
+      url: true,
+      thumbnailUrl: true,
+      width: true,
+      height: true,
+      metadata: true,
+    },
   });
   const byId = new Map(assets.map((asset) => [asset.id, asset]));
   return messages.map((message) => {
@@ -190,6 +198,7 @@ async function enrichAttachmentMedia(messages: Array<Record<string, unknown>>, u
         if (!isRecord(attachment)) return attachment;
         const mediaAssetId = typeof attachment.mediaAssetId === "string" ? attachment.mediaAssetId : null;
         const asset = mediaAssetId ? byId.get(mediaAssetId) : null;
+        const isSynthetic = asset ? isSyntheticMediaAsset(asset.metadata) : false;
         return asset
           ? {
               ...attachment,
@@ -197,6 +206,8 @@ async function enrichAttachmentMedia(messages: Array<Record<string, unknown>>, u
               thumbnailUrl: asset.thumbnailUrl ?? asset.url,
               width: attachment.width ?? asset.width,
               height: attachment.height ?? asset.height,
+              isSynthetic,
+              sourceAuthority: isSynthetic ? "legacy_test_asset" : "media_asset",
             }
           : attachment;
       }),

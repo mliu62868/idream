@@ -37,6 +37,7 @@ import {
   type ViewerFetcher,
 } from "./viewer-auth";
 import { activeEntitlementSummary } from "./entitlement-copy";
+import { LegacyTestAssetBadge } from "./LegacyTestAssetBadge";
 
 type ProfilePayload = {
   ok?: boolean;
@@ -121,6 +122,7 @@ type LibraryItem = {
   thumbnailUrl?: string;
   url?: string;
   contentType?: string | null;
+  isSynthetic?: boolean;
   prompt?: string | null;
   visibility?: string;
   status?: string;
@@ -1829,6 +1831,10 @@ function LibraryCard({
               unoptimized={isPrivateMediaUrl(source)}
             />
           ) : null}
+          <LegacyTestAssetBadge
+            className="absolute right-2 top-2 z-20"
+            isSynthetic={isMediaItem && item.isSynthetic}
+          />
         </div>
       )}
       <div className="p-4">

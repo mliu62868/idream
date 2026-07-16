@@ -27,6 +27,7 @@ import {
   readyAuthorityStatus,
 } from "./authority-state";
 import { authHrefForTarget } from "./authRedirect";
+import { LegacyTestAssetBadge } from "./LegacyTestAssetBadge";
 
 type MediaItem = {
   id: string;
@@ -39,6 +40,7 @@ type MediaItem = {
   height?: number | null;
   prompt: string | null;
   liked: boolean;
+  isSynthetic?: boolean;
   canEditIdentity?: boolean;
   visualProfileId?: string | null;
   visualProfileVersion?: number | null;
@@ -2040,6 +2042,10 @@ export function GeneratorWorkspace() {
                               testIdPrefix="latest-result"
                             />
                           )}
+                          <LegacyTestAssetBadge
+                            className="absolute right-2 top-2 z-20"
+                            isSynthetic={item.isSynthetic}
+                          />
                         </div>
                         <div className="grid gap-2 p-3">
                           {item.type === "image" && item.characterId && (
@@ -2384,6 +2390,10 @@ export function GeneratorWorkspace() {
                           source={source}
                         />
                       )}
+                      <LegacyTestAssetBadge
+                        className="absolute right-2 top-2 z-20"
+                        isSynthetic={item.isSynthetic}
+                      />
                       {manageMode ? (
                         <button
                           aria-label={isSelected ? "Deselect media" : "Select media"}

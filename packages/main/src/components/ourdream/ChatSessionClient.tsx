@@ -22,6 +22,7 @@ import { ChatSessionListDrawer } from "./chat/ChatSessionListDrawer";
 import { MemoryPanel } from "./chat/MemoryPanel";
 import { MessageActions } from "./chat/MessageActions";
 import { authHrefForTarget } from "./authRedirect";
+import { LegacyTestAssetBadge } from "./LegacyTestAssetBadge";
 
 type ChatMessage = {
   id: string;
@@ -38,6 +39,8 @@ type ChatAttachment = {
   mediaAssetId?: string | null;
   mediaUrl?: string | null;
   thumbnailUrl?: string | null;
+  isSynthetic?: boolean;
+  sourceAuthority?: "legacy_test_asset" | "media_asset";
   costDreamcoins?: number | null;
   promptHint?: string | null;
   width?: number | null;
@@ -1044,10 +1047,13 @@ function ChatImageAttachmentCard({
   const previewKey = `${attachment.id}:${source ?? ""}`;
   const [invalidPreviewKey, setInvalidPreviewKey] = useState<string | null>(null);
   const invalidPreview = invalidPreviewKey === previewKey;
+  const isLegacyTestAsset =
+    attachment.isSynthetic === true ||
+    attachment.sourceAuthority === "legacy_test_asset";
 
   if (attachment.status === "completed" && attachment.mediaUrl && source && !invalidPreview) {
     return (
-      <figure className="overflow-hidden rounded-[12px] border border-white/10 bg-black/20">
+      <figure className="relative overflow-hidden rounded-[12px] border border-white/10 bg-black/20">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           alt={attachment.promptHint ? `Generated image: ${attachment.promptHint}` : "Generated chat image"}
@@ -1060,6 +1066,10 @@ function ChatImageAttachmentCard({
           }}
           src={source}
           width={attachment.width ?? 512}
+        />
+        <LegacyTestAssetBadge
+          className="absolute right-2 top-2 z-20"
+          isSynthetic={isLegacyTestAsset}
         />
         {attachment.mediaAssetId ? (
           <ChatImageAttachmentActions
