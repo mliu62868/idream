@@ -3,6 +3,7 @@ import {
   CUSTOMER_METRIC_DATA_SCOPE,
   OPERATIONAL_EVENT_DATA_CLASSES,
   OPERATIONAL_METRIC_DATA_SCOPE,
+  OPERATIONAL_USER_DATA_SCOPE,
   OPERATIONAL_USER_DATA_CLASSES,
   customerAnalyticsEventWhere,
   customerDreamcoinLedgerWhere,
@@ -106,6 +107,11 @@ describe("legacy admin metric data scopes", () => {
     expect(OPERATIONAL_METRIC_DATA_SCOPE).toEqual({
       kind: "operational",
       includedDataClasses: ["customer", "internal", "operational"],
+      excludedDataClasses: ["fixture", "audit"],
+    });
+    expect(OPERATIONAL_USER_DATA_SCOPE).toEqual({
+      kind: "operational",
+      includedDataClasses: ["customer", "internal"],
       excludedDataClasses: ["fixture", "audit"],
     });
   });

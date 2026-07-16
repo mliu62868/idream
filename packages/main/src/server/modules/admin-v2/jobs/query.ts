@@ -12,6 +12,10 @@ import { z } from "zod";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
+import {
+  OPERATIONAL_USER_DATA_SCOPE,
+  operationalGenerationJobWhere,
+} from "@/server/modules/admin/shared/metric-data-scope";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 
 const jobCursorSchema = z.object({
@@ -52,7 +56,7 @@ function cursorQueryHash(query: ReturnType<typeof generationJobQuerySchema.parse
 }
 
 function baseWhere(query: ReturnType<typeof generationJobQuerySchema.parse>): Prisma.GenerationJobWhereInput {
-  return {
+  return operationalGenerationJobWhere({
     mode: query.mode === "all" ? undefined : query.mode,
     status: query.legacyStatus,
     provider: query.provider,
@@ -72,7 +76,7 @@ function baseWhere(query: ReturnType<typeof generationJobQuerySchema.parse>): Pr
         { errorCode: { contains: query.search, mode: "insensitive" } },
       ],
     } : {}),
-  };
+  });
 }
 
 function sortOrder(sort: GenerationJobSort): Prisma.GenerationJobOrderByWithRelationInput[] {
@@ -326,6 +330,7 @@ export async function queryGenerationJobsV2Authority(input: {
       totalOutputCount: totals._sum.outputCount ?? 0,
       totalDeliveredOutputCount: totals._sum.deliveredOutputCount ?? 0,
     },
+    dataScope: OPERATIONAL_USER_DATA_SCOPE,
     asOf: (input.now ?? new Date()).toISOString(),
     freshness: "fresh",
   });

@@ -28,6 +28,12 @@ export const OPERATIONAL_METRIC_DATA_SCOPE = {
   excludedDataClasses: ["fixture", "audit"],
 } as const;
 
+export const OPERATIONAL_USER_DATA_SCOPE = {
+  kind: "operational",
+  includedDataClasses: OPERATIONAL_USER_DATA_CLASSES,
+  excludedDataClasses: ["fixture", "audit"],
+} as const;
+
 const customerOwnerRelationWhere = {
   user: { is: { dataClass: "customer" } },
 } as const;

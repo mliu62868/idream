@@ -1,5 +1,11 @@
 "use client";
 
+import {
+  ADMIN_DATA_CLASSES,
+  accessUserListResponseSchema,
+  type AccessUserListItem,
+  type AccessUserListResponse,
+} from "@idream/shared/admin";
 import { ADMIN_PERMISSION_KEYS } from "@idream/shared/admin/permissions";
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -21,12 +27,10 @@ import {
   accessStatusConfirmation,
   accessWorkspaceUrl,
   defaultAccessQuery,
+  type AccessDataClassFilter,
   type AccessQuery,
 } from "./query";
 
-type UserRow = Record<string, unknown>;
-type PageInfo = { endCursor: string | null; hasNextPage: boolean };
-type ListResponse = { items: UserRow[]; pageInfo?: PageInfo };
 type PermissionDraft = {
   userId: string;
   permissionKey: string;
@@ -45,7 +49,7 @@ export function AccessWorkspace({
 }) {
   const [query, setQuery] = useState<AccessQuery>(() => currentQuery());
   const [draft, setDraft] = useState<AccessQuery>(() => currentQuery());
-  const [data, setData] = useState<ListResponse | null>(null);
+  const [data, setData] = useState<AccessUserListResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
@@ -60,7 +64,9 @@ export function AccessWorkspace({
     setLoading(true);
     setError(null);
     try {
-      const response = await apiGet<ListResponse>(accessListPath(next));
+      const response = accessUserListResponseSchema.parse(
+        await apiGet<unknown>(accessListPath(next)),
+      );
       if (!request.isCurrent()) return;
       setData(response);
       setRefreshedAt(new Date().toISOString());
@@ -140,7 +146,9 @@ export function AccessWorkspace({
   }
 
   const users = data?.items ?? [];
-  const filtered = Boolean(query.search || query.role || query.status);
+  const filtered = Boolean(
+    query.search || query.role || query.status || query.dataClass,
+  );
   return (
     <section className="space-y-5">
       <PageHeader
@@ -169,7 +177,7 @@ export function AccessWorkspace({
         </span>
       </div>
       <form
-        className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-2 xl:grid-cols-[minmax(260px,1fr)_180px_180px_auto]"
+        className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-2 xl:grid-cols-[minmax(240px,1fr)_160px_160px_160px_auto]"
         onSubmit={apply}
       >
         <Field
@@ -197,6 +205,17 @@ export function AccessWorkspace({
           onChange={(status) => setDraft((value) => ({ ...value, status }))}
           options={["", "active", "suspended", "deleted"]}
           value={draft.status}
+        />
+        <Select
+          label="Data class"
+          onChange={(dataClass) =>
+            setDraft((value) => ({
+              ...value,
+              dataClass: dataClass as AccessDataClassFilter,
+            }))
+          }
+          options={["", ...ADMIN_DATA_CLASSES]}
+          value={draft.dataClass}
         />
         <div className="flex items-end gap-2">
           <button
@@ -348,6 +367,7 @@ export function AccessWorkspace({
               "Display name",
               "Role",
               "Status",
+              "Data class",
               "Dreamcoins",
               "Created",
               "Actions",
@@ -384,7 +404,7 @@ export function AccessWorkspace({
 }
 
 function userTableRows(
-  users: UserRow[],
+  users: readonly AccessUserListItem[],
   canChangeStatus: boolean,
   confirm: (input: {
     title: string;
@@ -405,6 +425,7 @@ function userTableRows(
         display(user.displayName),
         display(user.role),
         display(user.status),
+        display(user.dataClass),
         display(user.dreamcoins),
         date(user.createdAt),
         canChangeStatus ? (
@@ -441,7 +462,7 @@ function currentQuery() {
     : accessQueryFromSearch(window.location.search);
 }
 function freshness(
-  data: ListResponse | null,
+  data: AccessUserListResponse | null,
   loading: boolean,
   error: string | null,
   refreshedAt: string | null,

@@ -264,7 +264,12 @@ export function JobsView() {
       <ReadonlyOpsView columns={columns} empty={jobsBusy ? "Loading authoritative jobs…" : "No jobs match the server query."} rows={rows} title="Generation Jobs" />
       {jobData ? (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] px-4 py-3">
-          <p className="text-xs text-[var(--ad-text-muted)]">Showing {rows.length} of {jobData.summary.totalCount} matching jobs · fresh as of {compactDate(jobData.asOf, locale)}</p>
+          <p className="text-xs text-[var(--ad-text-muted)]">
+            Showing {rows.length} of {jobData.summary.totalCount} matching jobs
+            {" · "}operational owners: {jobData.dataScope.includedDataClasses.join(" + ")}
+            {" · "}excluded: {jobData.dataScope.excludedDataClasses.join(" + ")}
+            {" · "}fresh as of {compactDate(jobData.asOf, locale)}
+          </p>
           <button
             className="min-h-10 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold disabled:opacity-50"
             disabled={jobsBusy || !jobData.pageInfo.hasNextPage || !jobData.pageInfo.endCursor}

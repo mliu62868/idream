@@ -176,6 +176,20 @@ export const generationJobSummarySchema = z
   })
   .strict();
 
+export const generationJobDataScopeSchema = z
+  .object({
+    kind: z.literal("operational"),
+    includedDataClasses: z.tuple([
+      z.literal("customer"),
+      z.literal("internal"),
+    ]),
+    excludedDataClasses: z.tuple([
+      z.literal("fixture"),
+      z.literal("audit"),
+    ]),
+  })
+  .strict();
+
 export const generationJobListResponseSchema = adminListResponseSchema(
   generationJobListItemSchema,
   generationJobFacetsSchema,
@@ -183,6 +197,7 @@ export const generationJobListResponseSchema = adminListResponseSchema(
 ).extend({
   facets: generationJobFacetsSchema,
   summary: generationJobSummarySchema,
+  dataScope: generationJobDataScopeSchema,
 });
 
 export const generationJobDetailResponseSchema = z.object({

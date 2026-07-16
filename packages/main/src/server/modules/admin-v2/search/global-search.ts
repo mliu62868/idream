@@ -4,6 +4,7 @@ import { ok } from "@/server/lib/http";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { effectiveCharacterIdsForPermission, effectivePermissions } from "@/server/admin/effective-permissions";
 import { incidentReadScopeWhere } from "@/server/modules/admin-v2/incidents/scope";
+import { operationalGenerationJobWhere } from "@/server/modules/admin/shared/metric-data-scope";
 
 export async function globalAdminSearch(request: Request) {
   const actor = await actorWithPermission(request, "dashboard.read");
@@ -33,7 +34,7 @@ export async function globalAdminSearch(request: Request) {
       ? prisma.opsIncident.findMany({ where: { AND: [incidentScope, { OR: [{ id: contains }, { signature: contains }, { suspectedCause: contains }] }] }, orderBy: [{ updatedAt: "desc" }, { id: "desc" }], take: query.limit })
       : [],
     permissions.has("generation.job.read")
-      ? prisma.generationJob.findMany({ where: { OR: [{ id: contains }, { userId: contains }, { errorCode: contains }, { profileId: contains }] }, orderBy: [{ updatedAt: "desc" }, { id: "desc" }], take: query.limit })
+      ? prisma.generationJob.findMany({ where: operationalGenerationJobWhere({ OR: [{ id: contains }, { userId: contains }, { errorCode: contains }, { profileId: contains }] }), orderBy: [{ updatedAt: "desc" }, { id: "desc" }], take: query.limit })
       : [],
   ]);
   const items = [

@@ -9,6 +9,10 @@ import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import { appendLedger } from "@/server/modules/admin/billing/ledger";
 import { deriveGenerationJobState, deriveGenerationTimeline } from "@/server/modules/admin/generation-job-state";
+import {
+  OPERATIONAL_USER_DATA_SCOPE,
+  operationalGenerationJobWhere,
+} from "@/server/modules/admin/shared/metric-data-scope";
 import { actorWithPermission, clampInt, jsonBody, toInputJson, writeAudit, type AdminActor } from "@/server/modules/admin/shared/legacy-primitives";
 import { publicUser, redactGenerationJob as redactJob } from "@/server/modules/admin/shared/presenters";
 import { decodeAdminListCursor, encodeAdminListCursor } from "@/server/modules/admin-v2/shared/list-cursor";
@@ -37,12 +41,19 @@ export async function listGenerationJobs(request: Request) {
   const mode = url.searchParams.get("mode") ?? "image";
   const userId = url.searchParams.get("userId") ?? undefined;
   const jobs = await prisma.generationJob.findMany({
-    where: { status, mode: mode === "all" ? undefined : mode, userId },
+    where: operationalGenerationJobWhere({
+      status,
+      mode: mode === "all" ? undefined : mode,
+      userId,
+    }),
     include: { user: true, assets: true },
     orderBy: { createdAt: "desc" },
     take: clampInt(url.searchParams.get("limit"), 1, 100, 50),
   });
-  return ok({ items: jobs.map((job) => redactJob(job)) });
+  return ok({
+    items: jobs.map((job) => redactJob(job)),
+    dataScope: OPERATIONAL_USER_DATA_SCOPE,
+  });
 }
 
 export async function getGenerationJobDetail(request: Request, jobId: string) {
@@ -161,7 +172,7 @@ export async function deadLetterQueue(request: Request) {
     return { OR: [{ updatedAt: { lt: updatedAt } }, { updatedAt, id: { lt: id } }] };
   })() : undefined;
   const jobs = await prisma.generationJob.findMany({
-    where: {
+    where: operationalGenerationJobWhere({
       status: { in: statuses },
       errorCode: errorCode ? { contains: errorCode } : undefined,
       mode: mode && mode !== "all" ? mode : undefined,
@@ -175,7 +186,7 @@ export async function deadLetterQueue(request: Request) {
           { provider: { contains: search } },
         ] }] : []),
       ],
-    },
+    }),
     include: { assets: true, events: { orderBy: { createdAt: "asc" } } },
     orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
     take: limit + 1,
@@ -196,6 +207,7 @@ export async function deadLetterQueue(request: Request) {
         ledgerEntries: refundedIds.has(job.id) ? [{ reason: "refund", delta: job.costDreamcoins }] : [],
       }).retryEligibility,
     })),
+    dataScope: OPERATIONAL_USER_DATA_SCOPE,
     pageInfo: adminListPageInfo(
       "generation_dead_letter",
       queryIdentity,

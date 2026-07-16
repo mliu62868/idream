@@ -1,6 +1,24 @@
-export type AccessQuery = { search: string; role: string; status: string; cursor: string };
+import {
+  ADMIN_DATA_CLASSES,
+  type AdminDataClass,
+} from "@idream/shared/admin";
 
-export const defaultAccessQuery: AccessQuery = { search: "", role: "", status: "", cursor: "" };
+export type AccessDataClassFilter = "" | AdminDataClass;
+export type AccessQuery = {
+  search: string;
+  role: string;
+  status: string;
+  dataClass: AccessDataClassFilter;
+  cursor: string;
+};
+
+export const defaultAccessQuery: AccessQuery = {
+  search: "",
+  role: "",
+  status: "",
+  dataClass: "",
+  cursor: "",
+};
 
 export function accessQueryFromSearch(search: string): AccessQuery {
   const params = new URLSearchParams(search);
@@ -8,6 +26,7 @@ export function accessQueryFromSearch(search: string): AccessQuery {
     search: params.get("accessSearch") ?? "",
     role: params.get("accessRole") ?? "",
     status: params.get("accessStatus") ?? "",
+    dataClass: accessDataClass(params.get("accessDataClass")),
     cursor: params.get("accessCursor") ?? "",
   };
 }
@@ -17,6 +36,7 @@ export function accessListPath(query: AccessQuery) {
     q: query.search,
     role: query.role,
     status: query.status,
+    dataClass: query.dataClass,
     cursor: query.cursor,
     limit: "25",
   });
@@ -27,6 +47,7 @@ export function accessWorkspaceUrl(pathname: string, search: string, query: Acce
   set(params, "accessSearch", query.search);
   set(params, "accessRole", query.role);
   set(params, "accessStatus", query.status);
+  set(params, "accessDataClass", query.dataClass);
   set(params, "accessCursor", query.cursor);
   const value = params.toString();
   return value ? `${pathname}?${value}` : pathname;
@@ -49,4 +70,8 @@ function withQuery(path: string, values: Record<string, string>) {
 function set(params: URLSearchParams, key: string, value: string) {
   if (value) params.set(key, value);
   else params.delete(key);
+}
+
+function accessDataClass(value: string | null): AccessDataClassFilter {
+  return ADMIN_DATA_CLASSES.find((dataClass) => dataClass === value) ?? "";
 }

@@ -6,6 +6,10 @@ describe("Access workspace permissions", () => {
   it("keeps server filters visible and hides both high-risk capabilities without grants", () => {
     const html = renderToStaticMarkup(<AccessWorkspace permissions={{ changeStatus: false, managePermissions: false }} />);
     expect(html).toContain("Search users");
+    expect(html).toContain("Data class");
+    for (const dataClass of ["customer", "internal", "fixture", "audit"]) {
+      expect(html).toContain(`value="${dataClass}"`);
+    }
     expect(html).toContain("user.role.write is not granted");
     expect(html).toContain("user.status.write is not granted");
     expect(html).not.toContain("Permission override</h3>");

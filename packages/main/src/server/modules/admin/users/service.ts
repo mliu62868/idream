@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
+import {
+  accessUserListQuerySchema,
+  accessUserListResponseSchema,
+} from "@idream/shared/admin";
 import { z } from "zod";
 import {
   applyOverrides,
@@ -44,15 +48,6 @@ const permissionOverrideSchema = z.object({
   reason: z.string().trim().min(3).max(2_000),
   confirmation: z.string().trim().min(1).max(160),
 });
-
-const userListQuerySchema = z.object({
-  q: z.string().trim().min(1).max(200).optional(),
-  search: z.string().trim().min(1).max(200).optional(),
-  role: z.enum(["user", "moderator", "support", "ops", "analyst", "admin"]).optional(),
-  status: z.enum(["active", "suspended", "deleted"]).optional(),
-  cursor: z.string().min(1).optional(),
-  limit: z.coerce.number().int().min(1).max(100).optional(),
-}).strict();
 
 type UserCommandInput = {
   request: Request;
@@ -121,10 +116,17 @@ async function executeIdempotentUserCommand(input: UserCommandInput) {
 export async function listUsers(request: Request) {
   await actorWithPermission(request, "user.read");
   const url = new URL(request.url);
-  const query = userListQuerySchema.parse(Object.fromEntries(url.searchParams));
+  const query = accessUserListQuerySchema.parse(
+    Object.fromEntries(url.searchParams),
+  );
   const q = query.q ?? query.search;
   const limit = query.limit ?? 40;
-  const queryIdentity = { q, role: query.role, status: query.status };
+  const queryIdentity = {
+    q,
+    role: query.role,
+    status: query.status,
+    dataClass: query.dataClass,
+  };
   const cursorKeys = query.cursor ? decodeAdminListCursor(query.cursor, "admin_users", queryIdentity) : null;
   const [cursorCreatedAt, cursorId] = cursorKeys
     ? z.tuple([z.string().datetime(), z.string().min(1)]).parse(cursorKeys)
@@ -139,6 +141,7 @@ export async function listUsers(request: Request) {
     where: {
       role: query.role,
       status: query.status,
+      dataClass: query.dataClass,
       OR: q ? [
             { id: { contains: q } },
             { email: { contains: q } },
@@ -164,7 +167,8 @@ export async function listUsers(request: Request) {
       displayName: user.displayName ?? user.name,
       role: user.role,
       status: user.status,
-      createdAt: user.createdAt,
+      dataClass: user.dataClass,
+      createdAt: user.createdAt.toISOString(),
       plan: user.subscriptions[0]?.plan
         ? {
             slug: user.subscriptions[0].plan.slug,
@@ -177,7 +181,7 @@ export async function listUsers(request: Request) {
   );
 
   const last = page.at(-1);
-  return ok({
+  return ok(accessUserListResponseSchema.parse({
     items,
     pageInfo: {
       endCursor: users.length > limit && last
@@ -185,7 +189,7 @@ export async function listUsers(request: Request) {
         : null,
       hasNextPage: users.length > limit,
     },
-  });
+  }));
 }
 
 export async function getUserDetail(request: Request, userId: string) {
@@ -214,6 +218,7 @@ export async function getUserDetail(request: Request, userId: string) {
       displayName: user.displayName ?? user.name,
       role: user.role,
       status: user.status,
+      dataClass: user.dataClass,
       createdAt: user.createdAt,
       ageVerification: user.ageVerifications[0] ?? null,
       preferences: user.preferences,

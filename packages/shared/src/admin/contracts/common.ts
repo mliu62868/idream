@@ -5,7 +5,14 @@ export const adminIsoDateTimeSchema = z.string().datetime({ offset: true });
 export const adminJsonValueSchema = z.json();
 
 export const adminEnvironmentSchema = z.enum(["production", "staging", "development", "test"]);
-export const adminDataClassSchema = z.enum(["customer", "internal", "fixture", "audit"]);
+export const ADMIN_DATA_CLASSES = [
+  "customer",
+  "internal",
+  "fixture",
+  "audit",
+] as const;
+export const adminDataClassSchema = z.enum(ADMIN_DATA_CLASSES);
+export type AdminDataClass = z.infer<typeof adminDataClassSchema>;
 export const adminFreshnessSchema = z.enum(["fresh", "stale", "degraded"]);
 export const adminSeveritySchema = z.enum(["critical", "high", "medium", "low"]);
 export const adminPrioritySchema = z.enum(["urgent", "high", "normal", "low"]);

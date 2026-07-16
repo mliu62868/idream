@@ -44,6 +44,43 @@ describe("idempotent user authority commands", () => {
     expect(second.status).toBe(200);
     expect((await second.json()).data.items).toEqual([expect.objectContaining({ id: olderId })]);
   });
+
+  it("returns every user data class and applies an explicit dataClass filter", async () => {
+    const scopeToken = `${P}data-class`;
+    const classes = ["customer", "internal", "fixture", "audit"] as const;
+    const users = classes.map((dataClass) => ({
+      id: `${scopeToken}-${dataClass}`,
+      dataClass,
+    }));
+    for (const user of users) {
+      await createUser({
+        id: user.id,
+        email: `${user.id}@idream.test`,
+        dataClass: user.dataClass,
+      });
+    }
+
+    const all = await callList(`q=${scopeToken}&role=user&status=active&limit=10`);
+    expect(all.status).toBe(200);
+    const allItems = (await all.json()).data.items as Array<{ id: string; dataClass: string }>;
+    expect(allItems.map((item) => item.dataClass).sort()).toEqual([...classes].sort());
+
+    for (const dataClass of classes) {
+      const filtered = await callList(
+        `q=${scopeToken}&role=user&status=active&dataClass=${dataClass}&limit=10`,
+      );
+      expect(filtered.status).toBe(200);
+      expect((await filtered.json()).data.items).toEqual([
+        expect.objectContaining({
+          id: `${scopeToken}-${dataClass}`,
+          dataClass,
+        }),
+      ]);
+    }
+
+    expect((await callList(`q=${scopeToken}&dataClass=unknown&limit=10`)).status).toBe(400);
+  });
+
   it("replays an exact status request and conflicts on a changed canonical request", async () => {
     const targetId = `${P}status-target`;
     const key = `${P}status-key`;

@@ -82,10 +82,20 @@ describe("Generation Jobs v2 contracts", () => {
         totalOutputCount: 24,
         totalDeliveredOutputCount: 0,
       },
+      dataScope: {
+        kind: "operational",
+        includedDataClasses: ["customer", "internal"],
+        excludedDataClasses: ["fixture", "audit"],
+      },
       asOf: "2026-07-11T12:02:00.000Z",
       freshness: "fresh",
     };
     expect(generationJobListResponseSchema.parse(response).summary.totalCount).toBe(12);
+    expect(generationJobListResponseSchema.parse(response).dataScope).toEqual({
+      kind: "operational",
+      includedDataClasses: ["customer", "internal"],
+      excludedDataClasses: ["fixture", "audit"],
+    });
     expect(generationJobListResponseSchema.safeParse({
       ...response,
       items: [{ ...response.items[0], prompt: "must not cross the list boundary" }],
