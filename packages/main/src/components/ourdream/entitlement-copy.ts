@@ -67,11 +67,13 @@ export function activeEntitlementSummary(
   entitlements: EntitlementValues,
   hasActiveSubscription: boolean,
 ) {
+  const benefits = configuredEntitlementBenefits(entitlements);
   if (!hasActiveSubscription) {
-    return "Free: 30 text messages per day.";
+    return benefits.length > 0
+      ? `Free chat quota: 30 text messages per day · Additional entitlements: ${benefits.join(" · ")}.`
+      : "Free: 30 text messages per day.";
   }
 
-  const benefits = configuredEntitlementBenefits(entitlements);
   return benefits.length > 0
     ? `${benefits.join(" · ")}.`
     : "No additional entitlements are configured for this plan.";

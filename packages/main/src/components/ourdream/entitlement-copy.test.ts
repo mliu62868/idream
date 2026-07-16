@@ -48,5 +48,10 @@ describe("entitlement copy", () => {
     expect(activeEntitlementSummary({}, false)).toBe(
       "Free: 30 text messages per day.",
     );
+    expect(
+      activeEntitlementSummary({ image_generation: true }, false),
+    ).toBe(
+      "Free chat quota: 30 text messages per day · Additional entitlements: Image generation.",
+    );
   });
 });
