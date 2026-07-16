@@ -22,7 +22,15 @@ import {
   UserCog,
   Volume2,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  authorityShowsEmpty,
+  failedAuthorityStatus,
+  initialAuthorityStatus,
+  loadingAuthorityStatus,
+  profileAuthorityStateForResponse,
+  readyAuthorityStatus,
+} from "./authority-state";
 import { authHrefForTarget, authNextTargetFromPath } from "./authRedirect";
 
 type ProfilePayload = {
@@ -147,7 +155,7 @@ type MediaCollectionCreatePayload = {
   };
 };
 
-type AuthState = "loading" | "authenticated" | "anonymous";
+type AuthState = "loading" | "authenticated" | "anonymous" | "error";
 type CharacterEditInput = { name: string; description: string };
 type CollectionVisibility = MediaCollection["visibility"];
 type ProfileWorkspaceProps = {
@@ -278,21 +286,25 @@ function focusProfileDeepLink() {
 export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>) {
   const [authState, setAuthState] = useState<AuthState>("loading");
   const [authTarget, setAuthTarget] = useState("/profile");
-  const [balance, setBalance] = useState(0);
+  const [profileAuthority, setProfileAuthority] = useState(initialAuthorityStatus);
+  const [balance, setBalance] = useState<number | null>(null);
   const [plan, setPlan] = useState<string | null>(null);
   const [subscription, setSubscription] = useState<SubscriptionSummary | null>(null);
-  const [displayName, setDisplayName] = useState("Dreamer");
-  const [profileName, setProfileName] = useState("Dreamer");
+  const [displayName, setDisplayName] = useState("");
+  const [profileName, setProfileName] = useState("");
   const [tab, setTab] = useState<LibraryTab>("recent");
   const [items, setItems] = useState<LibraryItem[]>([]);
+  const [libraryAuthority, setLibraryAuthority] = useState(initialAuthorityStatus);
   const [emptyCta, setEmptyCta] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [profileError, setProfileError] = useState(false);
-  const [libraryError, setLibraryError] = useState(false);
   const [redeemCode, setRedeemCode] = useState("");
-  const [emailUpdates, setEmailUpdates] = useState(true);
+  const [emailUpdates, setEmailUpdates] = useState<boolean | null>(null);
   const [mutedTags, setMutedTags] = useState<string[]>([]);
+  const [preferencesAuthority, setPreferencesAuthority] = useState(initialAuthorityStatus);
   const [preferenceTags, setPreferenceTags] = useState<ProfileTag[]>([]);
+  const [preferenceTagsAuthority, setPreferenceTagsAuthority] = useState(
+    initialAuthorityStatus,
+  );
   const [deleteConfirm, setDeleteConfirm] = useState("");
   const [deleteConfirmMediaId, setDeleteConfirmMediaId] = useState<string | null>(null);
   const [deleteConfirmCharacterId, setDeleteConfirmCharacterId] = useState<string | null>(null);
@@ -301,91 +313,217 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
   const [failedImageIds, setFailedImageIds] = useState<Set<string>>(new Set());
   const [invalidPreviewImageIds, setInvalidPreviewImageIds] = useState<Set<string>>(new Set());
   const [mediaCollections, setMediaCollections] = useState<MediaCollection[]>([]);
+  const [mediaCollectionsAuthority, setMediaCollectionsAuthority] = useState(
+    initialAuthorityStatus,
+  );
   const [publishedCollectionHref, setPublishedCollectionHref] = useState("");
+  const libraryTabRef = useRef<LibraryTab | null>(null);
+  const profileRequestSerialRef = useRef(0);
+  const libraryRequestSerialRef = useRef(0);
+  const mediaCollectionsRequestSerialRef = useRef(0);
+  const preferencesRequestSerialRef = useRef(0);
 
   const refreshProfile = useCallback(async () => {
-    // Surface a real load failure instead of silently showing a fake "0 dreamcoins · Free".
+    const requestSerial = profileRequestSerialRef.current + 1;
+    profileRequestSerialRef.current = requestSerial;
+    setProfileAuthority(loadingAuthorityStatus);
+    setAuthState((current) =>
+      current === "authenticated" ? "authenticated" : "loading",
+    );
     try {
       const response = await fetch("/api/v1/profile");
-      if (response.status === 401) {
+      if (requestSerial !== profileRequestSerialRef.current) return;
+      const responseState = profileAuthorityStateForResponse(response);
+      if (responseState === "anonymous") {
+        libraryRequestSerialRef.current += 1;
+        mediaCollectionsRequestSerialRef.current += 1;
+        preferencesRequestSerialRef.current += 1;
+        libraryTabRef.current = null;
         setAuthState("anonymous");
-        setProfileError(false);
-        setLibraryError(false);
+        setProfileAuthority(readyAuthorityStatus());
+        setBalance(null);
+        setPlan(null);
+        setSubscription(null);
+        setDisplayName("");
+        setProfileName("");
         setItems([]);
+        setLibraryAuthority(initialAuthorityStatus());
+        setEmailUpdates(null);
+        setMutedTags([]);
+        setPreferencesAuthority(initialAuthorityStatus());
+        setPreferenceTags([]);
+        setPreferenceTagsAuthority(initialAuthorityStatus());
+        setMediaCollections([]);
+        setMediaCollectionsAuthority(initialAuthorityStatus());
         return;
       }
-      if (!response.ok) throw new Error("profile fetch failed");
-      const payload = (await response.json()) as ProfilePayload;
-      const nextName = payload.data?.user?.displayName ?? payload.data?.user?.email ?? "Dreamer";
+      const payload = (await response.json().catch(() => null)) as
+        | ProfilePayload
+        | null;
+      if (requestSerial !== profileRequestSerialRef.current) return;
+      if (responseState === "error" || payload?.ok === false) {
+        throw new Error(payload?.error?.message ?? "Account data could not load.");
+      }
+      const profileData = payload?.data;
+      const user = profileData?.user;
+      const nextName = user?.displayName?.trim() || user?.email?.trim() || "";
+      const nextBalance = profileData?.balance;
+      const sub = profileData?.subscription;
+      if (
+        !profileData ||
+        !user ||
+        !nextName ||
+        typeof nextBalance !== "number" ||
+        !Number.isFinite(nextBalance) ||
+        sub === undefined ||
+        (sub !== null && !sub.plan)
+      ) {
+        throw new Error("Account data was incomplete.");
+      }
       setAuthState("authenticated");
       setDisplayName(nextName);
       setProfileName(nextName);
-      setBalance(payload.data?.balance ?? 0);
-      const sub = payload.data?.subscription;
-      setSubscription(sub ?? null);
+      setBalance(nextBalance);
+      setSubscription(sub);
       setPlan(sub?.plan ? `${sub.plan.name} ${sub.plan.billingPeriod}` : "Free");
-      setProfileError(false);
-    } catch {
-      setAuthState("authenticated");
-      setProfileError(true);
+      setProfileAuthority(readyAuthorityStatus());
+    } catch (error) {
+      if (requestSerial !== profileRequestSerialRef.current) return;
+      setProfileAuthority((current) =>
+        failedAuthorityStatus(
+          current,
+          profileRequestError(error, "Account data could not load."),
+        ),
+      );
+      setAuthState((current) =>
+        current === "authenticated" ? "authenticated" : "error",
+      );
     }
   }, []);
 
   const refreshLibrary = useCallback(async (nextTab: LibraryTab) => {
-    // Distinguish a backend error from a genuinely empty library tab.
-    try {
-      const response = await fetch(`/api/v1/library/${nextTab}`);
-      if (!response.ok) throw new Error("library fetch failed");
-      const payload = (await response.json()) as LibraryPayload;
-      setItems(payload.data?.items ?? []);
-      setEmptyCta(payload.data?.emptyCta ?? null);
-      setLibraryError(false);
-    } catch {
+    const requestSerial = libraryRequestSerialRef.current + 1;
+    libraryRequestSerialRef.current = requestSerial;
+    const hasMatchingSnapshot = libraryTabRef.current === nextTab;
+    if (!hasMatchingSnapshot) {
+      libraryTabRef.current = nextTab;
       setItems([]);
       setEmptyCta(null);
-      setLibraryError(true);
+    }
+    setLibraryAuthority((current) =>
+      loadingAuthorityStatus(
+        hasMatchingSnapshot ? current : initialAuthorityStatus(),
+      ),
+    );
+    try {
+      const response = await fetch(`/api/v1/library/${nextTab}`);
+      const payload = (await response.json().catch(() => null)) as
+        | LibraryPayload
+        | null;
+      if (requestSerial !== libraryRequestSerialRef.current) return;
+      if (!response.ok || !Array.isArray(payload?.data?.items)) {
+        throw new Error("Library data could not load.");
+      }
+      setItems(payload.data.items);
+      setEmptyCta(payload.data.emptyCta ?? null);
+      setLibraryAuthority(readyAuthorityStatus());
+    } catch (error) {
+      if (requestSerial !== libraryRequestSerialRef.current) return;
+      setLibraryAuthority((current) =>
+        failedAuthorityStatus(
+          current,
+          profileRequestError(error, "Library data could not load."),
+        ),
+      );
     }
   }, []);
 
   const refreshMediaCollections = useCallback(async () => {
+    const requestSerial = mediaCollectionsRequestSerialRef.current + 1;
+    mediaCollectionsRequestSerialRef.current = requestSerial;
+    setMediaCollectionsAuthority(loadingAuthorityStatus);
     try {
       const response = await fetch("/api/v1/media/collections");
-      if (!response.ok) throw new Error("collections fetch failed");
-      const payload = (await response.json()) as {
+      const payload = (await response.json().catch(() => null)) as {
         data?: { collections?: MediaCollection[] };
-      };
-      setMediaCollections(payload.data?.collections ?? []);
-    } catch {
-      setMediaCollections([]);
+        error?: { message?: string };
+        ok?: boolean;
+      } | null;
+      if (requestSerial !== mediaCollectionsRequestSerialRef.current) return;
+      if (
+        !response.ok ||
+        payload?.ok === false ||
+        !Array.isArray(payload?.data?.collections)
+      ) {
+        throw new Error(
+          payload?.error?.message ?? "Media collections could not load.",
+        );
+      }
+      setMediaCollections(payload.data.collections);
+      setMediaCollectionsAuthority(readyAuthorityStatus());
+    } catch (error) {
+      if (requestSerial !== mediaCollectionsRequestSerialRef.current) return;
+      setMediaCollectionsAuthority((current) =>
+        failedAuthorityStatus(
+          current,
+          profileRequestError(error, "Media collections could not load."),
+        ),
+      );
     }
   }, []);
 
   const refreshPreferences = useCallback(async () => {
+    const requestSerial = preferencesRequestSerialRef.current + 1;
+    preferencesRequestSerialRef.current = requestSerial;
+    setPreferencesAuthority(loadingAuthorityStatus);
     try {
       const response = await fetch("/api/v1/profile/preferences");
-      if (response.ok) {
-        const payload = (await response.json()) as PreferencesPayload;
-        const preferences = payload.data?.preferences;
-        const notificationSettings = preferences?.notificationSettings ?? {};
-        const updates = notificationSettings.productUpdates;
-        if (typeof updates === "boolean") setEmailUpdates(updates);
-        setMutedTags(preferences?.mutedTags ?? []);
+      const payload = (await response.json().catch(() => null)) as
+        | PreferencesPayload
+        | null;
+      if (requestSerial !== preferencesRequestSerialRef.current) return;
+      const preferences = payload?.data?.preferences;
+      if (!response.ok || !preferences) {
+        throw new Error("Preferences could not load.");
       }
-    } catch {
-      // Preferences are non-critical for first paint; keep the current local defaults.
+      const notificationSettings = preferences.notificationSettings ?? {};
+      setEmailUpdates(notificationSettings.productUpdates === true);
+      setMutedTags(preferences.mutedTags ?? []);
+      setPreferencesAuthority(readyAuthorityStatus());
+    } catch (error) {
+      if (requestSerial !== preferencesRequestSerialRef.current) return;
+      setPreferencesAuthority((current) =>
+        failedAuthorityStatus(
+          current,
+          profileRequestError(error, "Preferences could not load."),
+        ),
+      );
     }
 
+    setPreferenceTagsAuthority(loadingAuthorityStatus);
     try {
       const response = await fetch("/api/v1/tags");
-      if (!response.ok) throw new Error("tags fetch failed");
-      const payload = (await response.json()) as ProfileTagsPayload;
+      const payload = (await response.json().catch(() => null)) as
+        | ProfileTagsPayload
+        | null;
+      if (requestSerial !== preferencesRequestSerialRef.current) return;
+      if (!response.ok || !Array.isArray(payload?.data?.items)) {
+        throw new Error("Preference tags could not load.");
+      }
       setPreferenceTags(
-        (payload.data?.items ?? []).filter(
+        payload.data.items.filter(
           (tag) => !tag.isMutedByDefault && (tag.publicCharacterCount ?? 0) > 0,
         ),
       );
-    } catch {
-      setPreferenceTags([]);
+      setPreferenceTagsAuthority(readyAuthorityStatus());
+    } catch (error) {
+      if (requestSerial !== preferencesRequestSerialRef.current) return;
+      setPreferenceTagsAuthority((current) =>
+        failedAuthorityStatus(
+          current,
+          profileRequestError(error, "Preference tags could not load."),
+        ),
+      );
     }
   }, []);
 
@@ -520,6 +658,10 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
   }
 
   async function savePreferences() {
+    if (emailUpdates === null) {
+      setStatus("Load your saved preferences before updating them.");
+      return;
+    }
     try {
       const response = await fetch("/api/v1/profile/preferences", {
         method: "PATCH",
@@ -529,6 +671,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
           notificationSettings: { productUpdates: emailUpdates },
         }),
       });
+      if (response.ok) setPreferencesAuthority(readyAuthorityStatus());
       setStatus(response.ok ? "Preferences updated." : "Preferences update failed.");
     } catch {
       setStatus("Network error. Please try again.");
@@ -878,6 +1021,16 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
     ? "Your characters, generated media, presets, and created companions live in your private My AI library."
     : "Your account settings, billing, referrals, preferences, and private AI library live in your profile.";
 
+  function selectLibraryTab(nextTab: LibraryTab) {
+    if (nextTab === tab) return;
+    libraryRequestSerialRef.current += 1;
+    libraryTabRef.current = nextTab;
+    setItems([]);
+    setEmptyCta(null);
+    setLibraryAuthority(initialAuthorityStatus());
+    setTab(nextTab);
+  }
+
   if (authState === "loading") {
     return (
       <section className="px-4 py-10 md:px-[60px]">
@@ -893,6 +1046,39 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
             <p className="mx-auto mt-3 max-w-md text-[14px] leading-6 text-[rgb(170,170,170)]">
               Fetching your library, balance, and billing state.
             </p>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  if (authState === "error") {
+    return (
+      <section className="px-4 py-10 md:px-[60px]">
+        <div className="mx-auto max-w-5xl">
+          <h1 className="text-[38px] font-black uppercase leading-10 text-white">
+            {workspaceTitle}
+          </h1>
+          <div
+            className="mt-6 rounded-[20px] border border-[rgb(255,184,112)]/30 bg-[rgb(18,18,18)] p-10 text-center"
+            data-testid="profile-unavailable"
+            role="alert"
+          >
+            <Bot className="mx-auto h-10 w-10 text-[rgb(255,184,112)]" />
+            <h2 className="mt-4 text-[22px] font-black uppercase text-white">
+              Account unavailable
+            </h2>
+            <p className="mx-auto mt-3 max-w-md text-[14px] leading-6 text-[rgb(170,170,170)]">
+              {profileAuthority.error ??
+                "We couldn't verify your account data. No private account details are being shown."}
+            </p>
+            <button
+              className="mt-6 inline-flex h-11 items-center justify-center rounded-full bg-white px-5 text-[14px] font-black text-[rgb(13,13,13)]"
+              onClick={() => void refreshProfile()}
+              type="button"
+            >
+              Retry
+            </button>
           </div>
         </div>
       </section>
@@ -946,23 +1132,27 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
               {workspaceTitle}
             </h1>
             <p className="mt-2 text-[14px] font-semibold text-white">{displayName}</p>
-            {profileError ? (
-              <p className="mt-3 flex flex-wrap items-center gap-2 text-[13px] font-bold text-[rgb(255,140,140)]">
-                Couldn&apos;t load your balance and plan.
-                <button
-                  className="rounded-full bg-[rgb(36,36,36)] px-3 py-1 text-[12px] font-bold text-white"
-                  onClick={() => void refreshProfile()}
-                  type="button"
-                >
-                  Retry
-                </button>
-              </p>
-            ) : (
+            {balance !== null && plan ? (
               <p className="mt-3 flex items-center gap-2 text-[13px] font-bold text-[rgb(170,170,170)]">
                 <Coins className="h-4 w-4 text-[rgb(253,95,194)]" />
                 {balance.toLocaleString()} dreamcoins · {plan}
               </p>
-            )}
+            ) : null}
+            {profileAuthority.phase === "error" ? (
+              <ProfileAuthorityNotice
+                hasSnapshot={profileAuthority.hasSnapshot}
+                message={
+                  profileAuthority.error ?? "Account data could not refresh."
+                }
+                onRetry={() => void refreshProfile()}
+              />
+            ) : null}
+            {profileAuthority.phase === "loading" &&
+            profileAuthority.hasSnapshot ? (
+              <p className="mt-3 text-[12px] font-semibold text-[rgb(170,170,170)]">
+                Refreshing account data…
+              </p>
+            ) : null}
           </div>
           <Link
             className="inline-flex h-10 items-center justify-center rounded-full bg-white px-5 text-[13px] font-black text-[rgb(13,13,13)]"
@@ -988,7 +1178,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
                 tab === item ? "bg-[rgb(46,46,46)] text-white" : "text-[rgb(170,170,170)]"
               }`}
               key={item}
-              onClick={() => setTab(item)}
+              onClick={() => selectLibraryTab(item)}
               type="button"
             >
               {tabLabels[item]}
@@ -1042,7 +1232,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
             </p>
             <p className="mt-1 text-[12px] font-medium text-[rgb(170,170,170)]">{billingStatus}</p>
             <div className="mt-3 flex flex-wrap gap-2">
-              {!plan && profileError ? (
+              {!plan && profileAuthority.phase === "error" ? (
                 <button
                   className="inline-flex h-9 items-center justify-center rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]"
                   onClick={() => void refreshProfile()}
@@ -1163,15 +1353,17 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
                 <label className="flex items-center gap-2 text-[13px] font-semibold text-white">
                   <input
                     aria-label="Product updates"
-                    checked={emailUpdates}
+                    checked={emailUpdates ?? false}
                     className="h-4 w-4 accent-[rgb(253,95,194)]"
+                    disabled={emailUpdates === null}
                     onChange={(event) => setEmailUpdates(event.target.checked)}
                     type="checkbox"
                   />
                   Product updates
                 </label>
                 <button
-                  className="inline-flex h-9 items-center gap-2 rounded-full bg-black/30 px-3 text-[12px] font-bold text-white"
+                  className="inline-flex h-9 items-center gap-2 rounded-full bg-black/30 px-3 text-[12px] font-bold text-white disabled:opacity-50"
+                  disabled={emailUpdates === null}
                   onClick={savePreferences}
                   type="button"
                 >
@@ -1179,6 +1371,37 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
                   Save preferences
                 </button>
               </div>
+              {preferencesAuthority.phase === "loading" &&
+              !preferencesAuthority.hasSnapshot ? (
+                <p className="mt-3 text-[12px] font-semibold text-[rgb(170,170,170)]">
+                  Loading saved preferences…
+                </p>
+              ) : null}
+              {preferencesAuthority.phase === "error" ? (
+                <ProfileAuthorityNotice
+                  hasSnapshot={preferencesAuthority.hasSnapshot}
+                  message={
+                    preferencesAuthority.error ?? "Preferences could not load."
+                  }
+                  onRetry={() => void refreshPreferences()}
+                />
+              ) : null}
+              {preferenceTagsAuthority.phase === "error" ? (
+                <ProfileAuthorityNotice
+                  hasSnapshot={preferenceTagsAuthority.hasSnapshot}
+                  message={
+                    preferenceTagsAuthority.error ??
+                    "Preference tags could not load."
+                  }
+                  onRetry={() => void refreshPreferences()}
+                />
+              ) : null}
+              {preferenceTagsAuthority.phase === "loading" &&
+              !preferenceTagsAuthority.hasSnapshot ? (
+                <p className="mt-3 text-[12px] font-semibold text-[rgb(170,170,170)]">
+                  Loading available tags…
+                </p>
+              ) : null}
               {preferenceTags.length > 0 ? (
                 <div className="mt-4 border-t border-white/10 pt-3">
                   <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
@@ -1266,21 +1489,47 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
             </button>
           )}
         </div>
+        {tab === "media" && mediaCollectionsAuthority.phase === "error" ? (
+          <ProfileAuthorityNotice
+            hasSnapshot={mediaCollectionsAuthority.hasSnapshot}
+            message={
+              mediaCollectionsAuthority.error ??
+              "Media collections could not load."
+            }
+            onRetry={() => void refreshMediaCollections()}
+          />
+        ) : null}
+        {tab === "media" &&
+        mediaCollectionsAuthority.phase === "loading" &&
+        !mediaCollectionsAuthority.hasSnapshot ? (
+          <p className="mt-4 text-[12px] font-semibold text-[rgb(170,170,170)]">
+            Loading media collections…
+          </p>
+        ) : null}
         <div className="mt-4 rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-6">
-          {libraryError ? (
+          {libraryAuthority.phase === "error" ? (
+            <ProfileAuthorityNotice
+              hasSnapshot={libraryAuthority.hasSnapshot}
+              message={libraryAuthority.error ?? "Library data could not load."}
+              onRetry={() => void refreshLibrary(tab)}
+            />
+          ) : null}
+          {libraryAuthority.phase === "loading" &&
+          libraryAuthority.hasSnapshot ? (
+            <p className="mb-4 text-[12px] font-semibold text-[rgb(170,170,170)]">
+              Refreshing this tab. Showing the last loaded items.
+            </p>
+          ) : null}
+          {libraryAuthority.phase === "loading" &&
+          !libraryAuthority.hasSnapshot ? (
             <div className="p-10 text-center">
               <Bot className="mx-auto h-10 w-10 text-[rgb(114,113,112)]" />
-              <h2 className="mt-4 text-[22px] font-black uppercase">Couldn&apos;t load this tab</h2>
+              <h2 className="mt-4 text-[22px] font-black uppercase">
+                Loading this tab
+              </h2>
               <p className="mx-auto mt-3 max-w-md text-[14px] leading-6 text-[rgb(170,170,170)]">
-                Something went wrong loading your library. Please try again.
+                Fetching your private library data.
               </p>
-              <button
-                className="mt-6 inline-flex h-11 items-center justify-center rounded-full bg-white px-5 text-[14px] font-bold text-[rgb(13,13,13)]"
-                onClick={() => void refreshLibrary(tab)}
-                type="button"
-              >
-                Retry
-              </button>
             </div>
           ) : visibleItems.length > 0 ? (
             <div className="grid gap-3 md:grid-cols-3">
@@ -1323,7 +1572,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
                 />
               ))}
             </div>
-          ) : normalizedQuery ? (
+          ) : normalizedQuery && libraryAuthority.hasSnapshot ? (
             <div className="p-10 text-center">
               <Bot className="mx-auto h-10 w-10 text-[rgb(114,113,112)]" />
               <h2 className="mt-4 text-[22px] font-black uppercase">No matches</h2>
@@ -1331,7 +1580,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
                 Nothing in {tabLabels[tab]} matches “{query}”.
               </p>
             </div>
-          ) : (
+          ) : authorityShowsEmpty(libraryAuthority, items.length) ? (
             <div className="p-10 text-center" data-testid="library-empty-state">
               <Bot className="mx-auto h-10 w-10 text-[rgb(114,113,112)]" />
               <h2 className="mt-4 text-[22px] font-black uppercase">{emptyState.title}</h2>
@@ -1347,10 +1596,39 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
                 </Link>
               ) : null}
             </div>
-          )}
+          ) : null}
         </div>
       </div>
     </section>
+  );
+}
+
+function ProfileAuthorityNotice({
+  hasSnapshot,
+  message,
+  onRetry,
+}: Readonly<{
+  hasSnapshot: boolean;
+  message: string;
+  onRetry: () => void;
+}>) {
+  return (
+    <div
+      className="mt-4 flex flex-wrap items-center gap-2 rounded-[12px] border border-[rgb(255,184,112)]/30 bg-[rgb(36,28,18)] px-4 py-3 text-[13px] font-semibold text-[rgb(255,184,112)]"
+      role="alert"
+    >
+      <span>
+        {message}
+        {hasSnapshot ? " Showing the last loaded data." : ""}
+      </span>
+      <button
+        className="rounded-full bg-white/10 px-3 py-1 text-[12px] font-black text-white"
+        onClick={onRetry}
+        type="button"
+      >
+        Retry
+      </button>
+    </div>
   );
 }
 
@@ -1775,6 +2053,10 @@ function triggerDownload(url: string) {
   document.body.appendChild(link);
   link.click();
   link.remove();
+}
+
+function profileRequestError(error: unknown, fallback: string) {
+  return error instanceof Error && error.message ? error.message : fallback;
 }
 
 function isPrivateMediaUrl(url: string) {

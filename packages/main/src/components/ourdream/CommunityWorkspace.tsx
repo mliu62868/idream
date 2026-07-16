@@ -5,6 +5,14 @@ import Link from "next/link";
 import { ChevronDown, ChevronLeft, ChevronRight, Flag, HeartHandshake, Users } from "lucide-react";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  authorityShowsEmpty,
+  failedAuthorityStatus,
+  initialAuthorityStatus,
+  loadingAuthorityStatus,
+  loadingAuthorityStatusForScope,
+  readyAuthorityStatus,
+} from "./authority-state";
 import { authHrefForTarget } from "./authRedirect";
 
 // SPEC: campaign 投放位曝光/点击埋点，经既有 POST /api/v1/events/track。
@@ -192,9 +200,12 @@ export function CommunityWorkspace() {
   const [release, setRelease] = useState("all");
   const [focusedCollectionId, setFocusedCollectionId] = useState("");
   const [status, setStatus] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [leaderboardsAuthority, setLeaderboardsAuthority] = useState(initialAuthorityStatus);
+  const [collectionsAuthority, setCollectionsAuthority] = useState(initialAuthorityStatus);
+  const [reloadToken, setReloadToken] = useState(0);
   const [rankingExperiment, setRankingExperiment] = useState<NonNullable<NonNullable<CommunityPayload["data"]>["experimentAssignment"]> | null>(null);
   const rankingExposureRecordedRef = useRef(false);
+  const leaderboardsQueryRef = useRef("");
 
   const query = useMemo(() => {
     const params = new URLSearchParams({ release });
@@ -216,6 +227,14 @@ export function CommunityWorkspace() {
   );
   const normalizedCampaignIndex = campaignIndex % visibleCampaigns.length;
   const activeCampaign = visibleCampaigns[normalizedCampaignIndex] ?? fallbackCampaign;
+  const invalidateLeaderboardScope = useCallback(() => {
+    leaderboardsQueryRef.current = "";
+    rankingExposureRecordedRef.current = false;
+    setCharacters([]);
+    setDreamers([]);
+    setRankingExperiment(null);
+    setLeaderboardsAuthority(initialAuthorityStatus());
+  }, []);
   const recordRankingExposure = useCallback(() => {
     if (!rankingExperiment || rankingExposureRecordedRef.current) return;
     rankingExposureRecordedRef.current = true;
@@ -264,52 +283,142 @@ export function CommunityWorkspace() {
 
   useEffect(() => {
     let active = true;
-    async function loadCommunity() {
-      setStatus("");
-      setLoading(true);
-      const [leaderboards, publicCollections, campaignResponse] = await Promise.all([
-        fetch(`/api/v1/community/leaderboards?${query.toString()}`),
-        fetch("/api/v1/community/collections"),
-        fetch("/api/v1/community/campaigns"),
-      ]);
-      const leaderboardPayload = (await leaderboards.json()) as CommunityPayload;
-      const collectionsPayload = (await publicCollections.json()) as CommunityPayload;
-      const campaignPayload = (await campaignResponse.json()) as CommunityCampaignPayload;
-      if (!active) return;
-      if (!leaderboards.ok || leaderboardPayload.ok === false) {
-        setStatus(leaderboardPayload.error?.message ?? "Accept the age gate to view community.");
-        return;
+    const leaderboardsQuery = query.toString();
+
+    async function loadLeaderboards() {
+      try {
+        const response = await fetch(
+          `/api/v1/community/leaderboards?${leaderboardsQuery}`,
+        );
+        const payload = (await response.json().catch(() => null)) as
+          | CommunityPayload
+          | null;
+        const leaderboards = payload?.data?.leaderboards;
+        if (
+          !response.ok ||
+          payload?.ok === false ||
+          !leaderboards ||
+          !Array.isArray(leaderboards.characters) ||
+          !Array.isArray(leaderboards.dreamers)
+        ) {
+          throw new Error(
+            payload?.error?.message ?? "Community rankings could not load.",
+          );
+        }
+        if (!active) return;
+        setCharacters(leaderboards.characters);
+        setDreamers(leaderboards.dreamers);
+        setRankingExperiment(payload.data?.experimentAssignment ?? null);
+        rankingExposureRecordedRef.current = false;
+        setLeaderboardsAuthority(readyAuthorityStatus());
+      } catch (error) {
+        if (!active) return;
+        setLeaderboardsAuthority((current) =>
+          failedAuthorityStatus(
+            current,
+            communityRequestError(error, "Community rankings could not load."),
+          ),
+        );
       }
-      setCharacters(leaderboardPayload.data?.leaderboards?.characters ?? []);
-      setRankingExperiment(leaderboardPayload.data?.experimentAssignment ?? null);
-      rankingExposureRecordedRef.current = false;
-      setDreamers(leaderboardPayload.data?.leaderboards?.dreamers ?? []);
-      setCollections(collectionsPayload.data?.collections ?? []);
-      setCampaigns(
-        campaignResponse.ok && campaignPayload.ok !== false
-          ? (campaignPayload.data?.campaigns ?? []).map((campaign) => ({
-              ...campaign,
-              source: "authority" as const,
-            }))
-          : [],
-      );
     }
 
-    loadCommunity()
-      .catch(() => {
-        if (active) setStatus("Community unavailable.");
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
+    async function loadCollections() {
+      try {
+        const response = await fetch("/api/v1/community/collections");
+        const payload = (await response.json().catch(() => null)) as
+          | CommunityPayload
+          | null;
+        const nextCollections = payload?.data?.collections;
+        if (
+          !response.ok ||
+          payload?.ok === false ||
+          !Array.isArray(nextCollections)
+        ) {
+          throw new Error(
+            payload?.error?.message ?? "Public collections could not load.",
+          );
+        }
+        if (!active) return;
+        setCollections(nextCollections);
+        setCollectionsAuthority(readyAuthorityStatus());
+      } catch (error) {
+        if (!active) return;
+        setCollectionsAuthority((current) =>
+          failedAuthorityStatus(
+            current,
+            communityRequestError(error, "Public collections could not load."),
+          ),
+        );
+      }
+    }
+
+    async function loadCampaigns() {
+      try {
+        const response = await fetch("/api/v1/community/campaigns");
+        const payload = (await response.json().catch(() => null)) as
+          | CommunityCampaignPayload
+          | null;
+        const nextCampaigns = payload?.data?.campaigns;
+        if (
+          !response.ok ||
+          payload?.ok === false ||
+          !Array.isArray(nextCampaigns)
+        ) {
+          return;
+        }
+        if (!active) return;
+        setCampaigns(
+          nextCampaigns.map((campaign) => ({
+            ...campaign,
+            source: "authority" as const,
+          })),
+        );
+      } catch {
+        // The editorial campaign remains visible, while any last-good authority
+        // campaigns stay in memory until a later successful refresh.
+      }
+    }
+
+    async function loadCommunity() {
+      setStatus("");
+      const hasMatchingLeaderboardQuery =
+        leaderboardsQueryRef.current === leaderboardsQuery;
+      if (!hasMatchingLeaderboardQuery) {
+        leaderboardsQueryRef.current = leaderboardsQuery;
+        setCharacters([]);
+        setDreamers([]);
+        setRankingExperiment(null);
+      }
+      setLeaderboardsAuthority((current) =>
+        loadingAuthorityStatusForScope(
+          current,
+          hasMatchingLeaderboardQuery,
+        ),
+      );
+      setCollectionsAuthority(loadingAuthorityStatus);
+      await Promise.all([
+        loadLeaderboards(),
+        loadCollections(),
+        loadCampaigns(),
+      ]);
+    }
+
+    void loadCommunity();
 
     return () => {
       active = false;
     };
-  }, [query]);
+  }, [query, reloadToken]);
 
   useEffect(() => {
-    if (!focusedCollectionId || loading || !focusedCollection) return;
+    if (
+      !focusedCollectionId ||
+      (collectionsAuthority.phase === "loading" &&
+        !collectionsAuthority.hasSnapshot) ||
+      !focusedCollection
+    ) {
+      return;
+    }
     const timer = window.setTimeout(() => {
       const target = Array.from(
         document.querySelectorAll<HTMLElement>("[data-collection-id]"),
@@ -317,7 +426,7 @@ export function CommunityWorkspace() {
       target?.scrollIntoView({ block: "center" });
     }, 50);
     return () => window.clearTimeout(timer);
-  }, [focusedCollection, focusedCollectionId, loading]);
+  }, [collectionsAuthority, focusedCollection, focusedCollectionId]);
 
   async function follow(creatorId?: string | null) {
     if (!creatorId) {
@@ -479,19 +588,31 @@ export function CommunityWorkspace() {
         >
           <SelectPill
             ariaLabel="Release"
-            onChange={setRelease}
+            onChange={(value) => {
+              if (value === release) return;
+              invalidateLeaderboardScope();
+              setRelease(value);
+            }}
             options={releaseOptions}
             value={release}
           />
           <SelectPill
             ariaLabel="Gender"
-            onChange={setGender}
+            onChange={(value) => {
+              if (value === gender) return;
+              invalidateLeaderboardScope();
+              setGender(value);
+            }}
             options={genderOptions}
             value={gender}
           />
           <SelectPill
             ariaLabel="Style"
-            onChange={setStyle}
+            onChange={(value) => {
+              if (value === style) return;
+              invalidateLeaderboardScope();
+              setStyle(value);
+            }}
             options={styleOptions}
             value={style}
           />
@@ -506,6 +627,21 @@ export function CommunityWorkspace() {
             {visibleStatus}
           </p>
         )}
+        {leaderboardsAuthority.phase === "error" ? (
+          <CommunityAuthorityNotice
+            hasSnapshot={leaderboardsAuthority.hasSnapshot}
+            message={
+              leaderboardsAuthority.error ?? "Community rankings could not load."
+            }
+            onRetry={() => setReloadToken((current) => current + 1)}
+          />
+        ) : null}
+        {leaderboardsAuthority.phase === "loading" &&
+        leaderboardsAuthority.hasSnapshot ? (
+          <p className="mt-5 text-[12px] font-semibold text-[rgb(170,170,170)]">
+            Updating rankings. Showing the previous results until the refresh completes.
+          </p>
+        ) : null}
 
         <section className="mt-8">
           <div className="mb-4 flex items-center gap-2">
@@ -513,7 +649,8 @@ export function CommunityWorkspace() {
             <h2 className="text-[22px] font-black uppercase">Dreamers</h2>
           </div>
           <div className="grid gap-3 md:grid-cols-3">
-            {loading ? (
+            {leaderboardsAuthority.phase === "loading" &&
+            !leaderboardsAuthority.hasSnapshot ? (
               <DreamerSkeletons />
             ) : dreamers.length > 0 ? (
               dreamers.map((dreamer) => (
@@ -582,11 +719,11 @@ export function CommunityWorkspace() {
                   </div>
                 </article>
               ))
-            ) : (
+            ) : authorityShowsEmpty(leaderboardsAuthority, dreamers.length) ? (
               <p className="text-[13px] font-medium text-[rgb(170,170,170)]">
                 Dreamers with public characters appear here.
               </p>
-            )}
+            ) : null}
           </div>
         </section>
 
@@ -596,7 +733,8 @@ export function CommunityWorkspace() {
             <h2 className="text-[22px] font-black uppercase">Characters</h2>
           </div>
           <div className="grid gap-3 md:grid-cols-4">
-            {loading ? (
+            {leaderboardsAuthority.phase === "loading" &&
+            !leaderboardsAuthority.hasSnapshot ? (
               <CharacterSkeletons />
             ) : characters.length > 0 ? (
               characters.map((character) => (
@@ -608,14 +746,14 @@ export function CommunityWorkspace() {
                   onReport={report}
                 />
               ))
-            ) : (
+            ) : authorityShowsEmpty(leaderboardsAuthority, characters.length) ? (
               <p
                 className="rounded-[12px] bg-[rgb(18,18,18)] p-5 text-[13px] font-medium text-[rgb(170,170,170)] md:col-span-4"
                 data-testid="community-characters-empty"
               >
                 No characters match these filters.
               </p>
-            )}
+            ) : null}
           </div>
         </section>
 
@@ -624,8 +762,18 @@ export function CommunityWorkspace() {
             <Users className="h-5 w-5 text-[rgb(253,95,194)]" />
             <h2 className="text-[22px] font-black uppercase">Collections</h2>
           </div>
+          {collectionsAuthority.phase === "error" ? (
+            <CommunityAuthorityNotice
+              hasSnapshot={collectionsAuthority.hasSnapshot}
+              message={
+                collectionsAuthority.error ?? "Public collections could not load."
+              }
+              onRetry={() => setReloadToken((current) => current + 1)}
+            />
+          ) : null}
           <div className="grid gap-3 md:grid-cols-3">
-            {loading ? (
+            {collectionsAuthority.phase === "loading" &&
+            !collectionsAuthority.hasSnapshot ? (
               <CollectionSkeletons />
             ) : collections.length > 0 ? (
               collections.map((collection) => (
@@ -667,17 +815,17 @@ export function CommunityWorkspace() {
                       {collection.name}
                     </p>
                     <p className="mt-2 text-[12px] font-medium text-[rgb(170,170,170)]">
-                      {countLabel(collection.itemCount ?? 0, "item")} · by{" "}
-                      {collection.ownerName ?? "Dreamer"}
+                      {countLabel(collection.itemCount ?? 0, "item")}
+                      {collection.ownerName ? ` · by ${collection.ownerName}` : ""}
                     </p>
                   </div>
                 </div>
               ))
-            ) : (
+            ) : authorityShowsEmpty(collectionsAuthority, collections.length) ? (
               <p className="text-[13px] font-medium text-[rgb(170,170,170)]">
                 Public collections appear here.
               </p>
-            )}
+            ) : null}
           </div>
         </section>
       </div>
@@ -880,6 +1028,35 @@ function CampaignLink({
   );
 }
 
+function CommunityAuthorityNotice({
+  hasSnapshot,
+  message,
+  onRetry,
+}: Readonly<{
+  hasSnapshot: boolean;
+  message: string;
+  onRetry: () => void;
+}>) {
+  return (
+    <div
+      className="mt-5 flex flex-wrap items-center gap-2 rounded-[12px] border border-[rgb(255,184,112)]/30 bg-[rgb(36,28,18)] px-4 py-3 text-[13px] font-semibold text-[rgb(255,184,112)]"
+      role="alert"
+    >
+      <span>
+        {message}
+        {hasSnapshot ? " Showing the last loaded results." : ""}
+      </span>
+      <button
+        className="rounded-full bg-white/10 px-3 py-1 text-[12px] font-black text-white"
+        onClick={onRetry}
+        type="button"
+      >
+        Retry
+      </button>
+    </div>
+  );
+}
+
 // SPEC: skeleton placeholders shown while the first community fetch is in flight.
 // INTENT: avoid the false "empty" flash before data arrives; genuine empty-states
 // only render once loading is done.
@@ -939,4 +1116,8 @@ async function followErrorMessage(response: Response): Promise<string> {
   if (response.status === 401) return "Sign in to follow creators.";
   const payload = (await response.json().catch(() => null)) as CommunityPayload | null;
   return payload?.error?.message ?? "Could not update follow.";
+}
+
+function communityRequestError(error: unknown, fallback: string) {
+  return error instanceof Error && error.message ? error.message : fallback;
 }

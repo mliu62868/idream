@@ -19,6 +19,13 @@ import {
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { CharacterCardData } from "@/types/ourdream";
+import {
+  authorityShowsEmpty,
+  failedAuthorityStatus,
+  initialAuthorityStatus,
+  loadingAuthorityStatus,
+  readyAuthorityStatus,
+} from "./authority-state";
 import { authHrefForTarget } from "./authRedirect";
 
 type MediaItem = {
@@ -150,6 +157,7 @@ const generatorPresetDraftStorageKey = "idream.generatePresetDraft.v1";
 export function GeneratorWorkspace() {
   const [config, setConfig] = useState<GenerationConfig | null>(null);
   const [characters, setCharacters] = useState<CharacterCardData[]>([]);
+  const [charactersAuthority, setCharactersAuthority] = useState(initialAuthorityStatus);
   const [characterId, setCharacterId] = useState("");
   const [freeplay, setFreeplay] = useState(false);
   const [mode, setMode] = useState<GenerationMode>("image");
@@ -166,9 +174,12 @@ export function GeneratorWorkspace() {
   const [posePresetId, setPosePresetId] = useState("");
   const [outfitPresetId, setOutfitPresetId] = useState("");
   const [jobs, setJobs] = useState<GenerationJob[]>([]);
+  const [jobsAuthority, setJobsAuthority] = useState(initialAuthorityStatus);
   const [media, setMedia] = useState<MediaItem[]>([]);
+  const [mediaAuthority, setMediaAuthority] = useState(initialAuthorityStatus);
   const [latestResults, setLatestResults] = useState<MediaItem[]>([]);
   const [identityMedia, setIdentityMedia] = useState<MediaItem[]>([]);
+  const [identityMediaAuthority, setIdentityMediaAuthority] = useState(initialAuthorityStatus);
   const [galleryTab, setGalleryTab] = useState<GalleryTab>("image");
   const [view, setView] = useState<WorkspaceView>("create");
   const [status, setStatus] = useState("");
@@ -179,6 +190,7 @@ export function GeneratorWorkspace() {
   const [failedLatestResultIds, setFailedLatestResultIds] = useState<Set<string>>(() => new Set());
   const [invalidLatestResultIds, setInvalidLatestResultIds] = useState<Set<string>>(() => new Set());
   const [userPresets, setUserPresets] = useState<UserPreset[]>([]);
+  const [presetsAuthority, setPresetsAuthority] = useState(initialAuthorityStatus);
   const [presetName, setPresetName] = useState("");
   const [manageMode, setManageMode] = useState(false);
   const [selectedMediaIds, setSelectedMediaIds] = useState<Set<string>>(() => new Set());
@@ -190,10 +202,15 @@ export function GeneratorWorkspace() {
   const [lookLabel, setLookLabel] = useState("");
   const [lookDescription, setLookDescription] = useState("");
   const [looks, setLooks] = useState<CharacterLookItem[]>([]);
+  const [looksAuthority, setLooksAuthority] = useState(initialAuthorityStatus);
   const [selectedLookId, setSelectedLookId] = useState("");
   const [remixFeedItemId, setRemixFeedItemId] = useState("");
   const [authReturnTarget, setAuthReturnTarget] = useState("/generate");
   const workspaceTopRef = useRef<HTMLDivElement>(null);
+  const looksCharacterIdRef = useRef("");
+  const looksRequestSerialRef = useRef(0);
+  const mediaTabRef = useRef<GalleryTab>("image");
+  const mediaRequestSerialRef = useRef(0);
 
   const videoModeEnabled = Boolean(config?.video.enabled && (config.video.models.length ?? 0) > 0);
   const availableModels = useMemo(
@@ -295,6 +312,14 @@ export function GeneratorWorkspace() {
   const bulkDeleteArmed =
     selectedMediaIds.size > 0 && bulkDeleteConfirmKey === selectedMediaConfirmKey;
 
+  const invalidateLookScope = useCallback(() => {
+    looksRequestSerialRef.current += 1;
+    looksCharacterIdRef.current = "";
+    setLooks([]);
+    setSelectedLookId("");
+    setLooksAuthority(initialAuthorityStatus());
+  }, []);
+
   const showJobsView = useCallback(() => {
     setView("jobs");
     window.setTimeout(() => {
@@ -335,7 +360,6 @@ export function GeneratorWorkspace() {
         | null;
       const data = payload?.data;
       if (!response.ok || !payload?.ok || !data) {
-        setConfig(null);
         setConfigError(
           payload?.error?.message ?? generationConfigErrorMessage(response.status),
         );
@@ -353,80 +377,198 @@ export function GeneratorWorkspace() {
       setOrientation((current) => current || data.image.orientations[0] || "4:5");
       setCount((current) => Math.min(current, data.pricing.image.maxCount));
     } catch {
-      setConfig(null);
       setConfigError("Generation controls could not load. Refresh and try again.");
     }
   }, []);
 
   const refreshJobs = useCallback(async () => {
-    const response = await fetch("/api/v1/generation/jobs?limit=20");
-    if (!response.ok) return;
-    const payload = (await response.json()) as ApiPayload<{ items: GenerationJob[] }>;
-    setJobs(payload.data?.items ?? []);
+    setJobsAuthority(loadingAuthorityStatus);
+    try {
+      const response = await fetch("/api/v1/generation/jobs?limit=20");
+      const payload = (await response.json().catch(() => null)) as
+        | ApiPayload<{ items: GenerationJob[] }>
+        | null;
+      if (!response.ok || !payload?.ok || !Array.isArray(payload.data?.items)) {
+        throw new Error(payload?.error?.message ?? "Jobs could not load.");
+      }
+      setJobs(payload.data.items);
+      setJobsAuthority(readyAuthorityStatus());
+    } catch (error) {
+      setJobsAuthority((current) =>
+        failedAuthorityStatus(current, requestErrorMessage(error, "Jobs could not load.")),
+      );
+    }
   }, []);
 
-  const refreshMedia = useCallback(async (tab: GalleryTab = galleryTab) => {
+  const refreshMedia = useCallback(async (tab: GalleryTab) => {
     const query = tab === "liked" ? "liked=1" : `type=${tab}`;
-    const response = await fetch(`/api/v1/media?${query}`);
-    if (!response.ok) return;
-    const payload = (await response.json()) as ApiPayload<{ items: MediaItem[] }>;
-    setMedia(payload.data?.items ?? []);
-    setDeleteConfirmMediaId(null);
-    setBulkDeleteConfirmKey(null);
-  }, [galleryTab]);
+    const requestSerial = mediaRequestSerialRef.current + 1;
+    mediaRequestSerialRef.current = requestSerial;
+    const hasMatchingSnapshot = mediaTabRef.current === tab;
+    if (!hasMatchingSnapshot) {
+      mediaTabRef.current = tab;
+      setMedia([]);
+      setSelectedMediaIds(new Set());
+      setDeleteConfirmMediaId(null);
+      setBulkDeleteConfirmKey(null);
+    }
+    setMediaAuthority((current) =>
+      loadingAuthorityStatus(
+        hasMatchingSnapshot ? current : initialAuthorityStatus(),
+      ),
+    );
+    try {
+      const response = await fetch(`/api/v1/media?${query}`);
+      const payload = (await response.json().catch(() => null)) as
+        | ApiPayload<{ items: MediaItem[] }>
+        | null;
+      if (requestSerial !== mediaRequestSerialRef.current) return;
+      if (!response.ok || !payload?.ok || !Array.isArray(payload.data?.items)) {
+        throw new Error(payload?.error?.message ?? "Gallery could not load.");
+      }
+      setMedia(payload.data.items);
+      setMediaAuthority(readyAuthorityStatus());
+      setDeleteConfirmMediaId(null);
+      setBulkDeleteConfirmKey(null);
+    } catch (error) {
+      if (requestSerial !== mediaRequestSerialRef.current) return;
+      setMediaAuthority((current) =>
+        failedAuthorityStatus(current, requestErrorMessage(error, "Gallery could not load.")),
+      );
+    }
+  }, []);
 
   const refreshPresets = useCallback(async () => {
     // scope=user yields only the signed-in user's saved presets (built-in
     // background/pose/outfit presets arrive separately via the config endpoint).
-    const response = await fetch("/api/v1/generation/presets?scope=user");
-    if (!response.ok) return;
-    const payload = (await response.json()) as ApiPayload<{ items: UserPreset[] }>;
-    setUserPresets(payload.data?.items ?? []);
-    setDeleteConfirmPresetId(null);
+    setPresetsAuthority(loadingAuthorityStatus);
+    try {
+      const response = await fetch("/api/v1/generation/presets?scope=user");
+      const payload = (await response.json().catch(() => null)) as
+        | ApiPayload<{ items: UserPreset[] }>
+        | null;
+      if (!response.ok || !payload?.ok || !Array.isArray(payload.data?.items)) {
+        throw new Error(payload?.error?.message ?? "Saved presets could not load.");
+      }
+      setUserPresets(payload.data.items);
+      setPresetsAuthority(readyAuthorityStatus());
+      setDeleteConfirmPresetId(null);
+    } catch (error) {
+      setPresetsAuthority((current) =>
+        failedAuthorityStatus(
+          current,
+          requestErrorMessage(error, "Saved presets could not load."),
+        ),
+      );
+    }
   }, []);
 
   const refreshIdentityMedia = useCallback(async () => {
-    const response = await fetch("/api/v1/media?type=image&limit=60");
-    if (!response.ok) return;
-    const payload = (await response.json()) as ApiPayload<{ items: MediaItem[] }>;
-    setIdentityMedia(payload.data?.items ?? []);
+    setIdentityMediaAuthority(loadingAuthorityStatus);
+    try {
+      const response = await fetch("/api/v1/media?type=image&limit=60");
+      const payload = (await response.json().catch(() => null)) as
+        | ApiPayload<{ items: MediaItem[] }>
+        | null;
+      if (!response.ok || !payload?.ok || !Array.isArray(payload.data?.items)) {
+        throw new Error(payload?.error?.message ?? "Identity references could not load.");
+      }
+      setIdentityMedia(payload.data.items);
+      setIdentityMediaAuthority(readyAuthorityStatus());
+    } catch (error) {
+      setIdentityMediaAuthority((current) =>
+        failedAuthorityStatus(
+          current,
+          requestErrorMessage(error, "Identity references could not load."),
+        ),
+      );
+    }
   }, []);
 
   const refreshLooks = useCallback(async () => {
+    const requestSerial = looksRequestSerialRef.current + 1;
+    looksRequestSerialRef.current = requestSerial;
     if (!characterId || freeplay) {
       setLooks([]);
       setSelectedLookId("");
+      looksCharacterIdRef.current = "";
+      setLooksAuthority(readyAuthorityStatus());
       return;
     }
-    const response = await fetch(`/api/v1/characters/${encodeURIComponent(characterId)}/looks`);
-    if (!response.ok) {
+    const hasMatchingSnapshot = looksCharacterIdRef.current === characterId;
+    if (!hasMatchingSnapshot) {
       setLooks([]);
       setSelectedLookId("");
-      return;
+      looksCharacterIdRef.current = characterId;
     }
-    const payload = (await response.json()) as ApiPayload<{ items: CharacterLookItem[] }>;
-    const items = (payload.data?.items ?? []).filter((look) => look.status === "active");
-    setLooks(items);
-    setSelectedLookId((current) => items.some((look) => look.id === current) ? current : "");
+    setLooksAuthority((current) =>
+      loadingAuthorityStatus(
+        hasMatchingSnapshot ? current : initialAuthorityStatus(),
+      ),
+    );
+    try {
+      const response = await fetch(`/api/v1/characters/${encodeURIComponent(characterId)}/looks`);
+      const payload = (await response.json().catch(() => null)) as
+        | ApiPayload<{ items: CharacterLookItem[] }>
+        | null;
+      if (requestSerial !== looksRequestSerialRef.current) return;
+      if (!response.ok || !payload?.ok || !Array.isArray(payload.data?.items)) {
+        throw new Error(payload?.error?.message ?? "Saved Looks could not load.");
+      }
+      const items = payload.data.items.filter((look) => look.status === "active");
+      setLooks(items);
+      setLooksAuthority(readyAuthorityStatus());
+      setSelectedLookId((current) =>
+        items.some((look) => look.id === current) ? current : "",
+      );
+    } catch (error) {
+      if (requestSerial !== looksRequestSerialRef.current) return;
+      setLooksAuthority((current) =>
+        failedAuthorityStatus(
+          current,
+          requestErrorMessage(error, "Saved Looks could not load."),
+        ),
+      );
+    }
   }, [characterId, freeplay]);
 
   const refreshCharacters = useCallback(async () => {
+    setCharactersAuthority(loadingAuthorityStatus);
     try {
       const response = await fetch("/api/v1/characters?limit=12");
-      const payload = (await response.json()) as ApiPayload<{ items: CharacterCardData[] }>;
+      const payload = (await response.json().catch(() => null)) as
+        | ApiPayload<{ items: CharacterCardData[] }>
+        | null;
+      if (!response.ok || !payload?.ok || !Array.isArray(payload.data?.items)) {
+        throw new Error(payload?.error?.message ?? "Character catalog could not load.");
+      }
       const searchParams = new URLSearchParams(window.location.search);
       const desired = searchParams.get("characterId");
       const nextRemixFeedItemId = searchParams.get("remixFeedItemId") ?? "";
-      const listedItems = payload.data?.items ?? [];
+      const listedItems = payload.data.items;
+      const desiredListed = Boolean(
+        desired && listedItems.some((character) => character.id === desired),
+      );
       const desiredCharacter =
-        desired && !listedItems.some((character) => character.id === desired)
+        desired && !desiredListed
           ? await fetchCharacterById(desired)
           : null;
       const items = desiredCharacter ? [desiredCharacter, ...listedItems] : listedItems;
       setCharacters(items);
+      setCharactersAuthority(readyAuthorityStatus());
       if (items.length === 0) {
+        invalidateLookScope();
         setCharacterId("");
         setFreeplay(true);
+        return;
+      }
+      if (desired && !desiredListed && !desiredCharacter) {
+        invalidateLookScope();
+        setCharacterId("");
+        setFreeplay(false);
+        setStatus(
+          "The requested character is no longer available. Choose another character or Freeplay.",
+        );
         return;
       }
       if (nextRemixFeedItemId) {
@@ -436,13 +578,15 @@ export function GeneratorWorkspace() {
       const preset = desired && items.some((c) => c.id === desired) ? desired : "";
       if (preset) setFreeplay(false);
       setCharacterId((current) => current || preset || items[0]?.id || "");
-    } catch {
-      setCharacters([]);
-      setCharacterId("");
-      setFreeplay(true);
-      setStatus((current) => current || "Character catalog unavailable. Freeplay selected.");
+    } catch (error) {
+      setCharactersAuthority((current) =>
+        failedAuthorityStatus(
+          current,
+          requestErrorMessage(error, "Character catalog could not load."),
+        ),
+      );
     }
-  }, []);
+  }, [invalidateLookScope]);
 
   const pollGeneration = useCallback(async (jobId: string) => {
     const response = await fetch(`/api/v1/generation/jobs/${jobId}`);
@@ -535,7 +679,7 @@ export function GeneratorWorkspace() {
             backgroundPresetId: mode === "image" && backgroundPresetId ? backgroundPresetId : undefined,
             posePresetId: mode === "image" && posePresetId ? posePresetId : undefined,
             outfitPresetId: mode === "image" && outfitPresetId ? outfitPresetId : undefined,
-            lookId: mode === "image" && selectedLookId ? selectedLookId : undefined,
+            lookId: characterImageMode && selectedLookId ? selectedLookId : undefined,
           },
         }),
       });
@@ -691,6 +835,7 @@ export function GeneratorWorkspace() {
 
   function startNewMomentFromResult(item: MediaItem) {
     if (item.characterId) {
+      invalidateLookScope();
       setCharacterId(item.characterId);
       setFreeplay(false);
     }
@@ -1055,7 +1200,10 @@ export function GeneratorWorkspace() {
                     onClick={() => {
                       setImageWorkflow(item);
                       setStatus("");
-                      if (item === "image-edit") setGalleryTab("image");
+                      if (item === "image-edit") {
+                        setGalleryTab("image");
+                        void refreshMedia("image");
+                      }
                     }}
                     type="button"
                   >
@@ -1090,11 +1238,22 @@ export function GeneratorWorkspace() {
                     Open Gallery
                   </button>
                 </div>
-                {imageEditCandidates.length === 0 ? (
+                {mediaAuthority.phase === "error" ? (
+                  <GeneratorAuthorityNotice
+                    hasSnapshot={mediaAuthority.hasSnapshot}
+                    message={mediaAuthority.error ?? "Gallery could not load."}
+                    onRetry={() => void refreshMedia("image")}
+                  />
+                ) : null}
+                {mediaAuthority.phase === "loading" && !mediaAuthority.hasSnapshot ? (
+                  <p className="rounded-[8px] bg-[rgb(36,36,36)] p-3 text-[12px] font-semibold text-[rgb(170,170,170)]">
+                    Loading editable images…
+                  </p>
+                ) : authorityShowsEmpty(mediaAuthority, imageEditCandidates.length) ? (
                   <p className="rounded-[8px] bg-[rgb(36,36,36)] p-3 text-[12px] font-semibold text-[rgb(170,170,170)]">
                     No editable images yet. Generate an image first, then return to Image Edit.
                   </p>
-                ) : (
+                ) : imageEditCandidates.length > 0 ? (
                   <div className="grid grid-cols-3 gap-2">
                     {imageEditCandidates.map((item, index) => {
                       const source = item.thumbnailUrl ?? item.url;
@@ -1130,7 +1289,7 @@ export function GeneratorWorkspace() {
                       );
                     })}
                   </div>
-                )}
+                ) : null}
               </div>
             )}
 
@@ -1141,12 +1300,26 @@ export function GeneratorWorkspace() {
                   <select
                     aria-label="Character"
                     className="mt-2 h-12 w-full rounded-[10px] bg-[rgb(36,36,36)] px-4 text-[13px] font-semibold text-white outline-none"
-                    disabled={freeplay}
+                    disabled={
+                      freeplay ||
+                      !charactersAuthority.hasSnapshot ||
+                      characters.length === 0
+                    }
                     id="generator-character"
                     name="characterId"
-                    onChange={(event) => setCharacterId(event.target.value)}
+                    onChange={(event) => {
+                      const nextCharacterId = event.target.value;
+                      if (nextCharacterId === characterId) return;
+                      invalidateLookScope();
+                      setCharacterId(nextCharacterId);
+                    }}
                     value={characterId}
                   >
+                    {!characterId ? (
+                      <option disabled value="">
+                        Choose a character
+                      </option>
+                    ) : null}
                     {characters.map((character) => (
                       <option key={character.id} value={character.id}>
                         {character.title}
@@ -1154,6 +1327,26 @@ export function GeneratorWorkspace() {
                     ))}
                   </select>
                 </label>
+                {charactersAuthority.phase === "loading" &&
+                !charactersAuthority.hasSnapshot ? (
+                  <p className="mt-2 text-[12px] font-semibold text-[rgb(170,170,170)]">
+                    Loading your characters…
+                  </p>
+                ) : null}
+                {charactersAuthority.phase === "error" ? (
+                  <GeneratorAuthorityNotice
+                    hasSnapshot={charactersAuthority.hasSnapshot}
+                    message={
+                      charactersAuthority.error ?? "Character catalog could not load."
+                    }
+                    onRetry={() => void refreshCharacters()}
+                  />
+                ) : null}
+                {authorityShowsEmpty(charactersAuthority, characters.length) ? (
+                  <p className="mt-2 text-[12px] font-semibold text-[rgb(170,170,170)]">
+                    No characters yet. Freeplay is available.
+                  </p>
+                ) : null}
 
                 <label className="mt-3 flex items-center gap-2 text-[13px] font-semibold text-white">
                   <input
@@ -1161,7 +1354,11 @@ export function GeneratorWorkspace() {
                     className="h-4 w-4 accent-[rgb(255,64,180)]"
                     id="generator-freeplay"
                     name="freeplay"
-                    onChange={(event) => setFreeplay(event.target.checked)}
+                    onChange={(event) => {
+                      const nextFreeplay = event.target.checked;
+                      if (nextFreeplay) invalidateLookScope();
+                      setFreeplay(nextFreeplay);
+                    }}
                     type="checkbox"
                   />
                   Freeplay
@@ -1192,6 +1389,18 @@ export function GeneratorWorkspace() {
                     This legacy character has no confirmed identity image. New characters establish identity before publishing; results for this character may vary.
                   </div>
                 )}
+                {looksAuthority.phase === "loading" && !looksAuthority.hasSnapshot ? (
+                  <p className="mt-3 text-[12px] font-semibold text-[rgb(170,170,170)]">
+                    Loading saved Looks…
+                  </p>
+                ) : null}
+                {looksAuthority.phase === "error" ? (
+                  <GeneratorAuthorityNotice
+                    hasSnapshot={looksAuthority.hasSnapshot}
+                    message={looksAuthority.error ?? "Saved Looks could not load."}
+                    onRetry={() => void refreshLooks()}
+                  />
+                ) : null}
                 {looks.length > 0 && (
                   <label className="mt-3 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
                     Reuse a Look
@@ -1210,6 +1419,11 @@ export function GeneratorWorkspace() {
                     </select>
                   </label>
                 )}
+                {authorityShowsEmpty(looksAuthority, looks.length) ? (
+                  <p className="mt-3 text-[12px] font-semibold text-[rgb(114,113,112)]">
+                    No saved Looks for this character yet.
+                  </p>
+                ) : null}
               </div>
             )}
 
@@ -1380,11 +1594,23 @@ export function GeneratorWorkspace() {
                     Save
                   </button>
                 </div>
-                {userPresets.length === 0 ? (
+                {presetsAuthority.phase === "loading" && !presetsAuthority.hasSnapshot ? (
+                  <p className="text-[12px] font-medium text-[rgb(114,113,112)]">
+                    Loading saved presets…
+                  </p>
+                ) : null}
+                {presetsAuthority.phase === "error" ? (
+                  <GeneratorAuthorityNotice
+                    hasSnapshot={presetsAuthority.hasSnapshot}
+                    message={presetsAuthority.error ?? "Saved presets could not load."}
+                    onRetry={() => void refreshPresets()}
+                  />
+                ) : null}
+                {authorityShowsEmpty(presetsAuthority, userPresets.length) ? (
                   <p className="text-[12px] font-medium text-[rgb(114,113,112)]">
                     Save your current background, pose, outfit, or prompt to reuse later.
                   </p>
-                ) : (
+                ) : userPresets.length > 0 ? (
                   <ul className="grid gap-2">
                     {userPresets.map((preset) => {
                       const confirmingDelete = deleteConfirmPresetId === preset.id;
@@ -1427,7 +1653,7 @@ export function GeneratorWorkspace() {
                       );
                     })}
                   </ul>
-                )}
+                ) : null}
               </div>
             )}
 
@@ -1487,6 +1713,22 @@ export function GeneratorWorkspace() {
                         {consistencyModeDescription(consistencyMode)}
                       </p>
                     </div>
+                    {identityMediaAuthority.phase === "error" ? (
+                      <GeneratorAuthorityNotice
+                        hasSnapshot={identityMediaAuthority.hasSnapshot}
+                        message={
+                          identityMediaAuthority.error ??
+                          "Identity references could not load."
+                        }
+                        onRetry={() => void refreshIdentityMedia()}
+                      />
+                    ) : null}
+                    {identityMediaAuthority.phase === "loading" &&
+                    !identityMediaAuthority.hasSnapshot ? (
+                      <p className="text-[12px] font-semibold text-[rgb(170,170,170)]">
+                        Loading identity references…
+                      </p>
+                    ) : null}
                     {identityTimeline.length > 0 && (
                       <div data-testid="identity-timeline">
                         <div className="mb-2 flex items-center justify-between gap-2">
@@ -1524,6 +1766,14 @@ export function GeneratorWorkspace() {
                         </div>
                       </div>
                     )}
+                    {authorityShowsEmpty(
+                      identityMediaAuthority,
+                      identityTimeline.length,
+                    ) ? (
+                      <p className="text-[12px] font-semibold text-[rgb(150,150,150)]">
+                        No identity reference history yet.
+                      </p>
+                    ) : null}
                   </div>
                 )}
               </div>
@@ -1723,7 +1973,19 @@ export function GeneratorWorkspace() {
                 </button>
               </div>
               <div className="grid gap-3">
-                {jobs.length === 0 && (
+                {jobsAuthority.phase === "error" ? (
+                  <GeneratorAuthorityNotice
+                    hasSnapshot={jobsAuthority.hasSnapshot}
+                    message={jobsAuthority.error ?? "Jobs could not load."}
+                    onRetry={() => void refreshJobs()}
+                  />
+                ) : null}
+                {jobsAuthority.phase === "loading" && !jobsAuthority.hasSnapshot ? (
+                  <div className="rounded-[10px] bg-[rgb(36,36,36)] p-5 text-[13px] font-medium text-[rgb(170,170,170)]">
+                    Loading jobs…
+                  </div>
+                ) : null}
+                {authorityShowsEmpty(jobsAuthority, jobs.length) && (
                   <div className="rounded-[10px] bg-[rgb(36,36,36)] p-5 text-[13px] font-medium text-[rgb(170,170,170)]">
                     No jobs yet.
                   </div>
@@ -1867,8 +2129,22 @@ export function GeneratorWorkspace() {
                       {bulkDeleteArmed ? "Confirm delete selected" : "Delete selected"}
                     </button>
                   </span>
-                </div>
+                  </div>
               )}
+              {mediaAuthority.phase === "error" ? (
+                <div className="mb-4">
+                  <GeneratorAuthorityNotice
+                    hasSnapshot={mediaAuthority.hasSnapshot}
+                    message={mediaAuthority.error ?? "Gallery could not load."}
+                    onRetry={() => void refreshMedia(galleryTab)}
+                  />
+                </div>
+              ) : null}
+              {mediaAuthority.phase === "loading" && !mediaAuthority.hasSnapshot ? (
+                <div className="mb-4 rounded-[10px] bg-[rgb(36,36,36)] p-5 text-[13px] font-medium text-[rgb(170,170,170)]">
+                  Loading gallery…
+                </div>
+              ) : null}
               {lookEditorMediaId && (
                 <div className="mb-4 grid gap-3 rounded-[12px] border border-white/10 bg-[rgb(28,28,28)] p-4">
                   <div>
@@ -2087,7 +2363,7 @@ export function GeneratorWorkspace() {
                     </div>
                   );
                 })}
-                {media.length === 0 && (
+                {authorityShowsEmpty(mediaAuthority, media.length) && (
                   <div className="col-span-full grid min-h-40 place-items-center rounded-[10px] bg-[rgb(36,36,36)] text-[13px] font-medium text-[rgb(170,170,170)]">
                     <div className="flex items-center gap-2">
                       <ImageIcon className="h-4 w-4" />
@@ -2261,11 +2537,45 @@ function IconButton({
   );
 }
 
-async function fetchCharacterById(id: string) {
+function GeneratorAuthorityNotice({
+  hasSnapshot,
+  message,
+  onRetry,
+}: {
+  hasSnapshot: boolean;
+  message: string;
+  onRetry: () => void;
+}) {
+  return (
+    <div
+      className="mt-2 flex flex-wrap items-center gap-2 rounded-[10px] border border-[rgb(255,184,112)]/30 bg-[rgb(36,28,18)] px-3 py-2 text-[12px] font-semibold text-[rgb(255,184,112)]"
+      role="alert"
+    >
+      <span>
+        {message}
+        {hasSnapshot ? " Showing the last loaded data." : ""}
+      </span>
+      <button
+        className="rounded-full bg-white/10 px-3 py-1 font-black text-white"
+        onClick={onRetry}
+        type="button"
+      >
+        Retry
+      </button>
+    </div>
+  );
+}
+
+export async function fetchCharacterById(id: string) {
   const response = await fetch(`/api/v1/characters/${encodeURIComponent(id)}`);
-  if (!response.ok) return null;
-  const payload = (await response.json()) as ApiPayload<{ character: CharacterCardData }>;
-  return payload.data?.character ?? null;
+  if (response.status === 404) return null;
+  const payload = (await response.json().catch(() => null)) as
+    | ApiPayload<{ character: CharacterCardData }>
+    | null;
+  if (!response.ok || !payload?.ok || !payload.data?.character) {
+    throw new Error(payload?.error?.message ?? "Requested character could not load.");
+  }
+  return payload.data.character;
 }
 
 function isTerminal(status: string) {
@@ -2433,6 +2743,10 @@ function generationConfigErrorMessage(status: number) {
   if (status === 401) return "Sign in to use generation controls.";
   if (status === 403) return "Complete age checks before using generation controls.";
   return "Generation controls could not load. Refresh and try again.";
+}
+
+function requestErrorMessage(error: unknown, fallback: string) {
+  return error instanceof Error && error.message ? error.message : fallback;
 }
 
 function jobStatusLabel(status: string, errorCode: string | null) {
