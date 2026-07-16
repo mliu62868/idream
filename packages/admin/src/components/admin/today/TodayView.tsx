@@ -14,7 +14,12 @@ type Row = Record<string, unknown>;
 export type TodayLegacyData = {
   metrics: {
     users: { active: number; suspended: number };
-    generation: { queued: number; failed: number; blocked: number; successRate: number };
+    generation: {
+      queued: number;
+      failed: number;
+      blocked: number;
+      successRate: number | null;
+    };
     moderation: { openReports: number };
     billing: { activeSubscriptions: number };
   };

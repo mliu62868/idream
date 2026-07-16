@@ -36,7 +36,9 @@ export async function adminDashboard(request: Request) {
 
   const totalFinished = completedJobs + failedJobs + blockedJobs;
   const successRate =
-    totalFinished > 0 ? Math.round((completedJobs / totalFinished) * 100) : 100;
+    totalFinished > 0
+      ? Math.round((completedJobs / totalFinished) * 100)
+      : null;
 
   return ok({
     metrics: {

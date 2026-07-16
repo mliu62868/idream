@@ -168,7 +168,7 @@ export function ChatOpsWorkspace({ canRead }: { canRead: boolean }) {
   const connected = authorities.some(
     (authority) => states[authority].data?.configured,
   );
-  const overview = states.overview.data?.overview ?? {};
+  const overview = states.overview.data?.overview ?? null;
   return (
     <section className="space-y-5">
       <PageHeader
@@ -283,7 +283,7 @@ export function ChatOpsWorkspace({ canRead }: { canRead: boolean }) {
           />
           <DiagnosticsNotice data={states.overview.data} />
           {states.overview.data ? (
-            <OverviewCards overview={overview} />
+            <ChatOpsOverviewCards overview={overview} />
           ) : (
             <Loading authority="overview" state={states.overview} />
           )}
@@ -382,16 +382,16 @@ export function ChatOpsWorkspace({ canRead }: { canRead: boolean }) {
   );
 }
 
-function OverviewCards({ overview }: { overview: Row }) {
+export function ChatOpsOverviewCards({ overview }: { overview: Row | null }) {
   const cards = [
-    ["Active sessions", overview.activeSessions],
-    ["Archived", overview.archivedSessions],
-    ["Messages 24h", overview.messages24h],
-    ["Moderation 24h", overview.moderationEvents24h],
-    ["Messages used today", overview.messagesUsedToday],
-    ["Users at daily limit", overview.usersAtDailyLimit],
-    ["Unlimited users", overview.unlimitedEntitlements],
-    ["Blocked moderation 24h", overview.blockedModeration24h],
+    ["Active sessions", overview?.activeSessions],
+    ["Archived", overview?.archivedSessions],
+    ["Messages 24h", overview?.messages24h],
+    ["Moderation 24h", overview?.moderationEvents24h],
+    ["Messages used today", overview?.messagesUsedToday],
+    ["Users at daily limit", overview?.usersAtDailyLimit],
+    ["Unlimited users", overview?.unlimitedEntitlements],
+    ["Blocked moderation 24h", overview?.blockedModeration24h],
   ];
   return (
     <div className="grid gap-px overflow-hidden rounded-lg border bg-black/[0.05] md:grid-cols-4">
@@ -399,7 +399,7 @@ function OverviewCards({ overview }: { overview: Row }) {
         <div className="bg-[var(--ad-surface)] p-4" key={String(label)}>
           <p className="text-xs text-[var(--ad-text-muted)]">{String(label)}</p>
           <p className="mt-2 text-2xl font-semibold">
-            {typeof value === "number" ? value : 0}
+            {typeof value === "number" ? value : "—"}
           </p>
         </div>
       ))}

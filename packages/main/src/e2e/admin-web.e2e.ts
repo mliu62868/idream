@@ -1965,7 +1965,7 @@ test("admin CMS UI requires typed confirmation for publish changes", async ({ pa
   }
 });
 
-test("admin insights dry-run UI requires typed confirmation", async ({ page }) => {
+test("admin insights configuration check UI requires typed confirmation", async ({ page }) => {
   const consoleFailures = collectConsoleFailures(page);
   const dialogs: string[] = [];
   page.on("dialog", async (dialog) => {
@@ -1979,7 +1979,7 @@ test("admin insights dry-run UI requires typed confirmation", async ({ page }) =
   const profile = await prisma.generationModelProfile.create({
     data: {
       profileKey: `e2e-insights-dryrun-${suffix}`,
-      label: "E2E Insights Dry-run",
+      label: "E2E Insights Configuration Check",
       pipelineModel: "test-model",
       allowedOrientations: ["1:1"],
       status: "draft",
@@ -1992,22 +1992,34 @@ test("admin insights dry-run UI requires typed confirmation", async ({ page }) =
     await expectAdminShellReady(page, "Funnels & Retention");
 
     await page.getByRole("textbox", { name: "Model profile id" }).fill(profile.id);
-    await page.getByRole("button", { name: "Dry-run" }).click();
+    await page.getByRole("button", { name: "Configuration check" }).click();
 
-    const confirmDryRun = page.getByRole("button", { name: "Confirm dry-run" });
+    const confirmDryRun = page.getByRole("button", {
+      name: "Confirm configuration check",
+    });
     await expect(confirmDryRun).toBeDisabled();
-    await page.getByRole("textbox", { name: "Dry-run reason" }).fill("E2E profile dry-run check");
+    await page
+      .getByRole("textbox", { name: "Configuration check reason" })
+      .fill("E2E profile configuration check");
     await expect(confirmDryRun).toBeDisabled();
-    await page.getByRole("textbox", { name: "Dry-run confirmation" }).fill("WRONG");
+    await page
+      .getByRole("textbox", { name: "Configuration check confirmation" })
+      .fill("WRONG");
     await expect(confirmDryRun).toBeDisabled();
-    await page.getByRole("textbox", { name: "Dry-run confirmation" }).fill("DRYRUN");
+    await page
+      .getByRole("textbox", { name: "Configuration check confirmation" })
+      .fill("DRYRUN");
     await expect(confirmDryRun).toBeDisabled();
-    await page.getByRole("textbox", { name: "Dry-run confirmation" }).fill(profile.id);
+    await page
+      .getByRole("textbox", { name: "Configuration check confirmation" })
+      .fill(profile.id);
     await expect(confirmDryRun).toBeEnabled();
     await confirmDryRun.click();
-    await expect(page.getByText("Dry-run pass: 2/2 samples passed.")).toBeVisible({
-      timeout: 10_000,
-    });
+    await expect(
+      page.getByText(
+        "Configuration check pass: 2/2 configuration cases passed. No provider call was made.",
+      ),
+    ).toBeVisible({ timeout: 10_000 });
 
     const audit = await prisma.adminAuditLog.findFirstOrThrow({
       where: {
@@ -2017,7 +2029,7 @@ test("admin insights dry-run UI requires typed confirmation", async ({ page }) =
       },
       orderBy: { createdAt: "desc" },
     });
-    expect(audit.reason).toBe("E2E profile dry-run check");
+    expect(audit.reason).toBe("E2E profile configuration check");
     await expect
       .poll(async () => {
         const refreshed = await prisma.generationModelProfile.findUnique({

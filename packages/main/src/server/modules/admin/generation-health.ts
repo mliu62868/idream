@@ -65,7 +65,8 @@ export async function profileHealth(request: Request, id: string): Promise<Respo
       failed,
       blocked,
       refunded,
-      successRate: finished > 0 ? Math.round((completed / finished) * 100) : 100,
+      successRate:
+        finished > 0 ? Math.round((completed / finished) * 100) : null,
       blockedRate: finished > 0 ? Math.round((blocked / finished) * 100) : 0,
       refundRate: total > 0 ? Math.round((refunded / total) * 100) : 0,
       latencyP50Ms: percentile(durations, 50),

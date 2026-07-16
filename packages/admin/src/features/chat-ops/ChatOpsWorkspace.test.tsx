@@ -1,6 +1,9 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { ChatOpsWorkspace } from "./ChatOpsWorkspace";
+import {
+  ChatOpsOverviewCards,
+  ChatOpsWorkspace,
+} from "./ChatOpsWorkspace";
 
 describe("Chat Ops workspace permissions", () => {
   it("renders five independent authority states and explicit no-permission status", () => {
@@ -11,5 +14,14 @@ describe("Chat Ops workspace permissions", () => {
     expect(html).toContain("Usage: refreshing");
     expect(html).toContain("Events: refreshing");
     expect(html).toContain("chat.ops.read is not granted");
+  });
+
+  it("renders unavailable overview metrics as dashes instead of fabricated zeroes", () => {
+    const html = renderToStaticMarkup(
+      <ChatOpsOverviewCards overview={null} />,
+    );
+
+    expect(html.match(/>—</g)).toHaveLength(8);
+    expect(html).not.toContain(">0<");
   });
 });

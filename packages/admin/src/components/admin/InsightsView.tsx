@@ -2,7 +2,7 @@
 
 // SPEC: 生成质量 + 增长洞察面板（ADMIN_PHASE3_DESIGN §5.1/§5.3 的 UI）。
 //   - Phase 0 hides invalid legacy retention values and export.
-//   - 按 profile id 查健康度 + 跑 dry-run。
+//   - 按 profile id 查健康度 + 跑不调用 provider 的配置检查（兼容既有 dry-run API）。
 // INTENT: 自取数、无 props；样式对齐 TagsView。
 import { useState } from "react";
 import { Activity, AlertTriangle, Loader2 } from "lucide-react";
@@ -12,13 +12,13 @@ import { useAdminI18n } from "@/components/admin/i18n";
 const inputClass =
   "rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]";
 
-type Health = {
+export type Health = {
   metrics: {
     total: number;
     completed: number;
     failed: number;
     blocked: number;
-    successRate: number;
+    successRate: number | null;
     blockedRate: number;
     refundRate: number;
     latencyP50Ms: number;
@@ -107,14 +107,21 @@ function ProfileHealthSection() {
       );
       setDryRunDraft(null);
       setNote(
-        t("Dry-run {status}: {passed}/{total} samples passed.", {
-          status: data.dryRun.status,
-          passed: data.dryRun.passed,
-          total: data.dryRun.total,
-        }),
+        t(
+          "Configuration check {status}: {passed}/{total} configuration cases passed. No provider call was made.",
+          {
+            status: data.dryRun.status,
+            passed: data.dryRun.passed,
+            total: data.dryRun.total,
+          },
+        ),
       );
     } catch (error) {
-      setErr(error instanceof Error ? error.message : "Dry-run failed");
+      setErr(
+        error instanceof Error
+          ? error.message
+          : t("Configuration check failed"),
+      );
     } finally {
       setBusy(null);
     }
@@ -122,9 +129,13 @@ function ProfileHealthSection() {
 
   return (
     <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-      <h2 className="text-sm font-semibold">{t("Profile health + dry-run")}</h2>
+      <h2 className="text-sm font-semibold">
+        {t("Profile health + configuration check")}
+      </h2>
       <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-        发布前依据：输入 model profile id 查近 30 天健康度，或跑配置 dry-run。
+        {t(
+          "The configuration check validates deterministic profile and runtime fields only; it does not call a provider or generate media.",
+        )}
       </p>
       <div className="mt-3 grid gap-3 md:grid-cols-[1fr_auto_auto]">
         <input
@@ -150,24 +161,25 @@ function ProfileHealthSection() {
           type="button"
         >
           {busy === "dryrun" ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-          {t("Dry-run")}
+          {t("Configuration check")}
         </button>
       </div>
       {dryRunDraft ? (
         <section className="rounded-lg mt-3 border border-[var(--ad-yellow-text)]/20 bg-[var(--ad-yellow-bg)] p-3">
           <p className="text-xs font-semibold text-[var(--ad-yellow-text)]">
-            {t("Confirm dry-run")} <span className="font-mono">{dryRunDraft.profileId}</span>
+            {t("Confirm configuration check")}{" "}
+            <span className="font-mono">{dryRunDraft.profileId}</span>
           </p>
           <div className="mt-3 grid gap-3 md:grid-cols-[1fr_260px_auto_auto]">
             <input
-              aria-label={t("Dry-run reason")}
+              aria-label={t("Configuration check reason")}
               className={inputClass}
               onChange={(event) => setDryRunDraft({ ...dryRunDraft, reason: event.target.value })}
               placeholder={t("Reason (≥3)")}
               value={dryRunDraft.reason}
             />
             <input
-              aria-label={t("Dry-run confirmation")}
+              aria-label={t("Configuration check confirmation")}
               className={`${inputClass} font-mono`}
               onChange={(event) => setDryRunDraft({ ...dryRunDraft, confirmation: event.target.value })}
               placeholder={t("Type profile ID")}
@@ -187,26 +199,37 @@ function ProfileHealthSection() {
               type="button"
             >
               {busy === "dryrun" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              {t("Confirm dry-run")}
+              {t("Confirm configuration check")}
             </button>
           </div>
         </section>
       ) : null}
       {err ? <p role="alert" className="mt-2 text-xs text-[var(--ad-red-text)]">{err}</p> : null}
       {note ? <p className="mt-2 text-xs text-[var(--ad-green-text)]">{note}</p> : null}
-      {health ? (
-        <div className="rounded-lg mt-3 grid grid-cols-2 gap-px overflow-hidden border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
-          <Metric label="Total" value={health.metrics.total} />
-          <Metric label="Success" value={`${health.metrics.successRate}%`} />
-          <Metric label="Blocked" value={`${health.metrics.blockedRate}%`} />
-          <Metric label="Refund" value={`${health.metrics.refundRate}%`} />
-          <Metric label="p50" value={`${health.metrics.latencyP50Ms}ms`} />
-          <Metric label="p95" value={`${health.metrics.latencyP95Ms}ms`} />
-          <Metric label="Failed" value={health.metrics.failed} />
-          <Metric label="Completed" value={health.metrics.completed} />
-        </div>
-      ) : null}
+      {health ? <ProfileHealthMetrics health={health} /> : null}
     </section>
+  );
+}
+
+export function ProfileHealthMetrics({ health }: { health: Health }) {
+  return (
+    <div className="rounded-lg mt-3 grid grid-cols-2 gap-px overflow-hidden border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
+      <Metric label="Total" value={health.metrics.total} />
+      <Metric
+        label="Success"
+        value={
+          health.metrics.successRate === null
+            ? "—"
+            : `${health.metrics.successRate}%`
+        }
+      />
+      <Metric label="Blocked" value={`${health.metrics.blockedRate}%`} />
+      <Metric label="Refund" value={`${health.metrics.refundRate}%`} />
+      <Metric label="p50" value={`${health.metrics.latencyP50Ms}ms`} />
+      <Metric label="p95" value={`${health.metrics.latencyP95Ms}ms`} />
+      <Metric label="Failed" value={health.metrics.failed} />
+      <Metric label="Completed" value={health.metrics.completed} />
+    </div>
   );
 }
 
