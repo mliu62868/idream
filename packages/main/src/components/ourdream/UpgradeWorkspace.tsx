@@ -18,7 +18,7 @@ type Plan = {
   billingPeriod: string;
   priceCents: number;
   includedDreamcoins: number;
-  features: Record<string, unknown>;
+  features: unknown;
 };
 
 type BillingMode = {

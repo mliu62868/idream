@@ -40,6 +40,8 @@ describe("entitlement copy", () => {
   });
 
   it("does not invent paid benefits when none are configured", () => {
+    expect(configuredEntitlementBenefits(null)).toEqual([]);
+    expect(configuredEntitlementBenefits(["unlimitedMessages"])).toEqual([]);
     expect(activeEntitlementSummary({}, true)).toBe(
       "No additional entitlements are configured for this plan.",
     );

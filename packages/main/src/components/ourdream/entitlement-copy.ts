@@ -1,5 +1,11 @@
 type EntitlementValues = Record<string, unknown>;
 
+function entitlementValues(value: unknown): EntitlementValues {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as EntitlementValues
+    : {};
+}
+
 function enabled(
   values: EntitlementValues,
   camelCaseKey: string,
@@ -20,8 +26,9 @@ function numericValue(
 }
 
 export function configuredEntitlementBenefits(
-  values: EntitlementValues,
+  value: unknown,
 ): string[] {
+  const values = entitlementValues(value);
   const benefits: string[] = [];
 
   if (enabled(values, "unlimitedMessages", "unlimited_messages")) {
