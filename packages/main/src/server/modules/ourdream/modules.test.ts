@@ -763,7 +763,11 @@ describe("feed, community, policies, analytics", () => {
     const contentVersionId = `${P}exposure-content-v1`;
     const projectId = `${P}exposure-project`;
     const releaseId = `${P}exposure-release-v1`;
-    await createUser({ id: userId });
+    await createUser({
+      id: userId,
+      email: `${userId}@customer.invalid`,
+      dataClass: "customer",
+    });
     await createCharacter({ id: characterId, creatorId: userId, likes: 9_999_999 });
     await prisma.characterContentVersion.create({
       data: {
@@ -1085,6 +1089,54 @@ describe("feed, community, policies, analytics", () => {
     expectOk(unvote);
     expect(unvote.data.item.userVoted).toBe(false);
     expect(unvote.data.item.voteCount).toBe(defaultItem.voteCount);
+  });
+
+  it("does not write defaults on read and excludes non-customer user feedback", async () => {
+    const customerId = `${P}feedback-customer`;
+    const fixtureId = `${P}feedback-fixture`;
+    await createUser({ id: customerId, dataClass: "customer" });
+    await createUser({ id: fixtureId });
+    await prisma.productFeedbackItem.createMany({
+      data: [
+        {
+          id: `${P}feedback-customer-item`,
+          createdById: customerId,
+          title: `${P}Customer feedback`,
+          description: "A real customer-created roadmap suggestion.",
+        },
+        {
+          id: `${P}feedback-fixture-item`,
+          createdById: fixtureId,
+          title: `${P}Fixture feedback`,
+          description: "An automated suggestion that must stay hidden.",
+        },
+      ],
+    });
+    const removedOfficial = await prisma.productFeedbackItem.delete({
+      where: { sourceKey: "chat-memory-review" },
+    });
+
+    try {
+      const list = await api("GET", "feedback/items");
+      expectOk(list);
+      expect(
+        list.data.items.some(
+          (item: { title: string }) => item.title === `${P}Customer feedback`,
+        ),
+      ).toBe(true);
+      expect(
+        list.data.items.some(
+          (item: { title: string }) => item.title === `${P}Fixture feedback`,
+        ),
+      ).toBe(false);
+      expect(
+        list.data.items.some(
+          (item: { sourceKey: string | null }) => item.sourceKey === "chat-memory-review",
+        ),
+      ).toBe(false);
+    } finally {
+      await prisma.productFeedbackItem.create({ data: removedOfficial });
+    }
   });
 
   it("requires age gate before creating roadmap feedback", async () => {

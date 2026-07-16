@@ -66,6 +66,7 @@
     "probe:age": "tsx src/server/probe-age-verification.ts",
     "probe:blob": "tsx src/server/probe-blob-storage.ts",
     "probe:catalog": "tsx src/server/probe-public-catalog.ts",
+    "cleanup:public-content": "tsx src/server/cleanup-public-content.ts",
     "probe:chat": "tsx src/server/probe-chat-model.ts",
     "probe:chat-service": "tsx src/server/probe-chat-service.ts",
     "probe:generation-model-candidates": "tsx src/server/probe-generation-model-candidates.ts",

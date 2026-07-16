@@ -2,9 +2,24 @@ import type { Prisma, PrismaClient } from "@prisma/client";
 
 type Db = PrismaClient | Prisma.TransactionClient;
 
+type UserDataClass = "customer" | "internal" | "fixture" | "audit";
+
 function isFixtureEmail(email: string) {
   const normalized = email.trim().toLowerCase();
-  return normalized.endsWith(".test") || normalized.endsWith("@example.com");
+  const domain = normalized.split("@").at(-1) ?? "";
+  return domain === "test.local" || domain.endsWith(".test") || domain === "example.com";
+}
+
+function normalizeDataClass(dataClass: string): UserDataClass {
+  if (
+    dataClass === "customer" ||
+    dataClass === "internal" ||
+    dataClass === "fixture" ||
+    dataClass === "audit"
+  ) {
+    return dataClass;
+  }
+  return "internal";
 }
 
 export function classifyExistingCustomerMetricActor(user: {
@@ -13,16 +28,26 @@ export function classifyExistingCustomerMetricActor(user: {
   readonly role: string;
   readonly status: string;
   readonly deletedAt: Date | null;
+  readonly dataClass: string;
 }) {
   const fixture = isFixtureEmail(user.email);
-  const isInternal = user.role !== "user" || user.status !== "active" || user.deletedAt !== null;
+  const storedDataClass = normalizeDataClass(user.dataClass);
+  const isInactiveOrPrivileged =
+    user.role !== "user" || user.status !== "active" || user.deletedAt !== null;
+  const dataClass = fixture
+    ? "fixture" as const
+    : storedDataClass !== "customer"
+      ? storedDataClass
+      : isInactiveOrPrivileged
+        ? "internal" as const
+        : "customer" as const;
   return {
-    dataClass: fixture ? "fixture" as const : isInternal ? "internal" as const : "customer" as const,
+    dataClass,
     actor: {
       type: "user",
       userId: user.id,
       role: user.role,
-      isInternal: isInternal || fixture,
+      isInternal: dataClass !== "customer",
     },
   };
 }
@@ -36,7 +61,14 @@ export async function classifyCustomerMetricActor(db: Db, userId: string | null)
   }
   const user = await db.user.findUnique({
     where: { id: userId },
-    select: { id: true, email: true, role: true, status: true, deletedAt: true },
+    select: {
+      id: true,
+      email: true,
+      role: true,
+      status: true,
+      deletedAt: true,
+      dataClass: true,
+    },
   });
   if (user) return classifyExistingCustomerMetricActor(user);
   return {

@@ -115,6 +115,7 @@ export interface CreateUserInput {
   role?: ActorRole;
   displayName?: string;
   status?: "active" | "suspended" | "deleted";
+  dataClass?: "customer" | "internal" | "fixture" | "audit";
 }
 
 export async function createUser(input: CreateUserInput) {
@@ -126,6 +127,7 @@ export async function createUser(input: CreateUserInput) {
       displayName: input.displayName ?? "Test User",
       role: input.role ?? "user",
       status: input.status ?? "active",
+      dataClass: input.dataClass ?? "fixture",
     },
   });
 }

@@ -88,6 +88,7 @@ import {
   type ExposureSubject,
 } from "./exposure-context";
 import { resolveCommunityCampaignPlacements } from "./community-campaigns";
+import { publicFeedbackAudienceWhere } from "./public-content-audience";
 
 type ApiMethod = "GET" | "POST" | "PATCH" | "DELETE" | "PUT";
 type JsonRecord = Record<string, Prisma.JsonValue>;
@@ -363,30 +364,6 @@ const feedbackItemCreateSchema = z.object({
   title: z.string().trim().min(3).max(120),
   description: z.string().trim().min(10).max(600),
 });
-
-const defaultFeedbackItems = [
-  {
-    sourceKey: "generator-recipes",
-    title: "Saved generator recipes",
-    description: "Save a prompt, character, style, orientation, and preset stack so it can be reused later.",
-    category: "feature",
-    status: "planned",
-  },
-  {
-    sourceKey: "creator-collections",
-    title: "Creator collection boards",
-    description: "Let creators group characters and generated media into public boards followers can browse.",
-    category: "feature",
-    status: "under_review",
-  },
-  {
-    sourceKey: "chat-memory-review",
-    title: "Memory review before long chats",
-    description: "Give users a quick way to inspect and adjust remembered facts before continuing a session.",
-    category: "improvement",
-    status: "under_review",
-  },
-] as const;
 
 type ProductFeedbackItemRow = {
   id: string;
@@ -4823,8 +4800,8 @@ async function submitSupportRequest(request: Request) {
 
 async function listFeedbackItems(request: Request) {
   const ctx = await getAuthCtx(request);
-  await ensureDefaultFeedbackItems();
   const items = await prisma.productFeedbackItem.findMany({
+    where: publicFeedbackAudienceWhere,
     orderBy: [{ voteCount: "desc" }, { createdAt: "desc" }],
     take: 12,
   });
@@ -4924,36 +4901,6 @@ async function unvoteFeedbackItem(request: Request, itemId: string) {
     return updated;
   });
   return ok({ item: feedbackItemDTO(item, new Set()) });
-}
-
-let defaultFeedbackItemsSeeded: Promise<void> | null = null;
-async function ensureDefaultFeedbackItems() {
-  // The defaults are static, so seed them once per process instead of running an upsert
-  // $transaction on EVERY feedback read (write-on-read row-lock contention that scales with
-  // read traffic). A failed attempt is not cached, so a transient DB error retries next call.
-  if (!defaultFeedbackItemsSeeded) {
-    defaultFeedbackItemsSeeded = prisma
-      .$transaction(
-        defaultFeedbackItems.map((item) =>
-          prisma.productFeedbackItem.upsert({
-            where: { sourceKey: item.sourceKey },
-            update: {
-              title: item.title,
-              description: item.description,
-              category: item.category,
-              status: item.status,
-            },
-            create: item,
-          }),
-        ),
-      )
-      .then(() => undefined)
-      .catch((error) => {
-        defaultFeedbackItemsSeeded = null;
-        throw error;
-      });
-  }
-  return defaultFeedbackItemsSeeded;
 }
 
 async function userFeedbackVoteIds(userId: string | undefined, itemIds: string[]) {

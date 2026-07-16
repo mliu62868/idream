@@ -18,6 +18,7 @@ model User {
   displayName   String?
   role          String    @default("user") // enum: user | moderator | support | ops | analyst | admin
   status        String    @default("active") // enum: active | suspended | deleted
+  dataClass     String    @default("customer") // enum: customer | internal | fixture | audit
   anonymousId   String?   @unique
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
@@ -57,6 +58,7 @@ model User {
   characterLooks     CharacterLook[]
   generationFeedback GenerationFeedback[]
 
+  @@index([dataClass, status, deletedAt])
   @@map("users")
 }
 
@@ -767,11 +769,13 @@ model MediaCollection {
   ownerId    String
   name       String
   visibility String                @default("private") // enum: private | public | unlisted
+  source     String                @default("user") // enum: official | user
   createdAt  DateTime              @default(now())
   owner      User                  @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   items      MediaCollectionItem[]
 
   @@index([ownerId])
+  @@index([source, visibility])
   @@map("media_collections")
 }
 

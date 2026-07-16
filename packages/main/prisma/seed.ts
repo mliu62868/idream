@@ -8,6 +8,7 @@ import {
 } from "../src/lib/ourdream-data";
 import { createPrismaClientOptions } from "../src/server/lib/prisma-adapter";
 import { safetyDocuments } from "../src/lib/ourdream-safety-data";
+import { officialFeedbackItems } from "../src/lib/official-cold-start-content";
 
 process.env.DB_PROVIDER ??= "postgresql";
 process.env.DATABASE_URL ??= "postgresql://postgres:postgres@localhost:5433/idream";
@@ -78,16 +79,6 @@ function creatorEmailForHandle(handle: string) {
   return `${creatorSlug(handle)}@creators.idream.local`;
 }
 
-function parseCount(value: string) {
-  const normalized = value.trim().toLowerCase();
-  const numeric = Number.parseFloat(normalized.replace(/[km]/g, ""));
-
-  if (Number.isNaN(numeric)) return 0;
-  if (normalized.endsWith("m")) return Math.round(numeric * 1_000_000);
-  if (normalized.endsWith("k")) return Math.round(numeric * 1_000);
-  return Math.round(numeric);
-}
-
 function parseAge(value: string) {
   const age = Number.parseInt(value, 10);
   return Number.isFinite(age) && age >= 18 ? age : 18;
@@ -117,37 +108,40 @@ function inferredTagSlugs(card: (typeof characterCards)[number]) {
 async function seedUsers() {
   await prisma.user.upsert({
     where: { id: SYSTEM_USER_ID },
-    update: {},
+    update: { dataClass: "internal" },
     create: {
       id: SYSTEM_USER_ID,
       email: "system@idream.local",
       emailVerified: true,
       displayName: "System Creator",
       role: "admin",
+      dataClass: "internal",
     },
   });
 
   await prisma.user.upsert({
     where: { id: ADMIN_USER_ID },
-    update: {},
+    update: { dataClass: "internal" },
     create: {
       id: ADMIN_USER_ID,
       email: "admin@idream.local",
       emailVerified: true,
       displayName: "Admin",
       role: "admin",
+      dataClass: "internal",
     },
   });
 
   await prisma.user.upsert({
     where: { id: DEV_USER_ID },
-    update: {},
+    update: { dataClass: "internal" },
     create: {
       id: DEV_USER_ID,
       email: "user@idream.local",
       emailVerified: true,
       displayName: "Dev User",
       role: "user",
+      dataClass: "internal",
     },
   });
 
@@ -186,37 +180,40 @@ async function seedUsers() {
 
   await prisma.user.upsert({
     where: { id: SUPPORT_USER_ID },
-    update: {},
+    update: { dataClass: "internal" },
     create: {
       id: SUPPORT_USER_ID,
       email: "support@idream.local",
       emailVerified: true,
       displayName: "Support",
       role: "support",
+      dataClass: "internal",
     },
   });
 
   await prisma.user.upsert({
     where: { id: OPS_USER_ID },
-    update: {},
+    update: { dataClass: "internal" },
     create: {
       id: OPS_USER_ID,
       email: "ops@idream.local",
       emailVerified: true,
       displayName: "Ops",
       role: "ops",
+      dataClass: "internal",
     },
   });
 
   await prisma.user.upsert({
     where: { id: ANALYST_USER_ID },
-    update: {},
+    update: { dataClass: "internal" },
     create: {
       id: ANALYST_USER_ID,
       email: "analyst@idream.local",
       emailVerified: true,
       displayName: "Analyst",
       role: "analyst",
+      dataClass: "internal",
     },
   });
 
@@ -256,6 +253,7 @@ async function seedUsers() {
         displayName: handle,
         role: "user",
         status: "active",
+        dataClass: "internal",
         deletedAt: null,
       },
       create: {
@@ -264,6 +262,7 @@ async function seedUsers() {
         emailVerified: true,
         displayName: handle,
         role: "user",
+        dataClass: "internal",
       },
     });
   }
@@ -345,6 +344,7 @@ async function seedCharacters() {
         systemPrompt,
         visibility: "public",
         status: "approved",
+        source: "official",
         imageAssetId: mediaAssetId,
         vivid: card.vivid ?? false,
       },
@@ -357,6 +357,7 @@ async function seedCharacters() {
         systemPrompt,
         visibility: "public",
         status: "approved",
+        source: "official",
         style: card.title.toLowerCase().includes("anime") ? "anime" : "realistic",
         gender: "female",
         relationship: card.creator,
@@ -372,13 +373,13 @@ async function seedCharacters() {
     await prisma.characterStats.upsert({
       where: { characterId: card.id },
       update: {
-        likesCount: parseCount(card.likes),
-        chatsCount: parseCount(card.chats),
+        likesCount: 0,
+        chatsCount: 0,
       },
       create: {
         characterId: card.id,
-        likesCount: parseCount(card.likes),
-        chatsCount: parseCount(card.chats),
+        likesCount: 0,
+        chatsCount: 0,
       },
     });
 
@@ -412,12 +413,14 @@ async function seedCommunityCollections() {
         ownerId,
         name: collection.name,
         visibility: "public",
+        source: "official",
       },
       create: {
         id: collection.id,
         ownerId,
         name: collection.name,
         visibility: "public",
+        source: "official",
       },
     });
 
@@ -432,6 +435,24 @@ async function seedCommunityCollections() {
         sortOrder: index,
       })),
       skipDuplicates: true,
+    });
+  }
+}
+
+async function seedOfficialFeedbackItems() {
+  for (const item of officialFeedbackItems) {
+    await prisma.productFeedbackItem.upsert({
+      where: { sourceKey: item.sourceKey },
+      update: {
+        title: item.title,
+        description: item.description,
+        category: item.category,
+        status: item.status,
+      },
+      create: {
+        ...item,
+        voteCount: 0,
+      },
     });
   }
 }
@@ -1584,6 +1605,7 @@ async function main() {
   await seedTags();
   await seedCharacters();
   await seedCommunityCollections();
+  await seedOfficialFeedbackItems();
   await seedPlans();
   await seedPresets();
   await seedAdminControlPlane();

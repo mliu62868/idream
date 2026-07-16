@@ -117,7 +117,14 @@ async function mainAuthorityItems(
     },
     include: {
       user: {
-        select: { id: true, email: true, role: true, status: true, deletedAt: true },
+        select: {
+          id: true,
+          email: true,
+          role: true,
+          status: true,
+          deletedAt: true,
+          dataClass: true,
+        },
       },
     },
     orderBy: { id: "asc" },
