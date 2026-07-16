@@ -57,7 +57,7 @@ describe("MediaAssetAuthority", () => {
     expect(html).toContain(DEMO_OR_LEGACY_ASSET_LABEL);
   });
 
-  it("is wired into both Image Library surfaces", () => {
+  it("is wired into both Image Library surfaces without duplicating review authority", () => {
     const listSource = readFileSync(
       new URL("./AssetsListPage.tsx", import.meta.url),
       "utf8",
@@ -69,6 +69,9 @@ describe("MediaAssetAuthority", () => {
 
     expect(listSource).toContain("MediaAssetAuthorityNotice");
     expect(detailSource).toContain("MediaAssetAuthorityNotice");
-    expect(detailSource).toContain("disabled={!canApproveMediaAsset(row)}");
+    expect(detailSource).toContain("disabled={hasActiveAuthority}");
+    expect(detailSource).not.toContain('setPending("approve")');
+    expect(detailSource).not.toContain('setPending("reject")');
+    expect(detailSource).toContain("/admin/creative/runs/${row.sourceBatch.id}");
   });
 });
