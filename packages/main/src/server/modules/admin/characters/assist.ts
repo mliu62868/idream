@@ -4,7 +4,11 @@
 import { z } from "zod";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
-import { providers } from "@/server/providers";
+import {
+  assertAdminTextGenerationAvailable,
+  generateAdminText,
+  type AdminTextGenerationRuntime,
+} from "@/server/modules/admin/shared/admin-text-generation";
 import { actorWithPermission, jsonBody } from "@/server/modules/admin/shared/legacy-primitives";
 import { moderateText } from "@/server/modules/ourdream/service";
 
@@ -13,16 +17,6 @@ const assistSchema = z.object({
   gender: z.enum(["female", "male", "trans"]).optional(),
   style: z.enum(["realistic", "anime", "hybrid", "other"]).optional(),
 });
-
-type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
-
-async function aggregate(messages: ChatMessage[]): Promise<string> {
-  let text = "";
-  for await (const chunk of providers.chat.stream({ messages })) {
-    text += chunk.delta;
-  }
-  return text.trim();
-}
 
 function nameIdeasFromText(value: string): string[] {
   return value
@@ -33,61 +27,93 @@ function nameIdeasFromText(value: string): string[] {
 }
 
 // POST /api/v1/admin/content/character-assist
-export async function generateCharacterDraft(request: Request): Promise<Response> {
+export async function generateCharacterDraft(
+  request: Request,
+  runtime?: AdminTextGenerationRuntime,
+): Promise<Response> {
   await actorWithPermission(request, "content.official.write");
   const body = assistSchema.parse(await jsonBody(request));
+  const inputModeration = await moderateText(
+    "character_assist",
+    "draft",
+    body.seed,
+    "input",
+  );
+  if (inputModeration.status === "blocked") {
+    throw Errors.forbidden("Generated draft failed safety checks", inputModeration);
+  }
+  assertAdminTextGenerationAvailable(runtime);
   const traits = [body.gender, body.style].filter(Boolean).join(", ");
   const context = traits ? `${body.seed} (${traits})` : body.seed;
 
-  const [description, personality, speakingStyle, firstMessage, visualBrief, rawNameIdeas] = await Promise.all([
-    aggregate([
-      {
-        role: "system",
-        content:
-          "Write a vivid 2-3 sentence background bio for an ADULT (18+) AI companion based on the user's seed. Tasteful, safe, prose only — no headings or lists.",
-      },
-      { role: "user", content: context },
-    ]),
-    aggregate([
-      {
-        role: "system",
-        content:
-          "List 3-5 concise personality traits (comma-separated) for an ADULT (18+) AI companion based on the user's seed. Output the comma-separated traits only.",
-      },
-      { role: "user", content: context },
-    ]),
-    aggregate([
-      {
-        role: "system",
-        content:
-          "Describe this ADULT (18+) AI companion's speaking style in 2 concise sentences. Cover rhythm, vocabulary, warmth, and one distinctive verbal habit. Prose only.",
-      },
-      { role: "user", content: context },
-    ]),
-    aggregate([
-      {
-        role: "system",
-        content:
-          "Write the first message this ADULT (18+) AI companion sends when meeting the user. 2-4 sentences, immediately playable, no headings or quotation marks.",
-      },
-      { role: "user", content: context },
-    ]),
-    aggregate([
-      {
-        role: "system",
-        content:
-          "Write a concise visual art direction for this ADULT (18+) character. Include face, hair, silhouette, wardrobe, signature detail, palette, and lighting. Prose only.",
-      },
-      { role: "user", content: context },
-    ]),
-    aggregate([
-      {
-        role: "system",
-        content:
-          "Suggest exactly 3 distinctive character names for this ADULT (18+) AI companion. One name per line, names only.",
-      },
-      { role: "user", content: context },
-    ]),
+  const [
+    description,
+    personality,
+    speakingStyle,
+    firstMessage,
+    visualBrief,
+    rawNameIdeas,
+  ] = await Promise.all([
+    generateAdminText({
+      messages: [
+        {
+          role: "system",
+          content:
+            "Write a vivid 2-3 sentence background bio for an ADULT (18+) AI companion based on the user's seed. Tasteful, safe, prose only — no headings or lists.",
+        },
+        { role: "user", content: context },
+      ],
+    }, runtime),
+    generateAdminText({
+      messages: [
+        {
+          role: "system",
+          content:
+            "List 3-5 concise personality traits (comma-separated) for an ADULT (18+) AI companion based on the user's seed. Output the comma-separated traits only.",
+        },
+        { role: "user", content: context },
+      ],
+    }, runtime),
+    generateAdminText({
+      messages: [
+        {
+          role: "system",
+          content:
+            "Describe this ADULT (18+) AI companion's speaking style in 2 concise sentences. Cover rhythm, vocabulary, warmth, and one distinctive verbal habit. Prose only.",
+        },
+        { role: "user", content: context },
+      ],
+    }, runtime),
+    generateAdminText({
+      messages: [
+        {
+          role: "system",
+          content:
+            "Write the first message this ADULT (18+) AI companion sends when meeting the user. 2-4 sentences, immediately playable, no headings or quotation marks.",
+        },
+        { role: "user", content: context },
+      ],
+    }, runtime),
+    generateAdminText({
+      messages: [
+        {
+          role: "system",
+          content:
+            "Write a concise visual art direction for this ADULT (18+) character. Include face, hair, silhouette, wardrobe, signature detail, palette, and lighting. Prose only.",
+        },
+        { role: "user", content: context },
+      ],
+    }, runtime),
+    generateAdminText({
+      messages: [
+        {
+          role: "system",
+          content:
+            "Suggest exactly 3 distinctive character names for this ADULT (18+) AI companion. One name per line, names only.",
+        },
+        { role: "user", content: context },
+      ],
+    }, runtime),
   ]);
 
   const nameIdeas = nameIdeasFromText(rawNameIdeas);

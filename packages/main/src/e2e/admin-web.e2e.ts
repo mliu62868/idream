@@ -1422,7 +1422,7 @@ test("admin API allows an authorized write (admin creates a pricing draft)", asy
   }
 });
 
-test("admin API creates an official character and runs AI assist", async ({ page }) => {
+test("admin API creates an official character and fails mock AI assist closed", async ({ page }) => {
   const adminURL = adminBaseURL();
   await startRoleSession(page, "admin");
   const name = `E2E Official ${Date.now()}`;
@@ -1445,13 +1445,17 @@ test("admin API creates an official character and runs AI assist", async ({ page
     createdId = body.data?.character?.id;
     expect(createdId).toBeTruthy();
 
-    // §8 AI 辅助：一句话 seed → 非空 description + personality。
+    // A mock chat provider must never return operator-saveable creative fields.
     const assist = await page.request.post(`${adminURL}/api/v1/admin/content/character-assist`, {
       data: { seed: "shy bookish painter who loves rainy nights", gender: "female", style: "realistic" },
     });
-    expect(assist.status(), await assist.text()).toBe(200);
-    const assistBody = (await assist.json()) as { data?: { description?: string } };
-    expect((assistBody.data?.description ?? "").length).toBeGreaterThan(0);
+    expect(assist.status(), await assist.text()).toBe(503);
+    const assistBody = (await assist.json()) as {
+      error?: { code?: string };
+      data?: unknown;
+    };
+    expect(assistBody.error?.code).toBe("unavailable");
+    expect(assistBody.data).toBeUndefined();
   } finally {
     if (createdId) await prisma.character.delete({ where: { id: createdId } }).catch(() => {});
     await prisma.tag.deleteMany({ where: { slug: "e2e-official" } });

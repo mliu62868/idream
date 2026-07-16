@@ -23,7 +23,8 @@ export function StartersNewPage() {
   const [seed, setSeed] = useState("");
   const [assisting, setAssisting] = useState(false);
   const [creating, setCreating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [assistError, setAssistError] = useState<string | null>(null);
+  const [createError, setCreateError] = useState<string | null>(null);
 
   function patch(partial: Partial<StarterDraft>) {
     setDraft((current) => ({ ...current, ...partial }));
@@ -33,7 +34,7 @@ export function StartersNewPage() {
   async function assist() {
     if (seed.trim().length === 0) return;
     setAssisting(true);
-    setError(null);
+    setAssistError(null);
     try {
       const data = await apiWrite<{
         description: string;
@@ -54,7 +55,7 @@ export function StartersNewPage() {
         tags: [...new Set([...existing, ...traits])].slice(0, 12).join(", "),
       });
     } catch (assistError) {
-      setError(assistError instanceof Error ? assistError.message : t("Request failed"));
+      setAssistError(assistError instanceof Error ? assistError.message : t("Request failed"));
     } finally {
       setAssisting(false);
     }
@@ -64,7 +65,7 @@ export function StartersNewPage() {
 
   async function create() {
     setCreating(true);
-    setError(null);
+    setCreateError(null);
     try {
       const created = await apiWrite<{ template?: { id?: string } }>(
         STARTERS_LIST, "POST", starterPayload({ ...draft, reason: EMPTY_DRAFT.reason }),
@@ -74,7 +75,7 @@ export function StartersNewPage() {
         ? `/admin/content/templates/${newId}`
         : "/admin/content/templates";
     } catch (createError) {
-      setError(createError instanceof Error ? createError.message : t("Request failed"));
+      setCreateError(createError instanceof Error ? createError.message : t("Request failed"));
       setCreating(false);
     }
   }
@@ -95,6 +96,11 @@ export function StartersNewPage() {
             </GhostButton>
           </div>
         </Field>
+        {assistError ? (
+          <p className="text-sm text-[var(--ad-red-text)]" role="alert">
+            {assistError}
+          </p>
+        ) : null}
       </FormSection>
       <FormSection title={t("Basic info")}>
         <Field label={t("Name (≥1)")}>
@@ -160,7 +166,7 @@ export function StartersNewPage() {
           <textarea className={TEXTAREA_CLASS} onChange={(e) => patch({ visualBrief: e.target.value })} value={draft.visualBrief} />
         </Field>
       </FormSection>
-      <FormFooter error={error}>
+      <FormFooter error={createError}>
         <PrimaryButton disabled={!canSubmit} onClick={() => void create()}>
           {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
           Save template draft

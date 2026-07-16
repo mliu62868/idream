@@ -6,6 +6,7 @@ export type AppErrorCode =
   | "not_found"
   | "conflict"
   | "rate_limited"
+  | "unavailable"
   | "internal";
 
 const statusByCode: Record<AppErrorCode, number> = {
@@ -16,6 +17,7 @@ const statusByCode: Record<AppErrorCode, number> = {
   not_found: 404,
   conflict: 409,
   rate_limited: 429,
+  unavailable: 503,
   internal: 500,
 };
 
@@ -54,6 +56,9 @@ export const Errors = {
   },
   rateLimited(message = "Rate limited", details?: unknown) {
     return new AppError("rate_limited", message, details);
+  },
+  unavailable(message = "Service unavailable", details?: unknown) {
+    return new AppError("unavailable", message, details);
   },
   internal(message = "Internal error", details?: unknown) {
     return new AppError("internal", message, details);

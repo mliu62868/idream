@@ -2,7 +2,11 @@ import { z } from "zod";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
-import { providers } from "@/server/providers";
+import {
+  assertAdminTextGenerationAvailable,
+  generateAdminText,
+  type AdminTextGenerationRuntime,
+} from "./shared/admin-text-generation";
 import { actorWithPermission, jsonBody } from "./service";
 
 const purposeSchema = z.enum([
@@ -46,13 +50,6 @@ const creativeDirectionsSchema = z.array(creativeDirectionSchema).length(4);
 
 type DirectionRequest = z.infer<typeof directionRequestSchema>;
 type CreativeDirection = z.infer<typeof creativeDirectionSchema>;
-type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
-
-async function aggregate(messages: ChatMessage[]): Promise<string> {
-  let text = "";
-  for await (const chunk of providers.chat.stream({ messages })) text += chunk.delta;
-  return text.trim();
-}
 
 function parseDirections(text: string): CreativeDirection[] | null {
   const unfenced = text
@@ -92,52 +89,6 @@ function withStarterPrompt(
   return { ...input, creativeBrief, scenePrompt };
 }
 
-export function fallbackCreativeDirections(input: DirectionRequest): CreativeDirection[] {
-  const mood = valueOrFallback(input.mood, "cinematic and emotionally present");
-  const setting = valueOrFallback(input.setting, "a setting that supports the story moment");
-  const outfit = valueOrFallback(input.outfit, "an outfit consistent with the character");
-  const lighting = valueOrFallback(input.lighting, "soft directional light with clear facial detail");
-  const base = input.scenePrompt.trim().replace(/[.!?]+$/, "");
-  return [
-    {
-      title: "Intimate close-up",
-      scenePrompt: `${base}. Focus on a quiet, emotionally readable close-up and one natural gesture that makes the moment feel candid.`,
-      mood,
-      setting,
-      outfit,
-      camera: valueOrFallback(input.camera, "85mm close portrait, shallow depth of field"),
-      lighting,
-    },
-    {
-      title: "Environmental story",
-      scenePrompt: `${base}. Pull back to show the environment and let foreground and background details explain what happened just before this moment.`,
-      mood,
-      setting,
-      outfit,
-      camera: "35mm environmental portrait, layered composition",
-      lighting,
-    },
-    {
-      title: "Candid movement",
-      scenePrompt: `${base}. Capture the character mid-action with natural body language, a believable imperfect moment, and subtle motion in the scene.`,
-      mood,
-      setting,
-      outfit,
-      camera: "50mm candid frame, eye-level, gentle motion",
-      lighting,
-    },
-    {
-      title: "Editorial variation",
-      scenePrompt: `${base}. Reinterpret the same story beat with a stronger graphic composition, a distinctive camera angle, and polished editorial restraint.`,
-      mood,
-      setting,
-      outfit,
-      camera: "editorial portrait, deliberate negative space",
-      lighting: valueOrFallback(input.lighting, "controlled cinematic key light and practical highlights"),
-    },
-  ];
-}
-
 function modelPrompt(input: DirectionRequest, character: {
   name: string;
   age: number;
@@ -157,7 +108,10 @@ function modelPrompt(input: DirectionRequest, character: {
   });
 }
 
-export async function generateProductionDirections(request: Request): Promise<Response> {
+export async function generateProductionDirections(
+  request: Request,
+  runtime?: AdminTextGenerationRuntime,
+): Promise<Response> {
   await actorWithPermission(request, "content.production.write");
   const body = directionRequestSchema.parse(await jsonBody(request));
   const character = await prisma.character.findUnique({
@@ -177,10 +131,10 @@ export async function generateProductionDirections(request: Request): Promise<Re
   });
   if (!character) throw Errors.notFound("Character not found");
   const input = withStarterPrompt(body, character);
+  assertAdminTextGenerationAvailable(runtime);
 
-  let directions: CreativeDirection[] | null = null;
-  try {
-    const result = await aggregate([
+  const result = await generateAdminText({
+    messages: [
       {
         role: "system",
         content: [
@@ -199,14 +153,17 @@ export async function generateProductionDirections(request: Request): Promise<Re
           identityPrompt: character.visualProfiles[0]?.identityPrompt ?? null,
         }),
       },
-    ]);
-    directions = parseDirections(result);
-  } catch {
-    directions = null;
+    ],
+  }, runtime);
+  const directions = parseDirections(result);
+  if (!directions) {
+    throw Errors.unavailable(
+      "AI creative directions returned an invalid model response. Check the chat model and try again",
+    );
   }
 
   return ok({
-    directions: directions ?? fallbackCreativeDirections(input),
-    source: directions ? "model" : "fallback",
+    directions,
+    source: "model",
   });
 }

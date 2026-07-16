@@ -110,7 +110,7 @@ type CreativeDirection = {
 
 type DirectionResponse = {
   directions: Array<Omit<CreativeDirection, "id" | "selected">>;
-  source: "model" | "fallback";
+  source: "model";
 };
 
 type StudioForm = {
@@ -430,11 +430,7 @@ export function CreativeProductionStudio() {
         })),
       );
       setStage("directions");
-      setNotice(
-        result.source === "model"
-          ? t("Four creative directions are ready to edit.")
-          : t("Four starter directions are ready to edit."),
-      );
+      setNotice(t("Four creative directions are ready to edit."));
     } catch (directionError) {
       setError(directionError instanceof Error ? directionError.message : "Direction generation failed");
     } finally {
