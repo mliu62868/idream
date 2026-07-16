@@ -145,4 +145,38 @@ describe("legacy overview data scopes", () => {
       },
     });
   });
+
+  it("reports unavailable provider latency when there are no completed samples", async () => {
+    mocks.groupGenerationJobs.mockResolvedValue([
+      {
+        provider: "backend",
+        status: "queued",
+        _count: { _all: 2 },
+        _sum: { costDreamcoins: 10 },
+      },
+    ]);
+
+    const response = await providerOps(
+      new Request("http://localhost/api/v1/admin/ops/providers"),
+    );
+    const payload = (await response.json()) as {
+      data: {
+        providers: Array<{
+          provider: string;
+          latencyP50Ms: number | null;
+          latencyP95Ms: number | null;
+          latencySamples: number;
+        }>;
+      };
+    };
+
+    expect(payload.data.providers).toEqual([
+      expect.objectContaining({
+        provider: "backend",
+        latencyP50Ms: null,
+        latencyP95Ms: null,
+        latencySamples: 0,
+      }),
+    ]);
+  });
 });

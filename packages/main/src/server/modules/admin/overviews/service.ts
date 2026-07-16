@@ -302,8 +302,8 @@ function windowFromRequest(request: Request, label: string) {
   return { from, to, createdAt: { gte: from, lte: to } };
 }
 
-function percentile(sorted: number[], p: number) {
-  if (sorted.length === 0) return 0;
+function percentile(sorted: number[], p: number): number | null {
+  if (sorted.length === 0) return null;
   const index = Math.max(
     0,
     Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1),
