@@ -1,9 +1,6 @@
 import { createServer } from "node:http";
 import { MockImageModel } from "@/server/providers/image/mock";
 
-const TRANSPARENT_PNG_BASE64 =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
-
 function portFromArgs() {
   const index = process.argv.indexOf("--port");
   const value = index >= 0 ? process.argv[index + 1] : undefined;
@@ -49,7 +46,7 @@ const server = createServer(async (request, response) => {
     response.end(JSON.stringify({
       data: result.data.assets.map((asset) => ({
         key: asset.key,
-        b64_json: TRANSPARENT_PNG_BASE64,
+        b64_json: Buffer.from(asset.body ?? []).toString("base64"),
       })),
     }));
   } catch (error) {
