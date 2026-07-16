@@ -128,7 +128,7 @@ export function StartersListPage() {
               { value: "disabled", label: t("Inactive") }] },
         ]}
       />
-      {authority.error ? <AuthorityRequestError message={authority.error} onRetry={() => void reload(cursor)} /> : null}
+      {authority.error ? <AuthorityRequestError message={authority.error} onRetry={() => void reload(cursor)} snapshotAt={authority.data ? authority.refreshedAt : null} /> : null}
       {authority.loading && authority.data === null ? (
         <p className="text-sm text-[var(--ad-text-muted)]">{t("Loading…")}</p>
       ) : authority.data && rows.length === 0 ? (

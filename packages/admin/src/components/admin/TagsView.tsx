@@ -128,7 +128,7 @@ export function TagsView() {
         purpose={t("Manage the tag vocabulary for characters.")}
         title={t("Tags")}
       />
-      {authority.error ? <AuthorityRequestError message={authority.error} onRetry={() => void load()} /> : null}
+      {authority.error ? <AuthorityRequestError message={authority.error} onRetry={() => void load()} snapshotAt={authority.data ? authority.refreshedAt : null} /> : null}
 
       {authority.loading && authority.data === null ? (
         <p className="text-sm text-[var(--ad-text-muted)]" role="status">{t("Loading…")}</p>

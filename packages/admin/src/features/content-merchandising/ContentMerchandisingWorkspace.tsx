@@ -1,6 +1,6 @@
 "use client";
 
-import { Flag, Loader2, RefreshCcw, RotateCcw, Search } from "lucide-react";
+import { Flag, Loader2, RotateCcw, Search } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet, apiWrite } from "@/components/admin/api";
@@ -8,6 +8,7 @@ import {
   ConfirmDialog,
   type ConfirmSpec,
 } from "@/components/admin/ui/ConfirmDialog";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
@@ -259,10 +260,13 @@ export function ContentMerchandisingWorkspace({
           </button>
         </div>
       </form>
-      <AuthorityError
-        error={featured.error}
-        onRetry={() => void loadFeatured()}
-      />
+      {featured.error ? (
+        <AuthorityRequestError
+          message={featured.error}
+          onRetry={() => void loadFeatured()}
+          snapshotAt={featured.data ? featured.refreshedAt : null}
+        />
+      ) : null}
       {featured.loading && featured.data === null ? (
         <p className="text-sm text-[var(--ad-text-muted)]" role="status">
           Loading featured authority…
@@ -341,10 +345,13 @@ export function ContentMerchandisingWorkspace({
         headers={["ID", "Name", "Visibility", "Status"]}
         rows={featuredRows}
       /> : null}
-      <AuthorityError
-        error={characters.error}
-        onRetry={() => void loadCharacters(query)}
-      />
+      {characters.error ? (
+        <AuthorityRequestError
+          message={characters.error}
+          onRetry={() => void loadCharacters(query)}
+          snapshotAt={characters.data ? characters.refreshedAt : null}
+        />
+      ) : null}
       {characters.loading && characters.data === null ? (
         <p className="text-sm text-[var(--ad-text-muted)]" role="status">
           Loading character authority…
@@ -412,32 +419,6 @@ function Freshness<T>({
         ? new Date(state.refreshedAt).toLocaleTimeString()
         : ""}
     </span>
-  );
-}
-
-function AuthorityError({
-  error,
-  onRetry,
-}: {
-  error: string | null;
-  onRetry: () => void;
-}) {
-  if (!error) return null;
-  return (
-    <div
-      className="flex items-center justify-between rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
-      role="alert"
-    >
-      <span>{error}</span>
-      <button
-        className="inline-flex min-h-9 items-center gap-2 rounded border px-3"
-        onClick={onRetry}
-        type="button"
-      >
-        <RefreshCcw className="h-4 w-4" />
-        Retry
-      </button>
-    </div>
   );
 }
 

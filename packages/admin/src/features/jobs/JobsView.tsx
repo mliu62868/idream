@@ -264,7 +264,7 @@ export function JobsView() {
         </div>
       </form>
 
-      {jobs.error ? <AuthorityRequestError message={jobs.error} onRetry={() => void loadJobs(jobQuery)} /> : null}
+      {jobs.error ? <AuthorityRequestError message={jobs.error} onRetry={() => void loadJobs(jobQuery)} snapshotAt={jobs.data ? jobs.refreshedAt : null} /> : null}
       {jobs.data ? (
         <section aria-label="Generation Job query summary" className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
           {[

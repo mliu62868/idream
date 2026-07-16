@@ -189,6 +189,7 @@ function AgeVerificationSection() {
   const [notice, setNotice] = useState<string | null>(null);
   const [overrideDraft, setOverrideDraft] = useState<AgeOverrideDraft | null>(null);
   const [overrideBusy, setOverrideBusy] = useState(false);
+  const [overrideError, setOverrideError] = useState<string | null>(null);
   const requestGate = useRef(createLatestRequestGate());
   const initialStatus = useRef(status);
 
@@ -225,6 +226,7 @@ function AgeVerificationSection() {
     if (!overrideDraft || !canConfirm(overrideDraft, overrideDraft.id)) return;
     const draft = overrideDraft;
     setOverrideBusy(true);
+    setOverrideError(null);
     try {
       await apiWrite(`/api/v1/admin/compliance/age-verifications/${draft.id}/override`, "POST", {
         status: draft.next,
@@ -232,6 +234,7 @@ function AgeVerificationSection() {
         confirmation: draft.confirmation.trim(),
       });
       setOverrideDraft(null);
+      setOverrideError(null);
       setNotice(t("Age verification updated."));
       setAuthority((current) => current.data ? {
         ...current,
@@ -242,10 +245,7 @@ function AgeVerificationSection() {
       } : current);
       void load(status);
     } catch (err) {
-      setAuthority((current) => ({
-        ...current,
-        error: err instanceof Error ? err.message : "Override failed",
-      }));
+      setOverrideError(err instanceof Error ? err.message : "Override failed");
     } finally {
       setOverrideBusy(false);
     }
@@ -264,6 +264,7 @@ function AgeVerificationSection() {
               setStatus(nextStatus);
               setNotice(null);
               setOverrideDraft(null);
+              setOverrideError(null);
               void load(nextStatus);
             }}
             value={status}
@@ -287,7 +288,11 @@ function AgeVerificationSection() {
       </div>
       {authority.error ? (
         <div className="p-3">
-          <AuthorityRequestError message={authority.error} onRetry={() => void load(status)} />
+          <AuthorityRequestError
+            message={authority.error}
+            onRetry={() => void load(status)}
+            snapshotAt={authority.data ? authority.refreshedAt : null}
+          />
         </div>
       ) : null}
       {notice ? <p className="px-3 py-2 text-xs text-[var(--ad-green-text)]">{notice}</p> : null}
@@ -314,7 +319,10 @@ function AgeVerificationSection() {
             />
             <button
               className="rounded-md inline-flex h-10 items-center justify-center border border-[var(--ad-border)] px-3 text-sm"
-              onClick={() => setOverrideDraft(null)}
+              onClick={() => {
+                setOverrideDraft(null);
+                setOverrideError(null);
+              }}
               type="button"
             >
               {t("Cancel")}
@@ -328,6 +336,11 @@ function AgeVerificationSection() {
               {t("Confirm override")}
             </button>
           </div>
+          {overrideError ? (
+            <div className="mt-3">
+              <AuthorityRequestError message={overrideError} onRetry={() => void override()} />
+            </div>
+          ) : null}
         </section>
       ) : null}
       {authority.loading && authority.data === null ? (
@@ -359,6 +372,7 @@ function AgeVerificationSection() {
                     onClick={() => {
                       setAuthority((current) => ({ ...current, error: null }));
                       setNotice(null);
+                      setOverrideError(null);
                       setOverrideDraft({ id: row.id, next: "verified", reason: "", confirmation: "" });
                     }}
                     type="button"
@@ -372,6 +386,7 @@ function AgeVerificationSection() {
                     onClick={() => {
                       setAuthority((current) => ({ ...current, error: null }));
                       setNotice(null);
+                      setOverrideError(null);
                       setOverrideDraft({ id: row.id, next: "failed", reason: "", confirmation: "" });
                     }}
                     type="button"
