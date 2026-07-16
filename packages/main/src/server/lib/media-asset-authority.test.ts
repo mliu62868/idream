@@ -99,7 +99,11 @@ describe("media asset customer publishability", () => {
       latestAttemptProvider: "replicate",
     })).toEqual({
       publishable: false,
-      reasons: ["pinned_job_provider_mismatch"],
+      reasons: [
+        "job_provider_untrusted",
+        "latest_attempt_provider_untrusted",
+        "pinned_job_provider_mismatch",
+      ],
     });
   });
 

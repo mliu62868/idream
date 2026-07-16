@@ -17,6 +17,10 @@ import {
   type AssetDraft,
   type ContentAsset,
 } from "./assets-api";
+import {
+  MediaAssetAuthorityNotice,
+  canApproveMediaAsset,
+} from "./MediaAssetAuthority";
 
 // SPEC: 图片库详情页 —— 大图 + 元数据（用途/目标/尺寸/标签描述）+ 生产溯源（生成任务/批次）+
 // 审核动作（通过/保存/拒绝/归档），spec §7 详情页的图片库变体。
@@ -154,7 +158,12 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
   const actions = canReview ? (
     <>
       <GhostButton onClick={() => setPending("save")}>{t("Save")}</GhostButton>
-      <PrimaryButton onClick={() => setPending("approve")}>{t("Approve")}</PrimaryButton>
+      <PrimaryButton
+        disabled={!canApproveMediaAsset(row)}
+        onClick={() => setPending("approve")}
+      >
+        {t("Approve")}
+      </PrimaryButton>
       <DangerButton onClick={() => setPending("reject")}>{t("Reject")}</DangerButton>
       <DangerButton onClick={() => setPending("archive")}>{t("Archive")}</DangerButton>
     </>
@@ -170,6 +179,7 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
     >
       {error ? <p role="alert" className="text-sm text-[var(--ad-red-text)]">{error}</p> : null}
 
+      <MediaAssetAuthorityNotice asset={row} />
       <AssetImage asset={row} />
 
       <DetailSection title={t("Basic info")}>

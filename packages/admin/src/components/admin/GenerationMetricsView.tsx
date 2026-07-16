@@ -5,7 +5,7 @@
 // INTENT: selfFetch 模式镜像 BackendsView.tsx；纯展示，无写操作。
 // INVARIANTS: avgDurationMs 渲染为 "x.x s"（null → "–"）；failed/total>0.2 时该行 failed 单元格标红。
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Loader2, RefreshCcw } from "lucide-react";
 import { apiGet } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
@@ -35,7 +35,7 @@ type PlacementEngagementMetric = {
   clicks: number;
 };
 
-type MetricsResponse = {
+export type MetricsResponse = {
   windowDays: number;
   profiles: ProfileMetric[];
   recipes: RecipeMetric[];
@@ -46,6 +46,34 @@ type MetricsResponse = {
 };
 
 const WINDOW_OPTIONS = [7, 30] as const;
+export type MetricsWindowDays = (typeof WINDOW_OPTIONS)[number];
+type MetricsSnapshots = Partial<Record<MetricsWindowDays, MetricsResponse>>;
+type MetricsWindowState<T> = Partial<Record<MetricsWindowDays, T>>;
+
+export function metricsSnapshotForWindow(
+  snapshots: MetricsSnapshots,
+  windowDays: MetricsWindowDays,
+) {
+  return snapshots[windowDays] ?? null;
+}
+
+export function metricsWindowErrorMessage(input: {
+  error: string;
+  requestedWindowDays: MetricsWindowDays;
+  hasRequestedSnapshot: boolean;
+  lastGoodWindowDays: MetricsWindowDays | null;
+}) {
+  if (input.hasRequestedSnapshot) {
+    return `${input.error} Showing the last successfully loaded ${input.requestedWindowDays}-day snapshot.`;
+  }
+  if (
+    input.lastGoodWindowDays !== null &&
+    input.lastGoodWindowDays !== input.requestedWindowDays
+  ) {
+    return `${input.error} ${input.requestedWindowDays}-day metrics are unavailable. The last successful snapshot was ${input.lastGoodWindowDays} days and is not shown for this window.`;
+  }
+  return `${input.error} ${input.requestedWindowDays}-day metrics are unavailable.`;
+}
 
 function failureRate(buckets: StatusBuckets): number {
   if (buckets.total === 0) return 0;
@@ -59,30 +87,58 @@ function formatDuration(avgDurationMs: number | null): string {
 
 export function GenerationMetricsView() {
   const { t } = useAdminI18n();
-  const [windowDays, setWindowDays] = useState<(typeof WINDOW_OPTIONS)[number]>(7);
-  const [metrics, setMetrics] = useState<MetricsResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [windowDays, setWindowDays] = useState<MetricsWindowDays>(7);
+  const [snapshots, setSnapshots] = useState<MetricsSnapshots>({});
+  const [loadingByWindow, setLoadingByWindow] = useState<
+    MetricsWindowState<boolean>
+  >({});
+  const [errorsByWindow, setErrorsByWindow] = useState<
+    MetricsWindowState<string | null>
+  >({});
+  const [lastGoodWindowDays, setLastGoodWindowDays] =
+    useState<MetricsWindowDays | null>(null);
+  const metrics = metricsSnapshotForWindow(snapshots, windowDays);
+  const error = errorsByWindow[windowDays] ?? null;
+  const loading =
+    loadingByWindow[windowDays] ??
+    (metrics === null && errorsByWindow[windowDays] === undefined);
+  const errorMessage = error
+    ? metricsWindowErrorMessage({
+        error,
+        requestedWindowDays: windowDays,
+        hasRequestedSnapshot: metrics !== null,
+        lastGoodWindowDays,
+      })
+    : null;
 
-  async function load(days: number) {
-    setLoading(true);
-    setError(null);
+  const load = useCallback(async (days: MetricsWindowDays) => {
+    setLoadingByWindow((current) => ({ ...current, [days]: true }));
+    setErrorsByWindow((current) => ({ ...current, [days]: null }));
     try {
       const data = await apiGet<MetricsResponse>(`/api/v1/admin/generation/metrics?days=${days}`);
-      setMetrics(data);
+      if (data.windowDays !== days) {
+        throw new Error(
+          `Metrics authority returned ${data.windowDays} days for a ${days}-day request.`,
+        );
+      }
+      setSnapshots((current) => ({ ...current, [days]: data }));
+      setLastGoodWindowDays(days);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Load failed");
+      setErrorsByWindow((current) => ({
+        ...current,
+        [days]: err instanceof Error ? err.message : "Load failed",
+      }));
     } finally {
-      setLoading(false);
+      setLoadingByWindow((current) => ({ ...current, [days]: false }));
     }
-  }
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void load(windowDays);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [windowDays]);
+  }, [load, windowDays]);
 
   return (
     <div className="space-y-5">
@@ -115,19 +171,48 @@ export function GenerationMetricsView() {
           </button>
         </div>
       </div>
-      {error ? <p role="alert" className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
+      {errorMessage ? (
+        <p role="alert" className="text-xs text-[var(--ad-red-text)]">
+          {errorMessage}
+        </p>
+      ) : null}
 
-      <ProfilesTable profiles={metrics?.profiles ?? []} t={t} />
-      <RecipesTable recipes={metrics?.recipes ?? []} t={t} />
-      <SourcesTable sources={metrics?.sources ?? []} t={t} />
-      <PlacementsTable placements={metrics?.placements ?? []} t={t} />
-      <PlacementEngagementTable engagement={metrics?.placementEngagement ?? []} t={t} />
-      <RemixSection total={metrics?.remix.total ?? 0} t={t} />
+      {metrics ? (
+        <>
+          <ProfilesTable profiles={metrics.profiles} t={t} />
+          <RecipesTable recipes={metrics.recipes} t={t} />
+          <SourcesTable sources={metrics.sources} t={t} />
+          <PlacementsTable placements={metrics.placements} t={t} />
+          <PlacementEngagementTable engagement={metrics.placementEngagement} t={t} />
+          <RemixSection total={metrics.remix.total} t={t} />
+        </>
+      ) : (
+        <MetricsAuthorityState loading={loading} t={t} />
+      )}
     </div>
   );
 }
 
 type Translate = (text: string) => string;
+
+function MetricsAuthorityState({ loading, t }: { loading: boolean; t: Translate }) {
+  return (
+    <section
+      aria-live="polite"
+      className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6 text-sm text-[var(--ad-text-muted)]"
+      role="status"
+    >
+      {loading ? (
+        <span className="inline-flex items-center gap-2">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          {t("Loading authoritative generation metrics...")}
+        </span>
+      ) : (
+        t("Generation metrics are unavailable. No values are shown until the authority request succeeds.")
+      )}
+    </section>
+  );
+}
 
 function SectionShell({ title, isEmpty, t, children }: { title: string; isEmpty: boolean; t: Translate; children: ReactNode }) {
   return (

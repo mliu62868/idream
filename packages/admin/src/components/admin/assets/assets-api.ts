@@ -25,6 +25,9 @@ export type ContentAsset = {
   type: string;
   url: string;
   thumbnailUrl: string;
+  isSynthetic: boolean;
+  customerPublishable: boolean;
+  publishabilityReasons: string[];
   width: number | null;
   height: number | null;
   safetyStatus: string;

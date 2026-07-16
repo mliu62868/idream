@@ -8,6 +8,12 @@ import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
+import { isSyntheticMediaAsset } from "@/server/lib/media-asset-authority";
+import {
+  assertMediaAssetCustomerPublishable,
+  resolveMediaAssetAuthorityMap,
+  type ResolvedMediaAssetAuthority,
+} from "@/server/lib/media-asset-authority-query";
 import {
   actorWithPermission,
   clampInt,
@@ -222,10 +228,17 @@ export async function listProductionBatches(request: Request) {
     orderBy: { createdAt: "desc" },
     take: clampInt(url.searchParams.get("limit"), 1, 100, 50),
   });
-  const ledgerEntries = await productionBatchLedgerEntries(batches);
+  const [ledgerEntries, mediaAuthorityById] = await Promise.all([
+    productionBatchLedgerEntries(batches),
+    productionBatchMediaAuthority(batches),
+  ]);
   return ok({
     items: batches.map((batch) =>
-      productionBatchDTO(batch, ledgerEntriesForBatch(batch, ledgerEntries)),
+      productionBatchDTO(
+        batch,
+        ledgerEntriesForBatch(batch, ledgerEntries),
+        mediaAuthorityById,
+      ),
     ),
   });
 }
@@ -539,7 +552,11 @@ export async function createProductionBatchCore(
     });
   });
   if (!replayed) await dispatchCreativeRetryOutbox(prisma, { limit: totalOutputCount });
-  return ok({ batch: productionBatchDTO(batch), replayed }, { status: replayed ? 200 : 202 });
+  const mediaAuthorityById = await productionBatchMediaAuthority([batch]);
+  return ok(
+    { batch: productionBatchDTO(batch, [], mediaAuthorityById), replayed },
+    { status: replayed ? 200 : 202 },
+  );
 }
 
 export async function createProductionBatch(request: Request) {
@@ -555,8 +572,13 @@ export async function getProductionBatch(request: Request, id: string) {
     include: productionBatchInclude,
   });
   if (!batch) throw Errors.notFound("Production batch not found");
-  const ledgerEntries = await productionBatchLedgerEntries([batch]);
-  return ok({ batch: productionBatchDTO(batch, ledgerEntries) });
+  const [ledgerEntries, mediaAuthorityById] = await Promise.all([
+    productionBatchLedgerEntries([batch]),
+    productionBatchMediaAuthority([batch]),
+  ]);
+  return ok({
+    batch: productionBatchDTO(batch, ledgerEntries, mediaAuthorityById),
+  });
 }
 
 export async function approveProductionItem(request: Request, id: string) {
@@ -738,8 +760,11 @@ export async function listContentAssets(request: Request) {
   const page = matches.slice(0, limit);
   const hasNextPage = matches.length > limit || !exhausted;
   const last = page.at(-1);
+  const mediaAuthorityById = await resolveMediaAssetAuthorityMap(prisma, page);
   return ok({
-    items: page.map(contentAssetDTO),
+    items: page.map((asset) =>
+      contentAssetDTO(asset, mediaAuthorityById.get(asset.id)),
+    ),
     pageInfo: {
       endCursor: hasNextPage && last
         ? encodeAdminListCursor("content_assets", queryIdentity, [last.createdAt.toISOString(), last.id])
@@ -758,7 +783,10 @@ export async function getContentAsset(request: Request, id: string) {
     include: contentAssetInclude,
   });
   if (!asset || asset.deletedAt) throw Errors.notFound("Content asset not found");
-  return ok({ asset: contentAssetDTO(asset) });
+  const authority = (
+    await resolveMediaAssetAuthorityMap(prisma, [asset])
+  ).get(asset.id);
+  return ok({ asset: contentAssetDTO(asset, authority) });
 }
 
 export async function patchContentAsset(request: Request, id: string) {
@@ -817,7 +845,10 @@ export async function patchContentAsset(request: Request, id: string) {
     before: { metadata: asset.metadata },
     after: { status: body.status ?? null, purpose: body.purpose ?? null, tags: body.tags ?? null },
   });
-  return ok({ asset: contentAssetDTO(updated) });
+  const authority = (
+    await resolveMediaAssetAuthorityMap(prisma, [updated])
+  ).get(updated.id);
+  return ok({ asset: contentAssetDTO(updated, authority) });
 }
 
 export async function bulkPatchContentAssets(request: Request) {
@@ -830,7 +861,7 @@ export async function bulkPatchContentAssets(request: Request) {
   await prisma.$transaction(async (tx) => {
     const assets = await tx.mediaAsset.findMany({
       where: { id: { in: body.assetIds }, deletedAt: null },
-      select: { id: true },
+      select: { id: true, sourceJobId: true, metadata: true },
     });
     for (const asset of assets) {
       await patchAssetMetadata(tx, asset.id, {
@@ -915,8 +946,17 @@ export async function listPlacements(request: Request) {
   const hasNextPage = placements.length > limit;
   const page = placements.slice(0, limit);
   const last = page.at(-1);
+  const mediaAuthorityById = await resolveMediaAssetAuthorityMap(
+    prisma,
+    page.map((placement) => placement.mediaAsset),
+  );
   return ok({
-    items: page.map(placementDTO),
+    items: page.map((placement) =>
+      placementDTO(
+        placement,
+        mediaAuthorityById.get(placement.mediaAssetId),
+      ),
+    ),
     pageInfo: {
       endCursor: hasNextPage && last
         ? encodeAdminListCursor("placements", queryIdentity, [last.createdAt.toISOString(), last.id])
@@ -932,17 +972,20 @@ export async function getPlacement(request: Request, id: string) {
   await actorWithPermission(request, "creative.placement.read");
   const placement = await prisma.mediaAssetPlacement.findUnique({ where: { id }, include: placementInclude });
   if (!placement) throw Errors.notFound("Placement not found");
-  return ok({ placement: placementDTO(placement) });
+  const authority = (
+    await resolveMediaAssetAuthorityMap(prisma, [placement.mediaAsset])
+  ).get(placement.mediaAssetId);
+  return ok({ placement: placementDTO(placement, authority) });
 }
 
 export async function createPlacement(request: Request) {
   const actor = await actorWithPermission(request, "creative.placement.publish");
   const body = placementCreateSchema.parse(await jsonBody(request));
   assertLegacyPlacementAuthority(body.slot);
-  await assertApprovedAsset(body.mediaAssetId);
   const scheduledAt = parseOptionalDate(body.scheduledAt);
   validatePlacementTarget(body.slot, body.targetType);
   const placement = await auditedTransaction("content.placement.create", async (tx) => {
+    await assertApprovedAsset(tx, body.mediaAssetId);
     if (body.status === "published") {
       await archiveCurrentPlacement(tx, body.slot, body.targetType, body.targetId);
     }
@@ -983,7 +1026,10 @@ export async function createPlacement(request: Request) {
       include: placementInclude,
     });
   });
-  return ok({ placement: placementDTO(placement) });
+  const authority = (
+    await resolveMediaAssetAuthorityMap(prisma, [placement.mediaAsset])
+  ).get(placement.mediaAssetId);
+  return ok({ placement: placementDTO(placement, authority) });
 }
 
 export async function patchPlacement(request: Request, id: string) {
@@ -995,9 +1041,11 @@ export async function patchPlacement(request: Request, id: string) {
   const before = await prisma.mediaAssetPlacement.findUnique({ where: { id } });
   if (!before) throw Errors.notFound("Placement not found");
   assertLegacyPlacementAuthority(before.slot);
-  if (body.status === "published") await assertApprovedAsset(before.mediaAssetId);
   const scheduledAt = parseOptionalDate(body.scheduledAt);
   const placement = await auditedTransaction("content.placement.update", async (tx) => {
+    if (body.status === "published") {
+      await assertApprovedAsset(tx, before.mediaAssetId);
+    }
     if (body.status === "published") {
       await archiveCurrentPlacement(tx, before.slot, before.targetType, before.targetId, id);
     }
@@ -1041,7 +1089,10 @@ export async function patchPlacement(request: Request, id: string) {
       include: placementInclude,
     });
   });
-  return ok({ placement: placementDTO(placement) });
+  const authority = (
+    await resolveMediaAssetAuthorityMap(prisma, [placement.mediaAsset])
+  ).get(placement.mediaAssetId);
+  return ok({ placement: placementDTO(placement, authority) });
 }
 
 function transactionAuditData(
@@ -1450,8 +1501,11 @@ async function patchAssetMetadata(
   });
 }
 
-async function assertApprovedAsset(mediaAssetId: string) {
-  const approved = await prisma.contentProductionItem.findFirst({
+async function assertApprovedAsset(
+  db: typeof prisma | Prisma.TransactionClient,
+  mediaAssetId: string,
+) {
+  const approved = await db.contentProductionItem.findFirst({
     where: {
       mediaAssetId,
       status: { in: ["approved", "published"] },
@@ -1461,6 +1515,7 @@ async function assertApprovedAsset(mediaAssetId: string) {
   if (!approved?.mediaAsset || platformAssetMetadata(approved.mediaAsset).status === "archived") {
     throw Errors.badRequest("Only approved content assets can be placed");
   }
+  await assertMediaAssetCustomerPublishable(db, approved.mediaAsset);
 }
 
 async function archiveCurrentPlacement(
@@ -1578,6 +1633,7 @@ async function appendProductionJobEvent(
 export function productionBatchDTO(
   batch: ProductionBatchWithItems,
   ledgerEntries: ReadonlyArray<CreativeRunLedgerFact> = [],
+  mediaAuthorityById: ReadonlyMap<string, ResolvedMediaAssetAuthority> = new Map(),
 ) {
   const state = deriveCreativeRunState({
     legacyStatus: batch.status,
@@ -1635,8 +1691,26 @@ export function productionBatchDTO(
     createdByEmail: batch.createdBy.email,
     createdAt: batch.createdAt,
     updatedAt: batch.updatedAt,
-    items: batch.items.map(productionItemDTO),
+    items: batch.items.map((item) =>
+      productionItemDTO(item, mediaAuthorityById),
+    ),
   };
+}
+
+async function productionBatchMediaAuthority(
+  batches: ReadonlyArray<ProductionBatchWithItems>,
+) {
+  const assets = [
+    ...new Map(
+      batches.flatMap((batch) =>
+        batch.items.flatMap((item) => {
+          const asset = item.mediaAsset ?? item.job?.assets[0] ?? null;
+          return asset ? [[asset.id, asset] as const] : [];
+        }),
+      ),
+    ).values(),
+  ];
+  return resolveMediaAssetAuthorityMap(prisma, assets);
 }
 
 async function productionBatchLedgerEntries(
@@ -1666,6 +1740,7 @@ function productionItemDTO(
   item: Prisma.ContentProductionItemGetPayload<{
     include: { batch: true; job: { include: { assets: true } }; mediaAsset: true };
   }> | ProductionBatchWithItems["items"][number],
+  mediaAuthorityById: ReadonlyMap<string, ResolvedMediaAssetAuthority> = new Map(),
 ) {
   const asset = item.mediaAsset ?? item.job?.assets[0] ?? null;
   return {
@@ -1696,16 +1771,21 @@ function productionItemDTO(
           completedAt: item.job.completedAt,
         }
       : null,
-    asset: asset ? mediaAssetDTO(asset) : null,
+    asset: asset
+      ? mediaAssetDTO(asset, mediaAuthorityById.get(asset.id))
+      : null,
   };
 }
 
-function contentAssetDTO(asset: ContentAssetWithRelations) {
+function contentAssetDTO(
+  asset: ContentAssetWithRelations,
+  authority?: ResolvedMediaAssetAuthority,
+) {
   const item = asset.productionItems[0] ?? null;
   const platform = platformAssetMetadata(asset);
   const platformStatus = platform.status === "archived" ? "archived" : (item?.status ?? platform.status);
   return {
-    ...mediaAssetDTO(asset),
+    ...mediaAssetDTO(asset, authority),
     platformStatus: platformStatus ?? "generated",
     purpose: item?.batch.purpose ?? platform.purpose ?? null,
     targetType: item?.batch.targetType ?? null,
@@ -1744,7 +1824,10 @@ function contentAssetDTO(asset: ContentAssetWithRelations) {
   };
 }
 
-function placementDTO(placement: PlacementWithRelations) {
+function placementDTO(
+  placement: PlacementWithRelations,
+  authority?: ResolvedMediaAssetAuthority,
+) {
   return {
     id: placement.id,
     mediaAssetId: placement.mediaAssetId,
@@ -1761,7 +1844,7 @@ function placementDTO(placement: PlacementWithRelations) {
     metadata: placement.metadata,
     createdAt: placement.createdAt,
     updatedAt: placement.updatedAt,
-    asset: mediaAssetDTO(placement.mediaAsset),
+    asset: mediaAssetDTO(placement.mediaAsset, authority),
   };
 }
 
@@ -1778,7 +1861,11 @@ function mediaAssetDTO(asset: {
   prompt: string | null;
   metadata: Prisma.JsonValue;
   createdAt: Date;
-}) {
+}, authority?: ResolvedMediaAssetAuthority) {
+  const isSynthetic = isSyntheticMediaAsset(asset.metadata);
+  const publishabilityReasons = authority?.reasons ?? (
+    isSynthetic ? ["metadata_synthetic"] : []
+  );
   return {
     id: asset.id,
     type: asset.type,
@@ -1789,6 +1876,9 @@ function mediaAssetDTO(asset: {
     height: asset.height,
     safetyStatus: asset.safetyStatus,
     sourceJobId: asset.sourceJobId,
+    isSynthetic,
+    customerPublishable: authority?.publishable ?? !isSynthetic,
+    publishabilityReasons,
     promptSummary: asset.prompt ? asset.prompt.slice(0, 180) : null,
     metadata: asset.metadata,
     createdAt: asset.createdAt,

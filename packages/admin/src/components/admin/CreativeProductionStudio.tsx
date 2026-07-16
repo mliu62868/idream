@@ -18,6 +18,10 @@ import {
 } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
+import {
+  MediaAssetAuthorityNotice,
+  canApproveMediaAsset,
+} from "@/components/admin/assets/MediaAssetAuthority";
 import { AssetImage } from "@/components/admin/ui/AssetImage";
 import { adminV2Request } from "@/lib/admin-v2-api";
 import { cn } from "@/lib/utils";
@@ -55,6 +59,9 @@ type CharacterOption = {
 };
 
 type ProductionAsset = AssetSource & {
+  isSynthetic: boolean;
+  customerPublishable: boolean;
+  publishabilityReasons: string[];
   width: number | null;
   height: number | null;
   createdAt: string;
@@ -493,6 +500,10 @@ export function CreativeProductionStudio() {
   }
 
   async function reviewItem(item: ProductionItem, action: "approve" | "reject" | "regenerate") {
+    if (action === "approve" && !canApproveMediaAsset(item.asset)) {
+      setError(t("This asset is not customer-publishable."));
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -523,7 +534,10 @@ export function CreativeProductionStudio() {
   async function approveSelected() {
     if (!selectedBatch) return;
     const items = selectedBatch.items.filter(
-      (item) => selectedItemIds.includes(item.id) && item.status === "generated" && item.asset,
+      (item) =>
+        selectedItemIds.includes(item.id) &&
+        item.status === "generated" &&
+        canApproveMediaAsset(item.asset),
     );
     for (const item of items) await reviewItem(item, "approve");
   }
@@ -935,6 +949,12 @@ function RecentSets({ batches, onOpenBatch, t, valueLabel }: { batches: Producti
 
 function ReviewWorkspace({ batch, batches, busy, focusedItemId, onApproveSelected, onOpenBatch, onRefresh, onReview, reviewDrafts, reviewFilter, selectedItemIds, setFocusedItemId, setReviewDrafts, setReviewFilter, setSelectedItemIds, t, valueLabel }: { batch: ProductionBatch; batches: ProductionBatch[]; busy: boolean; focusedItemId: string | null; onApproveSelected: () => Promise<void>; onOpenBatch: (id: string) => void; onRefresh: () => Promise<ProductionBatch[]>; onReview: (item: ProductionItem, action: "approve" | "reject" | "regenerate") => Promise<void>; reviewDrafts: Record<string, ReviewDraft>; reviewFilter: ReviewFilter; selectedItemIds: string[]; setFocusedItemId: Dispatch<SetStateAction<string | null>>; setReviewDrafts: Dispatch<SetStateAction<Record<string, ReviewDraft>>>; setReviewFilter: Dispatch<SetStateAction<ReviewFilter>>; setSelectedItemIds: Dispatch<SetStateAction<string[]>>; t: (key: string, vars?: Record<string, string | number>) => string; valueLabel: (key: string) => string }) {
   const focusedItem = batch.items.find((item) => item.id === focusedItemId) ?? null;
+  const selectedApprovalCount = batch.items.filter(
+    (item) =>
+      selectedItemIds.includes(item.id) &&
+      item.status === "generated" &&
+      canApproveMediaAsset(item.asset),
+  ).length;
   const filteredItems = batch.items.filter((item) => {
     if (reviewFilter === "unreviewed") return item.status === "generated";
     if (reviewFilter === "selected") return selectedItemIds.includes(item.id);
@@ -947,7 +967,7 @@ function ReviewWorkspace({ batch, batches, busy, focusedItemId, onApproveSelecte
         <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-medium text-[var(--ad-text-muted)]">{t("Generate & review")}</p><h2 className="mt-1 text-lg font-semibold">{batch.title}</h2><p className="mt-1 text-xs text-[var(--ad-text-muted)]">{purposeLabels[batch.purpose] ?? valueLabel(batch.purpose)} · {valueLabel(batch.status)} · {batch.completedItems}/{batch.totalItems} · {batch.estimatedCostDreamcoins} DC</p></div><button className="flex h-9 items-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-xs hover:border-[var(--ad-ink)]" onClick={() => void onRefresh()} type="button"><RefreshCcw className="h-3.5 w-3.5" /> {t("Refresh")}</button></div>
         <div className="mt-4 flex gap-2 overflow-x-auto">{batches.slice(0, 10).map((item) => <button className={cn("min-w-44 rounded-md border px-3 py-2 text-left", item.id === batch.id ? "border-[var(--ad-ink)] bg-[var(--ad-ink)] text-white" : "border-[var(--ad-border)]")} key={item.id} onClick={() => onOpenBatch(item.id)} type="button"><span className="block truncate text-xs font-semibold">{item.title}</span><span className={cn("mt-1 block text-[10px]", item.id === batch.id ? "text-white/65" : "text-[var(--ad-text-muted)]")}>{item.completedItems}/{item.totalItems} · {valueLabel(item.status)}</span></button>)}</div>
       </div>
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--ad-border)] px-4 py-3"><div className="flex rounded-md border border-[var(--ad-border)] p-0.5">{(["all", "unreviewed", "selected", "failed"] as const).map((filter) => <button aria-pressed={reviewFilter === filter} className={cn("h-8 rounded px-3 text-xs", reviewFilter === filter ? "bg-[var(--ad-ink)] text-white" : "text-[var(--ad-text-muted)] hover:bg-black/[0.04]")} key={filter} onClick={() => setReviewFilter(filter)} type="button">{t(filter[0].toUpperCase() + filter.slice(1))}</button>)}</div>{selectedItemIds.length > 0 ? <button className="flex h-9 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-3 text-xs font-semibold text-white disabled:opacity-50" disabled={busy} onClick={() => void onApproveSelected()} type="button"><Check className="h-4 w-4" /> {t("Approve {count} selected", { count: selectedItemIds.length })}</button> : null}</div>
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--ad-border)] px-4 py-3"><div className="flex rounded-md border border-[var(--ad-border)] p-0.5">{(["all", "unreviewed", "selected", "failed"] as const).map((filter) => <button aria-pressed={reviewFilter === filter} className={cn("h-8 rounded px-3 text-xs", reviewFilter === filter ? "bg-[var(--ad-ink)] text-white" : "text-[var(--ad-text-muted)] hover:bg-black/[0.04]")} key={filter} onClick={() => setReviewFilter(filter)} type="button">{t(filter[0].toUpperCase() + filter.slice(1))}</button>)}</div>{selectedItemIds.length > 0 ? <button className="flex h-9 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-3 text-xs font-semibold text-white disabled:opacity-50" disabled={busy || selectedApprovalCount === 0} onClick={() => void onApproveSelected()} type="button"><Check className="h-4 w-4" /> {t("Approve {count} selected", { count: selectedApprovalCount })}</button> : null}</div>
       <div className={cn("grid gap-4 p-4", focusedItem ? "2xl:grid-cols-[minmax(0,1fr)_300px]" : "grid-cols-1")}>
         <div className="grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">{filteredItems.map((item) => <ReviewCard busy={busy} item={item} key={item.id} onFocus={() => setFocusedItemId(item.id)} onReview={onReview} selected={selectedItemIds.includes(item.id)} setSelected={(selected) => setSelectedItemIds((current) => selected ? [...new Set([...current, item.id])] : current.filter((id) => id !== item.id))} t={t} valueLabel={valueLabel} />)}</div>
         {focusedItem ? <ReviewDetail batch={batch} busy={busy} draft={reviewDrafts[focusedItem.id] ?? { tags: focusedItem.tags.join(", "), description: "" }} item={focusedItem} onClose={() => setFocusedItemId(null)} onReview={onReview} setDraft={(draft) => setReviewDrafts((current) => ({ ...current, [focusedItem.id]: draft }))} t={t} valueLabel={valueLabel} /> : null}
@@ -957,15 +977,17 @@ function ReviewWorkspace({ batch, batches, busy, focusedItemId, onApproveSelecte
 }
 
 function ReviewCard({ busy, item, onFocus, onReview, selected, setSelected, t, valueLabel }: { busy: boolean; item: ProductionItem; onFocus: () => void; onReview: (item: ProductionItem, action: "approve" | "reject" | "regenerate") => Promise<void>; selected: boolean; setSelected: (selected: boolean) => void; t: (key: string) => string; valueLabel: (key: string) => string }) {
+  const approvalEligible = item.status === "generated" && canApproveMediaAsset(item.asset);
   return <article className={cn("overflow-hidden rounded-md border bg-[var(--ad-surface)]", selected ? "border-[var(--ad-ink)] ring-1 ring-[var(--ad-ink)]" : "border-[var(--ad-border)]")}>
     <button className="relative block aspect-[4/5] w-full bg-black/[0.04] text-left" onClick={onFocus} type="button">{item.asset ? <AssetImage asset={{ url: item.asset.url, thumbnailUrl: item.asset.thumbnailUrl ?? "" }} /> : item.status === "failed" ? <span className="absolute inset-0 grid place-items-center p-4 text-center"><span><CircleAlert className="mx-auto h-6 w-6 text-[var(--ad-red-text)]" /><strong className="mt-2 block text-xs text-[var(--ad-red-text)]">{t("Generation failed")}</strong><span className="mt-1 block text-[10px] text-[var(--ad-text-muted)]">{item.job?.errorCode ?? t("Unknown error")}</span></span></span> : <span className="absolute inset-0 grid place-items-center text-xs text-[var(--ad-text-muted)]"><span><Loader2 className="mx-auto mb-2 h-5 w-5 animate-spin" />{valueLabel(item.job?.status ?? item.status)}</span></span>}</button>
-    <div className="space-y-2 p-2.5"><div className="flex items-center justify-between gap-2"><label className="flex items-center gap-2 text-xs"><input checked={selected} disabled={!item.asset || !["generated", "approved"].includes(item.status)} onChange={(event) => setSelected(event.target.checked)} type="checkbox" /> #{item.itemIndex + 1}</label><span className="text-[10px] text-[var(--ad-text-muted)]">{valueLabel(item.status)}</span></div><div className="flex gap-1.5">{item.status === "generated" ? <><SmallButton disabled={busy} label={t("Approve")} onClick={() => onReview(item, "approve")}><Check className="h-3.5 w-3.5" /></SmallButton><SmallButton disabled={busy} label={t("Reject")} onClick={() => onReview(item, "reject")}><X className="h-3.5 w-3.5" /></SmallButton></> : null}{item.status === "failed" || item.status === "rejected" ? <SmallButton disabled={busy} label={t("Retry")} onClick={() => onReview(item, "regenerate")}><RotateCcw className="h-3.5 w-3.5" /></SmallButton> : null}</div></div>
+    <div className="space-y-2 p-2.5"><MediaAssetAuthorityNotice asset={item.asset} className="w-full justify-center" /><div className="flex items-center justify-between gap-2"><label className="flex items-center gap-2 text-xs"><input checked={selected} disabled={!item.asset?.customerPublishable || !["generated", "approved"].includes(item.status)} onChange={(event) => setSelected(event.target.checked)} type="checkbox" /> #{item.itemIndex + 1}</label><span className="text-[10px] text-[var(--ad-text-muted)]">{valueLabel(item.status)}</span></div><div className="flex gap-1.5">{item.status === "generated" ? <><SmallButton disabled={busy || !approvalEligible} label={t("Approve")} onClick={() => onReview(item, "approve")}><Check className="h-3.5 w-3.5" /></SmallButton><SmallButton disabled={busy} label={t("Reject")} onClick={() => onReview(item, "reject")}><X className="h-3.5 w-3.5" /></SmallButton></> : null}{item.status === "failed" || item.status === "rejected" ? <SmallButton disabled={busy} label={t("Retry")} onClick={() => onReview(item, "regenerate")}><RotateCcw className="h-3.5 w-3.5" /></SmallButton> : null}</div></div>
   </article>;
 }
 
 function ReviewDetail({ batch, busy, draft, item, onClose, onReview, setDraft, t, valueLabel }: { batch: ProductionBatch; busy: boolean; draft: ReviewDraft; item: ProductionItem; onClose: () => void; onReview: (item: ProductionItem, action: "approve" | "reject" | "regenerate") => Promise<void>; setDraft: (draft: ReviewDraft) => void; t: (key: string) => string; valueLabel: (key: string) => string }) {
   const releaseOwned = item.status === "approved" && ["character_cover", "character_hero"].includes(batch.purpose);
-  return <aside className="rounded-md border border-[var(--ad-border)] p-3 2xl:sticky 2xl:top-24"><div className="flex items-center justify-between"><div><p className="text-xs font-semibold">{t("Image details")} #{item.itemIndex + 1}</p><p className="mt-1 text-[10px] text-[var(--ad-text-muted)]">{valueLabel(item.status)}</p></div><button aria-label={t("Close")} className="grid h-8 w-8 place-items-center rounded-md border border-[var(--ad-border)]" onClick={onClose} type="button"><X className="h-4 w-4" /></button></div>{item.asset ? <div className="mt-3 overflow-hidden rounded-md"><AssetImage asset={{ url: item.asset.url, thumbnailUrl: item.asset.thumbnailUrl ?? "" }} /></div> : null}<div className="mt-3 space-y-3"><Field label={t("Tags")}><input className={inputClass} onChange={(event) => setDraft({ ...draft, tags: event.target.value })} placeholder="selfie, rainy night, city" value={draft.tags} /></Field><Field label={t("Description")}><textarea className={cn(textareaClass, "min-h-24")} onChange={(event) => setDraft({ ...draft, description: event.target.value })} value={draft.description} /></Field><div className="grid grid-cols-2 gap-2">{item.status === "generated" ? <><button className="h-9 rounded-md bg-[var(--ad-ink)] text-xs font-semibold text-white disabled:opacity-50" disabled={busy} onClick={() => void onReview(item, "approve")} type="button">{t("Approve")}</button><button className="h-9 rounded-md border border-[var(--ad-border)] text-xs disabled:opacity-50" disabled={busy} onClick={() => void onReview(item, "reject")} type="button">{t("Reject")}</button></> : null}<button className="col-span-2 flex h-9 items-center justify-center gap-2 rounded-md border border-[var(--ad-border)] text-xs disabled:opacity-50" disabled={busy} onClick={() => void onReview(item, "regenerate")} type="button"><RotateCcw className="h-3.5 w-3.5" /> {t("More like this")}</button>{releaseOwned ? <p className="col-span-2 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-center text-xs text-[var(--ad-yellow-text)]">Publish through Character Release so the immutable snapshot and Serving pointer change atomically.</p> : null}{item.status === "approved" && batch.purpose === "character_chat" ? <p className="col-span-2 rounded-md bg-[var(--ad-green-bg)] px-3 py-2 text-center text-xs text-[var(--ad-green-text)]">{t("Approved for the character chat pool")}</p> : null}</div></div></aside>;
+  const approvalEligible = item.status === "generated" && canApproveMediaAsset(item.asset);
+  return <aside className="rounded-md border border-[var(--ad-border)] p-3 2xl:sticky 2xl:top-24"><div className="flex items-center justify-between"><div><p className="text-xs font-semibold">{t("Image details")} #{item.itemIndex + 1}</p><p className="mt-1 text-[10px] text-[var(--ad-text-muted)]">{valueLabel(item.status)}</p></div><button aria-label={t("Close")} className="grid h-8 w-8 place-items-center rounded-md border border-[var(--ad-border)]" onClick={onClose} type="button"><X className="h-4 w-4" /></button></div>{item.asset ? <div className="mt-3 overflow-hidden rounded-md"><AssetImage asset={{ url: item.asset.url, thumbnailUrl: item.asset.thumbnailUrl ?? "" }} /></div> : null}<MediaAssetAuthorityNotice asset={item.asset} className="mt-3 w-full justify-center" /><div className="mt-3 space-y-3"><Field label={t("Tags")}><input className={inputClass} onChange={(event) => setDraft({ ...draft, tags: event.target.value })} placeholder="selfie, rainy night, city" value={draft.tags} /></Field><Field label={t("Description")}><textarea className={cn(textareaClass, "min-h-24")} onChange={(event) => setDraft({ ...draft, description: event.target.value })} value={draft.description} /></Field><div className="grid grid-cols-2 gap-2">{item.status === "generated" ? <><button className="h-9 rounded-md bg-[var(--ad-ink)] text-xs font-semibold text-white disabled:opacity-50" disabled={busy || !approvalEligible} onClick={() => void onReview(item, "approve")} type="button">{t("Approve")}</button><button className="h-9 rounded-md border border-[var(--ad-border)] text-xs disabled:opacity-50" disabled={busy} onClick={() => void onReview(item, "reject")} type="button">{t("Reject")}</button></> : null}<button className="col-span-2 flex h-9 items-center justify-center gap-2 rounded-md border border-[var(--ad-border)] text-xs disabled:opacity-50" disabled={busy} onClick={() => void onReview(item, "regenerate")} type="button"><RotateCcw className="h-3.5 w-3.5" /> {t("More like this")}</button>{releaseOwned ? <p className="col-span-2 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-center text-xs text-[var(--ad-yellow-text)]">Publish through Character Release so the immutable snapshot and Serving pointer change atomically.</p> : null}{item.status === "approved" && batch.purpose === "character_chat" ? <p className="col-span-2 rounded-md bg-[var(--ad-green-bg)] px-3 py-2 text-center text-xs text-[var(--ad-green-text)]">{t("Approved for the character chat pool")}</p> : null}</div></div></aside>;
 }
 
 function SmallButton({ children, disabled, label, onClick }: { children: React.ReactNode; disabled: boolean; label: string; onClick: () => void | Promise<void> }) {

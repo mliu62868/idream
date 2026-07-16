@@ -13,4 +13,10 @@ describe("creative production pricing truth", () => {
     expect(source).toContain("Pricing estimate unavailable");
     expect(source).toContain("perItemCost !== null");
   });
+
+  it("marks demo assets and keeps them out of approval actions", () => {
+    expect(source).toContain("MediaAssetAuthorityNotice");
+    expect(source).toContain("canApproveMediaAsset");
+    expect(source).toContain("customerPublishable");
+  });
 });

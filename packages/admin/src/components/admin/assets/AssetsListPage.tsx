@@ -10,6 +10,7 @@ import { StatusPill } from "@/components/admin/ui/StatusPill";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { AssetImage } from "@/components/admin/ui/AssetImage";
 import { ASSET_PURPOSES, ASSET_STATUSES, assetsListPath, type ContentAsset } from "./assets-api";
+import { MediaAssetAuthorityNotice } from "./MediaAssetAuthority";
 
 // SPEC: 图片库列表页 —— 状态/用途走服务端查询参数拼接（沿用 旧图片库视图 原有筛选方式，不改
 // 成客户端过滤——资产量可观，服务端筛更省），标签/描述/id 关键词走客户端二次过滤（新增，复用运营
@@ -123,6 +124,7 @@ function AssetCard({ asset }: { asset: ContentAsset }) {
     >
       <AssetImage asset={asset} />
       <div className="space-y-1.5 p-4">
+        <MediaAssetAuthorityNotice asset={asset} />
         <StatusPill status={asset.platformStatus} />
         <p className="truncate text-xs text-[var(--ad-text-muted)]">
           {asset.purpose ? value(asset.purpose) : "—"}
