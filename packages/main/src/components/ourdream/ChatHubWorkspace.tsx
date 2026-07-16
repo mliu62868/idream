@@ -4,7 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { ArrowRight, Compass, MessageCircle, Plus, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
-import { characterCards } from "@/lib/ourdream-data";
+import type { CharacterCardData } from "@/types/ourdream";
 import { authHrefForTarget } from "./authRedirect";
 
 // SPEC: /chat landing — a real hub listing the user's chat sessions (most-recent
@@ -24,8 +24,7 @@ type SessionRow = {
 };
 
 type HubState = "loading" | "ready" | "error" | "signed-out";
-
-const featuredChatCards = characterCards.slice(0, 3);
+type FeaturedState = "loading" | "ready" | "error";
 
 export function ChatHubWorkspace() {
   const [sessions, setSessions] = useState<SessionRow[]>([]);
@@ -208,6 +207,32 @@ export function ChatHubWorkspace() {
 }
 
 function ChatStartPanel() {
+  const [featuredCharacters, setFeaturedCharacters] = useState<
+    CharacterCardData[]
+  >([]);
+  const [featuredState, setFeaturedState] = useState<FeaturedState>("loading");
+
+  async function loadFeaturedCharacters() {
+    setFeaturedState("loading");
+    try {
+      const response = await fetch("/api/v1/characters?sort=for-you&limit=3");
+      if (!response.ok) throw new Error("characters unavailable");
+      const payload = (await response.json()) as {
+        data?: { items?: CharacterCardData[] };
+      };
+      setFeaturedCharacters((payload.data?.items ?? []).slice(0, 3));
+      setFeaturedState("ready");
+    } catch {
+      setFeaturedCharacters([]);
+      setFeaturedState("error");
+    }
+  }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void loadFeaturedCharacters(), 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
   return (
     <aside
       className="rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-4 md:p-5"
@@ -224,34 +249,66 @@ function ChatStartPanel() {
       </p>
 
       <div className="mt-4 grid gap-3">
-        {featuredChatCards.map((card) => (
-          <Link
-            aria-label={`Chat with ${card.title}`}
-            className="group grid grid-cols-[64px_minmax(0,1fr)_18px] items-center gap-3 rounded-[14px] border border-white/10 bg-[rgb(36,36,36)] p-2 transition-colors hover:bg-[rgb(46,46,46)]"
-            data-testid="chat-hub-character-card"
-            href={`/characters/${card.id}`}
-            key={card.id}
+        {featuredState === "loading" ? (
+          <p
+            aria-live="polite"
+            className="rounded-[14px] border border-white/10 bg-[rgb(36,36,36)] p-4 text-[12px] font-medium text-[rgb(170,170,170)]"
+            data-testid="chat-hub-featured-status"
+            role="status"
           >
-            <span className="relative block aspect-[4/5] overflow-hidden rounded-[10px] bg-black">
-              <Image
-                alt=""
-                className="object-cover object-top transition-transform duration-200 group-hover:scale-[1.03]"
-                fill
-                sizes="64px"
-                src={card.image}
-              />
-            </span>
-            <span className="min-w-0">
-              <span className="block truncate text-[14px] font-bold text-white">
-                {card.title}
-              </span>
-              <span className="mt-1 block text-[12px] font-medium text-[rgb(170,170,170)]">
-                {card.chats} chats
-              </span>
-            </span>
-            <ArrowRight className="h-4 w-4 text-[rgb(114,113,112)] transition-colors group-hover:text-white" />
-          </Link>
-        ))}
+            Loading featured characters...
+          </p>
+        ) : null}
+        {featuredState === "ready" && featuredCharacters.length === 0 ? (
+          <p
+            aria-live="polite"
+            className="rounded-[14px] border border-white/10 bg-[rgb(36,36,36)] p-4 text-[12px] font-medium leading-5 text-[rgb(170,170,170)]"
+            data-testid="chat-hub-featured-status"
+            role="status"
+          >
+            No public characters are available yet.
+          </p>
+        ) : null}
+        {featuredState === "error" ? (
+          <p
+            aria-live="assertive"
+            className="rounded-[14px] border border-white/10 bg-[rgb(36,36,36)] p-4 text-[12px] font-medium leading-5 text-[rgb(170,170,170)]"
+            data-testid="chat-hub-featured-status"
+            role="alert"
+          >
+            Featured characters are temporarily unavailable.
+          </p>
+        ) : null}
+        {featuredState === "ready"
+          ? featuredCharacters.map((card) => (
+              <Link
+                aria-label={`Chat with ${card.title}`}
+                className="group grid grid-cols-[64px_minmax(0,1fr)_18px] items-center gap-3 rounded-[14px] border border-white/10 bg-[rgb(36,36,36)] p-2 transition-colors hover:bg-[rgb(46,46,46)]"
+                data-testid="chat-hub-character-card"
+                href={`/characters/${card.id}`}
+                key={card.id}
+              >
+                <span className="relative block aspect-[4/5] overflow-hidden rounded-[10px] bg-black">
+                  <Image
+                    alt=""
+                    className="object-cover object-top transition-transform duration-200 group-hover:scale-[1.03]"
+                    fill
+                    sizes="64px"
+                    src={card.image}
+                  />
+                </span>
+                <span className="min-w-0">
+                  <span className="block truncate text-[14px] font-bold text-white">
+                    {card.title}
+                  </span>
+                  <span className="mt-1 block text-[12px] font-medium text-[rgb(170,170,170)]">
+                    {card.chats} chats
+                  </span>
+                </span>
+                <ArrowRight className="h-4 w-4 text-[rgb(114,113,112)] transition-colors group-hover:text-white" />
+              </Link>
+            ))
+          : null}
       </div>
 
       <div className="mt-4 grid gap-2">

@@ -8,7 +8,6 @@ import {
   Sparkles,
 } from "lucide-react";
 import {
-  characterCards,
   getOurdreamRoute,
   getRoutesByPrefix,
   ourdreamRoutePaths,
@@ -23,12 +22,14 @@ import { AuthNav } from "./AuthNav";
 import { AuthWorkspace } from "./AuthWorkspace";
 import { AppSearch } from "./AppSearch";
 import { ChatHubWorkspace } from "./ChatHubWorkspace";
+import { ComparisonPlanSnapshot } from "./ComparisonPlanSnapshot";
 import { CommunityWorkspace } from "./CommunityWorkspace";
 import { CreateWorkspace } from "./CreateWorkspace";
 import { FeedWorkspace } from "./FeedWorkspace";
 import { GeneratorWorkspace } from "./GeneratorWorkspace";
 import { HelpDeskWorkspace } from "./HelpDeskWorkspace";
 import { ProfileWorkspace } from "./ProfileWorkspace";
+import { PublicCharacterStrip } from "./PublicCharacterStrip";
 import { UpgradeWorkspace } from "./UpgradeWorkspace";
 import { MobileAppMenu } from "./MobileAppMenu";
 
@@ -153,42 +154,6 @@ function PageHero({ route }: Readonly<{ route: OurdreamRoute }>) {
   );
 }
 
-function CharacterStrip() {
-  return (
-    <section className="px-4 py-8 md:px-[60px] md:py-12">
-      <div className="grid gap-3 md:grid-cols-4">
-        {characterCards.slice(0, 4).map((card) => (
-          <article
-            className="group overflow-hidden rounded-[14px] border border-white/10 bg-[rgb(18,18,18)]"
-            key={card.id}
-          >
-            <div className="relative aspect-[240/260] overflow-hidden">
-              <Image
-                alt=""
-                className="object-cover object-top transition-transform duration-200 group-hover:scale-[1.03]"
-                fill
-                loading="eager"
-                sizes="(max-width: 767px) 50vw, 220px"
-                src={card.image}
-              />
-              <div className="absolute inset-0 bg-[linear-gradient(0deg,rgba(0,0,0,.78),rgba(0,0,0,.18)_58%,transparent)]" />
-              <div className="absolute inset-x-0 bottom-0 p-3">
-                <h3 className="line-clamp-2 text-[17px] font-bold leading-5">
-                  {card.title}
-                  <span className="ml-2 text-[14px]">{card.age}</span>
-                </h3>
-                <p className="mt-1 text-[12px] font-medium leading-4 text-[rgb(170,170,170)]">
-                  {card.chats} plays
-                </p>
-              </div>
-            </div>
-          </article>
-        ))}
-      </div>
-    </section>
-  );
-}
-
 function FeatureGrid() {
   const features = [
     ["Create", "Shape appearance, personality, voice, and style."],
@@ -231,7 +196,7 @@ function MarketingPage({ route }: Readonly<{ route: OurdreamRoute }>) {
   return (
     <RouteShell route={route}>
       <PageHero route={route} />
-      <CharacterStrip />
+      <PublicCharacterStrip />
       <section className="px-4 py-8 md:px-[60px] md:py-12">
         <div className="relative overflow-hidden rounded-[18px] bg-[rgb(18,18,18)]">
           <Image
@@ -349,7 +314,7 @@ function LibraryPage({ route }: Readonly<{ route: OurdreamRoute }>) {
           ))}
         </div>
       </section>
-      <CharacterStrip />
+      <PublicCharacterStrip />
     </RouteShell>
   );
 }
@@ -709,35 +674,9 @@ const comparisonFeatureRows = [
   {
     area: "Account and pricing",
     ourdream:
-      "Free accounts start with dreamcoins. Premium monthly is $19.99 with 1,500 dreamcoins; Deluxe monthly is $59.99 with 6,000 dreamcoins.",
+      "Current plan prices and included dreamcoins are loaded from the plan authority below; checkout and billing state live on Upgrade.",
     compare:
       "Compare included credits, chat limits, renewal controls, and whether plan changes preserve the current workflow.",
-  },
-] as const;
-
-const comparisonPlanSummaries = [
-  {
-    name: "Free starter",
-    price: "$0",
-    details: "Starter dreamcoins, Explore, Create, Chat, Feed, Community, and Gallery access.",
-    href: "/signup",
-    action: "Join free",
-  },
-  {
-    name: "Premium monthly",
-    price: "$19.99",
-    details:
-      "Includes 1,500 dreamcoins, unlimited text messages & audio, longer conversation context, and advanced generation controls.",
-    href: "/upgrade?plan=premium&billing=monthly",
-    action: "Compare Premium",
-  },
-  {
-    name: "Deluxe monthly",
-    price: "$59.99",
-    details:
-      "Includes 6,000 dreamcoins, premium chat model, 3x chat memory depth, longest context window, and highest rate limit.",
-    href: "/upgrade?plan=deluxe&billing=monthly",
-    action: "Compare Deluxe",
   },
 ] as const;
 
@@ -790,48 +729,6 @@ function ComparisonChecklist({ route }: Readonly<{ route: OurdreamRoute }>) {
                 {row.compare}
               </div>
             </div>
-          ))}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function PricingComparison() {
-  return (
-    <section className="px-4 py-10 md:px-[60px] md:py-12">
-      <div className="mx-auto max-w-6xl">
-        <div className="max-w-3xl">
-          <p className="text-[12px] font-black uppercase leading-4 text-[rgb(253,95,194)]">
-            Price and entitlement snapshot
-          </p>
-          <h2 className="mt-3 text-[32px] font-black uppercase leading-9 text-white md:text-[42px] md:leading-[44px]">
-            Know what each Ourdream tier unlocks
-          </h2>
-        </div>
-        <div className="mt-7 grid gap-3 md:grid-cols-3">
-          {comparisonPlanSummaries.map((plan) => (
-            <article
-              className="rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-5"
-              key={plan.name}
-            >
-              <p className="text-[12px] font-black uppercase leading-4 text-[rgb(253,95,194)]">
-                {plan.name}
-              </p>
-              <h3 className="mt-4 text-[34px] font-black uppercase leading-none text-white">
-                {plan.price}
-              </h3>
-              <p className="mt-4 min-h-24 text-[14px] font-medium leading-7 text-[rgb(170,170,170)]">
-                {plan.details}
-              </p>
-              <Link
-                className="mt-5 inline-flex h-10 items-center justify-center gap-2 rounded-full bg-white px-5 text-[13px] font-black text-[rgb(13,13,13)] hover:bg-white/90"
-                href={plan.href}
-              >
-                {plan.action}
-                <ArrowRight className="h-4 w-4" />
-              </Link>
-            </article>
           ))}
         </div>
       </div>
@@ -902,7 +799,7 @@ function ComparisonPage({ route }: Readonly<{ route: OurdreamRoute }>) {
     <RouteShell route={route}>
       <PageHero route={route} />
       <ComparisonChecklist route={route} />
-      <PricingComparison />
+      <ComparisonPlanSnapshot />
       <ComparisonRouteCards route={route} />
     </RouteShell>
   );

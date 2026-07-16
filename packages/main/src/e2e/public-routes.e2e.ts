@@ -174,10 +174,27 @@ test.describe("public route smoke", () => {
     );
   });
 
-  test("comparison pages explain feature and pricing differences with CTAs", async ({
+  test("comparison pages explain feature differences and mirror the live plan authority", async ({
     page,
   }) => {
     await startSignedInAdultSession(page, "/comparison/character-ai-alternative");
+    const plansResponse = await page.request.get("/api/v1/plans");
+    const plansBody = await plansResponse.text();
+    expect(plansResponse.ok(), plansBody).toBeTruthy();
+    const plansPayload = JSON.parse(plansBody) as {
+      data?: {
+        items?: Array<{
+          billingPeriod: string;
+          includedDreamcoins: number;
+          name: string;
+          priceCents: number;
+          slug: string;
+        }>;
+      };
+    };
+    const plans = plansPayload.data?.items ?? [];
+    expect(plans.length).toBeGreaterThan(0);
+
     await page.goto("/comparison/character-ai-alternative");
     await dismissAgeGateIfPresent(page);
 
@@ -185,20 +202,23 @@ test.describe("public route smoke", () => {
       page.getByRole("heading", { name: /compare character ai by the workflow/i }),
     ).toBeVisible();
     await expect(page.getByText("Image generation tools", { exact: true })).toBeVisible();
-    await expect(
-      page.getByText("Premium monthly is $19.99 with 1,500 dreamcoins", {
-        exact: false,
-      }),
-    ).toBeVisible();
-    await expect(
-      page.getByText("Deluxe monthly is $59.99 with 6,000 dreamcoins", {
-        exact: false,
-      }),
-    ).toBeVisible();
-    await expect(page.getByRole("link", { name: /compare premium/i })).toHaveAttribute(
-      "href",
-      "/upgrade?plan=premium&billing=monthly",
-    );
+    await expect(page.getByText("Live plan snapshot", { exact: true })).toBeVisible();
+    const planCards = page.getByTestId("comparison-plan-card");
+    await expect(planCards).toHaveCount(plans.length);
+    for (const [index, plan] of plans.entries()) {
+      const card = planCards.nth(index);
+      await expect(card).toContainText(plan.name);
+      await expect(card).toContainText(`$${(plan.priceCents / 100).toFixed(2)}`);
+      await expect(card).toContainText(
+        `${plan.includedDreamcoins.toLocaleString()} dreamcoins`,
+      );
+      await expect(
+        card.getByRole("link", { name: `View ${plan.name}` }),
+      ).toHaveAttribute(
+        "href",
+        `/upgrade?plan=${encodeURIComponent(plan.slug)}&billing=${encodeURIComponent(plan.billingPeriod)}`,
+      );
+    }
     await expect(page.getByRole("link", { name: /see plans/i })).toHaveAttribute(
       "href",
       "/upgrade",

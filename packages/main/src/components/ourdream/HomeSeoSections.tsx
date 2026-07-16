@@ -7,24 +7,33 @@ export function HomeSeoSections() {
     <section className="px-4 pb-14 pt-12 md:px-[60px] md:pb-20 md:pt-16">
       <div className="mx-auto max-w-4xl">
         <h1 className="text-center text-[32px] font-bold leading-10 text-white md:text-[36px]">
-          Ourdream ai, the Unlimited AI Roleplay Platform
+          One character, connected across every creative surface
         </h1>
 
         <div className="mt-8 grid gap-4 md:grid-cols-3">
           {[
-            ["63M+", "characters to explore"],
-            ["10M+", "dreamers creating stories"],
-            ["24/7", "chat and image tools"],
-          ].map(([value, label]) => (
+            [
+              "Discover",
+              "Browse public companions and find a personality, visual style, and story hook that fits.",
+            ],
+            [
+              "Create",
+              "Shape a private or public character with identity details that carry into chat and images.",
+            ],
+            [
+              "Continue",
+              "Return to saved conversations, generated media, and the characters you are building over time.",
+            ],
+          ].map(([title, description]) => (
             <div
-              className="rounded-[12px] border border-white/10 bg-[rgb(18,18,18)] p-5 text-center"
-              key={value}
+              className="rounded-[12px] border border-white/10 bg-[rgb(18,18,18)] p-5"
+              key={title}
             >
-              <p className="text-[28px] font-black leading-8 text-white">
-                {value}
-              </p>
-              <p className="mt-1 text-[12px] font-medium uppercase leading-4 text-[rgb(170,170,170)]">
-                {label}
+              <h2 className="text-[22px] font-black uppercase leading-7 text-white">
+                {title}
+              </h2>
+              <p className="mt-3 text-[14px] font-medium leading-6 text-[rgb(170,170,170)]">
+                {description}
               </p>
             </div>
           ))}
