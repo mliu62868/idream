@@ -175,7 +175,7 @@ describe("proxyChatRequest", () => {
     spy.mockRestore();
   });
 
-  it("keeps owner legacy test media visible with explicit source authority", async () => {
+  it("keeps owner legacy test media visible with explicit synthetic authority", async () => {
     const { proxyChatRequest } = await import("./chat-proxy");
     const db = await import("@/server/lib/db");
     const characterSpy = vi
@@ -234,7 +234,6 @@ describe("proxyChatRequest", () => {
     expect(json.data.session.messages[0]?.attachments[0]).toMatchObject({
       isSynthetic: true,
       mediaUrl: "/user-content/legacy.webp",
-      sourceAuthority: "legacy_test_asset",
     });
     expect(mediaSpy).toHaveBeenCalledOnce();
     mediaSpy.mockRestore();

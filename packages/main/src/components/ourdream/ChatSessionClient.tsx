@@ -40,7 +40,6 @@ type ChatAttachment = {
   mediaUrl?: string | null;
   thumbnailUrl?: string | null;
   isSynthetic?: boolean;
-  sourceAuthority?: "legacy_test_asset" | "media_asset";
   costDreamcoins?: number | null;
   promptHint?: string | null;
   width?: number | null;
@@ -1047,9 +1046,7 @@ function ChatImageAttachmentCard({
   const previewKey = `${attachment.id}:${source ?? ""}`;
   const [invalidPreviewKey, setInvalidPreviewKey] = useState<string | null>(null);
   const invalidPreview = invalidPreviewKey === previewKey;
-  const isLegacyTestAsset =
-    attachment.isSynthetic === true ||
-    attachment.sourceAuthority === "legacy_test_asset";
+  const isLegacyTestAsset = attachment.isSynthetic === true;
 
   if (attachment.status === "completed" && attachment.mediaUrl && source && !invalidPreview) {
     return (
@@ -1067,10 +1064,7 @@ function ChatImageAttachmentCard({
           src={source}
           width={attachment.width ?? 512}
         />
-        <LegacyTestAssetBadge
-          className="absolute right-2 top-2 z-20"
-          isSynthetic={isLegacyTestAsset}
-        />
+        <LegacyTestAssetBadge isSynthetic={isLegacyTestAsset} />
         {attachment.mediaAssetId ? (
           <ChatImageAttachmentActions
             canAddToIdentity={canAddToIdentity}

@@ -2042,10 +2042,7 @@ export function GeneratorWorkspace() {
                               testIdPrefix="latest-result"
                             />
                           )}
-                          <LegacyTestAssetBadge
-                            className="absolute right-2 top-2 z-20"
-                            isSynthetic={item.isSynthetic}
-                          />
+                          <LegacyTestAssetBadge isSynthetic={item.isSynthetic} />
                         </div>
                         <div className="grid gap-2 p-3">
                           {item.type === "image" && item.characterId && (
@@ -2390,10 +2387,7 @@ export function GeneratorWorkspace() {
                           source={source}
                         />
                       )}
-                      <LegacyTestAssetBadge
-                        className="absolute right-2 top-2 z-20"
-                        isSynthetic={item.isSynthetic}
-                      />
+                      <LegacyTestAssetBadge isSynthetic={item.isSynthetic} />
                       {manageMode ? (
                         <button
                           aria-label={isSelected ? "Deselect media" : "Select media"}

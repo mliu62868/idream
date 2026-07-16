@@ -1831,10 +1831,7 @@ function LibraryCard({
               unoptimized={isPrivateMediaUrl(source)}
             />
           ) : null}
-          <LegacyTestAssetBadge
-            className="absolute right-2 top-2 z-20"
-            isSynthetic={isMediaItem && item.isSynthetic}
-          />
+          <LegacyTestAssetBadge isSynthetic={isMediaItem && item.isSynthetic} />
         </div>
       )}
       <div className="p-4">

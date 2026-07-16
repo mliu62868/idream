@@ -207,7 +207,6 @@ async function enrichAttachmentMedia(messages: Array<Record<string, unknown>>, u
               width: attachment.width ?? asset.width,
               height: attachment.height ?? asset.height,
               isSynthetic,
-              sourceAuthority: isSynthetic ? "legacy_test_asset" : "media_asset",
             }
           : attachment;
       }),
