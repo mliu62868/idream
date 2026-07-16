@@ -77,6 +77,9 @@ type CommunityCharacter = {
   creator: string;
   likes: string;
   chats: string;
+  likesCount?: number;
+  chatsCount?: number;
+  source?: "official" | "user";
   style?: string;
   gender?: string;
   exposureContext?: {
@@ -103,6 +106,7 @@ type CampaignBanner = {
   href?: string | null;
   id: string;
   image: string;
+  source: "authority" | "editorial_fallback";
   title: string;
 };
 
@@ -114,6 +118,8 @@ type Dreamer = {
   followers: number;
   likes: string;
   chats: string;
+  likesCount?: number;
+  chatsCount?: number;
   isFollowing?: boolean;
 };
 
@@ -167,6 +173,7 @@ const fallbackCampaign: CampaignBanner = {
   eyebrow: "Community",
   id: "fallback-community",
   image: "/images/ourdream/promo-card-female.webp",
+  source: "editorial_fallback",
   title: "Dreamers, Characters, Collections",
 };
 
@@ -221,6 +228,7 @@ export function CommunityWorkspace() {
   const activeCampaignIdRef = useRef(activeCampaign.id);
 
   function recordCampaignImpression(placementId: string) {
+    if (placementId === fallbackCampaign.id) return;
     if (impressedCampaignIds.current.has(placementId)) return;
     impressedCampaignIds.current.add(placementId);
     trackPlacementEvent(PLACEMENT_IMPRESSION_EVENT, placementId, "campaign");
@@ -277,7 +285,14 @@ export function CommunityWorkspace() {
       rankingExposureRecordedRef.current = false;
       setDreamers(leaderboardPayload.data?.leaderboards?.dreamers ?? []);
       setCollections(collectionsPayload.data?.collections ?? []);
-      setCampaigns(campaignResponse.ok && campaignPayload.ok !== false ? (campaignPayload.data?.campaigns ?? []) : []);
+      setCampaigns(
+        campaignResponse.ok && campaignPayload.ok !== false
+          ? (campaignPayload.data?.campaigns ?? []).map((campaign) => ({
+              ...campaign,
+              source: "authority" as const,
+            }))
+          : [],
+      );
     }
 
     loadCommunity()
@@ -309,16 +324,20 @@ export function CommunityWorkspace() {
       setStatus("This creator cannot be followed.");
       return;
     }
-    const response = await fetch(`/api/v1/users/${creatorId}/follow`, { method: "POST" });
-    if (response.ok) {
-      setStatus("Creator followed.");
-      return;
+    try {
+      const response = await fetch(`/api/v1/users/${creatorId}/follow`, { method: "POST" });
+      if (response.ok) {
+        setStatus("Creator followed.");
+        return;
+      }
+      if (response.status === 401) {
+        redirectToCreatorSignup(creatorId);
+        return;
+      }
+      setStatus(await followErrorMessage(response));
+    } catch {
+      setStatus("Could not update follow. Please try again.");
     }
-    if (response.status === 401) {
-      redirectToCreatorSignup(creatorId);
-      return;
-    }
-    setStatus(await followErrorMessage(response));
   }
 
   async function toggleFollowDreamer(dreamer: Dreamer) {
@@ -334,10 +353,7 @@ export function CommunityWorkspace() {
           : item,
       ),
     );
-    const response = await fetch(`/api/v1/users/${dreamer.id}/follow`, {
-      method: next ? "POST" : "DELETE",
-    });
-    if (!response.ok) {
+    const rollback = () => {
       setDreamers((current) =>
         current.map((item) =>
           item.id === dreamer.id
@@ -346,14 +362,25 @@ export function CommunityWorkspace() {
                 isFollowing: dreamer.isFollowing,
                 followers: dreamer.followers,
               }
-            : item,
+          : item,
         ),
       );
-      if (response.status === 401) {
-        redirectToCreatorSignup(dreamer.id);
-        return;
+    };
+    try {
+      const response = await fetch(`/api/v1/users/${dreamer.id}/follow`, {
+        method: next ? "POST" : "DELETE",
+      });
+      if (!response.ok) {
+        rollback();
+        if (response.status === 401) {
+          redirectToCreatorSignup(dreamer.id);
+          return;
+        }
+        setStatus(await followErrorMessage(response));
       }
-      setStatus(await followErrorMessage(response));
+    } catch {
+      rollback();
+      setStatus("Could not update follow. Please try again.");
     }
   }
 
@@ -519,9 +546,17 @@ export function CommunityWorkspace() {
                       </p>
                     </div>
                   </Link>
-                  <p className="mt-3 text-[12px] font-medium text-[rgb(170,170,170)]">
-                    {dreamer.likes} likes · {dreamer.chats} chats
-                  </p>
+                  {(dreamer.likesCount ?? 0) > 0 || (dreamer.chatsCount ?? 0) > 0 ? (
+                    <p className="mt-3 text-[12px] font-medium text-[rgb(170,170,170)]">
+                      {(dreamer.likesCount ?? 0) > 0 ? `${dreamer.likes} likes` : null}
+                      {(dreamer.likesCount ?? 0) > 0 && (dreamer.chatsCount ?? 0) > 0 ? " · " : null}
+                      {(dreamer.chatsCount ?? 0) > 0 ? `${dreamer.chats} chats` : null}
+                    </p>
+                  ) : (
+                    <p className="mt-3 text-[12px] font-medium text-[rgb(170,170,170)]">
+                      Public creator
+                    </p>
+                  )}
                   <div className="mt-4 flex gap-2">
                     <button
                       className={`inline-flex h-9 flex-1 items-center justify-center gap-2 rounded-full text-[12px] font-black ${
@@ -752,7 +787,17 @@ function CommunityCharacterCard({
       <div className="p-4">
         <h2 className="line-clamp-2 text-[16px] font-black uppercase leading-5">{character.title}</h2>
         <p className="mt-1 text-[12px] font-medium text-[rgb(170,170,170)]">
-          {character.likes} likes · {character.chats} chats
+          {(character.likesCount ?? 0) > 0 || (character.chatsCount ?? 0) > 0 ? (
+            <>
+              {(character.likesCount ?? 0) > 0 ? `${character.likes} likes` : null}
+              {(character.likesCount ?? 0) > 0 && (character.chatsCount ?? 0) > 0 ? " · " : null}
+              {(character.chatsCount ?? 0) > 0 ? `${character.chats} chats` : null}
+            </>
+          ) : character.source === "official" ? (
+            "Official character"
+          ) : (
+            "New public character"
+          )}
         </p>
         <div className="mt-4 flex gap-2">
           <button

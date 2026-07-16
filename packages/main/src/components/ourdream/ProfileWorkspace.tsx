@@ -279,7 +279,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
   const [authState, setAuthState] = useState<AuthState>("loading");
   const [authTarget, setAuthTarget] = useState("/profile");
   const [balance, setBalance] = useState(0);
-  const [plan, setPlan] = useState("Free");
+  const [plan, setPlan] = useState<string | null>(null);
   const [subscription, setSubscription] = useState<SubscriptionSummary | null>(null);
   const [displayName, setDisplayName] = useState("Dreamer");
   const [profileName, setProfileName] = useState("Dreamer");
@@ -868,7 +868,9 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
     ? subscription.cancelAtPeriodEnd
       ? `Renewal canceled · benefits active until ${subscriptionPeriod}`
       : `Renews ${subscriptionPeriod}`
-    : "No active subscription";
+    : plan
+      ? "No active subscription"
+      : "Billing status unavailable";
   const isMyAiRoute = routePath.startsWith("/custom");
   const workspaceTitle = isMyAiRoute ? "My AI" : "Profile";
   const authRequiredTitle = isMyAiRoute ? "Sign in to open My AI" : "Sign in to open Profile";
@@ -975,7 +977,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
             Chat plan
           </p>
           <p className="mt-2 text-[14px] font-semibold leading-6 text-white">
-            {chatEntitlementSummary(plan)}
+            {plan ? chatEntitlementSummary(plan) : "Plan details are unavailable until account data loads."}
           </p>
         </div>
         <div aria-label="Library sections" className="mt-6 flex flex-wrap gap-2">
@@ -1035,10 +1037,20 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
             id="billing"
           >
             <p className="text-[13px] font-black uppercase text-white">Billing Portal</p>
-            <p className="mt-2 text-[12px] font-bold text-[rgb(170,170,170)]">{plan}</p>
+            <p className="mt-2 text-[12px] font-bold text-[rgb(170,170,170)]">
+              {plan ?? "Plan unavailable"}
+            </p>
             <p className="mt-1 text-[12px] font-medium text-[rgb(170,170,170)]">{billingStatus}</p>
             <div className="mt-3 flex flex-wrap gap-2">
-              {subscription ? (
+              {!plan && profileError ? (
+                <button
+                  className="inline-flex h-9 items-center justify-center rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]"
+                  onClick={() => void refreshProfile()}
+                  type="button"
+                >
+                  Retry account data
+                </button>
+              ) : subscription ? (
                 <>
                   <button
                     className="inline-flex h-9 items-center justify-center rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]"

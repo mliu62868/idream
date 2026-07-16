@@ -105,7 +105,7 @@ type GenerationConfig = {
   dreamcoins: { balance: number };
   pricing: {
     image: { baseCost: number; maxCount: number };
-    video: { baseCost: number };
+    video: { baseCost: number | null };
   };
   image: {
     orientations: string[];
@@ -207,11 +207,12 @@ export function GeneratorWorkspace() {
   const maxCount =
     selectedModel?.maxCount ?? (mode === "video" ? 1 : (config?.pricing.image.maxCount ?? 4));
   const outputCount = mode === "video" ? 1 : Math.max(1, Math.min(count, maxCount));
-  const estimatedCost = Math.ceil(
-    (mode === "video" ? (config?.pricing.video.baseCost ?? 100) : (config?.pricing.image.baseCost ?? 5)) *
-      outputCount *
-      (selectedModel?.costMultiplier ?? 1),
-  );
+  const baseCost = mode === "video"
+    ? config?.pricing.video.baseCost
+    : config?.pricing.image.baseCost;
+  const estimatedCost = typeof baseCost === "number"
+    ? Math.ceil(baseCost * outputCount * (selectedModel?.costMultiplier ?? 1))
+    : null;
   const modeAvailable =
     mode === "image"
       ? (config?.image.models.length ?? 0) > 0
@@ -222,7 +223,9 @@ export function GeneratorWorkspace() {
   );
   const canUsePrompt = Boolean(config?.entitlements.premium_controls);
   const insufficientBalance =
-    Boolean(config) && estimatedCost > (config?.dreamcoins.balance ?? 0);
+    Boolean(config) &&
+    estimatedCost !== null &&
+    estimatedCost > (config?.dreamcoins.balance ?? 0);
   const imageEditMode = mode === "image" && imageWorkflow === "image-edit";
   const characterImageMode = mode === "image" && !freeplay && !imageEditMode;
   const canDescribeMoment = canUsePrompt || characterImageMode;
@@ -284,6 +287,7 @@ export function GeneratorWorkspace() {
     !pending &&
     (imageEditMode || freeplay || Boolean(characterId)) &&
     Boolean(config) &&
+    estimatedCost !== null &&
     modeAvailable &&
     (!imageEditMode || Boolean(selectedEditSource)) &&
     !insufficientBalance;
@@ -558,18 +562,24 @@ export function GeneratorWorkspace() {
   }
 
   async function retryJob(jobId: string) {
-    const response = await fetch(`/api/v1/generation/jobs/${jobId}/retry`, {
-      method: "POST",
-    });
-    const payload = (await response.json()) as ApiPayload<{ job: GenerationJob }>;
-    if (!response.ok || !payload.data?.job) {
-      setStatus(payload.error?.message ?? "Retry failed");
-      return;
+    try {
+      const response = await fetch(`/api/v1/generation/jobs/${jobId}/retry`, {
+        method: "POST",
+      });
+      const payload = (await response.json().catch(() => null)) as ApiPayload<{
+        job: GenerationJob;
+      }> | null;
+      if (!response.ok || !payload?.data?.job) {
+        setStatus(payload?.error?.message ?? "Retry failed");
+        return;
+      }
+      const job = payload.data.job;
+      setJobs((current) => [job, ...current]);
+      setStatus("Retry queued.");
+      void refreshConfig();
+    } catch {
+      setStatus("Retry failed. Check your connection and try again.");
     }
-    const job = payload.data.job;
-    setJobs((current) => [job, ...current]);
-    setStatus("Retry queued.");
-    void refreshConfig();
   }
 
   async function toggleLike(item: MediaItem) {
@@ -582,10 +592,18 @@ export function GeneratorWorkspace() {
       }
       return current.map((m) => (m.id === item.id ? { ...m, liked: nextLiked } : m));
     });
-    const response = await fetch(`/api/v1/media/${item.id}/like`, {
-      method: nextLiked ? "POST" : "DELETE",
-    });
-    if (!response.ok) void refreshMedia(galleryTab);
+    try {
+      const response = await fetch(`/api/v1/media/${item.id}/like`, {
+        method: nextLiked ? "POST" : "DELETE",
+      });
+      if (!response.ok) {
+        setStatus("Could not update like. Restoring the current gallery.");
+        void refreshMedia(galleryTab);
+      }
+    } catch {
+      setStatus("Could not update like. Restoring the current gallery.");
+      void refreshMedia(galleryTab);
+    }
   }
 
   async function deleteMedia(id: string) {
@@ -986,7 +1004,7 @@ export function GeneratorWorkspace() {
                 )}
               </div>
               <div className="rounded-full bg-[rgb(36,36,36)] px-3 py-2 text-[12px] font-bold text-white">
-                {estimatedCost} coins
+                {estimatedCost === null ? "Price unavailable" : `${estimatedCost} coins`}
               </div>
             </div>
 
@@ -1538,7 +1556,7 @@ export function GeneratorWorkspace() {
                     ? remixFeedItemId
                       ? "Join free to get starter coins for this remix."
                       : "Join free to get starter coins before generating."
-                    : `Need ${estimatedCost} coins · you have ${config?.dreamcoins.balance ?? 0}.`}
+                    : `Need ${estimatedCost ?? "an available price"} coins · you have ${config?.dreamcoins.balance ?? 0}.`}
                 </span>
                 <span className="rounded-full bg-[rgb(255,48,170)] px-3 py-1 text-[11px] font-black text-white">
                   {anonymousViewer ? "Join Free" : "Get coins"}
@@ -1559,7 +1577,9 @@ export function GeneratorWorkspace() {
                 : imageEditMode
                   ? "Create edit"
                   : characterImageMode
-                    ? `Generate this moment · ${estimatedCost} coins`
+                    ? estimatedCost === null
+                      ? "Generation price unavailable"
+                      : `Generate this moment · ${estimatedCost} coins`
                     : "Generate"}
             </button>
             {configError && (
@@ -1731,15 +1751,25 @@ export function GeneratorWorkspace() {
                     {job.status === "failed" && (
                       <div className="mt-3 flex flex-col gap-2">
                         <button
-                          className="h-9 w-fit rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]"
+                          className="h-9 w-fit rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)] disabled:bg-[rgb(64,64,64)] disabled:text-[rgb(150,150,150)]"
+                          disabled={
+                            !config ||
+                            (job.mode === "image"
+                              ? typeof config.pricing.image.baseCost !== "number"
+                              : typeof config.pricing.video.baseCost !== "number")
+                          }
                           onClick={() => retryJob(job.id)}
                           type="button"
                         >
                           Retry
                         </button>
                         <p className="text-[12px] font-medium text-[rgb(170,170,170)]">
-                          Provider hiccup — your coins were refunded. Retry will reserve the normal
-                          cost again.
+                          {!config ||
+                          (job.mode === "image"
+                            ? typeof config.pricing.image.baseCost !== "number"
+                            : typeof config.pricing.video.baseCost !== "number")
+                            ? "Retry is unavailable until current pricing loads."
+                            : "Provider hiccup — your coins were refunded. Retry will reserve the current price again."}
                         </p>
                       </div>
                     )}
