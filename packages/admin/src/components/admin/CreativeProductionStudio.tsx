@@ -268,7 +268,8 @@ export function CreativeProductionStudio() {
   const [reviewDrafts, setReviewDrafts] = useState<Record<string, ReviewDraft>>({});
   const [focusedItemId, setFocusedItemId] = useState<string | null>(null);
   const [reviewFilter, setReviewFilter] = useState<ReviewFilter>("all");
-  const [perItemCost, setPerItemCost] = useState(0);
+  const [perItemCost, setPerItemCost] = useState<number | null>(null);
+  const [pricingError, setPricingError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [directionBusy, setDirectionBusy] = useState(false);
@@ -356,13 +357,23 @@ export function CreativeProductionStudio() {
   useEffect(() => {
     if (!form.profileId) return;
     return runAfterEffect(() => {
+      setPerItemCost(null);
+      setPricingError(null);
       void apiWrite<{ perItemCostDreamcoins: number }>(
         "/api/v1/admin/content/production/estimate",
         "POST",
         { profileId: form.profileId, count: Math.max(1, Number.parseInt(form.count, 10) || 1) },
       )
-        .then((result) => setPerItemCost(result.perItemCostDreamcoins))
-        .catch(() => setPerItemCost(0));
+        .then((result) => {
+          if (!Number.isFinite(result.perItemCostDreamcoins) || result.perItemCostDreamcoins < 0) {
+            throw new Error("Pricing authority returned an invalid estimate");
+          }
+          setPerItemCost(result.perItemCostDreamcoins);
+        })
+        .catch((cause: unknown) => {
+          setPerItemCost(null);
+          setPricingError(cause instanceof Error ? cause.message : "Pricing authority is unavailable");
+        });
     });
   }, [form.count, form.profileId]);
 
@@ -381,7 +392,9 @@ export function CreativeProductionStudio() {
   );
   const selectedDirectionCount = directions.filter((item) => item.selected).length;
   const countPerDirection = Math.max(1, Number.parseInt(form.count, 10) || 1);
-  const estimatedCost = perItemCost * countPerDirection * Math.max(1, selectedDirectionCount);
+  const estimatedCost = perItemCost === null
+    ? null
+    : perItemCost * countPerDirection * Math.max(1, selectedDirectionCount);
   const orientations = jsonStringArray(
     profiles.find((item) => item.profileKey === form.profileId || item.id === form.profileId)?.allowedOrientations,
   );
@@ -564,6 +577,7 @@ export function CreativeProductionStudio() {
           onLaunchDirections={launchSelectedDirections}
           orientations={orientations}
           perItemCost={perItemCost}
+          pricingError={pricingError}
           presets={presets}
           profiles={profiles}
           recipes={recipes}
@@ -672,6 +686,7 @@ function CreativeBriefPanel({
   onLaunchDirections,
   orientations,
   perItemCost,
+  pricingError,
   presets,
   profiles,
   recipes,
@@ -687,13 +702,14 @@ function CreativeBriefPanel({
   countPerDirection: number;
   directionBusy: boolean;
   directions: CreativeDirection[];
-  estimatedCost: number;
+  estimatedCost: number | null;
   form: StudioForm;
   inspirationAssets: AssetSource[];
   onGenerateDirections: () => Promise<void>;
   onLaunchDirections: () => Promise<void>;
   orientations: string[];
-  perItemCost: number;
+  perItemCost: number | null;
+  pricingError: string | null;
   presets: Preset[];
   profiles: Profile[];
   recipes: Recipe[];
@@ -708,7 +724,10 @@ function CreativeBriefPanel({
   const selectedDirectionCount = directions.filter((direction) => direction.selected).length;
   const recentForCharacter = batches.filter((batch) => batch.targetId === selectedCharacter?.id).length;
   const canGenerate = Boolean(form.characterId);
-  const canLaunch = selectedDirectionCount > 0 && Boolean(form.profileId && form.recipeId);
+  const canLaunch =
+    selectedDirectionCount > 0 &&
+    perItemCost !== null &&
+    Boolean(form.profileId && form.recipeId);
   return (
     <aside className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 lg:sticky lg:top-24">
       <div className="space-y-4">
@@ -804,8 +823,15 @@ function CreativeBriefPanel({
 
         <div className="flex items-center justify-between text-xs text-[var(--ad-text-muted)]">
           <span>{t("Estimated cost")}</span>
-          <strong className="font-mono text-sm text-[var(--ad-ink)]">{estimatedCost} DC</strong>
+          <strong className="font-mono text-sm text-[var(--ad-ink)]">
+            {estimatedCost === null ? "Unavailable" : `${estimatedCost} DC`}
+          </strong>
         </div>
+        {pricingError ? (
+          <p className="text-xs text-[var(--ad-red-text)]" role="alert">
+            Pricing estimate unavailable: {pricingError}
+          </p>
+        ) : null}
         {stage === "directions" && directions.length > 0 ? (
           <button className="flex h-11 w-full items-center justify-center gap-2 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white disabled:opacity-50" disabled={busy || !canLaunch} onClick={() => void onLaunchDirections()} type="button">
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
@@ -837,7 +863,10 @@ function CreativeBriefPanel({
               <Field label={t("Images per direction")}><input className={inputClass} max={8} min={1} onChange={(event) => setForm((current) => ({ ...current, count: event.target.value }))} type="number" value={form.count} /></Field>
             </div>
             <PresetFields form={form} presets={presets} setForm={setForm} t={t} valueLabel={valueLabel} />
-            <p className="text-xs text-[var(--ad-text-muted)]">{countPerDirection} {t("images per direction")} · {perItemCost} DC {t("each")}</p>
+            <p className="text-xs text-[var(--ad-text-muted)]">
+              {countPerDirection} {t("images per direction")} ·{" "}
+              {perItemCost === null ? "pricing unavailable" : `${perItemCost} DC ${t("each")}`}
+            </p>
           </div>
         </details>
       </div>
