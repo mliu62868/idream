@@ -1,11 +1,20 @@
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 
-const operationalDataClasses = ["customer", "internal"];
-const operationalEventDataClasses = [
+export const OPERATIONAL_USER_DATA_CLASSES = [
+  "customer",
+  "internal",
+] as const;
+export const OPERATIONAL_EVENT_DATA_CLASSES = [
   "customer",
   "internal",
   "operational",
-];
+] as const;
+export const OPERATIONAL_USER_DATA_CLASS_SQL = Prisma.join([
+  ...OPERATIONAL_USER_DATA_CLASSES,
+]);
+export const OPERATIONAL_EVENT_DATA_CLASS_SQL = Prisma.join([
+  ...OPERATIONAL_EVENT_DATA_CLASSES,
+]);
 
 export const CUSTOMER_METRIC_DATA_SCOPE = {
   kind: "customer",
@@ -15,7 +24,7 @@ export const CUSTOMER_METRIC_DATA_SCOPE = {
 
 export const OPERATIONAL_METRIC_DATA_SCOPE = {
   kind: "operational",
-  includedDataClasses: ["customer", "internal", "operational"],
+  includedDataClasses: OPERATIONAL_EVENT_DATA_CLASSES,
   excludedDataClasses: ["fixture", "audit"],
 } as const;
 
@@ -25,7 +34,7 @@ const customerOwnerRelationWhere = {
 
 const operationalOwnerRelationWhere = {
   user: {
-    is: { dataClass: { in: [...operationalDataClasses] } },
+    is: { dataClass: { in: [...OPERATIONAL_USER_DATA_CLASSES] } },
   },
 } satisfies Prisma.GenerationJobWhereInput;
 
@@ -93,7 +102,7 @@ export function operationalAnalyticsEventWhere(
 ): Prisma.AnalyticsEventWhereInput {
   return {
     AND: [
-      { dataClass: { in: [...operationalEventDataClasses] } },
+      { dataClass: { in: [...OPERATIONAL_EVENT_DATA_CLASSES] } },
       where,
     ],
   };
@@ -117,14 +126,14 @@ export function operationalMediaAssetPlacementWhere(
     AND: [
       {
         createdBy: {
-          is: { dataClass: { in: [...operationalDataClasses] } },
+          is: { dataClass: { in: [...OPERATIONAL_USER_DATA_CLASSES] } },
         },
       },
       {
         mediaAsset: {
           is: {
             owner: {
-              is: { dataClass: { in: [...operationalDataClasses] } },
+              is: { dataClass: { in: [...OPERATIONAL_USER_DATA_CLASSES] } },
             },
           },
         },

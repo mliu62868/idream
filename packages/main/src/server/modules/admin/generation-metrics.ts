@@ -6,6 +6,8 @@ import { prisma } from "@/server/lib/db";
 import { ok } from "@/server/lib/http";
 import {
   OPERATIONAL_METRIC_DATA_SCOPE,
+  OPERATIONAL_EVENT_DATA_CLASS_SQL,
+  OPERATIONAL_USER_DATA_CLASS_SQL,
   operationalAnalyticsEventWhere,
   operationalGenerationJobWhere,
   operationalMediaAssetPlacementWhere,
@@ -81,7 +83,7 @@ export async function generationMetrics(request: Request): Promise<Response> {
       WHERE jobs."createdAt" >= ${since}
         AND jobs."completedAt" IS NOT NULL
         AND jobs."profileId" IS NOT NULL
-        AND owners."dataClass" IN ('customer', 'internal')
+        AND owners."dataClass" IN (${OPERATIONAL_USER_DATA_CLASS_SQL})
       GROUP BY jobs."profileId"
     `,
     prisma.$queryRaw<
@@ -93,7 +95,7 @@ export async function generationMetrics(request: Request): Promise<Response> {
       FROM "analytics_events"
       WHERE name IN ('placement_impression','placement_click')
         AND "createdAt" >= ${since}
-        AND "dataClass" IN ('customer', 'internal', 'operational')
+        AND "dataClass" IN (${OPERATIONAL_EVENT_DATA_CLASS_SQL})
       GROUP BY 1,2
     `,
     prisma.analyticsEvent.count({

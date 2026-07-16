@@ -3081,7 +3081,7 @@ describe("billing operations", () => {
   it("reconciles ledger by reason over the window with one active-subscription count", async () => {
     const admin = await setupActor("admin", "billing-recon");
     const owner = `${P}recon-owner`;
-    await createUser({ id: owner });
+    await createUser({ id: owner, dataClass: "customer" });
     await prisma.dreamcoinLedger.create({
       data: {
         id: `${P}recon-grant`,
@@ -3090,6 +3090,18 @@ describe("billing operations", () => {
         balanceAfter: 250,
         reason: "signup_bonus",
         sourceId: `${P}recon-grant`,
+      },
+    });
+    const fixtureOwner = `${P}recon-fixture-owner`;
+    await createUser({ id: fixtureOwner, dataClass: "fixture" });
+    await prisma.dreamcoinLedger.create({
+      data: {
+        id: `${P}recon-fixture-spend`,
+        userId: fixtureOwner,
+        delta: -9_999,
+        balanceAfter: -9_999,
+        reason: "generation_spend",
+        sourceId: `${P}recon-fixture-spend`,
       },
     });
     await prisma.dreamcoinLedger.create({
@@ -3115,6 +3127,10 @@ describe("billing operations", () => {
 
     const recon = await api("GET", "admin/billing/reconciliation", { userId: admin, role: "admin" });
     expectOk(recon);
+    expect(recon.data.dataScope).toMatchObject({
+      kind: "customer",
+      includedDataClasses: ["customer"],
+    });
     // 全局窗口聚合，断言用 >=/<= 以兼容并发测试数据。
     const byReason = Object.fromEntries(
       (recon.data.byReason as Array<{ reason: string; totalDelta: number; count: number }>).map(
@@ -3125,6 +3141,7 @@ describe("billing operations", () => {
     expect(byReason.generation_spend?.totalDelta).toBeLessThanOrEqual(-10);
     expect(recon.data.totals.entries).toBeGreaterThanOrEqual(3);
     expect(typeof recon.data.activeSubscriptions).toBe("number");
+    expect(byReason.generation_spend?.totalDelta).toBeGreaterThan(-9_999);
   });
 });
 
@@ -3133,7 +3150,7 @@ describe("analytics overview", () => {
     const analyst = await setupActor("analyst", "analytics");
     const ops = await setupActor("ops", "analytics");
     const owner = `${P}an-owner`;
-    await createUser({ id: owner });
+    await createUser({ id: owner, dataClass: "customer" });
     const plan = await prisma.plan.findFirstOrThrow({ where: { slug: "premium" } });
     await prisma.subscription.create({
       data: { id: `${P}an-sub`, userId: owner, planId: plan.id, provider: "mock", status: "active" },
@@ -3159,6 +3176,29 @@ describe("analytics overview", () => {
         sourceId: `${P}an-grant`,
       },
     });
+    const fixtureOwner = `${P}an-fixture-owner`;
+    await createUser({ id: fixtureOwner, dataClass: "fixture" });
+    await prisma.generationJob.create({
+      data: {
+        id: `${P}an-fixture-job`,
+        userId: fixtureOwner,
+        mode: "image",
+        controls: {},
+        presetIds: [],
+        status: "completed",
+        costDreamcoins: 50_000,
+      },
+    });
+    await prisma.dreamcoinLedger.create({
+      data: {
+        id: `${P}an-fixture-grant`,
+        userId: fixtureOwner,
+        delta: 50_000,
+        balanceAfter: 50_000,
+        reason: "subscription_grant",
+        sourceId: `${P}an-fixture-grant`,
+      },
+    });
     await prisma.dreamcoinLedger.create({
       data: {
         id: `${P}an-spend`,
@@ -3178,6 +3218,10 @@ describe("analytics overview", () => {
       role: "analyst",
     });
     expectOk(overview);
+    expect(overview.data.dataScope).toMatchObject({
+      kind: "customer",
+      includedDataClasses: ["customer"],
+    });
     // Phase 0 truth containment: exact signups remain visible, but the old
     // generation-as-activation and cross-window conversion are invalid.
     expect(overview.data.funnel.signups).toBeGreaterThanOrEqual(1);
@@ -3195,6 +3239,7 @@ describe("analytics overview", () => {
     });
     expect(overview.data.generation.total).toBeGreaterThanOrEqual(1);
     expect(overview.data.economy.coinsGranted).toBeGreaterThanOrEqual(100);
+    expect(overview.data.economy.coinsGranted).toBeLessThan(50_000);
     expect(overview.data.economy.coinsSpent).toBeLessThanOrEqual(-5);
     const eventNames = (overview.data.topEvents as Array<{ name: string }>).map((e) => e.name);
     expect(Array.isArray(eventNames)).toBe(true);
@@ -3210,18 +3255,44 @@ describe("risk / abuse overview", () => {
     const anon = `${P}device-shared`;
     const accountA = `${P}abuse-a`;
     const accountB = `${P}abuse-b`;
-    await createUser({ id: accountA });
-    await createUser({ id: accountB });
+    await createUser({ id: accountA, dataClass: "customer" });
+    await createUser({ id: accountB, dataClass: "customer" });
     await prisma.analyticsEvent.create({
-      data: { id: `${P}ev-a`, userId: accountA, anonymousId: anon, name: "signup", props: {} },
+      data: {
+        id: `${P}ev-a`,
+        userId: accountA,
+        anonymousId: anon,
+        name: "signup",
+        props: {},
+        dataClass: "customer",
+      },
     });
     await prisma.analyticsEvent.create({
-      data: { id: `${P}ev-b`, userId: accountB, anonymousId: anon, name: "signup", props: {} },
+      data: {
+        id: `${P}ev-b`,
+        userId: accountB,
+        anonymousId: anon,
+        name: "signup",
+        props: {},
+        dataClass: "customer",
+      },
+    });
+    const fixtureAccount = `${P}abuse-fixture`;
+    await createUser({ id: fixtureAccount, dataClass: "fixture" });
+    await prisma.analyticsEvent.create({
+      data: {
+        id: `${P}ev-fixture`,
+        userId: fixtureAccount,
+        anonymousId: anon,
+        name: "signup",
+        props: {},
+        dataClass: "fixture",
+      },
     });
 
     // Referral 薅取：一个 inviter 三条邀请。
     const inviter = `${P}abuse-inviter`;
-    await createUser({ id: inviter });
+    await createUser({ id: inviter, dataClass: "customer" });
     for (let i = 0; i < 3; i += 1) {
       await prisma.referral.create({
         data: { id: `${P}ref-${i}`, inviterId: inviter, code: `${P}code-${i}` },
@@ -3230,7 +3301,7 @@ describe("risk / abuse overview", () => {
 
     // 异常 admin_adjust：一个用户两条人工调整。
     const adjusted = `${P}abuse-adjusted`;
-    await createUser({ id: adjusted });
+    await createUser({ id: adjusted, dataClass: "customer" });
     await prisma.dreamcoinLedger.create({
       data: { id: `${P}adj-1`, userId: adjusted, delta: 500, balanceAfter: 500, reason: "admin_adjust", sourceId: `${P}adj-1` },
     });
@@ -3243,6 +3314,10 @@ describe("risk / abuse overview", () => {
 
     const res = await api("GET", "admin/risk/abuse", { userId: support, role: "support" });
     expectOk(res);
+    expect(res.data.dataScope).toMatchObject({
+      kind: "customer",
+      includedDataClasses: ["customer"],
+    });
 
     const cluster = (res.data.deviceClusters as Array<{ anonymousId: string; accountCount: number; userIds: string[] }>).find(
       (item) => item.anonymousId === anon,
@@ -3268,7 +3343,7 @@ describe("provider ops dashboard", () => {
     const ops = await setupActor("ops", "prov");
     const analyst = await setupActor("analyst", "prov");
     const owner = `${P}prov-owner`;
-    await createUser({ id: owner });
+    await createUser({ id: owner, dataClass: "customer" });
     const provider = `${P}runner`;
     const t0 = new Date();
     await prisma.generationJob.create({
@@ -3283,6 +3358,22 @@ describe("provider ops dashboard", () => {
         provider,
         createdAt: t0,
         completedAt: new Date(t0.getTime() + 2000),
+      },
+    });
+    const fixtureOwner = `${P}prov-fixture-owner`;
+    await createUser({ id: fixtureOwner, dataClass: "fixture" });
+    await prisma.generationJob.create({
+      data: {
+        id: `${P}prov-fixture`,
+        userId: fixtureOwner,
+        mode: "image",
+        controls: {},
+        presetIds: [],
+        status: "completed",
+        costDreamcoins: 50_000,
+        provider,
+        createdAt: t0,
+        completedAt: new Date(t0.getTime() + 60_000),
       },
     });
     await prisma.generationJob.create({
@@ -3317,6 +3408,10 @@ describe("provider ops dashboard", () => {
 
     const res = await api("GET", "admin/ops/providers", { userId: ops, role: "ops" });
     expectOk(res);
+    expect(res.data.dataScope).toMatchObject({
+      kind: "operational",
+      excludedDataClasses: ["fixture", "audit"],
+    });
     const row = (res.data.providers as Array<Record<string, number | string>>).find(
       (item) => item.provider === provider,
     );
@@ -4243,7 +4338,9 @@ describe("admin generation health + dry-run (T4)", () => {
     const admin = await setupActor("admin", "genh");
     const support = await setupActor("support", "genh"); // lacks generation.config.read
     const jobUser = `${P}genh-user`;
-    await createUser({ id: jobUser });
+    await createUser({ id: jobUser, dataClass: "internal" });
+    const fixtureJobUser = `${P}genh-fixture-user`;
+    await createUser({ id: fixtureJobUser, dataClass: "fixture" });
     const profile = await prisma.generationModelProfile.create({
       data: {
         profileKey: `${P}genh-profile`,
@@ -4257,6 +4354,7 @@ describe("admin generation health + dry-run (T4)", () => {
       data: [
         { userId: jobUser, mode: "image", controls: {}, presetIds: [], profileId: profile.profileKey, status: "completed", completedAt: new Date() },
         { userId: jobUser, mode: "image", controls: {}, presetIds: [], profileId: profile.id, status: "failed" },
+        { userId: fixtureJobUser, mode: "image", controls: {}, presetIds: [], profileId: profile.id, status: "completed", completedAt: new Date() },
       ],
     });
 
@@ -4270,7 +4368,11 @@ describe("admin generation health + dry-run (T4)", () => {
       role: "admin",
     });
     expectOk(health);
-    expect(health.data.metrics.total).toBeGreaterThanOrEqual(2);
+    expect(health.data.dataScope).toMatchObject({
+      kind: "operational",
+      excludedDataClasses: ["fixture", "audit"],
+    });
+    expect(health.data.metrics.total).toBe(2);
     expect(health.data.metrics.successRate).toBeLessThanOrEqual(100);
 
     const dryRun = await api("POST", `admin/generation/model-profiles/${profile.id}/dry-run`, {
@@ -4424,6 +4526,10 @@ describe("admin analytics export + retention (T4)", () => {
 
     const csv = await api("GET", "admin/analytics/export", { userId: admin, role: "admin" });
     expectOk(csv);
+    expect(csv.data.dataScope).toMatchObject({
+      kind: "customer",
+      includedDataClasses: ["customer"],
+    });
     expect(typeof csv.data.csv).toBe("string");
     expect(csv.data.csv).toContain("section");
 
@@ -4569,6 +4675,10 @@ describe("admin experiments (Phase 4)", () => {
 
     const res = await api("GET", "admin/experiments", { userId: admin, role: "admin" });
     expectOk(res);
+    expect(res.data.dataScope).toMatchObject({
+      kind: "customer",
+      includedDataClasses: ["customer"],
+    });
     expect(Array.isArray(res.data.items)).toBe(true);
     expect(typeof res.data.note).toBe("string");
   });
@@ -4578,10 +4688,14 @@ describe("admin generation metrics rollup (P3)", () => {
   it("aggregates generation metrics by profile, recipe, source and placements", async () => {
     const admin = await setupActor("admin", "generation-metrics");
     const support = await setupActor("support", "generation-metrics");
+    const jobOwner = `${P}generation-metrics-owner`;
+    const fixtureJobOwner = `${P}generation-metrics-fixture-owner`;
+    await createUser({ id: jobOwner, dataClass: "internal" });
+    await createUser({ id: fixtureJobOwner, dataClass: "fixture" });
     const profileId = `${P}metrics-profile`;
     const recipeId = `${P}metrics-recipe`;
     const base = {
-      userId: admin,
+      userId: jobOwner,
       mode: "image",
       controls: {},
       presetIds: [],
@@ -4598,6 +4712,16 @@ describe("admin generation metrics rollup (P3)", () => {
         sourceId: `${P}metrics-src-1`,
         status: "completed",
         costDreamcoins: 7,
+      },
+    });
+    await prisma.generationJob.create({
+      data: {
+        ...base,
+        id: `${P}metrics-job-fixture`,
+        userId: fixtureJobOwner,
+        sourceId: `${P}metrics-src-fixture`,
+        status: "completed",
+        costDreamcoins: 70_000,
       },
     });
     // completedAt is set via a follow-up update (not at create time) so it is
@@ -4629,6 +4753,10 @@ describe("admin generation metrics rollup (P3)", () => {
       query: { days: 7 },
     });
     expectOk(metrics);
+    expect(metrics.data.dataScope).toMatchObject({
+      kind: "operational",
+      excludedDataClasses: ["fixture", "audit"],
+    });
     const profileRow = metrics.data.profiles.find(
       (row: { profileId: string }) => row.profileId === profileId,
     );
@@ -4657,6 +4785,7 @@ describe("admin generation metrics rollup (P3)", () => {
         id: `${P}impression-1`,
         name: "placement_impression",
         props: { placementId, slot: "campaign" },
+        dataClass: "internal",
       },
     });
     await prisma.analyticsEvent.create({
@@ -4664,6 +4793,7 @@ describe("admin generation metrics rollup (P3)", () => {
         id: `${P}impression-2`,
         name: "placement_impression",
         props: { placementId, slot: "campaign" },
+        dataClass: "internal",
       },
     });
     await prisma.analyticsEvent.create({
@@ -4671,13 +4801,32 @@ describe("admin generation metrics rollup (P3)", () => {
         id: `${P}click-1`,
         name: "placement_click",
         props: { placementId, slot: "campaign" },
+        dataClass: "internal",
       },
     });
     await prisma.analyticsEvent.create({
-      data: { id: `${P}remix-1`, name: "feed_item_remixed", props: {} },
+      data: {
+        id: `${P}remix-1`,
+        name: "feed_item_remixed",
+        props: {},
+        dataClass: "internal",
+      },
     });
     await prisma.analyticsEvent.create({
-      data: { id: `${P}remix-2`, name: "feed_item_remixed", props: {} },
+      data: {
+        id: `${P}remix-2`,
+        name: "feed_item_remixed",
+        props: {},
+        dataClass: "internal",
+      },
+    });
+    await prisma.analyticsEvent.create({
+      data: {
+        id: `${P}impression-fixture`,
+        name: "placement_impression",
+        props: { placementId, slot: "campaign" },
+        dataClass: "fixture",
+      },
     });
 
     const metrics = await api("GET", "admin/generation/metrics", {

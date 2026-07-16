@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   CUSTOMER_METRIC_DATA_SCOPE,
+  OPERATIONAL_EVENT_DATA_CLASSES,
   OPERATIONAL_METRIC_DATA_SCOPE,
+  OPERATIONAL_USER_DATA_CLASSES,
   customerAnalyticsEventWhere,
   customerDreamcoinLedgerWhere,
   customerGenerationJobWhere,
@@ -56,6 +58,12 @@ describe("legacy admin metric data scopes", () => {
   });
 
   it("keeps operational metrics while excluding fixture and audit traffic", () => {
+    expect(OPERATIONAL_USER_DATA_CLASSES).toEqual(["customer", "internal"]);
+    expect(OPERATIONAL_EVENT_DATA_CLASSES).toEqual([
+      "customer",
+      "internal",
+      "operational",
+    ]);
     expect(operationalGenerationJobWhere({ status: "failed" })).toEqual({
       AND: [
         {
