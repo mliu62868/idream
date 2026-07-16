@@ -302,7 +302,11 @@ function ChatStartPanel() {
                     {card.title}
                   </span>
                   <span className="mt-1 block text-[12px] font-medium text-[rgb(170,170,170)]">
-                    {card.chats} chats
+                    {typeof card.chatsCount === "number" && card.chatsCount > 0
+                      ? `${card.chats} chats`
+                      : card.source === "official"
+                        ? "Official character"
+                        : "New public character"}
                   </span>
                 </span>
                 <ArrowRight className="h-4 w-4 text-[rgb(114,113,112)] transition-colors group-hover:text-white" />
