@@ -105,7 +105,7 @@ type BulkAction = "delete" | "visibility";
 type BulkVisibility = "private" | "public_pack" | "unlisted";
 
 type GenerationConfig = {
-  viewer?: {
+  viewer: {
     authenticated: boolean;
   };
   entitlements: Record<string, unknown>;
@@ -153,6 +153,40 @@ type PresetDraft = {
 };
 
 const generatorPresetDraftStorageKey = "idream.generatePresetDraft.v1";
+
+type GeneratorInitialDataLoaders = {
+  loadConfig: () => Promise<boolean | null>;
+  loadCharacters: () => Promise<void>;
+  loadJobs: () => Promise<void>;
+  loadMedia: () => Promise<void>;
+  loadPresets: () => Promise<void>;
+  loadIdentityMedia: () => Promise<void>;
+};
+
+export async function loadGeneratorWorkspaceInitialData(
+  loaders: GeneratorInitialDataLoaders,
+) {
+  const [viewerAuthenticated] = await Promise.all([
+    loaders.loadConfig(),
+    loaders.loadCharacters(),
+  ]);
+  if (viewerAuthenticated !== true) return;
+
+  await Promise.all([
+    loaders.loadJobs(),
+    loaders.loadMedia(),
+    loaders.loadPresets(),
+    loaders.loadIdentityMedia(),
+  ]);
+}
+
+export async function loadGeneratorLooksForViewer(
+  viewerAuthenticated: boolean | undefined,
+  loadLooks: () => Promise<void>,
+) {
+  if (viewerAuthenticated !== true) return;
+  await loadLooks();
+}
 
 export function GeneratorWorkspace() {
   const [config, setConfig] = useState<GenerationConfig | null>(null);
@@ -211,6 +245,7 @@ export function GeneratorWorkspace() {
   const looksRequestSerialRef = useRef(0);
   const mediaTabRef = useRef<GalleryTab>("image");
   const mediaRequestSerialRef = useRef(0);
+  const viewerAuthenticatedRef = useRef<boolean | null>(null);
 
   const videoModeEnabled = Boolean(config?.video.enabled && (config.video.models.length ?? 0) > 0);
   const availableModels = useMemo(
@@ -304,6 +339,7 @@ export function GeneratorWorkspace() {
     !pending &&
     (imageEditMode || freeplay || Boolean(characterId)) &&
     Boolean(config) &&
+    config?.viewer.authenticated === true &&
     estimatedCost !== null &&
     modeAvailable &&
     (!imageEditMode || Boolean(selectedEditSource)) &&
@@ -319,6 +355,27 @@ export function GeneratorWorkspace() {
     setSelectedLookId("");
     setLooksAuthority(initialAuthorityStatus());
   }, []);
+
+  const resetPrivateViewerData = useCallback(() => {
+    mediaRequestSerialRef.current += 1;
+    setJobs([]);
+    setJobsAuthority(readyAuthorityStatus());
+    setMedia([]);
+    setMediaAuthority(readyAuthorityStatus());
+    setLatestResults([]);
+    setIdentityMedia([]);
+    setIdentityMediaAuthority(readyAuthorityStatus());
+    setUserPresets([]);
+    setPresetsAuthority(readyAuthorityStatus());
+    setEditSourceMediaId("");
+    setSelectedMediaIds(new Set());
+    setDeleteConfirmMediaId(null);
+    setBulkDeleteConfirmKey(null);
+    setDeleteConfirmPresetId(null);
+    setLookEditorMediaId(null);
+    invalidateLookScope();
+    setLooksAuthority(readyAuthorityStatus());
+  }, [invalidateLookScope]);
 
   const showJobsView = useCallback(() => {
     setView("jobs");
@@ -363,8 +420,14 @@ export function GeneratorWorkspace() {
         setConfigError(
           payload?.error?.message ?? generationConfigErrorMessage(response.status),
         );
-        return;
+        return null;
       }
+      if (typeof data.viewer?.authenticated !== "boolean") {
+        setConfigError("Generation viewer authority was incomplete.");
+        return null;
+      }
+      viewerAuthenticatedRef.current = data.viewer.authenticated;
+      if (!data.viewer.authenticated) resetPrivateViewerData();
       setConfig(data);
       setConfigError("");
       const nextVideoModeEnabled = data.video.enabled && data.video.models.length > 0;
@@ -376,12 +439,15 @@ export function GeneratorWorkspace() {
       setModel((current) => current || firstModel);
       setOrientation((current) => current || data.image.orientations[0] || "4:5");
       setCount((current) => Math.min(current, data.pricing.image.maxCount));
+      return data.viewer.authenticated;
     } catch {
       setConfigError("Generation controls could not load. Refresh and try again.");
+      return null;
     }
-  }, []);
+  }, [resetPrivateViewerData]);
 
   const refreshJobs = useCallback(async () => {
+    if (viewerAuthenticatedRef.current !== true) return;
     setJobsAuthority(loadingAuthorityStatus);
     try {
       const response = await fetch("/api/v1/generation/jobs?limit=20");
@@ -401,6 +467,7 @@ export function GeneratorWorkspace() {
   }, []);
 
   const refreshMedia = useCallback(async (tab: GalleryTab) => {
+    if (viewerAuthenticatedRef.current !== true) return;
     const query = tab === "liked" ? "liked=1" : `type=${tab}`;
     const requestSerial = mediaRequestSerialRef.current + 1;
     mediaRequestSerialRef.current = requestSerial;
@@ -439,6 +506,7 @@ export function GeneratorWorkspace() {
   }, []);
 
   const refreshPresets = useCallback(async () => {
+    if (viewerAuthenticatedRef.current !== true) return;
     // scope=user yields only the signed-in user's saved presets (built-in
     // background/pose/outfit presets arrive separately via the config endpoint).
     setPresetsAuthority(loadingAuthorityStatus);
@@ -464,6 +532,7 @@ export function GeneratorWorkspace() {
   }, []);
 
   const refreshIdentityMedia = useCallback(async () => {
+    if (viewerAuthenticatedRef.current !== true) return;
     setIdentityMediaAuthority(loadingAuthorityStatus);
     try {
       const response = await fetch("/api/v1/media?type=image&limit=60");
@@ -486,6 +555,13 @@ export function GeneratorWorkspace() {
   }, []);
 
   const refreshLooks = useCallback(async () => {
+    if (config?.viewer.authenticated !== true) {
+      if (config?.viewer.authenticated === false) {
+        invalidateLookScope();
+        setLooksAuthority(readyAuthorityStatus());
+      }
+      return;
+    }
     const requestSerial = looksRequestSerialRef.current + 1;
     looksRequestSerialRef.current = requestSerial;
     if (!characterId || freeplay) {
@@ -530,7 +606,7 @@ export function GeneratorWorkspace() {
         ),
       );
     }
-  }, [characterId, freeplay]);
+  }, [characterId, config?.viewer.authenticated, freeplay, invalidateLookScope]);
 
   const refreshCharacters = useCallback(async () => {
     setCharactersAuthority(loadingAuthorityStatus);
@@ -614,20 +690,29 @@ export function GeneratorWorkspace() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      void refreshConfig();
-      void refreshJobs();
-      void refreshMedia("image");
-      void refreshPresets();
-      void refreshIdentityMedia();
-      void refreshCharacters();
+      void loadGeneratorWorkspaceInitialData({
+        loadConfig: refreshConfig,
+        loadCharacters: refreshCharacters,
+        loadJobs: refreshJobs,
+        loadMedia: () => refreshMedia("image"),
+        loadPresets: refreshPresets,
+        loadIdentityMedia: refreshIdentityMedia,
+      });
     }, 0);
     return () => window.clearTimeout(timer);
   }, [refreshCharacters, refreshConfig, refreshIdentityMedia, refreshJobs, refreshMedia, refreshPresets]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void refreshLooks(), 0);
+    const timer = window.setTimeout(
+      () =>
+        void loadGeneratorLooksForViewer(
+          config?.viewer.authenticated,
+          refreshLooks,
+        ),
+      0,
+    );
     return () => window.clearTimeout(timer);
-  }, [refreshLooks]);
+  }, [config?.viewer.authenticated, refreshLooks]);
 
   useEffect(() => {
     const pendingJobs = jobs.filter((job) => !isTerminal(job.status));
@@ -1121,6 +1206,37 @@ export function GeneratorWorkspace() {
           ))}
         </div>
 
+        {anonymousViewer && (
+          <div
+            className="mb-5 flex flex-col gap-4 rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-5 sm:flex-row sm:items-center sm:justify-between"
+            data-testid="generator-auth-required"
+          >
+            <div>
+              <p className="text-[15px] font-black text-white">
+                Sign in to use your private generation workspace
+              </p>
+              <p className="mt-1 max-w-2xl text-[13px] font-medium leading-5 text-[rgb(170,170,170)]">
+                Your jobs, gallery, saved presets, identity references, and reusable Looks
+                appear here after you sign in.
+              </p>
+            </div>
+            <div className="flex shrink-0 flex-wrap gap-2">
+              <Link
+                className="inline-flex h-10 items-center justify-center rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]"
+                href={authHrefForTarget("/login", authReturnTarget)}
+              >
+                Log in
+              </Link>
+              <Link
+                className="inline-flex h-10 items-center justify-center rounded-full bg-[rgb(255,48,170)] px-4 text-[12px] font-black text-white"
+                href={authHrefForTarget("/signup", authReturnTarget)}
+              >
+                Join free
+              </Link>
+            </div>
+          </div>
+        )}
+
         <div className="grid gap-5 md:grid-cols-[390px_1fr]">
           <form
             className={`${view === "create" ? "block" : "hidden"} rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-4 md:block`}
@@ -1238,7 +1354,9 @@ export function GeneratorWorkspace() {
                     Open Gallery
                   </button>
                 </div>
-                {mediaAuthority.phase === "error" ? (
+                {anonymousViewer ? (
+                  <GeneratorPrivateDataAuthHint label="your editable images" />
+                ) : mediaAuthority.phase === "error" ? (
                   <GeneratorAuthorityNotice
                     hasSnapshot={mediaAuthority.hasSnapshot}
                     message={mediaAuthority.error ?? "Gallery could not load."}
@@ -1389,19 +1507,24 @@ export function GeneratorWorkspace() {
                     This legacy character has no confirmed identity image. New characters establish identity before publishing; results for this character may vary.
                   </div>
                 )}
-                {looksAuthority.phase === "loading" && !looksAuthority.hasSnapshot ? (
+                {anonymousViewer ? (
+                  <GeneratorPrivateDataAuthHint label="your saved Looks" />
+                ) : null}
+                {!anonymousViewer &&
+                looksAuthority.phase === "loading" &&
+                !looksAuthority.hasSnapshot ? (
                   <p className="mt-3 text-[12px] font-semibold text-[rgb(170,170,170)]">
                     Loading saved Looks…
                   </p>
                 ) : null}
-                {looksAuthority.phase === "error" ? (
+                {!anonymousViewer && looksAuthority.phase === "error" ? (
                   <GeneratorAuthorityNotice
                     hasSnapshot={looksAuthority.hasSnapshot}
                     message={looksAuthority.error ?? "Saved Looks could not load."}
                     onRetry={() => void refreshLooks()}
                   />
                 ) : null}
-                {looks.length > 0 && (
+                {!anonymousViewer && looks.length > 0 && (
                   <label className="mt-3 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
                     Reuse a Look
                     <select
@@ -1419,7 +1542,7 @@ export function GeneratorWorkspace() {
                     </select>
                   </label>
                 )}
-                {authorityShowsEmpty(looksAuthority, looks.length) ? (
+                {!anonymousViewer && authorityShowsEmpty(looksAuthority, looks.length) ? (
                   <p className="mt-3 text-[12px] font-semibold text-[rgb(114,113,112)]">
                     No saved Looks for this character yet.
                   </p>
@@ -1587,26 +1710,32 @@ export function GeneratorWorkspace() {
                   />
                   <button
                     className="h-11 shrink-0 rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)] disabled:bg-[rgb(64,64,64)] disabled:text-[rgb(150,150,150)]"
-                    disabled={!presetName.trim()}
+                    disabled={anonymousViewer || !presetName.trim()}
                     onClick={() => void saveCurrentPreset()}
                     type="button"
                   >
                     Save
                   </button>
                 </div>
-                {presetsAuthority.phase === "loading" && !presetsAuthority.hasSnapshot ? (
+                {anonymousViewer ? (
+                  <GeneratorPrivateDataAuthHint label="your saved presets" />
+                ) : null}
+                {!anonymousViewer &&
+                presetsAuthority.phase === "loading" &&
+                !presetsAuthority.hasSnapshot ? (
                   <p className="text-[12px] font-medium text-[rgb(114,113,112)]">
                     Loading saved presets…
                   </p>
                 ) : null}
-                {presetsAuthority.phase === "error" ? (
+                {!anonymousViewer && presetsAuthority.phase === "error" ? (
                   <GeneratorAuthorityNotice
                     hasSnapshot={presetsAuthority.hasSnapshot}
                     message={presetsAuthority.error ?? "Saved presets could not load."}
                     onRetry={() => void refreshPresets()}
                   />
                 ) : null}
-                {authorityShowsEmpty(presetsAuthority, userPresets.length) ? (
+                {!anonymousViewer &&
+                authorityShowsEmpty(presetsAuthority, userPresets.length) ? (
                   <p className="text-[12px] font-medium text-[rgb(114,113,112)]">
                     Save your current background, pose, outfit, or prompt to reuse later.
                   </p>
@@ -1713,7 +1842,10 @@ export function GeneratorWorkspace() {
                         {consistencyModeDescription(consistencyMode)}
                       </p>
                     </div>
-                    {identityMediaAuthority.phase === "error" ? (
+                    {anonymousViewer ? (
+                      <GeneratorPrivateDataAuthHint label="your identity references" />
+                    ) : null}
+                    {!anonymousViewer && identityMediaAuthority.phase === "error" ? (
                       <GeneratorAuthorityNotice
                         hasSnapshot={identityMediaAuthority.hasSnapshot}
                         message={
@@ -1723,13 +1855,14 @@ export function GeneratorWorkspace() {
                         onRetry={() => void refreshIdentityMedia()}
                       />
                     ) : null}
-                    {identityMediaAuthority.phase === "loading" &&
+                    {!anonymousViewer &&
+                    identityMediaAuthority.phase === "loading" &&
                     !identityMediaAuthority.hasSnapshot ? (
                       <p className="text-[12px] font-semibold text-[rgb(170,170,170)]">
                         Loading identity references…
                       </p>
                     ) : null}
-                    {identityTimeline.length > 0 && (
+                    {!anonymousViewer && identityTimeline.length > 0 && (
                       <div data-testid="identity-timeline">
                         <div className="mb-2 flex items-center justify-between gap-2">
                           <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
@@ -1766,7 +1899,7 @@ export function GeneratorWorkspace() {
                         </div>
                       </div>
                     )}
-                    {authorityShowsEmpty(
+                    {!anonymousViewer && authorityShowsEmpty(
                       identityMediaAuthority,
                       identityTimeline.length,
                     ) ? (
@@ -1973,19 +2106,24 @@ export function GeneratorWorkspace() {
                 </button>
               </div>
               <div className="grid gap-3">
-                {jobsAuthority.phase === "error" ? (
+                {anonymousViewer ? (
+                  <GeneratorPrivateDataAuthHint label="your generation jobs" />
+                ) : null}
+                {!anonymousViewer && jobsAuthority.phase === "error" ? (
                   <GeneratorAuthorityNotice
                     hasSnapshot={jobsAuthority.hasSnapshot}
                     message={jobsAuthority.error ?? "Jobs could not load."}
                     onRetry={() => void refreshJobs()}
                   />
                 ) : null}
-                {jobsAuthority.phase === "loading" && !jobsAuthority.hasSnapshot ? (
+                {!anonymousViewer &&
+                jobsAuthority.phase === "loading" &&
+                !jobsAuthority.hasSnapshot ? (
                   <div className="rounded-[10px] bg-[rgb(36,36,36)] p-5 text-[13px] font-medium text-[rgb(170,170,170)]">
                     Loading jobs…
                   </div>
                 ) : null}
-                {authorityShowsEmpty(jobsAuthority, jobs.length) && (
+                {!anonymousViewer && authorityShowsEmpty(jobsAuthority, jobs.length) && (
                   <div className="rounded-[10px] bg-[rgb(36,36,36)] p-5 text-[13px] font-medium text-[rgb(170,170,170)]">
                     No jobs yet.
                   </div>
@@ -2131,7 +2269,12 @@ export function GeneratorWorkspace() {
                   </span>
                   </div>
               )}
-              {mediaAuthority.phase === "error" ? (
+              {anonymousViewer ? (
+                <div className="mb-4">
+                  <GeneratorPrivateDataAuthHint label="your private gallery" />
+                </div>
+              ) : null}
+              {!anonymousViewer && mediaAuthority.phase === "error" ? (
                 <div className="mb-4">
                   <GeneratorAuthorityNotice
                     hasSnapshot={mediaAuthority.hasSnapshot}
@@ -2140,7 +2283,9 @@ export function GeneratorWorkspace() {
                   />
                 </div>
               ) : null}
-              {mediaAuthority.phase === "loading" && !mediaAuthority.hasSnapshot ? (
+              {!anonymousViewer &&
+              mediaAuthority.phase === "loading" &&
+              !mediaAuthority.hasSnapshot ? (
                 <div className="mb-4 rounded-[10px] bg-[rgb(36,36,36)] p-5 text-[13px] font-medium text-[rgb(170,170,170)]">
                   Loading gallery…
                 </div>
@@ -2363,7 +2508,7 @@ export function GeneratorWorkspace() {
                     </div>
                   );
                 })}
-                {authorityShowsEmpty(mediaAuthority, media.length) && (
+                {!anonymousViewer && authorityShowsEmpty(mediaAuthority, media.length) && (
                   <div className="col-span-full grid min-h-40 place-items-center rounded-[10px] bg-[rgb(36,36,36)] text-[13px] font-medium text-[rgb(170,170,170)]">
                     <div className="flex items-center gap-2">
                       <ImageIcon className="h-4 w-4" />
@@ -2534,6 +2679,17 @@ function IconButton({
     >
       {children}
     </button>
+  );
+}
+
+function GeneratorPrivateDataAuthHint({ label }: { label: string }) {
+  return (
+    <p
+      className="rounded-[10px] bg-[rgb(36,36,36)] p-3 text-[12px] font-semibold text-[rgb(170,170,170)]"
+      data-testid="generator-private-auth-required"
+    >
+      Sign in to load {label}.
+    </p>
   );
 }
 

@@ -32,6 +32,10 @@ import {
   readyAuthorityStatus,
 } from "./authority-state";
 import { authHrefForTarget, authNextTargetFromPath } from "./authRedirect";
+import {
+  fetchProtectedForViewer,
+  type ViewerFetcher,
+} from "./viewer-auth";
 
 type ProfilePayload = {
   ok?: boolean;
@@ -161,6 +165,14 @@ type CollectionVisibility = MediaCollection["visibility"];
 type ProfileWorkspaceProps = {
   routePath: string;
 };
+
+export function loadProfileForViewer(fetcher: ViewerFetcher = fetch) {
+  return fetchProtectedForViewer(
+    "/api/v1/profile",
+    { cache: "no-store" },
+    fetcher,
+  );
+}
 
 const tabs = ["recent", "characters", "created", "presets", "media", "group-chats", "packs"] as const;
 type LibraryTab = (typeof tabs)[number];
@@ -323,6 +335,29 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
   const mediaCollectionsRequestSerialRef = useRef(0);
   const preferencesRequestSerialRef = useRef(0);
 
+  const showAnonymousProfile = useCallback(() => {
+    libraryRequestSerialRef.current += 1;
+    mediaCollectionsRequestSerialRef.current += 1;
+    preferencesRequestSerialRef.current += 1;
+    libraryTabRef.current = null;
+    setAuthState("anonymous");
+    setProfileAuthority(readyAuthorityStatus());
+    setBalance(null);
+    setPlan(null);
+    setSubscription(null);
+    setDisplayName("");
+    setProfileName("");
+    setItems([]);
+    setLibraryAuthority(initialAuthorityStatus());
+    setEmailUpdates(null);
+    setMutedTags([]);
+    setPreferencesAuthority(initialAuthorityStatus());
+    setPreferenceTags([]);
+    setPreferenceTagsAuthority(initialAuthorityStatus());
+    setMediaCollections([]);
+    setMediaCollectionsAuthority(initialAuthorityStatus());
+  }, []);
+
   const refreshProfile = useCallback(async () => {
     const requestSerial = profileRequestSerialRef.current + 1;
     profileRequestSerialRef.current = requestSerial;
@@ -331,30 +366,16 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
       current === "authenticated" ? "authenticated" : "loading",
     );
     try {
-      const response = await fetch("/api/v1/profile");
+      const result = await loadProfileForViewer();
       if (requestSerial !== profileRequestSerialRef.current) return;
+      if (result.viewer === "anonymous") {
+        showAnonymousProfile();
+        return;
+      }
+      const response = result.response;
       const responseState = profileAuthorityStateForResponse(response);
       if (responseState === "anonymous") {
-        libraryRequestSerialRef.current += 1;
-        mediaCollectionsRequestSerialRef.current += 1;
-        preferencesRequestSerialRef.current += 1;
-        libraryTabRef.current = null;
-        setAuthState("anonymous");
-        setProfileAuthority(readyAuthorityStatus());
-        setBalance(null);
-        setPlan(null);
-        setSubscription(null);
-        setDisplayName("");
-        setProfileName("");
-        setItems([]);
-        setLibraryAuthority(initialAuthorityStatus());
-        setEmailUpdates(null);
-        setMutedTags([]);
-        setPreferencesAuthority(initialAuthorityStatus());
-        setPreferenceTags([]);
-        setPreferenceTagsAuthority(initialAuthorityStatus());
-        setMediaCollections([]);
-        setMediaCollectionsAuthority(initialAuthorityStatus());
+        showAnonymousProfile();
         return;
       }
       const payload = (await response.json().catch(() => null)) as
@@ -399,7 +420,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
         current === "authenticated" ? "authenticated" : "error",
       );
     }
-  }, []);
+  }, [showAnonymousProfile]);
 
   const refreshLibrary = useCallback(async (nextTab: LibraryTab) => {
     const requestSerial = libraryRequestSerialRef.current + 1;

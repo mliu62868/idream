@@ -6,6 +6,10 @@ import { ArrowRight, Compass, MessageCircle, Plus, Sparkles } from "lucide-react
 import { useEffect, useState } from "react";
 import type { CharacterCardData } from "@/types/ourdream";
 import { authHrefForTarget } from "./authRedirect";
+import {
+  fetchProtectedForViewer,
+  type ViewerFetcher,
+} from "./viewer-auth";
 
 // SPEC: /chat landing — a real hub listing the user's chat sessions (most-recent
 //       first), each linking into /chat/{id}. Empty → guide to Explore; logged-out
@@ -26,6 +30,14 @@ type SessionRow = {
 type HubState = "loading" | "ready" | "error" | "signed-out";
 type FeaturedState = "loading" | "ready" | "error";
 
+export function loadChatSessionsForViewer(fetcher: ViewerFetcher = fetch) {
+  return fetchProtectedForViewer(
+    "/api/v1/chat/sessions",
+    { cache: "no-store" },
+    fetcher,
+  );
+}
+
 export function ChatHubWorkspace() {
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [state, setState] = useState<HubState>("loading");
@@ -33,8 +45,15 @@ export function ChatHubWorkspace() {
   async function load() {
     setState("loading");
     try {
-      const res = await fetch("/api/v1/chat/sessions");
+      const result = await loadChatSessionsForViewer();
+      if (result.viewer === "anonymous") {
+        setSessions([]);
+        setState("signed-out");
+        return;
+      }
+      const res = result.response;
       if (res.status === 401) {
+        setSessions([]);
         setState("signed-out");
         return;
       }

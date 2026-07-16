@@ -5,6 +5,10 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
 import { safeInternalAuthRedirect } from "./authRedirect";
+import {
+  fetchProtectedForViewer,
+  type ViewerFetcher,
+} from "./viewer-auth";
 
 type Plan = {
   id: string;
@@ -53,6 +57,14 @@ function chatBenefits(slug: string): string[] {
 
 const FREE_CHAT_SUMMARY = "Free: 30 text messages per day · basic chat model · base memory.";
 
+export function loadUpgradeProfileForViewer(fetcher: ViewerFetcher = fetch) {
+  return fetchProtectedForViewer(
+    "/api/v1/profile",
+    { cache: "no-store" },
+    fetcher,
+  );
+}
+
 export function UpgradeWorkspace() {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [billingMode, setBillingMode] = useState<BillingMode | null>(null);
@@ -99,8 +111,12 @@ export function UpgradeWorkspace() {
   useEffect(() => {
     let alive = true;
     const timer = window.setTimeout(() => {
-      void fetch("/api/v1/profile")
-        .then((response) => (response.ok ? response.json() : null))
+      void loadUpgradeProfileForViewer()
+        .then((result) =>
+          result.viewer === "authenticated" && result.response.ok
+            ? result.response.json()
+            : null,
+        )
         .then(
           (
             payload: {
