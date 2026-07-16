@@ -9,6 +9,7 @@ import {
   fetchProtectedForViewer,
   type ViewerFetcher,
 } from "./viewer-auth";
+import { configuredEntitlementBenefits } from "./entitlement-copy";
 
 type Plan = {
   id: string;
@@ -17,6 +18,7 @@ type Plan = {
   billingPeriod: string;
   priceCents: number;
   includedDreamcoins: number;
+  features: Record<string, unknown>;
 };
 
 type BillingMode = {
@@ -30,32 +32,7 @@ type CheckoutResult =
   | { kind: "redirect"; message: string; url: string }
   | { kind: "error"; message: string };
 
-// P1-D: spell out the concrete chat entitlement per tier — never just
-// "account-wide benefits". Mirrors the server-enforced policy (design §5.5).
-function chatBenefits(slug: string): string[] {
-  const s = slug.toLowerCase();
-  if (s.includes("deluxe")) {
-    return [
-      "Unlimited text messages & audio",
-      "Premium chat model (highest quality replies)",
-      "3× chat memory depth",
-      "Longest context window + highest rate limit",
-    ];
-  }
-  if (s.includes("premium")) {
-    return [
-      "Unlimited text messages & audio",
-      "Longer conversation context",
-      "Advanced generation controls",
-    ];
-  }
-  return [
-    "Unlimited text messages & audio",
-    "Longer context and richer memory",
-  ];
-}
-
-const FREE_CHAT_SUMMARY = "Free: 30 text messages per day · basic chat model · base memory.";
+const FREE_CHAT_SUMMARY = "Free: 30 text messages per day.";
 
 export function loadUpgradeProfileForViewer(fetcher: ViewerFetcher = fetch) {
   return fetchProtectedForViewer(
@@ -247,6 +224,7 @@ export function UpgradeWorkspace() {
           const isActive =
             activePlan !== "" &&
             `${plan.name} ${plan.billingPeriod}`.toLowerCase() === activePlan;
+          const benefits = configuredEntitlementBenefits(plan.features);
           return (
           <article
             className={`rounded-[20px] border p-6 ${
@@ -274,13 +252,18 @@ export function UpgradeWorkspace() {
               Includes {plan.includedDreamcoins.toLocaleString()} dreamcoins.
             </p>
             <ul className="mt-3 space-y-1.5">
-              {chatBenefits(plan.slug).map((benefit) => (
+              {benefits.map((benefit) => (
                 <li className="flex items-start gap-2 text-[13px] leading-5 text-white" key={benefit}>
                   <Check className="mt-0.5 h-4 w-4 shrink-0 text-[rgb(253,95,194)]" />
                   {benefit}
                 </li>
               ))}
             </ul>
+            {benefits.length === 0 ? (
+              <p className="mt-3 text-[13px] leading-5 text-[rgb(170,170,170)]">
+                No additional entitlements are configured for this plan.
+              </p>
+            ) : null}
             <button
               className="mt-6 h-11 w-full rounded-full bg-white text-[14px] font-black text-[rgb(13,13,13)] disabled:opacity-70"
               disabled={pendingPlan === plan.id || isActive}

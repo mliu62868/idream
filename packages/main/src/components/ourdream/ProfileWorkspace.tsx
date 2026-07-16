@@ -36,6 +36,7 @@ import {
   fetchProtectedForViewer,
   type ViewerFetcher,
 } from "./viewer-auth";
+import { activeEntitlementSummary } from "./entitlement-copy";
 
 type ProfilePayload = {
   ok?: boolean;
@@ -78,19 +79,6 @@ type BillingMutationPayload = {
     subscription?: SubscriptionSummary | null;
   };
 };
-
-// P1-D: describe the chat entitlement that matches the active plan tier so users
-// see what their plan actually unlocks for chat (not a vague "benefits" line).
-function chatEntitlementSummary(plan: string): string {
-  const p = plan.toLowerCase();
-  if (p.includes("deluxe")) {
-    return "Unlimited messages · premium chat model · 3× chat memory · highest rate limit.";
-  }
-  if (p.includes("premium")) {
-    return "Unlimited messages · longer context · advanced generation controls.";
-  }
-  return "Free: 30 messages per day · basic chat model · base memory.";
-}
 
 type LibraryPayload = {
   data?: {
@@ -302,6 +290,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
   const [balance, setBalance] = useState<number | null>(null);
   const [plan, setPlan] = useState<string | null>(null);
   const [subscription, setSubscription] = useState<SubscriptionSummary | null>(null);
+  const [entitlements, setEntitlements] = useState<Record<string, unknown>>({});
   const [displayName, setDisplayName] = useState("");
   const [profileName, setProfileName] = useState("");
   const [tab, setTab] = useState<LibraryTab>("recent");
@@ -345,6 +334,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
     setBalance(null);
     setPlan(null);
     setSubscription(null);
+    setEntitlements({});
     setDisplayName("");
     setProfileName("");
     setItems([]);
@@ -390,6 +380,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
       const nextName = user?.displayName?.trim() || user?.email?.trim() || "";
       const nextBalance = profileData?.balance;
       const sub = profileData?.subscription;
+      const nextEntitlements = profileData?.entitlements;
       if (
         !profileData ||
         !user ||
@@ -397,7 +388,9 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
         typeof nextBalance !== "number" ||
         !Number.isFinite(nextBalance) ||
         sub === undefined ||
-        (sub !== null && !sub.plan)
+        (sub !== null && !sub.plan) ||
+        !nextEntitlements ||
+        Array.isArray(nextEntitlements)
       ) {
         throw new Error("Account data was incomplete.");
       }
@@ -406,6 +399,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
       setProfileName(nextName);
       setBalance(nextBalance);
       setSubscription(sub);
+      setEntitlements(nextEntitlements);
       setPlan(sub?.plan ? `${sub.plan.name} ${sub.plan.billingPeriod}` : "Free");
       setProfileAuthority(readyAuthorityStatus());
     } catch (error) {
@@ -1182,13 +1176,15 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
             Upgrade
           </Link>
         </div>
-        {/* P1-D: surface the concrete chat entitlement for the active tier. */}
+        {/* Surface only entitlements returned by the account authority. */}
         <div className="mt-6 rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-4">
           <p className="text-[12px] font-bold uppercase tracking-wide text-[rgb(114,113,112)]">
-            Chat plan
+            Current entitlements
           </p>
           <p className="mt-2 text-[14px] font-semibold leading-6 text-white">
-            {plan ? chatEntitlementSummary(plan) : "Plan details are unavailable until account data loads."}
+            {plan
+              ? activeEntitlementSummary(entitlements, subscription !== null)
+              : "Plan details are unavailable until account data loads."}
           </p>
         </div>
         <div aria-label="Library sections" className="mt-6 flex flex-wrap gap-2">
